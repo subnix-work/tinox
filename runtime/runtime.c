@@ -4991,11 +4991,22 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     memcpy(out, body, body_len); out += body_len;
     size_t resp_total = (size_t)(out - http_resp);
 
-    // Send with pre-computed length (no strlen)
+    // Send with pre-computed length (no strlen). Bug 175: this loop used to
+    // give up on ANY n <= 0, including errno == EINTR -- a blocking send()
+    // can be interrupted by the GC's SIGPWR stop-the-world signal like any
+    // other blocking syscall (see the Runtime Quirks note on conn_recv/
+    // conn_send, the template this loop failed to follow), silently
+    // truncating the HTTP response mid-write under GC pressure instead of
+    // finishing it. Retry on EINTR instead of aborting, matching conn_send's
+    // own discipline.
     size_t sent_bytes = 0;
     while (sent_bytes < resp_total) {
         ssize_t n = send((int)client_fd, http_resp + sent_bytes, resp_total - sent_bytes, MSG_NOSIGNAL);
-        if (n <= 0) break;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) break;
         sent_bytes += (size_t)n;
     }
     *keep_alive_out = !req_close;
