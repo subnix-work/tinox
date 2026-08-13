@@ -2627,6 +2627,7 @@ static size_t fast_i64_write(int64_t val, char* buf);
 // below sets it to false explicitly (malloc doesn't zero); it becomes
 // true only if handshake() actually negotiates the extension.
 typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; } TinoxConn;   // ssl==NULL => plaintext
+static void conn_send_all(TinoxConn* c, const char* data, size_t len);
 
 #ifdef TINOX_TLS
 #include <openssl/ssl.h>
@@ -2791,17 +2792,36 @@ static char* conn_read_request(TinoxConn* c) {
         if (cl) {
             long body_len = atol(cl + 15);
             long header_len = (long)(hdr_end - buf) + 4;
-            // Bug 96: Content-Length is attacker-controlled and used to be
-            // trusted with no maximum and no bound on how far the loop below
-            // would grow `cap` trying to fit it (TINOX_MAX_BODY was defined
-            // but never enforced) -- an unauthenticated client could send
-            // headers with a huge Content-Length and little/no body to force
-            // an unbounded allocation attempt. Clamp instead: a negative or
-            // over-cap value truncates the body to what we're willing to
-            // buffer rather than growing without bound (still safe even
-            // though a legitimately larger body would be truncated, which is
-            // an acceptable degradation for an abusive value).
-            if (body_len < 0 || body_len > TINOX_MAX_BODY) body_len = TINOX_MAX_BODY;
+            // Bug 96 clamped an over-cap Content-Length down to
+            // TINOX_MAX_BODY and kept reading -- which stopped the
+            // unbounded-allocation attack, but silently handed the
+            // application a TRUNCATED body with no signal anything was
+            // cut (bug #174): a 150 MB upload became an unmarked ~4 MB
+            // prefix, and the handler had no way to tell "this really is
+            // a complete small request" from "this was silently
+            // mangled". Bug #174 fix: reject up front instead of
+            // clamping-and-continuing -- a Content-Length that's
+            // negative (malformed) or already over the cap gets a hard,
+            // visible 413 and the connection is closed without ever
+            // reading/handing off a truncated body. This still bounds
+            // allocation exactly like the clamp did (we never grow `cap`
+            // past what a request under the cap needs), just via
+            // rejection instead of quiet corruption.
+            if (body_len < 0 || body_len > TINOX_MAX_BODY) {
+                static const char* body413 = "Payload Too Large\n";
+                char resp413[256];
+                int rn = snprintf(resp413, sizeof(resp413),
+                    "HTTP/1.1 413 Payload Too Large\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Content-Length: %zu\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    "%s",
+                    strlen(body413), body413);
+                conn_send_all(c, resp413, (size_t)rn);
+                buf[0] = '\0';
+                return buf;
+            }
             long total = header_len + body_len;
             while ((long)used < total) {
                 while (cap < (size_t)total + 1) {
