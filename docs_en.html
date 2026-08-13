@@ -1858,6 +1858,7 @@ epoll_fd = epoll_create1(0);
   <h2>http_server</h2>
   <p class="mod-ref-note">Full reference (description, dependencies, examples, classes &amp; methods) is loaded directly from the published tinox-central package documentation, so it does not have to be maintained in two places: <a href="docs/tinox-core/http_server/1-0-1/docs.html" target="_blank" rel="noopener">docs/tinox-core/http_server/1-0-1/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/http_server/1-0-1/docs.html" loading="lazy" title="tinox.core:http_server documentation"></iframe>
+  <p class="mod-ref-note">Request body size cap: 4&nbsp;MiB (<code>TINOX_MAX_BODY</code> in <code>runtime.c</code>). A request whose <code>Content-Length</code> exceeds this is rejected up front with <code>413 Payload Too Large</code> and the connection is closed &mdash; the handler is never invoked, and the body is never silently truncated and processed as if it were complete (issue #174).</p>
   </div>
 
     <div class="mod-section" id="mod-http2_server">
