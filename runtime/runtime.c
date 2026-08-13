@@ -5014,11 +5014,18 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
 
 // Per-connection state for epoll-based multi-connection handler
 #define EPOLL_MAX_CONNS 4096
-#define EPOLL_KEEP_ALIVE_MS 500  // close idle connections after 500ms
+#define EPOLL_KEEP_ALIVE_MS 500      // close genuinely idle keep-alive connections after 500ms
+#define EPOLL_FIRST_REQUEST_GRACE_MS 5000 // see `served` below; matches the SO_RCVTIMEO
+                                          // "zombie guard" in the accept path, so a
+                                          // connection that truly never sends anything
+                                          // is still bounded by the same 5s either way
 
 typedef struct {
     int      fd;          // -1 = unused slot
     uint64_t last_ms;     // last activity timestamp (milliseconds)
+    int      served;      // 0 until this connection's first request has completed --
+                           // see the stale-scan below for why this needs to be tracked
+                           // separately from a genuinely-idle keep-alive connection
 } EpollConnSlot;
 
 static __thread EpollConnSlot g_epoll_slots[EPOLL_MAX_CONNS];
@@ -5030,11 +5037,29 @@ static uint64_t epoll_now_ms(void) {
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)(ts.tv_nsec / 1000000);
 }
 
-static void epoll_slot_add(int fd) {
+// Bug 175 (root cause): this used to call epoll_now_ms() itself instead of
+// taking the caller's already-captured `now_ms`. tinox_handle_connections'
+// main loop captures `now_ms` ONCE per iteration (right after epoll_wait
+// returns) and reuses that single value for both the accept-handling section
+// (which used to call this function) and the stale-connection scan later in
+// the SAME iteration. CLOCK_MONOTONIC_COARSE never goes backward, but it can
+// tick forward between two separate reads -- so a connection accepted mid-
+// iteration could get a `last_ms` a few coarse-clock ticks LATER than the
+// iteration's own `now_ms`. The stale-scan's `now_ms - last_ms` is unsigned;
+// with last_ms > now_ms that subtraction underflows to roughly UINT64_MAX,
+// which is >= any timeout threshold -- so a connection accepted this exact
+// iteration could be force-closed by the SAME iteration's stale-scan pass,
+// before it was ever read even once. Confirmed live: temporary instrumen-
+// tation caught this exact underflow (age_ms values like 18446744073709551599,
+// i.e. (uint64_t)-16) on every observed spurious close during a 300-way
+// concurrent burst. Passing the loop's own `now_ms` through removes the
+// possibility of two inconsistent clock reads within one iteration entirely.
+static void epoll_slot_add(int fd, uint64_t now_ms) {
     int idx = fd % EPOLL_MAX_CONNS;
     if (g_epoll_slots[idx].fd < 0) g_epoll_nconns++;
     g_epoll_slots[idx].fd = fd;
-    g_epoll_slots[idx].last_ms = epoll_now_ms();
+    g_epoll_slots[idx].last_ms = now_ms;
+    g_epoll_slots[idx].served = 0;
 }
 
 static void epoll_slot_remove(int fd) {
@@ -5089,14 +5114,16 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
                     cev.events  = EPOLLIN;
                     cev.data.fd = cfd;
                     epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev);
-                    epoll_slot_add(cfd);
+                    epoll_slot_add(cfd, now_ms);
                 }
             } else {
                 // Handle one request on this client connection
                 int keep_alive = 0;
                 tinox_handle_one(srv, (int64_t)fd, &keep_alive);
                 if (keep_alive) {
-                    g_epoll_slots[fd % EPOLL_MAX_CONNS].last_ms = now_ms;
+                    int idx = fd % EPOLL_MAX_CONNS;
+                    g_epoll_slots[idx].last_ms = now_ms;
+                    g_epoll_slots[idx].served = 1;
                 } else {
                     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
                     epoll_slot_remove(fd);
@@ -5105,11 +5132,35 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
             }
         }
 
-        // Scan for stale connections (only when we have active clients)
+        // Scan for stale connections (only when we have active clients).
+        //
+        // Bug 175: a freshly-accepted connection's `last_ms` is set once, at
+        // accept() time (epoll_slot_add), and only touched again once its
+        // FIRST request has actually completed (the `served = 1` above). If
+        // this worker thread is backlogged handling other connections'
+        // events -- entirely possible under a concurrent burst, since one
+        // thread's epoll instance can have many connections ready at once --
+        // a connection that already has its request sitting in the kernel
+        // receive buffer, just not yet read by tinox_handle_one, was
+        // indistinguishable here from a genuinely idle keep-alive connection
+        // waiting for its NEXT request. Both used the same tight
+        // EPOLL_KEEP_ALIVE_MS (500ms) threshold, so a busy-but-healthy
+        // connection could get force-closed by this scan before it was ever
+        // serviced -- the client sees an abrupt close/reset (CURLE_RECV_ERROR)
+        // for a request the server never even attempted to read. Give a
+        // connection that hasn't been served yet the same longer grace period
+        // as the SO_RCVTIMEO "zombie guard" already set on accept (5s) --
+        // that guard already bounds a connection that truly never sends
+        // anything, so this scan doesn't need a tighter deadline for the
+        // not-yet-served case; only a genuinely idle, already-served
+        // keep-alive connection uses the tight 500ms.
         if (g_epoll_nconns > 0) {
             for (int i = 0; i < EPOLL_MAX_CONNS; i++) {
                 if (g_epoll_slots[i].fd < 0) continue;
-                if (now_ms - g_epoll_slots[i].last_ms >= EPOLL_KEEP_ALIVE_MS) {
+                uint64_t timeout_ms = g_epoll_slots[i].served
+                    ? EPOLL_KEEP_ALIVE_MS
+                    : EPOLL_FIRST_REQUEST_GRACE_MS;
+                if (now_ms - g_epoll_slots[i].last_ms >= timeout_ms) {
                     int fd = g_epoll_slots[i].fd;
                     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
                     epoll_slot_remove(fd);
