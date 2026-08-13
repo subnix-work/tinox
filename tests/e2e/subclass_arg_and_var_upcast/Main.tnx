@@ -1,0 +1,22 @@
+import Animal;
+import Dog;
+import Zoo;
+
+// Bug 173: a subclass instance was rejected as a base-class-typed argument
+// through an explicit-receiver method call, and as a base-class-typed
+// variable's initializer, even though a bare/free function call already
+// accepted the identical relationship. Covers both previously-broken paths.
+// expect: count=1
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let d: Dog = Dog { name: "Rex" };
+        let z: Zoo = Zoo { count: 0 };
+        z.addAnimal(d);
+        let a: Animal = d;
+        print("count=" + z.count.toString());
+        return 0;
+    }
+}

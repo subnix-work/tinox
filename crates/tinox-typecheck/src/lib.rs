@@ -3802,12 +3802,21 @@ impl TypeChecker {
             (_, ValueType::Null) => false,
             // A non-null value is compatible with its nullable counterpart
             (ValueType::Nullable(inner), _) => self.types_compatible(inner, b),
-            // Allow passing a class where an interface it implements is expected
-            (ValueType::Named(iface, _), ValueType::Named(class, _)) => {
+            // Allow passing a class where an interface it implements is
+            // expected, OR where a base class it extends (directly or
+            // transitively) is expected (#173: this arm used to only check
+            // interface_implementations, so a subclass instance was
+            // rejected as an argument/variable typed as its own base
+            // class — even though the free-function-call path already
+            // accepted the same relationship, via a separate code path
+            // that skips this check entirely rather than handling it
+            // correctly).
+            (ValueType::Named(base_or_iface, _), ValueType::Named(class, _)) => {
                 self.interface_implementations
                     .get(class)
-                    .map(|ifaces| ifaces.iter().any(|i| i == iface))
+                    .map(|ifaces| ifaces.iter().any(|i| i == base_or_iface))
                     .unwrap_or(false)
+                    || self.is_subclass_or_equal(class, base_or_iface)
             }
             // `channel` (a bare Int — see ExprKind::Channel/Recv above,
             // there's no element type to infer at creation) is compatible
