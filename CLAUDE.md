@@ -38,6 +38,27 @@ several bugs were sometimes merged into a single issue, e.g. "Bugs
 by title (`gh issue list --repo subnix-work/tinox --state all --search
 "Bug 40"`), not by assumed number.
 
+## Branching Model (since 2026-08-13)
+
+Three-tier flow: `main` → `develop` → `feature/*`.
+
+- **`main`** is always the stable, releasable state. Nothing is pushed
+  to it directly — it only advances via a merge (PR) from `develop`
+  once a batch of features is verified there.
+- **`develop`** is the integration branch. Finished features land here
+  first, via PR from a `feature/*` branch. This is the default base
+  branch for day-to-day work — branch new feature work off `develop`,
+  not `main`.
+- **`feature/<name>`** branches are cut from `develop` for individual
+  pieces of work (e.g. `feature/rest-param-binding`). Merge back into
+  `develop` via PR once `make check` is green; delete the feature
+  branch after merge.
+- Both `main` and `develop` have GitHub branch protection enabled (PR
+  required, no direct pushes) — configured via `gh api repos/
+  subnix-work/tinox/branches/<branch>/protection`.
+- Releasing to `main` = opening a PR `develop` → `main` once `develop`
+  is in a shippable state; no separate release-branch tier for now.
+
 ## Core Philosophy (distilled from 70+ documented bugs)
 
 - **No silent garbage.** Every error case gets a hard, visible failure
