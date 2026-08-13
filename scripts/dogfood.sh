@@ -35,9 +35,22 @@ run_job() {
 }
 
 # Prints the step label followed by OK/FAIL, based on a previously run_job'd id.
+# On FAIL, also dumps the job's captured stdout/stderr (from run_job's
+# $TMP/log/<id>) so the real underlying error is visible in the CI log
+# instead of just "FAIL" -- previously the only way to see it was to
+# rerun the failing command by hand, which isn't possible on a CI runner
+# after the fact (issue #179: this swallowed the actual jgrep-tinox
+# build.sh error on every CI run for days).
 report() {
     step "$1"
-    if [ "$(cat "$TMP/status/$2" 2>/dev/null)" = "0" ]; then ok; else bad; fi
+    if [ "$(cat "$TMP/status/$2" 2>/dev/null)" = "0" ]; then
+        ok
+    else
+        bad
+        echo "  --- $1 output ($TMP/log/$2) ---"
+        sed 's/^/    /' "$TMP/log/$2" 2>/dev/null
+        echo "  --- end $1 output ---"
+    fi
 }
 
 # Launches a build+run+compare-stdout job in the background (same check as
