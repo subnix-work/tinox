@@ -1,0 +1,23 @@
+import tinox.core.array;
+
+namespace tinox.core.array
+{
+    class ArraysTest
+    {
+        @Test("containsInt finds a present value")
+        fn containsIntFindsPresentValue() -> Bool
+        {
+            let arr: List<Int64> = [1, 2, 3];
+            let arrays = new Arrays();
+            return arrays.containsInt(arr, 2);
+        }
+
+        @Test("containsInt rejects an absent value")
+        fn containsIntRejectsAbsentValue() -> Bool
+        {
+            let arr: List<Int64> = [1, 2, 3];
+            let arrays = new Arrays();
+            return !arrays.containsInt(arr, 42);
+        }
+    }
+}

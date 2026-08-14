@@ -201,12 +201,17 @@ enforces this link).
 
 **How to generate one:** `tinox doc` only auto-discovers files under a
 project's `src/` next to its `tinox.toml` (for the Description/Dependencies
-sections) — but `crates/tinox-core-ext/<module>/` is flat (`.tnx` files
-and `tinox.toml` directly in the module dir, no `src/`, matching the live
+sections) — but `crates/tinox-core-ext/<module>/` has no `src/` layer of
+its own (`tinox.toml` sits directly in the module dir; since issue #185's
+namespace-mirroring migration, its `.tnx` files live one level further in,
+under the module's own `tinox/core/<module>/` subtree, matching the live
 archive layout `publish-stdlib-ext.sh` uploads). So stage a throwaway
 project first: create a temp dir, copy the module's `tinox.toml` in as-is
-and copy its `.tnx` file(s) into a `src/` subdirectory (recursively for
-multi-directory modules like `rest`'s `client/`/`server/`), then run
+and copy the CONTENTS of its `tinox/core/<module>/` subtree — not the
+module dir itself, or the `tinox/core/<module>/` prefix would end up
+literally inside `src/` — into a `src/` subdirectory (recursively for
+multi-directory modules like `rest`'s `tinox/core/rest/client/`/`server/`,
+which should land at plain `src/client/`/`src/server/`), then run
 `tinox doc --out <path-to-repo>/docs/<group>/<artifactId>/<version>/
 docs.html` from inside that staged dir. The Dependencies section is read
 straight from the copied `tinox.toml`'s `[[dependencies]]` and links to
@@ -291,6 +296,136 @@ unaffected — the rule is "at most one", not "exactly one".
   exact pattern breaks again silently (a silent-garbage trap: compiles
   unchanged for single-file programs, only multi-file programs with an
   interface upcast are affected).
+
+## Namespace-Mirroring Folder Structure (issue #185, since 2026-08-14)
+
+Finishes what the one-type-per-file convention above started: previously
+only the LAST namespace segment became a directory (`tinox.core.amqp10` →
+`crates/tinox-core-ext/amqp10/`); now a type declared inside a
+`namespace a.b.c { ... }` block must live at a file path that mirrors the
+**full** dotted namespace, hard-enforced at the compiler level exactly like
+the one-type-per-file rule (`check_namespace_path_matches`,
+`crates/tinox/src/main.rs`, wired at the same 5 call sites as
+`check_one_type_per_file`).
+
+- **Strictly opt-in, keyed off the `namespace {}` block, not a separate
+  annotation.** A type declared with no enclosing `namespace` block is
+  exempt — this matched 0% adoption in project-local code at migration
+  time (every file under `examples/**` skips `namespace` entirely), so the
+  check only ever fires for stdlib-style code that already declares one.
+  There is no `namespace a.b.c;` semicolon form — the parser has a
+  `module a.b.c;` statement (parsed but completely discarded, never
+  affects resolution or this check) and a real `namespace a.b.c { ... }`
+  block (`ast.rs`'s `Namespace` struct); only the latter carries any
+  meaning.
+- **Root resolution walks up for the nearest `tinox.toml`**
+  (`pm::find_project_root_from`), then checks the mirrored path against
+  whichever of `<manifest_dir>/src`, `<manifest_dir>/tests`, or
+  `<manifest_dir>` itself the file actually resolves under (most specific
+  first). `tests/` has to be a recognized root in its own right, not just
+  a `src/` fallback — a `namespace`-wrapped test file legitimately lives
+  under `tests/<namespace-path>/<TypeName>Test.tnx`, and checking it only
+  against `src/...` rejects it outright (hit live while adding the first
+  example test below: the check initially only knew about `src/`/bare
+  `manifest_dir`, so a correctly-placed `tests/tinox/core/array/
+  ArraysTest.tnx` was hard-rejected with "must be located at
+  crates/tinox-core/tinox/core/array/ArraysTest.tnx" — i.e. `src/`'s
+  fallback path — until `tests/` was added as its own candidate root). No
+  `tinox.toml` ancestor at all, or the file isn't under any of the three
+  candidates → the check is skipped, nothing to validate against.
+- **Never applied to a file inside an INSTALLED dependency** (detected by
+  a literal `.tinox` path component anywhere in the file's canonicalized
+  path — covers both project-local `.tinox/deps/...` and the global
+  `~/.tinox/repository/...` cache, `pm::dep_install_dir`/
+  `global_dep_install_dir`'s own layout). Hit live during `make check`,
+  not hypothetical: `socket` (core-tier, `CORE_MODULES`) is ALSO declared
+  as an explicit dependency by an older e2e fixture and gets installed as
+  a real package — but that published package predates this migration and
+  has no `tinox.toml` of its own inside its installed directory, so
+  `find_project_root_from` walked straight past it and anchored on the
+  CONSUMING e2e project's own manifest instead, producing a nonsensical
+  "must be located at `<consumer project root>/tinox/core/socket/
+  Socket.tnx`" error for a file that project doesn't even own. Installed
+  dependencies are pre-vetted, address-scoped, immutable content this
+  check has no business re-validating in the first place — only this
+  project's own source is in scope.
+- **Core tier and extended tier ended up with DIFFERENT physical shapes —
+  this asymmetry is load-bearing, not an inconsistency to "fix" later.**
+  - `crates/tinox-core/` (core tier) has no per-module directory identity
+    anymore: ALL modules now live under one shared
+    `crates/tinox-core/tinox/core/<module>/` tree, because
+    `stdlib_dir()`/the `tinox.core.X` resolution branch in
+    `resolve_imports()` (main.rs) always resolves EVERY core module from
+    the same single root — there's no per-module scoping to preserve. A
+    minimal `crates/tinox-core/tinox.toml` was added purely as the
+    `find_project_root_from` anchor for the namespace check (it has no
+    role in dependency resolution).
+  - `crates/tinox-core-ext/<module>/` (extended tier) KEEPS its own
+    per-module top-level directory (that's how `tinox.toml`+dependency
+    resolution scopes each published package) — only the module's
+    *content* moved one level deeper, to
+    `crates/tinox-core-ext/<module>/tinox/core/<module>/...` (preserving
+    any existing internal nesting, e.g. `rest`'s `client/`/`server/` →
+    `tinox/core/rest/client/`, `tinox/core/rest/server/`). The module's
+    own `tinox.toml` stays at the module root, a sibling of the new
+    `tinox/` subtree, not inside it.
+  - Getting this backwards for either tier silently breaks resolution:
+    core-tier modules are found via `stdlib_dir()` (one shared root, no
+    per-module directory), extended-tier modules are found via
+    `resolve_in_dep_dirs` against each dependency's own install directory
+    (necessarily per-module) — mixing the two shapes up during any future
+    change here reproduces exactly the "Cannot resolve stdlib import"
+    failure this migration hit and fixed once already.
+  - **This local-tree change is invisible to consumers.** Published/
+    downloaded extended-tier packages already shipped with this exact
+    `tinox/core/<module>/` nesting inside the archive before this
+    migration (`scripts/publish-stdlib-ext.sh` staged it that way, and
+    `resolve_in_dep_dirs` already resolves full paths under each
+    dependency dir) — only the *local dev* source tree was flat. So
+    `examples/**/tinox.toml`'s coordinate-based `[[dependencies]]` on
+    extended-tier packages (resolved against the real tinox-central
+    registry / `~/.tinox/repository/...` cache, never against
+    `crates/tinox-core-ext/` directly) needed zero changes.
+- **Test convention**: `tests/<namespace-path>/<TypeName>Test.tnx`
+  (distinct from the existing scenario-named e2e fixtures at
+  `tests/e2e/<scenario>/Main.tnx`, which are unaffected and keep their own
+  shape/location — they don't declare a namespace and this check doesn't
+  apply to them). Two representative examples exist so far, one per tier,
+  both verified passing:
+  `crates/tinox-core/tests/tinox/core/array/ArraysTest.tnx` (`tinox test
+  crates/tinox-core/tests/tinox/core/array/ArraysTest.tnx` — resolves and
+  runs directly, since core-tier imports always resolve via `stdlib_dir()`
+  unconditionally) and `crates/tinox-core-ext/crypto/tests/tinox/core/
+  crypto/CryptoTest.tnx` (content verified passing the same way
+  `stdlib_smoke.rs`/`amqp10_consumer_annotation.rs` already verify
+  extended-tier code: copied into a throwaway project with a synthesized
+  `[[dependencies]] group="tinox.core" artifactId="crypto"` entry,
+  `tinox install`, then `tinox test`). Backfilling this convention across
+  every stdlib module is a separate, larger test-coverage initiative, not
+  part of this layout migration.
+- **Extended-tier test files can't be run directly with `tinox test
+  <path>` from inside this repo, and that's pre-existing, not something
+  this migration introduced.** Unlike core-tier (always resolves via
+  `stdlib_dir()`), an extended-tier module's own `tinox.toml` declares no
+  dependency on itself, so `import tinox.core.<module>;` inside its own
+  `tests/` file has nothing to resolve against locally — exactly the same
+  gap `stdlib_smoke.rs`'s own doc comment already describes for its SMOKES
+  cases ("no longer resolve via `stdlib_dir()`/`TINOX_PATH` at build
+  time"). Verifying an extended-tier test's actual logic therefore always
+  goes through an installed (published) version of the module, the same
+  way `stdlib_smoke.rs` and `amqp10_consumer_annotation.rs` already do it
+  — not against the workspace's own uncommitted edits to that module.
+- `crates/tinox/tests/stdlib_smoke.rs`'s `scan_module_dir` (the
+  per-module inventory scan behind `stdlib_smoke_completeness`) needed a
+  matching update: it transparently unwraps each extended-tier module's
+  own `tinox/core/<name>/` prefix before applying its existing "does this
+  dir have its own `.tnx` files, or is it a pure grouping dir" logic, so
+  module names it reports (`amqp10`, `rest.client`, `rest.server`, ...)
+  are unchanged from before the migration. Core tier didn't need a
+  `scan_module_dir` change at all — its `stdlib_dir()` test helper is
+  simply repointed straight at the shared `crates/tinox-core/tinox/core/`
+  tree, which has the exact same per-module-subdirectory shape the old
+  `crates/tinox-core/` root used to have.
 
 ## Mandatory Entry Point: `class Main` + CDI-Style Bootstrap (since 2026-08-09)
 

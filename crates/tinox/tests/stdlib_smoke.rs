@@ -561,8 +561,15 @@ const SMOKES: &[Smoke] = &[
     },
 ];
 
+/// Issue #185: crates/tinox-core is now one shared `tinox/core/` tree at
+/// the crate root (every core-tier module resolves through `stdlib_dir()`
+/// unconditionally, with no per-module scoping the way extended-tier
+/// dependency dirs have) — repointed straight at that tree so every
+/// existing per-module scan below it (`array/`, `base64/`, ...) is found
+/// exactly like before the migration, no `scan_module_dir` changes needed
+/// for this tier.
 fn stdlib_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core/tinox/core")
 }
 
 /// The extended-tier stdlib split off crates/tinox-core into its own
@@ -617,6 +624,19 @@ fn scan_module_dir(dir: &Path) -> Vec<String> {
             if p.is_dir() {
                 let name = p.file_name().map(|n| n.to_string_lossy().to_string());
                 let Some(name) = name else { return vec![] };
+                // Issue #185: extended-tier modules now nest their real
+                // content one more level deeper, under their own
+                // module-name-scoped `tinox/core/<name>/` prefix
+                // (crates/tinox-core-ext/<name>/tinox/core/<name>/...,
+                // matching what a published/downloaded package already
+                // looks like on disk) — transparently unwrap it here so
+                // the module's top-level identity (`name`) keeps keying
+                // the smoke-test inventory exactly like before the
+                // migration. Core-tier (`stdlib_dir()`, repointed straight
+                // at its own shared `tinox/core/` tree above) never hits
+                // this branch, since it has no such per-module prefix.
+                let nested = p.join("tinox").join("core").join(&name);
+                let p = if nested.is_dir() { nested } else { p };
                 let has_own_tnx = fs::read_dir(&p)
                     .map(|entries| {
                         entries
