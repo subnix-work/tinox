@@ -1707,6 +1707,34 @@ unchanged and already existed; this adds real pooling and a
   sqlite3-not-installed SKIP. CI's `check.yml` installs `libpq-dev`
   (compiles the driver) and `postgresql-client` (the `psql` CLI) so this
   test actually runs there rather than silently skipping.
+- **A real, serious bug found only by using the feature for real work**
+  (building a layered demo app in a separate project, not part of this
+  repo's own test suite): `@Transactional` methods that end in an
+  explicit `return` never actually committed — found live when a
+  Postgres-backed `PersonService.createPerson` returned a real,
+  successfully-inserted row over HTTP, yet a follow-up `GET` for that same
+  id came back 404, and `psql` confirmed the row was never actually
+  there. Root cause: `StmtKind::Return`'s codegen emits its `ret`
+  instruction directly with zero awareness of `gen_transactional_wrapper`'s
+  own try/catch-style structure around it — the exact same gap a plain
+  `try { return x; } finally { ... }` already has today (confirmed with a
+  throwaway repro: the `finally` block's `println` never printed). That
+  general `try`/`finally` bug is real but deliberately left unfixed here
+  (a separate, pre-existing issue, out of this feature's scope, tracked
+  as issue #193) — but
+  unacceptable for `@Transactional` specifically, since virtually every
+  real method ends with an explicit `return`. Fixed with a new
+  `GenCtx.transactional_commit: Option<String>` field (the owning
+  transaction's `i1` "do I own this" alloca slot), set for the duration of
+  an `@Transactional` method's body and consulted directly by
+  `StmtKind::Return`'s own codegen (`emit_transactional_commit_before_return`,
+  called right before every `ret` it emits) — correctly fires for a
+  `return` at any nesting depth inside the method body, not just a
+  top-level one. `postgres_transactional.rs`'s fixture gained a second
+  `@Transactional` method (`getBalanceAndTouch`, ending in `return
+  acct.balance;`) specifically to keep this covered by a real test — the
+  original `transfer` method didn't catch it because a `Nothing`-returning
+  method with no explicit `return` never exercised the bug at all.
 - **Explicitly out of scope for v1** (see issue #191): SQLite/MySQL
   pooling and transactions, savepoints / nested propagation modes other
   than `REQUIRED`, and a manual (non-annotation) transaction API. Also

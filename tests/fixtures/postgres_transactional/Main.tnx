@@ -22,6 +22,11 @@ class Main
             println("transfer2 rolled back: " + e);
         }
 
+        // Regression check for the explicit-return-skips-commit bug --
+        // must actually commit account 1's +1 balance bump.
+        let newBalance: Int64 = svc.getBalanceAndTouch(1);
+        println("balance after touch: " + newBalance.toString());
+
         return 0;
     }
 }

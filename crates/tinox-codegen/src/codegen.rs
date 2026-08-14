@@ -4429,6 +4429,7 @@ impl CodeGen {
             in_defer_exec: false,
             ret_type: ret_type.clone(),
             timed_metric: None,
+            transactional_commit: None,
         };
 
         for (i, p) in f.params.iter().enumerate() {
@@ -4547,6 +4548,7 @@ impl CodeGen {
             in_defer_exec: false,
             ret_type: ret_type.clone(),
             timed_metric: None,
+            transactional_commit: None,
         };
 
         let mut params_str = if method.static_ {
@@ -6310,12 +6312,14 @@ impl CodeGen {
                 // tail is a void call, under the uniform i64 closure ABI) must
                 // yield a dummy of the expected type — never `ret void 0`.
                 if expected.as_str() == "void" {
+                    self.emit_transactional_commit_before_return(ctx);
                     writeln!(&mut self.ir, "ret void").unwrap();
                     return Ok(());
                 }
                 if ty == "void" {
                     let rt = if expected.is_empty() { "i64" } else { expected.as_str() };
                     let z = if rt.ends_with('*') { "null" } else { "0" };
+                    self.emit_transactional_commit_before_return(ctx);
                     writeln!(&mut self.ir, "ret {} {}", rt, z).unwrap();
                     return Ok(());
                 }
@@ -6341,6 +6345,7 @@ impl CodeGen {
                 } else {
                     (val, ty)
                 };
+                self.emit_transactional_commit_before_return(ctx);
                 writeln!(&mut self.ir, "ret {} {}", final_ty, final_val).unwrap();
             }
             StmtKind::Return(None) => {
@@ -6352,6 +6357,7 @@ impl CodeGen {
                 // under the uniform i64 return ABI) must still yield a value of
                 // the expected type — otherwise `ret void` mismatches.
                 let expected = ctx.ret_type.as_str();
+                self.emit_transactional_commit_before_return(ctx);
                 if expected.is_empty() || expected == "void" {
                     writeln!(&mut self.ir, "ret void").unwrap();
                 } else if expected.ends_with('*') {
@@ -11941,6 +11947,7 @@ impl CodeGen {
             in_defer_exec: false,
             ret_type: ret_ty.clone(),
             timed_metric: None,
+            transactional_commit: None,
         };
         for (i, p) in params.iter().enumerate() {
             if i > 0 {
@@ -12718,6 +12725,27 @@ impl CodeGen {
         Ok(())
     }
 
+    /// Emits the same "commit if I own this transaction" branch
+    /// gen_transactional_wrapper's own fall-through (implicit-return) path
+    /// emits, for use right before every `ret` a `return` statement
+    /// produces -- a no-op (emits nothing) outside an @Transactional
+    /// method's body, where ctx.transactional_commit is None. See the
+    /// field's own doc comment on GenCtx for why this is needed at all.
+    fn emit_transactional_commit_before_return(&mut self, ctx: &GenCtx) {
+        let Some(owned_slot) = ctx.transactional_commit.clone() else {
+            return;
+        };
+        let owned = self.temp();
+        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned, owned_slot).unwrap();
+        let commit_bb = self.new_bb("tx_early_commit");
+        let cont_bb = self.new_bb("tx_early_commit_cont");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned, commit_bb, cont_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", commit_bb).unwrap();
+        writeln!(&mut self.ir, "call void @tinox_db_tx_commit()").unwrap();
+        writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", cont_bb).unwrap();
+    }
+
     /// Wraps an @Transactional method's body (issue #191): BEGIN before,
     /// COMMIT on normal completion, ROLLBACK-then-rethrow on any error --
     /// structurally the same try/no-catch/no-swallow shape gen_try_stmt
@@ -12767,12 +12795,14 @@ impl CodeGen {
         let old_error_catch = ctx.error_catch.take();
         let try_defer_depth = ctx.defer_stack.len();
         ctx.error_catch = Some((catch_bb.clone(), error_var.clone(), try_defer_depth));
+        let old_transactional_commit = ctx.transactional_commit.replace(owned_slot.clone());
 
         self.gen_stmt_body(&method.body, ctx)?;
         if !self.last_is_terminator() {
             self.emit_post_stmt_throw_check(ctx)?;
         }
         ctx.error_catch = old_error_catch;
+        ctx.transactional_commit = old_transactional_commit;
 
         // Normal completion: commit (and release the pooled connection) if
         // this call owns the transaction, then fall through to gen_class_method's
@@ -14622,6 +14652,22 @@ pub struct GenCtx {
     ret_type: String,
     /// If set, emit histogram_record before every return. (metric_name, start_reg)
     timed_metric: Option<(String, String)>,
+    /// Set for the duration of an @Transactional method's body (issue
+    /// #191, see gen_transactional_wrapper): the i1 alloca slot recording
+    /// whether THIS call owns the transaction. A bare `return` statement
+    /// (StmtKind::Return) emits its `ret` directly with no awareness of
+    /// gen_transactional_wrapper's own try/catch-style structure around
+    /// it -- exactly the same way a plain `try { return x; } finally {
+    /// ... }` already skips its finally block today (a real, pre-existing
+    /// bug found while building this, confirmed live: "finally ran" never
+    /// printed). Left as a documented, separate, deferred issue for plain
+    /// try/finally, but NOT acceptable for @Transactional, since virtually
+    /// every real method ends with an explicit `return` -- so `return`'s
+    /// own codegen checks this field directly and emits the same
+    /// commit-if-owned branch gen_transactional_wrapper's own fall-through
+    /// path emits, right before every `ret` it produces, regardless of
+    /// nesting depth inside the method body.
+    transactional_commit: Option<String>,
 }
 
 // ─── ORM: compile-time lambda→SQL translation ────────────────────────────────

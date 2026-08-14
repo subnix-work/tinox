@@ -223,14 +223,19 @@ version = "1.0.0"
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert!(stdout.contains("transfer1 done"), "stdout: {stdout}");
     assert!(stdout.contains("transfer2 rolled back: insufficient funds"), "stdout: {stdout}");
+    assert!(stdout.contains("balance after touch: 501"), "stdout: {stdout}");
 
     // Independent verification against real Postgres state, not just the
     // program's own stdout: transfer1 (500) must be committed, transfer2
     // (999999, overdraws Alice) must be FULLY rolled back -- both saves,
-    // not just the one nearest the throw.
+    // not just the one nearest the throw -- and getBalanceAndTouch's +1
+    // (an @Transactional method that ends in an explicit `return`, unlike
+    // transfer's implicit fall-through) must ALSO be committed, not
+    // silently lost the way the explicit-return-skips-commit bug this
+    // fixture was extended to catch would have left it.
     let alice_balance = pg.psql("SELECT balance FROM accounts WHERE name = 'Alice';");
     let bob_balance = pg.psql("SELECT balance FROM accounts WHERE name = 'Bob';");
-    assert_eq!(alice_balance, "500", "Alice's balance should reflect only the committed transfer1");
+    assert_eq!(alice_balance, "501", "Alice's balance should reflect the committed transfer1 (500) plus getBalanceAndTouch's committed +1");
     assert_eq!(bob_balance, "700", "Bob's balance should reflect only the committed transfer1");
 
     let _ = std::fs::remove_dir_all(&workdir);

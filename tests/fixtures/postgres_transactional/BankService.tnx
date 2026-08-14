@@ -21,4 +21,23 @@ class BankService
             throw "insufficient funds";
         }
     }
+
+    // A real, previously-undiscovered bug: `return` statements emit their
+    // `ret` directly with no awareness of gen_transactional_wrapper's own
+    // try/catch-style structure around them (the exact same way a plain
+    // `try { return x; } finally { ... } ` already skips its finally
+    // today) -- so a method ending in an explicit `return` never actually
+    // committed, even on success. `transfer` above didn't catch this
+    // because Nothing-returning methods with no explicit `return` don't
+    // exercise the bug at all. Fixed via GenCtx.transactional_commit,
+    // consulted directly by StmtKind::Return's own codegen. This method
+    // exists specifically to keep that fix covered by a real test.
+    @Transactional
+    fn getBalanceAndTouch(accountId: Int64) -> Int64
+    {
+        let acct: Account = DB.of(Account).filter(a => a.id == accountId).first();
+        acct.balance = acct.balance + 1;
+        DB.of(Account).save(acct);
+        return acct.balance;
+    }
 }
