@@ -15,8 +15,8 @@ Eclipse plugin that integrates the `tinox-lsp` language server.
 ### 1. Install tinox-lsp
 
 ```bash
-./install-lsp.sh
-# Installs to ~/.cargo/bin/tinox-lsp
+../install-lsp.sh
+# Installs to ~/.cargo/bin/tinox-lsp -- shared by every editor under editors/
 ```
 
 ### 2. Load the plugin in Eclipse
@@ -30,7 +30,7 @@ Install LSP4E if not already present:
 
 Import the plugin:
 1. File → Import → Existing Projects into Workspace
-2. Root directory: this directory (`eclipse/tinox-eclipse`)
+2. Root directory: this directory (`editors/eclipse/tinox-eclipse`)
 3. Finish
 
 ### 3. Start the plugin

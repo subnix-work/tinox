@@ -1273,3 +1273,141 @@ the issue itself first suggested), and no `--from`/`--depth` filtering yet
   `callgraph.rs`'s own test helper -- re-verified by temporarily moving
   `~/.tinox/repository` aside to force a real, fresh-machine install path
   locally, not just trusting the CI rerun.
+
+## Editor Support: Eclipse + VS Code (`editors/`, since 2026-08-14)
+
+`editors/eclipse/` (moved here from a top-level `eclipse/`, no other path
+in the repo referenced the old location) and `editors/vscode/` are both
+thin LSP CLIENTS over the same `tinox-lsp` binary (`crates/tinox-lsp`,
+tower-lsp based) -- neither has its own language-analysis logic. Every
+feature (diagnostics, hover, completion, go-to-definition, outline) comes
+from `tinox-lsp` itself; each editor plugin is just wiring.
+
+- **Shared `editors/install-lsp.sh`** (hoisted out of `editors/eclipse/`,
+  which used to have its own copy — nothing in the script was
+  Eclipse-specific): `cargo build --release -p tinox-lsp` +
+  `cp target/release/tinox-lsp ~/.cargo/bin/tinox-lsp`. Both editors'
+  READMEs point at this one copy.
+- **Binary path resolution is identical in both editors, deliberately**:
+  a user-configurable setting (Eclipse: `tinox.lsp.path` preference;
+  VS Code: `tinox.lsp.path` setting), defaulting to probing
+  `~/.cargo/bin/tinox-lsp`, `/usr/local/bin/tinox-lsp`,
+  `/usr/bin/tinox-lsp` in that order
+  (`TinoxPreferenceInitializer.java` / `defaultLspPath()` in
+  `editors/vscode/src/extension.ts`). The "Run File" command in both
+  derives the `tinox` compiler binary's path the same way, too: swap
+  `tinox-lsp` for `tinox` in the resolved LSP path (assumes both
+  binaries live in the same directory, true for a normal cargo
+  build/install) -- `RunTinoxHandler.java`'s `getTinoxBinary()` and
+  `resolveTinoxBinaryPath()` in `extension.ts` are the same logic in two
+  languages.
+- **The TextMate grammar (`tinox.tmLanguage.json`) is a genuine
+  duplicate, not a shared file** —
+  `editors/eclipse/tinox-eclipse/grammars/tinox.tmLanguage.json` and
+  `editors/vscode/syntaxes/tinox.tmLanguage.json` are byte-identical as
+  of this writing, but there is no build step or symlink keeping them
+  that way. **Must be kept in sync by hand** — same deliberate
+  duplication convention this repo already uses for `docs.html`/
+  `docs_en.html`, chosen for the same reason: each editor ecosystem
+  expects the grammar file living in its own conventional location
+  (`grammars/` for TM4E, `syntaxes/` for VS Code), and a shared file
+  outside either directory would need its own copy/build step for two
+  genuinely small, rarely-changing files. (Aside, not acted on here,
+  scope was "add VS Code support" not "improve the grammar": the shared
+  grammar is missing `namespace`/`fnc` from `keyword_declaration` even
+  though both are real Tinox keywords used throughout this repo — a
+  pre-existing gap in the Eclipse-era grammar, inherited as-is by the
+  VS Code copy rather than silently fixed as a drive-by change.)
+- **Neither is published anywhere** — no Eclipse update site, no VS Code
+  Marketplace listing (a deliberate choice, confirmed with the user:
+  local-only distribution matches the Eclipse plugin's own existing
+  precedent exactly). Eclipse: manual Export → deployable plug-in →
+  `.jar` into `dropins/`. VS Code: `npx @vscode/vsce package` → `.vsix`
+  → "Install from VSIX...". No CI wiring for either.
+- **VS Code packaging note**: `package.json` needs a `repository` field
+  or `vsce package` prints a (non-blocking) warning; added, pointing at
+  this repo with `directory: "editors/vscode"`. A missing `LICENSE`
+  file in `editors/vscode/` itself also warns (non-blocking) — not
+  added, since the repo's root `LICENSE-APACHE`/`LICENSE-MIT` already
+  cover the whole tree including this directory, and duplicating full
+  license text into a third location would just be one more place to
+  keep in sync for a cosmetic warning.
+- **A real bug, found only by the user actually testing a real,
+  installed VS Code window (build-time checks alone did NOT catch this
+  — see below)**: syntax highlighting worked, but completion never
+  showed anything object-specific (`ctx.` fell back to VS Code's own
+  generic word-based suggestions, e.g. literal string fragments already
+  present in the file, instead of `tinox-lsp`'s real, type-aware
+  member list) — and the "Tinox Language Server" output channel didn't
+  even exist in the Output panel dropdown, meaning the `LanguageClient`
+  was never constructed at all. Root cause: `.vscodeignore`'s
+  `node_modules/**` line strips `vscode-languageclient` (a real
+  `dependencies` entry, not `devDependencies`) out of the packaged
+  `.vsix` — but plain `tsc` compilation leaves
+  `require("vscode-languageclient/node")` as a literal Node `require`
+  call, which doesn't bundle anything. The require throws the instant
+  VS Code tries to load the extension, so `activate()` never runs —
+  with no visibly obvious error dialog for the user to notice, since a
+  module-load failure in one extension doesn't interrupt anything else
+  (syntax highlighting, being pure declarative grammar, works
+  regardless, since it needs no JS to run at all — this is exactly why
+  it looked "half-working" instead of "not working"). Fixed by bundling
+  the extension with esbuild (`editors/vscode/esbuild.js`) into a
+  single self-contained `out/extension.js` with only `vscode` itself
+  left external (real VS Code injects that at runtime; every other
+  dependency, including all of `vscode-languageclient`'s own transitive
+  deps, gets inlined) — `node_modules/**` in `.vscodeignore` is now
+  correct rather than the bug, since the bundle genuinely needs nothing
+  from it at runtime. `npm run compile` is now `tsc --noEmit` (type
+  -checking only) followed by the esbuild bundle step, not `tsc`'s own
+  emit.
+- **Verification note**: build-time correctness was checked twice —
+  once before the bug above was found (compiles clean, packages into a
+  `.vsix`, installs via CLI — none of which caught the missing-bundle
+  bug, since none of those steps actually LOAD the extension inside a
+  JS host the way VS Code itself does) and once after the fix, this
+  time including a non-GUI load test: extracting the packaged `.vsix`
+  and `require()`-ing the bundled `out/extension.js` under a real
+  Node process with a minimal mocked `vscode` module, confirming zero
+  "Cannot find module" errors for anything other than `vscode` itself
+  (the mock's remaining gaps, e.g. `vscode.CodeLens` not being a real
+  class, are artifacts of the mock's incompleteness, not the
+  extension — real VS Code provides all of these for real). This is a
+  meaningfully stronger check than the pre-fix verification, but still
+  short of a full live GUI pass — the actual confirmation that
+  highlighting/hover/completion/diagnostics/Run File all work came from
+  the user testing a real installed build, not from anything automated
+  in this repo. If touching this extension again: a `tsc`-compiles /
+  `vsce`-packages / `--install-extension`-succeeds check is NOT
+  sufficient on its own to catch an activation-time bundling bug like
+  this one — either do the `require()`-under-mock check above, or get
+  a real human to open a `.tnx` file and confirm completion/hover
+  actually populate, not just that highlighting renders.
+- **A second real bug, found in the SAME live-testing round, layered on
+  top of the first**: after fixing the bundling bug above, completion
+  populated but was drowned out by VS Code's own generic word-based
+  suggester (literal word/string fragments already present in the file
+  -- e.g. `"Alice"`/`"Bob"` from unrelated string literals elsewhere in
+  the same file -- mixed in alongside, and vastly outnumbering, the
+  real `tinox-lsp` member completions). VS Code adds these by default
+  for every language unless a language extension opts out. Fixed via
+  `contributes.configurationDefaults`: `"[tinox]": {
+  "editor.wordBasedSuggestions": "off" }` in `package.json` -- ships as
+  the DEFAULT for anyone installing the extension, but is only a
+  default, so it can still be silently overridden by a pre-existing
+  user/workspace setting (a real snag hit live during this same
+  session: setting it a second time, explicitly, directly in the user's
+  own `settings.json`, was needed to confirm the fix before the
+  packaged default's effect could be verified against a genuinely clean
+  reinstall).
+- **Both bugs together are why a clean reinstall matters when verifying
+  a fix to this extension, not just re-running `vsce package`**: VS
+  Code does not always fully unload/reactivate an extension just
+  because its `.vsix` was reinstalled over the same version number --
+  confirming a fix required Uninstall -> Reload Window -> Install from
+  VSIX -> Reload Window again, checked by confirming the "Tinox
+  Language Server" entry actually appears in the Output panel's
+  channel dropdown (compare against another real, working
+  LSP-based extension's own entry, e.g. "JSON Language Server", as a
+  sanity check that the mechanism itself is functioning) before
+  re-testing completion.

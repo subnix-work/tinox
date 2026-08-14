@@ -20,7 +20,7 @@ The Eclipse plugin communicates with the `tinox-lsp` language server. It must be
 
 ```bash
 # In the repo's root directory:
-./eclipse/install-lsp.sh
+./editors/install-lsp.sh
 ```
 
 The script builds `tinox-lsp` in release mode and copies the binary to `~/.cargo/bin/tinox-lsp`.
@@ -52,7 +52,7 @@ LSP4E is the framework that connects Eclipse to language servers.
 
 1. **File → Import…**
 2. **General → Existing Projects into Workspace** → Next
-3. Root directory: choose the path to the `eclipse/tinox-eclipse` folder in the repo
+3. Root directory: choose the path to the `editors/eclipse/tinox-eclipse` folder in the repo
 4. `tinox-eclipse` should appear in the list → **Finish**
 
 ---
