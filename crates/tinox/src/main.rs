@@ -3734,9 +3734,35 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+    // Where does this system keep libpq-fe.h? Not the same place everywhere:
+    // on this dev machine (Arch) `libpq` flattens its headers straight into
+    // /usr/include, so a bare `#include <libpq-fe.h>` "just worked" there --
+    // but CI (Ubuntu, PGDG's own postgresql-client apt repo) nests them
+    // under /usr/include/postgresql/ instead, which clang/gcc's default
+    // search path does NOT include. Found the hard way: local testing only
+    // ever ran on this machine, so the CI failure (`libpq-fe.h: No such
+    // file or directory`, package reported as "already the newest version")
+    // was invisible until the real GitHub Actions run. `pg_config
+    // --includedir` is the portable, canonical way to ask libpq itself
+    // where its headers live, on any distro -- not a hardcoded guess at a
+    // specific nested path.
+    let pg_include_dir = if db_driver == "postgres" {
+        Command::new("pg_config")
+            .arg("--includedir")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    } else {
+        None
+    };
     let mut cc_args = vec!["-c", &runtime_src, "-o", &runtime_obj, "-O3"];
+    let pg_include_flag = pg_include_dir.as_ref().map(|d| format!("-I{d}"));
     if db_driver == "postgres" {
         cc_args.push("-DTINOX_DB_POSTGRES");
+        if let Some(flag) = &pg_include_flag {
+            cc_args.push(flag);
+        }
     } else if db_driver == "mysql" {
         cc_args.push("-DTINOX_DB_MYSQL");
     } else if db_driver == "sqlite" {
