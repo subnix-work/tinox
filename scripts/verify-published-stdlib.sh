@@ -54,16 +54,20 @@ for dir in crates/tinox-core-ext/*/; do
 
     # Published archives are rooted at tinox/core/<module>/... plus a
     # top-level tinox.toml (see build_tar_gz's archive-root convention in
-    # pm.rs); local source is crates/tinox-core-ext/<module>/... itself
-    # (no tinox/core/<module> prefix) -- diff the matching subtrees.
+    # pm.rs). Since issue #185's namespace-mirroring migration, local
+    # source now has the SAME nested shape at
+    # crates/tinox-core-ext/<module>/tinox/core/<module>/... (previously it
+    # was flat directly under $dir, with no tinox/core/<module> prefix) --
+    # diff the matching subtrees.
     published_src="$extract/tinox/core/$module"
+    local_src="$dir/tinox/core/$module"
     if [ ! -d "$published_src" ]; then
         echo "UNEXPECTED ARCHIVE LAYOUT"
         DRIFTED+=("$module (archive layout)")
         continue
     fi
 
-    if diff -rq "$published_src" "$dir" -x tinox.toml >/dev/null 2>&1; then
+    if diff -rq "$published_src" "$local_src" >/dev/null 2>&1; then
         echo "clean"
         CLEAN=$((CLEAN + 1))
     else

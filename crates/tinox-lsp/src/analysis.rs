@@ -1223,9 +1223,11 @@ mod tests {
         // parse and merge all of them, same as build_embedded_stdlib() does.
         // Core/extended stdlib split (see CLAUDE.md): http_server is
         // extended-tier, so it lives under tinox-core-ext now, not
-        // tinox-core.
+        // tinox-core. Namespace-mirroring migration (issue #185): its
+        // content moved one level deeper, under its own
+        // tinox/core/http_server/ subtree.
         let manifest = env!("CARGO_MANIFEST_DIR");
-        let dir = format!("{}/../../crates/tinox-core-ext/http_server", manifest);
+        let dir = format!("{}/../../crates/tinox-core-ext/http_server/tinox/core/http_server", manifest);
         let mut registry = HashMap::new();
         let Ok(entries) = std::fs::read_dir(&dir) else { return registry };
         let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
