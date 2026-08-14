@@ -1906,14 +1906,14 @@ fn gen_call_graph(args: &[String]) {
 
     let input_file = match resolve_entry_file(args) {
         Some(f) => f,
-        None => return,
+        None => std::process::exit(1),
     };
 
     let source = match fs::read_to_string(&input_file) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: cannot read {}: {}", input_file, e);
-            return;
+            std::process::exit(1);
         }
     };
     let mut lexer = Lexer::new(&source);
@@ -1921,7 +1921,7 @@ fn gen_call_graph(args: &[String]) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("error: lex error: {:?}", e);
-            return;
+            std::process::exit(1);
         }
     };
     let mut parser = Parser::new(tokens);
@@ -1929,20 +1929,20 @@ fn gen_call_graph(args: &[String]) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: parse error: {:?}", e);
-            return;
+            std::process::exit(1);
         }
     };
     if let Err(e) = check_one_type_per_file(&ast.decls, Path::new(&input_file)) {
         eprintln!("error: {}", e);
-        return;
+        std::process::exit(1);
     }
     if let Err(e) = check_no_top_level_fn(&ast.decls, Path::new(&input_file)) {
         eprintln!("error: {}", e);
-        return;
+        std::process::exit(1);
     }
     if let Err(e) = check_namespace_path_matches(&ast.decls, Path::new(&input_file)) {
         eprintln!("error: {}", e);
-        return;
+        std::process::exit(1);
     }
     stamp_file_identity(&mut ast.decls, Path::new(&input_file));
 
@@ -1954,14 +1954,14 @@ fn gen_call_graph(args: &[String]) {
     let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
     if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps) {
         eprintln!("error: import error: {}", e);
-        return;
+        std::process::exit(1);
     }
 
     tinox_parser::assign_node_ids(&mut ast);
     let mut typechecker = tinox_typecheck::TypeChecker::new();
     if let Err(e) = typechecker.check(&ast) {
         eprintln!("error: type error:\n{}", e);
-        return;
+        std::process::exit(1);
     }
     let (iface_methods, class_implements) = typechecker.interface_info();
 
@@ -1986,12 +1986,12 @@ fn gen_call_graph(args: &[String]) {
     if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         if let Err(e) = fs::create_dir_all(parent) {
             eprintln!("error: cannot create {}: {}", parent.display(), e);
-            return;
+            std::process::exit(1);
         }
     }
     if let Err(e) = fs::write(&out_path, &mermaid) {
         eprintln!("error: cannot write {}: {}", out_path.display(), e);
-        return;
+        std::process::exit(1);
     }
 
     println!(

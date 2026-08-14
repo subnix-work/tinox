@@ -1247,3 +1247,29 @@ the issue itself first suggested), and no `--from`/`--depth` filtering yet
   (`npx @mermaid-js/mermaid-cli`) to confirm valid Mermaid syntax, not
   just eyeballed -- the prototype step the issue's own "Suggested next
   step" asked for before committing to the full entry-point matrix.
+- **A fourth real bug, caught by CI, not local testing**: `gen_call_graph`'s
+  every failure path (unreadable file, lex/parse error, import error, type
+  error, unwritable output) originally did `eprintln!(...); return;` --
+  returning from the function normally instead of `std::process::exit(1)`
+  the way `build()`'s equivalent paths already do. `run()`'s dispatch
+  match doesn't propagate a callee's "did this fail" status at all, so
+  this meant the PROCESS exited 0 even after printing an error and never
+  writing the output file -- exactly the kind of silent-success failure
+  this project's philosophy exists to prevent. Every one of the 3 example
+  projects this feature is tested against (`rest_with_mini`,
+  `ws_echo_annotated`, `amqp10_consumer_annotated`) declares an
+  extended-tier dependency that needs `tinox install` first; this
+  dev machine already had all three cached from earlier work, so the bug
+  was invisible locally -- a genuinely fresh CI checkout (nothing in
+  `~/.tinox/repository`) hit the "declare it in tinox.toml... then run
+  tinox install" import error immediately, and with the missing
+  `exit(1)`, that printed error was silently treated as success by the
+  test harness's own `output.status.success()` check, which only then
+  failed on the SEPARATE, more confusing symptom of the output file not
+  existing. Fixed by switching every failure path to
+  `std::process::exit(1)`, and by adding the same `install_deps_if_needed`
+  step (`tinox install`, cwd'd at the entry file's own directory) the
+  existing `amqp10_consumer_annotation.rs` test already uses, to
+  `callgraph.rs`'s own test helper -- re-verified by temporarily moving
+  `~/.tinox/repository` aside to force a real, fresh-machine install path
+  locally, not just trusting the CI rerun.

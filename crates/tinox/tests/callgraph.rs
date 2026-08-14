@@ -21,11 +21,39 @@ fn repo_root() -> PathBuf {
         .expect("repo root")
 }
 
+/// Runs `tinox install` in the entry file's own directory if it has a
+/// tinox.toml -- several of these examples (`rest_with_mini`,
+/// `ws_echo_annotated`, `amqp10_consumer_annotated`) import extended-tier
+/// stdlib modules that need a declared+installed dependency, not just an
+/// unconditional stdlib import (core/extended split, see CLAUDE.md).
+/// Mirrors `amqp10_consumer_annotation.rs`'s own `install_deps_if_needed`
+/// -- this dev machine already had every one of these cached from earlier
+/// work, which is exactly why running this test WITHOUT this step first
+/// passed locally but failed in CI on a fresh checkout with nothing
+/// installed yet (real failure hit writing this test, not hypothetical).
+fn install_deps_if_needed(tinox: &str, entry: &std::path::Path) {
+    let dir = entry.parent().expect("entry has a parent dir");
+    if !dir.join("tinox.toml").exists() {
+        return;
+    }
+    let install = Command::new(tinox).arg("install").current_dir(dir).output().expect("spawn install");
+    assert!(
+        install.status.success(),
+        "tinox install in {} failed:\nstdout: {}\nstderr: {}",
+        dir.display(),
+        String::from_utf8_lossy(&install.stdout),
+        String::from_utf8_lossy(&install.stderr)
+    );
+}
+
 /// Runs `tinox graph <entry> --out <out>` and returns the written file's
 /// contents. Panics with the process's stderr on failure -- a test
 /// failure should show WHY the compiler rejected it, not just "false".
 fn run_graph(entry_rel: &str) -> String {
     let tinox = env!("CARGO_BIN_EXE_tinox");
+    let entry = repo_root().join(entry_rel);
+    install_deps_if_needed(tinox, &entry);
+
     let out = std::env::temp_dir().join(format!(
         "tinox-graph-test-{}-{}.mmd",
         entry_rel.replace(['/', '.'], "_"),
@@ -35,7 +63,7 @@ fn run_graph(entry_rel: &str) -> String {
 
     let output = Command::new(tinox)
         .arg("graph")
-        .arg(repo_root().join(entry_rel))
+        .arg(&entry)
         .arg("--out")
         .arg(&out)
         .output()
