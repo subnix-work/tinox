@@ -254,6 +254,13 @@ pub struct AnnotationProcessingResult {
     pub route_entries: Vec<RouteInfo>,
     pub inline_functions: HashSet<String>,
     pub inline_methods: HashSet<(String, String)>,
+    /// (class, method) pairs that should run inside a DB transaction --
+    /// either the method itself carries @Transactional, or its class does
+    /// (class-level applies to every method, same precedence pattern as
+    /// @Auth; a method-level annotation on top of a class-level one is
+    /// simply redundant, not an override, since there's no argument to
+    /// override — unlike @Auth's "bearer"/"basic" choice).
+    pub transactional_methods: HashSet<(String, String)>,
     pub deprecated_warnings: Vec<String>,
     pub custom_annotation_names: Vec<String>,
     pub di_components: Vec<DiComponentInfo>,
@@ -392,6 +399,16 @@ impl AnnotationProcessor {
                 min_args: 1,
                 max_args: 1,
                 description: "Requires a verified OIDC access token (RS256/JWKS, IdP config via OIDC_ISSUER/OIDC_JWKS_URI/OIDC_AUDIENCE env vars) carrying at least one of the listed realm roles".to_string(),
+            },
+        );
+        registry.insert(
+            "Transactional".to_string(),
+            AnnotationInfo {
+                name: "Transactional".to_string(),
+                valid_targets: vec![AnnotationTarget::Method, AnnotationTarget::Class],
+                min_args: 0,
+                max_args: 0,
+                description: "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Postgres only in v1 (issue #191) -- a hard compile error on any other [database] driver".to_string(),
             },
         );
         // REST parameter binding annotations -- exactly one required on
@@ -904,6 +921,7 @@ impl AnnotationProcessor {
     ) {
         let mut class_base_path: Option<String> = None;
         let mut class_auth: Option<String> = None;
+        let mut class_transactional = false;
         let mut di_scope: Option<DiScope> = None;
         let mut ws_endpoint_path: Option<String> = None;
         let mut ws_endpoint_port: Option<i64> = None;
@@ -959,6 +977,9 @@ impl AnnotationProcessor {
                     if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         class_auth = Some(s.clone());
                     }
+                }
+                "Transactional" => {
+                    class_transactional = true;
                 }
                 "deprecated" => {
                     let msg = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
@@ -1101,6 +1122,10 @@ impl AnnotationProcessor {
             );
             if let Some(route) = route {
                 result.route_entries.push(route);
+            }
+
+            if class_transactional || method.annotations.iter().any(|a| a.name == "Transactional") {
+                result.transactional_methods.insert((class.name.clone(), method.name.clone()));
             }
 
             for ann in &method.annotations {
@@ -2545,5 +2570,46 @@ class TaskController {
     fn test_process_custom_annotation_registered() {
         let result = proc("@annotation\nclass MyAnn {}");
         assert!(result.custom_annotation_names.contains(&"MyAnn".to_string()));
+    }
+
+    // --- @Transactional ---
+
+    #[test]
+    fn test_process_transactional_on_method() {
+        let result = proc(r#"
+class Svc {
+    @Transactional
+    fn transfer() -> Nothing {}
+    fn readOnly() -> Nothing {}
+}
+"#);
+        assert!(result.transactional_methods.contains(&("Svc".to_string(), "transfer".to_string())));
+        assert!(!result.transactional_methods.contains(&("Svc".to_string(), "readOnly".to_string())));
+    }
+
+    #[test]
+    fn test_process_transactional_on_class_applies_to_every_method() {
+        let result = proc(r#"
+@Transactional
+class Svc {
+    fn a() -> Nothing {}
+    fn b() -> Nothing {}
+}
+"#);
+        assert!(result.transactional_methods.contains(&("Svc".to_string(), "a".to_string())));
+        assert!(result.transactional_methods.contains(&("Svc".to_string(), "b".to_string())));
+    }
+
+    #[test]
+    fn test_validate_transactional_on_class_ok() {
+        let errors = valid("@Transactional\nclass Svc { fn a() -> Nothing {} }");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_transactional_on_function_err() {
+        let errors = valid("@Transactional\nfn f() -> Nothing {}");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("cannot be applied"));
     }
 }

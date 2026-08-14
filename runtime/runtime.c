@@ -6353,29 +6353,137 @@ char* tinox_metrics_prometheus(void) {
 #ifdef TINOX_DB_POSTGRES
 #include <libpq-fe.h>
 
-static PGconn* _tinox_db_conn = NULL;
-static pthread_mutex_t _tinox_db_mu = PTHREAD_MUTEX_INITIALIZER;
+// Connection pool (issue #191): a fixed-size array of PGconn*, all
+// connected eagerly at startup, checked out exclusively per statement (or
+// for the duration of an @Transactional method) and returned when done.
+// Fixed-size and eagerly connected rather than grow-on-demand -- keeps
+// acquire/release wait-free once warm, and gives a hard, visible failure
+// at startup if the configured pool can't actually be established instead
+// of a lazy first query silently discovering a broken DB much later.
+#define TINOX_DB_POOL_MAX 64
 
-void tinox_db_connect(const char* url) {
-    _tinox_db_conn = PQconnectdb(url);
-    if (PQstatus(_tinox_db_conn) != CONNECTION_OK) {
-        fprintf(stderr, "DB connection failed: %s\n", PQerrorMessage(_tinox_db_conn));
-        PQfinish(_tinox_db_conn);
+static PGconn* _tinox_pg_pool[TINOX_DB_POOL_MAX];
+static int64_t _tinox_pg_pool_size = 0;
+static int     _tinox_pg_pool_free[TINOX_DB_POOL_MAX];
+static int     _tinox_pg_pool_free_count = 0;
+static pthread_mutex_t _tinox_pg_pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  _tinox_pg_pool_cond = PTHREAD_COND_INITIALIZER;
+
+// The connection currently owned by this thread's active @Transactional
+// method, if any -- NULL outside a transaction. Deliberately a plain
+// __thread PGconn* (a foreign, non-GC-heap pointer allocated by libpq's
+// own malloc), not something needing tinox_gc_register_thread_roots: the
+// GC-root-scanning gap documented near the top of this file only matters
+// for GC-managed pointers reachable ONLY via __thread storage, and a
+// PGconn* is never GC memory.
+static __thread PGconn* _tinox_db_tx_conn = NULL;
+
+void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    if (pool_size <= 0) pool_size = 1;
+    if (pool_size > TINOX_DB_POOL_MAX) {
+        fprintf(stderr, "DB pool size %lld exceeds maximum of %d\n",
+            (long long)pool_size, TINOX_DB_POOL_MAX);
         exit(1);
     }
+    for (int64_t i = 0; i < pool_size; i++) {
+        PGconn* c = PQconnectdb(url);
+        if (PQstatus(c) != CONNECTION_OK) {
+            fprintf(stderr, "DB connection failed: %s\n", PQerrorMessage(c));
+            PQfinish(c);
+            exit(1);
+        }
+        _tinox_pg_pool[i] = c;
+        _tinox_pg_pool_free[i] = (int)i;
+    }
+    _tinox_pg_pool_size = pool_size;
+    _tinox_pg_pool_free_count = (int)pool_size;
 }
 
-void* tinox_db_get_conn(void) {
-    return _tinox_db_conn;
+static PGconn* _tinox_pg_pool_acquire(void) {
+    pthread_mutex_lock(&_tinox_pg_pool_mu);
+    while (_tinox_pg_pool_free_count == 0) {
+        pthread_cond_wait(&_tinox_pg_pool_cond, &_tinox_pg_pool_mu);
+    }
+    PGconn* c = _tinox_pg_pool[_tinox_pg_pool_free[--_tinox_pg_pool_free_count]];
+    pthread_mutex_unlock(&_tinox_pg_pool_mu);
+    return c;
+}
+
+static void _tinox_pg_pool_release(PGconn* conn) {
+    pthread_mutex_lock(&_tinox_pg_pool_mu);
+    for (int64_t i = 0; i < _tinox_pg_pool_size; i++) {
+        if (_tinox_pg_pool[i] == conn) {
+            _tinox_pg_pool_free[_tinox_pg_pool_free_count++] = (int)i;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&_tinox_pg_pool_mu);
+    pthread_cond_signal(&_tinox_pg_pool_cond);
+}
+
+// Connection to use for a single ORM statement: the active transaction's
+// connection if this thread is inside one, otherwise a freshly checked-out
+// pool connection (which the caller must pair with
+// tinox_db_release_stmt_conn once the statement is done).
+void* tinox_db_acquire_stmt_conn(void) {
+    if (_tinox_db_tx_conn != NULL) return _tinox_db_tx_conn;
+    return _tinox_pg_pool_acquire();
+}
+
+// No-op if conn is the thread's active transaction connection (still owned
+// by the transaction, released by tinox_db_tx_commit/_rollback instead);
+// otherwise returns it to the pool.
+void tinox_db_release_stmt_conn(void* conn) {
+    if (conn == (void*)_tinox_db_tx_conn) return;
+    _tinox_pg_pool_release((PGconn*)conn);
+}
+
+void* tinox_db_tx_begin(void) {
+    PGconn* c = _tinox_pg_pool_acquire();
+    PGresult* res = PQexec(c, "BEGIN");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "BEGIN failed: %s\n", PQerrorMessage(c));
+    }
+    PQclear(res);
+    _tinox_db_tx_conn = c;
+    return c;
+}
+
+void tinox_db_tx_commit(void) {
+    if (_tinox_db_tx_conn == NULL) return;
+    PGresult* res = PQexec(_tinox_db_tx_conn, "COMMIT");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "COMMIT failed: %s\n", PQerrorMessage(_tinox_db_tx_conn));
+    }
+    PQclear(res);
+    _tinox_pg_pool_release(_tinox_db_tx_conn);
+    _tinox_db_tx_conn = NULL;
+}
+
+void tinox_db_tx_rollback(void) {
+    if (_tinox_db_tx_conn == NULL) return;
+    PGresult* res = PQexec(_tinox_db_tx_conn, "ROLLBACK");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "ROLLBACK failed: %s\n", PQerrorMessage(_tinox_db_tx_conn));
+    }
+    PQclear(res);
+    _tinox_pg_pool_release(_tinox_db_tx_conn);
+    _tinox_db_tx_conn = NULL;
+}
+
+bool tinox_db_tx_active(void) {
+    return _tinox_db_tx_conn != NULL;
 }
 
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
-    // Bug 103: _tinox_db_mu was declared but never locked. The HTTP server
-    // runs request handlers concurrently (one worker pthread per CPU), and
-    // libpq's PGconn is not safe for concurrent use by multiple threads --
-    // two requests calling tinox_db_exec at the same time on the same
-    // connection could corrupt libpq's connection/result state.
-    pthread_mutex_lock(&_tinox_db_mu);
+    // Bug 103 (fixed by locking a mutex around this call) no longer
+    // applies: that bug existed because every thread shared the SAME
+    // single PGconn. Since issue #191's connection pool, each conn handed
+    // out by tinox_db_acquire_stmt_conn/tinox_db_tx_begin is exclusively
+    // owned by exactly one thread until it's released/committed/rolled
+    // back -- no mutex is needed here anymore, and keeping one would have
+    // served no purpose beyond re-serializing the pool it was meant to
+    // parallelize.
     PGresult* res = PQexecParams(
         (PGconn*)conn, sql,
         (int)n_params, NULL,
@@ -6385,7 +6493,6 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
     if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
         fprintf(stderr, "Query error: %s\nSQL: %s\n", PQresultErrorMessage(res), sql);
     }
-    pthread_mutex_unlock(&_tinox_db_mu);
     return (void*)res;
 }
 
@@ -6424,7 +6531,12 @@ typedef struct {
     char** data;  // row-major: data[row * n_cols + col]
 } TinoxSqliteResult;
 
-void tinox_db_connect(const char* url) {
+void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    // SQLite keeps its pre-#191 single-connection model -- pool_size is
+    // accepted (uniform driver-layer signature, see the Postgres block
+    // above) but ignored; no pooling/transactions for this driver yet,
+    // see the tinox_db_tx_* stubs below.
+    (void)pool_size;
     // url may be a path or sqlite:///path
     const char* path = url;
     if (strncmp(path, "sqlite:///", 10) == 0) path += 9;
@@ -6435,7 +6547,26 @@ void tinox_db_connect(const char* url) {
     }
 }
 
-void* tinox_db_get_conn(void) { return _tinox_sqlite_db; }
+void* tinox_db_acquire_stmt_conn(void) { return _tinox_sqlite_db; }
+void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
+
+// @Transactional is a hard compile error for this driver (see the driver
+// check in tinox/src/main.rs) -- these exist only so a fully-linked binary
+// never has an undefined symbol. A real call here would mean that check
+// was bypassed, so fail loudly rather than silently no-op.
+void* tinox_db_tx_begin(void) {
+    fprintf(stderr, "@Transactional is not supported for the sqlite driver\n");
+    exit(1);
+}
+void tinox_db_tx_commit(void) {
+    fprintf(stderr, "@Transactional is not supported for the sqlite driver\n");
+    exit(1);
+}
+void tinox_db_tx_rollback(void) {
+    fprintf(stderr, "@Transactional is not supported for the sqlite driver\n");
+    exit(1);
+}
+bool tinox_db_tx_active(void) { return false; }
 
 // ---- Statement cache (Optimization 1) ----
 #define STMT_CACHE_SIZE 64
@@ -6621,7 +6752,12 @@ static void _parse_mysql_url(const char* url,
     }
 }
 
-void tinox_db_connect(const char* url) {
+void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    // MySQL keeps its pre-#191 single-connection model -- pool_size is
+    // accepted (uniform driver-layer signature, see the Postgres block
+    // above) but ignored; no pooling/transactions for this driver yet,
+    // see the tinox_db_tx_* stubs below.
+    (void)pool_size;
     _tinox_mysql_conn = mysql_init(NULL);
     if (!_tinox_mysql_conn) {
         fprintf(stderr, "MySQL init failed\n");
@@ -6643,7 +6779,26 @@ typedef struct {
     char** data;   // row-major: data[row * n_cols + col]
 } TinoxMysqlResult;
 
-void* tinox_db_get_conn(void) { return _tinox_mysql_conn; }
+void* tinox_db_acquire_stmt_conn(void) { return _tinox_mysql_conn; }
+void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
+
+// @Transactional is a hard compile error for this driver (see the driver
+// check in tinox/src/main.rs) -- these exist only so a fully-linked binary
+// never has an undefined symbol. A real call here would mean that check
+// was bypassed, so fail loudly rather than silently no-op.
+void* tinox_db_tx_begin(void) {
+    fprintf(stderr, "@Transactional is not supported for the mysql driver\n");
+    exit(1);
+}
+void tinox_db_tx_commit(void) {
+    fprintf(stderr, "@Transactional is not supported for the mysql driver\n");
+    exit(1);
+}
+void tinox_db_tx_rollback(void) {
+    fprintf(stderr, "@Transactional is not supported for the mysql driver\n");
+    exit(1);
+}
+bool tinox_db_tx_active(void) { return false; }
 
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
     MYSQL_STMT* stmt = mysql_stmt_init((MYSQL*)conn);
@@ -6743,8 +6898,13 @@ char*   tinox_db_error(void* c) { return GC_strdup(mysql_error((MYSQL*)c)); }
 
 #else
 // Stub implementations when no DB driver is selected — prevent link errors.
-void  tinox_db_connect(const char* url)                                       { (void)url; }
-void* tinox_db_get_conn(void)                                                  { return NULL; }
+void  tinox_db_pool_init(const char* url, int64_t pool_size)                  { (void)url;(void)pool_size; }
+void* tinox_db_acquire_stmt_conn(void)                                        { return NULL; }
+void  tinox_db_release_stmt_conn(void* conn)                                  { (void)conn; }
+void* tinox_db_tx_begin(void)                                                 { return NULL; }
+void  tinox_db_tx_commit(void)                                                { }
+void  tinox_db_tx_rollback(void)                                              { }
+bool  tinox_db_tx_active(void)                                                { return false; }
 void* tinox_db_exec(void* c, const char* s, const char** p, int64_t n)        { (void)c;(void)s;(void)p;(void)n; return NULL; }
 int64_t tinox_db_nrows(void* r)                                                { (void)r; return 0; }
 int64_t tinox_db_ncols(void* r)                                                { (void)r; return 0; }

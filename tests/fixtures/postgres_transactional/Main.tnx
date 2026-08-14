@@ -1,0 +1,27 @@
+import tinox.core.db;
+import Account;
+import BankService;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let svc = new BankService();
+
+        // Succeeds -- commits, real balance change expected in Postgres.
+        svc.transfer(1, 2, 500);
+        println("transfer1 done");
+
+        // Overdraws the sender -- must roll back BOTH saves inside the
+        // same @Transactional call, not just leave the throwing statement's
+        // own effect undone.
+        try {
+            svc.transfer(1, 2, 999999);
+            println("transfer2 should have thrown");
+        } catch (e: String) {
+            println("transfer2 rolled back: " + e);
+        }
+
+        return 0;
+    }
+}

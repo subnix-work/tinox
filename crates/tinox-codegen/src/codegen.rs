@@ -162,6 +162,9 @@ struct EvaluatedReceiver<'a> {
 pub struct AnnotationInfo {
     pub inline_fns: HashSet<String>,
     pub inline_meths: HashSet<(String, String)>,
+    /// (class, method) pairs wrapped in a DB transaction (issue #191) --
+    /// see gen_transactional_wrapper.
+    pub transactional_methods: HashSet<(String, String)>,
     pub routes: Vec<RouteEntry>,
     pub di_components: Vec<DiComponentInfo>,
     pub log_classes: HashSet<String>,
@@ -400,6 +403,10 @@ pub struct CodeGen {
     inline_functions: HashSet<String>,
     /// Annotation processing: (class_name, method_name) pairs for methods annotated @inline
     inline_methods: HashSet<(String, String)>,
+    /// Annotation processing: (class_name, method_name) pairs wrapped in a
+    /// DB transaction, either directly @Transactional or via a class-level
+    /// @Transactional (issue #191). See gen_transactional_wrapper.
+    transactional_methods: HashSet<(String, String)>,
     /// REST route entries collected from annotation processing
     route_entries: Vec<RouteEntry>,
     /// DI component info from annotation processing
@@ -439,6 +446,11 @@ pub struct CodeGen {
     expr_value_types: HashMap<u32, tinox_typecheck::ValueType>,
     /// DB connection URL from tinox.toml [database] — emitted as compile-time constant
     db_url: Option<String>,
+    /// [database] pool size from tinox.toml, default 5 when omitted (see
+    /// crates/tinox/src/main.rs's read_database_config) — passed to
+    /// tinox_db_pool_init alongside db_url. Ignored by the sqlite/mysql
+    /// drivers (single-connection model, unchanged since before issue #191).
+    db_pool_size: i64,
     /// Whether a [metrics] endpoint is enabled (path to expose on)
     metrics_path: Option<String>,
     /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
@@ -570,6 +582,7 @@ impl CodeGen {
             variant_owner: HashMap::new(),
             inline_functions: HashSet::new(),
             inline_methods: HashSet::new(),
+            transactional_methods: HashSet::new(),
             route_entries: Vec::new(),
             di_components: Vec::new(),
             log_classes: HashSet::new(),
@@ -587,6 +600,7 @@ impl CodeGen {
             http3_rest_controller: None,
             expr_value_types: HashMap::new(),
             db_url: None,
+            db_pool_size: 5,
             metrics_path: None,
             test_entry: None,
             has_main: false,
@@ -617,6 +631,7 @@ impl CodeGen {
     pub fn set_annotation_info(&mut self, info: AnnotationInfo) {
         self.inline_functions = info.inline_fns;
         self.inline_methods = info.inline_meths;
+        self.transactional_methods = info.transactional_methods;
         self.route_entries = info.routes;
         self.di_components = info.di_components;
         self.log_classes = info.log_classes;
@@ -696,6 +711,10 @@ impl CodeGen {
 
     pub fn set_db_url(&mut self, url: Option<String>) {
         self.db_url = url;
+    }
+
+    pub fn set_db_pool_size(&mut self, pool_size: i64) {
+        self.db_pool_size = pool_size;
     }
 
     /// Register a string constant and return an inline `getelementptr` expression (i8*).
@@ -1513,8 +1532,13 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_clock_nanos()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
         // DB / ORM runtime
-        writeln!(&mut self.ir, "declare void @tinox_db_connect(i8*)").unwrap();
-        writeln!(&mut self.ir, "declare i8* @tinox_db_get_conn()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_db_pool_init(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_db_acquire_stmt_conn()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_db_release_stmt_conn(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_db_tx_begin()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_db_tx_commit()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_db_tx_rollback()").unwrap();
+        writeln!(&mut self.ir, "declare i1 @tinox_db_tx_active()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_exec(i8*, i8*, i8**, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_db_nrows(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_db_ncols(i8*)").unwrap();
@@ -4594,7 +4618,11 @@ impl CodeGen {
             ctx.timed_metric = Some((label.clone(), start_reg));
         }
 
-        self.gen_stmt_body(&method.body, &mut ctx)?;
+        if self.transactional_methods.contains(&(class_name.to_string(), method.name.clone())) {
+            self.gen_transactional_wrapper(method, &mut ctx)?;
+        } else {
+            self.gen_stmt_body(&method.body, &mut ctx)?;
+        }
 
         let has_terminator = self.ir.lines().last().is_some_and(|l| {
             let t = l.trim();
@@ -5561,8 +5589,9 @@ impl CodeGen {
         // Execute query
         let conn_reg = self.temp();
         let result_reg = self.temp();
-        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_get_conn()").unwrap();
+        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
         writeln!(&mut self.ir, "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {params_arr}, i64 {n_params})").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
 
         match chain.terminal.as_str() {
             "count" => {
@@ -5658,7 +5687,7 @@ impl CodeGen {
         };
 
         let conn_reg = self.temp();
-        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_get_conn()").unwrap();
+        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
 
         if op == "delete" {
             let id_ptr = self.temp();
@@ -5679,6 +5708,7 @@ impl CodeGen {
             )
             .unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
             let as_i64 = self.temp();
             writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
             return Ok((as_i64, "i64".to_string()));
@@ -5741,6 +5771,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
 
         writeln!(&mut self.ir, "{done_bb}:").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
         let as_i64 = self.temp();
         writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
         Ok((as_i64, "i64".to_string()))
@@ -5756,7 +5787,7 @@ impl CodeGen {
             writeln!(&mut self.ir, "define void @__tinox_db_init() {{").unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
             writeln!(&mut self.ir, "  %url = getelementptr [{url_len} x i8], [{url_len} x i8]* @__db_url, i64 0, i64 0").unwrap();
-            writeln!(&mut self.ir, "  call void @tinox_db_connect(i8* %url)").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_pool_init(i8* %url, i64 {})", self.db_pool_size).unwrap();
             writeln!(&mut self.ir, "  ret void").unwrap();
             writeln!(&mut self.ir, "}}").unwrap();
             writeln!(&mut self.ir, "@llvm.global_ctors = appending global [1 x {{ i32, void ()*, i8* }}] [{{ i32, void ()*, i8* }} {{ i32 10, void ()* @__tinox_db_init, i8* null }}]").unwrap();
@@ -12681,6 +12712,106 @@ impl CodeGen {
             }
         } else {
             writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
+        }
+
+        writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+        Ok(())
+    }
+
+    /// Wraps an @Transactional method's body (issue #191): BEGIN before,
+    /// COMMIT on normal completion, ROLLBACK-then-rethrow on any error --
+    /// structurally the same try/no-catch/no-swallow shape gen_try_stmt
+    /// emits for `try { ... }` with no catch clauses (error_var alloca,
+    /// ctx.error_catch redirect, emit_post_stmt_throw_check per statement,
+    /// rethrow via ctx.error_catch if there's an enclosing try/@Transactional
+    /// in this same function, else via the global `@__tinox_err` slot), just
+    /// with a fixed BEGIN/COMMIT/ROLLBACK action instead of user catch/finally
+    /// blocks, and gated on whether THIS call actually owns the transaction.
+    ///
+    /// Propagation is REQUIRED (Spring's default, no savepoints): a nested
+    /// @Transactional call (or a plain call from inside one to another
+    /// @Transactional method) joins the caller's already-open transaction --
+    /// tinox_db_tx_active() is checked at entry, and only the outermost call
+    /// (the one that finds no active transaction) actually begins/commits/
+    /// rolls back. An inner call's own error still rolls back the whole
+    /// (shared) transaction: rollback happens whenever this frame RE-THROWS
+    /// past its own catch, regardless of ownership -- only the ACT of calling
+    /// tinox_db_tx_commit/_rollback (which also releases the pooled
+    /// connection) is gated on ownership, since only the outermost owner
+    /// may safely do that.
+    fn gen_transactional_wrapper(&mut self, method: &Method, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
+        let already_active = self.temp();
+        writeln!(&mut self.ir, "{} = call i1 @tinox_db_tx_active()", already_active).unwrap();
+        let owned_slot = self.temp();
+        writeln!(&mut self.ir, "{} = alloca i1", owned_slot).unwrap();
+        let owned_val = self.temp();
+        writeln!(&mut self.ir, "{} = xor i1 {}, true", owned_val, already_active).unwrap();
+        writeln!(&mut self.ir, "store i1 {}, i1* {}", owned_val, owned_slot).unwrap();
+
+        let begin_bb = self.new_bb("tx_begin");
+        let body_bb = self.new_bb("tx_body");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_val, begin_bb, body_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", begin_bb).unwrap();
+        writeln!(&mut self.ir, "call i8* @tinox_db_tx_begin()").unwrap();
+        writeln!(&mut self.ir, "br label %{}", body_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+
+        let error_var = format!("%__tx_error_{}__", self.temp_count);
+        self.temp_count += 1;
+        writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
+
+        let catch_bb = self.new_bb("tx_catch");
+        let end_bb = self.new_bb("tx_end");
+
+        let old_error_catch = ctx.error_catch.take();
+        let try_defer_depth = ctx.defer_stack.len();
+        ctx.error_catch = Some((catch_bb.clone(), error_var.clone(), try_defer_depth));
+
+        self.gen_stmt_body(&method.body, ctx)?;
+        if !self.last_is_terminator() {
+            self.emit_post_stmt_throw_check(ctx)?;
+        }
+        ctx.error_catch = old_error_catch;
+
+        // Normal completion: commit (and release the pooled connection) if
+        // this call owns the transaction, then fall through to gen_class_method's
+        // own implicit-return handling.
+        let commit_bb = self.new_bb("tx_commit");
+        writeln!(&mut self.ir, "br label %{}", commit_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", commit_bb).unwrap();
+        let owned_at_commit = self.temp();
+        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned_at_commit, owned_slot).unwrap();
+        let do_commit_bb = self.new_bb("tx_do_commit");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_at_commit, do_commit_bb, end_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", do_commit_bb).unwrap();
+        writeln!(&mut self.ir, "call void @tinox_db_tx_commit()").unwrap();
+        writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
+
+        // Error path: rollback (and release) if we own the transaction, then
+        // ALWAYS re-throw -- @Transactional never swallows an error, it only
+        // reacts to one, exactly like gen_try_stmt's catches.is_empty() path.
+        writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
+        let owned_at_catch = self.temp();
+        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned_at_catch, owned_slot).unwrap();
+        let do_rollback_bb = self.new_bb("tx_do_rollback");
+        let after_rollback_bb = self.new_bb("tx_after_rollback");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_at_catch, do_rollback_bb, after_rollback_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", do_rollback_bb).unwrap();
+        writeln!(&mut self.ir, "call void @tinox_db_tx_rollback()").unwrap();
+        writeln!(&mut self.ir, "br label %{}", after_rollback_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", after_rollback_bb).unwrap();
+
+        let ev = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", ev, error_var).unwrap();
+        if let Some((outer_catch, outer_error_var, outer_depth)) = ctx.error_catch.clone() {
+            writeln!(&mut self.ir, "store i64 {}, i64* {}", ev, outer_error_var).unwrap();
+            self.emit_unwind_defers_to(ctx, outer_depth)?;
+            writeln!(&mut self.ir, "br label %{}", outer_catch).unwrap();
+        } else {
+            writeln!(&mut self.ir, "store i64 {}, i64* @__tinox_err", ev).unwrap();
+            self.emit_unwind_defers(ctx)?;
+            self.emit_ret_default(ctx);
         }
 
         writeln!(&mut self.ir, "{}:", end_bb).unwrap();

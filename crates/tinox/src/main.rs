@@ -403,7 +403,6 @@ fn read_startup_banner_config() -> bool {
 struct DbConfig {
     driver: String,
     url: String,
-    #[allow(dead_code)]
     pool: usize,
 }
 
@@ -417,7 +416,13 @@ fn read_database_config() -> Option<DbConfig> {
             let mut in_db = false;
             let mut driver = String::new();
             let mut url = String::new();
-            let mut pool: usize = 1;
+            // Default pool size when [database] pool is omitted entirely --
+            // sized for a small server under real concurrent load, not just
+            // "works for a single request at a time" (that's what the old
+            // default of 1 amounted to, back when this field was still dead
+            // code and every driver shared one single global connection
+            // regardless of what it said).
+            let mut pool: Option<usize> = None;
             let mut found = false;
             for line in content.lines() {
                 let line = line.trim();
@@ -434,12 +439,18 @@ fn read_database_config() -> Option<DbConfig> {
                     let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
                     url = rest.trim_matches('"').to_string();
                 } else if let Some(rest) = line.strip_prefix("pool") {
-                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("1");
-                    pool = rest.parse().unwrap_or(1);
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    match rest.parse::<usize>() {
+                        Ok(n) if n >= 1 => pool = Some(n),
+                        _ => {
+                            eprintln!("error: [database] pool must be a positive integer, found '{rest}'");
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
             if found && !driver.is_empty() {
-                return Some(DbConfig { driver, url, pool });
+                return Some(DbConfig { driver, url, pool: pool.unwrap_or(5) });
             }
             return None;
         }
@@ -2590,6 +2601,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
         do_not_serialize_fields,
         json_serializable_classes: ann.json_serializable_classes,
         metric_entries: vec![],
+        transactional_methods: ann.transactional_methods,
     });
     let entity_entries_test: Vec<tinox_codegen::EntityEntry> = ann.entity_entries
         .iter()
@@ -3300,6 +3312,28 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         ));
     }
 
+    // @Transactional is postgres-only in v1 (issue #191): the connection
+    // pool + BEGIN/COMMIT/ROLLBACK primitives it compiles down to only
+    // exist for that driver (runtime.c's sqlite/mysql tinox_db_tx_* stubs
+    // hard-abort if ever actually called, as a second line of defense, but
+    // that's meant to catch a bug in THIS check, not substitute for it).
+    // A hard compile error here, not a silent no-op or a runtime surprise
+    // the first time a transactional method actually runs. Checked here,
+    // before ann_result.transactional_methods is moved into the
+    // set_annotation_info() call further down.
+    if !ann_result.transactional_methods.is_empty() {
+        let driver_cfg = read_database_config();
+        let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
+        if driver != "postgres" {
+            let (class_name, method_name) = ann_result.transactional_methods.iter().next().unwrap();
+            return Err(format!(
+                "'{class_name}.{method_name}' is @Transactional, but [database] driver is {} -- \
+                 @Transactional is only supported for driver = \"postgres\" in this version",
+                if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
+            ));
+        }
+    }
+
     let route_entries: Vec<tinox_codegen::RouteEntry> = ann_result
         .route_entries
         .iter()
@@ -3520,6 +3554,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         do_not_serialize_fields,
         json_serializable_classes: ann_result.json_serializable_classes,
         metric_entries,
+        transactional_methods: ann_result.transactional_methods,
     });
     codegen.set_metrics_config(read_metrics_config());
     let entity_entries: Vec<tinox_codegen::EntityEntry> = ann_result.entity_entries
@@ -3542,7 +3577,9 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     codegen.set_amqp10_consumers(amqp10_consumers);
     codegen.set_amqp091_consumers(amqp091_consumers);
     codegen.set_http3_rest_controller(http3_rest_controller);
-    codegen.set_db_url(read_database_config().map(|c| c.url));
+    let db_config_for_codegen = read_database_config();
+    codegen.set_db_url(db_config_for_codegen.as_ref().map(|c| c.url.clone()));
+    codegen.set_db_pool_size(db_config_for_codegen.as_ref().map(|c| c.pool as i64).unwrap_or(5));
     if dev_config.enabled {
         codegen.set_dev_info(
             read_project_name().unwrap_or_else(|| "app".to_string()),
