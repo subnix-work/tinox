@@ -8,6 +8,7 @@ use tinox_codegen::CodeGen;
 use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Formatter, Parser};
 
+mod callgraph;
 mod pm;
 
 fn main() {
@@ -43,6 +44,7 @@ fn run() {
         "dev"   => dev_mode(&args[2..]),
         "test"  => run_tests(&args[2..]),
         "doc"   => gen_docs(&args[2..]),
+        "graph" => gen_call_graph(&args[2..]),
         "check"   => check(&args[2..]),
         "fmt"     => fmt(&args[2..]),
         "repl"    => repl(),
@@ -74,6 +76,7 @@ fn print_help() {
     println!("  tinox test  [file]         Run all @Test-annotated methods");
     println!("  tinox test --watch         Re-run tests on file changes (TDD mode)");
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
+    println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox fmt   <file>         Format a Tinox file (print to stdout)");
     println!("  tinox fmt --write <file>   Format a Tinox file in place");
@@ -1884,6 +1887,123 @@ fn gen_docs(args: &[String]) {
         let _ = Command::new("xdg-open").arg(&out_path).spawn()
             .or_else(|_| Command::new("open").arg(&out_path).spawn());
     }
+}
+
+/// Issue #186: `tinox graph` -- statically analyzes the project (same
+/// project-root/`--out` discovery shape as `gen_docs` above) and writes a
+/// Mermaid call-graph diagram seeded from every auto-run entry point
+/// (`@GET`/etc, `@WebsocketEndpoint`, `@Amqp10Consumer`/`@Amqp091Consumer`,
+/// `@Command`). Runs the same parse -> resolve_imports -> typecheck ->
+/// process_annotations pipeline `compile_file` uses (needs a real,
+/// type-checked AST: `TypeChecker::interface_info()` backs the
+/// interface-dispatch fan-out in `callgraph::build_call_graph`) -- the
+/// actual graph construction and Mermaid rendering live in
+/// `callgraph.rs`, this function only assembles the AST and writes the
+/// output file.
+fn gen_call_graph(args: &[String]) {
+    let out_override: Option<&String> =
+        args.iter().position(|a| a == "--out").and_then(|i| args.get(i + 1));
+
+    let input_file = match resolve_entry_file(args) {
+        Some(f) => f,
+        None => std::process::exit(1),
+    };
+
+    let source = match fs::read_to_string(&input_file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {}", input_file, e);
+            std::process::exit(1);
+        }
+    };
+    let mut lexer = Lexer::new(&source);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: lex error: {:?}", e);
+            std::process::exit(1);
+        }
+    };
+    let mut parser = Parser::new(tokens);
+    let mut ast = match parser.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: parse error: {:?}", e);
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = check_one_type_per_file(&ast.decls, Path::new(&input_file)) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = check_no_top_level_fn(&ast.decls, Path::new(&input_file)) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = check_namespace_path_matches(&ast.decls, Path::new(&input_file)) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+    stamp_file_identity(&mut ast.decls, Path::new(&input_file));
+
+    let base_dir = Path::new(&input_file).parent().unwrap_or(Path::new(".")).to_path_buf();
+    let mut visited = HashSet::new();
+    if let Ok(c) = Path::new(&input_file).canonicalize() {
+        visited.insert(c);
+    }
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
+    if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps) {
+        eprintln!("error: import error: {}", e);
+        std::process::exit(1);
+    }
+
+    tinox_parser::assign_node_ids(&mut ast);
+    let mut typechecker = tinox_typecheck::TypeChecker::new();
+    if let Err(e) = typechecker.check(&ast) {
+        eprintln!("error: type error:\n{}", e);
+        std::process::exit(1);
+    }
+    let (iface_methods, class_implements) = typechecker.interface_info();
+
+    let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
+    let project_root = pm::find_project_root_from(&base_dir).unwrap_or(base_dir);
+    let graph = callgraph::build_call_graph(&ast.decls, &ann_result, &iface_methods, &class_implements, &project_root);
+
+    if graph.entry_points.is_empty() {
+        eprintln!(
+            "warning: no auto-run entry points found (no @GET/@POST/etc, \
+             @WebsocketEndpoint, @Amqp10Consumer/@Amqp091Consumer, or @Command) \
+             -- writing an empty graph"
+        );
+    }
+
+    let mermaid = callgraph::render_mermaid(&graph);
+
+    let out_path = match out_override {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from("docs").join("callgraph.mmd"),
+    };
+    if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("error: cannot create {}: {}", parent.display(), e);
+            std::process::exit(1);
+        }
+    }
+    if let Err(e) = fs::write(&out_path, &mermaid) {
+        eprintln!("error: cannot write {}: {}", out_path.display(), e);
+        std::process::exit(1);
+    }
+
+    println!(
+        "Call graph written to {} ({} entry point{}, {} edge{}, {} unresolved call{})",
+        out_path.display(),
+        graph.entry_points.len(),
+        if graph.entry_points.len() == 1 { "" } else { "s" },
+        graph.edges.len(),
+        if graph.edges.len() == 1 { "" } else { "s" },
+        graph.unresolved.len(),
+        if graph.unresolved.len() == 1 { "" } else { "s" },
+    );
 }
 
 // ── Doc data model ────────────────────────────────────────────────────────────

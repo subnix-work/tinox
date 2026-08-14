@@ -1125,3 +1125,151 @@ fixtures that build a JWKS/token-endpoint URL as a string -- those splice via
   behavior, not just test plumbing, and each already uses one distinct,
   non-colliding port. Out of scope here (fix narrowly, not broadly) -- a
   separate follow-up if wanted.
+
+## `tinox graph`: Mermaid Call-Graph From Entry Points (issue #186, since 2026-08-14)
+
+`tinox graph [file] [--out <path>]` (`gen_call_graph` in `crates/tinox/src/
+main.rs`, graph construction/rendering in the new `crates/tinox/src/
+callgraph.rs`) statically analyzes a project and writes a Mermaid
+`flowchart TD` call graph (default `docs/callgraph.mmd`) seeded from every
+auto-run entry point: `@GET`/`@POST`/etc (including `@Http3RestController`
+routes, since those flow through the same `route_entries`),
+`@WebsocketEndpoint`'s `@OnOpen`/`@OnMessage`/`@OnClose`,
+`@Amqp10Consumer`/`@Amqp091Consumer`, and `@Command` (CLI). v1 scope,
+settled via AskUserQuestion before implementation: per-METHOD nodes (not
+per-class), the full entry-point matrix including AMQP (not deferred as
+the issue itself first suggested), and no `--from`/`--depth` filtering yet
+(fast-follow once the base output is confirmed useful -- exactly the
+"prototype first" step the issue asked for, done against
+`examples/rest_with_mini`, see below).
+
+- **No new discovery logic needed at all** -- `tinox_typecheck::
+  annotations::process_annotations(&ast)` already returns every entry
+  point's `class_name` + handler method name(s) (`RouteInfo`,
+  `WsEndpointInfo`, `Amqp10ConsumerInfo`/`Amqp091ConsumerInfo`,
+  `CliCommandInfo`), the exact same structs `codegen.rs` already consumes
+  for the real annotation-driven bootstrap. `@Command`'s entry method has
+  no per-method annotation to discover (unlike the other three kinds) --
+  it's a fixed convention, `run` (verified against `codegen.rs`'s `call
+  i64 @{class}_run(...)` and `examples/GreetCommand.tnx`), hardcoded in
+  `build_call_graph`.
+- **No `tinox-typecheck` coupling for interface fan-out beyond
+  `TypeChecker::interface_info()`, already called on this same pipeline's
+  AST anyway** (`gen_call_graph` runs the identical parse -> resolve_imports
+  -> typecheck -> process_annotations sequence `compile_file` uses, since a
+  real type-checked AST is needed either way). `interface_info()` returns
+  `(iface_methods: HashMap<interface, Vec<method>>, class_implements:
+  HashMap<class, Vec<interface>>)` -- inverted once into `interface ->
+  implementing classes` for fan-out. `interface_implementations` itself
+  does NOT walk the `extends` chain (each class's own direct `implements`
+  only, confirmed by reading `check_class`'s population site) -- so this
+  is exactly equivalent to what a hand-rolled AST walk over
+  `Class.implements` would have given anyway, just reusing tested logic
+  instead of duplicating it.
+- **`MethodCall { obj, method, args }` represents BOTH `ClassName.method(...)`
+  (static) and `var.method(...)` (instance) calls** -- disambiguated by
+  resolving `obj`: `Ident` matching a known class = static call; `Ident`
+  matching a local var/param with a STATICALLY declared type (explicit
+  `var x: Foo = ...`, or inferred from a `var x = new Foo()` initializer
+  only -- no real type inference, a single flat non-scope-aware pass over
+  the method body, deliberate v1 simplification) = instance call through
+  that type; `This` = self-call; `New { class, .. }` = a chained `new
+  Foo().method(...)`. Anything else is **unresolved** -- shown via a
+  shared `unresolved` sink node + `%%`-comment detail lines in the `.mmd`
+  output, never silently dropped (this project's "no silent garbage"
+  philosophy, applied to a read-only analysis tool same as everywhere
+  else).
+- **Real, load-bearing edge case, found via the issue's own suggested
+  prototype target (`examples/rest_with_mini/UserController.tnx`)**:
+  `getUser` calls `findUserIndex(users, id)` with NO receiver at all. Since
+  top-level free functions are banned (issue #149), this parses as
+  `ExprKind::Call { func: Ident("findUserIndex"), .. }`, not `MethodCall`
+  -- syntactically identical to a lambda-variable invocation at parse
+  time. The walker special-cases a bare `Call` to a same-class method
+  name (checked via `find_method`, which also walks the `extends` chain)
+  before falling back to "unresolved (lambda call)".
+- **A second real, load-bearing edge case, found live while smoke-testing
+  `examples/ws_echo_annotated` (not from the prototype target above)**:
+  `Ws::sendText(conn, ...)` was completely invisible in the graph at
+  first -- neither an edge nor an unresolved entry. `X::y(...)` is the
+  SAME `ExprKind::EnumValue` AST node for a real enum-variant literal
+  (`Color::Red`, `Option::Some(value)`) and this static-call-like
+  reference -- there's no separate call syntax for it. Fixed by handling
+  `EnumValue` as a call site too: a known project class -> a real static
+  call; a known project enum -> not a call at all (skip, matches a real
+  variant construction); anything else (e.g. `Ws`/`Json`, merged in via
+  `import tinox.core.*`) -> unresolved rather than silently dropped, since
+  it's genuinely ambiguous without cross-crate type info.
+- **A third real bug, also found via the SAME `examples/ws_echo_annotated`
+  smoke test, worse than the second one**: once `Ws::sendText` started
+  resolving, the traversal recursed straight into `tinox.core.websocket`'s
+  OWN internals (`Ws.sendText` -> `Ws.writeFrame` -> ... ->
+  `httpConnWriteBytes`) -- exactly the "expanding into tinox.core.*
+  internals" the issue explicitly asks to avoid, and the plan explicitly
+  designed against. Root cause: `resolve_imports` merges every imported
+  file's decls into the SAME flat list before this module ever sees the
+  AST, so a `class_ast_map`-style lookup built from those merged decls
+  can't tell "this project's own class" from "a class pulled in via
+  import" apart on its own -- `Ws` was structurally indistinguishable
+  from `UserController`. Fixed by `project_owned_classes`
+  (`callgraph.rs`): since one-type-per-file guarantees every method of a
+  class shares one originating file, and `stamp_file_identity` (main.rs)
+  already stamps that onto every `Method.file` for both the entry file
+  and every imported file uniformly, a class only counts as
+  project-owned if its first method's file is a descendant of
+  `project_root` and NOT inside a `.tinox` (installed-dependency)
+  subtree -- the same `.tinox`-component heuristic issue #185's
+  `check_namespace_path_matches` already uses to recognize installed
+  dependencies. The FULL merged class map is still used for name
+  resolution (so `Ws::sendText` still correctly resolves as a real call,
+  not "unresolved") -- only the RECURSION decision (expand further or
+  stop) consults the project-owned subset.
+- **Cycle/depth safety is a single global `expanded: HashSet<"Class.method">`
+  set plus a depth cap (40), not a fresh per-entry-point set** -- a
+  deliberate simplification over the devui `visiting`-set pattern this
+  feature was modeled on (see the REST "Try it out" Example Schemas
+  section below): since the goal is ONE combined graph across every entry
+  point (not a separate graph per entry point), reusing one global
+  "already expanded" set both dedupes edges when multiple entry points
+  reach the same subtree AND makes a genuine call cycle (A calls B calls
+  A) safe for free -- the second visit to an already-expanded node just
+  returns immediately, after its inbound edge was already recorded, so
+  the cycle still shows correctly in the output without needing a
+  separate on-stack/visiting-vs-expanded distinction.
+- **Verified against 4 real example projects, one per entry-point kind**
+  (`crates/tinox/tests/callgraph.rs`, spawns the real compiled `tinox`
+  binary, not a direct call into `callgraph.rs`'s functions): REST
+  (`rest_with_mini`, asserting on the two edge cases above by name), CLI
+  (`GreetCommand`, the `run` convention), WebSocket (`ws_echo_annotated`,
+  asserting the stdlib boundary actually stops expansion), AMQP 1.0
+  (`amqp10_consumer_annotated`). Every generated `.mmd` in this
+  investigation was also rendered with real `@mermaid-js/mermaid-cli`
+  (`npx @mermaid-js/mermaid-cli`) to confirm valid Mermaid syntax, not
+  just eyeballed -- the prototype step the issue's own "Suggested next
+  step" asked for before committing to the full entry-point matrix.
+- **A fourth real bug, caught by CI, not local testing**: `gen_call_graph`'s
+  every failure path (unreadable file, lex/parse error, import error, type
+  error, unwritable output) originally did `eprintln!(...); return;` --
+  returning from the function normally instead of `std::process::exit(1)`
+  the way `build()`'s equivalent paths already do. `run()`'s dispatch
+  match doesn't propagate a callee's "did this fail" status at all, so
+  this meant the PROCESS exited 0 even after printing an error and never
+  writing the output file -- exactly the kind of silent-success failure
+  this project's philosophy exists to prevent. Every one of the 3 example
+  projects this feature is tested against (`rest_with_mini`,
+  `ws_echo_annotated`, `amqp10_consumer_annotated`) declares an
+  extended-tier dependency that needs `tinox install` first; this
+  dev machine already had all three cached from earlier work, so the bug
+  was invisible locally -- a genuinely fresh CI checkout (nothing in
+  `~/.tinox/repository`) hit the "declare it in tinox.toml... then run
+  tinox install" import error immediately, and with the missing
+  `exit(1)`, that printed error was silently treated as success by the
+  test harness's own `output.status.success()` check, which only then
+  failed on the SEPARATE, more confusing symptom of the output file not
+  existing. Fixed by switching every failure path to
+  `std::process::exit(1)`, and by adding the same `install_deps_if_needed`
+  step (`tinox install`, cwd'd at the entry file's own directory) the
+  existing `amqp10_consumer_annotation.rs` test already uses, to
+  `callgraph.rs`'s own test helper -- re-verified by temporarily moving
+  `~/.tinox/repository` aside to force a real, fresh-machine install path
+  locally, not just trusting the CI rerun.
