@@ -1511,3 +1511,77 @@ from `tinox-lsp` itself; each editor plugin is just wiring.
   `xmllint` is now the one thing standing between a typo here and a
   silent full-plugin outage that only surfaces in a real user's Error
   Log.
+- **A second, different real bug, found in the SAME live-testing
+  round, one step further**: with `plugin.xml` now well-formed, the
+  import wizard itself showed up correctly, but selecting a
+  `tinox.toml` triggered Eclipse's own "Marketplace solutions
+  available" dialog ("Your IDE is missing natures to properly support
+  your projects") naming `tinox.eclipse.tinoxNature` -- i.e. the
+  nature extension was well-formed XML but still wasn't actually
+  registering. `xmllint` only proves a file parses as XML, not that
+  its content matches a given extension point's SCHEMA -- a distinct,
+  narrower kind of correctness. Root cause: wrote
+  `<runtime id="..." class="..."/>` (attributes directly on
+  `<runtime>`) instead of the real
+  `org.eclipse.core.resources.natures` shape, confirmed by grepping
+  three real, already-installed plugin.xmls in the local bundle pool
+  (JDT's `javanature`, m2e's `maven2Nature`, PDE's own
+  `PluginProject`/`FeatureProject`/etc.) -- all three, with zero
+  exceptions, use `id`/`name` on the `<extension>` element itself,
+  then a nested `<runtime><run class="..."/></runtime>`, never
+  attributes directly on `<runtime>`. Cross-checked the OTHER two new
+  extension points the same way (grepped 8 real decorator
+  declarations, 2 real import-wizard declarations, across
+  debug/JDT/EGit/Buildship/m2e/Mylyn/EclEmma) while fixing this, and
+  found the decorator was ALSO missing a `location` attribute that
+  literally every single real-world example includes (`TOP_LEFT`/
+  `TOP_RIGHT`/`BOTTOM_RIGHT`) even for class-based lightweight
+  decorators that pick their own `IDecoration` position
+  programmatically -- added defensively to match universal real-world
+  convention rather than trusting that it's "probably optional" from
+  a schema default I hadn't actually verified. Lesson for editing
+  `plugin.xml` again: don't trust memory of a given extension point's
+  exact attribute shape, even when the XML itself is well-formed --
+  grep a handful of real, already-installed plugin.xmls for the same
+  extension point first (`~/.p2/pool/plugins/*.jar` on this dev
+  machine has hundreds of real examples to check against), the same
+  way this repo's own CLAUDE.md philosophy already insists on
+  verifying against real, independent systems rather than
+  self-consistent assumptions.
+- **A third real bug, found by the user importing a genuine real-world
+  project (`~/git/demo`) through the now-working import wizard above --
+  this one in `tinox-typecheck` itself, not in the plugin, and affecting
+  BOTH editor integrations equally (Eclipse and VS Code, since both go
+  through the same `tinox-lsp` binary)**: a plain `@JsonSerializable
+  class Person { ... }` and its `PersonController` (`@PostParam`/
+  auto-serialize REST handlers) were flagged with `unknown annotation:
+  @JsonSerializable` and cascading `@PostParam`/return-type errors --
+  despite compiling cleanly with the real `tinox` compiler. Root cause:
+  `tinox-lsp`'s `typecheck_with_prelude` (`crates/tinox-typecheck/src/
+  lib.rs`) deliberately keeps the file being edited and its stdlib
+  "preludes" as SEPARATE `SourceFile`s (registering each prelude's decls
+  via `register_declarations` before checking the real source), unlike
+  the real compiler's `compile_file` pipeline, which fully merges every
+  import into one `decls` list via `resolve_imports` before typechecking
+  ever runs. `annotations::validate_annotations` (`crates/tinox-
+  typecheck/src/annotations.rs`) documented and relied on exactly that
+  merged-list assumption ("imports are already merged into source.decls
+  by this point") for its two registration passes (custom `@annotation`
+  classes, `@JsonSerializable` class names) -- true for the compiler,
+  false for the LSP's split model, so a custom annotation declared in a
+  prelude (`@JsonSerializable` itself is declared via `@annotation class
+  JsonSerializable {}` inside `tinox.core.json`'s own
+  `JsonSerializable.tnx`) was invisible to any file that merely imported
+  it. Fixed with a new `TypeChecker.prelude_decls: Vec<Decl>` field,
+  accumulated by `register_declarations` on every call (harmlessly
+  redundant for the compiler's own single, already-merged call; the
+  actual fix for the LSP's multiple prelude-then-source calls) and
+  threaded into `validate_annotations` as a second `extra_decls`
+  parameter, scanned by both registration passes alongside `source.decls`
+  itself. Verified: `cargo test -p tinox-typecheck` (367 tests) still
+  green, and confirmed live against the real `~/git/demo` project after
+  rebuilding+reinstalling `tinox-lsp` (`mv` over the running binary
+  rather than `cp`, since Eclipse's LSP4E immediately respawns a killed
+  `tinox-lsp` process, making the target "busy" for a `cp`-based
+  overwrite -- `mv`'s atomic rename works even while the old binary is
+  still running).

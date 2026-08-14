@@ -97,8 +97,13 @@
   <!-- Marks a project as a Tinox project (no build behavior of its own,
        see TinoxProjectNature's doc comment) so the source-folder
        decorator below can gate itself on it. -->
-  <extension point="org.eclipse.core.resources.natures">
-    <runtime id="tinox.eclipse.tinoxNature" class="tinox.eclipse.TinoxProjectNature"/>
+  <extension
+    point="org.eclipse.core.resources.natures"
+    id="tinox.eclipse.tinoxNature"
+    name="Tinox Nature">
+    <runtime>
+      <run class="tinox.eclipse.TinoxProjectNature"/>
+    </runtime>
   </extension>
 
   <!-- Distinct icon for src/ and tests/ under a Tinox project -->
@@ -108,6 +113,7 @@
       class="tinox.eclipse.TinoxSourceFolderDecorator"
       label="Tinox Source Folders"
       lightweight="true"
+      location="TOP_LEFT"
       state="true">
       <enablement>
         <objectClass name="org.eclipse.core.resources.IFolder"/>

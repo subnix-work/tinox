@@ -482,6 +482,23 @@ pub struct TypeChecker {
     /// (which is what silently mis-specialized `U` to `Int64` downstream in
     /// codegen — see `infer_own_type_params`'s doc comment in codegen.rs).
     generic_instance_fn_arg_hints: HashMap<String, Vec<(usize, Vec<ValueType>)>>,
+    /// Every decl seen via register_declarations (both `typecheck_with_prelude`'s
+    /// prelude files AND the main source's own decls, registered first thing
+    /// inside check_source_file) -- `validate_annotations` needs this because it
+    /// documents its own assumption ("imports are already merged into
+    /// source.decls") that only holds for the real compiler's `compile_file`
+    /// pipeline (resolve_imports merges everything into one decl list BEFORE
+    /// typecheck ever runs). tinox-lsp's `typecheck_with_prelude` deliberately
+    /// keeps the main file and its stdlib preludes as SEPARATE SourceFiles
+    /// instead -- without this, a custom annotation declared in a prelude (e.g.
+    /// `@JsonSerializable`, declared via `@annotation class JsonSerializable {}`
+    /// inside tinox.core.json's own JsonSerializable.tnx) reads as "unknown
+    /// annotation" for any file that merely IMPORTS it, since
+    /// validate_annotations's own first-pass registration scan never saw it.
+    /// Real bug, found live: an Eclipse-imported real project's own
+    /// `@JsonSerializable class Person` flagged this way despite being
+    /// perfectly valid and compiling fine with the real `tinox` compiler.
+    prelude_decls: Vec<Decl>,
 }
 
 impl TypeChecker {
@@ -1177,6 +1194,7 @@ impl TypeChecker {
             generic_method_param_types: HashMap::new(),
             class_fields: HashMap::new(),
             generic_instance_fn_arg_hints: HashMap::new(),
+            prelude_decls: Vec::new(),
         }
     }
 
@@ -1362,6 +1380,8 @@ impl TypeChecker {
     }
 
     fn register_declarations(&mut self, source: &SourceFile) {
+        self.prelude_decls
+            .extend(Self::flatten_decls(source).into_iter().cloned());
         for decl in Self::flatten_decls(source) {
             match &decl.node {
                 DeclKind::Function(f) => {
@@ -1824,7 +1844,7 @@ impl TypeChecker {
         }
 
         // Annotation validation pass
-        let ann_errors = annotations::validate_annotations(source);
+        let ann_errors = annotations::validate_annotations(source, &self.prelude_decls);
         self.errors.extend(ann_errors);
     }
 
