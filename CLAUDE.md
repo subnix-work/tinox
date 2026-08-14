@@ -1273,3 +1273,74 @@ the issue itself first suggested), and no `--from`/`--depth` filtering yet
   `callgraph.rs`'s own test helper -- re-verified by temporarily moving
   `~/.tinox/repository` aside to force a real, fresh-machine install path
   locally, not just trusting the CI rerun.
+
+## Editor Support: Eclipse + VS Code (`editors/`, since 2026-08-14)
+
+`editors/eclipse/` (moved here from a top-level `eclipse/`, no other path
+in the repo referenced the old location) and `editors/vscode/` are both
+thin LSP CLIENTS over the same `tinox-lsp` binary (`crates/tinox-lsp`,
+tower-lsp based) -- neither has its own language-analysis logic. Every
+feature (diagnostics, hover, completion, go-to-definition, outline) comes
+from `tinox-lsp` itself; each editor plugin is just wiring.
+
+- **Shared `editors/install-lsp.sh`** (hoisted out of `editors/eclipse/`,
+  which used to have its own copy — nothing in the script was
+  Eclipse-specific): `cargo build --release -p tinox-lsp` +
+  `cp target/release/tinox-lsp ~/.cargo/bin/tinox-lsp`. Both editors'
+  READMEs point at this one copy.
+- **Binary path resolution is identical in both editors, deliberately**:
+  a user-configurable setting (Eclipse: `tinox.lsp.path` preference;
+  VS Code: `tinox.lsp.path` setting), defaulting to probing
+  `~/.cargo/bin/tinox-lsp`, `/usr/local/bin/tinox-lsp`,
+  `/usr/bin/tinox-lsp` in that order
+  (`TinoxPreferenceInitializer.java` / `defaultLspPath()` in
+  `editors/vscode/src/extension.ts`). The "Run File" command in both
+  derives the `tinox` compiler binary's path the same way, too: swap
+  `tinox-lsp` for `tinox` in the resolved LSP path (assumes both
+  binaries live in the same directory, true for a normal cargo
+  build/install) -- `RunTinoxHandler.java`'s `getTinoxBinary()` and
+  `resolveTinoxBinaryPath()` in `extension.ts` are the same logic in two
+  languages.
+- **The TextMate grammar (`tinox.tmLanguage.json`) is a genuine
+  duplicate, not a shared file** —
+  `editors/eclipse/tinox-eclipse/grammars/tinox.tmLanguage.json` and
+  `editors/vscode/syntaxes/tinox.tmLanguage.json` are byte-identical as
+  of this writing, but there is no build step or symlink keeping them
+  that way. **Must be kept in sync by hand** — same deliberate
+  duplication convention this repo already uses for `docs.html`/
+  `docs_en.html`, chosen for the same reason: each editor ecosystem
+  expects the grammar file living in its own conventional location
+  (`grammars/` for TM4E, `syntaxes/` for VS Code), and a shared file
+  outside either directory would need its own copy/build step for two
+  genuinely small, rarely-changing files. (Aside, not acted on here,
+  scope was "add VS Code support" not "improve the grammar": the shared
+  grammar is missing `namespace`/`fnc` from `keyword_declaration` even
+  though both are real Tinox keywords used throughout this repo — a
+  pre-existing gap in the Eclipse-era grammar, inherited as-is by the
+  VS Code copy rather than silently fixed as a drive-by change.)
+- **Neither is published anywhere** — no Eclipse update site, no VS Code
+  Marketplace listing (a deliberate choice, confirmed with the user:
+  local-only distribution matches the Eclipse plugin's own existing
+  precedent exactly). Eclipse: manual Export → deployable plug-in →
+  `.jar` into `dropins/`. VS Code: `npx @vscode/vsce package` → `.vsix`
+  → "Install from VSIX...". No CI wiring for either.
+- **VS Code packaging note**: `package.json` needs a `repository` field
+  or `vsce package` prints a (non-blocking) warning; added, pointing at
+  this repo with `directory: "editors/vscode"`. A missing `LICENSE`
+  file in `editors/vscode/` itself also warns (non-blocking) — not
+  added, since the repo's root `LICENSE-APACHE`/`LICENSE-MIT` already
+  cover the whole tree including this directory, and duplicating full
+  license text into a third location would just be one more place to
+  keep in sync for a cosmetic warning.
+- **Verification note**: build-time correctness was fully verified
+  (`tsc` compiles clean, `vsce package` produces a valid `.vsix`,
+  `code --install-extension` succeeds, the installed extension's bundled
+  files match what `package.json` declares). Live, in-editor activation
+  (does `.tnx` syntax highlighting/hover/completion actually render) was
+  **not** confirmed against a running VS Code window in this session —
+  the only available X display was the developer's own live desktop
+  session (not a disposable sandbox), where opening windows and
+  screenshotting further wasn't appropriate to keep doing autonomously.
+  If touching this extension again: verify live-in-editor behavior
+  explicitly rather than assuming the build-time checks above are
+  sufficient proof.

@@ -1,0 +1,97 @@
+{
+  "name": "tinox",
+  "displayName": "Tinox",
+  "description": "Language support for Tinox (.tnx): syntax highlighting, diagnostics, hover, completion, go to definition, outline, and running files -- via the tinox-lsp language server.",
+  "version": "1.0.0",
+  "publisher": "tinox-lang",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/subnix-work/tinox",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:tinox"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "tinox",
+        "aliases": [
+          "Tinox"
+        ],
+        "extensions": [
+          ".tnx"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "tinox",
+        "scopeName": "source.tinox",
+        "path": "./syntaxes/tinox.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Tinox",
+      "properties": {
+        "tinox.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the tinox-lsp binary. Leave empty to auto-detect (~/.cargo/bin/tinox-lsp, /usr/local/bin/tinox-lsp, /usr/bin/tinox-lsp, in that order)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "tinox.run",
+        "title": "Tinox: Run File",
+        "icon": "$(play)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "tinox.run",
+        "key": "ctrl+f11",
+        "when": "resourceLangId == tinox"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "resourceLangId == tinox",
+          "command": "tinox.run",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "when": "resourceLangId == tinox",
+          "command": "tinox.run",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
