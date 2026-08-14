@@ -1332,15 +1332,82 @@ from `tinox-lsp` itself; each editor plugin is just wiring.
   cover the whole tree including this directory, and duplicating full
   license text into a third location would just be one more place to
   keep in sync for a cosmetic warning.
-- **Verification note**: build-time correctness was fully verified
-  (`tsc` compiles clean, `vsce package` produces a valid `.vsix`,
-  `code --install-extension` succeeds, the installed extension's bundled
-  files match what `package.json` declares). Live, in-editor activation
-  (does `.tnx` syntax highlighting/hover/completion actually render) was
-  **not** confirmed against a running VS Code window in this session —
-  the only available X display was the developer's own live desktop
-  session (not a disposable sandbox), where opening windows and
-  screenshotting further wasn't appropriate to keep doing autonomously.
-  If touching this extension again: verify live-in-editor behavior
-  explicitly rather than assuming the build-time checks above are
-  sufficient proof.
+- **A real bug, found only by the user actually testing a real,
+  installed VS Code window (build-time checks alone did NOT catch this
+  — see below)**: syntax highlighting worked, but completion never
+  showed anything object-specific (`ctx.` fell back to VS Code's own
+  generic word-based suggestions, e.g. literal string fragments already
+  present in the file, instead of `tinox-lsp`'s real, type-aware
+  member list) — and the "Tinox Language Server" output channel didn't
+  even exist in the Output panel dropdown, meaning the `LanguageClient`
+  was never constructed at all. Root cause: `.vscodeignore`'s
+  `node_modules/**` line strips `vscode-languageclient` (a real
+  `dependencies` entry, not `devDependencies`) out of the packaged
+  `.vsix` — but plain `tsc` compilation leaves
+  `require("vscode-languageclient/node")` as a literal Node `require`
+  call, which doesn't bundle anything. The require throws the instant
+  VS Code tries to load the extension, so `activate()` never runs —
+  with no visibly obvious error dialog for the user to notice, since a
+  module-load failure in one extension doesn't interrupt anything else
+  (syntax highlighting, being pure declarative grammar, works
+  regardless, since it needs no JS to run at all — this is exactly why
+  it looked "half-working" instead of "not working"). Fixed by bundling
+  the extension with esbuild (`editors/vscode/esbuild.js`) into a
+  single self-contained `out/extension.js` with only `vscode` itself
+  left external (real VS Code injects that at runtime; every other
+  dependency, including all of `vscode-languageclient`'s own transitive
+  deps, gets inlined) — `node_modules/**` in `.vscodeignore` is now
+  correct rather than the bug, since the bundle genuinely needs nothing
+  from it at runtime. `npm run compile` is now `tsc --noEmit` (type
+  -checking only) followed by the esbuild bundle step, not `tsc`'s own
+  emit.
+- **Verification note**: build-time correctness was checked twice —
+  once before the bug above was found (compiles clean, packages into a
+  `.vsix`, installs via CLI — none of which caught the missing-bundle
+  bug, since none of those steps actually LOAD the extension inside a
+  JS host the way VS Code itself does) and once after the fix, this
+  time including a non-GUI load test: extracting the packaged `.vsix`
+  and `require()`-ing the bundled `out/extension.js` under a real
+  Node process with a minimal mocked `vscode` module, confirming zero
+  "Cannot find module" errors for anything other than `vscode` itself
+  (the mock's remaining gaps, e.g. `vscode.CodeLens` not being a real
+  class, are artifacts of the mock's incompleteness, not the
+  extension — real VS Code provides all of these for real). This is a
+  meaningfully stronger check than the pre-fix verification, but still
+  short of a full live GUI pass — the actual confirmation that
+  highlighting/hover/completion/diagnostics/Run File all work came from
+  the user testing a real installed build, not from anything automated
+  in this repo. If touching this extension again: a `tsc`-compiles /
+  `vsce`-packages / `--install-extension`-succeeds check is NOT
+  sufficient on its own to catch an activation-time bundling bug like
+  this one — either do the `require()`-under-mock check above, or get
+  a real human to open a `.tnx` file and confirm completion/hover
+  actually populate, not just that highlighting renders.
+- **A second real bug, found in the SAME live-testing round, layered on
+  top of the first**: after fixing the bundling bug above, completion
+  populated but was drowned out by VS Code's own generic word-based
+  suggester (literal word/string fragments already present in the file
+  -- e.g. `"Alice"`/`"Bob"` from unrelated string literals elsewhere in
+  the same file -- mixed in alongside, and vastly outnumbering, the
+  real `tinox-lsp` member completions). VS Code adds these by default
+  for every language unless a language extension opts out. Fixed via
+  `contributes.configurationDefaults`: `"[tinox]": {
+  "editor.wordBasedSuggestions": "off" }` in `package.json` -- ships as
+  the DEFAULT for anyone installing the extension, but is only a
+  default, so it can still be silently overridden by a pre-existing
+  user/workspace setting (a real snag hit live during this same
+  session: setting it a second time, explicitly, directly in the user's
+  own `settings.json`, was needed to confirm the fix before the
+  packaged default's effect could be verified against a genuinely clean
+  reinstall).
+- **Both bugs together are why a clean reinstall matters when verifying
+  a fix to this extension, not just re-running `vsce package`**: VS
+  Code does not always fully unload/reactivate an extension just
+  because its `.vsix` was reinstalled over the same version number --
+  confirming a fix required Uninstall -> Reload Window -> Install from
+  VSIX -> Reload Window again, checked by confirming the "Tinox
+  Language Server" entry actually appears in the Output panel's
+  channel dropdown (compare against another real, working
+  LSP-based extension's own entry, e.g. "JSON Language Server", as a
+  sanity check that the mechanism itself is functioning) before
+  re-testing completion.

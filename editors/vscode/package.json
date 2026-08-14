@@ -50,6 +50,11 @@
         }
       }
     },
+    "configurationDefaults": {
+      "[tinox]": {
+        "editor.wordBasedSuggestions": "off"
+      }
+    },
     "commands": [
       {
         "command": "tinox.run",
@@ -82,8 +87,9 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
-    "watch": "tsc -w -p ./",
+    "check-types": "tsc --noEmit -p ./",
+    "compile": "npm run check-types && node esbuild.js",
+    "watch": "node esbuild.js --watch",
     "vscode:prepublish": "npm run compile"
   },
   "dependencies": {
@@ -92,6 +98,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "esbuild": "^0.23.0",
     "typescript": "^5.4.0"
   }
 }
