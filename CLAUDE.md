@@ -1411,3 +1411,41 @@ from `tinox-lsp` itself; each editor plugin is just wiring.
   LSP-based extension's own entry, e.g. "JSON Language Server", as a
   sanity check that the mechanism itself is functioning) before
   re-testing completion.
+- **`editors/eclipse/build.sh`** (added after the user pointed out that
+  "install the plugin" originally meant "import a PDE project into
+  Eclipse and Run As Eclipse Application" -- real friction compared to
+  a normal Eclipse plugin install): builds a real, installable OSGi
+  bundle JAR from the command line, no Eclipse GUI/PDE Export wizard
+  needed. Auto-detects an Eclipse bundle pool to compile against --
+  verified live on this dev machine that an Eclipse-Installer
+  -provisioned install's actual bundle jars live in the SHARED pool at
+  `~/.p2/pool/plugins`, not the installation's own near-empty
+  `plugins/` directory (only 1 jar there); `ECLIPSE_PLUGINS_DIR`
+  overrides the guess. Compiles with `--release 17` (matching
+  `Bundle-RequiredExecutionEnvironment: JavaSE-17` in `MANIFEST.MF` --
+  the system `javac` here is Java 26, so an unqualified compile would
+  silently produce bytecode newer than what the manifest declares
+  supported) against a classpath of every jar in the pool (a real,
+  proper OSGi dependency resolution would only need the bundles listed
+  in `Require-Bundle`, but globbing the whole pool is simpler and
+  robust enough for a plugin this small). Substitutes a real build
+  timestamp for `MANIFEST.MF`'s checked-in `1.0.0.qualifier` PDE/Tycho
+  placeholder (`sed`), since a raw manual build has no Tycho build
+  process to fill that in itself. Verified (without launching Eclipse,
+  which needs the same live-desktop caution as the VS Code work above):
+  the produced JAR is a well-formed bundle (`META-INF/MANIFEST.MF` +
+  `plugin.xml` + `grammars/` + compiled `.class` files, matching
+  `build.properties`'s `bin.includes` exactly) and its class files are
+  genuinely Java 17 bytecode (`javap -verbose` -> `major version: 61`).
+  Actually dropping the jar into a running Eclipse's `dropins/` and
+  confirming it loads is the one step left to a real human, same
+  caveat as the VS Code extension's own verification note above.
+  **Found and fixed a real, pre-existing documentation gap while
+  writing this**: both `README.md` and `SETUP.md` only ever mentioned
+  LSP4E as a prerequisite, never TM4E -- but `MANIFEST.MF`'s
+  `Require-Bundle` has always required both (TM4E renders the grammar;
+  without it, syntax highlighting silently wouldn't have worked even
+  though nothing else would have visibly failed). Not something this
+  build.sh work introduced, just a gap noticed while reading
+  `Require-Bundle` closely enough to know what to check for on the
+  compile classpath -- fixed in both docs alongside this change.

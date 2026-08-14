@@ -2,15 +2,27 @@
 
 This guide explains step by step how to set up and use the Tinox Eclipse Plugin.
 
+**Just want to install and use it, not develop it?** Skip to [Exporting
+the plugin as a `.jar`](#exporting-the-plugin-as-a-jar-for-distribution)
+near the bottom — `./build.sh` builds a real, installable plugin JAR from
+the command line, no PDE project import or GUI export wizard needed. The
+step-by-step walkthrough below (Steps 1-6) is the live "Run As → Eclipse
+Application" development workflow, useful if you're changing the
+plugin's own code.
+
 ---
 
 ## Prerequisites
 
 | What | Version |
 |-----|---------|
-| Eclipse IDE for Plugin Development | ≥ 2023-09 |
+| Eclipse IDE (Java ≥ 17) with [LSP4E](https://download.eclipse.org/lsp4e/releases/latest/) + [TM4E](https://download.eclipse.org/tm4e/releases/latest/) | any recent release; most "for Java/C++/... Developers" packages already include both |
 | Java | ≥ 17 |
 | Rust / Cargo | ≥ 1.75 |
+
+For plugin *development* specifically (Steps 3-4 below, not the `build.sh`
+path): an Eclipse IDE for Plugin Development (≥ 2023-09) package, since
+PDE itself is also needed there.
 
 ---
 
@@ -33,17 +45,24 @@ cp target/release/tinox-lsp ~/.cargo/bin/tinox-lsp
 
 ---
 
-## Step 2: Install LSP4E in Eclipse
+## Step 2: Install LSP4E + TM4E in Eclipse
 
-LSP4E is the framework that connects Eclipse to language servers.
+LSP4E is the framework that connects Eclipse to language servers; TM4E
+renders the plugin's TextMate grammar for syntax highlighting. Both are
+required (`MANIFEST.MF`'s `Require-Bundle` lists both) — most Eclipse
+"for Java/C++/... Developers" packages already ship with them, so check
+`Help → About Eclipse IDE → Installation Details → Plug-ins` (search for
+"LSP4E"/"TM4E") before installing anything.
 
+If either is missing:
 1. Open Eclipse
 2. **Help → Install New Software…**
 3. Enter under "Work with":
    ```
    https://download.eclipse.org/lsp4e/releases/latest/
    ```
-4. Select **"Language Server Protocol client for Eclipse"**
+   (or `https://download.eclipse.org/tm4e/releases/latest/` for TM4E)
+4. Select **"Language Server Protocol client for Eclipse"** (or "TM4E")
 5. Next → Finish → restart Eclipse
 
 ---
@@ -125,9 +144,28 @@ If `tinox-lsp` isn't located at `~/.cargo/bin/tinox-lsp`:
 
 ## Exporting the plugin as a `.jar` (for distribution)
 
-To distribute the plugin without an Eclipse development environment:
+No Eclipse development environment needed for this — `build.sh` compiles
+the plugin from the command line against whatever Eclipse installation's
+bundle pool it finds:
 
-1. Right-click `tinox-eclipse` → **Export…**
-2. **Plug-in Development → Deployable plug-ins and fragments**
-3. Destination: choose a directory → Finish
-4. Copy the generated `.jar` into the `dropins/` folder of an Eclipse installation
+```bash
+cd editors/eclipse
+./build.sh
+```
+
+Auto-detects the bundle pool to compile against (an Eclipse-Installer
+-provisioned install's shared pool at `~/.p2/pool/plugins`, or a
+traditional all-in-one install's own `plugins/` directory); override with
+`ECLIPSE_PLUGINS_DIR=/path/to/plugins ./build.sh` if it guesses wrong, or
+if the bundles listed in Step 2 above live in a different Eclipse
+installation than the one you'll actually install the result into.
+
+Prints the built JAR's path, e.g. `dist/tinox.eclipse_1.0.0.<timestamp>.jar`
+(the `.qualifier` placeholder in the checked-in `MANIFEST.MF` gets
+replaced with a real build timestamp). Copy it into the `dropins/` folder
+of the Eclipse installation you actually want to use the plugin in, and
+restart Eclipse:
+
+```bash
+cp dist/tinox.eclipse_*.jar <eclipse-install-dir>/dropins/
+```

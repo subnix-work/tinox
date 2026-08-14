@@ -10,38 +10,52 @@ Eclipse plugin that integrates the `tinox-lsp` language server.
 - F3 / Ctrl+Click → go to definition
 - Outline view → document symbols
 
-## Setup
+## Install (just want to use it)
 
-### 1. Install tinox-lsp
+**Prerequisite:** Eclipse IDE with [LSP4E](https://download.eclipse.org/lsp4e/releases/latest/) and [TM4E](https://download.eclipse.org/tm4e/releases/latest/) installed (`Help → Install New Software…`, work with those update sites — most Eclipse "for Java/C++/... Developers" packages already include both).
 
 ```bash
+# 1. Install tinox-lsp (shared by every editor under editors/):
 ../install-lsp.sh
-# Installs to ~/.cargo/bin/tinox-lsp -- shared by every editor under editors/
+
+# 2. Build the plugin JAR:
+./build.sh
 ```
 
-### 2. Load the plugin in Eclipse
+`build.sh` compiles against whatever Eclipse installation's bundle pool it
+finds (auto-detected; override with `ECLIPSE_PLUGINS_DIR` if it guesses
+wrong) and prints the resulting JAR's path, e.g. `dist/tinox.eclipse_1.0.0.<timestamp>.jar`.
 
-**Prerequisite:** Eclipse IDE for Plugin Development (≥ 2023-09) with PDE and LSP4E.
+**3. Install it** — copy that JAR into your Eclipse installation's `dropins/`
+folder and restart Eclipse:
 
-Install LSP4E if not already present:
-- Help → Install New Software
-- Work with: `https://download.eclipse.org/lsp4e/releases/latest/`
-- Install: "Language Server Protocol client for Eclipse"
+```bash
+cp dist/tinox.eclipse_*.jar <eclipse-install-dir>/dropins/
+```
 
-Import the plugin:
-1. File → Import → Existing Projects into Workspace
-2. Root directory: this directory (`editors/eclipse/tinox-eclipse`)
-3. Finish
+Not sure where that is? In Eclipse: `Help → About Eclipse IDE → Installation
+Details → Configuration` tab, look for `eclipse.home.location`.
 
-### 3. Start the plugin
+That's it — no importing the project, no "Run As → Eclipse Application".
+Open a `.tnx` file and the language server starts automatically. If it
+doesn't find `tinox-lsp` on its own: `Window → Preferences → Tinox`, set
+the path explicitly.
 
-1. Right-click the `tinox-eclipse` project → Run As → Eclipse Application
-2. In the new Eclipse window: create a new project, create a `*.tnx` file
-3. The language server starts automatically
+## Develop the plugin
 
-### 4. Configure the binary path
+If you're changing the plugin's own code (not just using it), work with it
+as a live PDE project instead of rebuilding+reinstalling the JAR every
+time:
 
-Window → Preferences → Tinox → set the path to the `tinox-lsp` binary
+1. File → Import → Existing Projects into Workspace → root directory:
+   this directory (`editors/eclipse/tinox-eclipse`)
+2. Right-click the `tinox-eclipse` project → Run As → Eclipse Application
+   — opens a second, nested Eclipse window running your in-progress
+   changes live
+3. In that window: create/open a `*.tnx` file — the language server
+   starts automatically
+4. `Window → Preferences → Tinox` to point at a specific `tinox-lsp`
+   binary if needed
 
 ## Project structure
 
