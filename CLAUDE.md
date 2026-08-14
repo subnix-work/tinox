@@ -1411,3 +1411,177 @@ from `tinox-lsp` itself; each editor plugin is just wiring.
   LSP-based extension's own entry, e.g. "JSON Language Server", as a
   sanity check that the mechanism itself is functioning) before
   re-testing completion.
+- **`editors/eclipse/build.sh`** (added after the user pointed out that
+  "install the plugin" originally meant "import a PDE project into
+  Eclipse and Run As Eclipse Application" -- real friction compared to
+  a normal Eclipse plugin install): builds a real, installable OSGi
+  bundle JAR from the command line, no Eclipse GUI/PDE Export wizard
+  needed. Auto-detects an Eclipse bundle pool to compile against --
+  verified live on this dev machine that an Eclipse-Installer
+  -provisioned install's actual bundle jars live in the SHARED pool at
+  `~/.p2/pool/plugins`, not the installation's own near-empty
+  `plugins/` directory (only 1 jar there); `ECLIPSE_PLUGINS_DIR`
+  overrides the guess. Compiles with `--release 17` (matching
+  `Bundle-RequiredExecutionEnvironment: JavaSE-17` in `MANIFEST.MF` --
+  the system `javac` here is Java 26, so an unqualified compile would
+  silently produce bytecode newer than what the manifest declares
+  supported) against a classpath of every jar in the pool (a real,
+  proper OSGi dependency resolution would only need the bundles listed
+  in `Require-Bundle`, but globbing the whole pool is simpler and
+  robust enough for a plugin this small). Substitutes a real build
+  timestamp for `MANIFEST.MF`'s checked-in `1.0.0.qualifier` PDE/Tycho
+  placeholder (`sed`), since a raw manual build has no Tycho build
+  process to fill that in itself. Verified (without launching Eclipse,
+  which needs the same live-desktop caution as the VS Code work above):
+  the produced JAR is a well-formed bundle (`META-INF/MANIFEST.MF` +
+  `plugin.xml` + `grammars/` + compiled `.class` files, matching
+  `build.properties`'s `bin.includes` exactly) and its class files are
+  genuinely Java 17 bytecode (`javap -verbose` -> `major version: 61`).
+  Actually dropping the jar into a running Eclipse's `dropins/` and
+  confirming it loads is the one step left to a real human, same
+  caveat as the VS Code extension's own verification note above.
+  **Found and fixed a real, pre-existing documentation gap while
+  writing this**: both `README.md` and `SETUP.md` only ever mentioned
+  LSP4E as a prerequisite, never TM4E -- but `MANIFEST.MF`'s
+  `Require-Bundle` has always required both (TM4E renders the grammar;
+  without it, syntax highlighting silently wouldn't have worked even
+  though nothing else would have visibly failed). Not something this
+  build.sh work introduced, just a gap noticed while reading
+  `Require-Bundle` closely enough to know what to check for on the
+  compile classpath -- fixed in both docs alongside this change.
+- **`File → Import → Tinox → Import Existing Tinox Project` wizard**
+  (`TinoxImportWizard`/`TinoxImportWizardPage`, `org.eclipse.ui.importWizards`)
+  imports a project in place (no file copy -- `newProjectDescription` +
+  `setLocation` + `create`/`open`, the same sequence "Import Existing
+  Projects into Workspace" uses structurally) from a picked
+  `tinox.toml`. `TinoxToml.parsePackageName` is a minimal line-scanning
+  `[package]` reader mirroring `pm.rs`'s own hand-rolled parser (no TOML
+  library dependency for one field). `src/` is required (matches
+  `pm.rs:1117-1121`'s own "no src/, no package" rule); `tests/` is
+  optional and rare in real Tinox projects (only `crates/tinox-core` has
+  one anywhere in this repo) -- the wizard must not require it.
+  `src/`/`tests/` get a real icon swap (not just a corner badge) via
+  `TinoxSourceFolderDecorator` using `IDecoration.REPLACE`, gated on a
+  new `TinoxProjectNature` (`org.eclipse.core.resources.natures`) so it
+  never fires outside actual Tinox projects -- the decorator itself
+  registers globally (no per-folder-name enablement exists in the
+  extension point), so that gate has to live in code, not XML. Icons
+  (`icons/source_folder.png`/`tests_folder.png`) are freshly generated
+  (ImageMagick), not copies of JDT's own art -- there's no
+  functional distinction to justify depending on JDT for this (Tinox
+  isn't Java, `IClasspathEntry` doesn't apply, and there's no
+  tinox-lsp/tooling concept of a "test source root" to hook into yet;
+  confirmed with the user this is meant to be visual/organizational
+  only for now). No new `Require-Bundle` entries needed -- `plugin.xml`
+  additions are all additive, `org.eclipse.core.resources`/
+  `org.eclipse.ui.ide` were already present. `icons/test_folder.png`
+  was renamed to `tests_folder.png` after discovering the root
+  `.gitignore`'s `test_*` rule (meant for excluded compiled test
+  binaries elsewhere in the repo) was silently matching it too --
+  more accurate anyway, since the real folder is named `tests`, not
+  `test`.
+- **A real bug, found only by the user actually dropping the JAR into a
+  real running Eclipse and checking the Error Log (build-time checks --
+  `javac`, `jar`, `unzip -l`, `javap` -- caught none of this, since
+  none of them parse `plugin.xml` as Eclipse itself does)**: the new
+  `importWizards`/`natures`/`decorators` extensions never showed up at
+  all -- not just the import wizard, EVERYTHING in `plugin.xml`
+  silently stopped registering (LSP, syntax highlighting, the Run
+  command, all of it), yet the bundle itself still showed up as
+  installed in `Installation Details -> Plug-ins`, giving no obvious
+  signal anything was wrong from that view alone. Root cause: one of
+  the new `<!-- -->` comments contained a bare `--` in its body (a
+  prose double-hyphen, this project's usual "aside" punctuation) --
+  which the XML spec forbids ANYWHERE inside a comment, not just at
+  its boundaries. Confirmed via the actual Error Log entry the user
+  found: `org.eclipse.equinox.registry` logs "Could not parse XML
+  contribution... Any contributed extensions and extension points will
+  be ignored" and fails the ENTIRE file's parse, not just the one
+  malformed comment -- a single stray `--` anywhere in `plugin.xml`
+  is a full-file outage, not a localized one. Fixed the comment, and
+  -- so this exact mistake can't silently ship again -- added an
+  `xmllint --noout plugin.xml` validation step to `build.sh` itself,
+  verified live to actually catch it (reintroduced the bug in a
+  throwaway copy, confirmed `xmllint` reports the exact line/column
+  and a non-zero exit; confirmed it passes clean on the real, fixed
+  file). Generalizes beyond this one mistake: `plugin.xml` is
+  hand-written XML with no other syntax check anywhere in this
+  project's tooling (Eclipse's own PDE editor would flag this
+  instantly, but nothing does when editing the file directly) --
+  `xmllint` is now the one thing standing between a typo here and a
+  silent full-plugin outage that only surfaces in a real user's Error
+  Log.
+- **A second, different real bug, found in the SAME live-testing
+  round, one step further**: with `plugin.xml` now well-formed, the
+  import wizard itself showed up correctly, but selecting a
+  `tinox.toml` triggered Eclipse's own "Marketplace solutions
+  available" dialog ("Your IDE is missing natures to properly support
+  your projects") naming `tinox.eclipse.tinoxNature` -- i.e. the
+  nature extension was well-formed XML but still wasn't actually
+  registering. `xmllint` only proves a file parses as XML, not that
+  its content matches a given extension point's SCHEMA -- a distinct,
+  narrower kind of correctness. Root cause: wrote
+  `<runtime id="..." class="..."/>` (attributes directly on
+  `<runtime>`) instead of the real
+  `org.eclipse.core.resources.natures` shape, confirmed by grepping
+  three real, already-installed plugin.xmls in the local bundle pool
+  (JDT's `javanature`, m2e's `maven2Nature`, PDE's own
+  `PluginProject`/`FeatureProject`/etc.) -- all three, with zero
+  exceptions, use `id`/`name` on the `<extension>` element itself,
+  then a nested `<runtime><run class="..."/></runtime>`, never
+  attributes directly on `<runtime>`. Cross-checked the OTHER two new
+  extension points the same way (grepped 8 real decorator
+  declarations, 2 real import-wizard declarations, across
+  debug/JDT/EGit/Buildship/m2e/Mylyn/EclEmma) while fixing this, and
+  found the decorator was ALSO missing a `location` attribute that
+  literally every single real-world example includes (`TOP_LEFT`/
+  `TOP_RIGHT`/`BOTTOM_RIGHT`) even for class-based lightweight
+  decorators that pick their own `IDecoration` position
+  programmatically -- added defensively to match universal real-world
+  convention rather than trusting that it's "probably optional" from
+  a schema default I hadn't actually verified. Lesson for editing
+  `plugin.xml` again: don't trust memory of a given extension point's
+  exact attribute shape, even when the XML itself is well-formed --
+  grep a handful of real, already-installed plugin.xmls for the same
+  extension point first (`~/.p2/pool/plugins/*.jar` on this dev
+  machine has hundreds of real examples to check against), the same
+  way this repo's own CLAUDE.md philosophy already insists on
+  verifying against real, independent systems rather than
+  self-consistent assumptions.
+- **A third real bug, found by the user importing a genuine real-world
+  project (`~/git/demo`) through the now-working import wizard above --
+  this one in `tinox-typecheck` itself, not in the plugin, and affecting
+  BOTH editor integrations equally (Eclipse and VS Code, since both go
+  through the same `tinox-lsp` binary)**: a plain `@JsonSerializable
+  class Person { ... }` and its `PersonController` (`@PostParam`/
+  auto-serialize REST handlers) were flagged with `unknown annotation:
+  @JsonSerializable` and cascading `@PostParam`/return-type errors --
+  despite compiling cleanly with the real `tinox` compiler. Root cause:
+  `tinox-lsp`'s `typecheck_with_prelude` (`crates/tinox-typecheck/src/
+  lib.rs`) deliberately keeps the file being edited and its stdlib
+  "preludes" as SEPARATE `SourceFile`s (registering each prelude's decls
+  via `register_declarations` before checking the real source), unlike
+  the real compiler's `compile_file` pipeline, which fully merges every
+  import into one `decls` list via `resolve_imports` before typechecking
+  ever runs. `annotations::validate_annotations` (`crates/tinox-
+  typecheck/src/annotations.rs`) documented and relied on exactly that
+  merged-list assumption ("imports are already merged into source.decls
+  by this point") for its two registration passes (custom `@annotation`
+  classes, `@JsonSerializable` class names) -- true for the compiler,
+  false for the LSP's split model, so a custom annotation declared in a
+  prelude (`@JsonSerializable` itself is declared via `@annotation class
+  JsonSerializable {}` inside `tinox.core.json`'s own
+  `JsonSerializable.tnx`) was invisible to any file that merely imported
+  it. Fixed with a new `TypeChecker.prelude_decls: Vec<Decl>` field,
+  accumulated by `register_declarations` on every call (harmlessly
+  redundant for the compiler's own single, already-merged call; the
+  actual fix for the LSP's multiple prelude-then-source calls) and
+  threaded into `validate_annotations` as a second `extra_decls`
+  parameter, scanned by both registration passes alongside `source.decls`
+  itself. Verified: `cargo test -p tinox-typecheck` (367 tests) still
+  green, and confirmed live against the real `~/git/demo` project after
+  rebuilding+reinstalling `tinox-lsp` (`mv` over the running binary
+  rather than `cp`, since Eclipse's LSP4E immediately respawns a killed
+  `tinox-lsp` process, making the target "busy" for a `cp`-based
+  overwrite -- `mv`'s atomic rename works even while the old binary is
+  still running).

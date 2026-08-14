@@ -1644,13 +1644,29 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
     }
 }
 
+/// `extra_decls` covers declarations that are visible to `source` but not
+/// physically present in `source.decls` -- true for tinox-lsp's
+/// `typecheck_with_prelude`, which keeps the main file and its stdlib
+/// preludes as separate `SourceFile`s instead of merging them the way the
+/// real compiler's `resolve_imports` does before typechecking ever runs.
+/// Without this, a custom annotation declared in a prelude (e.g.
+/// `@JsonSerializable`, itself declared via `@annotation class
+/// JsonSerializable {}` inside `tinox.core.json`'s own
+/// `JsonSerializable.tnx`) reads as "unknown annotation" for any file that
+/// merely imports it, since the registration passes below never saw it.
+/// The real compiler's own call site passes an empty slice here -- its
+/// `source.decls` is already fully merged, so there's nothing extra to add.
 pub fn validate_annotations(
     source: &tinox_parser::SourceFile,
+    extra_decls: &[tinox_parser::Decl],
 ) -> Vec<Error> {
     let mut processor = AnnotationProcessor::new();
 
     // First pass: register all @annotation-class definitions so they are valid in the second pass
     for decl in &source.decls {
+        collect_custom_annotation_classes(&decl.node, &mut processor);
+    }
+    for decl in extra_decls {
         collect_custom_annotation_classes(&decl.node, &mut processor);
     }
 
@@ -1660,6 +1676,7 @@ pub fn validate_annotations(
     // so this also sees classes defined in other files.
     let mut json_serializable: HashSet<String> = HashSet::new();
     collect_json_serializable_classes(&source.decls, &mut json_serializable);
+    collect_json_serializable_classes(extra_decls, &mut json_serializable);
 
     let mut errors = Vec::new();
     for decl in &source.decls {
@@ -1698,7 +1715,7 @@ mod tests {
     }
 
     fn valid(src: &str) -> Vec<Error> {
-        validate_annotations(&parse(src))
+        validate_annotations(&parse(src), &[])
     }
 
     // --- validate: unknown annotation ---
