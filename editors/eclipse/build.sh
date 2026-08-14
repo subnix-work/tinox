@@ -61,6 +61,22 @@ for b in $REQUIRED_BUNDLES; do
     fi
 done
 
+# --- Validate plugin.xml ----------------------------------------------------
+# A real bug hit live: a malformed XML comment (a bare "--" inside a
+# <!-- --> body, which the XML spec forbids anywhere in a comment, not
+# just at its boundaries) silently disabled the ENTIRE plugin.xml at
+# Eclipse's OWN parse time -- every extension point in the file, not
+# just the one near the mistake -- with no signal anywhere in this
+# script (javac/jar don't parse plugin.xml at all) or in Eclipse's UI
+# beyond a buried Error Log entry the user had to go find. Catch this
+# class of mistake here instead, before it ever reaches a real Eclipse
+# install.
+if command -v xmllint >/dev/null 2>&1; then
+    xmllint --noout "$PLUGIN_DIR/plugin.xml"
+else
+    echo "warning: xmllint not found, skipping plugin.xml validation" >&2
+fi
+
 # --- Compile ---------------------------------------------------------------
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/bin"

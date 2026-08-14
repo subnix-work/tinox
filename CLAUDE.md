@@ -1466,7 +1466,7 @@ from `tinox-lsp` itself; each editor plugin is just wiring.
   never fires outside actual Tinox projects -- the decorator itself
   registers globally (no per-folder-name enablement exists in the
   extension point), so that gate has to live in code, not XML. Icons
-  (`icons/source_folder.png`/`test_folder.png`) are freshly generated
+  (`icons/source_folder.png`/`tests_folder.png`) are freshly generated
   (ImageMagick), not copies of JDT's own art -- there's no
   functional distinction to justify depending on JDT for this (Tinox
   isn't Java, `IClasspathEntry` doesn't apply, and there's no
@@ -1474,4 +1474,40 @@ from `tinox-lsp` itself; each editor plugin is just wiring.
   confirmed with the user this is meant to be visual/organizational
   only for now). No new `Require-Bundle` entries needed -- `plugin.xml`
   additions are all additive, `org.eclipse.core.resources`/
-  `org.eclipse.ui.ide` were already present.
+  `org.eclipse.ui.ide` were already present. `icons/test_folder.png`
+  was renamed to `tests_folder.png` after discovering the root
+  `.gitignore`'s `test_*` rule (meant for excluded compiled test
+  binaries elsewhere in the repo) was silently matching it too --
+  more accurate anyway, since the real folder is named `tests`, not
+  `test`.
+- **A real bug, found only by the user actually dropping the JAR into a
+  real running Eclipse and checking the Error Log (build-time checks --
+  `javac`, `jar`, `unzip -l`, `javap` -- caught none of this, since
+  none of them parse `plugin.xml` as Eclipse itself does)**: the new
+  `importWizards`/`natures`/`decorators` extensions never showed up at
+  all -- not just the import wizard, EVERYTHING in `plugin.xml`
+  silently stopped registering (LSP, syntax highlighting, the Run
+  command, all of it), yet the bundle itself still showed up as
+  installed in `Installation Details -> Plug-ins`, giving no obvious
+  signal anything was wrong from that view alone. Root cause: one of
+  the new `<!-- -->` comments contained a bare `--` in its body (a
+  prose double-hyphen, this project's usual "aside" punctuation) --
+  which the XML spec forbids ANYWHERE inside a comment, not just at
+  its boundaries. Confirmed via the actual Error Log entry the user
+  found: `org.eclipse.equinox.registry` logs "Could not parse XML
+  contribution... Any contributed extensions and extension points will
+  be ignored" and fails the ENTIRE file's parse, not just the one
+  malformed comment -- a single stray `--` anywhere in `plugin.xml`
+  is a full-file outage, not a localized one. Fixed the comment, and
+  -- so this exact mistake can't silently ship again -- added an
+  `xmllint --noout plugin.xml` validation step to `build.sh` itself,
+  verified live to actually catch it (reintroduced the bug in a
+  throwaway copy, confirmed `xmllint` reports the exact line/column
+  and a non-zero exit; confirmed it passes clean on the real, fixed
+  file). Generalizes beyond this one mistake: `plugin.xml` is
+  hand-written XML with no other syntax check anywhere in this
+  project's tooling (Eclipse's own PDE editor would flag this
+  instantly, but nothing does when editing the file directly) --
+  `xmllint` is now the one thing standing between a typo here and a
+  silent full-plugin outage that only surfaces in a real user's Error
+  Log.

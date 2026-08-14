@@ -94,7 +94,7 @@
     </wizard>
   </extension>
 
-  <!-- Marks a project as a Tinox project (no build behavior of its own --
+  <!-- Marks a project as a Tinox project (no build behavior of its own,
        see TinoxProjectNature's doc comment) so the source-folder
        decorator below can gate itself on it. -->
   <extension point="org.eclipse.core.resources.natures">
