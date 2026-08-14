@@ -84,6 +84,7 @@ sed "s/1\\.0\\.0\\.qualifier/${VERSION}/" "$PLUGIN_DIR/META-INF/MANIFEST.MF" \
     > "$BUILD_DIR/stage/META-INF/MANIFEST.MF"
 cp "$PLUGIN_DIR/plugin.xml" "$BUILD_DIR/stage/"
 cp -r "$PLUGIN_DIR/grammars" "$BUILD_DIR/stage/"
+cp -r "$PLUGIN_DIR/icons" "$BUILD_DIR/stage/"
 cp -r "$BUILD_DIR/bin/." "$BUILD_DIR/stage/"
 
 mkdir -p "$DIST_DIR"

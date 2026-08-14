@@ -2,13 +2,19 @@
 
 Eclipse plugin that integrates the `tinox-lsp` language server.
 
-## Features (via LSP)
+## Features
 
+Via LSP:
 - Error underlining (diagnostics)
 - Hover → types and function signatures
 - Ctrl+Space → autocomplete
 - F3 / Ctrl+Click → go to definition
 - Outline view → document symbols
+
+Project import:
+- `File → Import → Tinox → Import Existing Tinox Project` — pick a
+  `tinox.toml`, get a real project pointed at that directory (no file
+  copy), with `src/`/`tests/` shown with a distinct source-folder icon
 
 ## Install (just want to use it)
 
@@ -41,6 +47,16 @@ Open a `.tnx` file and the language server starts automatically. If it
 doesn't find `tinox-lsp` on its own: `Window → Preferences → Tinox`, set
 the path explicitly.
 
+## Importing a project
+
+`File → Import → Tinox → Import Existing Tinox Project` — pick the
+project's `tinox.toml`. The project name is pre-filled from
+`[package]` `name` in the TOML (editable); the directory is imported in
+place, no files are copied or moved. `src/` is required (matches
+`tinox`'s own rule that a project always has one); `tests/` is picked
+up automatically if present, but isn't required — most real Tinox
+projects don't have one. Both get a distinct folder icon once imported.
+
 ## Develop the plugin
 
 If you're changing the plugin's own code (not just using it), work with it
@@ -64,9 +80,17 @@ tinox-eclipse/
 ├── META-INF/MANIFEST.MF       # OSGi bundle manifest
 ├── plugin.xml                 # Extension points
 ├── build.properties
+├── grammars/tinox.tmLanguage.json  # Syntax highlighting
+├── icons/                          # Source-folder icons
 └── src/tinox/eclipse/
     ├── Activator.java                  # Plugin lifecycle
     ├── TinoxLanguageServer.java        # LSP server process
     ├── TinoxPreferencePage.java        # Settings UI
-    └── TinoxPreferenceInitializer.java # Default values
+    ├── TinoxPreferenceInitializer.java # Default values
+    ├── RunTinoxHandler.java            # "Run Tinox File" command
+    ├── TinoxImportWizard.java          # Import Existing Tinox Project
+    ├── TinoxImportWizardPage.java      # ...its one page
+    ├── TinoxProjectNature.java         # Marks a project as Tinox
+    ├── TinoxSourceFolderDecorator.java # src/ + tests/ icon
+    └── TinoxToml.java                  # Minimal tinox.toml reader
 ```

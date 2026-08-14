@@ -1449,3 +1449,29 @@ from `tinox-lsp` itself; each editor plugin is just wiring.
   build.sh work introduced, just a gap noticed while reading
   `Require-Bundle` closely enough to know what to check for on the
   compile classpath -- fixed in both docs alongside this change.
+- **`File → Import → Tinox → Import Existing Tinox Project` wizard**
+  (`TinoxImportWizard`/`TinoxImportWizardPage`, `org.eclipse.ui.importWizards`)
+  imports a project in place (no file copy -- `newProjectDescription` +
+  `setLocation` + `create`/`open`, the same sequence "Import Existing
+  Projects into Workspace" uses structurally) from a picked
+  `tinox.toml`. `TinoxToml.parsePackageName` is a minimal line-scanning
+  `[package]` reader mirroring `pm.rs`'s own hand-rolled parser (no TOML
+  library dependency for one field). `src/` is required (matches
+  `pm.rs:1117-1121`'s own "no src/, no package" rule); `tests/` is
+  optional and rare in real Tinox projects (only `crates/tinox-core` has
+  one anywhere in this repo) -- the wizard must not require it.
+  `src/`/`tests/` get a real icon swap (not just a corner badge) via
+  `TinoxSourceFolderDecorator` using `IDecoration.REPLACE`, gated on a
+  new `TinoxProjectNature` (`org.eclipse.core.resources.natures`) so it
+  never fires outside actual Tinox projects -- the decorator itself
+  registers globally (no per-folder-name enablement exists in the
+  extension point), so that gate has to live in code, not XML. Icons
+  (`icons/source_folder.png`/`test_folder.png`) are freshly generated
+  (ImageMagick), not copies of JDT's own art -- there's no
+  functional distinction to justify depending on JDT for this (Tinox
+  isn't Java, `IClasspathEntry` doesn't apply, and there's no
+  tinox-lsp/tooling concept of a "test source root" to hook into yet;
+  confirmed with the user this is meant to be visual/organizational
+  only for now). No new `Require-Bundle` entries needed -- `plugin.xml`
+  additions are all additive, `org.eclipse.core.resources`/
+  `org.eclipse.ui.ide` were already present.

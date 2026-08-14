@@ -82,4 +82,37 @@
     </grammar>
   </extension>
 
+  <!-- File -> Import -> Tinox -> Import Existing Tinox Project -->
+  <extension point="org.eclipse.ui.importWizards">
+    <category id="tinox.eclipse.importCategory" name="Tinox"/>
+    <wizard
+      id="tinox.eclipse.importWizard"
+      class="tinox.eclipse.TinoxImportWizard"
+      category="tinox.eclipse.importCategory"
+      name="Import Existing Tinox Project">
+      <description>Import a Tinox project from an existing tinox.toml</description>
+    </wizard>
+  </extension>
+
+  <!-- Marks a project as a Tinox project (no build behavior of its own --
+       see TinoxProjectNature's doc comment) so the source-folder
+       decorator below can gate itself on it. -->
+  <extension point="org.eclipse.core.resources.natures">
+    <runtime id="tinox.eclipse.tinoxNature" class="tinox.eclipse.TinoxProjectNature"/>
+  </extension>
+
+  <!-- Distinct icon for src/ and tests/ under a Tinox project -->
+  <extension point="org.eclipse.ui.decorators">
+    <decorator
+      id="tinox.eclipse.sourceFolderDecorator"
+      class="tinox.eclipse.TinoxSourceFolderDecorator"
+      label="Tinox Source Folders"
+      lightweight="true"
+      state="true">
+      <enablement>
+        <objectClass name="org.eclipse.core.resources.IFolder"/>
+      </enablement>
+    </decorator>
+  </extension>
+
 </plugin>
