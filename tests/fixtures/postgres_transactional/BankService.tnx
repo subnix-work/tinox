@@ -1,0 +1,43 @@
+import tinox.core.db;
+import Account;
+
+class BankService
+{
+    // @Transactional (issue #191): both saves below must land atomically --
+    // either the whole transfer commits, or (if the sender ends up
+    // overdrawn) neither balance change survives. Verified end-to-end
+    // against a real Postgres, independently of this program's own stdout,
+    // by crates/tinox/tests/postgres_transactional.rs.
+    @Transactional
+    fn transfer(fromId: Int64, toId: Int64, amount: Int64) -> Nothing
+    {
+        let from: Account = DB.of(Account).filter(a => a.id == fromId).first();
+        let to: Account = DB.of(Account).filter(a => a.id == toId).first();
+        from.balance = from.balance - amount;
+        to.balance = to.balance + amount;
+        DB.of(Account).save(from);
+        DB.of(Account).save(to);
+        if (from.balance < 0) {
+            throw "insufficient funds";
+        }
+    }
+
+    // A real, previously-undiscovered bug: `return` statements emit their
+    // `ret` directly with no awareness of gen_transactional_wrapper's own
+    // try/catch-style structure around them (the exact same way a plain
+    // `try { return x; } finally { ... } ` already skips its finally
+    // today) -- so a method ending in an explicit `return` never actually
+    // committed, even on success. `transfer` above didn't catch this
+    // because Nothing-returning methods with no explicit `return` don't
+    // exercise the bug at all. Fixed via GenCtx.transactional_commit,
+    // consulted directly by StmtKind::Return's own codegen. This method
+    // exists specifically to keep that fix covered by a real test.
+    @Transactional
+    fn getBalanceAndTouch(accountId: Int64) -> Int64
+    {
+        let acct: Account = DB.of(Account).filter(a => a.id == accountId).first();
+        acct.balance = acct.balance + 1;
+        DB.of(Account).save(acct);
+        return acct.balance;
+    }
+}

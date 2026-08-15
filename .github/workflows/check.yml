@@ -9,7 +9,13 @@
 # Toolchain: the Tinox compiler invokes llc/opt (llvm), cc (clang/gcc)
 # and links against Boehm-GC (libgc-dev); the ORM e2e tests need the
 # sqlite3 CLI (fixtures) and libsqlite3-dev (-lsqlite3), otherwise
-# they'd be skipped.
+# they'd be skipped. crates/tinox/tests/postgres_transactional.rs (issue
+# #191, @Transactional) needs libpq-dev to compile the postgres runtime.c
+# driver plus the psql CLI for its own independent verification query --
+# it starts its own Postgres via `docker run` (ubuntu-latest ships docker
+# preinstalled, no separate `services:` container needed) and SKIPs
+# gracefully if docker or psql are missing, same pattern as the sqlite3
+# check above.
 #
 # Core/extended stdlib split (see CLAUDE.md): examples/e2e/dogfood cases
 # importing an extended-tier module (e.g. tinox.core.json, tinox.core.rest)
@@ -60,7 +66,7 @@ jobs:
       - name: Install system toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libgc-dev libsqlite3-dev sqlite3
+          sudo apt-get install -y clang llvm libgc-dev libsqlite3-dev sqlite3 libpq-dev postgresql-client
 
       - name: llc/opt available?
         run: |

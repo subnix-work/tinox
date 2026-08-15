@@ -1585,3 +1585,159 @@ from `tinox-lsp` itself; each editor plugin is just wiring.
   `tinox-lsp` process, making the target "busy" for a `cp`-based
   overwrite -- `mv`'s atomic rename works even while the old binary is
   still running).
+
+## Postgres Connection Pool + `@Transactional` (issue #191, since 2026-08-14)
+
+Real database transaction handling, replacing what used to be a single
+global DB connection shared by every thread for the whole process
+lifetime. Postgres only in v1 (deliberate scope, tracked as follow-up
+for SQLite/MySQL) — the ORM itself (`tinox.core.db`: `@Entity`/`@Table`/
+`@Column`/`@Id`/`@GeneratedValue`, `DB.of(Class).filter()...`) is
+unchanged and already existed; this adds real pooling and a
+`@Transactional` annotation underneath it.
+
+- **The old model, found while investigating the user's ask for "a proper
+  driver layer and proper transaction handling"**: `runtime.c` opened ONE
+  connection per process at startup (`tinox_db_connect`, called from an
+  LLVM `@llvm.global_ctors` entry) and every thread funneled every query
+  through it — Postgres/MySQL serialized access with a mutex (`Bug 103`),
+  SQLite serialized through its statement cache (`Bug 102`). `[database]
+  pool` in `tinox.toml` was parsed (`DbConfig.pool` in `crates/tinox/src/
+  main.rs`) but was `#[allow(dead_code)]` — never wired to anything. No
+  `BEGIN`/`COMMIT`/`ROLLBACK` existed anywhere in the runtime.
+- **New driver-layer C ABI, deliberately small and uniform across all
+  three drivers** (`runtime/runtime.c`): `tinox_db_pool_init(url,
+  pool_size)`, `tinox_db_acquire_stmt_conn()` /
+  `tinox_db_release_stmt_conn(conn)`, `tinox_db_tx_begin()` /
+  `tinox_db_tx_commit()` / `tinox_db_tx_rollback()` /
+  `tinox_db_tx_active()` — replacing `tinox_db_connect`/`tinox_db_get_conn`
+  everywhere, for every driver, not just Postgres. This uniform shape is
+  the "generic driver layer" part of the ask: adding real pooling/
+  transactions for SQLite/MySQL later means implementing these same
+  functions for that driver, not an architecture change.
+  - **Postgres**: a real fixed-size pool (`TINOX_DB_POOL_MAX = 64`,
+    eagerly connected at `tinox_db_pool_init` so a broken DB fails loudly
+    at startup, not on the first lazy query), free-list + mutex/condvar
+    for acquire/release, and a `static __thread PGconn*` holding the
+    calling thread's active transaction connection (if any) — deliberately
+    a plain foreign pointer, not something needing
+    `tinox_gc_register_thread_roots`, since a `PGconn*` from libpq's own
+    malloc is never GC memory (the exact gap that helper exists for only
+    applies to GC-managed pointers reachable solely via `__thread`
+    storage). `tinox_db_exec`'s old `_tinox_db_mu` mutex (Bug 103's fix)
+    is gone — it existed because every thread shared the SAME connection;
+    the pool now guarantees each checked-out connection is exclusively
+    owned by one thread until released/committed/rolled back, so the
+    mutex would only have re-serialized the pool it was meant to
+    parallelize.
+  - **SQLite/MySQL**: kept on their exact pre-#191 single-connection,
+    auto-commit model, completely unchanged — `tinox_db_pool_init` for
+    these drivers just calls the old connect logic and ignores
+    `pool_size`. `tinox_db_tx_begin/commit/rollback` are stubs that
+    `fprintf`+`exit(1)` with a clear "not supported for this driver"
+    message rather than silently no-opping — defense in depth for the
+    hard compile-time check below, not the primary enforcement mechanism.
+- **`[database] pool` now actually does something**: default 5 when
+  omitted (was silently 1 before, back when the field was dead code and
+  every driver had exactly one connection regardless of what it said); an
+  unparseable value is now a hard compile error (`main.rs`'s
+  `read_database_config`) instead of a silently-swallowed fallback to 1 —
+  a newly load-bearing field deserves this project's usual "no silent
+  garbage" treatment, unlike when it did nothing.
+- **`@Transactional`** (class-level or method-level, same
+  class-overrides/extends-to-methods precedence pattern as `@Auth`/`@Log`;
+  registered in `tinox-typecheck/src/annotations.rs` exactly like every
+  other built-in annotation, arity 0, valid on `Method`/`Class`).
+  Propagation is `REQUIRED` (Spring's default, no savepoints in v1): a
+  transactional method calls `tinox_db_tx_active()` at entry — if a
+  transaction is already open on this thread (a nested `@Transactional`
+  call), it joins it instead of nesting a second `BEGIN`; only the
+  outermost call actually begins/commits/rolls back. Any exception
+  propagating out of the method's body rolls back (and always re-throws —
+  `@Transactional` never swallows an error, same as a `try` with no catch
+  clauses); a normal return commits.
+  - **Codegen (`gen_transactional_wrapper`, `tinox-codegen/src/
+    codegen.rs`) reuses the SAME low-level try/catch primitives
+    `gen_try_stmt` uses** (an `alloca i64` error slot, `ctx.error_catch`
+    redirect, `emit_post_stmt_throw_check` after the body,
+    `emit_unwind_defers_to`/`emit_unwind_defers` + `emit_ret_default` for
+    the rethrow) rather than inventing new unwinding machinery — the
+    difference is a fixed BEGIN/COMMIT/ROLLBACK action (gated on an
+    `i1` "do I own this transaction" flag) instead of user-written catch/
+    finally blocks. Wired into `gen_class_method` as an alternative to a
+    plain `gen_stmt_body` call, gated on a new `transactional_methods:
+    HashSet<(String, String)>` populated by annotation processing exactly
+    like the existing `inline_methods` set.
+  - **Postgres-only is a HARD compile error, not a silent ignore**,
+    checked in `compile_file` (`main.rs`) right after `ann_result` is
+    computed (before it's moved into `set_annotation_info` further down —
+    a real move-before-use bug hit once while placing this check near the
+    `db_pool_size`/`db_url` wiring further down the function, fixed by
+    checking earlier instead of cloning): any `@Transactional` method with
+    `[database] driver` unset or not `"postgres"` fails the build with a
+    message naming the offending class/method, before codegen ever runs.
+  - **ORM codegen (`gen_orm_query`/`gen_orm_save_delete`) already had
+    exactly one connection-acquisition call site each** (`tinox_db_get_conn`,
+    now `tinox_db_acquire_stmt_conn`) — renaming those two call sites and
+    adding a matching `tinox_db_release_stmt_conn` at every exit path (3
+    in `gen_orm_query`'s count/first/list branches, 2 in
+    `gen_orm_save_delete`'s delete/save-done paths) was the entire ORM-side
+    change. No other codegen changes were needed: a statement issued
+    outside any `@Transactional` method transparently gets a
+    fresh-pool-connection-per-statement (auto-commit, unchanged behavior),
+    one issued inside one transparently reuses the TLS-bound transaction
+    connection, purely because `tinox_db_acquire_stmt_conn` makes that
+    decision internally.
+- **Verified against a REAL Postgres, not a simulated/mocked driver**
+  (`crates/tinox/tests/postgres_transactional.rs`, this project's
+  established "verify against real, independent systems" rule) — starts
+  its own `postgres:16-alpine` via `docker run -P` (dynamic host port,
+  same "don't hardcode a literal port" convention the e2e fixtures already
+  use), compiles+runs `tests/fixtures/postgres_transactional/` (an
+  `Account` entity + a `BankService.transfer` method doing two `save()`
+  calls inside one `@Transactional`, throwing if the sender would go
+  negative), then verifies the FINAL row state with a separate `psql`
+  query — independent of the compiled program's own stdout, the same
+  "don't just trust the system under test's own report of what it did"
+  principle bug 70/71 established. Confirms both directions: a successful
+  transfer's two `save()`s both commit, and a failing transfer's two
+  `save()`s are BOTH rolled back (not just the one nearest the `throw`).
+  Re-run 3× to rule out flakiness (real docker/network I/O); SKIPs
+  gracefully if `docker`/`psql` aren't installed, matching `e2e.rs`'s own
+  sqlite3-not-installed SKIP. CI's `check.yml` installs `libpq-dev`
+  (compiles the driver) and `postgresql-client` (the `psql` CLI) so this
+  test actually runs there rather than silently skipping.
+- **A real, serious bug found only by using the feature for real work**
+  (building a layered demo app in a separate project, not part of this
+  repo's own test suite): `@Transactional` methods that end in an
+  explicit `return` never actually committed — found live when a
+  Postgres-backed `PersonService.createPerson` returned a real,
+  successfully-inserted row over HTTP, yet a follow-up `GET` for that same
+  id came back 404, and `psql` confirmed the row was never actually
+  there. Root cause: `StmtKind::Return`'s codegen emits its `ret`
+  instruction directly with zero awareness of `gen_transactional_wrapper`'s
+  own try/catch-style structure around it — the exact same gap a plain
+  `try { return x; } finally { ... }` already has today (confirmed with a
+  throwaway repro: the `finally` block's `println` never printed). That
+  general `try`/`finally` bug is real but deliberately left unfixed here
+  (a separate, pre-existing issue, out of this feature's scope, tracked
+  as issue #193) — but
+  unacceptable for `@Transactional` specifically, since virtually every
+  real method ends with an explicit `return`. Fixed with a new
+  `GenCtx.transactional_commit: Option<String>` field (the owning
+  transaction's `i1` "do I own this" alloca slot), set for the duration of
+  an `@Transactional` method's body and consulted directly by
+  `StmtKind::Return`'s own codegen (`emit_transactional_commit_before_return`,
+  called right before every `ret` it emits) — correctly fires for a
+  `return` at any nesting depth inside the method body, not just a
+  top-level one. `postgres_transactional.rs`'s fixture gained a second
+  `@Transactional` method (`getBalanceAndTouch`, ending in `return
+  acct.balance;`) specifically to keep this covered by a real test — the
+  original `transfer` method didn't catch it because a `Nothing`-returning
+  method with no explicit `return` never exercised the bug at all.
+- **Explicitly out of scope for v1** (see issue #191): SQLite/MySQL
+  pooling and transactions, savepoints / nested propagation modes other
+  than `REQUIRED`, and a manual (non-annotation) transaction API. Also
+  pre-existing, not caused by this work: `docs.html`/`docs_en.html` have
+  no `tinox.core.db` module section at all yet (unlike every other stdlib
+  module) — filling that gap is a separate, still-open task.
