@@ -30,6 +30,10 @@ const EMBEDDED_STDLIB: &[(&str, &str)] = &[
         include_str!("../../tinox-core/tinox/core/collections/Queue.tnx"),
         include_str!("../../tinox-core/tinox/core/collections/Stack.tnx"),
     )),
+    ("db",            concat!(
+        include_str!("../../tinox-core-ext/db/tinox/core/db/DB.tnx"),
+        include_str!("../../tinox-core-ext/db/tinox/core/db/EntityQuery.tnx"),
+    )),
     ("env",           include_str!("../../tinox-core/tinox/core/env/Env.tnx")),
     ("fmt",           include_str!("../../tinox-core/tinox/core/fmt/Fmt.tnx")),
     ("fs",            include_str!("../../tinox-core/tinox/core/fs/Fs.tnx")),
