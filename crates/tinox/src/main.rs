@@ -3220,6 +3220,34 @@ fn resolve_import_target(
     if let Some(p) = resolve_module_paths(base_dir, &rel_file, &rel_dir)? {
         return Ok((p, ImportOrigin::Local));
     }
+    // Fallback: relative to the nearest project root's src/, tests/, or the
+    // manifest dir itself (the same three candidates issue #185's own
+    // namespace-mirroring check already treats as valid roots) instead of
+    // the importing file's own directory. Needed for a full dotted path to
+    // reach a DIFFERENT namespace-mirrored directory from anywhere in the
+    // project, not just from the entry file itself: a project-local import
+    // resolves relative to the importing file's own directory (branch
+    // above), which means a plain sibling import (`import PersonDao;` from
+    // within the same directory) works from anywhere, but a full dotted
+    // path (`import demo.model.Person;`) written OUTSIDE the entry file
+    // has no valid relative-to-self resolution at all once that file lives
+    // more than one level deep — confirmed live via the external `demo`
+    // project (issue #194's own motivating example) once Phase 1 made the
+    // import mandatory: `demo.dao.PersonDaoImpl` genuinely could not
+    // express any working import for `demo.model.Person`. Only tried after
+    // the direct relative-to-self lookup already failed, so this is purely
+    // additive — it can only resolve imports that previously errored, never
+    // change one that already worked.
+    if let Some(root) = pm::find_project_root_from(base_dir) {
+        for candidate_root in [root.join("src"), root.join("tests"), root.clone()] {
+            if candidate_root == base_dir {
+                continue;
+            }
+            if let Some(p) = resolve_module_paths(&candidate_root, &rel_file, &rel_dir)? {
+                return Ok((p, ImportOrigin::Local));
+            }
+        }
+    }
     if let Some(p) = resolve_in_dep_dirs(dep_dirs, &rel_file, &rel_dir)? {
         return Ok((p, ImportOrigin::External));
     }
@@ -3557,6 +3585,20 @@ fn check_explicit_imports(
 
         if let Err(bag) = tinox_typecheck::typecheck_with_prelude(&cache[&path], &preludes) {
             for err in bag.errors {
+                // "missing return statement" is a real, independent
+                // typechecker gap (return-completeness analysis doesn't
+                // look inside try/catch bodies, confirmed unrelated to
+                // imports/namespaces — found live via the external `demo`
+                // project) with nothing to do with import visibility.
+                // Reporting it here, wrapped in this function's own
+                // "add the missing `import`" trailer, would be actively
+                // misleading — skip it and let the REAL compile pipeline's
+                // own typecheck pass (which runs right after this function
+                // returns Ok, on the fully merged whole-program AST) catch
+                // it properly, with its own accurate error instead.
+                if err.message == "missing return statement" {
+                    continue;
+                }
                 violations.push(format!(
                     "{}:{}: {}",
                     path.display(),
