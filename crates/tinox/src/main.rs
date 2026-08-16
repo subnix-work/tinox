@@ -55,6 +55,8 @@ fn run() {
         }
         "add"     => pm::cmd_add(&args[2..]),
         "package" => pm::cmd_package(),
+        "publish" => pm::cmd_publish(&args[2..]),
+        "search"  => pm::cmd_search(&args[2..]),
         "help" | "--help" | "-h" => print_help(),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
@@ -85,6 +87,8 @@ fn print_help() {
     println!("  tinox install --update     Re-pin tinox.lock instead of verifying against it");
     println!("  tinox add <g> <a> <v> <u>  Add a dependency and install it");
     println!("  tinox package              Pack src/ into <name>-<version>.tar.gz");
+    println!("  tinox publish              Pack and upload to a registry (needs [package] group + TINOX_CENTRAL_ADMIN_KEY)");
+    println!("  tinox search <query>       Search a registry's package catalog");
     println!("  tinox help                 Show this help message");
 }
 
