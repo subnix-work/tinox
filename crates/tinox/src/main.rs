@@ -2860,6 +2860,58 @@ fn collect_namespaced_type_decls(decls: &[tinox_parser::Decl]) -> Vec<(Vec<Strin
 /// content this check has no business re-validating in the first place
 /// (there's nothing a local compile error would let anyone fix); only
 /// this project's OWN source is in scope.
+/// Every distinct namespace path (as segments) any top-level declaration in
+/// `decls` was declared under — issue #194 Phase 2's own notion of "this
+/// file's namespace(s)" (at most one in practice, given the one-type-per-
+/// file convention, but handled generally). Empty for the common case (no
+/// `namespace {}` block at all), which is what keeps Phase 2 a zero-cost
+/// no-op for the vast majority of project-local code (see issue #194's own
+/// "0% adoption in project-local code" blast-radius finding).
+fn own_namespace_paths(decls: &[tinox_parser::Decl]) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for (segs, _name) in collect_namespaced_type_decls(decls) {
+        if !out.contains(&segs) {
+            out.push(segs);
+        }
+    }
+    out
+}
+
+/// Issue #194 Phase 2 ("same namespace as the current file → implicit
+/// visibility, no import statement needed"): every `.tnx` file directly in
+/// `dir` (no subdirectory recursion — a subdirectory corresponds to a
+/// DEEPER namespace segment, a different namespace, per issue #185's
+/// namespace-mirroring convention) whose OWN namespace path exactly equals
+/// `ns_path`. Checked by actually parsing each candidate, not just trusting
+/// directory placement — issue #185's own path-match check is skipped for
+/// installed dependencies / when no tinox.toml ancestor exists, so
+/// directory placement alone isn't proof. Includes the file this was
+/// computed FROM (trivially matches its own namespace) — both call sites
+/// rely on their own `visited`/self-equality check to skip it rather than
+/// excluding it here, since they already need that check anyway (a
+/// same-namespace sibling can itself already be visited via an explicit
+/// import, or via ANOTHER sibling's own auto-merge).
+fn find_namespace_siblings(dir: &Path, ns_path: &[String]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.extension().map(|e| e == "tnx").unwrap_or(false) {
+            continue;
+        }
+        let Ok(source) = fs::read_to_string(&p) else { continue };
+        let Ok(tokens) = Lexer::new(&source).tokenize() else { continue };
+        let Ok(parsed) = Parser::new(tokens).parse() else { continue };
+        if own_namespace_paths(&parsed.decls).iter().any(|s| s.as_slice() == ns_path) {
+            out.push(p);
+        }
+    }
+    out.sort();
+    out
+}
+
 fn check_namespace_path_matches(decls: &[tinox_parser::Decl], path: &Path) -> Result<(), String> {
     let namespaced = collect_namespaced_type_decls(decls);
     if namespaced.is_empty() {
@@ -3242,33 +3294,22 @@ fn resolve_imports(
         let (full_paths, _origin) = resolve_import_target(&import, base_dir, dep_dirs, missing_deps)?;
 
         for full_path in full_paths {
-            if visited.contains(&full_path) {
-                continue;
+            if let Some(decls) = resolve_and_merge_file(&full_path, visited, dep_dirs, missing_deps)? {
+                imported_decls.extend(decls);
             }
-            visited.insert(full_path.clone());
+        }
+    }
 
-            let source = fs::read_to_string(&full_path)
-                .map_err(|e| format!("Failed to read import '{}': {}", full_path.display(), e))?;
-
-            let mut lexer = Lexer::new(&source);
-            // Keep source alive for the lexer lifetime
-            let tokens = lexer
-                .tokenize()
-                .map_err(|e| format!("Lexer error in '{}': {:?}", full_path.display(), e))?;
-
-            let mut parser = Parser::new(tokens);
-            let mut imported = parser
-                .parse()
-                .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
-            check_one_type_per_file(&imported.decls, &full_path)?;
-            check_no_top_level_fn(&imported.decls, &full_path)?;
-            check_namespace_path_matches(&imported.decls, &full_path)?;
-            stamp_file_identity(&mut imported.decls, &full_path);
-
-            let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-            resolve_imports(&mut imported, &imported_dir, visited, dep_dirs, missing_deps)?;
-
-            imported_decls.extend(imported.decls);
+    // Issue #194 Phase 2: same-namespace siblings are implicitly visible,
+    // with zero `import` statement needed — same prepend-before-own-decls
+    // treatment as an explicit import, via the same shared
+    // resolve_and_merge_file (including this file's own `visited` entry
+    // transparently excluding itself from its own sibling scan).
+    for ns_path in own_namespace_paths(&ast.decls) {
+        for sib_path in find_namespace_siblings(base_dir, &ns_path) {
+            if let Some(decls) = resolve_and_merge_file(&sib_path, visited, dep_dirs, missing_deps)? {
+                imported_decls.extend(decls);
+            }
         }
     }
 
@@ -3280,6 +3321,44 @@ fn resolve_imports(
     ast.decls = imported_decls;
 
     Ok(())
+}
+
+/// Reads, parses, validates, and recursively resolves one file's own
+/// imports (plus, transitively, its own same-namespace siblings) — the
+/// common tail shared by explicit `import` resolution and issue #194 Phase
+/// 2's same-namespace sibling auto-merge in `resolve_imports` above.
+/// Returns `None` if `full_path` was already visited (nothing new to
+/// merge — the standard `visited`-based cycle/dedup guard this whole
+/// pipeline already relies on), `Some(decls)` otherwise.
+fn resolve_and_merge_file(
+    full_path: &Path,
+    visited: &mut HashSet<PathBuf>,
+    dep_dirs: &[PathBuf],
+    missing_deps: &[pm::MissingDep],
+) -> Result<Option<Vec<tinox_parser::Decl>>, String> {
+    if visited.contains(full_path) {
+        return Ok(None);
+    }
+    visited.insert(full_path.to_path_buf());
+
+    let source = fs::read_to_string(full_path)
+        .map_err(|e| format!("Failed to read '{}': {}", full_path.display(), e))?;
+    let tokens = Lexer::new(&source)
+        .tokenize()
+        .map_err(|e| format!("Lexer error in '{}': {:?}", full_path.display(), e))?;
+    let mut parser = Parser::new(tokens);
+    let mut imported = parser
+        .parse()
+        .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
+    check_one_type_per_file(&imported.decls, full_path)?;
+    check_no_top_level_fn(&imported.decls, full_path)?;
+    check_namespace_path_matches(&imported.decls, full_path)?;
+    stamp_file_identity(&mut imported.decls, full_path);
+
+    let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    resolve_imports(&mut imported, &imported_dir, visited, dep_dirs, missing_deps)?;
+
+    Ok(Some(imported.decls))
 }
 
 fn parse_into_cache(
@@ -3331,6 +3410,23 @@ fn file_direct_imports(
         for t in targets {
             parse_into_cache(&t, cache)?;
             out.push((t, origin));
+        }
+    }
+
+    // Issue #194 Phase 2: same-namespace siblings are implicitly visible —
+    // this check must accept exactly what resolve_imports (main compile
+    // path) now actually merges in, or it would report spurious "missing
+    // import" violations for names Phase 2 already made legitimately
+    // visible. ImportOrigin::Local since these are project-local files
+    // check_explicit_imports's outer loop must also independently validate
+    // in their own right, same as an explicitly imported one.
+    for ns_path in own_namespace_paths(&cache[path].decls) {
+        for sib in find_namespace_siblings(&base_dir, &ns_path) {
+            if sib == path {
+                continue;
+            }
+            parse_into_cache(&sib, cache)?;
+            out.push((sib, ImportOrigin::Local));
         }
     }
     Ok(out)
