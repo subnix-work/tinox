@@ -4430,6 +4430,7 @@ impl CodeGen {
             ret_type: ret_type.clone(),
             timed_metric: None,
             transactional_commit: None,
+            finally_targets: Vec::new(),
         };
 
         for (i, p) in f.params.iter().enumerate() {
@@ -4549,6 +4550,7 @@ impl CodeGen {
             ret_type: ret_type.clone(),
             timed_metric: None,
             transactional_commit: None,
+            finally_targets: Vec::new(),
         };
 
         let mut params_str = if method.static_ {
@@ -6312,15 +6314,13 @@ impl CodeGen {
                 // tail is a void call, under the uniform i64 closure ABI) must
                 // yield a dummy of the expected type — never `ret void 0`.
                 if expected.as_str() == "void" {
-                    self.emit_transactional_commit_before_return(ctx);
-                    writeln!(&mut self.ir, "ret void").unwrap();
+                    self.emit_function_return(ctx, "void", "");
                     return Ok(());
                 }
                 if ty == "void" {
                     let rt = if expected.is_empty() { "i64" } else { expected.as_str() };
                     let z = if rt.ends_with('*') { "null" } else { "0" };
-                    self.emit_transactional_commit_before_return(ctx);
-                    writeln!(&mut self.ir, "ret {} {}", rt, z).unwrap();
+                    self.emit_function_return(ctx, rt, z);
                     return Ok(());
                 }
                 let (final_val, final_ty) = if !expected.is_empty() && &ty != expected {
@@ -6345,8 +6345,7 @@ impl CodeGen {
                 } else {
                     (val, ty)
                 };
-                self.emit_transactional_commit_before_return(ctx);
-                writeln!(&mut self.ir, "ret {} {}", final_ty, final_val).unwrap();
+                self.emit_function_return(ctx, &final_ty, &final_val);
             }
             StmtKind::Return(None) => {
                 self.gen_defer_scope(ctx)?;
@@ -6357,13 +6356,12 @@ impl CodeGen {
                 // under the uniform i64 return ABI) must still yield a value of
                 // the expected type — otherwise `ret void` mismatches.
                 let expected = ctx.ret_type.as_str();
-                self.emit_transactional_commit_before_return(ctx);
                 if expected.is_empty() || expected == "void" {
-                    writeln!(&mut self.ir, "ret void").unwrap();
+                    self.emit_function_return(ctx, "void", "");
                 } else if expected.ends_with('*') {
-                    writeln!(&mut self.ir, "ret {} null", expected).unwrap();
+                    self.emit_function_return(ctx, expected, "null");
                 } else {
-                    writeln!(&mut self.ir, "ret {} 0", expected).unwrap();
+                    self.emit_function_return(ctx, expected, "0");
                 }
             }
             StmtKind::Expr(expr) => {
@@ -11948,6 +11946,7 @@ impl CodeGen {
             ret_type: ret_ty.clone(),
             timed_metric: None,
             transactional_commit: None,
+            finally_targets: Vec::new(),
         };
         for (i, p) in params.iter().enumerate() {
             if i > 0 {
@@ -12575,6 +12574,33 @@ impl CodeGen {
         writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
         writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
 
+        // Issue #193: a `return` anywhere inside the try body OR a catch
+        // clause must run this finally block before actually returning —
+        // set up the pending-flag/return-value slots `emit_function_return`
+        // routes through, and push them so it's visible to everything about
+        // to be generated below. See GenCtx.finally_targets' own doc comment
+        // for the full design (this mirrors error_catch's alloca-then-set
+        // shape, just as a stack instead of one slot, and popped again
+        // further down, before the finally block's OWN body is generated).
+        let finally_target = finally_bb.as_ref().map(|fb| {
+            let pending_flag = format!("%__finally_pending_{}__", self.temp_count);
+            self.temp_count += 1;
+            writeln!(&mut self.ir, "{} = alloca i1", pending_flag).unwrap();
+            writeln!(&mut self.ir, "store i1 false, i1* {}", pending_flag).unwrap();
+            let return_slot = if ctx.ret_type.is_empty() || ctx.ret_type == "void" {
+                None
+            } else {
+                let slot = format!("%__finally_retval_{}__", self.temp_count);
+                self.temp_count += 1;
+                writeln!(&mut self.ir, "{} = alloca {}", slot, ctx.ret_type).unwrap();
+                Some(slot)
+            };
+            FinallyTarget { finally_bb: fb.clone(), pending_flag, return_slot }
+        });
+        if let Some(target) = &finally_target {
+            ctx.finally_targets.push(target.clone());
+        }
+
         // --- try body ---
         writeln!(&mut self.ir, "br label %{}", try_bb).unwrap();
         writeln!(&mut self.ir, "{}:", try_bb).unwrap();
@@ -12675,9 +12701,16 @@ impl CodeGen {
         }
 
         // --- finally block ---
-        // Runs on both the normal and the error path (merge_target). Afterwards
-        // control reaches the convergence point.
+        // Runs on both the normal and the error path (merge_target), AND
+        // (issue #193) whenever a `return` inside the try body/a catch
+        // clause routed through here via emit_function_return. Popped from
+        // ctx.finally_targets BEFORE generating the finally body itself, so
+        // a `return` inside `finally { ... }` sees only any FURTHER-out
+        // enclosing finally (never re-enters this same one).
         if let Some(fb) = &finally_bb {
+            if finally_target.is_some() {
+                ctx.finally_targets.pop();
+            }
             writeln!(&mut self.ir, "{}:", fb).unwrap();
             if let Some(finally_stmt) = finally {
                 self.gen_stmt_body(finally_stmt, ctx)?;
@@ -12685,6 +12718,42 @@ impl CodeGen {
             let finally_ok_bb = self.new_bb("finally_ok");
             writeln!(&mut self.ir, "br label %{}", finally_ok_bb).unwrap();
             writeln!(&mut self.ir, "{}:", finally_ok_bb).unwrap();
+
+            // A `return` routed through here: propagate the pending value
+            // to any further-out enclosing finally, or actually `ret` if
+            // this was the outermost one. Otherwise (the ordinary normal-
+            // completion/exception path), fall through to the convergence
+            // point exactly as before this field existed.
+            let target = finally_target.expect("finally_bb implies finally_target");
+            let pending = self.temp();
+            writeln!(&mut self.ir, "{} = load i1, i1* {}", pending, target.pending_flag).unwrap();
+            let do_return_bb = self.new_bb("finally_do_return");
+            let normal_bb = self.new_bb("finally_normal");
+            writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", pending, do_return_bb, normal_bb).unwrap();
+
+            writeln!(&mut self.ir, "{}:", do_return_bb).unwrap();
+            let ret_ty = ctx.ret_type.clone();
+            let ret_val = target.return_slot.as_ref().map(|slot| {
+                let v = self.temp();
+                writeln!(&mut self.ir, "{} = load {}, {}* {}", v, ret_ty, ret_ty, slot).unwrap();
+                v
+            });
+            if let Some(outer) = ctx.finally_targets.last().cloned() {
+                if let (Some(v), Some(outer_slot)) = (&ret_val, &outer.return_slot) {
+                    writeln!(&mut self.ir, "store {} {}, {}* {}", ret_ty, v, ret_ty, outer_slot).unwrap();
+                }
+                writeln!(&mut self.ir, "store i1 true, i1* {}", outer.pending_flag).unwrap();
+                writeln!(&mut self.ir, "br label %{}", outer.finally_bb).unwrap();
+            } else {
+                self.emit_transactional_commit_before_return(ctx);
+                if ret_ty.is_empty() || ret_ty == "void" {
+                    writeln!(&mut self.ir, "ret void").unwrap();
+                } else {
+                    writeln!(&mut self.ir, "ret {} {}", ret_ty, ret_val.unwrap()).unwrap();
+                }
+            }
+
+            writeln!(&mut self.ir, "{}:", normal_bb).unwrap();
             writeln!(&mut self.ir, "br label %{}", converge_bb).unwrap();
         }
 
@@ -12723,6 +12792,39 @@ impl CodeGen {
 
         writeln!(&mut self.ir, "{}:", end_bb).unwrap();
         Ok(())
+    }
+
+    /// The single point every `return` statement's codegen funnels through
+    /// (issue #193) instead of emitting `ret` directly: if there's an
+    /// enclosing `try { ... } finally { ... }` (`ctx.finally_targets` is
+    /// non-empty), the return value/pending-flag are stashed into that
+    /// finally's own slots and control branches into it instead — the
+    /// finally block's own tail (see `gen_try_stmt`) is what actually
+    /// performs the `ret`, after running (and possibly propagating further
+    /// through) every enclosing finally block, innermost first. With no
+    /// enclosing finally, this is exactly the previous direct-`ret`
+    /// behavior (still gated by `emit_transactional_commit_before_return`
+    /// for an @Transactional method's own commit).
+    ///
+    /// `ty`/`val` are ALREADY the final, cast-if-needed LLVM type/value —
+    /// callers do that work themselves first, same division of labor the
+    /// direct `ret` emission this replaces already had. `val` is ignored
+    /// when `ty == "void"`.
+    fn emit_function_return(&mut self, ctx: &GenCtx, ty: &str, val: &str) {
+        if let Some(target) = ctx.finally_targets.last().cloned() {
+            if let Some(slot) = &target.return_slot {
+                writeln!(&mut self.ir, "store {} {}, {}* {}", ty, val, ty, slot).unwrap();
+            }
+            writeln!(&mut self.ir, "store i1 true, i1* {}", target.pending_flag).unwrap();
+            writeln!(&mut self.ir, "br label %{}", target.finally_bb).unwrap();
+            return;
+        }
+        self.emit_transactional_commit_before_return(ctx);
+        if ty == "void" {
+            writeln!(&mut self.ir, "ret void").unwrap();
+        } else {
+            writeln!(&mut self.ir, "ret {} {}", ty, val).unwrap();
+        }
     }
 
     /// Emits the same "commit if I own this transaction" branch
@@ -14668,6 +14770,35 @@ pub struct GenCtx {
     /// path emits, right before every `ret` it produces, regardless of
     /// nesting depth inside the method body.
     transactional_commit: Option<String>,
+    /// Stack of enclosing `try { ... } finally { ... }` blocks a `return`
+    /// statement (StmtKind::Return) must route through before actually
+    /// returning (issue #193) — innermost last, mirroring `error_catch`'s
+    /// single-slot shape but as a stack, since returns can be nested inside
+    /// multiple enclosing finally blocks at once. Pushed by `gen_try_stmt`
+    /// right before generating the try body/catch clauses (so a `return`
+    /// anywhere in either sees it), popped again right before generating
+    /// the finally block's OWN body (so a `return` inside `finally { ... }`
+    /// itself only sees any FURTHER-out enclosing finally, never re-enters
+    /// this same one). A try with no `finally` clause never pushes here at
+    /// all — nothing needs to run before such a `return` proceeds, same as
+    /// before this field existed.
+    finally_targets: Vec<FinallyTarget>,
+}
+
+/// One entry in `GenCtx.finally_targets` — see that field's doc comment.
+#[derive(Clone)]
+struct FinallyTarget {
+    finally_bb: String,
+    /// i1 alloca: set true by a `return` that routed through here, checked
+    /// by the finally block's own tail to decide whether to fall through to
+    /// its normal converge/rethrow path (false) or propagate the pending
+    /// return further out / actually `ret` (true).
+    pending_flag: String,
+    /// Alloca typed as the enclosing function's own return type, holding
+    /// the value a routed-through `return` will eventually produce. `None`
+    /// for a `void`-returning function — nothing to carry, `pending_flag`
+    /// alone is enough.
+    return_slot: Option<String>,
 }
 
 // ─── ORM: compile-time lambda→SQL translation ────────────────────────────────
