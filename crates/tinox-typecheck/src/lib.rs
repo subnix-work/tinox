@@ -1711,125 +1711,179 @@ impl TypeChecker {
             );
         }
 
-        // Third pass: expand class inheritance (fields and methods from parent classes).
-        {
-            use std::collections::HashSet;
-            let class_map: HashMap<String, tinox_parser::Class> = Self::flatten_decls(source)
-                .into_iter()
-                .filter_map(|d| match &d.node {
-                    DeclKind::Class(c) => Some(c.clone()),
-                    _ => None,
-                })
-                .map(|c| (c.name.clone(), c))
-                .collect();
+    }
 
-            let class_names: Vec<String> = class_map.keys().cloned().collect();
-            let mut processed: HashSet<String> = HashSet::new();
+    /// Expands class inheritance (fields and methods from parent classes) for
+    /// every class declared directly in `source`. A parent class may instead
+    /// live only in a `register_declarations`-registered prelude
+    /// (`typecheck_with_prelude`'s split file-plus-preludes model, used by
+    /// both tinox-lsp and `check_explicit_imports`, issue #194) rather than
+    /// in `source` itself -- `self.prelude_decls` is consulted as a
+    /// parent-lookup fallback, but a prelude class is never itself treated as
+    /// one this pass must expand (see `expand_prelude_class_inheritance`,
+    /// below, for that half — calling both, in the right order, is what
+    /// makes a cross-prelude inheritance chain like `Derived extends Base`,
+    /// where BOTH are preludes of some third file, resolve correctly
+    /// regardless of which of the two got registered first).
+    fn expand_class_inheritance(&mut self, source: &SourceFile) {
+        let own_classes: HashMap<String, tinox_parser::Class> = Self::flatten_decls(source)
+            .into_iter()
+            .filter_map(|d| match &d.node {
+                DeclKind::Class(c) => Some(c.clone()),
+                _ => None,
+            })
+            .map(|c| (c.name.clone(), c))
+            .collect();
+        let extra_decls = self.prelude_decls.clone();
+        self.expand_class_inheritance_impl(own_classes, &extra_decls);
+    }
 
-            loop {
-                let before = processed.len();
-                for name in &class_names {
-                    if processed.contains(name) {
+    /// The prelude-side counterpart of `expand_class_inheritance`: expands
+    /// inheritance for EVERY class across ALL registered preludes together,
+    /// as one combined pass over `self.prelude_decls` — unlike running the
+    /// same expansion once per individual `register_declarations` call (the
+    /// original design), which broke as soon as a prelude class's parent was
+    /// itself a *different*, not-yet-registered prelude (registration order
+    /// depends on `check_explicit_imports`'s DFS over the import graph, not
+    /// inheritance order — found live via `tests/e2e/inherited_static_dispatch`,
+    /// where `Base`/`Derived` mutually import each other and DFS happened to
+    /// register `Derived` first, silently dropping its inherited methods).
+    /// Must run once, after every prelude has been registered, and before
+    /// `check(source)` — see `typecheck_with_prelude`.
+    fn expand_prelude_class_inheritance(&mut self) {
+        let own_classes: HashMap<String, tinox_parser::Class> = self
+            .prelude_decls
+            .iter()
+            .filter_map(|d| match &d.node {
+                DeclKind::Class(c) => Some(c.clone()),
+                _ => None,
+            })
+            .map(|c| (c.name.clone(), c))
+            .collect();
+        self.expand_class_inheritance_impl(own_classes, &[]);
+    }
+
+    fn expand_class_inheritance_impl(
+        &mut self,
+        own_classes: HashMap<String, tinox_parser::Class>,
+        extra_decls: &[Decl],
+    ) {
+        use std::collections::HashSet;
+        let mut class_map = own_classes;
+        let class_names: Vec<String> = class_map.keys().cloned().collect();
+        let own_class_names: HashSet<String> = class_names.iter().cloned().collect();
+        for d in extra_decls {
+            if let DeclKind::Class(c) = &d.node {
+                class_map.entry(c.name.clone()).or_insert_with(|| c.clone());
+            }
+        }
+
+        let mut processed: HashSet<String> = HashSet::new();
+
+        loop {
+            let before = processed.len();
+            for name in &class_names {
+                if processed.contains(name) {
+                    continue;
+                }
+                let c = &class_map[name];
+                let parent_ready = c
+                    .extends
+                    .as_ref()
+                    .map(|p| processed.contains(p) || !own_class_names.contains(p))
+                    .unwrap_or(true);
+                if !parent_ready {
+                    continue;
+                }
+
+                if let Some(parent_name) = &c.extends {
+                    if !class_map.contains_key(parent_name) {
+                        self.errors.push(Error::new(
+                            c.span,
+                            format!("undefined parent class: {}", parent_name),
+                        ));
+                        processed.insert(name.clone());
                         continue;
                     }
-                    let c = &class_map[name];
-                    let parent_ready = c
-                        .extends
-                        .as_ref()
-                        .map(|p| processed.contains(p) || !class_map.contains_key(p))
-                        .unwrap_or(true);
-                    if !parent_ready {
-                        continue;
-                    }
 
-                    if let Some(parent_name) = &c.extends {
-                        if !class_map.contains_key(parent_name) {
-                            self.errors.push(Error::new(
-                                c.span,
-                                format!("undefined parent class: {}", parent_name),
-                            ));
-                            processed.insert(name.clone());
-                            continue;
+                    let child_own_fields: HashSet<String> =
+                        c.fields.iter().map(|f| f.name.clone()).collect();
+                    let child_own_methods: HashSet<String> =
+                        c.methods.iter().map(|m| m.name.clone()).collect();
+
+                    // Walk the ancestor chain and collect inherited fields/methods.
+                    let mut ancestor = parent_name.clone();
+                    while let Some(pc) = class_map.get(&ancestor) {
+                        for field in &pc.fields {
+                            if child_own_fields.contains(&field.name) {
+                                continue;
+                            }
+                            let child_key = format!("{}.{}", name, field.name);
+                            if self.symbols.variables.contains_key(&child_key) {
+                                continue;
+                            }
+                            let ty = Self::type_to_value(&field.field_type);
+                            self.symbols.variables.insert(child_key.clone(), (ty, true));
+                            self.field_visibility
+                                .entry(child_key)
+                                .or_insert_with(|| field.visibility.clone());
+                            let child_fields = self.class_fields.entry(name.clone()).or_default();
+                            if !child_fields.contains(&field.name) {
+                                child_fields.push(field.name.clone());
+                            }
                         }
 
-                        let child_own_fields: HashSet<String> =
-                            c.fields.iter().map(|f| f.name.clone()).collect();
-                        let child_own_methods: HashSet<String> =
-                            c.methods.iter().map(|m| m.name.clone()).collect();
-
-                        // Walk the ancestor chain and collect inherited fields/methods.
-                        let mut ancestor = parent_name.clone();
-                        while let Some(pc) = class_map.get(&ancestor) {
-                            for field in &pc.fields {
-                                if child_own_fields.contains(&field.name) {
-                                    continue;
-                                }
-                                let child_key = format!("{}.{}", name, field.name);
-                                if self.symbols.variables.contains_key(&child_key) {
-                                    continue;
-                                }
-                                let ty = Self::type_to_value(&field.field_type);
-                                self.symbols.variables.insert(child_key.clone(), (ty, true));
-                                self.field_visibility
-                                    .entry(child_key)
-                                    .or_insert_with(|| field.visibility.clone());
-                                let child_fields = self.class_fields.entry(name.clone()).or_default();
-                                if !child_fields.contains(&field.name) {
-                                    child_fields.push(field.name.clone());
-                                }
+                        for method in &pc.methods {
+                            if child_own_methods.contains(&method.name) {
+                                continue;
                             }
-
-                            for method in &pc.methods {
-                                if child_own_methods.contains(&method.name) {
-                                    continue;
-                                }
-                                let child_key = format!("{}_{}", name, method.name);
-                                if self.symbols.functions.contains_key(&child_key) {
-                                    continue;
-                                }
-                                let mut params = vec![(
-                                    "self".to_string(),
-                                    ValueType::Named(name.clone(), vec![]),
-                                )];
-                                params.extend(method.params.iter().map(|p| {
-                                    (p.name.clone(), Self::type_to_value(&p.param_type))
-                                }));
-                                let sig = FunctionSignature {
-                                    params,
-                                    return_type: Self::type_to_value(&method.ret_type),
-                                };
-                                if Self::stmt_uses_this(&method.body) {
-                                    self.method_uses_this.insert(child_key.clone());
-                                }
-                                self.symbols.functions.insert(child_key.clone(), sig);
-                                self.method_visibility
-                                    .entry(child_key)
-                                    .or_insert_with(|| method.visibility.clone());
+                            let child_key = format!("{}_{}", name, method.name);
+                            if self.symbols.functions.contains_key(&child_key) {
+                                continue;
                             }
-
-                            ancestor = match &pc.extends {
-                                Some(next) => next.clone(),
-                                None => break,
+                            let mut params = vec![(
+                                "self".to_string(),
+                                ValueType::Named(name.clone(), vec![]),
+                            )];
+                            params.extend(method.params.iter().map(|p| {
+                                (p.name.clone(), Self::type_to_value(&p.param_type))
+                            }));
+                            let sig = FunctionSignature {
+                                params,
+                                return_type: Self::type_to_value(&method.ret_type),
                             };
+                            if Self::stmt_uses_this(&method.body) {
+                                self.method_uses_this.insert(child_key.clone());
+                            }
+                            self.symbols.functions.insert(child_key.clone(), sig);
+                            self.method_visibility
+                                .entry(child_key)
+                                .or_insert_with(|| method.visibility.clone());
                         }
-                    }
 
-                    self.known_class_names.insert(name.clone());
-                    if !c.type_params.is_empty() {
-                        self.generic_class_names.insert(name.clone());
-                        self.class_type_params.insert(name.clone(), c.type_params.clone());
+                        ancestor = match &pc.extends {
+                            Some(next) => next.clone(),
+                            None => break,
+                        };
                     }
-                    processed.insert(name.clone());
                 }
-                if processed.len() == before {
-                    break;
+
+                self.known_class_names.insert(name.clone());
+                if !c.type_params.is_empty() {
+                    self.generic_class_names.insert(name.clone());
+                    self.class_type_params.insert(name.clone(), c.type_params.clone());
                 }
+                processed.insert(name.clone());
+            }
+            if processed.len() == before {
+                break;
             }
         }
     }
 
     fn check_source_file(&mut self, source: &SourceFile) {
         self.register_declarations(source);
+        self.expand_class_inheritance(source);
 
         for decl in Self::flatten_decls(source) {
             match &decl.node {
@@ -3886,6 +3940,8 @@ pub fn typecheck_with_prelude(source: &SourceFile, preludes: &[&SourceFile]) -> 
         checker.register_declarations(prelude);
         checker.errors.clear();
     }
+    checker.expand_prelude_class_inheritance();
+    checker.errors.clear();
     checker.check(source)
 }
 
