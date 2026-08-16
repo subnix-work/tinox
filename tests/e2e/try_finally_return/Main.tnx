@@ -1,0 +1,67 @@
+// Issue #193: a `return` statement inside a `try` body (or a `catch`
+// clause) previously skipped its own enclosing `finally` block entirely —
+// StmtKind::Return's codegen emitted its `ret` directly, with no awareness
+// of gen_try_stmt's own finally_bb/converge_bb structure. Fixed via
+// GenCtx.finally_targets (see codegen.rs): `return` now routes through
+// every enclosing finally block (innermost first) before actually
+// returning.
+// expect: inner finally
+// expect: outer finally
+// expect: 1
+// expect: g finally
+// expect: 10
+// expect: finally-val
+
+class Main
+{
+    // Nested try/finally: both finally blocks must run, innermost first,
+    // before the value from the inner `return` actually comes back.
+    fnc f() -> Int64
+    {
+        try {
+            try {
+                return 1;
+            } finally {
+                println("inner finally");
+            }
+        } finally {
+            println("outer finally");
+        }
+        return 0;
+    }
+
+    // try/catch/finally: a normal (non-throwing) return from the try body
+    // must still run finally.
+    fnc g() -> Int64
+    {
+        try {
+            return 10;
+        } catch (e: String) {
+            return -1;
+        } finally {
+            println("g finally");
+        }
+        return 0;
+    }
+
+    // A `return` inside `finally` itself overrides the try body's own
+    // pending return -- matches Java/JS's well-defined (if surprising)
+    // semantics, not a bug.
+    fnc h() -> String
+    {
+        try {
+            return "try-val";
+        } finally {
+            return "finally-val";
+        }
+        return "";
+    }
+
+    fnc main() -> Int32
+    {
+        println(f());
+        println(g());
+        println(h());
+        return 0;
+    }
+}
