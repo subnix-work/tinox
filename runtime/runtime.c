@@ -39,6 +39,8 @@
 #include <zlib.h>
 #ifdef __GLIBC__
 #include <execinfo.h>
+#include <pty.h>
+#include <termios.h>
 #endif
 
 #ifdef TINOX_NO_GC
@@ -2103,10 +2105,26 @@ void rwlockWriteUnlock(int64_t handle) {
 // need them told apart). Handle is Int64 (GC_malloc'd), same idiom as
 // TinoxProcessResult above.
 
+// A real PTY, not a pair of plain pipes: a program reading from a plain
+// pipe never gets terminal line-discipline handling, so a lone '\r'
+// (what xterm.js and every real terminal emit for Enter -- terminal
+// convention, not '\n') is never recognized as a line terminator and a
+// shell just buffers it forever waiting for a real '\n'. This was found
+// live wiring up ExecWebSocket.tnx: bulk writes ending in an actual
+// '\n' worked, but character-by-character keystroke forwarding (ending
+// in '\r') silently never produced output. A remote PTY (via `kubectl
+// exec -it`) only gets allocated by kubectl when kubectl's OWN local
+// stdin is a real PTY too -- verified live, `-it` with a plain-pipe
+// local stdin just prints "Unable to use a TTY" and silently behaves
+// exactly like `-i` alone. openpty() gives the child a real slave PTY
+// as its controlling terminal, so the kernel's tty driver applies real
+// line-discipline handling (ICANON: buffers by line, translates the
+// child's own echo, delivers signals for Ctrl-C, etc.) exactly like a
+// real terminal application expects -- and kubectl in turn sees a real
+// local TTY and requests a real remote one.
 typedef struct {
     pid_t pid;
-    int stdin_fd;  // write end -- parent writes to the child's stdin
-    int out_fd;    // read end -- parent reads the child's merged stdout+stderr
+    int fd;  // PTY master -- single fd, read AND write (a real terminal has no separate stdin/stdout either)
     int64_t exited;
     int64_t exit_code;
 } TinoxInteractiveProcess;
@@ -2128,39 +2146,26 @@ int64_t processSpawnInteractive(int64_t* argv_handle) {
     }
     argv[argc] = NULL;
 
-    int in_pipe[2];
-    int out_pipe[2];
-    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0) {
-        fprintf(stderr, "runtime error: process_spawn_interactive: pipe() failed: %s\n", strerror(errno));
-        exit(1);
-    }
-
-    pid_t pid = fork();
+    int master_fd;
+    pid_t pid = forkpty(&master_fd, NULL, NULL, NULL);
     if (pid < 0) {
-        fprintf(stderr, "runtime error: process_spawn_interactive: fork() failed: %s\n", strerror(errno));
+        fprintf(stderr, "runtime error: process_spawn_interactive: forkpty() failed: %s\n", strerror(errno));
         exit(1);
     }
     if (pid == 0) {
         // Child -- same fork-safety note as processRun above: no GC/Tinox
-        // calls between fork() and execvp()/_exit().
-        dup2(in_pipe[0], STDIN_FILENO);
-        dup2(out_pipe[1], STDOUT_FILENO);
-        dup2(out_pipe[1], STDERR_FILENO);
-        close(in_pipe[0]); close(in_pipe[1]);
-        close(out_pipe[0]); close(out_pipe[1]);
+        // calls between forkpty() and execvp()/_exit(). forkpty() already
+        // set up the slave as our stdin/stdout/stderr and controlling tty.
         execvp(argv[0], argv);
         _exit(127);
     }
 
     // Parent
-    close(in_pipe[0]);
-    close(out_pipe[1]);
     free(argv);
 
     TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)GC_malloc(sizeof(TinoxInteractiveProcess));
     p->pid = pid;
-    p->stdin_fd = in_pipe[1];
-    p->out_fd = out_pipe[0];
+    p->fd = master_fd;
     p->exited = 0;
     p->exit_code = 0;
     return (int64_t)(intptr_t)p;
@@ -2176,7 +2181,7 @@ void processWriteStdin(int64_t handle, const char* data) {
     size_t len = strlen(data);
     size_t written = 0;
     while (written < len) {
-        ssize_t n = write(p->stdin_fd, data + written, len - written);
+        ssize_t n = write(p->fd, data + written, len - written);
         if (n > 0) { written += (size_t)n; continue; }
         if (n < 0 && errno == EINTR) continue;
         break;
@@ -2190,7 +2195,7 @@ void processWriteStdin(int64_t handle, const char* data) {
 char* processReadOutput(int64_t handle, int64_t timeoutMs) {
     TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
     struct pollfd fd;
-    fd.fd = p->out_fd;
+    fd.fd = p->fd;
     fd.events = POLLIN;
     int pr = poll(&fd, 1, (int)timeoutMs);
     if (pr <= 0) {
@@ -2200,7 +2205,10 @@ char* processReadOutput(int64_t handle, int64_t timeoutMs) {
         return GC_strdup("");
     }
     char buf[8192];
-    ssize_t n = read(p->out_fd, buf, sizeof(buf));
+    // A PTY master's read() returns -1/EIO (not 0) once the slave side is
+    // gone (child exited) -- the n<=0 check below already treats that the
+    // same as a plain pipe's EOF, which is exactly the behavior wanted here.
+    ssize_t n = read(p->fd, buf, sizeof(buf));
     if (n <= 0) {
         return GC_strdup("");
     }
@@ -2234,8 +2242,7 @@ void processKillInteractive(int64_t handle) {
         while (waitpid(p->pid, &status, 0) < 0 && errno == EINTR) {}
         p->exited = 1;
     }
-    close(p->stdin_fd);
-    close(p->out_fd);
+    close(p->fd);
 }
 
 // ---- Directory builtins ----
