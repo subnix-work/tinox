@@ -2,38 +2,44 @@ module tinox.core.semaphore;
 
 namespace tinox.core.semaphore
 {
+    /**
+     * A real reader/writer lock backed by pthread_rwlock_t (runtime.c).
+     *
+     * All four operations BLOCK as a real RWLock should (multiple readers
+     * concurrently, a writer excludes everyone). See Mutex.tnx's doc
+     * comment for the general issue with this module's previous
+     * implementations: this one was, if anything, more broken than
+     * Mutex/Semaphore -- writeLock() didn't even check for active readers
+     * before "acquiring", so it provided no real write exclusion at all,
+     * on top of the same check-then-act non-atomicity.
+     */
     class RWLock
     {
-        var readers: Int64;
-        var writers: Int64;
+        var handle: Int64;
 
         fn new() -> RWLock
         {
-            return RWLock { readers: 0, writers: 0 };
+            return RWLock { handle: rwlockNew() };
         }
 
         fn readLock(lock: RWLock) -> Nothing
         {
-            if lock.writers > 0
-            {
-                throw "Write lock held";
-            }
-            lock.readers = lock.readers + 1;
+            rwlockReadLock(lock.handle);
         }
 
         fn readUnlock(lock: RWLock) -> Nothing
         {
-            lock.readers = lock.readers - 1;
+            rwlockReadUnlock(lock.handle);
         }
 
         fn writeLock(lock: RWLock) -> Nothing
         {
-            lock.writers = lock.writers + 1;
+            rwlockWriteLock(lock.handle);
         }
 
         fn writeUnlock(lock: RWLock) -> Nothing
         {
-            lock.writers = lock.writers - 1;
+            rwlockWriteUnlock(lock.handle);
         }
     }
 }

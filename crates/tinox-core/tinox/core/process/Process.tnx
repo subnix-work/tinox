@@ -33,5 +33,36 @@ namespace tinox.core.process
         {
             envSet(name, value);
         }
+
+        /**
+         * Runs an external program via argv (never a shell): argv[0] is the
+         * program (resolved via PATH like execvp), argv[1..] are its
+         * arguments, each passed as a distinct native argument. Safe to use
+         * with untrusted argument values (e.g. taken from an HTTP path
+         * param) -- there is no shell in between to interpret them.
+         *
+         * timeoutMs <= 0 means no timeout. On timeout the process is killed
+         * and ProcessResult.timedOut is true. `stdin` is fed to the child's
+         * standard input (empty string = closed/empty stdin, the common
+         * case for a program that only reads argv, e.g. `kubectl get`);
+         * written concurrently with draining stdout/stderr, so a large
+         * stdin payload can't deadlock against a chatty child (see
+         * runtime.c's processRun comment for why that matters, e.g.
+         * `kubectl apply -f -` with a sizeable manifest).
+         *
+         * @param argv the program and its arguments, e.g. ["kubectl", "get", "pods", "-n", namespace, "-o", "json"]
+         * @param timeoutMs wall-clock timeout in milliseconds, or <= 0 for no timeout
+         * @param stdin data to write to the child's stdin, or "" for none
+         * @return the captured stdout/stderr/exit code
+         */
+        fn run(argv: List<String>, timeoutMs: Int64, stdin: String) -> ProcessResult
+        {
+            let handle: Int64 = processRun(argv, timeoutMs, stdin);
+            let out: String = processResultStdout(handle);
+            let err: String = processResultStderr(handle);
+            let code: Int64 = processResultExitCode(handle);
+            let to: Int64 = processResultTimedOut(handle);
+            return ProcessResult::new(out, err, code, to != 0);
+        }
     }
 }

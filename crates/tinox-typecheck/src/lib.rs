@@ -958,6 +958,75 @@ impl TypeChecker {
                 params: vec![], return_type: ret,
             });
         }
+        // Argv-based subprocess execution (tinox_process_run et al., runtime.c)
+        // -- handles are Int64 (ptrtoint of a GC_malloc'd struct), same idiom as
+        // every other opaque native resource in this runtime.
+        symbols.functions.insert("processRun".to_string(), FunctionSignature {
+            params: vec![
+                ("argv".to_string(), ValueType::Array(Box::new(ValueType::String))),
+                ("timeoutMs".to_string(), ValueType::Int),
+                ("stdin".to_string(), ValueType::String),
+            ],
+            return_type: ValueType::Int,
+        });
+        for name in &["processResultStdout", "processResultStderr", "processResultExitCode", "processResultTimedOut"] {
+            let ret = if *name == "processResultStdout" || *name == "processResultStderr" { ValueType::String }
+                      else { ValueType::Int };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ret,
+            });
+        }
+        // Real synchronization primitives (tinox.core.semaphore) -- see the
+        // runtime.c comment above mutexNew for why the previous, pure-Tinox
+        // check-then-act implementation was a real bug, not just a
+        // hypothetical one.
+        symbols.functions.insert("mutexNew".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        for name in &["mutexLock", "mutexUnlock"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+            });
+        }
+        symbols.functions.insert("mutexTryLock".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("semaphoreNew".to_string(), FunctionSignature {
+            params: vec![("initialCount".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        for name in &["semaphoreAcquire", "semaphoreRelease"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+            });
+        }
+        symbols.functions.insert("semaphoreTryAcquire".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("rwlockNew".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        for name in &["rwlockReadLock", "rwlockReadUnlock", "rwlockWriteLock", "rwlockWriteUnlock"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+            });
+        }
+        // Long-lived interactive subprocess (tinox.core.process) -- unlike
+        // processRun, spawns and returns immediately; the caller drives it
+        // incrementally for the session's lifetime (e.g. `kubectl exec`).
+        symbols.functions.insert("processSpawnInteractive".to_string(), FunctionSignature {
+            params: vec![("argv".to_string(), ValueType::Array(Box::new(ValueType::String)))],
+            return_type: ValueType::Int,
+        });
+        symbols.functions.insert("processWriteStdin".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)],
+            return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("processReadOutput".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int), ("timeoutMs".to_string(), ValueType::Int)],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("processIsAlive".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("processKillInteractive".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+        });
         // Metrics (manual API, MetricsRegistry/Stopwatch — @Timed/@Counted
         // auto-instrumentation injects the same calls directly in codegen)
         symbols.functions.insert("tinox_counter_inc".to_string(), FunctionSignature {
@@ -2416,6 +2485,29 @@ impl TypeChecker {
                 if obj_ty == ValueType::Any {
                     for arg in args { self.infer_type(arg); }
                     return ValueType::Any;
+                }
+                // `List<C>.toJson()` (C a @JsonSerializable class): mirrors
+                // codegen's own dedicated check (codegen.rs, right before its
+                // generic method dispatch) for exactly the same reason it has
+                // to run before the generic `{class}_{method}` lookup below
+                // -- ValueType::Array's Display is deliberately erased to a
+                // bare "Array" (dispatch keys for genuinely element-agnostic
+                // methods like push/len), so falling through to that generic
+                // path here would look up a nonexistent "Array_toJson" and
+                // fail with "undefined function: Array_toJson" even though
+                // codegen handles this exact call correctly via
+                // tinox_json_list_serialize. Found live: this `check_explicit_
+                // imports` (issue #194) pass runs its own independent
+                // typecheck ahead of the real compile pipeline and hard-blocks
+                // the build on this false positive before codegen ever runs.
+                if method == "toJson" && args.is_empty() {
+                    if let ValueType::Array(elem) = &obj_ty {
+                        if let ValueType::Named(cls, _) = elem.as_ref() {
+                            if self.symbols.functions.contains_key(&format!("{}_toJson", cls)) {
+                                return ValueType::String;
+                            }
+                        }
+                    }
                 }
                 let class_name = obj_ty.to_string();
 

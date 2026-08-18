@@ -1581,6 +1581,29 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @isStdinTty()").unwrap();
         writeln!(&mut self.ir, "declare i64 @isStdoutTty()").unwrap();
         writeln!(&mut self.ir, "declare i64 @processId()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processRun(i64*, i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processResultStdout(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processResultStderr(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processResultExitCode(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processResultTimedOut(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @mutexNew()").unwrap();
+        writeln!(&mut self.ir, "declare void @mutexLock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @mutexUnlock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @mutexTryLock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @semaphoreNew(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @semaphoreAcquire(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @semaphoreRelease(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @semaphoreTryAcquire(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @rwlockNew()").unwrap();
+        writeln!(&mut self.ir, "declare void @rwlockReadLock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @rwlockReadUnlock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @rwlockWriteLock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @rwlockWriteUnlock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processSpawnInteractive(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare void @processWriteStdin(i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processReadOutput(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processIsAlive(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @processKillInteractive(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @gcCollect()").unwrap();
         writeln!(&mut self.ir, "declare i64 @memoryUsage()").unwrap();
         writeln!(&mut self.ir, "declare void @printStackTrace()").unwrap();
@@ -10973,7 +10996,31 @@ impl CodeGen {
                     }
                 };
 
+                // A spawn target that's a non-static instance method (`fn`,
+                // not `fnc`) called via `Class::method(explicitArgsOnly)`
+                // must get the same "prepend a null self" treatment
+                // emit_static_dispatch_call already applies for the
+                // identical calling shape outside of spawn (see that
+                // function's own comment: args==declared → self unused →
+                // null-self; args==declared+1 → the receiver was passed
+                // explicitly, no null-self needed). Skipping this here was
+                // a real, previously-undiscovered bug: the compiled
+                // function for any non-static `fn` always has a leading
+                // `self` parameter regardless of how it's invoked, so
+                // omitting the null-self argument silently called it with
+                // one argument too few -- an LLVM call-site/definition
+                // arity mismatch, undefined behavior (this crashed with a
+                // real segfault the moment the method touched `self`,
+                // i.e. any field access at all, not just a type error).
+                let is_static = self.static_method_keys.contains(&fn_name);
+                let declared_len = self.method_param_types.get(&fn_name).map(|v| v.len());
+                let prepend_null_self = !is_static
+                    && declared_len.map(|d| args.len() != d + 1).unwrap_or(false);
+
                 let mut arg_vals: Vec<(String, String)> = Vec::new();
+                if prepend_null_self {
+                    arg_vals.push(("null".to_string(), "i64*".to_string()));
+                }
                 for arg in &args {
                     let (v, t) = self.gen_expr(arg, ctx)?;
                     arg_vals.push((v, t));
@@ -10991,11 +11038,14 @@ impl CodeGen {
                         // strings), just sourced from the class-method
                         // tables instead of fn_sigs.
                         self.method_ret_types.get(&fn_name).cloned().map(|rt| {
-                            let ptys = self
+                            let mut ptys: Vec<String> = self
                                 .method_param_types
                                 .get(&fn_name)
                                 .map(|v| v.iter().map(Self::type_to_llvm).collect())
                                 .unwrap_or_default();
+                            if prepend_null_self {
+                                ptys.insert(0, "i64*".to_string());
+                            }
                             (rt, ptys)
                         })
                     })

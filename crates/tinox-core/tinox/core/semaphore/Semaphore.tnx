@@ -2,39 +2,39 @@ module tinox.core.semaphore;
 
 namespace tinox.core.semaphore
 {
+    /**
+     * A real counting semaphore backed by POSIX sem_t (runtime.c).
+     *
+     * acquire() BLOCKS until a permit is available -- see Mutex.tnx's doc
+     * comment for why the previous "if count > 0 { count-- } else throw"
+     * implementation was a real, previously-undiscovered bug (not
+     * actually thread-safe, and "throw on contention" was an accident of
+     * that broken check-then-act code, not a deliberate semaphore
+     * semantic). tryAcquire()'s non-blocking, boolean-result contract is
+     * unchanged, now backed by a real sem_trywait.
+     */
     class Semaphore
     {
-        var count: Int64;
-        var waiting: List<Int64>;
+        var handle: Int64;
 
         fn new(count: Int64) -> Semaphore
         {
-            return Semaphore { count: count, waiting: [] };
+            return Semaphore { handle: semaphoreNew(count) };
         }
 
         fn acquire(sem: Semaphore) -> Nothing
         {
-            if sem.count > 0
-            {
-                sem.count = sem.count - 1;
-                return;
-            }
-            throw "Semaphore locked";
+            semaphoreAcquire(sem.handle);
         }
 
         fn release(sem: Semaphore) -> Nothing
         {
-            sem.count = sem.count + 1;
+            semaphoreRelease(sem.handle);
         }
 
         fn tryAcquire(sem: Semaphore) -> Bool
         {
-            if sem.count > 0
-            {
-                sem.count = sem.count - 1;
-                return true;
-            }
-            return false;
+            return semaphoreTryAcquire(sem.handle) != 0;
         }
     }
 }
