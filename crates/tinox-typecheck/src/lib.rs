@@ -965,6 +965,7 @@ impl TypeChecker {
             params: vec![
                 ("argv".to_string(), ValueType::Array(Box::new(ValueType::String))),
                 ("timeoutMs".to_string(), ValueType::Int),
+                ("stdin".to_string(), ValueType::String),
             ],
             return_type: ValueType::Int,
         });

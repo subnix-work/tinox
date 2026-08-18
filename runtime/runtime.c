@@ -1813,18 +1813,28 @@ static void tinox_growbuf_append(TinoxGrowBuf* b, const char* data, size_t n) {
     b->buf[b->len] = '\0';
 }
 
-// Runs argv[0] with argv[1..] as arguments, capturing stdout/stderr
-// separately and enforcing a wall-clock timeout (timeout_ms <= 0 means no
-// timeout). On timeout the child is SIGKILLed and reaped; `timed_out` is set
-// on the result and exit_code is -1 (no real exit status exists in that
-// case). A signal-terminated child reports exit_code as -signal, matching
-// the negative-on-signal convention already used elsewhere in this runtime.
+// Runs argv[0] with argv[1..] as arguments, feeding `stdin_data` to the
+// child's stdin (empty string = closed/empty stdin, e.g. for a plain
+// `kubectl get`) and capturing stdout/stderr separately, enforcing a
+// wall-clock timeout (timeout_ms <= 0 means no timeout). On timeout the
+// child is SIGKILLed and reaped; `timed_out` is set on the result and
+// exit_code is -1 (no real exit status exists in that case). A
+// signal-terminated child reports exit_code as -signal, matching the
+// negative-on-signal convention already used elsewhere in this runtime.
+//
+// stdin is written concurrently with draining stdout/stderr (poll() on all
+// three fds at once, POLLOUT on the stdin pipe alongside POLLIN on the
+// other two) rather than "write all of stdin, then read output" -- the
+// naive sequential approach deadlocks as soon as the child's own stdout/
+// stderr fills its OS pipe buffer before it has fully read stdin (a real
+// case here: `kubectl apply -f -` with a large manifest can easily write
+// enough progress/warning output to hit this before finishing reading).
 //
 // No GC_/Tinox runtime calls happen in the child between fork() and
 // execvp()/_exit() -- the one hazard specific to forking inside a GC'd,
 // multi-threaded process (another thread could hold a GC or malloc lock at
 // the moment of fork, and only the calling thread survives into the child).
-int64_t processRun(int64_t* argv_handle, int64_t timeout_ms) {
+int64_t processRun(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_data) {
     TinoxArray* argv_arr = (TinoxArray*)argv_handle;
     if (!argv_arr || argv_arr->len < 1) {
         fprintf(stderr, "runtime error: process_run: argv must have at least one element (the program)\n");
@@ -1841,9 +1851,10 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms) {
     }
     argv[argc] = NULL;
 
+    int in_pipe[2];
     int out_pipe[2];
     int err_pipe[2];
-    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
         fprintf(stderr, "runtime error: process_run: pipe() failed: %s\n", strerror(errno));
         exit(1);
     }
@@ -1860,8 +1871,10 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms) {
         // returns on failure; _exit(127) matches the shell's own
         // "command not found" convention so the caller can distinguish it
         // from a real exit code without needing a message string here.
+        dup2(in_pipe[0], STDIN_FILENO);
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(err_pipe[1], STDERR_FILENO);
+        close(in_pipe[0]); close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
         execvp(argv[0], argv);
@@ -1869,12 +1882,18 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms) {
     }
 
     // Parent
+    close(in_pipe[0]);
     close(out_pipe[1]);
     close(err_pipe[1]);
     free(argv);
 
+    int in_fd = in_pipe[1];
     int out_fd = out_pipe[0];
     int err_fd = err_pipe[0];
+    size_t stdin_len = strlen(stdin_data);
+    size_t stdin_written = 0;
+    int in_open = stdin_len > 0;
+    if (!in_open) close(in_fd); // nothing to write -- EOF immediately, same as e.g. `kubectl get`
     int out_open = 1, err_open = 1;
 
     TinoxGrowBuf out_buf = {0};
@@ -1892,10 +1911,11 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms) {
     int64_t timed_out = 0;
     char readbuf[4096];
 
-    while (out_open || err_open) {
-        struct pollfd fds[2];
+    while (in_open || out_open || err_open) {
+        struct pollfd fds[3];
         int nfds = 0;
-        int out_idx = -1, err_idx = -1;
+        int in_idx = -1, out_idx = -1, err_idx = -1;
+        if (in_open) { in_idx = nfds; fds[nfds].fd = in_fd; fds[nfds].events = POLLOUT; nfds++; }
         if (out_open) { out_idx = nfds; fds[nfds].fd = out_fd; fds[nfds].events = POLLIN; nfds++; }
         if (err_open) { err_idx = nfds; fds[nfds].fd = err_fd; fds[nfds].events = POLLIN; nfds++; }
 
@@ -1915,6 +1935,21 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms) {
         }
         if (pr == 0) { timed_out = 1; break; }
 
+        if (in_open && (fds[in_idx].revents & (POLLOUT | POLLERR | POLLHUP))) {
+            if (fds[in_idx].revents & POLLOUT) {
+                ssize_t n = write(in_fd, stdin_data + stdin_written, stdin_len - stdin_written);
+                if (n > 0) {
+                    stdin_written += (size_t)n;
+                    if (stdin_written == stdin_len) { close(in_fd); in_open = 0; }
+                } else if (n < 0 && errno != EINTR && errno != EAGAIN) {
+                    // Child closed its stdin early (e.g. doesn't read it at
+                    // all) -- not our error to report, just stop writing.
+                    close(in_fd); in_open = 0;
+                }
+            } else {
+                close(in_fd); in_open = 0;
+            }
+        }
         if (out_open && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
             ssize_t n = read(out_fd, readbuf, sizeof(readbuf));
             if (n > 0) tinox_growbuf_append(&out_buf, readbuf, (size_t)n);
@@ -1928,6 +1963,7 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms) {
             else if (errno != EINTR && errno != EAGAIN) { close(err_fd); err_open = 0; }
         }
     }
+    if (in_open) close(in_fd); // e.g. timed out while still writing stdin
 
     int64_t exit_code;
     if (timed_out) {
