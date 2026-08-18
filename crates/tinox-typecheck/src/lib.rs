@@ -2486,6 +2486,29 @@ impl TypeChecker {
                     for arg in args { self.infer_type(arg); }
                     return ValueType::Any;
                 }
+                // `List<C>.toJson()` (C a @JsonSerializable class): mirrors
+                // codegen's own dedicated check (codegen.rs, right before its
+                // generic method dispatch) for exactly the same reason it has
+                // to run before the generic `{class}_{method}` lookup below
+                // -- ValueType::Array's Display is deliberately erased to a
+                // bare "Array" (dispatch keys for genuinely element-agnostic
+                // methods like push/len), so falling through to that generic
+                // path here would look up a nonexistent "Array_toJson" and
+                // fail with "undefined function: Array_toJson" even though
+                // codegen handles this exact call correctly via
+                // tinox_json_list_serialize. Found live: this `check_explicit_
+                // imports` (issue #194) pass runs its own independent
+                // typecheck ahead of the real compile pipeline and hard-blocks
+                // the build on this false positive before codegen ever runs.
+                if method == "toJson" && args.is_empty() {
+                    if let ValueType::Array(elem) = &obj_ty {
+                        if let ValueType::Named(cls, _) = elem.as_ref() {
+                            if self.symbols.functions.contains_key(&format!("{}_toJson", cls)) {
+                                return ValueType::String;
+                            }
+                        }
+                    }
+                }
                 let class_name = obj_ty.to_string();
 
                 // Check if method is a Fn-type field (callable field) on the class
