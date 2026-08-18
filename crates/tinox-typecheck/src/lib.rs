@@ -976,6 +976,57 @@ impl TypeChecker {
                 params: vec![("handle".to_string(), ValueType::Int)], return_type: ret,
             });
         }
+        // Real synchronization primitives (tinox.core.semaphore) -- see the
+        // runtime.c comment above mutexNew for why the previous, pure-Tinox
+        // check-then-act implementation was a real bug, not just a
+        // hypothetical one.
+        symbols.functions.insert("mutexNew".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        for name in &["mutexLock", "mutexUnlock"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+            });
+        }
+        symbols.functions.insert("mutexTryLock".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("semaphoreNew".to_string(), FunctionSignature {
+            params: vec![("initialCount".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        for name in &["semaphoreAcquire", "semaphoreRelease"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+            });
+        }
+        symbols.functions.insert("semaphoreTryAcquire".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("rwlockNew".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        for name in &["rwlockReadLock", "rwlockReadUnlock", "rwlockWriteLock", "rwlockWriteUnlock"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+            });
+        }
+        // Long-lived interactive subprocess (tinox.core.process) -- unlike
+        // processRun, spawns and returns immediately; the caller drives it
+        // incrementally for the session's lifetime (e.g. `kubectl exec`).
+        symbols.functions.insert("processSpawnInteractive".to_string(), FunctionSignature {
+            params: vec![("argv".to_string(), ValueType::Array(Box::new(ValueType::String)))],
+            return_type: ValueType::Int,
+        });
+        symbols.functions.insert("processWriteStdin".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)],
+            return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("processReadOutput".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int), ("timeoutMs".to_string(), ValueType::Int)],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("processIsAlive".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("processKillInteractive".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+        });
         // Metrics (manual API, MetricsRegistry/Stopwatch — @Timed/@Counted
         // auto-instrumentation injects the same calls directly in codegen)
         symbols.functions.insert("tinox_counter_inc".to_string(), FunctionSignature {

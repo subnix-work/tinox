@@ -2,39 +2,41 @@ module tinox.core.semaphore;
 
 namespace tinox.core.semaphore
 {
+    /**
+     * A real mutual-exclusion lock backed by pthread_mutex_t (runtime.c).
+     *
+     * lock() BLOCKS until the mutex is available -- this is a real, atomic
+     * OS-level primitive, not the "if not locked { locked = true }"
+     * check-then-act pattern this class used to be implemented with (a
+     * genuine, previously-undiscovered bug: not actually thread-safe under
+     * concurrent access despite the name/purpose, since there is no way
+     * for pure Tinox code, which has no atomic compare-and-swap builtin,
+     * to implement real mutual exclusion). tryLock()'s non-blocking,
+     * boolean-result contract is unchanged, now backed by a real
+     * pthread_mutex_trylock instead of the same broken check-then-act.
+     */
     class Mutex
     {
-        var locked: Bool;
-        var queue: List<Int64>;
+        var handle: Int64;
 
         fn new() -> Mutex
         {
-            return Mutex { locked: false, queue: [] };
+            return Mutex { handle: mutexNew() };
         }
 
         fn lock(mutex: Mutex) -> Nothing
         {
-            if mutex.locked == false
-            {
-                mutex.locked = true;
-                return;
-            }
-            throw "Mutex already locked";
+            mutexLock(mutex.handle);
         }
 
         fn unlock(mutex: Mutex) -> Nothing
         {
-            mutex.locked = false;
+            mutexUnlock(mutex.handle);
         }
 
         fn tryLock(mutex: Mutex) -> Bool
         {
-            if mutex.locked == false
-            {
-                mutex.locked = true;
-                return true;
-            }
-            return false;
+            return mutexTryLock(mutex.handle) != 0;
         }
     }
 }
