@@ -33,5 +33,29 @@ namespace tinox.core.process
         {
             envSet(name, value);
         }
+
+        /**
+         * Runs an external program via argv (never a shell): argv[0] is the
+         * program (resolved via PATH like execvp), argv[1..] are its
+         * arguments, each passed as a distinct native argument. Safe to use
+         * with untrusted argument values (e.g. taken from an HTTP path
+         * param) -- there is no shell in between to interpret them.
+         *
+         * timeoutMs <= 0 means no timeout. On timeout the process is killed
+         * and ProcessResult.timedOut is true.
+         *
+         * @param argv the program and its arguments, e.g. ["kubectl", "get", "pods", "-n", namespace, "-o", "json"]
+         * @param timeoutMs wall-clock timeout in milliseconds, or <= 0 for no timeout
+         * @return the captured stdout/stderr/exit code
+         */
+        fn run(argv: List<String>, timeoutMs: Int64) -> ProcessResult
+        {
+            let handle: Int64 = processRun(argv, timeoutMs);
+            let out: String = processResultStdout(handle);
+            let err: String = processResultStderr(handle);
+            let code: Int64 = processResultExitCode(handle);
+            let to: Int64 = processResultTimedOut(handle);
+            return ProcessResult::new(out, err, code, to != 0);
+        }
     }
 }

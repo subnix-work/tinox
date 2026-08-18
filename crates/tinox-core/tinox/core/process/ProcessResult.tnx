@@ -1,0 +1,31 @@
+namespace tinox.core.process
+{
+    /**
+     * Result of Process.run(): captured stdout/stderr, the exit code, and
+     * whether the process was killed for exceeding its timeout.
+     *
+     * exitCode is -1 when timedOut is true (no real exit status exists in
+     * that case), or -signal when the process was terminated by a signal
+     * (matches the negative-on-signal convention used elsewhere in the
+     * runtime). A conventional 127 means "exec failed" (e.g. the program
+     * wasn't found on PATH) -- the same convention a shell uses.
+     */
+    class ProcessResult
+    {
+        var stdout: String;
+        var stderr: String;
+        var exitCode: Int64;
+        var timedOut: Bool;
+
+        fn new(stdout: String, stderr: String, exitCode: Int64, timedOut: Bool) -> ProcessResult
+        {
+            return ProcessResult { stdout: stdout, stderr: stderr, exitCode: exitCode, timedOut: timedOut };
+        }
+
+        /** True if the process ran to completion with exit code 0. */
+        fn success() -> Bool
+        {
+            return this.exitCode == 0 && !this.timedOut;
+        }
+    }
+}

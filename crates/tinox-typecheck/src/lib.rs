@@ -958,6 +958,23 @@ impl TypeChecker {
                 params: vec![], return_type: ret,
             });
         }
+        // Argv-based subprocess execution (tinox_process_run et al., runtime.c)
+        // -- handles are Int64 (ptrtoint of a GC_malloc'd struct), same idiom as
+        // every other opaque native resource in this runtime.
+        symbols.functions.insert("processRun".to_string(), FunctionSignature {
+            params: vec![
+                ("argv".to_string(), ValueType::Array(Box::new(ValueType::String))),
+                ("timeoutMs".to_string(), ValueType::Int),
+            ],
+            return_type: ValueType::Int,
+        });
+        for name in &["processResultStdout", "processResultStderr", "processResultExitCode", "processResultTimedOut"] {
+            let ret = if *name == "processResultStdout" || *name == "processResultStderr" { ValueType::String }
+                      else { ValueType::Int };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ret,
+            });
+        }
         // Metrics (manual API, MetricsRegistry/Stopwatch — @Timed/@Counted
         // auto-instrumentation injects the same calls directly in codegen)
         symbols.functions.insert("tinox_counter_inc".to_string(), FunctionSignature {

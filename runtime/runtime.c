@@ -1763,6 +1763,214 @@ void envSetCurrentDir(const char* path) {
     chdir(path);
 }
 
+// ---- Argv-based subprocess execution (tinox.core.process) -----------------
+//
+// fork+execvp, never a shell: every argv element is passed as its own execvp
+// argument, so a value flowing straight from untrusted input (e.g. a
+// Kubernetes namespace/pod name taken from an HTTP path param) can never be
+// interpreted as shell syntax. This is deliberately a separate mechanism from
+// tinox_run_command_json below (popen-based, one shell-escaped command
+// string) -- that one is fine for its single fixed, compile-time-constant
+// call site (the dev-UI test runner), but is the wrong tool for a command
+// built from caller-supplied arguments.
+//
+// Handles are returned as an Int64 (ptrtoint of a GC_malloc'd struct), the
+// same "opaque native resource as an Int64 handle" idiom used throughout
+// this runtime (HTTP connection fds, DB connections, etc.) rather than a
+// pointer type — Tinox's type system has no generic opaque-pointer type.
+// The struct and its two string fields are GC_malloc'd/GC_strdup'd, so
+// there's no explicit free: once the Tinox-side handle is no longer
+// reachable, the GC reclaims it like everything else in this runtime.
+
+typedef struct {
+    char* out;
+    char* err;
+    int64_t exit_code;
+    int64_t timed_out;
+} TinoxProcessResult;
+
+typedef struct {
+    char* buf;
+    size_t len;
+    size_t cap;
+} TinoxGrowBuf;
+
+static void tinox_growbuf_append(TinoxGrowBuf* b, const char* data, size_t n) {
+    if (n == 0) return;
+    if (b->len + n + 1 > b->cap) {
+        size_t new_cap = b->cap ? b->cap * 2 : 4096;
+        while (new_cap < b->len + n + 1) new_cap *= 2;
+        char* nb = realloc(b->buf, new_cap);
+        if (!nb) {
+            fprintf(stderr, "runtime error: process_run: out of memory capturing output\n");
+            exit(1);
+        }
+        b->buf = nb;
+        b->cap = new_cap;
+    }
+    memcpy(b->buf + b->len, data, n);
+    b->len += n;
+    b->buf[b->len] = '\0';
+}
+
+// Runs argv[0] with argv[1..] as arguments, capturing stdout/stderr
+// separately and enforcing a wall-clock timeout (timeout_ms <= 0 means no
+// timeout). On timeout the child is SIGKILLed and reaped; `timed_out` is set
+// on the result and exit_code is -1 (no real exit status exists in that
+// case). A signal-terminated child reports exit_code as -signal, matching
+// the negative-on-signal convention already used elsewhere in this runtime.
+//
+// No GC_/Tinox runtime calls happen in the child between fork() and
+// execvp()/_exit() -- the one hazard specific to forking inside a GC'd,
+// multi-threaded process (another thread could hold a GC or malloc lock at
+// the moment of fork, and only the calling thread survives into the child).
+int64_t processRun(int64_t* argv_handle, int64_t timeout_ms) {
+    TinoxArray* argv_arr = (TinoxArray*)argv_handle;
+    if (!argv_arr || argv_arr->len < 1) {
+        fprintf(stderr, "runtime error: process_run: argv must have at least one element (the program)\n");
+        exit(1);
+    }
+    int64_t argc = argv_arr->len;
+    char** argv = malloc((size_t)(argc + 1) * sizeof(char*));
+    if (!argv) {
+        fprintf(stderr, "runtime error: process_run: out of memory building argv\n");
+        exit(1);
+    }
+    for (int64_t i = 0; i < argc; i++) {
+        argv[i] = (char*)argv_arr->data[i];
+    }
+    argv[argc] = NULL;
+
+    int out_pipe[2];
+    int err_pipe[2];
+    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+        fprintf(stderr, "runtime error: process_run: pipe() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "runtime error: process_run: fork() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (pid == 0) {
+        // Child. Deliberately no fprintf/GC/malloc-locking-sensitive calls
+        // here beyond what's unavoidable (dup2/close/execvp are all
+        // async-signal-safe) -- see the fork-safety note above. execvp only
+        // returns on failure; _exit(127) matches the shell's own
+        // "command not found" convention so the caller can distinguish it
+        // from a real exit code without needing a message string here.
+        dup2(out_pipe[1], STDOUT_FILENO);
+        dup2(err_pipe[1], STDERR_FILENO);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    // Parent
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+    free(argv);
+
+    int out_fd = out_pipe[0];
+    int err_fd = err_pipe[0];
+    int out_open = 1, err_open = 1;
+
+    TinoxGrowBuf out_buf = {0};
+    TinoxGrowBuf err_buf = {0};
+
+    int has_deadline = timeout_ms > 0;
+    struct timespec deadline;
+    if (has_deadline) {
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_sec += timeout_ms / 1000;
+        deadline.tv_nsec += (timeout_ms % 1000) * 1000000L;
+        if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }
+    }
+
+    int64_t timed_out = 0;
+    char readbuf[4096];
+
+    while (out_open || err_open) {
+        struct pollfd fds[2];
+        int nfds = 0;
+        int out_idx = -1, err_idx = -1;
+        if (out_open) { out_idx = nfds; fds[nfds].fd = out_fd; fds[nfds].events = POLLIN; nfds++; }
+        if (err_open) { err_idx = nfds; fds[nfds].fd = err_fd; fds[nfds].events = POLLIN; nfds++; }
+
+        int poll_timeout_ms = -1;
+        if (has_deadline) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long remain_ms = (deadline.tv_sec - now.tv_sec) * 1000L + (deadline.tv_nsec - now.tv_nsec) / 1000000L;
+            if (remain_ms <= 0) { timed_out = 1; break; }
+            poll_timeout_ms = (int)(remain_ms > INT32_MAX ? INT32_MAX : remain_ms);
+        }
+
+        int pr = poll(fds, nfds, poll_timeout_ms);
+        if (pr < 0) {
+            if (errno == EINTR) continue; // GC's SIGPWR (or any other signal): retry
+            break;
+        }
+        if (pr == 0) { timed_out = 1; break; }
+
+        if (out_open && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = read(out_fd, readbuf, sizeof(readbuf));
+            if (n > 0) tinox_growbuf_append(&out_buf, readbuf, (size_t)n);
+            else if (n == 0) { close(out_fd); out_open = 0; }
+            else if (errno != EINTR && errno != EAGAIN) { close(out_fd); out_open = 0; }
+        }
+        if (err_open && (fds[err_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = read(err_fd, readbuf, sizeof(readbuf));
+            if (n > 0) tinox_growbuf_append(&err_buf, readbuf, (size_t)n);
+            else if (n == 0) { close(err_fd); err_open = 0; }
+            else if (errno != EINTR && errno != EAGAIN) { close(err_fd); err_open = 0; }
+        }
+    }
+
+    int64_t exit_code;
+    if (timed_out) {
+        kill(pid, SIGKILL);
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        if (out_open) close(out_fd);
+        if (err_open) close(err_fd);
+        exit_code = -1;
+    } else {
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        if (WIFEXITED(status)) exit_code = WEXITSTATUS(status);
+        else if (WIFSIGNALED(status)) exit_code = -WTERMSIG(status);
+        else exit_code = -1;
+    }
+
+    TinoxProcessResult* result = (TinoxProcessResult*)GC_malloc(sizeof(TinoxProcessResult));
+    result->out = out_buf.buf ? GC_strdup(out_buf.buf) : GC_strdup("");
+    result->err = err_buf.buf ? GC_strdup(err_buf.buf) : GC_strdup("");
+    result->exit_code = exit_code;
+    result->timed_out = timed_out;
+    free(out_buf.buf);
+    free(err_buf.buf);
+    return (int64_t)(intptr_t)result;
+}
+
+char* processResultStdout(int64_t handle) {
+    return ((TinoxProcessResult*)(intptr_t)handle)->out;
+}
+
+char* processResultStderr(int64_t handle) {
+    return ((TinoxProcessResult*)(intptr_t)handle)->err;
+}
+
+int64_t processResultExitCode(int64_t handle) {
+    return ((TinoxProcessResult*)(intptr_t)handle)->exit_code;
+}
+
+int64_t processResultTimedOut(int64_t handle) {
+    return ((TinoxProcessResult*)(intptr_t)handle)->timed_out;
+}
+
 // ---- Directory builtins ----
 
 #include <dirent.h>

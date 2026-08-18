@@ -1,0 +1,58 @@
+// Process::run(argv, timeoutMs) -- argv-based subprocess execution (no
+// shell). Covers: stdout capture, non-zero exit + stderr capture, timeout
+// kill, and exec failure (127) for a missing binary.
+//
+// Bool *fields* are bound to a local `let` before println() here, not
+// printed directly (`println(r.timedOut)`) -- a local var of type Bool
+// prints correctly ("true"/"false"), but println's LLVM-type dispatch
+// (codegen.rs, the print/println arm) apparently sees a class field load as
+// i64 rather than i1 and falls through to the integer formatter, printing
+// "0"/"1" instead. Confirmed pre-existing and unrelated to this feature
+// (isolated repro against a plain Bool-field class, no Process/JSON
+// involved) and does NOT affect @JsonSerializable output (a Bool field
+// serializes as real JSON true/false, verified separately) -- only affects
+// this specific println(<direct field access>) debug-print path. Out of
+// scope to fix here; worked around instead of blocking on it.
+import tinox.core.process;
+// expect: hello world
+// expect: 0
+// expect: true
+// expect: false
+// expect: true
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: 127
+// expect: false
+class Main
+{
+    fnc main() -> Int32 {
+        let echoArgs: List<String> = ["echo", "hello", "world"];
+        let r1 = Process::run(echoArgs, 5000);
+        let r1TimedOut: Bool = r1.timedOut;
+        println(r1.stdout.trim());
+        println(r1.exitCode);
+        println(r1.success());
+        println(r1TimedOut);
+
+        let lsArgs: List<String> = ["ls", "/this-path-does-not-exist-xyz"];
+        let r2 = Process::run(lsArgs, 5000);
+        println(r2.exitCode > 0);
+        println(r2.stderr.len() > 0);
+        println(r2.success());
+
+        let sleepArgs: List<String> = ["sleep", "2"];
+        let r3 = Process::run(sleepArgs, 100);
+        let r3TimedOut: Bool = r3.timedOut;
+        println(r3TimedOut);
+        println(r3.success());
+
+        let missingArgs: List<String> = ["this-binary-does-not-exist-xyz"];
+        let r4 = Process::run(missingArgs, 5000);
+        println(r4.exitCode);
+        println(r4.success());
+
+        return 0;
+    }
+}
