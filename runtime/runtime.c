@@ -10193,6 +10193,39 @@ char* tinox_db_error(void* conn) {
     return GC_strdup(PQerrorMessage((PGconn*)conn));
 }
 
+// DB.raw()'s row marshaling. Unlike an @Entity query, an arbitrary raw SQL
+// result has no static column schema for the codegen to generate a
+// per-class `_fromRow` function from, so (unlike emit_entity_from_row) the
+// whole `List<Map<String,String>>` result is built here in one C helper
+// using the existing Map/Array primitives, keyed by PQfname's column names.
+// A NULL column is simply omitted from its row's Map (sparse) rather than
+// given a sentinel value -- Tinox code checks `.contains(col)`. Per-row
+// TinoxMap*s are stored as plain int64 payloads in a GC-managed TinoxArray,
+// same as every other Tinox List<T> of boxed values (e.g. gen_orm_query's
+// own row loop storing entity-object pointers) -- storing a non-GC (malloc'd)
+// TinoxMap* pointer inside a GC-scanned block is safe (Boehm's conservative
+// scan never collects non-GC memory regardless of what points to it), and
+// matches every other Map<K,V> value's existing memory-management story
+// (tinox_map_create is a plain malloc, not GC_malloc, same as any other
+// Tinox map literal already relies on).
+void* tinox_db_result_to_row_maps(void* result) {
+    int64_t nrows = tinox_db_nrows(result);
+    int64_t ncols = tinox_db_ncols(result);
+    int64_t* rows = tinox_array_new(nrows, 0);
+    int64_t* data = ((TinoxArray*)rows)->data;
+    for (int64_t r = 0; r < nrows; r++) {
+        void* row_map = tinox_map_create();
+        for (int64_t c = 0; c < ncols; c++) {
+            if (tinox_db_is_null(result, r, c)) continue;
+            char* col_name = PQfname((PGresult*)result, (int)c);
+            char* val = GC_strdup(PQgetvalue((PGresult*)result, (int)r, (int)c));
+            tinox_map_set(row_map, col_name, (int64_t)(intptr_t)val);
+        }
+        data[r] = (int64_t)(intptr_t)row_map;
+    }
+    return (void*)rows;
+}
+
 #elif defined(TINOX_DB_SQLITE)
 
 // ---- SQLite driver ----

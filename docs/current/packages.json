@@ -134,11 +134,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/db/1-1-0/docs.html",
+      "docs": "docs/tinox-core/db/1-2-0/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/db/tinox.toml",
       "name": "db",
-      "version": "1.1.0"
+      "version": "1.2.0"
     },
     {
       "dependencies": [],

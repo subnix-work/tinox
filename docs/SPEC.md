@@ -830,6 +830,34 @@ browse the published packages on tinox-central — this spec intentionally
 does not duplicate that list, since it is added to frequently and would
 go stale here.
 
+### Raw SQL: `DB.raw`
+
+`DB.raw(sql, params)` (package `tinox.core.db` 1.2.0) runs one parameterized
+statement for queries the ORM DSL cannot express (for example a pgvector
+`ORDER BY embedding <-> $1`):
+
+```tinox
+const rows: List<Map<String, String>> = DB.raw(
+    "SELECT id, name, note FROM items WHERE price > $1 ORDER BY id",
+    ["5.00"]
+)
+for row in rows
+{
+    println(row.get("name") + " " + row.contains("note").toString())
+}
+```
+
+- `$1`, `$2`, ... are bound from `params` (a `List<String>`; Postgres converts the
+  text). **Always pass values through `params`**: the SQL text itself is not
+  checked, so building it from untrusted input is an SQL injection.
+- Each row is a `Map<String, String>` from column name to text value. A `NULL`
+  column is absent from its row's map: test it with `row.contains(col)`.
+- No matching rows give an empty list. A failed statement aborts the program with
+  the database error, like a failed ORM query.
+- Inside `@Transactional` it runs on the transaction's connection; otherwise it
+  uses a pooled connection per call.
+- Postgres only: with any other `[database] driver` (or none) the build fails.
+
 ---
 
 ## Tooling
