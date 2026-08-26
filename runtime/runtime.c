@@ -3530,19 +3530,67 @@ bool wsIsCompressed(int64_t conn) {
 int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
 #ifdef TINOX_TLS
     if (fd < 0) return -1;
-    if (!g_tls_client_ctx) {
+    // Same custom-CA/client-cert(mTLS)/insecure-skip-verify thread-local
+    // config http_request's https:// branch honors (httpSetTlsCaCertFile/
+    // httpSetTlsClientCertFile/httpSetTlsInsecureSkipVerify) -- needed so
+    // a conn-based client (e.g. tinox.core.kubernetes' Watch, which can't
+    // use the ordinary httpGet/httpPost path for a long-lived streaming
+    // response) can authenticate against a cluster with a self-signed CA
+    // and/or client-cert auth the same way a plain request already can.
+    // Falls back to the existing shared g_tls_client_ctx behavior
+    // (system trust store only) when none of this is set, so every
+    // existing caller (AMQP/WS/SMTP STARTTLS) is unaffected.
+    int use_custom_ctx = (_tinox_tls_ca_cert_path != NULL) ||
+                          (_tinox_tls_client_cert_path != NULL) ||
+                          _tinox_tls_insecure_skip_verify;
+    SSL_CTX* ctx = NULL;
+    if (use_custom_ctx) {
         SSL_library_init();
         SSL_load_error_strings();
         OpenSSL_add_ssl_algorithms();
-        g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
-        if (!g_tls_client_ctx) { close((int)fd); return -1; }
-        SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
-        SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+        ctx = SSL_CTX_new(TLS_client_method());
+        if (ctx) {
+            SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+            if (_tinox_tls_ca_cert_path) {
+                if (SSL_CTX_load_verify_locations(ctx, _tinox_tls_ca_cert_path, NULL) != 1) {
+                    fprintf(stderr, "httpConnFromFdTls: failed to load CA cert file %s\n", _tinox_tls_ca_cert_path);
+                    SSL_CTX_free(ctx);
+                    ctx = NULL;
+                }
+            } else {
+                SSL_CTX_set_default_verify_paths(ctx);
+            }
+            if (ctx && _tinox_tls_client_cert_path && _tinox_tls_client_key_path) {
+                if (SSL_CTX_use_certificate_file(ctx, _tinox_tls_client_cert_path, SSL_FILETYPE_PEM) != 1 ||
+                    SSL_CTX_use_PrivateKey_file(ctx, _tinox_tls_client_key_path, SSL_FILETYPE_PEM) != 1 ||
+                    SSL_CTX_check_private_key(ctx) != 1) {
+                    fprintf(stderr, "httpConnFromFdTls: failed to load client cert/key (%s / %s)\n",
+                            _tinox_tls_client_cert_path, _tinox_tls_client_key_path);
+                    SSL_CTX_free(ctx);
+                    ctx = NULL;
+                }
+            }
+        }
+    } else {
+        if (!g_tls_client_ctx) {
+            SSL_library_init();
+            SSL_load_error_strings();
+            OpenSSL_add_ssl_algorithms();
+            g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
+            if (g_tls_client_ctx) {
+                SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
+                SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+            }
+        }
+        ctx = g_tls_client_ctx;
     }
-    SSL* ssl = SSL_new(g_tls_client_ctx);
-    if (!ssl) { close((int)fd); return -1; }
+    if (!ctx) { close((int)fd); return -1; }
+    SSL* ssl = SSL_new(ctx);
+    if (!ssl) { if (use_custom_ctx) SSL_CTX_free(ctx); close((int)fd); return -1; }
     SSL_set_tlsext_host_name(ssl, host); // SNI
-    if (verify) {
+    if (_tinox_tls_insecure_skip_verify) {
+        SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
+    } else if (verify) {
         SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
         SSL_set1_host(ssl, host); // hostname must match the peer certificate
     } else {
@@ -3552,6 +3600,7 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     if (SSL_connect(ssl) <= 0) {
         ERR_print_errors_fp(stderr);
         SSL_free(ssl);
+        if (use_custom_ctx) SSL_CTX_free(ctx);
         close((int)fd);
         return -1;
     }

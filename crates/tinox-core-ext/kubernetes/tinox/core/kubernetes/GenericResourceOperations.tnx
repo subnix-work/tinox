@@ -119,5 +119,14 @@ namespace tinox.core.kubernetes
             let resp: KubeResponse = this.client.request("DELETE", this.basePath() + "/" + name, "");
             resp.throwIfError("delete " + this.plural + "/" + name);
         }
+
+        // Opens a live watch on this resource collection (or, combined
+        // with `.inNamespace(ns)`, this namespace's collection of it).
+        // See Watch's own doc comment for what it streams and its
+        // known simplifications (no resourceVersion resume support).
+        fn watch() -> Watch
+        {
+            return Watch::open(this.client, this.basePath());
+        }
     }
 }
