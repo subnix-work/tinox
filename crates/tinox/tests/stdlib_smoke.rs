@@ -36,6 +36,10 @@ const EXCLUDED: &[(&str, &str)] = &[
         "http3_server",
         "needs TINOX_HTTP3=1 (opt-in, default OFF -- unlike OpenSSL, ngtcp2/nghttp3 aren't universally installed); a smoke case without this flag would fail at link time. Covered by crates/tinox/tests/http3_server_curl.rs (its own process, real curl --http3-only, skips cleanly instead of failing when ngtcp2/nghttp3/HTTP3-curl are missing on the build machine).",
     ),
+    (
+        "ui",
+        "not yet published to tinox-central (issue #215's Phase 6) -- same reasoning as tinox.core:kubernetes had here before its own publish: a SMOKES case's auto-synthesized tinox.toml + `tinox install` fetches the REGISTRY version, not this workspace's own source. Add a real SMOKES entry once a version is published. Covered instead by crates/tinox/tests/tinox_ui_hello.rs (a real compiled example, live WebSocket protocol round-trip, and its own local-source-staging so it doesn't depend on tinox-central at all).",
+    ),
 ];
 
 struct Smoke {

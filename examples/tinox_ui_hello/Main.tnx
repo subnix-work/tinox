@@ -1,0 +1,27 @@
+// Plain HTTP server (on its own port) serving the Tinox-UI shell page +
+// generic client JS, alongside HelloApp's own @WebsocketEndpoint (a
+// separate port, spawned on its own thread by the mandatory-entry-point
+// bootstrap -- cross-kind combinations like HTTP + WebSocket in one
+// program have been allowed since 2026-08-09).
+//
+// Start: tinox run examples/tinox_ui_hello/Main.tnx
+// Open:  http://localhost:8280/
+import tinox.core.ui;
+import tinox.core.http_server;
+import HelloApp;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let srv: HttpServer = HttpServer::new(8280);
+        srv.get("/", ctx => {
+            ctx.response.html(Assets::shellHtml("ws://localhost:8281/__tinoxui"));
+        });
+        srv.get("/ui.js", ctx => {
+            ctx.response.content(Assets::clientJs(), "application/javascript");
+        });
+        srv.listen();
+        return 0;
+    }
+}

@@ -1,0 +1,75 @@
+// Tinox-UI "hello world": a label showing a click count and a button
+// that increments it. Demonstrates the whole v1 (Phase 1) hand-wired
+// shape -- no @TinoxUIApp/@View annotation sugar yet (that's Phase 4) --
+// so every app currently writes this same @OnOpen/@OnMessage/@OnClose
+// boilerplate by hand.
+//
+// State (`clicks`) lives directly as an instance field on this
+// @WebsocketEndpoint class -- see tinox.core.ui's TinoxUIRuntime doc
+// comment for why that's enough (no separate session registry needed):
+// one fresh instance per accepted connection, running on its own thread
+// since the Phase 0 concurrency fix, with `this` passed to every
+// @OnOpen/@OnMessage/@OnClose call for that same connection.
+import tinox.core.ui;
+import tinox.core.websocket;
+
+@WebsocketEndpoint("/__tinoxui", 8281)
+class HelloApp
+{
+    var clicks: Int64;
+    var root: Component;
+    var handlers: Map<String, fnc(String) -> Nothing>;
+
+    @OnOpen
+    fn onOpen(conn: Int64) -> Nothing
+    {
+        this.clicks = 0;
+        this.rerender();
+        TinoxUIRuntime::sendInit(conn, this.root);
+    }
+
+    @OnMessage
+    fn onMessage(conn: Int64, msg: String) -> Nothing
+    {
+        // "Automatic reactivity": every event handler ends with the
+        // framework rebuilding and resending the tree -- the handler
+        // itself (see build() below) only ever mutates state, it never
+        // has to remember to trigger a re-render.
+        TinoxUIRuntime::dispatchEvent(this.handlers, msg);
+        this.rerender();
+        TinoxUIRuntime::sendUpdate(conn, this.root);
+    }
+
+    @OnClose
+    fn onClose(conn: Int64) -> Nothing
+    {
+    }
+
+    fn rerender() -> Nothing
+    {
+        this.root = this.build();
+        this.handlers = TinoxUIRuntime::buildHandlers(this.root);
+    }
+
+    fn build() -> Component
+    {
+        // `this` itself can't be captured by a nested lambda directly
+        // ("'this' used outside of a method") -- only explicitly named
+        // locals are captured, so it's aliased to `app` first (`self` is
+        // a reserved keyword). `app` is still the SAME HelloApp instance
+        // reference (a heap object), so mutating `app.clicks` through it
+        // from inside the lambda is
+        // visible on every later call, exactly like a captured class
+        // instance always is in Tinox (unlike a captured plain scalar
+        // local, which is snapshotted by value at closure-creation time
+        // and never updates) -- see this module's own docs for why
+        // per-connection app state belongs on instance fields, not loose
+        // locals, for exactly this reason.
+        let app: HelloApp = this;
+        return Component::vbox([
+            Component::label("Tinox-UI Hello"),
+            Component::label("Clicks: " + this.clicks.toString()),
+            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1; })
+        ]);
+    }
+}

@@ -1,0 +1,147 @@
+module tinox.core.ui;
+
+namespace tinox.core.ui
+{
+    // The two static assets every Tinox-UI app needs to serve over plain
+    // HTTP: a minimal shell page (one mount `<div>`, nothing else) and
+    // the generic client runtime (~130 lines, hand-written -- see the
+    // module's own docs for why this is deliberately NOT generated from
+    // Tinox: it's the one piece of the whole framework that has to run
+    // as real client-side JS, same as Vaadin's/Phoenix LiveView's own
+    // client isn't Java/Elixir either).
+    //
+    // Baked in as string constants (not read from disk via Fs::readFile)
+    // so a compiled app never has a "forgot to ship ui.js next to the
+    // binary" deployment footgun.
+    class Assets
+    {
+        // wsUrl: the full "ws://host:port/path" the client should connect
+        // to -- substituted in verbatim (no templating engine needed for
+        // one placeholder). Callers are responsible for the value being
+        // safe to embed in a `<script>` block (a compile-time constant
+        // the app itself controls, not untrusted input).
+        fnc shellHtml(wsUrl: String) -> String
+        {
+            let template: String = Assets::shellHtmlTemplate();
+            return template.replace("__TINOX_UI_WS_URL__", wsUrl);
+        }
+
+        fnc shellHtmlTemplate() -> String
+        {
+            return r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tinox-UI</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; }
+  #tinox-ui-root { display: flex; flex-direction: column; gap: 0.5rem; max-width: 40rem; }
+</style>
+</head>
+<body>
+<div id="tinox-ui-root"></div>
+<script>window.TINOX_UI_WS_URL = "__TINOX_UI_WS_URL__";</script>
+<script src="/ui.js"></script>
+</body>
+</html>
+"#;
+        }
+
+        fnc clientJs() -> String
+        {
+            return r#"(function () {
+  "use strict";
+  var mount = document.getElementById("tinox-ui-root");
+  var ws = null;
+
+  function connect() {
+    ws = new WebSocket(window.TINOX_UI_WS_URL);
+    ws.onmessage = function (ev) {
+      var msg = JSON.parse(ev.data);
+      if (msg.kind === "init" || msg.kind === "update") {
+        mount.replaceChildren(build(msg.root));
+      }
+    };
+    ws.onclose = function () {
+      // v1 has no reconnect (documented gap, see the module's own docs) --
+      // a dropped connection just stops updating.
+    };
+  }
+
+  function sendEvent(id, value) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ kind: "event", id: id, value: value }));
+    }
+  }
+
+  // The one place that needs a matching entry whenever a new widget
+  // `type` is added server-side (Component.tnx) -- documented as a real
+  // two-sided contract in the module's own docs, the same way e.g. HTTP
+  // status codes have to stay in sync across this project's own
+  // HttpStatusHelper.
+  function build(node) {
+    if (!node || node.visible === false) {
+      return document.createElement("span");
+    }
+    var el;
+    var props = node.props || {};
+    switch (node.type) {
+      case "Label":
+        el = document.createElement("span");
+        el.textContent = node.text;
+        break;
+      case "Button":
+        el = document.createElement("button");
+        el.textContent = node.text;
+        el.addEventListener("click", function () { sendEvent(node.id, ""); });
+        break;
+      case "TextField":
+        el = document.createElement("input");
+        el.type = "text";
+        el.value = props.value || "";
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
+      case "Checkbox":
+        el = document.createElement("input");
+        el.type = "checkbox";
+        el.checked = props.checked === "true";
+        el.addEventListener("change", function () {
+          sendEvent(node.id, el.checked ? "true" : "false");
+        });
+        break;
+      case "VBox":
+        el = document.createElement("div");
+        el.style.display = "flex";
+        el.style.flexDirection = "column";
+        el.style.gap = "0.5rem";
+        break;
+      case "HBox":
+        el = document.createElement("div");
+        el.style.display = "flex";
+        el.style.flexDirection = "row";
+        el.style.gap = "0.5rem";
+        break;
+      case "Html":
+        el = document.createElement("div");
+        el.innerHTML = node.text;
+        break;
+      default:
+        el = document.createElement("div");
+    }
+    el.setAttribute("data-tinox-id", node.id);
+    if (props.style) {
+      el.setAttribute("style", (el.getAttribute("style") || "") + ";" + props.style);
+    }
+    var children = node.children || [];
+    for (var i = 0; i < children.length; i++) {
+      el.appendChild(build(children[i]));
+    }
+    return el;
+  }
+
+  connect();
+})();
+"#;
+        }
+    }
+}

@@ -1,0 +1,95 @@
+module tinox.core.ui;
+
+import tinox.core.json;
+
+namespace tinox.core.ui
+{
+    // A node in a Tinox-UI component tree. Deliberately ONE concrete class
+    // (not a typed subclass per widget kind) -- `type` + `props` carry the
+    // widget-specific shape, dispatched client-side by a small lookup
+    // table (see the bundled ui.js). This avoids an open question this
+    // module doesn't need to answer yet: whether a `Component` subclass
+    // round-trips correctly through the generic @JsonSerializable base-
+    // class field type (untested; revisit only once the widget set has
+    // grown enough that stringly-typed `props` genuinely hurts).
+    //
+    // `onEvent` is deliberately NOT part of what gets sent to the client
+    // (@DoNotSerialize) -- the client only ever needs to know THAT an
+    // interaction happened and report it back, never what runs on the
+    // server for it. Every factory sets `onEvent` (even non-interactive
+    // ones, to an inert handler) so `TinoxUIRuntime.finalize` never has to
+    // special-case "does this component even have a handler" -- it just
+    // always registers one, which is harmless since the client only ever
+    // emits an event for elements it actually renders as interactive.
+    @JsonSerializable
+    class Component
+    {
+        var id: String;
+        var type: String;
+        var text: String;
+        var props: Map<String, String>;
+        var children: List<Component>;
+        var visible: Bool;
+
+        @DoNotSerialize
+        var onEvent: fnc(String) -> Nothing;
+
+        fnc inert(value: String) -> Nothing
+        {
+        }
+
+        fnc label(text: String) -> Component
+        {
+            return Component { id: "", type: "Label", text: text, props: Map::new(), children: [], visible: true, onEvent: fn(v: String) { } };
+        }
+
+        // onClick is invoked with an always-empty value ("") -- Button
+        // has nothing meaningful to report beyond "it was clicked".
+        fnc button(text: String, onClick: fnc(String) -> Nothing) -> Component
+        {
+            return Component { id: "", type: "Button", text: text, props: Map::new(), children: [], visible: true, onEvent: onClick };
+        }
+
+        fnc textField(value: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value);
+            return Component { id: "", type: "TextField", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        fnc checkbox(checked: Bool, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("checked", checked ? "true" : "false");
+            return Component { id: "", type: "Checkbox", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        fnc vbox(children: List<Component>) -> Component
+        {
+            return Component { id: "", type: "VBox", text: "", props: Map::new(), children: children, visible: true, onEvent: fn(v: String) { } };
+        }
+
+        fnc hbox(children: List<Component>) -> Component
+        {
+            return Component { id: "", type: "HBox", text: "", props: Map::new(), children: children, visible: true, onEvent: fn(v: String) { } };
+        }
+
+        // Escape hatch for anything the v1 widget set doesn't cover yet --
+        // raw HTML string, rendered as-is client-side. Mirrors the same
+        // "generic client alongside the typed convenience layer" shape
+        // tinox.core.kubernetes' GenericResourceOperations already
+        // established for this project.
+        fnc html(rawHtml: String) -> Component
+        {
+            return Component { id: "", type: "Html", text: rawHtml, props: Map::new(), children: [], visible: true, onEvent: fn(v: String) { } };
+        }
+
+        // Sets an inline CSS style string (v1's only styling mechanism --
+        // see the module's own docs for why no theming system exists yet).
+        fn withStyle(style: String) -> Component
+        {
+            this.props.insert("style", style);
+            return this;
+        }
+    }
+}

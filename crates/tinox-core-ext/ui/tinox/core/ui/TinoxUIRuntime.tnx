@@ -1,0 +1,80 @@
+module tinox.core.ui;
+
+import tinox.core.json;
+import tinox.core.websocket;
+
+namespace tinox.core.ui
+{
+    // Stateless helpers backing a Tinox-UI app's own @WebsocketEndpoint
+    // class. Deliberately holds NO state of its own (no global session
+    // registry) -- Tinox has no module-level/static mutable variables, so
+    // the natural place for per-connection state is exactly where the
+    // compiler already isolates it: the fresh class instance
+    // @WebsocketEndpoint's generated code allocates once per accepted
+    // connection (one real OS thread per connection since the Phase 0
+    // concurrency fix) and passes as `this` to every @OnOpen/@OnMessage/
+    // @OnClose call for that connection. An app's own
+    // `var root: Component;`/`var handlers: Map<...>;` fields on ITS
+    // OWN endpoint class already ARE the per-connection session, with no
+    // extra bookkeeping and no cross-thread lookup needed.
+    class TinoxUIRuntime
+    {
+        // Assigns a fresh, depth-first "cN" id to `node` and every
+        // descendant, and returns a Map of id -> handler covering the
+        // whole tree (used by dispatchEvent below). IDs are NOT stable
+        // across separate calls (a v1 deliberate choice -- v1's rendering
+        // strategy always replaces the client's entire DOM subtree on
+        // every update, see the module's own docs, so there's nothing for
+        // a stable id to help correlate across renders; only needs to be
+        // unique WITHIN one render).
+        fnc buildHandlers(root: Component) -> Map<String, fnc(String) -> Nothing>
+        {
+            let handlers: Map<String, fnc(String) -> Nothing> = Map::new();
+            let counter: List<Int64> = [0];
+            TinoxUIRuntime::assignIds(root, handlers, counter);
+            return handlers;
+        }
+
+        fnc assignIds(node: Component, handlers: Map<String, fnc(String) -> Nothing>, counter: List<Int64>) -> Nothing
+        {
+            let id: String = "c" + counter[0].toString();
+            counter[0] = counter[0] + 1;
+            node.id = id;
+            handlers.insert(id, node.onEvent);
+            var i: Int64 = 0;
+            while i < node.children.len()
+            {
+                TinoxUIRuntime::assignIds(node.children[i], handlers, counter);
+                i = i + 1;
+            }
+        }
+
+        fnc sendInit(conn: Int64, root: Component) -> Nothing
+        {
+            Ws::sendText(conn, "{\"kind\":\"init\",\"root\":" + Json::serialize(root) + "}");
+        }
+
+        fnc sendUpdate(conn: Int64, root: Component) -> Nothing
+        {
+            Ws::sendText(conn, "{\"kind\":\"update\",\"root\":" + Json::serialize(root) + "}");
+        }
+
+        // Parses a client event message ({"kind":"event","id":...,"value":...})
+        // and calls the matching handler from a buildHandlers()-produced
+        // map. A missing id (stale event from an already-replaced render,
+        // or a malformed/unexpected message) is silently ignored rather
+        // than thrown -- a real, documented v1 gap, not an oversight: see
+        // the module's own docs on reconnect/staleness handling.
+        fnc dispatchEvent(handlers: Map<String, fnc(String) -> Nothing>, msg: String) -> Nothing
+        {
+            let event: JsonValue = Json::parse(msg);
+            let id: String = event.getField("id").getString();
+            let value: String = event.getField("value").getString();
+            if handlers.contains(id)
+            {
+                let handler: fnc(String) -> Nothing = handlers.get(id);
+                handler(value);
+            }
+        }
+    }
+}
