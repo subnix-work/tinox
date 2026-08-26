@@ -1,0 +1,132 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    // Generic CRUD over ANY Kubernetes resource kind -- built-in or a
+    // CRD-defined custom resource -- addressed purely by its
+    // group/version/plural (exactly what `kubectl api-resources` lists),
+    // with no compiled-in knowledge of the kind's shape. This is what
+    // makes "every resource kind" true structurally: KubernetesClient's
+    // typed convenience methods (pods()/deployments()/...) are thin
+    // wrappers over this same class for the common built-in kinds, but
+    // any kind -- including one this client has no dedicated method or
+    // model class for -- is reachable the same way via
+    // `client.resource(group, version, plural, namespaced)`.
+    class GenericResourceOperations
+    {
+        var client: KubernetesClient;
+        var group: String;
+        var version: String;
+        var plural: String;
+        var namespaced: Bool;
+        var namespace: String;
+
+        // Named `of`, not `create` -- this class also has an instance
+        // `create(bodyJson)` (the REST POST operation) and this compiler
+        // does not support two methods sharing a name in one class, even
+        // when one is static (`fnc`) and the other an instance method
+        // (`fn`): a `Class::create(...)` call resolved to whichever one
+        // regardless of arity, silently mistypechecking the other call
+        // site instead of rejecting the duplicate name outright.
+        fnc of(client: KubernetesClient, group: String, version: String, plural: String, namespaced: Bool, namespace: String) -> GenericResourceOperations
+        {
+            return GenericResourceOperations {
+                client: client, group: group, version: version, plural: plural,
+                namespaced: namespaced, namespace: namespace
+            };
+        }
+
+        fn inNamespace(namespace: String) -> GenericResourceOperations
+        {
+            return GenericResourceOperations {
+                client: this.client, group: this.group, version: this.version, plural: this.plural,
+                namespaced: this.namespaced, namespace: namespace
+            };
+        }
+
+        fn basePath() -> String
+        {
+            var apiRoot: String = "";
+            if this.group.len() == 0
+            {
+                apiRoot = "/api/" + this.version;
+            }
+            else
+            {
+                apiRoot = "/apis/" + this.group + "/" + this.version;
+            }
+            if this.namespaced
+            {
+                return apiRoot + "/namespaces/" + this.namespace + "/" + this.plural;
+            }
+            return apiRoot + "/" + this.plural;
+        }
+
+        // Full raw JSON response ({kind: "...List", items: [...], ...}) --
+        // use `.getField("items").asList()` to iterate, then a typed
+        // class's own `::fromJson(item)` for the common kinds.
+        fn list() -> JsonValue
+        {
+            let resp: KubeResponse = this.client.request("GET", this.basePath(), "");
+            resp.throwIfError("list " + this.plural);
+            return resp.json();
+        }
+
+        fn get(name: String) -> JsonValue
+        {
+            let resp: KubeResponse = this.client.request("GET", this.basePath() + "/" + name, "");
+            resp.throwIfError("get " + this.plural + "/" + name);
+            return resp.json();
+        }
+
+        fn exists(name: String) -> Bool
+        {
+            let resp: KubeResponse = this.client.request("GET", this.basePath() + "/" + name, "");
+            return resp.isSuccess();
+        }
+
+        fn create(bodyJson: String) -> JsonValue
+        {
+            let resp: KubeResponse = this.client.request("POST", this.basePath(), bodyJson);
+            resp.throwIfError("create " + this.plural);
+            return resp.json();
+        }
+
+        // Full-object replace (HTTP PUT) -- bodyJson must carry the
+        // current resourceVersion for an update to an existing object
+        // (the standard optimistic-concurrency check every Kubernetes
+        // API write goes through).
+        fn update(name: String, bodyJson: String) -> JsonValue
+        {
+            let resp: KubeResponse = this.client.request("PUT", this.basePath() + "/" + name, bodyJson);
+            resp.throwIfError("update " + this.plural + "/" + name);
+            return resp.json();
+        }
+
+        // JSON Merge Patch (RFC 7386) -- patchJson only needs the fields
+        // being changed, not the whole object (unlike update()).
+        fn patchMerge(name: String, patchJson: String) -> JsonValue
+        {
+            let resp: KubeResponse = this.client.request("PATCH", this.basePath() + "/" + name, patchJson);
+            resp.throwIfError("patch " + this.plural + "/" + name);
+            return resp.json();
+        }
+
+        fn delete(name: String) -> Nothing
+        {
+            let resp: KubeResponse = this.client.request("DELETE", this.basePath() + "/" + name, "");
+            resp.throwIfError("delete " + this.plural + "/" + name);
+        }
+
+        // Opens a live watch on this resource collection (or, combined
+        // with `.inNamespace(ns)`, this namespace's collection of it).
+        // See Watch's own doc comment for what it streams and its
+        // known simplifications (no resourceVersion resume support).
+        fn watch() -> Watch
+        {
+            return Watch::open(this.client, this.basePath());
+        }
+    }
+}

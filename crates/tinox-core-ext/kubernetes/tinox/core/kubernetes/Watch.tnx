@@ -1,0 +1,217 @@
+module tinox.core.kubernetes;
+
+import tinox.core.socket;
+import tinox.core.http;
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+    extern fn httpConnReadLine(conn: Int64) -> String;
+
+    // A live `?watch=true` connection to the API server: each `next()`
+    // call blocks until the next WatchEvent line arrives (or the stream
+    // ends, e.g. the server closed the connection after its configured
+    // watch timeout -- callers that want to watch "forever" should
+    // reopen on a "" result). One JSON object per line is the actual
+    // wire format (newline-delimited JSON), same as `kubectl get ... -w
+    // -o json` streams.
+    //
+    // Deliberately does NOT go through KubernetesClient::request/Http --
+    // that path always reads the FULL response body before returning
+    // (fine for ordinary CRUD, wrong for a long-lived streaming
+    // response). Built directly on tinox.core.socket + the httpConn*
+    // conn primitives (the same building blocks WsClient/SmtpClient use
+    // for their own long-lived connections), reading and dechunking the
+    // HTTP/1.1 chunked-transfer-encoded body incrementally by hand --
+    // the real Kubernetes API server always sends watch responses this
+    // way (no Content-Length is possible for a stream with no known
+    // end).
+    //
+    // No resourceVersion support in v1 (deliberate, narrower scope): a
+    // real production watch loop resumes from the resourceVersion of its
+    // last-seen event (or an initial list()'s) to avoid a gap/duplicate
+    // window across a reconnect -- omitted here, watches from "now" only
+    // (the server's own default when no resourceVersion query param is
+    // given), matching `kubectl get -w`'s default behavior.
+    class Watch
+    {
+        var conn: Int64;
+        var buffer: String;
+        var streamEnded: Bool;
+
+        // `path` is the resource's own base path, e.g. from
+        // GenericResourceOperations::basePath() -- GenericResourceOperations::watch()
+        // is the normal entry point, not this directly.
+        fnc open(client: KubernetesClient, path: String) -> Watch
+        {
+            let auth: ClusterAuth = client.auth;
+            let parsed: ParsedUrl = ParsedUrl::parse(auth.serverUrl);
+
+            let fd: Int64 = socketCreateTcp();
+            if !socketConnect(fd, parsed.host, parsed.port)
+            {
+                throw "Watch::open: failed to connect to " + parsed.host + ":" + parsed.port.toString();
+            }
+
+            var conn: Int64 = 0;
+            if parsed.isHttps
+            {
+                if auth.caCertPath.len() > 0
+                {
+                    Http::setTlsCaCertFile(auth.caCertPath);
+                }
+                if auth.clientCertPath.len() > 0 && auth.clientKeyPath.len() > 0
+                {
+                    Http::setTlsClientCertFile(auth.clientCertPath, auth.clientKeyPath);
+                }
+                if auth.insecureSkipTlsVerify
+                {
+                    Http::setTlsInsecureSkipVerify(true);
+                }
+                conn = httpConnFromFdTls(fd, parsed.host, !auth.insecureSkipTlsVerify);
+                Http::clearTlsConfig();
+            }
+            else
+            {
+                conn = httpConnFromFd(fd);
+            }
+            if conn <= 0
+            {
+                throw "Watch::open: TLS handshake / connection setup failed for " + parsed.host + ":" + parsed.port.toString();
+            }
+
+            let watchPath: String = path.contains("?") ? (path + "&watch=true") : (path + "?watch=true");
+            var req: String = "GET " + watchPath + " HTTP/1.1\r\n";
+            req = req + "Host: " + parsed.host + "\r\n";
+            req = req + "Accept: application/json\r\n";
+            if auth.bearerToken.len() > 0
+            {
+                req = req + "Authorization: Bearer " + auth.bearerToken + "\r\n";
+            }
+            req = req + "Connection: keep-alive\r\n\r\n";
+            httpConnSendRaw(conn, req);
+
+            // Read the response head line-by-line (NOT httpConnReadRequest --
+            // that call's single-shot recv can read past the header/body
+            // boundary into the start of the chunked stream and drop those
+            // bytes, since a chunked response has no Content-Length for it
+            // to stop at). httpConnReadLine reads one byte at a time, so it
+            // can never over-read past the blank line ending the headers.
+            let statusLine: String = httpConnReadLine(conn);
+            if !statusLine.contains("200")
+            {
+                httpConnClose(conn);
+                throw "Watch::open: unexpected response: " + statusLine;
+            }
+            while true
+            {
+                let line: String = httpConnReadLine(conn);
+                if line.len() == 0
+                {
+                    break;
+                }
+            }
+
+            return Watch { conn: conn, buffer: "", streamEnded: false };
+        }
+
+        // Next WatchEvent JSON line, or "" once the stream has ended.
+        fn next() -> String
+        {
+            while true
+            {
+                let nlIdx: Int64 = this.buffer.indexOf("\n");
+                if nlIdx >= 0
+                {
+                    let line: String = this.buffer.substring(0, nlIdx);
+                    this.buffer = this.buffer.substring(nlIdx + 1, this.buffer.len());
+                    let trimmed: String = line.trim();
+                    if trimmed.len() > 0
+                    {
+                        return trimmed;
+                    }
+                    continue;
+                }
+                if this.streamEnded
+                {
+                    return "";
+                }
+                let chunk: String = this.readNextChunk();
+                if chunk.len() == 0
+                {
+                    this.streamEnded = true;
+                    continue;
+                }
+                this.buffer = this.buffer + chunk;
+            }
+            return "";
+        }
+
+        // One HTTP/1.1 chunk's worth of body content (RFC 7230 4.1):
+        // "<hex-size>[;ext]\r\n<data>\r\n". "" both for the terminating
+        // zero-size chunk and for a connection error/EOF -- next() treats
+        // either as "stream ended", the right behavior for both (a
+        // deliberate server-side close after its watch timeout is the
+        // normal way a watch ends, not an error).
+        fn readNextChunk() -> String
+        {
+            let sizeLine: String = httpConnReadLine(this.conn);
+            if sizeLine.len() == 0
+            {
+                return "";
+            }
+            var hexPart: String = sizeLine;
+            let semi: Int64 = hexPart.indexOf(";");
+            if semi >= 0
+            {
+                hexPart = hexPart.substring(0, semi);
+            }
+            hexPart = hexPart.trim();
+            let size: Int64 = Watch::parseHex(hexPart);
+            if size <= 0
+            {
+                return "";
+            }
+            let bytes: List<Int64> = httpConnReadN(this.conn, size);
+            if bytes.len() < size
+            {
+                this.streamEnded = true;
+            }
+            httpConnReadN(this.conn, 2); // trailing CRLF after chunk data
+            return tinoxBytesToString(bytes);
+        }
+
+        fnc parseHex(s: String) -> Int64
+        {
+            var result: Int64 = 0;
+            var i: Int64 = 0;
+            while i < s.len()
+            {
+                let c: String = s.substring(i, i + 1).toLower();
+                let code: Int64 = c.charCodeAt(0);
+                var digit: Int64 = -1;
+                if code >= 48 && code <= 57
+                {
+                    digit = code - 48;
+                }
+                else if code >= 97 && code <= 102
+                {
+                    digit = code - 97 + 10;
+                }
+                if digit < 0
+                {
+                    return result;
+                }
+                result = result * 16 + digit;
+                i = i + 1;
+            }
+            return result;
+        }
+
+        fn close() -> Nothing
+        {
+            httpConnClose(this.conn);
+        }
+    }
+}

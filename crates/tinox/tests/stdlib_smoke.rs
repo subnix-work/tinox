@@ -277,6 +277,18 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "kubernetes",
+        // No network I/O here on purpose (CI has no live cluster to talk
+        // to) -- this only needs to catch ghost-builtin/codegen breakage
+        // in the module itself, the same job every other SMOKES case
+        // does. Real CRUD/Watch behavior is verified manually against a
+        // live minikube cluster (see the module's own commit history).
+        imports: &["tinox.core.kubernetes", "tinox.core.json"],
+        body: "var containers: List<Container> = [];\n    containers.push(Container::simple(\"c\", \"nginx:alpine\"));\n    let pod: Pod = Pod::create(\"smoke-pod\", \"default\", containers);\n    let j: String = Json::serialize(pod);\n    if j.contains(\"nginx:alpine\") { println(\"yes\"); } else { println(\"no\"); }",
+        expects: &["yes"],
+        contains: &[],
+    },
+    Smoke {
         key: "logger",
         imports: &["tinox.core.logger"],
         body: "let l: Logger = Logger::new(\"t\");\n    Logger::info(l, \"hello-smoke\");",

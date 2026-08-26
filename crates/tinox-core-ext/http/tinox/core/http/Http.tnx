@@ -23,6 +23,17 @@ namespace tinox.core.http
     extern fn httpPatch(url: String, body: String) -> HttpClientResponse;
     extern fn httpSetHeader(name: String, value: String) -> Nothing;
     extern fn httpClearHeaders() -> Nothing;
+    // Per-thread TLS client config for https:// requests -- custom CA
+    // (e.g. a Kubernetes cluster's own self-signed CA, not in the system
+    // trust store), client cert/key (mTLS), and insecure-skip-verify.
+    // Takes effect on the next httpGet/httpPost/etc. call on this thread
+    // and stays set until httpClearTlsConfig() -- same "configure via
+    // thread-local state, then call" shape as httpSetHeader/
+    // httpClearHeaders above.
+    extern fn httpSetTlsCaCertFile(path: String) -> Nothing;
+    extern fn httpSetTlsClientCertFile(certPath: String, keyPath: String) -> Nothing;
+    extern fn httpSetTlsInsecureSkipVerify(enabled: Int64) -> Nothing;
+    extern fn httpClearTlsConfig() -> Nothing;
     extern fn httpStatusCode(resp: HttpClientResponse) -> Int64;
     extern fn httpBody(resp: HttpClientResponse) -> String;
     extern fn httpHeader(resp: HttpClientResponse, name: String) -> String;
@@ -74,6 +85,26 @@ namespace tinox.core.http
         fn clearHeaders() -> Nothing
         {
             httpClearHeaders();
+        }
+
+        fn setTlsCaCertFile(path: String) -> Nothing
+        {
+            httpSetTlsCaCertFile(path);
+        }
+
+        fn setTlsClientCertFile(certPath: String, keyPath: String) -> Nothing
+        {
+            httpSetTlsClientCertFile(certPath, keyPath);
+        }
+
+        fn setTlsInsecureSkipVerify(enabled: Bool) -> Nothing
+        {
+            httpSetTlsInsecureSkipVerify(enabled ? 1 : 0);
+        }
+
+        fn clearTlsConfig() -> Nothing
+        {
+            httpClearTlsConfig();
         }
     }
 }

@@ -1,0 +1,25 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class RoleBinding
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var subjects: List<Subject>;
+        var roleRef: RoleRef;
+
+        fnc create(name: String, namespace: String, subjects: List<Subject>, roleRef: RoleRef) -> RoleBinding
+        {
+            return RoleBinding {
+                apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding",
+                metadata: ObjectMeta::withNameAndNamespace(name, namespace),
+                subjects: subjects, roleRef: roleRef
+            };
+        }
+    }
+}

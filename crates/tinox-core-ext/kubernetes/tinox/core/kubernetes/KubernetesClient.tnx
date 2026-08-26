@@ -1,0 +1,167 @@
+module tinox.core.kubernetes;
+
+import tinox.core.http;
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    class KubernetesClient
+    {
+        var auth: ClusterAuth;
+
+        fnc fromDefaultConfig() -> KubernetesClient
+        {
+            return KubernetesClient { auth: KubeConfigLoader::fromDefaultLocation() };
+        }
+
+        fnc fromKubeconfig(path: String) -> KubernetesClient
+        {
+            return KubernetesClient { auth: KubeConfigLoader::fromFile(path) };
+        }
+
+        fnc inCluster() -> KubernetesClient
+        {
+            return KubernetesClient { auth: KubeConfigLoader::inCluster() };
+        }
+
+        fnc withAuth(auth: ClusterAuth) -> KubernetesClient
+        {
+            return KubernetesClient { auth: auth };
+        }
+
+        fn defaultNamespace() -> String
+        {
+            return this.auth.namespace;
+        }
+
+        // Entry point for ANY resource kind -- see GenericResourceOperations
+        // for why this alone already covers "every kind", built-in or CRD.
+        fn resource(group: String, version: String, plural: String, namespaced: Bool) -> GenericResourceOperations
+        {
+            return GenericResourceOperations::of(this, group, version, plural, namespaced, this.auth.namespace);
+        }
+
+        // ---- Typed convenience for the common built-in kinds ----
+        // Each just fixes the (group, version, plural, namespaced) tuple
+        // `kubectl api-resources` would list -- the real work is entirely
+        // in GenericResourceOperations. Pair with the matching model
+        // class's own toJson()/fromJson() (e.g. `client.pods().create(
+        // Json::serialize(pod))`, `Pod::fromJson(client.pods().get(name))`).
+
+        fn pods() -> GenericResourceOperations { return this.resource("", "v1", "pods", true); }
+        fn services() -> GenericResourceOperations { return this.resource("", "v1", "services", true); }
+        fn configMaps() -> GenericResourceOperations { return this.resource("", "v1", "configmaps", true); }
+        fn secrets() -> GenericResourceOperations { return this.resource("", "v1", "secrets", true); }
+        fn serviceAccounts() -> GenericResourceOperations { return this.resource("", "v1", "serviceaccounts", true); }
+        fn persistentVolumeClaims() -> GenericResourceOperations { return this.resource("", "v1", "persistentvolumeclaims", true); }
+        fn endpoints() -> GenericResourceOperations { return this.resource("", "v1", "endpoints", true); }
+        fn namespaces() -> GenericResourceOperations { return this.resource("", "v1", "namespaces", false); }
+        fn nodes() -> GenericResourceOperations { return this.resource("", "v1", "nodes", false); }
+        fn persistentVolumes() -> GenericResourceOperations { return this.resource("", "v1", "persistentvolumes", false); }
+
+        fn deployments() -> GenericResourceOperations { return this.resource("apps", "v1", "deployments", true); }
+        fn replicaSets() -> GenericResourceOperations { return this.resource("apps", "v1", "replicasets", true); }
+        fn statefulSets() -> GenericResourceOperations { return this.resource("apps", "v1", "statefulsets", true); }
+        fn daemonSets() -> GenericResourceOperations { return this.resource("apps", "v1", "daemonsets", true); }
+
+        fn jobs() -> GenericResourceOperations { return this.resource("batch", "v1", "jobs", true); }
+        fn cronJobs() -> GenericResourceOperations { return this.resource("batch", "v1", "cronjobs", true); }
+
+        fn ingresses() -> GenericResourceOperations { return this.resource("networking.k8s.io", "v1", "ingresses", true); }
+        fn networkPolicies() -> GenericResourceOperations { return this.resource("networking.k8s.io", "v1", "networkpolicies", true); }
+
+        fn roles() -> GenericResourceOperations { return this.resource("rbac.authorization.k8s.io", "v1", "roles", true); }
+        fn roleBindings() -> GenericResourceOperations { return this.resource("rbac.authorization.k8s.io", "v1", "rolebindings", true); }
+        fn clusterRoles() -> GenericResourceOperations { return this.resource("rbac.authorization.k8s.io", "v1", "clusterroles", false); }
+        fn clusterRoleBindings() -> GenericResourceOperations { return this.resource("rbac.authorization.k8s.io", "v1", "clusterrolebindings", false); }
+
+        fn storageClasses() -> GenericResourceOperations { return this.resource("storage.k8s.io", "v1", "storageclasses", false); }
+
+        // ---- low-level request plumbing ----
+
+        fn applyTlsConfig() -> Nothing
+        {
+            if this.auth.caCertPath.len() > 0
+            {
+                Http::setTlsCaCertFile(this.auth.caCertPath);
+            }
+            if this.auth.clientCertPath.len() > 0 && this.auth.clientKeyPath.len() > 0
+            {
+                Http::setTlsClientCertFile(this.auth.clientCertPath, this.auth.clientKeyPath);
+            }
+            if this.auth.insecureSkipTlsVerify
+            {
+                Http::setTlsInsecureSkipVerify(true);
+            }
+        }
+
+        // `path` is the full API path (e.g.
+        // "/api/v1/namespaces/default/pods"); `body` is "" for GET/DELETE.
+        fn request(method: String, path: String, body: String) -> KubeResponse
+        {
+            this.applyTlsConfig();
+            if this.auth.bearerToken.len() > 0
+            {
+                Http::setHeader("Authorization", "Bearer " + this.auth.bearerToken);
+            }
+            Http::setHeader("Accept", "application/json");
+            // JSON Merge Patch needs its own Content-Type (RFC 7386) --
+            // sending it as plain application/json makes the API server
+            // reject the request outright ("the body of the request was
+            // in an unknown format"), it does not fall back to a
+            // different patch strategy.
+            if method == "PATCH"
+            {
+                Http::setHeader("Content-Type", "application/merge-patch+json");
+            }
+            else
+            {
+                Http::setHeader("Content-Type", "application/json");
+            }
+
+            let url: String = this.auth.serverUrl + path;
+            var statusCode: Int64 = 0;
+            var respBody: String = "";
+
+            if method == "GET"
+            {
+                let resp: HttpClientResponse = Http::get(url);
+                statusCode = resp.statusCode();
+                respBody = resp.body();
+            }
+            else if method == "POST"
+            {
+                let resp: HttpClientResponse = Http::post(url, body);
+                statusCode = resp.statusCode();
+                respBody = resp.body();
+            }
+            else if method == "PUT"
+            {
+                let resp: HttpClientResponse = Http::put(url, body);
+                statusCode = resp.statusCode();
+                respBody = resp.body();
+            }
+            else if method == "PATCH"
+            {
+                let resp: HttpClientResponse = Http::patch(url, body);
+                statusCode = resp.statusCode();
+                respBody = resp.body();
+            }
+            else if method == "DELETE"
+            {
+                let resp: HttpClientResponse = Http::delete(url);
+                statusCode = resp.statusCode();
+                respBody = resp.body();
+            }
+            else
+            {
+                throw "KubernetesClient: unsupported HTTP method: " + method;
+            }
+
+            Http::clearHeaders();
+            Http::clearTlsConfig();
+
+            return KubeResponse { statusCode: statusCode, body: respBody };
+        }
+    }
+}

@@ -39,7 +39,15 @@ namespace tinox.core.yaml
             {
                 return YamlRenderer::indent(indent) + value.intValue.toString() + "\n";
             }
-            return YamlRenderer::indent(indent) + "\n";
+            if value.isFloat()
+            {
+                return YamlRenderer::indent(indent) + value.floatValue.toString() + "\n";
+            }
+            if value.isBool()
+            {
+                return YamlRenderer::indent(indent) + (value.boolValue ? "true" : "false") + "\n";
+            }
+            return YamlRenderer::indent(indent) + "null\n";
         }
 
         fn indent(level: Int64) -> String

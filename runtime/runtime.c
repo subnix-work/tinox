@@ -1392,6 +1392,39 @@ void httpClearHeaders(void) {
     _tinox_http_req_headers = NULL;
 }
 
+// Per-thread TLS client config for https:// requests -- custom CA (self-
+// signed cluster CAs, e.g. Kubernetes' own), client cert/key (mTLS), and
+// insecure-skip-verify. Mirrors the header state above (thread-local,
+// plain malloc/strdup -- never GC memory, so no GC-root registration
+// needed, same reasoning as _tinox_http_req_headers). Consulted by
+// http_request()'s TLS branch further below; unset (all NULL/0) preserves
+// the exact previous behavior (shared lazily-initialized g_tls_client_ctx,
+// default system trust store, hostname verification).
+static __thread char* _tinox_tls_ca_cert_path = NULL;
+static __thread char* _tinox_tls_client_cert_path = NULL;
+static __thread char* _tinox_tls_client_key_path = NULL;
+static __thread int64_t _tinox_tls_insecure_skip_verify = 0;
+
+void httpSetTlsCaCertFile(const char* path) {
+    _tinox_tls_ca_cert_path = path ? strdup(path) : NULL;
+}
+
+void httpSetTlsClientCertFile(const char* certPath, const char* keyPath) {
+    _tinox_tls_client_cert_path = certPath ? strdup(certPath) : NULL;
+    _tinox_tls_client_key_path = keyPath ? strdup(keyPath) : NULL;
+}
+
+void httpSetTlsInsecureSkipVerify(int64_t enabled) {
+    _tinox_tls_insecure_skip_verify = enabled ? 1 : 0;
+}
+
+void httpClearTlsConfig(void) {
+    _tinox_tls_ca_cert_path = NULL;
+    _tinox_tls_client_cert_path = NULL;
+    _tinox_tls_client_key_path = NULL;
+    _tinox_tls_insecure_skip_verify = 0;
+}
+
 // http_parse_url/http_request/httpGet/httpPost/httpPut/httpDelete/httpPatch
 // moved below (after the TLS connection-handle section, ~"---- Binary-safe
 // conn primitives ----") so http_request can use g_tls_client_ctx for
@@ -3497,19 +3530,67 @@ bool wsIsCompressed(int64_t conn) {
 int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
 #ifdef TINOX_TLS
     if (fd < 0) return -1;
-    if (!g_tls_client_ctx) {
+    // Same custom-CA/client-cert(mTLS)/insecure-skip-verify thread-local
+    // config http_request's https:// branch honors (httpSetTlsCaCertFile/
+    // httpSetTlsClientCertFile/httpSetTlsInsecureSkipVerify) -- needed so
+    // a conn-based client (e.g. tinox.core.kubernetes' Watch, which can't
+    // use the ordinary httpGet/httpPost path for a long-lived streaming
+    // response) can authenticate against a cluster with a self-signed CA
+    // and/or client-cert auth the same way a plain request already can.
+    // Falls back to the existing shared g_tls_client_ctx behavior
+    // (system trust store only) when none of this is set, so every
+    // existing caller (AMQP/WS/SMTP STARTTLS) is unaffected.
+    int use_custom_ctx = (_tinox_tls_ca_cert_path != NULL) ||
+                          (_tinox_tls_client_cert_path != NULL) ||
+                          _tinox_tls_insecure_skip_verify;
+    SSL_CTX* ctx = NULL;
+    if (use_custom_ctx) {
         SSL_library_init();
         SSL_load_error_strings();
         OpenSSL_add_ssl_algorithms();
-        g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
-        if (!g_tls_client_ctx) { close((int)fd); return -1; }
-        SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
-        SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+        ctx = SSL_CTX_new(TLS_client_method());
+        if (ctx) {
+            SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+            if (_tinox_tls_ca_cert_path) {
+                if (SSL_CTX_load_verify_locations(ctx, _tinox_tls_ca_cert_path, NULL) != 1) {
+                    fprintf(stderr, "httpConnFromFdTls: failed to load CA cert file %s\n", _tinox_tls_ca_cert_path);
+                    SSL_CTX_free(ctx);
+                    ctx = NULL;
+                }
+            } else {
+                SSL_CTX_set_default_verify_paths(ctx);
+            }
+            if (ctx && _tinox_tls_client_cert_path && _tinox_tls_client_key_path) {
+                if (SSL_CTX_use_certificate_file(ctx, _tinox_tls_client_cert_path, SSL_FILETYPE_PEM) != 1 ||
+                    SSL_CTX_use_PrivateKey_file(ctx, _tinox_tls_client_key_path, SSL_FILETYPE_PEM) != 1 ||
+                    SSL_CTX_check_private_key(ctx) != 1) {
+                    fprintf(stderr, "httpConnFromFdTls: failed to load client cert/key (%s / %s)\n",
+                            _tinox_tls_client_cert_path, _tinox_tls_client_key_path);
+                    SSL_CTX_free(ctx);
+                    ctx = NULL;
+                }
+            }
+        }
+    } else {
+        if (!g_tls_client_ctx) {
+            SSL_library_init();
+            SSL_load_error_strings();
+            OpenSSL_add_ssl_algorithms();
+            g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
+            if (g_tls_client_ctx) {
+                SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
+                SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+            }
+        }
+        ctx = g_tls_client_ctx;
     }
-    SSL* ssl = SSL_new(g_tls_client_ctx);
-    if (!ssl) { close((int)fd); return -1; }
+    if (!ctx) { close((int)fd); return -1; }
+    SSL* ssl = SSL_new(ctx);
+    if (!ssl) { if (use_custom_ctx) SSL_CTX_free(ctx); close((int)fd); return -1; }
     SSL_set_tlsext_host_name(ssl, host); // SNI
-    if (verify) {
+    if (_tinox_tls_insecure_skip_verify) {
+        SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
+    } else if (verify) {
         SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
         SSL_set1_host(ssl, host); // hostname must match the peer certificate
     } else {
@@ -3519,6 +3600,7 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     if (SSL_connect(ssl) <= 0) {
         ERR_print_errors_fp(stderr);
         SSL_free(ssl);
+        if (use_custom_ctx) SSL_CTX_free(ctx);
         close((int)fd);
         return -1;
     }
@@ -3615,6 +3697,66 @@ static char* http_recv_all_tls(SSL* ssl) {
 }
 #endif
 
+// Case-insensitive search for "chunked" within a "Transfer-Encoding"
+// header line in the (headers-only, no trailing blank line) block --
+// HTTP header names/values are case-insensitive per RFC 7230, and real
+// servers vary casing (the Kubernetes API server itself sends
+// "Transfer-Encoding: chunked" this exact way for any List response with
+// no fixed Content-Length, which is what surfaced this gap: httpGet's
+// caller got the raw wire bytes -- literal hex chunk-size lines like
+// "800\r\n"/"0\r\n\r\n" -- spliced into the middle of what should have
+// been a plain JSON body, silently corrupting it instead of erroring).
+static int http_headers_has_chunked_encoding(const char* hdrs, size_t hdr_len) {
+    if (!hdrs) return 0;
+    size_t te_len = strlen("transfer-encoding");
+    for (size_t i = 0; i + te_len <= hdr_len; i++) {
+        if (strncasecmp(hdrs + i, "transfer-encoding", te_len) == 0) {
+            size_t j = i;
+            while (j < hdr_len && hdrs[j] != '\r' && hdrs[j] != '\n') j++;
+            for (size_t k = i; k + 7 <= j; k++) {
+                if (strncasecmp(hdrs + k, "chunked", 7) == 0) return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// Decodes an HTTP/1.1 chunked-transfer-encoded body (RFC 7230 §4.1):
+// a sequence of "<hex-size>\r\n<data>\r\n" chunks terminated by a
+// zero-size chunk. `body` starts right after the header block's own
+// trailing "\r\n\r\n". Chunk extensions (";...") and trailers after the
+// terminating chunk are skipped, not surfaced -- no server this runtime
+// talks to relies on either. Malformed input (a non-hex chunk-size line)
+// stops decoding and returns whatever was successfully decoded so far,
+// same "best effort, don't crash" spirit as this file's other lenient
+// parsers.
+static char* http_dechunk(const char* body) {
+    size_t cap = 8192, len = 0;
+    char* out = (char*)malloc(cap);
+    const char* p = body;
+    while (1) {
+        char* endptr = NULL;
+        long chunk_size = strtol(p, &endptr, 16);
+        if (endptr == p || chunk_size < 0) break;
+        const char* line_end = strstr(endptr, "\r\n");
+        if (!line_end) break;
+        p = line_end + 2;
+        if (chunk_size == 0) break; // terminating chunk
+        if (len + (size_t)chunk_size >= cap) {
+            while (len + (size_t)chunk_size >= cap) cap *= 2;
+            char* grown = (char*)malloc(cap);
+            memcpy(grown, out, len);
+            out = grown;
+        }
+        memcpy(out + len, p, (size_t)chunk_size);
+        len += (size_t)chunk_size;
+        p += chunk_size;
+        if (p[0] == '\r' && p[1] == '\n') p += 2;
+    }
+    out[len] = '\0';
+    return out;
+}
+
 static TinoxHttpResponse* http_request(const char* method, const char* url, const char* body) {
     TinoxHttpResponse* resp = (TinoxHttpResponse*)malloc(sizeof(TinoxHttpResponse));
     resp->status = 0;
@@ -3659,26 +3801,75 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
     char* raw;
 #ifdef TINOX_TLS
     if (is_https) {
-        if (!g_tls_client_ctx) {
+        // A custom CA/client-cert/insecure-skip-verify config (set via
+        // httpSetTlsCaCertFile/httpSetTlsClientCertFile/
+        // httpSetTlsInsecureSkipVerify -- tinox.core.kubernetes' auth
+        // layer is the first real caller) needs its own SSL_CTX per
+        // request rather than the shared g_tls_client_ctx: that ctx is
+        // lazily built once with the system trust store and no client
+        // identity, and is (deliberately) shared across every plain
+        // https:// caller in the process, so mutating it per-call would
+        // leak one call's cluster CA/client cert into every other
+        // caller's requests on the same thread/process.
+        int use_custom_ctx = (_tinox_tls_ca_cert_path != NULL) ||
+                              (_tinox_tls_client_cert_path != NULL) ||
+                              _tinox_tls_insecure_skip_verify;
+        SSL_CTX* ctx = NULL;
+        if (use_custom_ctx) {
             SSL_library_init();
             SSL_load_error_strings();
             OpenSSL_add_ssl_algorithms();
-            g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
-            if (g_tls_client_ctx) {
-                SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
-                SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+            ctx = SSL_CTX_new(TLS_client_method());
+            if (ctx) {
+                SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+                if (_tinox_tls_ca_cert_path) {
+                    if (SSL_CTX_load_verify_locations(ctx, _tinox_tls_ca_cert_path, NULL) != 1) {
+                        fprintf(stderr, "http_request: failed to load CA cert file %s\n", _tinox_tls_ca_cert_path);
+                        SSL_CTX_free(ctx);
+                        ctx = NULL;
+                    }
+                } else {
+                    SSL_CTX_set_default_verify_paths(ctx);
+                }
+                if (ctx && _tinox_tls_client_cert_path && _tinox_tls_client_key_path) {
+                    if (SSL_CTX_use_certificate_file(ctx, _tinox_tls_client_cert_path, SSL_FILETYPE_PEM) != 1 ||
+                        SSL_CTX_use_PrivateKey_file(ctx, _tinox_tls_client_key_path, SSL_FILETYPE_PEM) != 1 ||
+                        SSL_CTX_check_private_key(ctx) != 1) {
+                        fprintf(stderr, "http_request: failed to load client cert/key (%s / %s)\n",
+                                _tinox_tls_client_cert_path, _tinox_tls_client_key_path);
+                        SSL_CTX_free(ctx);
+                        ctx = NULL;
+                    }
+                }
             }
+        } else {
+            if (!g_tls_client_ctx) {
+                SSL_library_init();
+                SSL_load_error_strings();
+                OpenSSL_add_ssl_algorithms();
+                g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
+                if (g_tls_client_ctx) {
+                    SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
+                    SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+                }
+            }
+            ctx = g_tls_client_ctx;
         }
-        if (!g_tls_client_ctx) { close(fd); free(req); return resp; }
-        SSL* ssl = SSL_new(g_tls_client_ctx);
-        if (!ssl) { close(fd); free(req); return resp; }
+        if (!ctx) { close(fd); free(req); return resp; }
+        SSL* ssl = SSL_new(ctx);
+        if (!ssl) { if (use_custom_ctx) SSL_CTX_free(ctx); close(fd); free(req); return resp; }
         SSL_set_tlsext_host_name(ssl, host); // SNI
-        SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
-        SSL_set1_host(ssl, host); // hostname must match the peer certificate
+        if (_tinox_tls_insecure_skip_verify) {
+            SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
+        } else {
+            SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
+            SSL_set1_host(ssl, host); // hostname must match the peer certificate
+        }
         SSL_set_fd(ssl, fd);
         if (SSL_connect(ssl) <= 0) {
             ERR_print_errors_fp(stderr);
             SSL_free(ssl);
+            if (use_custom_ctx) SSL_CTX_free(ctx);
             close(fd);
             free(req);
             return resp;
@@ -3692,6 +3883,7 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
         raw = http_recv_all_tls(ssl);
         SSL_shutdown(ssl);
         SSL_free(ssl);
+        if (use_custom_ctx) SSL_CTX_free(ctx);
         close(fd);
     } else
 #endif
@@ -3719,7 +3911,14 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
         memcpy(hdrs, raw, hdr_len);
         hdrs[hdr_len] = '\0';
         resp->headers = hdrs;
-        resp->body = GC_strdup(sep + 4);
+        const char* raw_body = sep + 4;
+        if (http_headers_has_chunked_encoding(hdrs, hdr_len)) {
+            char* dechunked = http_dechunk(raw_body);
+            resp->body = GC_strdup(dechunked);
+            free(dechunked);
+        } else {
+            resp->body = GC_strdup(raw_body);
+        }
     } else {
         resp->body = GC_strdup(raw);
     }
@@ -6527,6 +6726,117 @@ char* jsonGetStringField(int64_t* obj, const char* key) {
 
 int64_t* jsonGetIntListField(int64_t* obj, const char* key) {
     return jsonIntArrayFromJson(jsonGetField(obj, key));
+}
+
+// ---- @JsonSerializable field kinds beyond scalars/int-lists ----
+// emit_json_serialize_code/emit_json_deserialize_code (codegen.rs) used to
+// route EVERY i64*-typed field through jsonBuilderAddIntList/
+// jsonIntArrayFromJson regardless of what it actually was -- correct only
+// for List<Int>. A Map<String,String> field (every resource's
+// labels/annotations, ConfigMap/Secret's own data) or a List<String>/
+// List<@JsonSerializable-class> field silently produced garbage (raw
+// pointer values reinterpreted as ints) or crashed. These four helpers,
+// paired with the container-marker dispatch codegen.rs now does in both
+// directions, are the fix. Mirrors the existing tinox_json_list_serialize
+// (List<class>, above) and jsonGetObject (JSON_OBJECT -> TinoxMap*, further
+// up) patterns exactly rather than inventing new machinery.
+
+// List<String> -> JSON array of strings. Same "[" + parts + "]" shape as
+// tinox_json_list_serialize, just string-encoding each element directly
+// instead of calling a per-class toJson.
+char* tinox_json_string_list_serialize(int64_t* h) {
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t n = a ? a->len : 0;
+    char** parts = (char**)malloc(sizeof(char*) * (n > 0 ? (size_t)n : 1));
+    size_t total = 2; // "[" + "]"
+    for (int64_t i = 0; i < n; i++) {
+        const char* s = (const char*)(intptr_t)a->data[i];
+        parts[i] = tinox_json_encode_string(s ? s : "");
+        total += strlen(parts[i]) + 1; // + ","
+    }
+    char* out = (char*)malloc(total + 1);
+    size_t pos = 0;
+    out[pos++] = '[';
+    for (int64_t i = 0; i < n; i++) {
+        if (i > 0) out[pos++] = ',';
+        size_t l = strlen(parts[i]);
+        memcpy(out + pos, parts[i], l);
+        pos += l;
+    }
+    out[pos++] = ']';
+    out[pos] = '\0';
+    return out;
+}
+
+// Map<String, String> -> JSON object. `map` may be NULL (a never-assigned
+// field) -- serializes as "{}", the same "nothing to iterate" convention
+// empty/absent collections get elsewhere in this runtime.
+char* tinox_json_string_map_serialize(void* map) {
+    char* b = jsonBuilderCreate();
+    if (map) {
+        int64_t* keysHandle = tinox_map_keys(map);
+        TinoxArray* ka = (TinoxArray*)keysHandle;
+        int64_t n = ka ? ka->len : 0;
+        for (int64_t i = 0; i < n; i++) {
+            const char* k = (const char*)(intptr_t)ka->data[i];
+            const char* v = (const char*)(intptr_t)tinox_map_get(map, k);
+            jsonBuilderAddString(b, k, v ? v : "");
+        }
+    }
+    return jsonBuilderFinish(b);
+}
+
+// JSON object field -> Map<String, String>. Missing/wrong-typed field ->
+// an empty map (jsonGetObject already gives that for free), not a crash --
+// same defensive-read convention jsonGetStringField/jsonGetIntListField
+// already use for a missing/wrong-typed field.
+void* jsonGetStringMapField(int64_t* obj, const char* key) {
+    void* srcMap = jsonGetObject(jsonGetField(obj, key));
+    void* outMap = tinox_map_create();
+    int64_t* keysHandle = tinox_map_keys(srcMap);
+    TinoxArray* ka = (TinoxArray*)keysHandle;
+    int64_t n = ka ? ka->len : 0;
+    for (int64_t i = 0; i < n; i++) {
+        const char* k = (const char*)(intptr_t)ka->data[i];
+        char* v = jsonGetString((int64_t*)(intptr_t)tinox_map_get(srcMap, k));
+        tinox_map_set(outMap, k, (int64_t)(intptr_t)v);
+    }
+    return outMap;
+}
+
+// JSON array field -> List<String>.
+int64_t* jsonGetStringListField(int64_t* obj, const char* key) {
+    TinoxJsonValue* v = (TinoxJsonValue*)jsonGetField(obj, key);
+    int64_t n = (v && v->type == JSON_ARRAY && v->arr_val) ? v->arr_val[-1] : 0;
+    TinoxArray* out = (TinoxArray*)GC_malloc(sizeof(TinoxArray));
+    out->len = n;
+    out->cap = n;
+    out->data = n > 0 ? (int64_t*)GC_malloc((size_t)n * sizeof(int64_t)) : NULL;
+    for (int64_t i = 0; i < n; i++) {
+        TinoxJsonValue* elem = (TinoxJsonValue*)(uintptr_t)v->arr_val[i];
+        out->data[i] = (int64_t)(intptr_t)jsonGetString((int64_t*)elem);
+    }
+    return (int64_t*)out;
+}
+
+// JSON array value (NOT a field lookup -- the array TinoxJsonValue* itself,
+// same convention as tinox_json_list_serialize taking the List handle
+// directly) -> List<T> for a @JsonSerializable T, via T's own generated
+// `T_fromJson`. The per-element function pointer mirrors
+// tinox_json_list_serialize's `to_json` parameter for the same reason: T
+// varies per call site (per field), so this can't be hardcoded to one class.
+int64_t* tinox_json_list_deserialize(int64_t* arr_val, int64_t* (*from_json)(int64_t*)) {
+    TinoxJsonValue* v = (TinoxJsonValue*)arr_val;
+    int64_t n = (v && v->type == JSON_ARRAY && v->arr_val) ? v->arr_val[-1] : 0;
+    TinoxArray* out = (TinoxArray*)GC_malloc(sizeof(TinoxArray));
+    out->len = n;
+    out->cap = n;
+    out->data = n > 0 ? (int64_t*)GC_malloc((size_t)n * sizeof(int64_t)) : NULL;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t* elem = (int64_t*)(uintptr_t)v->arr_val[i];
+        out->data[i] = (int64_t)(intptr_t)from_json(elem);
+    }
+    return (int64_t*)out;
 }
 
 // ---- Config (@Config annotation) ----

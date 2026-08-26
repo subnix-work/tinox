@@ -1,0 +1,31 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class DaemonSet
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var spec: DaemonSetSpec;
+        var status: DaemonSetStatus;
+
+        fnc create(name: String, namespace: String, labels: Map<String, String>, containers: List<Container>) -> DaemonSet
+        {
+            var meta: ObjectMeta = ObjectMeta::withNameAndNamespace(name, namespace);
+            meta.labels = labels;
+            return DaemonSet {
+                apiVersion: "apps/v1", kind: "DaemonSet",
+                metadata: meta,
+                spec: DaemonSetSpec {
+                    selector: LabelSelector { matchLabels: labels },
+                    template: PodTemplateSpec::create(labels, containers)
+                },
+                status: DaemonSetStatus { desiredNumberScheduled: 0, currentNumberScheduled: 0, numberReady: 0 }
+            };
+        }
+    }
+}

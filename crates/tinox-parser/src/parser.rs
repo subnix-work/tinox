@@ -344,6 +344,14 @@ impl Parser {
                     Keyword::Return => "return",
                     Keyword::Is => "is",
                     Keyword::As => "as",
+                    // A field/method literally named `namespace` is
+                    // extremely common in real code (e.g. any Kubernetes-
+                    // style API client: ObjectMeta.namespace) and already
+                    // parses fine as a field/parameter declaration and as
+                    // a struct-literal key -- only postfix access
+                    // (`obj.namespace`) went through this allowlist and
+                    // rejected it. Found while adding tinox.core.kubernetes.
+                    Keyword::Namespace => "namespace",
                     _ => return Err(Error::new(self.mk_span(), "expected method name")),
                 };
                 self.bump();
@@ -2369,6 +2377,12 @@ impl Parser {
                     Keyword::Send => "send",
                     Keyword::Recv => "recv",
                     Keyword::Is => "is",
+                    // Same reasoning as parse_ident's/parse_method_name's
+                    // own allowlists: a `namespace` parameter/field/local
+                    // referenced as a plain value (e.g. `foo(name,
+                    // namespace)`) needs to parse as ExprKind::Ident here
+                    // too, not just at its declaration site.
+                    Keyword::Namespace => "namespace",
                     _ => return Err(Error::new(token.span, format!("unexpected token: {:?}", token.kind))),
                 };
                 self.bump();
@@ -2854,6 +2868,12 @@ impl Parser {
                     Keyword::Send => "send",
                     Keyword::Recv => "recv",
                     Keyword::Is => "is",
+                    // Same reasoning as parse_method_name's own allowlist:
+                    // `namespace` is an extremely common field/param/
+                    // variable name in real code (e.g. every Kubernetes
+                    // resource's ObjectMeta.namespace) despite also being
+                    // this language's `namespace { ... }` block keyword.
+                    Keyword::Namespace => "namespace",
                     _ => return Err(Error::new(self.mk_span(), "expected identifier")),
                 };
                 self.bump();

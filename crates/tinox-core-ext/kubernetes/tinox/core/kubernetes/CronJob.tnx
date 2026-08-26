@@ -1,0 +1,39 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class CronJob
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var spec: CronJobSpec;
+        var status: CronJobStatus;
+
+        // schedule is a standard 5-field cron expression, e.g. "*/5 * * * *".
+        fnc create(name: String, namespace: String, schedule: String, containers: List<Container>) -> CronJob
+        {
+            var jobTemplate: PodTemplateSpec = PodTemplateSpec::create(Map::new(), containers);
+            jobTemplate.spec.restartPolicy = "Never";
+            let jobSpec: JobSpec = JobSpec { template: jobTemplate, completions: 1, parallelism: 1, backoffLimit: 6 };
+            return CronJob {
+                apiVersion: "batch/v1", kind: "CronJob",
+                metadata: ObjectMeta::withNameAndNamespace(name, namespace),
+                spec: CronJobSpec {
+                    schedule: schedule,
+                    jobTemplate: JobTemplateSpec { metadata: ObjectMeta::withName(""), spec: jobSpec },
+                    suspend: false
+                },
+                // Same "empty string isn't a valid time.Time placeholder"
+                // reason ObjectMeta.creationTimestamp's own factory
+                // documents -- every field in the request body, status
+                // included, goes through the same generic JSON decode
+                // before any subresource-specific handling.
+                status: CronJobStatus { lastScheduleTime: "1970-01-01T00:00:00Z" }
+            };
+        }
+    }
+}

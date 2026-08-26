@@ -1431,6 +1431,18 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i32 @jsonGetBoolField(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @jsonGetStringField(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @jsonGetIntListField(i64*, i8*)").unwrap();
+        // Map<String,String>/List<String>/List<class>/nested-class field
+        // kinds in @JsonSerializable toJson()/fromJson() (see
+        // emit_json_serialize_code/emit_json_deserialize_code). NOT
+        // including jsonGetField itself -- tinox.core.json's own `extern fn
+        // jsonGetField(...)` (Json.tnx, required to even use
+        // @JsonSerializable) already declares it with the same signature;
+        // a second `declare` here is a hard "invalid redefinition" error.
+        writeln!(&mut self.ir, "declare i8* @jsonGetStringMapField(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @jsonGetStringListField(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_string_list_serialize(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_string_map_serialize(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_json_list_deserialize(i64*, ptr)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.floor.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.ceil.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.round.f64(double)").unwrap();
@@ -5230,6 +5242,7 @@ impl CodeGen {
                 Some(m) => m.clone(),
                 None => continue,
             };
+            let field_class_types = self.struct_field_class_types.get(&class_name).cloned().unwrap_or_default();
 
             let data_fields: Vec<(String, usize, String)> = layout.iter()
                 .enumerate()
@@ -5261,7 +5274,30 @@ impl CodeGen {
                 writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %self, i64 {struct_idx}").unwrap();
                 writeln!(&mut self.ir, "  {raw}  = load i64, i64* {fptr}").unwrap();
 
+                let marker = field_class_types.get(field_name).cloned();
+
                 match llvm_ty.as_str() {
+                    // A Map<String, String> field (e.g. every Kubernetes-style
+                    // resource's labels/annotations) is ALSO "i8*" at this flat
+                    // level -- indistinguishable from a plain String field
+                    // without the marker, and previously always went through
+                    // jsonBuilderAddString (reading the TinoxMap* pointer as if
+                    // it were a C string: silent garbage, not a crash). Any
+                    // other Map<String, V> value type is out of scope here (no
+                    // current caller needs it) and falls back to a placeholder
+                    // rather than risking the same silent misread.
+                    "i8*" if marker.as_deref().map(|m| m.starts_with("Map:")).unwrap_or(false) => {
+                        if marker.as_deref() == Some("Map:String") {
+                            let map_ptr = self.temp();
+                            writeln!(&mut self.ir, "  {map_ptr} = inttoptr i64 {raw} to i8*").unwrap();
+                            let json = self.temp();
+                            writeln!(&mut self.ir, "  {json} = call i8* @tinox_json_string_map_serialize(i8* {map_ptr})").unwrap();
+                            writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                        } else {
+                            let placeholder = self.intern_json_placeholder_string();
+                            writeln!(&mut self.ir, "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {placeholder})").unwrap();
+                        }
+                    }
                     "i8*" => {
                         let str_val = self.temp();
                         writeln!(&mut self.ir, "  {str_val} = inttoptr i64 {raw} to i8*").unwrap();
@@ -5279,10 +5315,55 @@ impl CodeGen {
                         writeln!(&mut self.ir, "  {extended}  = zext i1 {truncated} to i32").unwrap();
                         writeln!(&mut self.ir, "  call void @jsonBuilderAddBool(i8* {builder}, i8* {key_ptr}, i32 {extended})").unwrap();
                     }
-                    "i64*" => {
+                    // "i64*" covers List<Int> (marker "Array"), List<String>
+                    // ("Array:String"), List<SomeClass> ("List:SomeClass") AND
+                    // a directly-nested @JsonSerializable class field (bare
+                    // class-name marker, e.g. Pod.metadata: ObjectMeta) --
+                    // all four are pointer-shaped and otherwise
+                    // indistinguishable, and previously ALL went through
+                    // jsonBuilderAddIntList regardless of which one they
+                    // actually were (issue found while modeling Kubernetes
+                    // resources: every nested spec/status/metadata field, and
+                    // every List<Container>-shaped field, serialized as
+                    // garbage int arrays).
+                    "i64*" if marker.as_deref() == Some("Array:String") => {
+                        let arr_ptr = self.temp();
+                        writeln!(&mut self.ir, "  {arr_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                        let json = self.temp();
+                        writeln!(&mut self.ir, "  {json} = call i8* @tinox_json_string_list_serialize(i64* {arr_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                    }
+                    "i64*" if marker.as_deref().and_then(|m| m.strip_prefix("List:"))
+                        .map(|cls| self.json_serializable_classes.iter().any(|c| c == cls))
+                        .unwrap_or(false) =>
+                    {
+                        let cls = marker.as_deref().and_then(|m| m.strip_prefix("List:")).unwrap().to_string();
+                        let list_ptr = self.temp();
+                        writeln!(&mut self.ir, "  {list_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                        let json = self.temp();
+                        writeln!(&mut self.ir, "  {json} = call i8* @tinox_json_list_serialize(i64* {list_ptr}, ptr @{cls}_toJson)").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                    }
+                    "i64*" if marker.as_deref()
+                        .map(|m| !m.starts_with("Array") && !m.starts_with("List:") && !m.starts_with("Map")
+                            && self.json_serializable_classes.iter().any(|c| c == m))
+                        .unwrap_or(false) =>
+                    {
+                        let cls = marker.clone().unwrap();
+                        let obj_ptr = self.temp();
+                        writeln!(&mut self.ir, "  {obj_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                        let json = self.temp();
+                        writeln!(&mut self.ir, "  {json} = call i8* @{cls}_toJson(i64* {obj_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                    }
+                    "i64*" if marker.as_deref() == Some("Array") || marker.is_none() => {
                         let arr_ptr = self.temp();
                         writeln!(&mut self.ir, "  {arr_ptr} = inttoptr i64 {raw} to i64*").unwrap();
                         writeln!(&mut self.ir, "  call void @jsonBuilderAddIntList(i8* {builder}, i8* {key_ptr}, i64* {arr_ptr})").unwrap();
+                    }
+                    "i64*" => {
+                        let placeholder = self.intern_json_placeholder_string();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {placeholder})").unwrap();
                     }
                     _ => {
                         // i64, i32, etc.
@@ -5299,6 +5380,22 @@ impl CodeGen {
         }
     }
 
+    /// Interns `"<unsupported field type>"` as a global string constant in
+    /// `self.ir` and returns a register holding a pointer to it -- the same
+    /// placeholder text/spirit `emit_devui_component_state_handlers` already
+    /// uses for a field kind it can't represent, reused here for
+    /// `_toJson`'s own narrower unsupported cases (Map<String, non-String>,
+    /// a pointer-shaped field with no recognizable marker at all).
+    fn intern_json_placeholder_string(&mut self) -> String {
+        let text = "<unsupported field type>";
+        let lbl = format!("str{}", self.strings.len());
+        self.strings.insert(lbl.clone(), text.to_string());
+        let len = text.len() + 1;
+        let ptr = self.temp();
+        writeln!(&mut self.ir, "  {ptr} = getelementptr [{len} x i8], [{len} x i8]* @{lbl}, i64 0, i64 0").unwrap();
+        ptr
+    }
+
     /// Emit `ClassName_fromJson(i64* %json_val) -> i64*` for every @JsonSerializable class.
     fn emit_json_deserialize_code(&mut self) {
         let class_names: Vec<String> = self.json_serializable_classes.clone();
@@ -5312,6 +5409,7 @@ impl CodeGen {
                 Some(m) => m.clone(),
                 None => continue,
             };
+            let field_class_types = self.struct_field_class_types.get(&class_name).cloned().unwrap_or_default();
 
             let n_slots  = layout.len().max(1);
             let byte_size = n_slots * 8;
@@ -5358,44 +5456,99 @@ impl CodeGen {
                 let fptr = self.temp();
                 writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {self_}, i64 {struct_idx}").unwrap();
 
-                let store_val = match llvm_ty.as_str() {
+                let marker = field_class_types.get(field_name).cloned();
+                let is_serializable_class = |m: &str| self.json_serializable_classes.iter().any(|c| c == m);
+
+                // Same four-way pointer-shaped split as emit_json_serialize_code's
+                // toJson (see the comment there for why "i64*"/"i8*" alone can't
+                // tell these apart) -- mirrored here field-for-field so a class's
+                // toJson/fromJson stay round-trip-consistent.
+                let store_val: Option<String> = match llvm_ty.as_str() {
+                    "i8*" if marker.as_deref() == Some("Map:String") => {
+                        let map_ptr = self.temp();
+                        let as_i64  = self.temp();
+                        writeln!(&mut self.ir, "  {map_ptr} = call i8* @jsonGetStringMapField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i8* {map_ptr} to i64").unwrap();
+                        Some(as_i64)
+                    }
+                    "i8*" if marker.as_deref().map(|m| m.starts_with("Map:")).unwrap_or(false) => None,
                     "i8*" => {
                         let str_val = self.temp();
                         let as_i64  = self.temp();
                         writeln!(&mut self.ir, "  {str_val} = call i8* @jsonGetStringField(i64* %json_val, i8* {key_ptr})").unwrap();
                         writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i8* {str_val} to i64").unwrap();
-                        as_i64
+                        Some(as_i64)
                     }
                     "double" | "float" => {
                         let dbl    = self.temp();
                         let as_i64 = self.temp();
                         writeln!(&mut self.ir, "  {dbl}    = call double @jsonGetFloatField(i64* %json_val, i8* {key_ptr})").unwrap();
                         writeln!(&mut self.ir, "  {as_i64} = bitcast double {dbl} to i64").unwrap();
-                        as_i64
+                        Some(as_i64)
                     }
                     "i1" => {
                         let b32    = self.temp();
                         let as_i64 = self.temp();
                         writeln!(&mut self.ir, "  {b32}    = call i32 @jsonGetBoolField(i64* %json_val, i8* {key_ptr})").unwrap();
                         writeln!(&mut self.ir, "  {as_i64} = zext i32 {b32} to i64").unwrap();
-                        as_i64
+                        Some(as_i64)
                     }
-                    "i64*" => {
+                    "i64*" if marker.as_deref() == Some("Array:String") => {
+                        let arr_ptr = self.temp();
+                        let as_i64  = self.temp();
+                        writeln!(&mut self.ir, "  {arr_ptr} = call i64* @jsonGetStringListField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i64* {arr_ptr} to i64").unwrap();
+                        Some(as_i64)
+                    }
+                    "i64*" if marker.as_deref().and_then(|m| m.strip_prefix("List:"))
+                        .map(is_serializable_class).unwrap_or(false) =>
+                    {
+                        let cls = marker.as_deref().and_then(|m| m.strip_prefix("List:")).unwrap().to_string();
+                        let field_val = self.temp();
+                        let arr_ptr   = self.temp();
+                        let as_i64    = self.temp();
+                        writeln!(&mut self.ir, "  {field_val} = call i64* @jsonGetField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {arr_ptr}   = call i64* @tinox_json_list_deserialize(i64* {field_val}, ptr @{cls}_fromJson)").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}    = ptrtoint i64* {arr_ptr} to i64").unwrap();
+                        Some(as_i64)
+                    }
+                    "i64*" if marker.as_deref()
+                        .map(|m| !m.starts_with("Array") && !m.starts_with("List:") && !m.starts_with("Map") && is_serializable_class(m))
+                        .unwrap_or(false) =>
+                    {
+                        let cls = marker.clone().unwrap();
+                        let field_val = self.temp();
+                        let obj_ptr   = self.temp();
+                        let as_i64    = self.temp();
+                        writeln!(&mut self.ir, "  {field_val} = call i64* @jsonGetField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {obj_ptr}   = call i64* @{cls}_fromJson(i64* {field_val})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}    = ptrtoint i64* {obj_ptr} to i64").unwrap();
+                        Some(as_i64)
+                    }
+                    "i64*" if marker.as_deref() == Some("Array") || marker.is_none() => {
                         let arr_ptr = self.temp();
                         let as_i64  = self.temp();
                         writeln!(&mut self.ir, "  {arr_ptr} = call i64* @jsonGetIntListField(i64* %json_val, i8* {key_ptr})").unwrap();
                         writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i64* {arr_ptr} to i64").unwrap();
-                        as_i64
+                        Some(as_i64)
                     }
+                    // Unsupported pointer-shaped field kind (e.g. Map<String,
+                    // non-String>, List<non-JsonSerializable class>): the slot
+                    // was already zeroed above, so leaving it alone is a safe
+                    // null default -- storing a value read via the wrong
+                    // accessor would silently corrupt it instead.
+                    "i64*" => None,
                     _ => {
                         // i64, i32, etc.
                         let val = self.temp();
                         writeln!(&mut self.ir, "  {val} = call i64 @jsonGetIntField(i64* %json_val, i8* {key_ptr})").unwrap();
-                        val
+                        Some(val)
                     }
                 };
 
-                writeln!(&mut self.ir, "  store i64 {store_val}, i64* {fptr}").unwrap();
+                if let Some(store_val) = store_val {
+                    writeln!(&mut self.ir, "  store i64 {store_val}, i64* {fptr}").unwrap();
+                }
             }
 
             writeln!(&mut self.ir, "  ret i64* {self_}").unwrap();
@@ -10771,7 +10924,20 @@ impl CodeGen {
                 let result_slot = self.temp();
                 writeln!(&mut self.ir, "{} = alloca i64", result_slot).unwrap();
 
-                let (cond_val, _) = self.gen_expr(cond, ctx)?;
+                let (cond_val, cond_ty) = self.gen_expr(cond, ctx)?;
+                // A condition that isn't already i1 (e.g. a direct Bool
+                // struct-field load, which comes back as a raw i64 word
+                // like every other field) needs the same icmp-to-i1
+                // coercion StmtKind::If already applies -- otherwise a
+                // ternary condition of the form `obj.boolField ? a : b`
+                // emits `br i1` on an i64 value and `opt` rejects the IR.
+                let cond_i1 = if cond_ty != "i1" {
+                    let tmp = self.temp();
+                    writeln!(&mut self.ir, "{} = icmp ne {} {}, 0", tmp, cond_ty, cond_val).unwrap();
+                    tmp
+                } else {
+                    cond_val
+                };
                 let then_bb = self.new_bb("if_then");
                 let else_bb = self.new_bb("if_else");
                 let merge_bb = self.new_bb("if_merge");
@@ -10779,7 +10945,7 @@ impl CodeGen {
                 writeln!(
                     &mut self.ir,
                     "br i1 {}, label %{}, label %{}",
-                    cond_val, then_bb, else_bb
+                    cond_i1, then_bb, else_bb
                 )
                 .unwrap();
 

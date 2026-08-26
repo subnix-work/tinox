@@ -1,0 +1,12 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class NamespaceStatus
+    {
+        var phase: String;
+    }
+}

@@ -1,0 +1,24 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class RoleRef
+    {
+        var apiGroup: String;
+        var kind: String;
+        var name: String;
+
+        fnc role(name: String) -> RoleRef
+        {
+            return RoleRef { apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: name };
+        }
+
+        fnc clusterRole(name: String) -> RoleRef
+        {
+            return RoleRef { apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: name };
+        }
+    }
+}

@@ -1,0 +1,15 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class ServiceSpec
+    {
+        var selector: Map<String, String>;
+        var ports: List<ServicePort>;
+        var type: String;
+        var clusterIP: String;
+    }
+}

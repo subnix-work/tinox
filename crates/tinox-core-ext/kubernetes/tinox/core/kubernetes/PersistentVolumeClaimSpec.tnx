@@ -1,0 +1,25 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class PersistentVolumeClaimSpec
+    {
+        var accessModes: List<String>;
+        var resources: ResourceRequirements;
+        var storageClassName: String;
+
+        fnc create(accessMode: String, storageRequest: String, storageClassName: String) -> PersistentVolumeClaimSpec
+        {
+            var requests: Map<String, String> = Map::new();
+            requests.insert("storage", storageRequest);
+            return PersistentVolumeClaimSpec {
+                accessModes: [accessMode],
+                resources: ResourceRequirements { requests: requests, limits: Map::new() },
+                storageClassName: storageClassName
+            };
+        }
+    }
+}

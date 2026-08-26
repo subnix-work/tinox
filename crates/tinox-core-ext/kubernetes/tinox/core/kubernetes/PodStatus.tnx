@@ -1,0 +1,16 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class PodStatus
+    {
+        var phase: String;
+        var podIP: String;
+        var hostIP: String;
+        var startTime: String;
+        var containerStatuses: List<ContainerStatus>;
+    }
+}

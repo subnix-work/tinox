@@ -1,0 +1,29 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    // volumeMounts is deliberately not modeled here (see PodSpec's own
+    // note on volumes) -- everything else a typical container spec needs
+    // day to day is.
+    @JsonSerializable
+    class Container
+    {
+        var name: String;
+        var image: String;
+        var command: List<String>;
+        var args: List<String>;
+        var ports: List<ContainerPort>;
+        var env: List<EnvVar>;
+        var resources: ResourceRequirements;
+
+        fnc simple(name: String, image: String) -> Container
+        {
+            return Container {
+                name: name, image: image, command: [], args: [], ports: [], env: [],
+                resources: ResourceRequirements::empty()
+            };
+        }
+    }
+}
