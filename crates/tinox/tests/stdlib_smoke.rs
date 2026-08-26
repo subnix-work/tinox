@@ -33,10 +33,6 @@ const KNOWN_BROKEN: &[&str] = &[];
 const EXCLUDED: &[(&str, &str)] = &[
     ("db", "needs [database] config; covered by the orm_sqlite_* e2e cases"),
     (
-        "kubernetes",
-        "not yet published to tinox-central (a SMOKES case auto-synthesizes a tinox.toml + `tinox install`, which fetches the REGISTRY version, not this workspace's own source) -- add a real SMOKES entry once a version is actually published. Verified manually instead, live against a real minikube cluster (kubeconfig/in-cluster auth incl. TLS client certs, chunked-transfer-encoded responses, full CRUD + JSON Merge Patch across ConfigMap/Secret/Pod/Service/Deployment, independently cross-checked with `kubectl`).",
-    ),
-    (
         "http3_server",
         "needs TINOX_HTTP3=1 (opt-in, default OFF -- unlike OpenSSL, ngtcp2/nghttp3 aren't universally installed); a smoke case without this flag would fail at link time. Covered by crates/tinox/tests/http3_server_curl.rs (its own process, real curl --http3-only, skips cleanly instead of failing when ngtcp2/nghttp3/HTTP3-curl are missing on the build machine).",
     ),
@@ -277,6 +273,18 @@ const SMOKES: &[Smoke] = &[
         key: "jwt",
         imports: &["tinox.core.jwt", "tinox.core.json"],
         body: "var p: Map<String, JsonValue> = Map::new();\n    let t: String = Jwt::encode(p, \"secret\");\n    if t.len() > 0 { println(\"yes\"); } else { println(\"no\"); }",
+        expects: &["yes"],
+        contains: &[],
+    },
+    Smoke {
+        key: "kubernetes",
+        // No network I/O here on purpose (CI has no live cluster to talk
+        // to) -- this only needs to catch ghost-builtin/codegen breakage
+        // in the module itself, the same job every other SMOKES case
+        // does. Real CRUD/Watch behavior is verified manually against a
+        // live minikube cluster (see the module's own commit history).
+        imports: &["tinox.core.kubernetes", "tinox.core.json"],
+        body: "var containers: List<Container> = [];\n    containers.push(Container::simple(\"c\", \"nginx:alpine\"));\n    let pod: Pod = Pod::create(\"smoke-pod\", \"default\", containers);\n    let j: String = Json::serialize(pod);\n    if j.contains(\"nginx:alpine\") { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
         contains: &[],
     },
