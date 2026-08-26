@@ -1,0 +1,24 @@
+[package]
+name = "tinox_ui_routed_demo"
+version = "0.1.0"
+description = "Tinox-UI Phase 5 demo: expanded widget library (heading/numberField/dropdown/progressBar/spacer/textArea) and client-side routing (Component::link) built on top of the @TinoxUIApp/@View annotation sugar."
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "ui"
+version = "1.0.0"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http_server"
+version = "1.0.1"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "websocket"
+version = "1.0.1"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "json"
+version = "1.0.0"

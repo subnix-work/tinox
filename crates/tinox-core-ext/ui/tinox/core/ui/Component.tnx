@@ -72,6 +72,131 @@ namespace tinox.core.ui
             return Component { id: "", type: "Checkbox", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
 
+        fnc textArea(value: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value);
+            return Component { id: "", type: "TextArea", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        // "Typed widget" (Phase 5): wraps a plain TextField-shaped element
+        // with server-side Float64<->String conversion, so the app deals
+        // in real numbers instead of always parsing/formatting Strings
+        // itself. A malformed client-side value (shouldn't normally
+        // happen -- the client only ever sends what a <input type=number>
+        // itself accepted) falls back to 0.0 rather than throwing, since
+        // there's no user-visible error channel for a single field's
+        // onChange to report through yet -- same tradeoff textField's own
+        // caller already has for any value it chooses not to validate.
+        fnc numberField(value: Float64, onChange: fnc(Float64) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value.toString());
+            let wrapped: fnc(String) -> Nothing = fn(v: String) { onChange(v.toFloat()); };
+            return Component { id: "", type: "NumberField", text: "", props: props, children: [], visible: true, onEvent: wrapped };
+        }
+
+        // Same wrapping idea as numberField, for Int64 fields (e.g. a
+        // quantity stepper) -- kept as a separate factory rather than one
+        // parameterized over a type, since Tinox has no generic top-level
+        // function type parameter that could stand for "Int64 or Float64"
+        // here.
+        fnc intField(value: Int64, onChange: fnc(Int64) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value.toString());
+            let wrapped: fnc(String) -> Nothing = fn(v: String) { onChange(v.toInt()); };
+            return Component { id: "", type: "IntField", text: "", props: props, children: [], visible: true, onEvent: wrapped };
+        }
+
+        // level: 1-6, matching h1..h6 -- clamped client-side to that range
+        // (see ui.js's own build()) rather than trusting the caller.
+        fnc heading(text: String, level: Int64) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("level", level.toString());
+            return Component { id: "", type: "Heading", text: text, props: props, children: [], visible: true, onEvent: fn(v: String) { } };
+        }
+
+        fnc image(src: String, alt: String) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("src", src);
+            props.insert("alt", alt);
+            return Component { id: "", type: "Image", text: "", props: props, children: [], visible: true, onEvent: fn(v: String) { } };
+        }
+
+        // A flex-grow spacer div -- the only widget with no text/props of
+        // its own, useful inside an hbox/vbox to push siblings apart.
+        fnc spacer() -> Component
+        {
+            return Component { id: "", type: "Spacer", text: "", props: Map::new(), children: [], visible: true, onEvent: fn(v: String) { } };
+        }
+
+        // value: 0.0-100.0 (a percentage, not a 0.0-1.0 fraction) --
+        // matches the native <progress> element's own `value`/`max=100`
+        // convention ui.js renders this as, so no extra scaling step is
+        // needed on either side.
+        fnc progressBar(value: Float64) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value.toString());
+            return Component { id: "", type: "ProgressBar", text: "", props: props, children: [], visible: true, onEvent: fn(v: String) { } };
+        }
+
+        // options/selected as plain Strings, not a List<String> field on
+        // Component itself (props stays Map<String,String>, the one
+        // shape every widget already shares -- adding a second,
+        // list-typed field just for this one widget isn't worth the
+        // extra @JsonSerializable surface). Joined with "|" -- a
+        // documented v1 limitation: an option value containing "|"
+        // itself would be misparsed client-side. Fine for the common
+        // case (labels/enum-like choices); revisit only if a real app
+        // actually needs "|" in an option label.
+        // Named `dropdown`, not `select` -- `select` is a reserved Tinox
+        // keyword (the channel select statement), not available as a
+        // method name.
+        fnc dropdown(options: List<String>, selected: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("options", options.join("|"));
+            props.insert("selected", selected);
+            return Component { id: "", type: "Select", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        // Client-side (pushState-based) navigation link -- the routing
+        // primitive for multi-view apps (Phase 5): clicking it updates the
+        // browser's URL bar without a real page reload, then reports the
+        // target `path` back to the server through the SAME onEvent/
+        // dispatchEvent pipeline every other interactive widget already
+        // uses (onNavigate receives `path` as its String value, exactly
+        // like textField's onChange receives the field's new value) --
+        // apps store it in an instance field and switch on it inside
+        // their own @View/build() method (see
+        // examples/tinox_ui_routed_demo for the full pattern). No new
+        // compiler/annotation surface needed for this -- deliberately
+        // reuses the existing event mechanism rather than adding a
+        // parallel one.
+        //
+        // v1 limitation, documented rather than silently unsupported: a
+        // fresh page load always starts at the app's own initial state
+        // (whatever @View/build() renders for a brand-new instance), not
+        // whatever path is currently in the address bar -- the WS
+        // handshake doesn't currently expose its own request path to
+        // application code, so the server has no way to know the
+        // browser's current path until the first navigate/event message
+        // arrives. Direct deep-linking to a non-root path (e.g. sharing a
+        // "/about" URL) therefore lands on the home view first, then
+        // needs a click to actually navigate -- a real, narrow gap, not
+        // pretended away; revisit if this becomes a real app's actual
+        // requirement.
+        fnc link(text: String, path: String, onNavigate: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("href", path);
+            return Component { id: "", type: "Link", text: text, props: props, children: [], visible: true, onEvent: onNavigate };
+        }
+
         fnc vbox(children: List<Component>) -> Component
         {
             return Component { id: "", type: "VBox", text: "", props: Map::new(), children: children, visible: true, onEvent: fn(v: String) { } };

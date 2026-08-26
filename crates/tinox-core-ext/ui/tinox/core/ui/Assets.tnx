@@ -120,11 +120,29 @@ namespace tinox.core.ui
     switch (el.tagName) {
       case "SPAN":
       case "BUTTON":
+      case "A":
         el.textContent = op.text;
+        if (el.tagName === "A" && props.href !== undefined) el.setAttribute("href", props.href);
         break;
       case "INPUT":
-        if (el.type === "text" && props.value !== undefined) el.value = props.value;
+        if ((el.type === "text" || el.type === "number") && props.value !== undefined) el.value = props.value;
         if (el.type === "checkbox" && props.checked !== undefined) el.checked = props.checked === "true";
+        break;
+      case "TEXTAREA":
+        if (props.value !== undefined) el.value = props.value;
+        break;
+      case "SELECT":
+        if (props.selected !== undefined) el.value = props.selected;
+        break;
+      case "PROGRESS":
+        if (props.value !== undefined) el.value = parseFloat(props.value) || 0;
+        break;
+      case "IMG":
+        if (props.src !== undefined) el.src = props.src;
+        if (props.alt !== undefined) el.alt = props.alt;
+        break;
+      case "H1": case "H2": case "H3": case "H4": case "H5": case "H6":
+        el.textContent = op.text;
         break;
       case "DIV":
         el.innerHTML = op.text;
@@ -166,12 +184,73 @@ namespace tinox.core.ui
         el.value = props.value || "";
         el.addEventListener("change", function () { sendEvent(node.id, el.value); });
         break;
+      case "TextArea":
+        el = document.createElement("textarea");
+        el.value = props.value || "";
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
+      case "NumberField":
+        el = document.createElement("input");
+        el.type = "number";
+        el.step = "any";
+        el.value = props.value || "0";
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
+      case "IntField":
+        el = document.createElement("input");
+        el.type = "number";
+        el.step = "1";
+        el.value = props.value || "0";
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
       case "Checkbox":
         el = document.createElement("input");
         el.type = "checkbox";
         el.checked = props.checked === "true";
         el.addEventListener("change", function () {
           sendEvent(node.id, el.checked ? "true" : "false");
+        });
+        break;
+      case "Select":
+        el = document.createElement("select");
+        var opts = (props.options || "").split("|").filter(function (s) { return s.length > 0; });
+        for (var oi = 0; oi < opts.length; oi++) {
+          var optEl = document.createElement("option");
+          optEl.value = opts[oi];
+          optEl.textContent = opts[oi];
+          if (opts[oi] === props.selected) optEl.selected = true;
+          el.appendChild(optEl);
+        }
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
+      case "Heading":
+        var lvl = Math.max(1, Math.min(6, parseInt(props.level, 10) || 1));
+        el = document.createElement("h" + lvl);
+        el.textContent = node.text;
+        break;
+      case "Image":
+        el = document.createElement("img");
+        el.src = props.src || "";
+        el.alt = props.alt || "";
+        break;
+      case "Spacer":
+        el = document.createElement("div");
+        el.style.flex = "1 1 auto";
+        break;
+      case "ProgressBar":
+        el = document.createElement("progress");
+        el.max = 100;
+        el.value = parseFloat(props.value) || 0;
+        break;
+      case "Link":
+        el = document.createElement("a");
+        el.textContent = node.text;
+        el.href = props.href || '#';
+        el.addEventListener("click", function (ev) {
+          ev.preventDefault();
+          var href = ev.currentTarget.getAttribute("href");
+          history.pushState(null, "", href);
+          sendEvent(node.id, href);
         });
         break;
       case "VBox":

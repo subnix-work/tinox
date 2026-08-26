@@ -1,0 +1,11 @@
+// Start: tinox run examples/tinox_ui_routed_demo/Main.tnx
+// Open:  http://localhost:8288/
+import RoutedDemoApp;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        return 0;
+    }
+}

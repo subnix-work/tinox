@@ -1,0 +1,87 @@
+// Tinox-UI Phase 5 example: expanded widget library + client-side
+// routing, built on top of Phase 4's @TinoxUIApp/@View annotation sugar.
+//
+// Routing is deliberately NOT a new compiler/annotation feature -- it's
+// just app-level state (isAbout, exactly like HelloApp's own `clicks`
+// field) driven by Component::link's onNavigate callback, which reports
+// its target path back to the server through the SAME onEvent/
+// dispatchEvent pipeline every other interactive widget already uses.
+// See Component.tnx's own doc comment on `link` for the v1 limitation
+// this implies (a fresh page load always starts at the home view, since
+// the server doesn't currently learn the browser's real starting path).
+//
+// `initialized`/lazy-init in @View: @TinoxUIApp's generated worker
+// allocates a fresh, zeroed instance and calls @View directly -- there's
+// no @OnOpen-equivalent hook exposed to app code to run once before the
+// first render (unlike the hand-wired Phase 1-3 examples). A zeroed Bool
+// field defaults safely to `false`; a zeroed String field defaults to a
+// null pointer, which is safe to *compare* (tinox_string_equals is
+// null-safe) but not safe to *serialize* as a Map<String,String> value
+// without ever assigning it first -- so `color` is set explicitly on the
+// very first render, guarded by `initialized`, rather than ever being
+// sent to the client in its zeroed state.
+import tinox.core.ui;
+import tinox.core.websocket;
+import tinox.core.http_server;
+
+@TinoxUIApp(8288, 8289)
+class RoutedDemoApp
+{
+    var initialized: Bool;
+    var isAbout: Bool;
+    var quantity: Float64;
+    var color: String;
+
+    @View
+    fn render() -> Component
+    {
+        if !this.initialized
+        {
+            this.color = "red";
+            this.initialized = true;
+        }
+        if this.isAbout
+        {
+            return this.shell(this.aboutView());
+        }
+        return this.shell(this.homeView());
+    }
+
+    fn shell(page: Component) -> Component
+    {
+        return Component::vbox([this.nav(), page]);
+    }
+
+    fn nav() -> Component
+    {
+        let app: RoutedDemoApp = this;
+        return Component::hbox([
+            Component::link("Home", "/", fn(p: String) { app.isAbout = false; }),
+            Component::link("About", "/about", fn(p: String) { app.isAbout = true; })
+        ]);
+    }
+
+    fn homeView() -> Component
+    {
+        let app: RoutedDemoApp = this;
+        let colors: List<String> = ["red", "green", "blue"];
+        return Component::vbox([
+            Component::heading("Tinox-UI Widget Showcase", 1),
+            Component::numberField(this.quantity, fn(v: Float64) { app.quantity = v; }),
+            Component::label("Quantity: " + this.quantity.toString()),
+            Component::dropdown(colors, this.color, fn(v: String) { app.color = v; }),
+            Component::label("Color: " + this.color),
+            Component::progressBar(this.quantity),
+            Component::spacer(),
+            Component::textArea("Notes...", fn(v: String) { })
+        ]);
+    }
+
+    fn aboutView() -> Component
+    {
+        return Component::vbox([
+            Component::heading("About", 1),
+            Component::label("Tinox-UI Phase 5 demo -- expanded widgets + client-side routing.")
+        ]);
+    }
+}
