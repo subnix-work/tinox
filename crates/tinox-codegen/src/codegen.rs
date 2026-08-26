@@ -1380,6 +1380,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_task_spawn(i8* (i8*)*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_task_spawn_detached(i8* (i8*)*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_task_await(i8*)").unwrap();
         // Monotonic milliseconds -- used only by emit_tinox_main_bootstrap's
         // startup banner to measure/print bootstrap time.
@@ -2967,11 +2968,28 @@ impl CodeGen {
                 .or_else(|| std::env::var("TINOX_PORT").ok().and_then(|s| s.parse::<i64>().ok()))
                 .unwrap_or(8080);
 
-            // The accept/message loop lives in __tinox_run_ws_<idx>(), a
-            // plain callee (not @tinox_main directly), so
-            // emit_tinox_main_bootstrap can run it on its own thread instead
-            // of tail-calling it inline.
+            // The accept loop lives in __tinox_run_ws_<idx>(), a plain callee
+            // (not @tinox_main directly), so emit_tinox_main_bootstrap can
+            // run it on its own thread instead of tail-calling it inline.
+            //
+            // Each accepted connection is handed off to its OWN detached
+            // worker thread (__tinox_ws_conn_worker_<idx>, spawned via
+            // tinox_task_spawn_detached) instead of being handled inline —
+            // accept_loop immediately goes back to WsServer_accept without
+            // waiting for that connection to finish. The original version of
+            // this function ran conn_open/msg_loop/conn_end INLINE in the
+            // accept loop, which meant WsServer_accept was never called
+            // again until the current connection closed: a second client
+            // could not connect at all while the first was still open. Found
+            // while designing a multi-client server-driven UI framework on
+            // top of this — a single-client-at-a-time WS server is fine for
+            // a demo/echo endpoint (the only thing that ever exercised this
+            // path before) but not for anything meant to serve real
+            // concurrent users.
             let run_fn = format!("__tinox_run_ws_{idx}");
+            let worker_fn = format!("__tinox_ws_conn_worker_{idx}");
+            let worker_wrapper = format!("__tinox_ws_worker_wrapper_{idx}");
+
             writeln!(&mut self.lambda_ir, "define i64 @{run_fn}() {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %srv = call i64 @WsServer_listen(i64* null, i64 {port})").unwrap();
@@ -2984,9 +3002,31 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %conn_open").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %dispatch").unwrap();
 
-            writeln!(&mut self.lambda_ir, "conn_open:").unwrap();
+            // 2-slot args array [worker_fn_ptr, conn] -- same convention
+            // emit_spawn_wrapper's own caller (ExprKind::Spawn) already uses
+            // for passing arguments through tinox_task_spawn's fixed
+            // i8*(i8*) trampoline signature.
+            writeln!(&mut self.lambda_ir, "dispatch:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %args_raw = call i8* @tinox_alloc(i64 16)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %args_ap = bitcast i8* %args_raw to [2 x i64]*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %fp_i64 = ptrtoint i64 (i64)* @{worker_fn} to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  %fp_slot = getelementptr [2 x i64], [2 x i64]* %args_ap, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %fp_i64, i64* %fp_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_slot = getelementptr [2 x i64], [2 x i64]* %args_ap, i64 0, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %conn, i64* %conn_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_task_spawn_detached(i8* (i8*)* @{worker_wrapper}, i8* %args_raw)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            // Former conn_open/msg_loop/conn_end body, now its own real,
+            // separately-spawnable function taking the connection handle as
+            // its one argument.
+            writeln!(&mut self.lambda_ir, "define i64 @{worker_fn}(i64 %conn) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
             if let Some(ref on_open) = ep.on_open {
@@ -3016,10 +3056,12 @@ impl CodeGen {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_close).unwrap();
             }
             writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
-            writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
+
+            self.emit_spawn_wrapper(&worker_wrapper, 2, "i64", &["i64".to_string()]);
 
             self.background_run_fns.push(run_fn);
             self.startup_endpoints.push(("WebSocket".to_string(), format!(":{port}")));

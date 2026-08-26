@@ -762,6 +762,29 @@ int64_t tinox_task_await(void* handle) {
     return (int64_t)(uintptr_t)retval;
 }
 
+// Fire-and-forget variant of tinox_task_spawn -- no TinoxTask handle, no
+// tinox_task_await ever expected. Reuses the SAME tinox_spawn_trampoline
+// (still gets the GC thread-root registration a spawned thread needs --
+// Bug 140), just pthread_detach()s instead of leaving the thread joinable.
+// For @WebsocketEndpoint's per-connection worker threads (codegen.rs,
+// emit_ws_code): a real, long-running server accepts and drops many
+// connections over its lifetime, and tinox_task_spawn's own joinable
+// threads would leak one pthread's kernel resources per connection
+// forever unless something calls tinox_task_await on every single one --
+// nothing sensibly can, since the accept loop's whole point is to keep
+// accepting without waiting on any one connection. Mirrors the exact
+// pthread_create+pthread_detach pattern tinox_HttpServer_listen's own
+// epoll worker pool already uses for the same "never joined, must not
+// leak" reason.
+void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
+    TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
+    t->fn = fn;
+    t->args = args;
+    pthread_t tid;
+    pthread_create(&tid, NULL, tinox_spawn_trampoline, t);
+    pthread_detach(tid);
+}
+
 void* tinox_channel_create(void) {
     TinoxChannel* ch = calloc(1, sizeof(TinoxChannel));
     pthread_mutex_init(&ch->mutex, NULL);
