@@ -59,6 +59,128 @@ namespace tinox.core.ui
             Ws::sendText(conn, "{\"kind\":\"update\",\"root\":" + Json::serialize(root) + "}");
         }
 
+        // ---- v2 diff-based rendering (Phase 3) ----
+        //
+        // Alternative to buildHandlers()+sendUpdate()'s "resend the whole
+        // tree every time" -- computes the minimal set of patch ops
+        // turning the PREVIOUS render (`old`) into the new one (`new_`),
+        // and only sends those. Opt-in: an app picks either style (or
+        // switches between them) per render; nothing here requires using
+        // diffing everywhere once adopted.
+        //
+        // Positional, NOT keyed -- there is no per-node identity an app
+        // can supply (no `key` prop concept in v1), so a node at child
+        // index i in the old tree is compared against whatever is at
+        // index i in the new tree, structurally. This is correct and
+        // reuses DOM nodes (and their focus/scroll/transition state) for
+        // the common cases (a leaf's text/props changing, children
+        // appended/removed at the END of a list) but an insert/remove in
+        // the MIDDLE of a children list is NOT detected as such -- every
+        // sibling positioned after it comes out misaligned and gets
+        // "replace"d wholesale instead of just shifting. A real, accepted
+        // v1 limitation (a full keyed/LIS-based reconciler is real,
+        // separate algorithm work with no current caller that needs it --
+        // "fix narrowly, not broadly"), not an oversight.
+        fnc diff(old: Component, new_: Component, counter: List<Int64>, ops: List<TinoxUIPatchOp>) -> Nothing
+        {
+            if old.type != new_.type || old.visible != new_.visible
+            {
+                TinoxUIRuntime::assignIdsOnly(new_, counter);
+                ops.push(TinoxUIPatchOp { op: "replace", id: old.id, text: "", props: Map::new(), node: new_, parentId: "", index: 0 });
+                return;
+            }
+
+            // Same type/visibility at this position -- reuse the OLD id
+            // so the client can address its existing DOM element for it
+            // across this update (this is what actually keeps ids stable
+            // across renders when diffing is used, despite
+            // assignIds/buildHandlers's own ids never being stable on
+            // their own -- see Component.tnx's doc comment).
+            new_.id = old.id;
+
+            if old.text != new_.text || !TinoxUIRuntime::propsEqual(old.props, new_.props)
+            {
+                ops.push(TinoxUIPatchOp { op: "update", id: new_.id, text: new_.text, props: new_.props, node: Component::none(), parentId: "", index: 0 });
+            }
+
+            var i: Int64 = 0;
+            let oldLen: Int64 = old.children.len();
+            let newLen: Int64 = new_.children.len();
+            while i < oldLen && i < newLen
+            {
+                TinoxUIRuntime::diff(old.children[i], new_.children[i], counter, ops);
+                i = i + 1;
+            }
+            while i < newLen
+            {
+                TinoxUIRuntime::assignIdsOnly(new_.children[i], counter);
+                ops.push(TinoxUIPatchOp { op: "insert", id: "", text: "", props: Map::new(), node: new_.children[i], parentId: new_.id, index: i });
+                i = i + 1;
+            }
+            while i < oldLen
+            {
+                ops.push(TinoxUIPatchOp { op: "remove", id: old.children[i].id, text: "", props: Map::new(), node: Component::none(), parentId: "", index: 0 });
+                i = i + 1;
+            }
+        }
+
+        fnc assignIdsOnly(node: Component, counter: List<Int64>) -> Nothing
+        {
+            node.id = "c" + counter[0].toString();
+            counter[0] = counter[0] + 1;
+            var i: Int64 = 0;
+            while i < node.children.len()
+            {
+                TinoxUIRuntime::assignIdsOnly(node.children[i], counter);
+                i = i + 1;
+            }
+        }
+
+        // Walks an already-id-assigned tree (e.g. the result of diff()'s
+        // in-place mutation of `new_`) and (re)builds its full id ->
+        // handler map -- the diff-rendering counterpart to buildHandlers(),
+        // split out since diff() itself already assigns ids as it goes
+        // and shouldn't reassign them a second time.
+        fnc collectHandlers(node: Component, handlers: Map<String, fnc(String) -> Nothing>) -> Nothing
+        {
+            handlers.insert(node.id, node.onEvent);
+            var i: Int64 = 0;
+            while i < node.children.len()
+            {
+                TinoxUIRuntime::collectHandlers(node.children[i], handlers);
+                i = i + 1;
+            }
+        }
+
+        fnc propsEqual(a: Map<String, String>, b: Map<String, String>) -> Bool
+        {
+            if a.len() != b.len()
+            {
+                return false;
+            }
+            let keys: List<String> = a.keys();
+            var i: Int64 = 0;
+            while i < keys.len()
+            {
+                if !b.contains(keys[i])
+                {
+                    return false;
+                }
+                if a.get(keys[i]) != b.get(keys[i])
+                {
+                    return false;
+                }
+                i = i + 1;
+            }
+            return true;
+        }
+
+        fnc sendPatch(conn: Int64, ops: List<TinoxUIPatchOp>) -> Nothing
+        {
+            let message: TinoxUIPatchMessage = TinoxUIPatchMessage { kind: "patch", ops: ops };
+            Ws::sendText(conn, Json::serialize(message));
+        }
+
         // Parses a client event message ({"kind":"event","id":...,"value":...})
         // and calls the matching handler from a buildHandlers()-produced
         // map. A missing id (stale event from an already-replaced render,

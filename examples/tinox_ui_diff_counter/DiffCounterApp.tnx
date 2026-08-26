@@ -1,0 +1,71 @@
+// Tinox-UI Phase 3 example: the same click-counter shape as
+// tinox_ui_hello, but rendering via TinoxUIRuntime.diff + sendPatch
+// instead of Phase 1's full-tree resend (TinoxUIRuntime.buildHandlers +
+// sendUpdate, see tinox_ui_hello for that style still working
+// unchanged) -- an app picks one rendering style, this one demonstrates
+// diffing specifically.
+import tinox.core.ui;
+import tinox.core.websocket;
+
+@WebsocketEndpoint("/__tinoxui", 8285)
+class DiffCounterApp
+{
+    var clicks: Int64;
+    var root: Component;
+    var handlers: Map<String, fnc(String) -> Nothing>;
+    // Diff-based rendering needs ids to stay unique ACROSS renders (a
+    // node reused at the same tree position keeps its old id; a newly
+    // appeared one needs a genuinely fresh one) -- buildHandlers()'s own
+    // "reset the counter to 0 every render" is fine for full-resend
+    // (every id is thrown away and rebuilt anyway) but would collide
+    // with reused old ids here, so this app owns a monotonically
+    // increasing counter across the whole connection's lifetime instead.
+    var idCounter: Int64;
+
+    @OnOpen
+    fn onOpen(conn: Int64) -> Nothing
+    {
+        this.clicks = 0;
+        this.idCounter = 0;
+        this.root = this.build();
+        let idc: List<Int64> = [this.idCounter];
+        TinoxUIRuntime::assignIdsOnly(this.root, idc);
+        this.idCounter = idc[0];
+        this.handlers = Map::new();
+        TinoxUIRuntime::collectHandlers(this.root, this.handlers);
+        TinoxUIRuntime::sendInit(conn, this.root);
+    }
+
+    @OnMessage
+    fn onMessage(conn: Int64, msg: String) -> Nothing
+    {
+        TinoxUIRuntime::dispatchEvent(this.handlers, msg);
+        let newRoot: Component = this.build();
+        var ops: List<TinoxUIPatchOp> = [];
+        let idc: List<Int64> = [this.idCounter];
+        TinoxUIRuntime::diff(this.root, newRoot, idc, ops);
+        this.idCounter = idc[0];
+        this.root = newRoot;
+        this.handlers = Map::new();
+        TinoxUIRuntime::collectHandlers(this.root, this.handlers);
+        if ops.len() > 0
+        {
+            TinoxUIRuntime::sendPatch(conn, ops);
+        }
+    }
+
+    @OnClose
+    fn onClose(conn: Int64) -> Nothing
+    {
+    }
+
+    fn build() -> Component
+    {
+        let app: DiffCounterApp = this;
+        return Component::vbox([
+            Component::label("Tinox-UI Diff Counter"),
+            Component::label("Clicks: " + this.clicks.toString()),
+            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1; })
+        ]);
+    }
+}

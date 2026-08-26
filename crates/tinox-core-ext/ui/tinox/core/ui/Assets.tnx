@@ -60,12 +60,77 @@ namespace tinox.core.ui
       var msg = JSON.parse(ev.data);
       if (msg.kind === "init" || msg.kind === "update") {
         mount.replaceChildren(build(msg.root));
+      } else if (msg.kind === "patch") {
+        applyPatch(msg.ops);
       }
     };
     ws.onclose = function () {
       // v1 has no reconnect (documented gap, see the module's own docs) --
       // a dropped connection just stops updating.
     };
+  }
+
+  function findEl(id) {
+    return mount.querySelector('[data-tinox-id="' + id + '"]');
+  }
+
+  // Applies a Phase-3 diff patch (TinoxUIRuntime.diff's op list) without
+  // rebuilding the whole subtree -- an "update" op re-applies text/props
+  // onto the SAME DOM element in place (so focus/scroll/typed-but-not-yet-
+  // committed input state on it survives), "replace"/"remove"/"insert"
+  // still (re)build via build() for the affected node only.
+  function applyPatch(ops) {
+    for (var i = 0; i < ops.length; i++) {
+      var op = ops[i];
+      if (op.op === "update") {
+        var el = findEl(op.id);
+        if (el) applyUpdate(el, op);
+      } else if (op.op === "replace") {
+        var old = findEl(op.id);
+        if (old && old.parentNode) {
+          old.parentNode.replaceChild(build(op.node), old);
+        }
+      } else if (op.op === "remove") {
+        var toRemove = findEl(op.id);
+        if (toRemove && toRemove.parentNode) {
+          toRemove.parentNode.removeChild(toRemove);
+        }
+      } else if (op.op === "insert") {
+        var parent = findEl(op.parentId);
+        if (!parent) continue;
+        var newEl = build(op.node);
+        if (op.index >= parent.children.length) {
+          parent.appendChild(newEl);
+        } else {
+          parent.insertBefore(newEl, parent.children[op.index]);
+        }
+      }
+    }
+  }
+
+  // Mirrors build()'s own per-type text/prop application, WITHOUT
+  // recreating the element or re-attaching its event listener -- the
+  // existing listener (from when this element was first built) already
+  // reads the live DOM value at event time (el.value/el.checked), not a
+  // stale captured snapshot, and its target id doesn't change on an
+  // "update" op, so it stays correct across repeated updates with no
+  // rewiring needed.
+  function applyUpdate(el, op) {
+    var props = op.props || {};
+    switch (el.tagName) {
+      case "SPAN":
+      case "BUTTON":
+        el.textContent = op.text;
+        break;
+      case "INPUT":
+        if (el.type === "text" && props.value !== undefined) el.value = props.value;
+        if (el.type === "checkbox" && props.checked !== undefined) el.checked = props.checked === "true";
+        break;
+      case "DIV":
+        el.innerHTML = op.text;
+        break;
+    }
+    el.setAttribute("style", props.style || "");
   }
 
   function sendEvent(id, value) {

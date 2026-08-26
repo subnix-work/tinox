@@ -1,0 +1,24 @@
+[package]
+name = "tinox_ui_diff_counter"
+version = "0.1.0"
+description = "Tinox-UI click counter using diff-based rendering (TinoxUIRuntime.diff/sendPatch) instead of full-tree resend."
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "ui"
+version = "1.0.0"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http_server"
+version = "1.0.1"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "websocket"
+version = "1.0.1"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "json"
+version = "1.0.0"

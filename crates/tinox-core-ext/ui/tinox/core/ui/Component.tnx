@@ -38,6 +38,14 @@ namespace tinox.core.ui
         {
         }
 
+        // Inert placeholder used by TinoxUIPatchOp's `node` field when an
+        // op kind (update/remove) doesn't actually carry a subtree --
+        // never rendered, just a well-formed value to satisfy the field.
+        fnc none() -> Component
+        {
+            return Component { id: "", type: "", text: "", props: Map::new(), children: [], visible: false, onEvent: fn(v: String) { } };
+        }
+
         fnc label(text: String) -> Component
         {
             return Component { id: "", type: "Label", text: text, props: Map::new(), children: [], visible: true, onEvent: fn(v: String) { } };
