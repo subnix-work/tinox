@@ -8897,9 +8897,38 @@ impl CodeGen {
 
                 // Look up actual return type from pre-collected signatures
                 let ret_ty = if let ExprKind::Ident(callee) = &func.node {
-                    self.fn_sigs.get(callee)
-                        .map(|(r, _)| r.clone())
-                        .unwrap_or_else(|| arg_types.first().cloned().unwrap_or_else(|| "i64".to_string()))
+                    if ctx.locals.contains_key(callee) {
+                        // `callee` is a local variable holding a closure
+                        // value (a captured fn param/local, e.g. `onChange`
+                        // in `fn(v: String) { onChange(v.toFloat()); }`),
+                        // not a real named function -- `fn_sigs` never has
+                        // an entry for it, so this must NOT fall through to
+                        // the arg_types.first() fallback below. Every
+                        // closure call always returns i64 at the ABI level
+                        // (see the `is_local_fn` branch just below, which
+                        // unconditionally casts the callee to `i64 (i64,
+                        // i64*)*`) regardless of the Tinox-level declared
+                        // return type -- exactly like gen_lambda always
+                        // emits `ret i64 0` for a Nothing-returning lambda,
+                        // never `ret void`. Before this check, a closure
+                        // whose first PARAMETER happened to be Float64
+                        // (e.g. `fnc(Float64) -> Nothing`) got its call's
+                        // LLVM return type mistaken for that parameter's
+                        // type (double) via the fallback below, which then
+                        // propagated out through StmtKind::Return as an
+                        // ill-typed `ret double` inside a function actually
+                        // declared to return i64 -- caught as "internal
+                        // compiler error: generated invalid LLVM IR" the
+                        // first time a real program (Tinox-UI's
+                        // Component::numberField, issue #215 Phase 5)
+                        // called a captured Float64-taking closure as a
+                        // lambda body's tail statement.
+                        "i64".to_string()
+                    } else {
+                        self.fn_sigs.get(callee)
+                            .map(|(r, _)| r.clone())
+                            .unwrap_or_else(|| arg_types.first().cloned().unwrap_or_else(|| "i64".to_string()))
+                    }
                 } else {
                     // Indirect call through a fn value (e.g. handlers[i](ctx)):
                     // lambdas return their value as i64 at the ABI level.
