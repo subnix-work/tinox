@@ -1,0 +1,21 @@
+// Start: tinox run examples/tinox_ui_signup/Main.tnx
+// Open:  http://localhost:8282/
+import tinox.core.ui;
+import tinox.core.http_server;
+import SignupApp;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let srv: HttpServer = HttpServer::new(8282);
+        srv.get("/", ctx => {
+            ctx.response.html(Assets::shellHtml("ws://localhost:8283/__tinoxui"));
+        });
+        srv.get("/ui.js", ctx => {
+            ctx.response.content(Assets::clientJs(), "application/javascript");
+        });
+        srv.listen();
+        return 0;
+    }
+}

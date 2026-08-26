@@ -1,0 +1,97 @@
+// Tinox-UI Phase 2 example: a form (TextField + Checkbox) with validation
+// feedback shown/cleared on submit -- exercises more of the v1 widget set
+// together than tinox_ui_hello's single button does, and demonstrates the
+// inline-style escape hatch (Component.withStyle) for a simple
+// error/success color.
+import tinox.core.ui;
+import tinox.core.websocket;
+
+@WebsocketEndpoint("/__tinoxui", 8283)
+class SignupApp
+{
+    var name: String;
+    var agreed: Bool;
+    var submitted: Bool;
+    var errorMsg: String;
+    var root: Component;
+    var handlers: Map<String, fnc(String) -> Nothing>;
+
+    @OnOpen
+    fn onOpen(conn: Int64) -> Nothing
+    {
+        this.name = "";
+        this.agreed = false;
+        this.submitted = false;
+        this.errorMsg = "";
+        this.rerender();
+        TinoxUIRuntime::sendInit(conn, this.root);
+    }
+
+    @OnMessage
+    fn onMessage(conn: Int64, msg: String) -> Nothing
+    {
+        TinoxUIRuntime::dispatchEvent(this.handlers, msg);
+        this.rerender();
+        TinoxUIRuntime::sendUpdate(conn, this.root);
+    }
+
+    @OnClose
+    fn onClose(conn: Int64) -> Nothing
+    {
+    }
+
+    fn rerender() -> Nothing
+    {
+        this.root = this.build();
+        this.handlers = TinoxUIRuntime::buildHandlers(this.root);
+    }
+
+    fn build() -> Component
+    {
+        // See issue #217 -- `this` can't be captured by a nested lambda
+        // directly, so it's aliased to a local first (`self` is a
+        // reserved keyword).
+        let app: SignupApp = this;
+
+        var children: List<Component> = [];
+        children.push(Component::label("Sign up"));
+        children.push(Component::textField(this.name, fn(v: String) { app.name = v; }));
+        children.push(Component::hbox([
+            Component::checkbox(this.agreed, fn(v: String) { app.agreed = v == "true"; }),
+            Component::label("I agree to the terms")
+        ]));
+
+        if this.errorMsg.len() > 0
+        {
+            children.push(Component::label(this.errorMsg).withStyle("color: #c0392b;"));
+        }
+
+        if this.submitted
+        {
+            children.push(Component::label("Thanks, " + this.name + "!").withStyle("color: #27ae60; font-weight: bold;"));
+        }
+        else
+        {
+            children.push(Component::button("Submit", fn(v: String) { app.trySubmit(); }));
+        }
+
+        return Component::vbox(children);
+    }
+
+    fn trySubmit() -> Nothing
+    {
+        if this.name.len() == 0
+        {
+            this.errorMsg = "Name is required";
+        }
+        else if !this.agreed
+        {
+            this.errorMsg = "You must agree to the terms";
+        }
+        else
+        {
+            this.errorMsg = "";
+            this.submitted = true;
+        }
+    }
+}
