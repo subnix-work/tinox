@@ -1,0 +1,24 @@
+[package]
+name = "tinox_ui_annotated_hello"
+version = "0.1.0"
+description = "Tinox-UI click counter using @TinoxUIApp/@View annotation sugar instead of hand-wired @OnOpen/@OnMessage/@OnClose."
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "ui"
+version = "1.0.0"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http_server"
+version = "1.0.1"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "websocket"
+version = "1.0.1"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "json"
+version = "1.0.0"

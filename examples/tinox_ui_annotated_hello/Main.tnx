@@ -1,0 +1,17 @@
+// Start: tinox run examples/tinox_ui_annotated_hello/Main.tnx
+// Open:  http://localhost:8286/
+//
+// A trivial entry point -- @TinoxUIApp on AnnotatedHelloApp generates the
+// actual HTTP shell/client-JS server and WebSocket accept loop, so this
+// class only exists to satisfy the mandatory `class Main` entry point
+// rule (same convention already used by examples/rest_auto/Main.tnx and
+// similar annotation-only examples).
+import AnnotatedHelloApp;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        return 0;
+    }
+}

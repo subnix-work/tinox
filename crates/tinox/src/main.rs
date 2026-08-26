@@ -3816,6 +3816,43 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             ann_result.http3_rest_controllers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
         ));
     }
+    // @TinoxUIApp (issue #215, Phase 4): at most one class per program
+    // (same v1 restriction as @Http3RestController -- multiple apps in one
+    // program is architecturally ambiguous for now), and exactly one
+    // @View method on that class (zero = nothing to render; more than one
+    // = ambiguous which builds the tree).
+    if ann_result.tinoxui_apps.len() > 1 {
+        return Err(format!(
+            "found {} @TinoxUIApp classes ({}); v1 supports exactly one Tinox-UI app per program",
+            ann_result.tinoxui_apps.len(),
+            ann_result.tinoxui_apps.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let tinoxui_app: Option<tinox_codegen::TinoxUIAppEntry> = match ann_result.tinoxui_apps.first() {
+        Some(app) => {
+            if app.view_methods.is_empty() {
+                return Err(format!(
+                    "@TinoxUIApp class '{}' has no @View method -- exactly one method returning Component is required to build its UI",
+                    app.class_name
+                ));
+            }
+            if app.view_methods.len() > 1 {
+                return Err(format!(
+                    "@TinoxUIApp class '{}' has {} @View methods ({}); exactly one is required",
+                    app.class_name,
+                    app.view_methods.len(),
+                    app.view_methods.join(", ")
+                ));
+            }
+            Some(tinox_codegen::TinoxUIAppEntry {
+                class_name: app.class_name.clone(),
+                http_port: app.http_port,
+                ws_port: app.ws_port,
+                view_method: app.view_methods[0].clone(),
+            })
+        }
+        None => None,
+    };
     // Cross-kind combos (@Http3RestController + @WebsocketEndpoint/@Amqp10Consumer/
     // @Amqp091Consumer, or any of those + plain @GET/@Path routes) used to be
     // rejected here because each auto-run kind generated its own competing
@@ -3957,6 +3994,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     codegen.set_amqp10_consumers(amqp10_consumers);
     codegen.set_amqp091_consumers(amqp091_consumers);
     codegen.set_http3_rest_controller(http3_rest_controller);
+    codegen.set_tinoxui_apps(tinoxui_app.into_iter().collect());
     let db_config_for_codegen = read_database_config();
     codegen.set_db_url(db_config_for_codegen.as_ref().map(|c| c.url.clone()));
     codegen.set_db_pool_size(db_config_for_codegen.as_ref().map(|c| c.pool as i64).unwrap_or(5));

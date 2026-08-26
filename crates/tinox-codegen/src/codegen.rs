@@ -225,6 +225,18 @@ pub struct Http3RestControllerEntry {
     pub key_path: String,
 }
 
+/// @TinoxUIApp(httpPort, wsPort) entry (issue #215, Phase 4). `view_method`
+/// is already resolved down to a single name here (main.rs enforces the
+/// "exactly one @View method" cardinality before building this entry, same
+/// place Http3RestControllerEntry's "at most one class" check lives).
+#[derive(Debug, Clone)]
+pub struct TinoxUIAppEntry {
+    pub class_name: String,
+    pub http_port: i64,
+    pub ws_port: i64,
+    pub view_method: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct EntityFieldEntry {
     pub field_name: String,
@@ -431,6 +443,8 @@ pub struct CodeGen {
     entity_entries: Vec<EntityEntry>,
     /// WebSocket endpoints from @WebsocketEndpoint annotation processing
     ws_endpoints: Vec<WsEndpointEntry>,
+    /// Tinox-UI apps from @TinoxUIApp annotation processing (issue #215, Phase 4)
+    tinoxui_apps: Vec<TinoxUIAppEntry>,
     /// AMQP-1.0 consumers from @Amqp10Consumer annotation processing (Issue #81)
     amqp10_consumers: Vec<Amqp10ConsumerEntry>,
     /// AMQP-0-9-1 consumers from @Amqp091Consumer annotation processing (Issue #126)
@@ -595,6 +609,7 @@ impl CodeGen {
             metric_entries: Vec::new(),
             entity_entries: Vec::new(),
             ws_endpoints: Vec::new(),
+            tinoxui_apps: Vec::new(),
             amqp10_consumers: Vec::new(),
             amqp091_consumers: Vec::new(),
             http3_rest_controller: None,
@@ -695,6 +710,10 @@ impl CodeGen {
 
     pub fn set_ws_endpoints(&mut self, endpoints: Vec<WsEndpointEntry>) {
         self.ws_endpoints = endpoints;
+    }
+
+    pub fn set_tinoxui_apps(&mut self, apps: Vec<TinoxUIAppEntry>) {
+        self.tinoxui_apps = apps;
     }
 
     pub fn set_amqp10_consumers(&mut self, consumers: Vec<Amqp10ConsumerEntry>) {
@@ -2058,6 +2077,10 @@ impl CodeGen {
         // Emit the auto-run accept/message loop for a @WebsocketEndpoint class
         self.emit_ws_code();
 
+        // Emit the auto-run HTTP shell/client-JS server + WS accept loop for
+        // a @TinoxUIApp class (issue #215, Phase 4)
+        self.emit_tinoxui_code();
+
         // Emit the auto-run connect/receive loop for an @Amqp10Consumer class
         self.emit_amqp10_consumer_code();
 
@@ -3065,6 +3088,207 @@ impl CodeGen {
 
             self.background_run_fns.push(run_fn);
             self.startup_endpoints.push(("WebSocket".to_string(), format!(":{port}")));
+        }
+    }
+
+    /// Generates the auto-run HTTP shell/client-JS server + WebSocket
+    /// accept loop for a `@TinoxUIApp` class (issue #215, Phase 4) --
+    /// annotation sugar over exactly the hand-wired shape
+    /// `examples/tinox_ui_hello/HelloApp.tnx` + `Main.tnx` already use: an
+    /// `HttpServer` on `httpPort` serving `"/"` (`Assets::shellHtml`) and
+    /// `"/ui.js"` (`Assets::clientJs`), and a WebSocket accept loop on
+    /// `wsPort` that calls the class's own `@View` method to build the
+    /// initial tree (`TinoxUIRuntime::buildHandlers` + `sendInit`), then on
+    /// every incoming event: `dispatchEvent`, rebuild via `@View` again,
+    /// `sendUpdate` -- Phase 1's full-resend "automatic reactivity" shape,
+    /// generated instead of hand-written. Diff-based rendering (Phase 3)
+    /// deliberately stays a manual, lower-level opt-in -- it needs an
+    /// app-owned persistent id-counter field this sugar has no class
+    /// layout to put one on (the synthesized per-connection state below
+    /// lives in plain local `alloca`s inside this hand-emitted function,
+    /// not on the app class itself, so it can't survive past one
+    /// connection's worker function the way a real instance field could).
+    ///
+    /// Modeled directly on `emit_ws_code` (identical accept-loop /
+    /// detached-per-connection-worker structure, reusing
+    /// `tinox_task_spawn_detached` + `emit_spawn_wrapper`) plus
+    /// `emit_route_code`'s shim-function convention for the two GET
+    /// routes -- calling already-compiled `tinox.core.ui`/`http_server`
+    /// methods by their mangled name (`TinoxUIRuntime_buildHandlers`,
+    /// `HttpResponse_html`, ...) rather than re-implementing any of their
+    /// logic here, the same "call the real compiled function directly"
+    /// technique `emit_ws_code` already uses for
+    /// `Ws_readMessage`/`Ws_text`/`Ws_close`.
+    fn emit_tinoxui_code(&mut self) {
+        if self.tinoxui_apps.is_empty() || self.has_main {
+            return;
+        }
+
+        if !self.class_named_types.contains("Component") {
+            panic!("@TinoxUIApp requires `import tinox.core.ui;` (Component type not found)");
+        }
+        if !self.class_named_types.contains("WsFrame") {
+            panic!("@TinoxUIApp requires `import tinox.core.websocket;` (WsFrame type not found)");
+        }
+        if !self.class_named_types.contains("HttpResponse") {
+            panic!("@TinoxUIApp requires `import tinox.core.http_server;` (HttpResponse type not found)");
+        }
+
+        // tinox_HttpServer_get/_listen are NOT safe to unconditionally
+        // re-declare (opt hard-errors "invalid redefinition" on a second
+        // `declare` for an already-declared symbol, even with an
+        // identical signature) -- same guard emit_devui_code already uses
+        // to avoid colliding with emit_route_code's own copy.
+        // tinox_HttpServer_new has no return-type overlap risk here since
+        // every declarer uses the identical `i64* (i64)` signature, but is
+        // guarded the same way for consistency/symmetry.
+        let declare_http_fns = self.route_entries.is_empty() || self.http3_rest_controller.is_some();
+        if declare_http_fns {
+            writeln!(&mut self.lambda_ir, "declare i64* @tinox_HttpServer_new(i64)").unwrap();
+            writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_get(i64*, i8*, i64)").unwrap();
+            writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_listen(i64*)").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+
+        let apps = self.tinoxui_apps.clone();
+        for (idx, app) in apps.iter().enumerate() {
+            let inst_size = self.struct_layouts.get(app.class_name.as_str())
+                .map(|f| (f.len().max(1) * 8) as i64)
+                .unwrap_or(8);
+
+            // ── HTTP shell server: "/" (shell HTML) + "/ui.js" (client JS) ──
+            let shell_shim = format!("__tinoxui_shell_shim_{idx}");
+            let js_shim = format!("__tinoxui_js_shim_{idx}");
+            let run_http_fn = format!("__tinox_run_tinoxui_http_{idx}");
+            let ws_url = format!("ws://localhost:{}/__tinoxui", app.ws_port);
+
+            // HttpContext layout: [request: i64*, response: i64*] -- offset
+            // 1 is the response pointer, same convention emit_route_code's
+            // own shim bodies use (see its own doc comment on this layout).
+            writeln!(&mut self.lambda_ir, "define void @{shell_shim}(i64 %ctx_i64) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_i64 = load i64, i64* %resp_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_ptr = inttoptr i64 %resp_i64 to i64*").unwrap();
+            let ws_url_ptr = self.emit_lambda_string_literal(&ws_url);
+            writeln!(&mut self.lambda_ir, "  %html = call i8* @Assets_shellHtml(i8* {ws_url_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %shell_r = call i64* @HttpResponse_html(i64* %resp_ptr, i8* %html)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            writeln!(&mut self.lambda_ir, "define void @{js_shim}(i64 %ctx_i64) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_i64 = load i64, i64* %resp_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_ptr = inttoptr i64 %resp_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %js = call i8* @Assets_clientJs()").unwrap();
+            let ct_ptr = self.emit_lambda_string_literal("application/javascript");
+            writeln!(&mut self.lambda_ir, "  %js_r = call i64* @HttpResponse_content(i64* %resp_ptr, i8* %js, i8* {ct_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            writeln!(&mut self.lambda_ir, "define i64 @{run_http_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %server = call i64* @tinox_HttpServer_new(i64 {})", app.http_port).unwrap();
+            let root_path_ptr = self.emit_lambda_string_literal("/");
+            writeln!(&mut self.lambda_ir, "  %shell_fn = ptrtoint void (i64)* @{shell_shim} to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_get(i64* %server, i8* {root_path_ptr}, i64 %shell_fn)").unwrap();
+            let js_path_ptr = self.emit_lambda_string_literal("/ui.js");
+            writeln!(&mut self.lambda_ir, "  %js_fn = ptrtoint void (i64)* @{js_shim} to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_get(i64* %server, i8* {js_path_ptr}, i64 %js_fn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_listen(i64* %server)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            self.background_run_fns.push(run_http_fn);
+            self.startup_endpoints.push(("HTTP".to_string(), format!(":{}", app.http_port)));
+
+            // ── WebSocket accept loop -- identical shape to emit_ws_code's
+            // own accept_loop/dispatch/worker_fn/msg_loop, just driving
+            // @View instead of @OnOpen/@OnMessage/@OnClose. ──────────────
+            let run_ws_fn = format!("__tinox_run_tinoxui_ws_{idx}");
+            let worker_fn = format!("__tinox_tinoxui_conn_worker_{idx}");
+            let worker_wrapper = format!("__tinox_tinoxui_worker_wrapper_{idx}");
+
+            writeln!(&mut self.lambda_ir, "define i64 @{run_ws_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %srv = call i64 @WsServer_listen(i64* null, i64 {})", app.ws_port).unwrap();
+            writeln!(&mut self.lambda_ir, "  %srv_bad = icmp slt i64 %srv, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %srv_bad, label %bind_fail, label %accept_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "bind_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
+
+            writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %tui_dispatch").unwrap();
+
+            writeln!(&mut self.lambda_ir, "tui_dispatch:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %args_raw = call i8* @tinox_alloc(i64 16)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %args_ap = bitcast i8* %args_raw to [2 x i64]*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %fp_i64 = ptrtoint i64 (i64)* @{worker_fn} to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  %fp_slot = getelementptr [2 x i64], [2 x i64]* %args_ap, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %fp_i64, i64* %fp_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_slot = getelementptr [2 x i64], [2 x i64]* %args_ap, i64 0, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %conn, i64* %conn_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_task_spawn_detached(i8* (i8*)* @{worker_wrapper}, i8* %args_raw)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            writeln!(&mut self.lambda_ir, "define i64 @{worker_fn}(i64 %conn) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %root0 = call i64* @{}_{}(i64* %inst)", app.class_name, app.view_method).unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers0 = call i8* @TinoxUIRuntime_buildHandlers(i64* %root0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %root_slot = alloca i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64* %root0, i64** %root_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers_slot = alloca i8*").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i8* %handlers0, i8** %handlers_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_sendInit(i64 %conn, i64* %root0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tui_msg_loop").unwrap();
+
+            // opcode 1 (text) -> dispatch + rebuild + resend; anything else
+            // (binary, close, EOF, protocol error -- Ping/Pong are already
+            // auto-handled inside Ws::readMessage) ends the connection,
+            // same convention emit_ws_code's own msg_loop uses.
+            writeln!(&mut self.lambda_ir, "tui_msg_loop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %opcode_ptr = getelementptr %class.WsFrame, ptr %f, i32 0, i32 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %opcode = load i64, i64* %opcode_ptr").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_text = icmp eq i64 %opcode, 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_text, label %tui_handle_text, label %tui_conn_end").unwrap();
+
+            writeln!(&mut self.lambda_ir, "tui_handle_text:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers_cur = load i8*, i8** %handlers_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_dispatchEvent(i8* %handlers_cur, i8* %msg)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %root_new = call i64* @{}_{}(i64* %inst)", app.class_name, app.view_method).unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64* %root_new, i64** %root_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers_new = call i8* @TinoxUIRuntime_buildHandlers(i64* %root_new)").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i8* %handlers_new, i8** %handlers_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_sendUpdate(i64 %conn, i64* %root_new)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tui_msg_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "tui_conn_end:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
+
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            self.emit_spawn_wrapper(&worker_wrapper, 2, "i64", &["i64".to_string()]);
+
+            self.background_run_fns.push(run_ws_fn);
+            self.startup_endpoints.push(("WebSocket".to_string(), format!(":{}", app.ws_port)));
         }
     }
 
