@@ -1,4 +1,4 @@
 [package]
 name = "http"
-version = "1.0.1"
+version = "1.0.2"
 description = "tinox.core.http, split out of the bundled stdlib as a standalone tinox-central package."

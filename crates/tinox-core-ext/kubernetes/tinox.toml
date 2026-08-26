@@ -11,9 +11,9 @@ version = "1.0.0"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http"
-version = "1.0.1"
+version = "1.0.2"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "yaml"
-version = "1.0.0"
+version = "1.0.1"
