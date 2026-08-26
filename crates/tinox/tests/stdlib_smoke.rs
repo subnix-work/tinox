@@ -33,6 +33,10 @@ const KNOWN_BROKEN: &[&str] = &[];
 const EXCLUDED: &[(&str, &str)] = &[
     ("db", "needs [database] config; covered by the orm_sqlite_* e2e cases"),
     (
+        "kubernetes",
+        "not yet published to tinox-central (a SMOKES case auto-synthesizes a tinox.toml + `tinox install`, which fetches the REGISTRY version, not this workspace's own source) -- add a real SMOKES entry once a version is actually published. Verified manually instead, live against a real minikube cluster (kubeconfig/in-cluster auth incl. TLS client certs, chunked-transfer-encoded responses, full CRUD + JSON Merge Patch across ConfigMap/Secret/Pod/Service/Deployment, independently cross-checked with `kubectl`).",
+    ),
+    (
         "http3_server",
         "needs TINOX_HTTP3=1 (opt-in, default OFF -- unlike OpenSSL, ngtcp2/nghttp3 aren't universally installed); a smoke case without this flag would fail at link time. Covered by crates/tinox/tests/http3_server_curl.rs (its own process, real curl --http3-only, skips cleanly instead of failing when ngtcp2/nghttp3/HTTP3-curl are missing on the build machine).",
     ),

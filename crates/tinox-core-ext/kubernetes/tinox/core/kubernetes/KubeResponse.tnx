@@ -1,0 +1,30 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    class KubeResponse
+    {
+        var statusCode: Int64;
+        var body: String;
+
+        fn isSuccess() -> Bool
+        {
+            return this.statusCode >= 200 && this.statusCode < 300;
+        }
+
+        fn json() -> JsonValue
+        {
+            return Json::parse(this.body);
+        }
+
+        fn throwIfError(context: String) -> Nothing
+        {
+            if !this.isSuccess()
+            {
+                throw "Kubernetes API error (" + context + "): HTTP " + this.statusCode.toString() + " - " + this.body;
+            }
+        }
+    }
+}

@@ -1,0 +1,19 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class PolicyRule
+    {
+        var apiGroups: List<String>;
+        var resources: List<String>;
+        var verbs: List<String>;
+
+        fnc create(apiGroups: List<String>, resources: List<String>, verbs: List<String>) -> PolicyRule
+        {
+            return PolicyRule { apiGroups: apiGroups, resources: resources, verbs: verbs };
+        }
+    }
+}

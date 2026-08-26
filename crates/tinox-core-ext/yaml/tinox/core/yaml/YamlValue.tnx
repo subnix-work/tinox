@@ -18,5 +18,83 @@ namespace tinox.core.yaml
         fn isBool() -> Bool { return this.kind == "bool"; }
         fn isList() -> Bool { return this.kind == "list"; }
         fn isMap() -> Bool { return this.kind == "map"; }
+        fn isNull() -> Bool { return this.kind == "null"; }
+
+        // Map/list convenience accessors -- avoid every caller having to
+        // spell out .mapValue["key"]/.listValue[i] plus a defensive
+        // isMap()/isList() check by hand.
+        fn get(key: String) -> YamlValue
+        {
+            if !this.isMap() || !this.mapValue.contains(key)
+            {
+                return YamlValue::ofNull();
+            }
+            return this.mapValue.get(key);
+        }
+
+        fn has(key: String) -> Bool
+        {
+            return this.isMap() && this.mapValue.contains(key);
+        }
+
+        fn at(index: Int64) -> YamlValue
+        {
+            if !this.isList() || index < 0 || index >= this.listValue.len()
+            {
+                return YamlValue::ofNull();
+            }
+            return this.listValue[index];
+        }
+
+        fn len() -> Int64
+        {
+            if this.isList() { return this.listValue.len(); }
+            if this.isMap() { return this.mapValue.len(); }
+            return 0;
+        }
+
+        // Scalar reads with a defensive fallback instead of a hard failure
+        // -- a missing/wrongly-typed kubeconfig field (e.g. an optional
+        // "namespace:" a context doesn't set) is common and legitimate,
+        // not a parse error.
+        fn asString(fallback: String) -> String
+        {
+            return this.isString() ? this.stringValue : fallback;
+        }
+
+        fnc ofNull() -> YamlValue
+        {
+            return YamlValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, listValue: [], mapValue: Map::new() };
+        }
+
+        fnc ofString(value: String) -> YamlValue
+        {
+            return YamlValue { kind: "string", stringValue: value, intValue: 0, floatValue: 0.0, boolValue: false, listValue: [], mapValue: Map::new() };
+        }
+
+        fnc ofInt(value: Int64) -> YamlValue
+        {
+            return YamlValue { kind: "int", stringValue: "", intValue: value, floatValue: 0.0, boolValue: false, listValue: [], mapValue: Map::new() };
+        }
+
+        fnc ofFloat(value: Float64) -> YamlValue
+        {
+            return YamlValue { kind: "float", stringValue: "", intValue: 0, floatValue: value, boolValue: false, listValue: [], mapValue: Map::new() };
+        }
+
+        fnc ofBool(value: Bool) -> YamlValue
+        {
+            return YamlValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: value, listValue: [], mapValue: Map::new() };
+        }
+
+        fnc ofList(value: List<YamlValue>) -> YamlValue
+        {
+            return YamlValue { kind: "list", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, listValue: value, mapValue: Map::new() };
+        }
+
+        fnc ofMap(value: Map<String, YamlValue>) -> YamlValue
+        {
+            return YamlValue { kind: "map", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, listValue: [], mapValue: value };
+        }
     }
 }

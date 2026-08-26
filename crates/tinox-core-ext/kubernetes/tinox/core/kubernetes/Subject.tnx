@@ -1,0 +1,24 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class Subject
+    {
+        var kind: String;
+        var name: String;
+        var namespace: String;
+
+        fnc serviceAccount(name: String, namespace: String) -> Subject
+        {
+            return Subject { kind: "ServiceAccount", name: name, namespace: namespace };
+        }
+
+        fnc user(name: String) -> Subject
+        {
+            return Subject { kind: "User", name: name, namespace: "" };
+        }
+    }
+}

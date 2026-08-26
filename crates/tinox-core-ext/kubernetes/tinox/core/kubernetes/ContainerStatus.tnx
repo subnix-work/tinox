@@ -1,0 +1,19 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    // ContainerState (waiting/running/terminated, each with its own
+    // reason/message/exit code) is not modeled -- read-only status field,
+    // narrower scope than what most callers need day to day (ready/
+    // restartCount/image already answer "is it healthy").
+    @JsonSerializable
+    class ContainerStatus
+    {
+        var name: String;
+        var ready: Bool;
+        var restartCount: Int64;
+        var image: String;
+    }
+}

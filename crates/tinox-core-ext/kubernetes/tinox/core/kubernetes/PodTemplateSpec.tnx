@@ -1,0 +1,20 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class PodTemplateSpec
+    {
+        var metadata: ObjectMeta;
+        var spec: PodSpec;
+
+        fnc create(labels: Map<String, String>, containers: List<Container>) -> PodTemplateSpec
+        {
+            var meta: ObjectMeta = ObjectMeta::withName("");
+            meta.labels = labels;
+            return PodTemplateSpec { metadata: meta, spec: PodSpec::withContainers(containers) };
+        }
+    }
+}

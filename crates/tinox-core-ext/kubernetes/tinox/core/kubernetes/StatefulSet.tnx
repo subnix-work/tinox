@@ -1,0 +1,33 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class StatefulSet
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var spec: StatefulSetSpec;
+        var status: StatefulSetStatus;
+
+        fnc create(name: String, namespace: String, serviceName: String, replicas: Int64, labels: Map<String, String>, containers: List<Container>) -> StatefulSet
+        {
+            var meta: ObjectMeta = ObjectMeta::withNameAndNamespace(name, namespace);
+            meta.labels = labels;
+            return StatefulSet {
+                apiVersion: "apps/v1", kind: "StatefulSet",
+                metadata: meta,
+                spec: StatefulSetSpec {
+                    replicas: replicas,
+                    selector: LabelSelector { matchLabels: labels },
+                    serviceName: serviceName,
+                    template: PodTemplateSpec::create(labels, containers)
+                },
+                status: StatefulSetStatus { replicas: 0, readyReplicas: 0 }
+            };
+        }
+    }
+}

@@ -1,0 +1,24 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class Role
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var rules: List<PolicyRule>;
+
+        fnc create(name: String, namespace: String, rules: List<PolicyRule>) -> Role
+        {
+            return Role {
+                apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role",
+                metadata: ObjectMeta::withNameAndNamespace(name, namespace),
+                rules: rules
+            };
+        }
+    }
+}

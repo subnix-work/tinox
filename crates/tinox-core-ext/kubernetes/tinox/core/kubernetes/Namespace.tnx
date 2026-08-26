@@ -1,0 +1,24 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class Namespace
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var status: NamespaceStatus;
+
+        fnc create(name: String) -> Namespace
+        {
+            return Namespace {
+                apiVersion: "v1", kind: "Namespace",
+                metadata: ObjectMeta::withName(name),
+                status: NamespaceStatus { phase: "" }
+            };
+        }
+    }
+}

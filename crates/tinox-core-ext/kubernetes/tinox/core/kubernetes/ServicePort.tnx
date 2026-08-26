@@ -1,0 +1,21 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class ServicePort
+    {
+        var name: String;
+        var port: Int64;
+        var targetPort: Int64;
+        var protocol: String;
+        var nodePort: Int64;
+
+        fnc tcp(port: Int64, targetPort: Int64) -> ServicePort
+        {
+            return ServicePort { name: "", port: port, targetPort: targetPort, protocol: "TCP", nodePort: 0 };
+        }
+    }
+}
