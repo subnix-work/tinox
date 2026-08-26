@@ -53,9 +53,33 @@ namespace tinox.core.ui
   "use strict";
   var mount = document.getElementById("tinox-ui-root");
   var ws = null;
+  var reconnectDelayMs = 500;
+  var reconnectTimer = null;
 
+  // Phase 6 (issue #215): a dropped connection retries with exponential
+  // backoff (0.5s, 1s, 2s, ... capped at 10s, reset back to 0.5s once a
+  // connection actually opens) instead of just stopping updates forever.
+  // `data-tinox-ui-status` on the mount element ("connected"/
+  // "reconnecting") lets an app's own CSS show a banner/spinner if it
+  // wants one -- nothing renders one by default.
+  //
+  // A reconnect always starts a brand-new session: the server allocates a
+  // fresh app instance per accepted WS connection (see
+  // TinoxUIRuntime's/Component's own docs on why -- no static/global
+  // state in Tinox to hold a session registry in), so whatever state the
+  // dropped connection had (form input, click counts, ...) is gone, same
+  // as a real page reload would lose it. This is a deliberate, documented
+  // v1 scope limit, not an oversight -- a real session store surviving a
+  // reconnect would need genuinely new server-side infrastructure
+  // (a session-id-keyed instance registry with its own TTL/expiry, which
+  // Tinox's current "no global mutable state" design has nowhere to put)
+  // disproportionate to what reconnect resilience alone needs.
   function connect() {
     ws = new WebSocket(window.TINOX_UI_WS_URL);
+    ws.onopen = function () {
+      reconnectDelayMs = 500;
+      mount.setAttribute("data-tinox-ui-status", "connected");
+    };
     ws.onmessage = function (ev) {
       var msg = JSON.parse(ev.data);
       if (msg.kind === "init" || msg.kind === "update") {
@@ -65,8 +89,18 @@ namespace tinox.core.ui
       }
     };
     ws.onclose = function () {
-      // v1 has no reconnect (documented gap, see the module's own docs) --
-      // a dropped connection just stops updating.
+      mount.setAttribute("data-tinox-ui-status", "reconnecting");
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(function () {
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 10000);
+        connect();
+      }, reconnectDelayMs);
+    };
+    ws.onerror = function () {
+      // onclose always fires after onerror for a WebSocket -- no separate
+      // reconnect scheduling needed here, just make sure the socket is
+      // actually closed rather than left half-open.
+      ws.close();
     };
   }
 
