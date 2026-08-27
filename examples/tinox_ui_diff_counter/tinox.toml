@@ -6,7 +6,7 @@ description = "Tinox-UI click counter using diff-based rendering (TinoxUIRuntime
 [[dependencies]]
 group = "tinox.core"
 artifactId = "ui"
-version = "1.0.1"
+version = "1.0.2"
 
 [[dependencies]]
 group = "tinox.core"

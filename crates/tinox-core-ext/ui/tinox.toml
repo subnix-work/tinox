@@ -1,6 +1,6 @@
 [package]
 name = "ui"
-version = "1.0.1"
+version = "1.0.2"
 description = "Tinox-UI -- a server-driven web UI framework (Vaadin/Phoenix LiveView-style): write your whole UI as a Tinox component tree running on the server, a thin generic JS client renders it and ships events back over a persistent WebSocket."
 
 [[dependencies]]
