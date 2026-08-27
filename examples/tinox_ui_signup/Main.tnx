@@ -10,7 +10,7 @@ class Main
     {
         let srv: HttpServer = HttpServer::new(8282);
         srv.get("/", ctx => {
-            ctx.response.html(Assets::shellHtml("ws://localhost:8283/__tinoxui"));
+            ctx.response.html(Assets::shellHtml(8283));
         });
         srv.get("/ui.js", ctx => {
             ctx.response.content(Assets::clientJs(), "application/javascript");

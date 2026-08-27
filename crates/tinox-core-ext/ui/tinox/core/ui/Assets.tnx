@@ -15,15 +15,24 @@ namespace tinox.core.ui
     // binary" deployment footgun.
     class Assets
     {
-        // wsUrl: the full "ws://host:port/path" the client should connect
-        // to -- substituted in verbatim (no templating engine needed for
-        // one placeholder). Callers are responsible for the value being
-        // safe to embed in a `<script>` block (a compile-time constant
-        // the app itself controls, not untrusted input).
-        fnc shellHtml(wsUrl: String) -> String
+        // wsPort: only the WebSocket server's PORT, not a full URL --
+        // deliberately NOT "ws://localhost:port/path" baked in as a
+        // compile-time constant (that was this widget's own original
+        // design, and a real bug: it silently broke for anyone reaching
+        // the HTTP shell through any hostname other than literally
+        // "localhost" -- a remote dev server, a Docker port mapping, a
+        // reverse proxy, a cloud sandbox's own forwarded URL, ... -- the
+        // page would load, but the WebSocket connection would silently
+        // try to reach the VIEWER'S OWN machine instead of the actual
+        // server, fail, and never retry successfully, leaving the page
+        // permanently blank with nothing to indicate why). The client JS
+        // (see clientJs() below) now builds the real WS URL itself from
+        // `window.location.hostname` (whatever host the browser actually
+        // used to reach this page) plus this port, at connect time.
+        fnc shellHtml(wsPort: Int64) -> String
         {
             let template: String = Assets::shellHtmlTemplate();
-            return template.replace("__TINOX_UI_WS_URL__", wsUrl);
+            return template.replace("__TINOX_UI_WS_PORT__", wsPort.toString());
         }
 
         // Design tokens (dark, glassy, cyan/purple neon-accented) ported
@@ -240,7 +249,7 @@ namespace tinox.core.ui
 </head>
 <body>
 <div id="tinox-ui-root"></div>
-<script>window.TINOX_UI_WS_URL = "__TINOX_UI_WS_URL__";</script>
+<script>window.TINOX_UI_WS_PORT = "__TINOX_UI_WS_PORT__";</script>
 <script src="/ui.js"></script>
 </body>
 </html>
@@ -275,7 +284,16 @@ namespace tinox.core.ui
   // Tinox's current "no global mutable state" design has nowhere to put)
   // disproportionate to what reconnect resilience alone needs.
   function connect() {
-    ws = new WebSocket(window.TINOX_UI_WS_URL);
+    // Built from the page's OWN actual hostname (whatever the browser
+    // used to reach this page -- localhost, a LAN IP, a Docker-mapped
+    // host, a reverse-proxied domain, ...), not a compile-time-baked
+    // "localhost" -- see shellHtml's own doc comment for the real bug
+    // this fixes. wss:// when the page itself was loaded over https:,
+    // matching the browser's own mixed-content rules (a wss:// server
+    // is required for a plain ws:// connection to succeed).
+    var wsProto = window.location.protocol === "https:" ? "wss://" : "ws://";
+    var wsUrl = wsProto + window.location.hostname + ":" + window.TINOX_UI_WS_PORT + "/__tinoxui";
+    ws = new WebSocket(wsUrl);
     ws.onopen = function () {
       reconnectDelayMs = 500;
       mount.setAttribute("data-tinox-ui-status", "connected");

@@ -3160,7 +3160,6 @@ impl CodeGen {
             let shell_shim = format!("__tinoxui_shell_shim_{idx}");
             let js_shim = format!("__tinoxui_js_shim_{idx}");
             let run_http_fn = format!("__tinox_run_tinoxui_http_{idx}");
-            let ws_url = format!("ws://localhost:{}/__tinoxui", app.ws_port);
 
             // HttpContext layout: [request: i64*, response: i64*] -- offset
             // 1 is the response pointer, same convention emit_route_code's
@@ -3171,8 +3170,12 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
             writeln!(&mut self.lambda_ir, "  %resp_i64 = load i64, i64* %resp_field").unwrap();
             writeln!(&mut self.lambda_ir, "  %resp_ptr = inttoptr i64 %resp_i64 to i64*").unwrap();
-            let ws_url_ptr = self.emit_lambda_string_literal(&ws_url);
-            writeln!(&mut self.lambda_ir, "  %html = call i8* @Assets_shellHtml(i8* {ws_url_ptr})").unwrap();
+            // Assets::shellHtml now takes only the WS PORT (Int64), not a
+            // full "ws://host:port/path" string -- the client builds the
+            // real URL itself from its own window.location.hostname at
+            // connect time (see Assets.tnx's own doc comment on why a
+            // baked-in "localhost" was a real bug).
+            writeln!(&mut self.lambda_ir, "  %html = call i8* @Assets_shellHtml(i64 {})", app.ws_port).unwrap();
             writeln!(&mut self.lambda_ir, "  %shell_r = call i64* @HttpResponse_html(i64* %resp_ptr, i8* %html)").unwrap();
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
