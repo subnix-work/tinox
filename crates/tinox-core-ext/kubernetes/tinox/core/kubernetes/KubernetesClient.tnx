@@ -19,6 +19,14 @@ namespace tinox.core.kubernetes
             return KubernetesClient { auth: KubeConfigLoader::fromFile(path) };
         }
 
+        // Like fromDefaultConfig, but for an explicit context name
+        // instead of the kubeconfig's own current-context -- "" means
+        // "use current-context", same as fromDefaultConfig itself.
+        fnc fromDefaultConfigWithContext(contextName: String) -> KubernetesClient
+        {
+            return KubernetesClient { auth: KubeConfigLoader::fromDefaultLocationWithContext(contextName) };
+        }
+
         fnc inCluster() -> KubernetesClient
         {
             return KubernetesClient { auth: KubeConfigLoader::inCluster() };
