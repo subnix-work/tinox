@@ -36,11 +36,19 @@ namespace tinox.core.ui
                 {
                     let col: GridColumn<T> = columns[cj];
                     // See GridColumn.tnx's own doc comment (issue #219) --
-                    // this `let`-typed local is load-bearing, not
-                    // stylistic: it's what makes the closure call's
-                    // result usable as a real String afterward.
-                    let cellText: String = col.accessor(item);
-                    cells.push(Component::gridCell(cellText, false));
+                    // these `let`-typed locals are load-bearing, not
+                    // stylistic: they're what makes each closure call's
+                    // result usable as a real String/Component afterward.
+                    if col.isComponent
+                    {
+                        let cellComponent: Component = col.componentAccessor(item);
+                        cells.push(Component::gridCellComponent(cellComponent, false));
+                    }
+                    else
+                    {
+                        let cellText: String = col.accessor(item);
+                        cells.push(Component::gridCell(cellText, false));
+                    }
                     cj = cj + 1;
                 }
                 rows.push(Component::gridRow(cells));

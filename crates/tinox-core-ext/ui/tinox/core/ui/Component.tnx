@@ -313,6 +313,20 @@ namespace tinox.core.ui
             return Component { id: "", type: "GridCell", text: text, props: props, children: [], visible: true, onEvent: fn(v: String) { } };
         }
 
+        // Rich-content cell (status pill, action button, sparkline, ...)
+        // -- `content` becomes the cell's one child, rendered inside a
+        // <th>/<td> exactly like any other Component's children (ui.js's
+        // GridCell case sets text unconditionally, harmlessly empty here,
+        // then the generic children-append loop adds `content` -- no
+        // client-side change needed for this at all). See
+        // GridColumn::ofComponent, the actual entry point apps use.
+        fnc gridCellComponent(content: Component, isHeader: Bool) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("header", isHeader ? "true" : "false");
+            return Component { id: "", type: "GridCell", text: "", props: props, children: [content], visible: true, onEvent: fn(v: String) { } };
+        }
+
         fnc vbox(children: List<Component>) -> Component
         {
             return Component { id: "", type: "VBox", text: "", props: Map::new(), children: children, visible: true, onEvent: fn(v: String) { } };

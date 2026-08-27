@@ -426,6 +426,20 @@ namespace tinox.core.ui
     }
   }
 
+  // Exposed globally so a Component::html()-embedded <script> (see the
+  // "Html" case's own doc comment on why those actually run now) can
+  // trigger a real server round trip -- e.g. a polling timer that
+  // re-sends an event on a fixed interval to force a periodic re-render,
+  // since the framework has no separate built-in polling primitive.
+  // `id` doesn't need to match any real component's id: dispatchEvent
+  // (TinoxUIRuntime.tnx) already silently no-ops on an unknown id via
+  // its own `handlers.contains(id)` check, and the generated msg_loop
+  // unconditionally rebuilds+resends the tree after every message
+  // regardless of whether a handler actually ran -- so a bogus id (e.g.
+  // "__poll__") is a safe, deliberate no-op-triggered-refresh, not a
+  // hack around a missing check.
+  window.tinoxSendEvent = sendEvent;
+
   // The one place that needs a matching entry whenever a new widget
   // `type` is added server-side (Component.tnx) -- documented as a real
   // two-sided contract in the module's own docs, the same way e.g. HTTP
@@ -543,6 +557,27 @@ namespace tinox.core.ui
       case "Html":
         el = document.createElement("div");
         el.innerHTML = node.text;
+        // <script> tags set via innerHTML are inert -- a standard DOM
+        // safety behavior, not a bug in this code -- so a naive
+        // Component::html(...) embedding a <script> (e.g. a polling
+        // timer, or a third-party widget's init code) would silently
+        // never run. Re-create each one as a real script element (which
+        // browsers DO execute when inserted via createElement+
+        // appendChild/replaceChild) so Component::html's own docs
+        // ("renders arbitrary markup") actually cover embedded scripts
+        // too, not just static markup. Copies attributes too (src, type,
+        // ...), not just inline text content, so an externally-sourced
+        // <script src="..."> embedded this way also loads correctly.
+        var embeddedScripts = el.querySelectorAll("script");
+        for (var esi = 0; esi < embeddedScripts.length; esi++) {
+          var oldScript = embeddedScripts[esi];
+          var newScript = document.createElement("script");
+          for (var eai = 0; eai < oldScript.attributes.length; eai++) {
+            newScript.setAttribute(oldScript.attributes[eai].name, oldScript.attributes[eai].value);
+          }
+          newScript.textContent = oldScript.textContent;
+          oldScript.parentNode.replaceChild(newScript, oldScript);
+        }
         break;
       case "DatePicker":
         el = document.createElement("input");

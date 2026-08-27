@@ -4,26 +4,62 @@ namespace tinox.core.ui
 {
     // One column definition for DataGrid<T>: a header label plus a
     // ValueProvider-style accessor closure extracting/formatting that
-    // column's cell text from one row item -- the same shape Vaadin's own
-    // Grid.addColumn(ValueProvider) uses, and the only realistic way to
-    // build a generic grid in Tinox: there is no reflection API to
-    // auto-discover a DTO's fields, so the caller supplies one small
-    // closure per column instead.
+    // column's cell content from one row item -- the same shape Vaadin's
+    // own Grid.addColumn(ValueProvider)/addComponentColumn(...) uses, and
+    // the only realistic way to build a generic grid in Tinox: there is
+    // no reflection API to auto-discover a DTO's fields, so the caller
+    // supplies one small closure per column instead.
     //
-    // IMPORTANT (issue #219): always route `accessor(item)`'s result
-    // through a `let`-typed local or a real method-argument position
-    // before using it -- calling a closure stored in an object field
-    // directly inside something like `println(...)` mistypes the result
-    // at the LLVM level (a real, open compiler bug). DataGrid::of below
-    // already does this correctly; don't "simplify" it away.
+    // Two shapes, chosen via `of` vs `ofComponent`: a plain-text column
+    // (`accessor: fnc(T) -> String`) or a rich-content column
+    // (`componentAccessor: fnc(T) -> Component`, e.g. a status pill, an
+    // action button, or a sparkline chart per row) -- `isComponent`
+    // records which one a given instance actually holds, since Tinox has
+    // no sum/union type to express "one of these two closures" directly;
+    // the unused field of either shape is set to a harmless inert dummy
+    // closure so the struct literal is always fully initialized. See
+    // DataGrid::of for the dispatch on `isComponent`.
+    //
+    // IMPORTANT (issue #219): always route `accessor(item)`'s or
+    // `componentAccessor(item)`'s result through a `let`-typed local
+    // before using it anywhere that inspects its type (e.g. `println`,
+    // or implicitly via Component::html's own text-vs-html handling) --
+    // calling a closure stored in an object field directly in such a
+    // context mistypes the result at the LLVM level (a real, open
+    // compiler bug, verified live: an early draft of this exact
+    // GridColumn<T> shape printed garbage instead of "Ada"/"<b>Ada</b>"
+    // until routed through `let s: String = col.accessor(item);` first).
+    // DataGrid::of already does this correctly for both shapes; don't
+    // "simplify" it away.
     class GridColumn<T>
     {
         var header: String;
         var accessor: fnc(T) -> String;
+        var componentAccessor: fnc(T) -> Component;
+        var isComponent: Bool;
 
         fnc of(header: String, accessor: fnc(T) -> String) -> GridColumn<T>
         {
-            return GridColumn<T> { header: header, accessor: accessor };
+            return GridColumn<T> {
+                header: header,
+                accessor: accessor,
+                componentAccessor: fn(item: T) { return Component::none(); },
+                isComponent: false
+            };
+        }
+
+        // For rich cell content -- status pills, action buttons,
+        // sparkline charts, anything Component::html()/other widgets can
+        // build. The whole returned Component becomes the cell's content
+        // (see Component::gridCellComponent).
+        fnc ofComponent(header: String, componentAccessor: fnc(T) -> Component) -> GridColumn<T>
+        {
+            return GridColumn<T> {
+                header: header,
+                accessor: fn(item: T) { return ""; },
+                componentAccessor: componentAccessor,
+                isComponent: true
+            };
         }
     }
 }
