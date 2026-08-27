@@ -114,6 +114,39 @@ namespace tinox.core.kubernetes
             return resp.json();
         }
 
+        // Server-Side Apply (PATCH + `application/apply-patch+json`,
+        // `?fieldManager=...&force=true`) -- unlike patchMerge (RFC 7386,
+        // caller supplies only the fields being changed) or update (full
+        // PUT replace, needs the current resourceVersion), SSA takes the
+        // FULL desired object state and lets the API server compute the
+        // diff itself against what this fieldManager previously applied,
+        // the standard way a "load YAML, edit it, apply" workflow is
+        // meant to work (no manual resourceVersion bookkeeping, no
+        // hand-built partial patch body). `force: true` resolves a field
+        // conflict with a DIFFERENT field manager in this manager's own
+        // favor (kubectl's own `--force-conflicts`) -- the expected
+        // behavior for an interactive YAML editor overwriting whatever
+        // was there, not a background controller that should defer.
+        fn applyServerSide(name: String, bodyJson: String, fieldManager: String) -> JsonValue
+        {
+            let path: String = this.basePath() + "/" + name + "?fieldManager=" + fieldManager + "&force=true";
+            // `application/apply-patch+yaml`, NOT `+json` -- verified live
+            // against a real cluster (minikube, kube-apiserver v1.35.1):
+            // `+json` is rejected outright with HTTP 415 Unsupported
+            // Media Type, matching `kubectl apply --server-side`'s own
+            // observed request (`kubectl -v=8`) which ALSO always sends
+            // `+yaml`, even for a body that's valid JSON -- apparently
+            // this API server build only registers the YAML apply-patch
+            // media type, not the JSON one both are supposed to support
+            // per the API conventions. A plain JSON body is valid YAML,
+            // so sending JSON under `+yaml` works fine; only the
+            // Content-Type header needed to match what kubectl itself
+            // actually uses.
+            let resp: KubeResponse = this.client.requestWithContentType("PATCH", path, bodyJson, "application/apply-patch+yaml");
+            resp.throwIfError("applyServerSide " + this.plural + "/" + name);
+            return resp.json();
+        }
+
         fn delete(name: String) -> Nothing
         {
             let resp: KubeResponse = this.client.request("DELETE", this.basePath() + "/" + name, "");

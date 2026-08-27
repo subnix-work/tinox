@@ -97,7 +97,30 @@ namespace tinox.core.kubernetes
 
         // `path` is the full API path (e.g.
         // "/api/v1/namespaces/default/pods"); `body` is "" for GET/DELETE.
+        // Picks the right default Content-Type per method (JSON Merge
+        // Patch, RFC 7386, for PATCH -- see requestWithContentType's own
+        // doc comment for why a wrong Content-Type here doesn't just get
+        // ignored). For a PATCH that needs a DIFFERENT patch strategy
+        // (Server-Side Apply's `application/apply-patch+yaml`/`+json`,
+        // strategic-merge-patch, ...), use requestWithContentType
+        // directly instead of this convenience wrapper.
         fn request(method: String, path: String, body: String) -> KubeResponse
+        {
+            let contentType: String = method == "PATCH" ? "application/merge-patch+json" : "application/json";
+            return this.requestWithContentType(method, path, body, contentType);
+        }
+
+        // Same as request(), but with an explicit Content-Type instead of
+        // request()'s own per-method default -- needed for Server-Side
+        // Apply (PATCH + `application/apply-patch+json`, NOT the default
+        // merge-patch content type: the Kubernetes API server dispatches
+        // entirely on Content-Type to decide which patch strategy to
+        // apply, sending SSA's own JSON body with the wrong
+        // Content-Type doesn't error, it just silently gets interpreted
+        // as an ordinary JSON Merge Patch instead -- silent garbage, not
+        // a loud rejection, so getting this right matters more than a
+        // typical "wrong header" mistake would).
+        fn requestWithContentType(method: String, path: String, body: String, contentType: String) -> KubeResponse
         {
             this.applyTlsConfig();
             if this.auth.bearerToken.len() > 0
@@ -105,19 +128,7 @@ namespace tinox.core.kubernetes
                 Http::setHeader("Authorization", "Bearer " + this.auth.bearerToken);
             }
             Http::setHeader("Accept", "application/json");
-            // JSON Merge Patch needs its own Content-Type (RFC 7386) --
-            // sending it as plain application/json makes the API server
-            // reject the request outright ("the body of the request was
-            // in an unknown format"), it does not fall back to a
-            // different patch strategy.
-            if method == "PATCH"
-            {
-                Http::setHeader("Content-Type", "application/merge-patch+json");
-            }
-            else
-            {
-                Http::setHeader("Content-Type", "application/json");
-            }
+            Http::setHeader("Content-Type", contentType);
 
             let url: String = this.auth.serverUrl + path;
             var statusCode: Int64 = 0;

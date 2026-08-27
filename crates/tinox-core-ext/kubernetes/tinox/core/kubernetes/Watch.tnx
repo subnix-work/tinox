@@ -42,8 +42,24 @@ namespace tinox.core.kubernetes
 
         // `path` is the resource's own base path, e.g. from
         // GenericResourceOperations::basePath() -- GenericResourceOperations::watch()
-        // is the normal entry point, not this directly.
+        // is the normal entry point, not this directly. Appends
+        // `watch=true` itself -- for anything that needs the SAME
+        // chunked-streaming connection machinery against a path that must
+        // NOT have `watch=true` forced onto it (e.g. the pod log
+        // subresource's own `?follow=true`), use `openRaw` instead.
         fnc open(client: KubernetesClient, path: String) -> Watch
+        {
+            let watchPath: String = path.contains("?") ? (path + "&watch=true") : (path + "?watch=true");
+            return Watch::openRaw(client, watchPath);
+        }
+
+        // Same chunked-transfer streaming connection as `open`, but
+        // `path` is used EXACTLY as given -- no `watch=true` appended.
+        // For the pod log subresource (`GET .../pods/{name}/log?
+        // follow=true&timestamps=true`), which is chunked-transfer HTTP
+        // structurally identical to a `?watch=true` stream but needs its
+        // own, different query parameters instead.
+        fnc openRaw(client: KubernetesClient, path: String) -> Watch
         {
             let auth: ClusterAuth = client.auth;
             let parsed: ParsedUrl = ParsedUrl::parse(auth.serverUrl);
@@ -51,7 +67,7 @@ namespace tinox.core.kubernetes
             let fd: Int64 = socketCreateTcp();
             if !socketConnect(fd, parsed.host, parsed.port)
             {
-                throw "Watch::open: failed to connect to " + parsed.host + ":" + parsed.port.toString();
+                throw "Watch::openRaw: failed to connect to " + parsed.host + ":" + parsed.port.toString();
             }
 
             var conn: Int64 = 0;
@@ -78,11 +94,10 @@ namespace tinox.core.kubernetes
             }
             if conn <= 0
             {
-                throw "Watch::open: TLS handshake / connection setup failed for " + parsed.host + ":" + parsed.port.toString();
+                throw "Watch::openRaw: TLS handshake / connection setup failed for " + parsed.host + ":" + parsed.port.toString();
             }
 
-            let watchPath: String = path.contains("?") ? (path + "&watch=true") : (path + "?watch=true");
-            var req: String = "GET " + watchPath + " HTTP/1.1\r\n";
+            var req: String = "GET " + path + " HTTP/1.1\r\n";
             req = req + "Host: " + parsed.host + "\r\n";
             req = req + "Accept: application/json\r\n";
             if auth.bearerToken.len() > 0
@@ -102,7 +117,7 @@ namespace tinox.core.kubernetes
             if !statusLine.contains("200")
             {
                 httpConnClose(conn);
-                throw "Watch::open: unexpected response: " + statusLine;
+                throw "Watch::openRaw: unexpected response: " + statusLine;
             }
             while true
             {
