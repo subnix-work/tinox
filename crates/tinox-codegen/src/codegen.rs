@@ -1551,6 +1551,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @httpConnReadN(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpConnWriteBytes(i64, i64*)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnClose(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @httpConnClearRecvTimeout(i64)").unwrap();
         // CLI helpers (@Command / @Option / @Argument)
         writeln!(&mut self.ir, "declare i8* @tinox_cli_get_string(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_cli_has_flag(i8*, i8*)").unwrap();

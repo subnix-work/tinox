@@ -834,6 +834,7 @@ impl TypeChecker {
         symbols.functions.insert("httpConnReadN".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("n".to_string(), ValueType::Int)], return_type: ValueType::Array(Box::new(ValueType::Int)) });
         symbols.functions.insert("httpConnWriteBytes".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("bytes".to_string(), ValueType::Array(Box::new(ValueType::Int)))], return_type: ValueType::Int });
         symbols.functions.insert("httpConnClose".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        symbols.functions.insert("httpConnClearRecvTimeout".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         // File I/O builtins
         symbols.functions.insert("open".to_string(), FunctionSignature {
             params: vec![("path".to_string(), ValueType::String), ("mode".to_string(), ValueType::String)],

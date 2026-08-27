@@ -4018,6 +4018,35 @@ void httpConnClose(int64_t conn) {
     conn_close((TinoxConn*)(intptr_t)conn);
 }
 
+// Removes the 5s "zombie guard" SO_RCVTIMEO that httpServerAcceptConn/
+// httpServerAcceptTls set on every accepted fd (meant to stop a slow-loris
+// HTTP client from blocking the single-threaded accept loop forever by
+// never finishing a request) -- that guard's own doc comment already notes
+// it "persists on `fd` for the life of the connection, so it also protects
+// later blocking reads after a successful handshake", which is exactly
+// backwards for a WEBSOCKET connection: a legitimately idle WS client (the
+// normal, expected state between user interactions, not a slow/broken one)
+// hits this same 5s recv() timeout on every blocking Ws::readMessage call,
+// gets treated as a dead connection, and is force-closed -- found live via
+// a real Tinox-UI app (issue #215's tinox.core:ui) whose WS connection was
+// silently reconnecting every ~5-6 seconds of user inactivity, discarding
+// all server-side state each time (no session persistence across a
+// reconnect, a separate documented v1 limitation) -- from the browser this
+// looked like "my clicks keep getting reverted to the initial state for no
+// reason". WsServer::accept/acceptTls (tinox.core:websocket) call this
+// right after a successful WS handshake -- the zombie guard already did
+// its job protecting the HANDSHAKE itself (which reuses the same blocking
+// httpServerAcceptConnHandle path), it just has no business staying active
+// for the rest of a legitimate long-lived connection's whole lifetime.
+// {0,0} is standard POSIX for "no timeout, block indefinitely" (the
+// default when SO_RCVTIMEO was never set at all).
+void httpConnClearRecvTimeout(int64_t conn) {
+    if (conn <= 0) return;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
+    setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
 // Reads a single '\n'-terminated line from a conn (issue #134, SMTP
 // client: RFC 5321 is a line-based, \r\n-terminated command/response
 // protocol -- unlike HTTP's blank-line-terminated request blocks
