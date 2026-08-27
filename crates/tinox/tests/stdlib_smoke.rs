@@ -36,10 +36,6 @@ const EXCLUDED: &[(&str, &str)] = &[
         "http3_server",
         "needs TINOX_HTTP3=1 (opt-in, default OFF -- unlike OpenSSL, ngtcp2/nghttp3 aren't universally installed); a smoke case without this flag would fail at link time. Covered by crates/tinox/tests/http3_server_curl.rs (its own process, real curl --http3-only, skips cleanly instead of failing when ngtcp2/nghttp3/HTTP3-curl are missing on the build machine).",
     ),
-    (
-        "ui",
-        "not yet published to tinox-central (issue #215's Phase 6) -- same reasoning as tinox.core:kubernetes had here before its own publish: a SMOKES case's auto-synthesized tinox.toml + `tinox install` fetches the REGISTRY version, not this workspace's own source. Add a real SMOKES entry once a version is published. Covered instead by crates/tinox/tests/tinox_ui_hello.rs (a real compiled example, live WebSocket protocol round-trip, and its own local-source-staging so it doesn't depend on tinox-central at all).",
-    ),
 ];
 
 struct Smoke {
@@ -502,6 +498,19 @@ const SMOKES: &[Smoke] = &[
         imports: &["tinox.core.trie"],
         body: "let t: Trie = Trie::new();\n    Trie::insert(t, \"ab\");\n    if Trie::search(t, \"ab\") { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
+        contains: &[],
+    },
+    Smoke {
+        key: "ui",
+        // No WebSocket/HTTP I/O here on purpose (matches kubernetes' own
+        // "no live cluster in CI" reasoning) -- this only needs to catch
+        // ghost-builtin/codegen breakage in the module itself. Real
+        // client/server protocol behavior is covered by
+        // crates/tinox/tests/tinox_ui_*.rs (real compiled examples, live
+        // WebSocket round-trips).
+        imports: &["tinox.core.ui", "tinox.core.json"],
+        body: "let c: Component = Component::label(\"hi\");\n    println(c.type);\n    let j: String = Json::serialize(c);\n    if j.contains(\"\\\"type\\\":\\\"Label\\\"\") { println(\"yes\"); } else { println(\"no\"); }",
+        expects: &["Label", "yes"],
         contains: &[],
     },
     Smoke {
