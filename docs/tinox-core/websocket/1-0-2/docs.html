@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>websocket — Tinox Docs</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --bg:        #070b14;
+  --bg2:       rgba(17, 25, 43, 0.6);
+  --bg3:       rgba(34, 211, 238, 0.07);
+  --sidebar:   rgba(7, 11, 20, 0.72);
+  --border:    rgba(103, 232, 249, 0.16);
+  --accent:    #22d3ee;
+  --accent2:   #a78bfa;
+  --link:      #67e8f9;
+  --green:     #34d399;
+  --text:      #e2e8f0;
+  --text2:     #93a4bd;
+  --text3:     #64748b;
+  --code-bg:   rgba(5, 7, 13, 0.65);
+  --tag-bg:    rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+  background-attachment: fixed;
+  color: var(--text);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, black, transparent 75%);
+}
+nav { position: sticky; top: 0; z-index: 1; width: 270px; min-width: 270px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--border); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 32px 0; overflow-y: auto; flex-shrink: 0; }
+nav h1 { padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-family: 'Space Grotesk', 'JetBrains Mono', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+nav ul { list-style: none; }
+nav li.nav-section { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }
+nav li a { display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }
+nav li a:hover { color: var(--text); background: var(--bg3); border-left-color: var(--accent); }
+main { position: relative; z-index: 1; flex: 1; min-width: 0; padding: 56px clamp(2rem, 4vw, 4rem); }
+main h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }
+main > p.generated-by { color: var(--text3); margin-bottom: 28px; font-size: 0.78rem; }
+.tool-tag { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text3); }
+.item { border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.item-name { font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.kw { color: #c792ea; }
+.doc { color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }
+h3 { font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }
+table.members { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.members tr { border-bottom: 1px solid var(--border); }
+table.members td { padding: 8px 10px; vertical-align: top; }
+.member-name { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); width: 35%; }
+.member-type { color: #ffcb6b; width: 20%; }
+.method-sig { background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }
+.method-doc { color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }
+.ann { color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }
+code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--link); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>📦 websocket</h1>
+  <ul><li class="nav-section">Overview</li><li><a href="#overview">Description</a></li><li class="nav-section">Examples</li><li><a href="#ex-echo-server">Echo server</a></li><li><a href="#ex-client">Client</a></li><li class="nav-section">Classes</li><li><a href="#class-Ws">Ws</a></li><li><a href="#class-WsClient">WsClient</a></li><li><a href="#class-WsFrame">WsFrame</a></li><li><a href="#class-WsServer">WsServer</a></li><li class="nav-section">Functions</li><li><a href="#fn-wsSetCompressed">wsSetCompressed</a></li><li><a href="#fn-wsIsCompressed">wsIsCompressed</a></li><li><a href="#fn-tinoxDeflateRaw">tinoxDeflateRaw</a></li><li><a href="#fn-tinoxInflateRaw">tinoxInflateRaw</a></li><li><a href="#fn-wsLastInflateOk">wsLastInflateOk</a></li><li><a href="#fn-tinoxBytesToString">tinoxBytesToString</a></li></ul>
+</nav>
+<main>
+  <h1>websocket</h1>
+  <p class="generated-by">Generated by <span class="tool-tag">tinox doc</span></p>
+  <section id="overview" class="item"><p class="doc" style="margin-bottom:0">tinox.core.websocket, split out of the bundled stdlib as a standalone tinox-central package.</p></section><section id="ex-echo-server" class="item"><h3 style="margin-top:0">Echo server</h3><pre><code><span class="kw">import</span> tinox.core.websocket;
+
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="kw">let</span> srv: <span class="type">Int64</span> = <span class="type">WsServer</span>::listen(<span class="num">8080</span>);
+        <span class="kw">let</span> conn: <span class="type">Int64</span> = <span class="type">WsServer</span>::accept(srv);
+
+        <span class="kw">while</span> <span class="kw">true</span>
+        {
+            <span class="kw">let</span> f: <span class="type">WsFrame</span> = <span class="type">Ws</span>::readMessage(conn);
+            <span class="kw">if</span> f.opcode != <span class="num">1</span>
+            {
+                <span class="kw">break</span>;
+            }
+            <span class="type">Ws</span>::sendText(conn, <span class="type">Ws</span>::text(f));
+        }
+
+        <span class="type">Ws</span>::close(conn);
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+}
+</code></pre></section><section id="ex-client" class="item"><h3 style="margin-top:0">Client</h3><pre><code><span class="kw">import</span> tinox.core.websocket;
+
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="kw">let</span> conn: <span class="type">Int64</span> = <span class="type">WsClient</span>::connect(<span class="str">&quot;localhost&quot;</span>, <span class="num">8080</span>, <span class="str">&quot;/&quot;</span>);
+        <span class="type">WsClient</span>::sendText(conn, <span class="str">&quot;hello from client&quot;</span>);
+
+        <span class="kw">let</span> f: <span class="type">WsFrame</span> = <span class="type">WsClient</span>::readMessage(conn);
+        println(<span class="type">WsClient</span>::text(f));
+
+        <span class="type">WsClient</span>::close(conn);
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+}
+</code></pre></section><section id="fn-wsSetCompressed" class="item"><h2 class="item-name"><span class="kw">fn</span> wsSetCompressed(conn: <span style="color:#ffcb6b">Int64</span>, enabled: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">Nothing</span></h2></section><section id="fn-wsIsCompressed" class="item"><h2 class="item-name"><span class="kw">fn</span> wsIsCompressed(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Bool</span></h2></section><section id="fn-tinoxDeflateRaw" class="item"><h2 class="item-name"><span class="kw">fn</span> tinoxDeflateRaw(bytes: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">List&lt;Int64&gt;</span></h2></section><section id="fn-tinoxInflateRaw" class="item"><h2 class="item-name"><span class="kw">fn</span> tinoxInflateRaw(bytes: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">List&lt;Int64&gt;</span></h2></section><section id="fn-wsLastInflateOk" class="item"><h2 class="item-name"><span class="kw">fn</span> wsLastInflateOk() → <span style="color:#ffcb6b">Bool</span></h2></section><section id="fn-tinoxBytesToString" class="item"><h2 class="item-name"><span class="kw">fn</span> tinoxBytesToString(bytes: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">String</span></h2></section><section id="class-Ws" class="item"><h2 class="item-name"><span class="kw">class</span> Ws</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> handshake(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-sig"><span class="kw">fn</span> readFrameGeneric(conn: <span style="color:#ffcb6b">Int64</span>, requireMasked: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">WsFrame</span></div><div class="method-sig"><span class="kw">fn</span> readFrame(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">WsFrame</span></div><div class="method-sig"><span class="kw">fn</span> writeFrameGeneric(conn: <span style="color:#ffcb6b">Int64</span>, opcode: <span style="color:#ffcb6b">Int64</span>, payload: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>, masked: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> writeFrame(conn: <span style="color:#ffcb6b">Int64</span>, opcode: <span style="color:#ffcb6b">Int64</span>, payload: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> readMessageGeneric(conn: <span style="color:#ffcb6b">Int64</span>, requireMasked: <span style="color:#ffcb6b">Bool</span>, maskOutgoing: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">WsFrame</span></div><div class="method-sig"><span class="kw">fn</span> finishMessage(conn: <span style="color:#ffcb6b">Int64</span>, maskOutgoing: <span style="color:#ffcb6b">Bool</span>, opcode: <span style="color:#ffcb6b">Int64</span>, payload: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>, compressed: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">WsFrame</span></div><div class="method-sig"><span class="kw">fn</span> readMessage(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">WsFrame</span></div><div class="method-sig"><span class="kw">fn</span> text(f: <span style="color:#ffcb6b">WsFrame</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-sig"><span class="kw">fn</span> textToBytes(s: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">List&lt;Int64&gt;</span></div><div class="method-sig"><span class="kw">fn</span> sendText(conn: <span style="color:#ffcb6b">Int64</span>, s: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendBinary(conn: <span style="color:#ffcb6b">Int64</span>, bytes: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendPing(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendCloseGeneric(conn: <span style="color:#ffcb6b">Int64</span>, code: <span style="color:#ffcb6b">Int64</span>, masked: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendClose(conn: <span style="color:#ffcb6b">Int64</span>, code: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> close(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div></section><section id="class-WsClient" class="item"><h2 class="item-name"><span class="kw">class</span> WsClient</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> connect(host: <span style="color:#ffcb6b">String</span>, port: <span style="color:#ffcb6b">Int64</span>, path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> readMessage(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">WsFrame</span></div><div class="method-sig"><span class="kw">fn</span> readFrame(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">WsFrame</span></div><div class="method-sig"><span class="kw">fn</span> text(f: <span style="color:#ffcb6b">WsFrame</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-sig"><span class="kw">fn</span> sendText(conn: <span style="color:#ffcb6b">Int64</span>, s: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendBinary(conn: <span style="color:#ffcb6b">Int64</span>, bytes: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendPing(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendClose(conn: <span style="color:#ffcb6b">Int64</span>, code: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> close(conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div></section><section id="class-WsFrame" class="item"><h2 class="item-name"><span class="kw">class</span> WsFrame</h2><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>fin</code></td><td class="member-type"><code>Bool</code></td><td></td></tr><tr><td class="member-name"><code>opcode</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>payload</code></td><td class="member-type"><code>List&lt;Int64&gt;</code></td><td></td></tr><tr><td class="member-name"><code>rsv1</code></td><td class="member-type"><code>Bool</code></td><td></td></tr></table></section><section id="class-WsServer" class="item"><h2 class="item-name"><span class="kw">class</span> WsServer</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> listen(port: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> accept(srv: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> listenTls(port: <span style="color:#ffcb6b">Int64</span>, certPath: <span style="color:#ffcb6b">String</span>, keyPath: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> acceptTls(srv: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Int64</span></div></section>
+</main>
+</body>
+</html>

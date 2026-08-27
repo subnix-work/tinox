@@ -6,7 +6,7 @@ description = "Tinox-UI hello-world: a label + a click-counting button."
 [[dependencies]]
 group = "tinox.core"
 artifactId = "ui"
-version = "1.0.2"
+version = "1.0.3"
 
 [[dependencies]]
 group = "tinox.core"
@@ -16,7 +16,7 @@ version = "1.0.1"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "websocket"
-version = "1.0.1"
+version = "1.0.2"
 
 [[dependencies]]
 group = "tinox.core"
