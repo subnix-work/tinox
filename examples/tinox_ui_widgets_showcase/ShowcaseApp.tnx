@@ -1,0 +1,78 @@
+// Tinox-UI widget-library showcase (issue #215 follow-up): every widget
+// added since Phase 5's original set -- DataGrid<T> (generic, DTO-driven),
+// DatePicker, RadioGroup, FileUpload, Tabs, Dialog, Notification,
+// Accordion -- exercised together in one app, built on Phase 4's
+// @TinoxUIApp/@View sugar.
+import tinox.core.ui;
+import tinox.core.websocket;
+import tinox.core.http_server;
+import Person;
+
+@TinoxUIApp(8290, 8291)
+class ShowcaseApp
+{
+    var initialized: Bool;
+    var activeTab: Int64;
+    var selectedDate: String;
+    var selectedColor: String;
+    var uploadedFileName: String;
+    var dialogOpen: Bool;
+    var people: List<Person>;
+
+    @View
+    fn render() -> Component
+    {
+        let app: ShowcaseApp = this;
+        if !this.initialized
+        {
+            this.selectedDate = "2026-01-01";
+            this.selectedColor = "red";
+            this.uploadedFileName = "";
+            this.people = [Person { name: "Ada", age: 30 }, Person { name: "Bob", age: 40 }];
+            this.initialized = true;
+        }
+
+        let tabContent: Component = this.tabContent();
+        let tabLabels: List<String> = ["Grid", "Form"];
+
+        return Component::vbox([
+            Component::heading("Widget Showcase", 1),
+            Component::tabs(tabLabels, this.activeTab, tabContent, fn(v: String) { app.activeTab = v.toInt(); }),
+            Component::button("Open Dialog", fn(v: String) { app.dialogOpen = true; }),
+            Component::dialog("Info", Component::label("This is a modal dialog."), this.dialogOpen, fn(v: String) { app.dialogOpen = false; }),
+            Component::notification("Loaded " + this.people.len().toString() + " people", "success")
+        ]);
+    }
+
+    fn tabContent() -> Component
+    {
+        if this.activeTab == 1
+        {
+            return this.formTab();
+        }
+        return this.gridTab();
+    }
+
+    fn gridTab() -> Component
+    {
+        let nameCol: GridColumn<Person> = GridColumn::of("Name", fn(p: Person) { return p.name; });
+        let ageCol: GridColumn<Person> = GridColumn::of("Age", fn(p: Person) { return p.age.toString(); });
+        let columns: List<GridColumn<Person>> = [nameCol, ageCol];
+        return DataGrid::of(this.people, columns);
+    }
+
+    fn formTab() -> Component
+    {
+        let app: ShowcaseApp = this;
+        let colors: List<String> = ["red", "green", "blue"];
+        return Component::vbox([
+            Component::datePicker(this.selectedDate, fn(v: String) { app.selectedDate = v; }),
+            Component::radioGroup(colors, this.selectedColor, fn(v: String) { app.selectedColor = v; }),
+            Component::fileUpload(fn(v: String) { app.uploadedFileName = v; }),
+            Component::label("File: " + this.uploadedFileName),
+            Component::accordion([
+                Component::accordionSection("Details", Component::label("Some details here."), false)
+            ])
+        ]);
+    }
+}

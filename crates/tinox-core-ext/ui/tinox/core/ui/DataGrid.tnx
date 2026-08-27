@@ -1,0 +1,53 @@
+module tinox.core.ui;
+
+namespace tinox.core.ui
+{
+    // A generic, DTO-driven data table: DataGrid::of(items, columns) turns
+    // a List<T> straight into a rendered <table>, no manual row-building
+    // required. `T` can be any class -- e.g. an @Entity loaded straight
+    // from DB.of(Person).all(), no separate "view model" needed.
+    //
+    // Row identity/diffing: rows carry NO stable per-item key in v1 (same
+    // positional-only limitation Phase 3's tree diff already documents
+    // elsewhere) -- fine for full-resend rendering (the default), and for
+    // diff-based rendering a reordered/filtered items list produces
+    // replace-heavy patches rather than minimal row moves.
+    class DataGrid<T>
+    {
+        fnc of(items: List<T>, columns: List<GridColumn<T>>) -> Component
+        {
+            var headerCells: List<Component> = [];
+            var ci: Int64 = 0;
+            while ci < columns.len()
+            {
+                let col: GridColumn<T> = columns[ci];
+                headerCells.push(Component::gridCell(col.header, true));
+                ci = ci + 1;
+            }
+            var rows: List<Component> = [Component::gridRow(headerCells)];
+
+            var ri: Int64 = 0;
+            while ri < items.len()
+            {
+                let item: T = items[ri];
+                var cells: List<Component> = [];
+                var cj: Int64 = 0;
+                while cj < columns.len()
+                {
+                    let col: GridColumn<T> = columns[cj];
+                    // See GridColumn.tnx's own doc comment (issue #219) --
+                    // this `let`-typed local is load-bearing, not
+                    // stylistic: it's what makes the closure call's
+                    // result usable as a real String afterward.
+                    let cellText: String = col.accessor(item);
+                    cells.push(Component::gridCell(cellText, false));
+                    cj = cj + 1;
+                }
+                rows.push(Component::gridRow(cells));
+                ri = ri + 1;
+            }
+
+            return Component { id: "", type: "DataGrid", text: "", props: Map::new(), children: rows, visible: true, onEvent: fn(v: String) { } };
+        }
+    }
+}

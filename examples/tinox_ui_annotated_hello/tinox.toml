@@ -6,7 +6,7 @@ description = "Tinox-UI click counter using @TinoxUIApp/@View annotation sugar i
 [[dependencies]]
 group = "tinox.core"
 artifactId = "ui"
-version = "1.0.0"
+version = "1.0.1"
 
 [[dependencies]]
 group = "tinox.core"

@@ -1,0 +1,29 @@
+module tinox.core.ui;
+
+namespace tinox.core.ui
+{
+    // One column definition for DataGrid<T>: a header label plus a
+    // ValueProvider-style accessor closure extracting/formatting that
+    // column's cell text from one row item -- the same shape Vaadin's own
+    // Grid.addColumn(ValueProvider) uses, and the only realistic way to
+    // build a generic grid in Tinox: there is no reflection API to
+    // auto-discover a DTO's fields, so the caller supplies one small
+    // closure per column instead.
+    //
+    // IMPORTANT (issue #219): always route `accessor(item)`'s result
+    // through a `let`-typed local or a real method-argument position
+    // before using it -- calling a closure stored in an object field
+    // directly inside something like `println(...)` mistypes the result
+    // at the LLVM level (a real, open compiler bug). DataGrid::of below
+    // already does this correctly; don't "simplify" it away.
+    class GridColumn<T>
+    {
+        var header: String;
+        var accessor: fnc(T) -> String;
+
+        fnc of(header: String, accessor: fnc(T) -> String) -> GridColumn<T>
+        {
+            return GridColumn<T> { header: header, accessor: accessor };
+        }
+    }
+}

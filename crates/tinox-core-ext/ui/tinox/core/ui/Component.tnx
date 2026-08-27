@@ -197,6 +197,122 @@ namespace tinox.core.ui
             return Component { id: "", type: "Link", text: text, props: props, children: [], visible: true, onEvent: onNavigate };
         }
 
+        // value: "YYYY-MM-DD" (native <input type="date"> format) -- no
+        // separate Date/DateTime type in Tinox's stdlib to bind to instead.
+        fnc datePicker(value: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value);
+            return Component { id: "", type: "DatePicker", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        // Same "|"-joined options convention as dropdown (see its own doc
+        // comment for the v1 limitation this implies).
+        fnc radioGroup(options: List<String>, selected: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("options", options.join("|"));
+            props.insert("selected", selected);
+            return Component { id: "", type: "RadioGroup", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        // v1 reports only the selected FILE NAME, not its binary content --
+        // uploading real file content would need a new wire-protocol path
+        // (base64 chunking or a separate HTTP upload endpoint), out of
+        // scope for this widget addition. Enough for e.g. showing what was
+        // picked, or driving a filename-based workflow; real content
+        // upload is a documented, real follow-up, not silently unsupported.
+        fnc fileUpload(onChange: fnc(String) -> Nothing) -> Component
+        {
+            return Component { id: "", type: "FileUpload", text: "", props: Map::new(), children: [], visible: true, onEvent: onChange };
+        }
+
+        // Renders a clickable header strip (one entry per label) plus
+        // whatever `content` the caller passes for the CURRENTLY active
+        // tab -- Tabs itself holds no per-tab content or active-index
+        // state; the app tracks that itself (a plain instance field) and
+        // picks `content`/`activeIndex` accordingly inside its own @View,
+        // the exact same pattern Component::link's routing already
+        // established (see its own doc comment) rather than a second,
+        // inconsistent state-management mechanism just for tabs.
+        // onTabChange receives the clicked tab's index as a String
+        // (`.toInt()` it in the handler).
+        fnc tabs(labels: List<String>, activeIndex: Int64, content: Component, onTabChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("labels", labels.join("|"));
+            props.insert("active", activeIndex.toString());
+            return Component { id: "", type: "Tabs", text: "", props: props, children: [content], visible: true, onEvent: onTabChange };
+        }
+
+        // A modal overlay; `open` is a plain Bool the app controls (e.g.
+        // toggled from a button's onClick) -- same explicit-state
+        // convention as everything else in this module, no separate
+        // show()/hide() imperative API. onClose fires when the backdrop or
+        // the dialog's own close button is clicked (value is always "").
+        fnc dialog(title: String, content: Component, open: Bool, onClose: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("title", title);
+            props.insert("open", open ? "true" : "false");
+            return Component { id: "", type: "Dialog", text: "", props: props, children: [content], visible: true, onEvent: onClose };
+        }
+
+        // kind: "info" | "success" | "error" (anything else falls back to
+        // "info" client-side) -- purely presentational, no interaction.
+        // The app controls whether it's shown at all via Component.visible
+        // (already a field every Component has) rather than a separate
+        // open/closed prop -- one fewer thing to keep in sync.
+        fnc notification(message: String, kind: String) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("kind", kind);
+            return Component { id: "", type: "Notification", text: message, props: props, children: [], visible: true, onEvent: fn(v: String) { } };
+        }
+
+        // Expand/collapse is handled entirely client-side (a header click
+        // toggles the section's body visibility in the DOM directly, no
+        // server round-trip) -- unlike Tabs/routing, there's no reason an
+        // app would need to know server-side which section is open. A
+        // real, documented consequence for full-resend (the default
+        // rendering mode, see TinoxUIRuntime's own docs): an unrelated
+        // event triggering a re-render replaces the whole subtree and
+        // resets every section back to `expanded`'s value from the LAST
+        // render, losing whatever the user toggled client-side in the
+        // meantime -- the same category of tradeoff full-resend already
+        // has for "typed but not committed" input state; diff-based
+        // rendering (Phase 3) doesn't have this problem, since an
+        // unrelated update only patches the parts that actually changed.
+        fnc accordionSection(header: String, content: Component, expanded: Bool) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("header", header);
+            props.insert("expanded", expanded ? "true" : "false");
+            return Component { id: "", type: "AccordionSection", text: "", props: props, children: [content], visible: true, onEvent: fn(v: String) { } };
+        }
+
+        fnc accordion(sections: List<Component>) -> Component
+        {
+            return Component { id: "", type: "Accordion", text: "", props: Map::new(), children: sections, visible: true, onEvent: fn(v: String) { } };
+        }
+
+        // --- DataGrid support (see GridColumn.tnx/DataGrid.tnx for the
+        // actual DataGrid::of<T> factory) -- these two are the internal
+        // building blocks DataGrid::of assembles into a full table, but
+        // are plain (non-generic) Component factories themselves like
+        // everything else here, so they live on Component, not DataGrid.
+        fnc gridRow(cells: List<Component>) -> Component
+        {
+            return Component { id: "", type: "GridRow", text: "", props: Map::new(), children: cells, visible: true, onEvent: fn(v: String) { } };
+        }
+
+        fnc gridCell(text: String, isHeader: Bool) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("header", isHeader ? "true" : "false");
+            return Component { id: "", type: "GridCell", text: text, props: props, children: [], visible: true, onEvent: fn(v: String) { } };
+        }
+
         fnc vbox(children: List<Component>) -> Component
         {
             return Component { id: "", type: "VBox", text: "", props: Map::new(), children: children, visible: true, onEvent: fn(v: String) { } };

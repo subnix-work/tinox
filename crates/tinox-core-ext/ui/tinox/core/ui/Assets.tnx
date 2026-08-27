@@ -26,6 +26,18 @@ namespace tinox.core.ui
             return template.replace("__TINOX_UI_WS_URL__", wsUrl);
         }
 
+        // Design tokens (dark, glassy, cyan/purple neon-accented) ported
+        // from tinox-central's own registry-frontend theme
+        // (registry-frontend/src/main/frontend/themes/tinox-central/
+        // styles.css in the tinox-central repo) -- same color values,
+        // gradients and fonts, just targeting plain HTML elements
+        // (button/input/table/...) instead of Vaadin web components,
+        // since ui.js renders plain DOM, not Vaadin. Every Tinox-UI app
+        // gets this by default (no opt-in) -- an app that wants its own
+        // look can still override via Component::withStyle's inline
+        // style hook, or by not using this shell template at all
+        // (Assets::clientJs() works standalone against any HTML page
+        // with a `#tinox-ui-root` element).
         fnc shellHtmlTemplate() -> String
         {
             return r#"<!doctype html>
@@ -33,9 +45,197 @@ namespace tinox.core.ui
 <head>
 <meta charset="utf-8">
 <title>Tinox-UI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; }
-  #tinox-ui-root { display: flex; flex-direction: column; gap: 0.5rem; max-width: 40rem; }
+  :root {
+    --tinox-base: #070b14;
+    --tinox-text: #e2e8f0;
+    --tinox-text2: #93a4bd;
+    --tinox-primary: #22d3ee;
+    --tinox-primary-10: rgba(34, 211, 238, 0.12);
+    --tinox-primary-text: #67e8f9;
+    --tinox-primary-contrast: #041018;
+    --tinox-accent-2: #a78bfa;
+    --tinox-error: #fb7185;
+    --tinox-success: #34d399;
+    --tinox-glass: rgba(17, 25, 43, 0.6);
+    --tinox-glass-border: rgba(103, 232, 249, 0.16);
+    --tinox-font: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    --tinox-font-display: 'Space Grotesk', 'JetBrains Mono', var(--tinox-font);
+    --tinox-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    --tinox-radius-m: 10px;
+    --tinox-radius-l: 16px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--tinox-font);
+    color: var(--tinox-text);
+    background:
+      radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+      radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+      linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+    background-attachment: fixed;
+  }
+  #tinox-ui-root {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    max-width: 48rem;
+    margin: 0 auto;
+    padding: 2.5rem clamp(1.25rem, 4vw, 3rem);
+  }
+  h1, h2, h3, h4, h5, h6 {
+    margin: 0.4rem 0;
+    font-family: var(--tinox-font-display);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  a {
+    color: var(--tinox-primary-text);
+    text-decoration: none;
+    font-weight: 500;
+  }
+  button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.5rem 1.1rem;
+    border-radius: 999px;
+    border: 1px solid rgba(103, 232, 249, 0.28);
+    background: rgba(34, 211, 238, 0.06);
+    color: var(--tinox-primary-text);
+    font-family: var(--tinox-font);
+    font-weight: 500;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  button:hover {
+    background: rgba(34, 211, 238, 0.16);
+    border-color: var(--tinox-primary);
+    box-shadow: 0 0 16px -2px rgba(34, 211, 238, 0.55);
+  }
+  input, textarea, select {
+    font-family: var(--tinox-font);
+    color: var(--tinox-text);
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid var(--tinox-glass-border);
+    border-radius: var(--tinox-radius-m);
+    padding: 0.5rem 0.7rem;
+    font-size: 0.9rem;
+  }
+  input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--tinox-primary);
+    box-shadow: 0 0 0 3px var(--tinox-primary-10);
+  }
+  a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.2rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid rgba(103, 232, 249, 0.28);
+    background: rgba(34, 211, 238, 0.06);
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  a:hover {
+    background: rgba(34, 211, 238, 0.16);
+    border-color: var(--tinox-primary);
+    box-shadow: 0 0 16px -2px rgba(34, 211, 238, 0.55);
+  }
+  progress {
+    width: 100%;
+    height: 0.6rem;
+    border-radius: 999px;
+    overflow: hidden;
+    border: none;
+    background: rgba(148, 163, 184, 0.14);
+  }
+  progress::-webkit-progress-bar { background: rgba(148, 163, 184, 0.14); }
+  progress::-webkit-progress-value { background: var(--tinox-primary); }
+  progress::-moz-progress-bar { background: var(--tinox-primary); }
+  table.tinox-datagrid {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--tinox-font);
+    background: var(--tinox-glass);
+    border: 1px solid var(--tinox-glass-border);
+    border-radius: var(--tinox-radius-l);
+    overflow: hidden;
+  }
+  table.tinox-datagrid th {
+    background: rgba(34, 211, 238, 0.05);
+    color: var(--tinox-primary-text);
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid rgba(103, 232, 249, 0.2);
+  }
+  table.tinox-datagrid td {
+    padding: 0.55rem 0.8rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.07);
+  }
+  table.tinox-datagrid tr:hover td { background: rgba(34, 211, 238, 0.055); }
+  .tinox-radio-group { display: flex; flex-direction: column; gap: 0.4rem; }
+  .tinox-radio-group label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
+  .tinox-tabs-header { display: flex; gap: 0.4rem; border-bottom: 1px solid var(--tinox-glass-border); padding-bottom: 0.5rem; margin-bottom: 0.75rem; }
+  .tinox-tab { padding: 0.35rem 0.9rem; border-radius: 999px; cursor: pointer; color: var(--tinox-text2); font-size: 0.85rem; }
+  .tinox-tab:hover { color: var(--tinox-text); }
+  .tinox-tab-active { background: var(--tinox-primary-10); color: var(--tinox-primary-text); font-weight: 600; }
+  .tinox-dialog-backdrop {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5, 7, 13, 0.65);
+  }
+  .tinox-dialog-box {
+    background: var(--tinox-glass);
+    border: 1px solid var(--tinox-glass-border);
+    border-radius: var(--tinox-radius-l);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    padding: 1.25rem;
+    min-width: 20rem;
+    max-width: 90vw;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .tinox-dialog-title {
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: var(--tinox-font-display); font-weight: 700; font-size: 1.1rem; color: var(--tinox-text);
+  }
+  .tinox-dialog-close { padding: 0.1rem 0.5rem; border-radius: 999px; min-width: unset; }
+  .tinox-notification {
+    padding: 0.6rem 1rem;
+    border-radius: var(--tinox-radius-m);
+    background: var(--tinox-glass);
+    border: 1px solid var(--tinox-glass-border);
+    font-size: 0.9rem;
+  }
+  .tinox-notification-success { border-color: rgba(52, 211, 153, 0.4); color: var(--tinox-success); }
+  .tinox-notification-error { border-color: rgba(251, 113, 133, 0.4); color: var(--tinox-error); }
+  .tinox-accordion { display: flex; flex-direction: column; gap: 0.5rem; }
+  .tinox-accordion-section {
+    background: var(--tinox-glass);
+    border: 1px solid var(--tinox-glass-border);
+    border-radius: var(--tinox-radius-m);
+    overflow: hidden;
+  }
+  .tinox-accordion-header { padding: 0.6rem 0.9rem; cursor: pointer; font-weight: 600; color: var(--tinox-primary-text); }
+  .tinox-accordion-body { padding: 0 0.9rem 0.75rem; }
 </style>
 </head>
 <body>
@@ -159,8 +359,28 @@ namespace tinox.core.ui
         if (el.tagName === "A" && props.href !== undefined) el.setAttribute("href", props.href);
         break;
       case "INPUT":
-        if ((el.type === "text" || el.type === "number") && props.value !== undefined) el.value = props.value;
+        if ((el.type === "text" || el.type === "number" || el.type === "date") && props.value !== undefined) el.value = props.value;
         if (el.type === "checkbox" && props.checked !== undefined) el.checked = props.checked === "true";
+        break;
+      case "TH": case "TD":
+        el.textContent = op.text;
+        break;
+      case "DIV":
+        // Notification is the one DIV-rendered leaf with real text to
+        // patch here -- every other DIV-rendered type (RadioGroup, Tabs,
+        // Dialog, Accordion, AccordionSection, FileUpload's container...)
+        // is structural (its "content" is child elements it built itself
+        // in build(), not a single text/innerHTML string) and isn't safe
+        // to blindly overwrite with `op.text` the way the plain Html
+        // widget's DIV already is below -- a props-only diff "update" on
+        // one of those currently only re-applies `style` (see the bottom
+        // of this function), same pre-existing gap this comment already
+        // documented for any unlisted tag before this widget batch.
+        if (el.className.indexOf("tinox-notification") === 0) {
+          el.textContent = op.text;
+        } else {
+          el.innerHTML = op.text;
+        }
         break;
       case "TEXTAREA":
         if (props.value !== undefined) el.value = props.value;
@@ -177,9 +397,6 @@ namespace tinox.core.ui
         break;
       case "H1": case "H2": case "H3": case "H4": case "H5": case "H6":
         el.textContent = op.text;
-        break;
-      case "DIV":
-        el.innerHTML = op.text;
         break;
     }
     el.setAttribute("style", props.style || "");
@@ -201,6 +418,12 @@ namespace tinox.core.ui
       return document.createElement("span");
     }
     var el;
+    // Most widgets append their `children` directly into `el` itself --
+    // a few (Dialog, AccordionSection) need children nested inside an
+    // inner wrapper instead (the dialog's content box, an accordion
+    // section's collapsible body), so a case can redirect the generic
+    // children-append loop below by setting this.
+    var childrenTarget = null;
     var props = node.props || {};
     switch (node.type) {
       case "Label":
@@ -303,6 +526,116 @@ namespace tinox.core.ui
         el = document.createElement("div");
         el.innerHTML = node.text;
         break;
+      case "DatePicker":
+        el = document.createElement("input");
+        el.type = "date";
+        el.value = props.value || "";
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
+      case "RadioGroup":
+        el = document.createElement("div");
+        el.className = "tinox-radio-group";
+        var ropts = (props.options || "").split("|").filter(function (s) { return s.length > 0; });
+        for (var roi = 0; roi < ropts.length; roi++) {
+          (function (optVal) {
+            var label = document.createElement("label");
+            var radio = document.createElement("input");
+            radio.type = "radio";
+            radio.name = node.id;
+            radio.value = optVal;
+            radio.checked = optVal === props.selected;
+            radio.addEventListener("change", function () { sendEvent(node.id, optVal); });
+            label.appendChild(radio);
+            label.appendChild(document.createTextNode(optVal));
+            el.appendChild(label);
+          })(ropts[roi]);
+        }
+        break;
+      case "FileUpload":
+        // v1 reports only the picked file's NAME, not its content -- see
+        // Component::fileUpload's own doc comment.
+        el = document.createElement("input");
+        el.type = "file";
+        el.addEventListener("change", function () {
+          sendEvent(node.id, el.files && el.files[0] ? el.files[0].name : "");
+        });
+        break;
+      case "Tabs":
+        el = document.createElement("div");
+        el.className = "tinox-tabs";
+        var tabHeader = document.createElement("div");
+        tabHeader.className = "tinox-tabs-header";
+        var tabLabels = (props.labels || "").split("|").filter(function (s) { return s.length > 0; });
+        var activeIdx = parseInt(props.active, 10) || 0;
+        for (var ti = 0; ti < tabLabels.length; ti++) {
+          (function (idx, label) {
+            var tabBtn = document.createElement("div");
+            tabBtn.className = "tinox-tab" + (idx === activeIdx ? " tinox-tab-active" : "");
+            tabBtn.textContent = label;
+            tabBtn.addEventListener("click", function () { sendEvent(node.id, String(idx)); });
+            tabHeader.appendChild(tabBtn);
+          })(ti, tabLabels[ti]);
+        }
+        el.appendChild(tabHeader);
+        break;
+      case "Dialog":
+        el = document.createElement("div");
+        el.className = "tinox-dialog-backdrop";
+        el.style.display = props.open === "true" ? "" : "none";
+        var dialogBox = document.createElement("div");
+        dialogBox.className = "tinox-dialog-box";
+        var dialogTitle = document.createElement("div");
+        dialogTitle.className = "tinox-dialog-title";
+        dialogTitle.textContent = props.title || "";
+        var dialogClose = document.createElement("button");
+        dialogClose.type = "button";
+        dialogClose.className = "tinox-dialog-close";
+        dialogClose.textContent = "×";
+        dialogClose.addEventListener("click", function () { sendEvent(node.id, ""); });
+        dialogTitle.appendChild(dialogClose);
+        dialogBox.appendChild(dialogTitle);
+        el.addEventListener("click", function (ev) {
+          if (ev.target === el) sendEvent(node.id, "");
+        });
+        el.appendChild(dialogBox);
+        childrenTarget = dialogBox;
+        break;
+      case "Notification":
+        el = document.createElement("div");
+        el.className = "tinox-notification tinox-notification-" + (props.kind || "info");
+        el.textContent = node.text;
+        break;
+      case "Accordion":
+        el = document.createElement("div");
+        el.className = "tinox-accordion";
+        break;
+      case "AccordionSection":
+        el = document.createElement("div");
+        el.className = "tinox-accordion-section";
+        var accHeader = document.createElement("div");
+        accHeader.className = "tinox-accordion-header";
+        accHeader.textContent = props.header || "";
+        var accBody = document.createElement("div");
+        accBody.className = "tinox-accordion-body";
+        accBody.style.display = props.expanded === "true" ? "" : "none";
+        accHeader.addEventListener("click", function () {
+          accBody.style.display = accBody.style.display === "none" ? "" : "none";
+        });
+        el.appendChild(accHeader);
+        el.appendChild(accBody);
+        childrenTarget = accBody;
+        break;
+      case "DataGrid":
+        el = document.createElement("table");
+        el.className = "tinox-datagrid";
+        break;
+      case "GridRow":
+        el = document.createElement("tr");
+        break;
+      case "GridCell":
+        el = document.createElement(props.header === "true" ? "th" : "td");
+        el.textContent = node.text;
+        break;
       default:
         el = document.createElement("div");
     }
@@ -310,9 +643,10 @@ namespace tinox.core.ui
     if (props.style) {
       el.setAttribute("style", (el.getAttribute("style") || "") + ";" + props.style);
     }
+    var appendTarget = childrenTarget || el;
     var children = node.children || [];
     for (var i = 0; i < children.length; i++) {
-      el.appendChild(build(children[i]));
+      appendTarget.appendChild(build(children[i]));
     }
     return el;
   }

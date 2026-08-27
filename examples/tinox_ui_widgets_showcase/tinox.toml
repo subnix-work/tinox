@@ -1,7 +1,7 @@
 [package]
-name = "tinox_ui_routed_demo"
+name = "tinox_ui_widgets_showcase"
 version = "0.1.0"
-description = "Tinox-UI Phase 5 demo: expanded widget library (heading/numberField/dropdown/progressBar/spacer/textArea) and client-side routing (Component::link) built on top of the @TinoxUIApp/@View annotation sugar."
+description = "Tinox-UI widget-library showcase: DataGrid<T>, DatePicker, RadioGroup, FileUpload, Tabs, Dialog, Notification, Accordion, all in one app."
 
 [[dependencies]]
 group = "tinox.core"
