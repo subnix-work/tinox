@@ -2038,6 +2038,10 @@ struct DocField  { name: String, ty: String, doc: Option<String>, annotations: V
 enum DocItem {
     Class {
         name: String,
+        /// Generic type parameters (`["T"]` for `class Foo<T>`), rendered
+        /// as an HTML-escaped `<T>` suffix next to the class name --
+        /// `name` itself stays the plain, anchor/id-safe class name.
+        type_params: Vec<String>,
         doc: Option<String>,
         annotations: Vec<String>,
         fields: Vec<DocField>,
@@ -2062,7 +2066,23 @@ enum DocItem {
 fn collect_doc_items(decl: &tinox_parser::DeclKind, out: &mut Vec<DocItem>) {
     use tinox_parser::DeclKind;
     match decl {
-        DeclKind::Class(c) if c.type_params.is_empty() => {
+        DeclKind::Class(c) => {
+            // Generic classes (type_params non-empty, e.g. `class
+            // GridColumn<T>`) used to be silently excluded from generated
+            // docs entirely -- the original guard here was `if
+            // c.type_params.is_empty()`, with no arm at all for the
+            // generic case, so a module's own generic classes just never
+            // appeared on its docs page, no error or warning either.
+            // Found while publishing tinox.core:ui 1.0.1 (issue #215
+            // follow-up): GridColumn<T>/DataGrid<T> compiled and worked
+            // fine, but were completely invisible in the generated
+            // docs.html. Fixed by documenting generic classes too --
+            // `name` stays the plain, anchor/id-safe class name (used
+            // verbatim in `id="class-{name}"`), `type_params` is rendered
+            // separately, HTML-escaped, as a `<T>` suffix next to it (see
+            // render_docs_html) so a raw `<T>` never ends up unescaped in
+            // the page, which would otherwise be parsed as a real HTML
+            // tag rather than displayed as text.
             let annotations = c.annotations.iter().map(|a| a.name.clone()).collect();
             let fields = c.fields.iter().map(|f| DocField {
                 name: f.name.clone(),
@@ -2073,6 +2093,7 @@ fn collect_doc_items(decl: &tinox_parser::DeclKind, out: &mut Vec<DocItem>) {
             let methods = c.methods.iter().map(method_to_doc).collect();
             out.push(DocItem::Class {
                 name: c.name.clone(),
+                type_params: c.type_params.clone(),
                 doc: c.doc.clone(),
                 annotations,
                 fields,
@@ -2235,15 +2256,20 @@ fn render_docs_html(
 
     for item in items {
         match item {
-            DocItem::Class { name, doc, annotations, fields, methods, implements, extends } => {
+            DocItem::Class { name, type_params, doc, annotations, fields, methods, implements, extends } => {
                 let anns = render_annotations(annotations);
+                let type_params_suffix = if type_params.is_empty() {
+                    String::new()
+                } else {
+                    format!("&lt;{}&gt;", html_escape(&type_params.join(", ")))
+                };
                 let mut subtitle = String::new();
                 if let Some(p) = extends { subtitle.push_str(&format!(" extends <code>{p}</code>")); }
                 if !implements.is_empty() {
                     subtitle.push_str(&format!(" implements {}", implements.iter().map(|i| format!("<code>{i}</code>")).collect::<Vec<_>>().join(", ")));
                 }
                 body.push_str(&format!(
-                    "<section id=\"class-{name}\" class=\"item\"><h2 class=\"item-name\">{anns}<span class=\"kw\">class</span> {name}{subtitle}</h2>"
+                    "<section id=\"class-{name}\" class=\"item\"><h2 class=\"item-name\">{anns}<span class=\"kw\">class</span> {name}{type_params_suffix}{subtitle}</h2>"
                 ));
                 if let Some(d) = doc { body.push_str(&format!("<p class=\"doc\">{}</p>", html_escape(d))); }
 
