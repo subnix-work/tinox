@@ -1,6 +1,6 @@
 [package]
 name = "kubernetes"
-version = "1.0.1"
+version = "1.0.2"
 description = "Kubernetes REST API client for tinox.core -- kubeconfig/in-cluster auth (incl. TLS client certs), a generic dynamic resource client that works with any Group/Version/Kind (including CRDs), and typed convenience classes for the common built-in resource kinds (Pod, Deployment, Service, ConfigMap, Secret, Job, Ingress, RBAC, ...)."
 
 [[dependencies]]
