@@ -259,6 +259,27 @@ pub struct CodeGen {
     lambda_ir: String,
     strings: HashMap<String, String>,
     temp_count: usize,
+    /// Source of `__lambda_N` names -- deliberately a SEPARATE counter
+    /// from `temp_count`, never saved/restored anywhere. `temp_count` is
+    /// legitimately saved-and-restored around generic-method-
+    /// specialization generation (so the CALLER's own subsequent SSA
+    /// temp numbering doesn't skip ahead unnecessarily) -- but lambda
+    /// names were previously derived from `temp_count` directly
+    /// (`gen_lambda`'s own `let lambda_id = self.temp_count;`), which
+    /// meant two INDEPENDENTLY generated generic specializations (e.g.
+    /// GridColumn<Person>::of and DataGrid<Person>::of, each containing
+    /// their own inline lambda literal) could both start from the SAME
+    /// restored `temp_count` baseline and emit an identically-named
+    /// `__lambda_N` if their own internal temp-counter progression up to
+    /// that lambda happened to coincide -- "invalid redefinition of
+    /// function '__lambda_4'", caught live while building a generic
+    /// `tinox.core:ui` DataGrid<T> widget (two of its own helper
+    /// classes' specializations collided this exact way). Every lambda
+    /// in the whole compiled program needs a permanently unique name
+    /// regardless of how many save/restore cycles happen around
+    /// `temp_count` elsewhere -- hence this always-monotonic, never-reset
+    /// counter instead.
+    lambda_counter: usize,
     /// DWARF debug info (issue #114): source file path (as stamped by
     /// `stamp_file_identity` in `tinox/src/main.rs`) -> its `!DIFile`
     /// metadata node id. Populated lazily the first time a given file is
@@ -558,6 +579,7 @@ impl CodeGen {
             lambda_ir: String::new(),
             strings: HashMap::new(),
             temp_count: 0,
+            lambda_counter: 0,
             di_file_ids: HashMap::new(),
             di_metadata: Vec::new(),
             di_next_id: 0,
@@ -12424,8 +12446,13 @@ impl CodeGen {
         body: &tinox_parser::Expr,
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
-        let lambda_id = self.temp_count;
-        self.temp_count += 1;
+        // Deliberately `lambda_counter`, not `temp_count` -- see the
+        // struct field's own doc comment for why sharing `temp_count`
+        // (saved/restored around generic specialization generation)
+        // caused two independently-generated specializations to
+        // sometimes collide on the same `__lambda_N` name.
+        let lambda_id = self.lambda_counter;
+        self.lambda_counter += 1;
         let fn_name = format!("__lambda_{}", lambda_id);
         // LLVM type hints from the call site (array map/filter/…): take them so
         // a nested lambda in the body never inherits them.
