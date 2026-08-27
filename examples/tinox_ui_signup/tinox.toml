@@ -6,7 +6,7 @@ description = "Tinox-UI signup form example: TextField + Checkbox + validation f
 [[dependencies]]
 group = "tinox.core"
 artifactId = "ui"
-version = "1.0.3"
+version = "1.0.4"
 
 [[dependencies]]
 group = "tinox.core"

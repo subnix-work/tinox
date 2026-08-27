@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ui — Tinox Docs</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --bg:        #070b14;
+  --bg2:       rgba(17, 25, 43, 0.6);
+  --bg3:       rgba(34, 211, 238, 0.07);
+  --sidebar:   rgba(7, 11, 20, 0.72);
+  --border:    rgba(103, 232, 249, 0.16);
+  --accent:    #22d3ee;
+  --accent2:   #a78bfa;
+  --link:      #67e8f9;
+  --green:     #34d399;
+  --text:      #e2e8f0;
+  --text2:     #93a4bd;
+  --text3:     #64748b;
+  --code-bg:   rgba(5, 7, 13, 0.65);
+  --tag-bg:    rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+  background-attachment: fixed;
+  color: var(--text);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, black, transparent 75%);
+}
+nav { position: sticky; top: 0; z-index: 1; width: 270px; min-width: 270px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--border); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 32px 0; overflow-y: auto; flex-shrink: 0; }
+nav h1 { padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-family: 'Space Grotesk', 'JetBrains Mono', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+nav ul { list-style: none; }
+nav li.nav-section { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }
+nav li a { display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }
+nav li a:hover { color: var(--text); background: var(--bg3); border-left-color: var(--accent); }
+main { position: relative; z-index: 1; flex: 1; min-width: 0; padding: 56px clamp(2rem, 4vw, 4rem); }
+main h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }
+main > p.generated-by { color: var(--text3); margin-bottom: 28px; font-size: 0.78rem; }
+.tool-tag { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text3); }
+.item { border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.item-name { font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.kw { color: #c792ea; }
+.doc { color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }
+h3 { font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }
+table.members { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.members tr { border-bottom: 1px solid var(--border); }
+table.members td { padding: 8px 10px; vertical-align: top; }
+.member-name { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); width: 35%; }
+.member-type { color: #ffcb6b; width: 20%; }
+.method-sig { background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }
+.method-doc { color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }
+.ann { color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }
+code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--link); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>📦 ui</h1>
+  <ul><li class="nav-section">Overview</li><li><a href="#overview">Description</a></li><li class="nav-section">Dependencies</li><li><a href="#dependencies">Dependencies</a></li><li class="nav-section">Examples</li><li><a href="#ex-annotated-counter">Annotated counter</a></li><li><a href="#ex-annotated-counter-entry-point">Annotated counter entry point</a></li><li><a href="#ex-widgets-and-routing">Widgets and routing</a></li><li><a href="#ex-widgets-and-routing-entry-point">Widgets and routing entry point</a></li><li class="nav-section">Classes</li><li><a href="#class-Assets">Assets</a></li><li><a href="#class-Component">Component</a></li><li><a href="#class-DataGrid">DataGrid</a></li><li><a href="#class-GridColumn">GridColumn</a></li><li><a href="#class-TinoxUIPatchMessage">TinoxUIPatchMessage</a></li><li><a href="#class-TinoxUIPatchOp">TinoxUIPatchOp</a></li><li><a href="#class-TinoxUIRuntime">TinoxUIRuntime</a></li></ul>
+</nav>
+<main>
+  <h1>ui</h1>
+  <p class="generated-by">Generated by <span class="tool-tag">tinox doc</span></p>
+  <section id="overview" class="item"><p class="doc" style="margin-bottom:0">Tinox-UI -- a server-driven web UI framework (Vaadin/Phoenix LiveView-style): write your whole UI as a Tinox component tree running on the server, a thin generic JS client renders it and ships events back over a persistent WebSocket.</p></section><section id="dependencies" class="item"><table class="members"><tr><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Module</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Version</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Group</th></tr><tr><td class="member-name"><a href="../../json/1-0-0/docs.html"><code>json</code></a></td><td class="member-type"><code>1.0.0</code></td><td>tinox.core</td></tr><tr><td class="member-name"><a href="../../http_server/1-0-1/docs.html"><code>http_server</code></a></td><td class="member-type"><code>1.0.1</code></td><td>tinox.core</td></tr><tr><td class="member-name"><a href="../../websocket/1-0-2/docs.html"><code>websocket</code></a></td><td class="member-type"><code>1.0.2</code></td><td>tinox.core</td></tr></table></section><section id="ex-annotated-counter" class="item"><h3 style="margin-top:0">Annotated counter</h3><pre><code><span class="kw">import</span> tinox.core.ui;
+<span class="kw">import</span> tinox.core.websocket;
+<span class="kw">import</span> tinox.core.http_server;
+
+// Annotation-driven: no HttpServer/WsServer wiring anywhere in the
+// program -- @TinoxUIApp generates the HTTP shell/client-JS server and
+// the WebSocket accept loop, calling the class's own @View method to
+// build/rebuild the component tree (full-resend rendering, automatic
+// re-render after every event).
+@<span class="type">TinoxUIApp</span>(<span class="num">8080</span>, <span class="num">8081</span>)
+<span class="kw">class</span> <span class="type">CounterApp</span>
+{
+    <span class="kw">var</span> clicks: <span class="type">Int64</span>;
+
+    @<span class="type">View</span>
+    <span class="kw">fn</span> render() -&gt; <span class="type">Component</span>
+    {
+        <span class="kw">let</span> app: <span class="type">CounterApp</span> = <span class="kw">this</span>;
+        <span class="kw">return</span> <span class="type">Component</span>::vbox([
+            <span class="type">Component</span>::label(<span class="str">&quot;Clicks: &quot;</span> + <span class="kw">this</span>.clicks.toString()),
+            <span class="type">Component</span>::button(<span class="str">&quot;Click me&quot;</span>, <span class="kw">fn</span>(v: <span class="type">String</span>) { app.clicks = app.clicks + <span class="num">1</span>; })
+        ]);
+    }
+}
+</code></pre></section><section id="ex-annotated-counter-entry-point" class="item"><h3 style="margin-top:0">Annotated counter entry point</h3><pre><code><span class="kw">import</span> <span class="type">CounterApp</span>;
+
+// Every Tinox program still needs its own class Main as the mandatory
+// entry point (since 2026-08-09) -- @TinoxUIApp's generated HTTP/WS
+// servers spawn and run alongside it on their own threads, they don't
+// replace it. This is the required sibling file for the annotated app
+// above.
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+}
+</code></pre></section><section id="ex-widgets-and-routing" class="item"><h3 style="margin-top:0">Widgets and routing</h3><pre><code><span class="kw">import</span> tinox.core.ui;
+<span class="kw">import</span> tinox.core.websocket;
+<span class="kw">import</span> tinox.core.http_server;
+
+// A wider tour of the widget library plus client-side routing:
+// Component::link(text, path, onNavigate) reports its target path back
+// through the same onEvent/dispatchEvent pipeline every other
+// interactive widget uses -- an app switches views by keeping its own
+// current-view state (a plain instance field) and branching inside its
+// own @View method, no separate routing annotation needed.
+@<span class="type">TinoxUIApp</span>(<span class="num">8080</span>, <span class="num">8081</span>)
+<span class="kw">class</span> <span class="type">ShowcaseApp</span>
+{
+    <span class="kw">var</span> isAbout: <span class="type">Bool</span>;
+    <span class="kw">var</span> quantity: <span class="type">Float64</span>;
+
+    @<span class="type">View</span>
+    <span class="kw">fn</span> render() -&gt; <span class="type">Component</span>
+    {
+        <span class="kw">let</span> app: <span class="type">ShowcaseApp</span> = <span class="kw">this</span>;
+        <span class="kw">let</span> nav: <span class="type">Component</span> = <span class="type">Component</span>::hbox([
+            <span class="type">Component</span>::link(<span class="str">&quot;Home&quot;</span>, <span class="str">&quot;/&quot;</span>, <span class="kw">fn</span>(p: <span class="type">String</span>) { app.isAbout = <span class="kw">false</span>; }),
+            <span class="type">Component</span>::link(<span class="str">&quot;About&quot;</span>, <span class="str">&quot;/about&quot;</span>, <span class="kw">fn</span>(p: <span class="type">String</span>) { app.isAbout = <span class="kw">true</span>; })
+        ]);
+        <span class="kw">if</span> <span class="kw">this</span>.isAbout
+        {
+            <span class="kw">return</span> <span class="type">Component</span>::vbox([nav, <span class="type">Component</span>::heading(<span class="str">&quot;About&quot;</span>, <span class="num">1</span>)]);
+        }
+        <span class="kw">return</span> <span class="type">Component</span>::vbox([
+            nav,
+            <span class="type">Component</span>::heading(<span class="str">&quot;Widgets&quot;</span>, <span class="num">1</span>),
+            <span class="type">Component</span>::numberField(<span class="kw">this</span>.quantity, <span class="kw">fn</span>(v: <span class="type">Float64</span>) { app.quantity = v; }),
+            <span class="type">Component</span>::progressBar(<span class="kw">this</span>.quantity)
+        ]);
+    }
+}
+</code></pre></section><section id="ex-widgets-and-routing-entry-point" class="item"><h3 style="margin-top:0">Widgets and routing entry point</h3><pre><code><span class="kw">import</span> <span class="type">ShowcaseApp</span>;
+
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+}
+</code></pre></section><section id="class-Assets" class="item"><h2 class="item-name"><span class="kw">class</span> Assets</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fnc</span> shellHtml(wsPort: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-sig"><span class="kw">fnc</span> shellHtmlTemplate() → <span style="color:#ffcb6b">String</span></div><div class="method-sig"><span class="kw">fnc</span> clientJs() → <span style="color:#ffcb6b">String</span></div></section><section id="class-Component" class="item"><h2 class="item-name"><span class="ann">@JsonSerializable</span><span class="kw">class</span> Component</h2><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>id</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>type</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>text</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>props</code></td><td class="member-type"><code>Map&lt;String, String&gt;</code></td><td></td></tr><tr><td class="member-name"><code>children</code></td><td class="member-type"><code>List&lt;Component&gt;</code></td><td></td></tr><tr><td class="member-name"><code>visible</code></td><td class="member-type"><code>Bool</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@DoNotSerialize</span><code>onEvent</code></td><td class="member-type"><code>fn(String) -&gt; Nothing</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fnc</span> inert(value: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fnc</span> none() → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> label(text: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> button(text: <span style="color:#ffcb6b">String</span>, onClick: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> textField(value: <span style="color:#ffcb6b">String</span>, onChange: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> checkbox(checked: <span style="color:#ffcb6b">Bool</span>, onChange: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> textArea(value: <span style="color:#ffcb6b">String</span>, onChange: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> numberField(value: <span style="color:#ffcb6b">Float64</span>, onChange: <span style="color:#ffcb6b">fn(Float64) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> intField(value: <span style="color:#ffcb6b">Int64</span>, onChange: <span style="color:#ffcb6b">fn(Int64) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> heading(text: <span style="color:#ffcb6b">String</span>, level: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> image(src: <span style="color:#ffcb6b">String</span>, alt: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> spacer() → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> progressBar(value: <span style="color:#ffcb6b">Float64</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> dropdown(options: <span style="color:#ffcb6b">List&lt;String&gt;</span>, selected: <span style="color:#ffcb6b">String</span>, onChange: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> link(text: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>, onNavigate: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> datePicker(value: <span style="color:#ffcb6b">String</span>, onChange: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> radioGroup(options: <span style="color:#ffcb6b">List&lt;String&gt;</span>, selected: <span style="color:#ffcb6b">String</span>, onChange: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> fileUpload(onChange: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> tabs(labels: <span style="color:#ffcb6b">List&lt;String&gt;</span>, activeIndex: <span style="color:#ffcb6b">Int64</span>, content: <span style="color:#ffcb6b">Component</span>, onTabChange: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> dialog(title: <span style="color:#ffcb6b">String</span>, content: <span style="color:#ffcb6b">Component</span>, open: <span style="color:#ffcb6b">Bool</span>, onClose: <span style="color:#ffcb6b">fn(String) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> notification(message: <span style="color:#ffcb6b">String</span>, kind: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> accordionSection(header: <span style="color:#ffcb6b">String</span>, content: <span style="color:#ffcb6b">Component</span>, expanded: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> accordion(sections: <span style="color:#ffcb6b">List&lt;Component&gt;</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> gridRow(cells: <span style="color:#ffcb6b">List&lt;Component&gt;</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> gridCell(text: <span style="color:#ffcb6b">String</span>, isHeader: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> gridCellComponent(content: <span style="color:#ffcb6b">Component</span>, isHeader: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> vbox(children: <span style="color:#ffcb6b">List&lt;Component&gt;</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> hbox(children: <span style="color:#ffcb6b">List&lt;Component&gt;</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fnc</span> html(rawHtml: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Component</span></div><div class="method-sig"><span class="kw">fn</span> withStyle(style: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Component</span></div></section><section id="class-DataGrid" class="item"><h2 class="item-name"><span class="kw">class</span> DataGrid&lt;T&gt;</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fnc</span> of(items: <span style="color:#ffcb6b">List&lt;T&gt;</span>, columns: <span style="color:#ffcb6b">List&lt;GridColumn&lt;T&gt;&gt;</span>) → <span style="color:#ffcb6b">Component</span></div></section><section id="class-GridColumn" class="item"><h2 class="item-name"><span class="kw">class</span> GridColumn&lt;T&gt;</h2><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>header</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>accessor</code></td><td class="member-type"><code>fn(T) -&gt; String</code></td><td></td></tr><tr><td class="member-name"><code>componentAccessor</code></td><td class="member-type"><code>fn(T) -&gt; Component</code></td><td></td></tr><tr><td class="member-name"><code>isComponent</code></td><td class="member-type"><code>Bool</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fnc</span> of(header: <span style="color:#ffcb6b">String</span>, accessor: <span style="color:#ffcb6b">fn(T) -&gt; String</span>) → <span style="color:#ffcb6b">GridColumn&lt;T&gt;</span></div><div class="method-sig"><span class="kw">fnc</span> ofComponent(header: <span style="color:#ffcb6b">String</span>, componentAccessor: <span style="color:#ffcb6b">fn(T) -&gt; Component</span>) → <span style="color:#ffcb6b">GridColumn&lt;T&gt;</span></div></section><section id="class-TinoxUIPatchMessage" class="item"><h2 class="item-name"><span class="ann">@JsonSerializable</span><span class="kw">class</span> TinoxUIPatchMessage</h2><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>kind</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>ops</code></td><td class="member-type"><code>List&lt;TinoxUIPatchOp&gt;</code></td><td></td></tr></table></section><section id="class-TinoxUIPatchOp" class="item"><h2 class="item-name"><span class="ann">@JsonSerializable</span><span class="kw">class</span> TinoxUIPatchOp</h2><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>op</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>id</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>text</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>props</code></td><td class="member-type"><code>Map&lt;String, String&gt;</code></td><td></td></tr><tr><td class="member-name"><code>node</code></td><td class="member-type"><code>Component</code></td><td></td></tr><tr><td class="member-name"><code>parentId</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>index</code></td><td class="member-type"><code>Int64</code></td><td></td></tr></table></section><section id="class-TinoxUIRuntime" class="item"><h2 class="item-name"><span class="kw">class</span> TinoxUIRuntime</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fnc</span> buildHandlers(root: <span style="color:#ffcb6b">Component</span>) → <span style="color:#ffcb6b">Map&lt;String, fn(String) -&gt; Nothing&gt;</span></div><div class="method-sig"><span class="kw">fnc</span> assignIds(node: <span style="color:#ffcb6b">Component</span>, handlers: <span style="color:#ffcb6b">Map&lt;String, fn(String) -&gt; Nothing&gt;</span>, counter: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fnc</span> sendInit(conn: <span style="color:#ffcb6b">Int64</span>, root: <span style="color:#ffcb6b">Component</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fnc</span> sendUpdate(conn: <span style="color:#ffcb6b">Int64</span>, root: <span style="color:#ffcb6b">Component</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fnc</span> diff(old: <span style="color:#ffcb6b">Component</span>, new_: <span style="color:#ffcb6b">Component</span>, counter: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>, ops: <span style="color:#ffcb6b">List&lt;TinoxUIPatchOp&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fnc</span> assignIdsOnly(node: <span style="color:#ffcb6b">Component</span>, counter: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fnc</span> collectHandlers(node: <span style="color:#ffcb6b">Component</span>, handlers: <span style="color:#ffcb6b">Map&lt;String, fn(String) -&gt; Nothing&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fnc</span> propsEqual(a: <span style="color:#ffcb6b">Map&lt;String, String&gt;</span>, b: <span style="color:#ffcb6b">Map&lt;String, String&gt;</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-sig"><span class="kw">fnc</span> sendPatch(conn: <span style="color:#ffcb6b">Int64</span>, ops: <span style="color:#ffcb6b">List&lt;TinoxUIPatchOp&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fnc</span> dispatchEvent(handlers: <span style="color:#ffcb6b">Map&lt;String, fn(String) -&gt; Nothing&gt;</span>, msg: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div></section>
+</main>
+</body>
+</html>
