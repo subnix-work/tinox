@@ -734,6 +734,35 @@ fn main() -> Int64 {
 }
 
 #[test]
+fn test_float64_to_int_method_call() {
+    // issue #223: `x.toInt()` on a Float64 receiver -- typecheck already
+    // registers `Float64_toInt` as valid (Float64 math methods block,
+    // tinox-typecheck/src/lib.rs), but codegen had no matching arm for
+    // it in the numeric method dispatch block (only `toString`/`sqrt`
+    // were handled), so a typecheck-accepted call fell through to the
+    // generic declared-type-mangled-name method call path, which
+    // synthesized a call to an undeclared `@Float_toInt` symbol (not
+    // even the same mangled name typecheck itself uses) and produced
+    // invalid LLVM IR (an ICE) -- for a PLAIN variable receiver, not
+    // just an inline expression. `x as Int64` (cast syntax) was the
+    // only working float->int conversion until this fix. Covers a bare
+    // Float64 variable and an inline Float64 arithmetic expression (the
+    // shape that first surfaced this while building tinox-k8s-ui2's
+    // Quantity.tnx CPU-quantity parser).
+    assert_eq!(run(r#"
+fn main() -> Int64 {
+    let f: Float64 = 2.5;
+    let a: Int64 = f.toInt();
+    println(a.toString());
+
+    let b: Int64 = (f * 1000.0).toInt();
+    println(b.toString());
+    return 0;
+}
+"#), "2\n2500");
+}
+
+#[test]
 fn test_gc_objects_survive_collection() {
     // Objects that are still reachable must NOT be collected
     assert_eq!(run(r#"

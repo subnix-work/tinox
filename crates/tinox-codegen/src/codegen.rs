@@ -9709,6 +9709,28 @@ impl CodeGen {
                             writeln!(&mut self.ir, "{} = call double @sqrt(double {})", result, arg).unwrap();
                             return Ok((result, "double".to_string()));
                         }
+                        // x.toInt() on a Float64 value (issue #223) — typecheck
+                        // already registers `Float64_toInt` (Float64 math methods
+                        // block, tinox-typecheck/src/lib.rs) as a valid, Int-
+                        // returning method, but codegen had no matching arm here
+                        // (only "toString"/"sqrt" were handled) — so a call that
+                        // typecheck correctly accepted fell through to the
+                        // generic declared-type-mangled-name method-call path
+                        // below, which synthesized a call to an undeclared
+                        // `@Float_toInt` symbol (note: NOT even the same mangled
+                        // name typecheck itself uses) and produced invalid LLVM
+                        // IR (an ICE), for a plain Float64 variable receiver, not
+                        // just an inline expression. `x as Int64` (cast syntax)
+                        // was the only working float→int conversion until this
+                        // fix. Only `double` is handled here — Int64/Bool/etc.
+                        // have no `.toInt()` method registered in typecheck at
+                        // all (correctly rejected at the typecheck stage, not a
+                        // bug), so there is nothing else for this arm to cover.
+                        "toInt" if args.is_empty() && obj_ty == "double" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = fptosi double {} to i64", result, obj_ptr).unwrap();
+                            return Ok((result, "i64".to_string()));
+                        }
                         _ => {}
                     }
                 }
