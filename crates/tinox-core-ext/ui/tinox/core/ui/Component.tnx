@@ -178,18 +178,17 @@ namespace tinox.core.ui
         // reuses the existing event mechanism rather than adding a
         // parallel one.
         //
-        // v1 limitation, documented rather than silently unsupported: a
-        // fresh page load always starts at the app's own initial state
-        // (whatever @View/build() renders for a brand-new instance), not
-        // whatever path is currently in the address bar -- the WS
-        // handshake doesn't currently expose its own request path to
-        // application code, so the server has no way to know the
-        // browser's current path until the first navigate/event message
-        // arrives. Direct deep-linking to a non-root path (e.g. sharing a
-        // "/about" URL) therefore lands on the home view first, then
-        // needs a click to actually navigate -- a real, narrow gap, not
-        // pretended away; revisit if this becomes a real app's actual
-        // requirement.
+        // Deep-linking to a non-root path (e.g. sharing a "/pods" URL) is
+        // handled by the separate @Route annotation, not by link() itself:
+        // an app using @Route declares `var currentRoute: String;` and
+        // annotates its per-path builder methods, and the compiler seeds
+        // that field from the browser's real initial path at WS-connect
+        // time (see annotations.rs's "Route" registry entry) -- link()'s
+        // own onNavigate handler just needs to keep assigning the SAME
+        // field on every click, same as it always did. An app that never
+        // adopts @Route keeps exactly the pre-@Route behavior: a fresh
+        // load always starts at whatever @View/build() renders for a
+        // brand-new instance, regardless of the address bar.
         fnc link(text: String, path: String, onNavigate: fnc(String) -> Nothing) -> Component
         {
             let props: Map<String, String> = Map::new();

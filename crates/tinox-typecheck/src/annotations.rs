@@ -260,6 +260,13 @@ pub struct TinoxUIAppInfo {
     pub http_port: i64,
     pub ws_port: i64,
     pub view_methods: Vec<String>,
+    /// @Route(path)-annotated methods on this class, in declaration order
+    /// (first-match-wins at dispatch time) -- (path pattern, method name).
+    /// Empty when the app doesn't use @Route at all (the common case,
+    /// unchanged from pre-@Route behavior: `view_methods[0]` alone builds
+    /// every render). See annotations.rs's "Route" registry entry for the
+    /// pattern syntax.
+    pub route_entries: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -568,6 +575,16 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Marks the method that builds this @TinoxUIApp's component tree; signature fn() -> Component".to_string(),
+            },
+        );
+        registry.insert(
+            "Route".to_string(),
+            AnnotationInfo {
+                name: "Route".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 1,
+                description: "@Route(\"/path/:param\") -- on a `fn() -> Component` method inside a @TinoxUIApp class, registers it as that path's builder (Vaadin-style route dispatch). The class must declare `var currentRoute: String;`: the compiler seeds it from the browser's initial request path at WS connect time, and the app's own navigation (e.g. Component::link's onNavigate handler) is expected to assign it on every subsequent navigation -- the compiler re-dispatches off its current value on every render. Patterns may use `:name` path-parameter segments (RouteMatcher syntax); a matched `:name` is auto-assigned into a same-named String field on the class, if one exists, before the method runs. When the current route matches no @Route pattern, the class's plain @View method renders instead (fallback/404 case) -- @View stays required even when @Route is used. Also registers the HTTP shell at each literal @Route path so a hard reload/deep link doesn't 404.".to_string(),
             },
         );
 
@@ -1307,10 +1324,16 @@ impl AnnotationProcessor {
 
         if let Some((http_port, ws_port)) = tinoxui_app_args {
             let mut view_methods: Vec<String> = Vec::new();
+            let mut route_entries: Vec<(String, String)> = Vec::new();
             for method in &class.methods {
                 for ann in &method.annotations {
                     if ann.name == "View" {
                         view_methods.push(method.name.clone());
+                    }
+                    if ann.name == "Route" {
+                        if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(path))) = ann.args.first() {
+                            route_entries.push((path.clone(), method.name.clone()));
+                        }
                     }
                 }
             }
@@ -1319,6 +1342,7 @@ impl AnnotationProcessor {
                 http_port,
                 ws_port,
                 view_methods,
+                route_entries,
             });
         }
     }

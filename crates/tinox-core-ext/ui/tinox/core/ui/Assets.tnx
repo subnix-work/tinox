@@ -297,6 +297,14 @@ namespace tinox.core.ui
     ws.onopen = function () {
       reconnectDelayMs = 500;
       mount.setAttribute("data-tinox-ui-status", "connected");
+      // Every app's worker reads and discards exactly one initial frame
+      // before its first render (see codegen's emit_tinoxui_code) -- a
+      // @Route-using app additionally seeds its `currentRoute` field from
+      // it, so a hard reload / directly-typed URL / shared deep link lands
+      // on the right view immediately. Sent unconditionally (harmless for
+      // a plain, non-routed app, which just discards it) so there's one
+      // client protocol regardless of whether the server app uses @Route.
+      ws.send(window.location.pathname);
     };
     ws.onmessage = function (ev) {
       var msg = JSON.parse(ev.data);

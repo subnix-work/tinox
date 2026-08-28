@@ -86,6 +86,29 @@ namespace tinox.core.http_server
         }
 
         /**
+         * Convenience wrapper around extractParams() for callers that only
+         * need a single named parameter's value (e.g. tinox.core.ui's
+         * @Route dispatch, which injects one class field per :param at a
+         * time) rather than the whole Map -- avoids every such caller
+         * re-deriving the same Map just to immediately throw the rest away.
+         *
+         * @param pattern the route pattern with :param placeholders
+         * @param path the actual request path
+         * @param name the parameter name to look up (without the leading ':')
+         * @return the matched segment's value, or "" if pattern/path don't
+         *         actually share a :name segment by that name
+         */
+        fn param(pattern: String, path: String, name: String) -> String
+        {
+            let params: Map<String, String> = RouteMatcher::extractParams(pattern, path);
+            if params.contains(name)
+            {
+                return params.get(name);
+            }
+            return "";
+        }
+
+        /**
          * Splits a path into segments, filtering empty segments
          *
          * @param path the path to split

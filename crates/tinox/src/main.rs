@@ -3875,6 +3875,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
                 http_port: app.http_port,
                 ws_port: app.ws_port,
                 view_method: app.view_methods[0].clone(),
+                route_entries: app.route_entries.clone(),
             })
         }
         None => None,

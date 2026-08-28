@@ -235,6 +235,11 @@ pub struct TinoxUIAppEntry {
     pub http_port: i64,
     pub ws_port: i64,
     pub view_method: String,
+    /// @Route(path)-annotated methods, in declaration order -- see
+    /// annotations.rs's "Route" registry entry. Empty for a plain
+    /// (non-routed) @TinoxUIApp, which keeps codegen byte-for-byte
+    /// identical to before @Route existed.
+    pub route_entries: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -3179,6 +3184,98 @@ impl CodeGen {
                 .map(|f| (f.len().max(1) * 8) as i64)
                 .unwrap_or(8);
 
+            // ── @Route dispatch ──────────────────────────────────────────
+            // Only generated for an app that actually uses @Route -- one
+            // that doesn't gets byte-for-byte the same codegen as before
+            // @Route existed, both here and at the two call sites below
+            // (route_dispatch_fn stays None, so they keep calling
+            // `@{class}_{view_method}` directly).
+            //
+            // `currentRoute: String` is a required-by-convention field (see
+            // annotations.rs's "Route" registry entry): the compiler seeds
+            // it from the browser's initial request path right after the
+            // WS handshake (below), and the app's own navigation (e.g. a
+            // Component::link's onNavigate handler, exactly like every
+            // other pre-@Route routed app already assigns its own
+            // `currentView`-style field) is expected to assign it on every
+            // subsequent in-app navigation -- this dispatcher just re-reads
+            // it fresh on every render and picks the matching @Route
+            // method, falling back to the plain @View method when nothing
+            // matches (unmatched route / true 404 case).
+            let route_dispatch_fn: Option<String> = if !app.route_entries.is_empty() {
+                // A snapshot (not a closure over `self`) -- the loop below
+                // needs to keep calling `self.emit_lambda_string_literal`/
+                // `self.temp()` (both `&mut self`) while also checking
+                // field types, which a closure borrowing `self` can't
+                // coexist with.
+                let app_field_llvm_types: HashMap<String, String> = self.struct_field_llvm_types
+                    .get(app.class_name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                let field_is_string = |field: &str| -> bool {
+                    app_field_llvm_types.get(field).map(|t| t == "i8*").unwrap_or(false)
+                };
+                let route_field_idx = self.struct_layouts.get(app.class_name.as_str())
+                    .and_then(|f| f.iter().position(|n| n == "currentRoute"))
+                    .unwrap_or_else(|| panic!(
+                        "@TinoxUIApp class '{}' uses @Route but declares no `var currentRoute: String;` field -- required so the compiler can seed it from the browser's initial request path and re-dispatch off its current value on every render",
+                        app.class_name
+                    ));
+                if !field_is_string("currentRoute") {
+                    panic!("@TinoxUIApp class '{}': `currentRoute` must be declared `String` (it's the field @Route dispatch reads/writes)", app.class_name);
+                }
+                if !self.class_named_types.contains("RouteMatcher") {
+                    panic!("@Route requires tinox.core.http_server's RouteMatcher class -- should already be available via @TinoxUIApp's own required `import tinox.core.http_server;`");
+                }
+
+                let dispatch_fn = format!("__tinox_tinoxui_dispatch_{idx}");
+                writeln!(&mut self.lambda_ir, "define i64* @{dispatch_fn}(i64* %inst) {{").unwrap();
+                writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+                writeln!(&mut self.lambda_ir, "  %route_field = getelementptr %class.{}, ptr %inst, i32 0, i32 {}", app.class_name, route_field_idx).unwrap();
+                writeln!(&mut self.lambda_ir, "  %path = load i8*, i8** %route_field").unwrap();
+                writeln!(&mut self.lambda_ir, "  br label %route_check0").unwrap();
+
+                for (ridx, (pattern, method)) in app.route_entries.iter().enumerate() {
+                    writeln!(&mut self.lambda_ir, "route_check{ridx}:").unwrap();
+                    let pat_ptr = self.emit_lambda_string_literal(pattern);
+                    let m = self.temp();
+                    writeln!(&mut self.lambda_ir, "  {m} = call i1 @RouteMatcher_matches(i64* null, i8* {pat_ptr}, i8* %path)").unwrap();
+                    writeln!(&mut self.lambda_ir, "  br i1 {m}, label %route_hit{ridx}, label %route_check{}", ridx + 1).unwrap();
+
+                    writeln!(&mut self.lambda_ir, "route_hit{ridx}:").unwrap();
+                    for seg in pattern.split('/') {
+                        if let Some(name) = seg.strip_prefix(':') {
+                            if !name.is_empty() {
+                                if let Some(field_idx) = self.struct_layouts.get(app.class_name.as_str()).and_then(|f| f.iter().position(|n| n == name)) {
+                                    if field_is_string(name) {
+                                        let name_ptr = self.emit_lambda_string_literal(name);
+                                        let pv = self.temp();
+                                        writeln!(&mut self.lambda_ir, "  {pv} = call i8* @RouteMatcher_param(i64* null, i8* {pat_ptr}, i8* %path, i8* {name_ptr})").unwrap();
+                                        let ff = self.temp();
+                                        writeln!(&mut self.lambda_ir, "  {ff} = getelementptr %class.{}, ptr %inst, i32 0, i32 {}", app.class_name, field_idx).unwrap();
+                                        writeln!(&mut self.lambda_ir, "  store i8* {pv}, i8** {ff}").unwrap();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let r = self.temp();
+                    writeln!(&mut self.lambda_ir, "  {r} = call i64* @{}_{}(i64* %inst)", app.class_name, method).unwrap();
+                    writeln!(&mut self.lambda_ir, "  ret i64* {r}").unwrap();
+                }
+
+                writeln!(&mut self.lambda_ir, "route_check{}:", app.route_entries.len()).unwrap();
+                let rf = self.temp();
+                writeln!(&mut self.lambda_ir, "  {rf} = call i64* @{}_{}(i64* %inst)", app.class_name, app.view_method).unwrap();
+                writeln!(&mut self.lambda_ir, "  ret i64* {rf}").unwrap();
+                writeln!(&mut self.lambda_ir, "}}").unwrap();
+                writeln!(&mut self.lambda_ir).unwrap();
+
+                Some(dispatch_fn)
+            } else {
+                None
+            };
+
             // ── HTTP shell server: "/" (shell HTML) + "/ui.js" (client JS) ──
             let shell_shim = format!("__tinoxui_shell_shim_{idx}");
             let js_shim = format!("__tinoxui_js_shim_{idx}");
@@ -3226,6 +3323,18 @@ impl CodeGen {
             let js_path_ptr = self.emit_lambda_string_literal("/ui.js");
             writeln!(&mut self.lambda_ir, "  %js_fn = ptrtoint void (i64)* @{js_shim} to i64").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_get(i64* %server, i8* {js_path_ptr}, i64 %js_fn)").unwrap();
+            // Also serve the shell at every @Route path (literal or
+            // `:param`, the underlying route matcher already handles both)
+            // so a hard reload / directly-typed URL / shared deep link
+            // doesn't 404 -- the shell itself is identical regardless of
+            // path, @Route dispatch only kicks in once the WS connects and
+            // sends its initial path below.
+            for (pattern, _) in app.route_entries.iter() {
+                if pattern != "/" {
+                    let route_path_ptr = self.emit_lambda_string_literal(pattern);
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_get(i64* %server, i8* {route_path_ptr}, i64 %shell_fn)").unwrap();
+                }
+            }
             writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_listen(i64* %server)").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
@@ -3273,7 +3382,33 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-            writeln!(&mut self.lambda_ir, "  %root0 = call i64* @{}_{}(i64* %inst)", app.class_name, app.view_method).unwrap();
+            // The client's very first WS frame is always its
+            // `window.location.pathname` at connect time (Assets.tnx's
+            // `connect()`: `ws.send(...)` on `ws.onopen`, before anything
+            // else) -- read and discard it here, unconditionally, for
+            // EVERY @TinoxUIApp (routed or not), so a plain (non-routed)
+            // app's msg_loop below never misreads it as a stray client
+            // event. A routed app additionally stores it into
+            // `currentRoute` before the very first render, so a hard
+            // reload/deep link lands on the right view immediately instead
+            // of always starting at the fallback @View.
+            writeln!(&mut self.lambda_ir, "  %init_f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %init_opcode_field = getelementptr %class.WsFrame, ptr %init_f, i32 0, i32 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %init_opcode = load i64, i64* %init_opcode_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %init_is_text = icmp eq i64 %init_opcode, 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %init_is_text, label %tui_init_path, label %tui_init_done").unwrap();
+            writeln!(&mut self.lambda_ir, "tui_init_path:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %init_path = call i8* @Ws_text(i64* null, i64* %init_f)").unwrap();
+            if let Some(route_field_idx) = self.struct_layouts.get(app.class_name.as_str()).and_then(|f| f.iter().position(|n| n == "currentRoute")) {
+                if !app.route_entries.is_empty() {
+                    writeln!(&mut self.lambda_ir, "  %init_route_field = getelementptr %class.{}, ptr %inst, i32 0, i32 {}", app.class_name, route_field_idx).unwrap();
+                    writeln!(&mut self.lambda_ir, "  store i8* %init_path, i8** %init_route_field").unwrap();
+                }
+            }
+            writeln!(&mut self.lambda_ir, "  br label %tui_init_done").unwrap();
+            writeln!(&mut self.lambda_ir, "tui_init_done:").unwrap();
+            let root_builder = route_dispatch_fn.clone().unwrap_or_else(|| format!("{}_{}", app.class_name, app.view_method));
+            writeln!(&mut self.lambda_ir, "  %root0 = call i64* @{root_builder}(i64* %inst)").unwrap();
             writeln!(&mut self.lambda_ir, "  %handlers0 = call i8* @TinoxUIRuntime_buildHandlers(i64* %root0)").unwrap();
             writeln!(&mut self.lambda_ir, "  %root_slot = alloca i64*").unwrap();
             writeln!(&mut self.lambda_ir, "  store i64* %root0, i64** %root_slot").unwrap();
@@ -3297,7 +3432,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
             writeln!(&mut self.lambda_ir, "  %handlers_cur = load i8*, i8** %handlers_slot").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_dispatchEvent(i8* %handlers_cur, i8* %msg)").unwrap();
-            writeln!(&mut self.lambda_ir, "  %root_new = call i64* @{}_{}(i64* %inst)", app.class_name, app.view_method).unwrap();
+            writeln!(&mut self.lambda_ir, "  %root_new = call i64* @{root_builder}(i64* %inst)").unwrap();
             writeln!(&mut self.lambda_ir, "  store i64* %root_new, i64** %root_slot").unwrap();
             writeln!(&mut self.lambda_ir, "  %handlers_new = call i8* @TinoxUIRuntime_buildHandlers(i64* %root_new)").unwrap();
             writeln!(&mut self.lambda_ir, "  store i8* %handlers_new, i8** %handlers_slot").unwrap();
