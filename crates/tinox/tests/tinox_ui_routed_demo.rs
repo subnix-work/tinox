@@ -189,31 +189,46 @@ fn tinox_ui_routed_demo_widgets_and_routing_end_to_end() {
     assert!(init.contains("\"type\":\"ProgressBar\""), "expected a ProgressBar widget, got: {init}");
     assert!(init.contains("\"options\":\"red|green|blue\""), "expected dropdown options, got: {init}");
 
+    // issue #225: @TinoxUIApp now renders via TinoxUIRuntime::diff/
+    // sendPatch (stable ids across renders) instead of Phase 1's
+    // full-tree resend -- both Link ids are captured ONCE from `init`
+    // and reused for both navigation clicks below (that's the whole
+    // point: they don't need to be re-discovered after every render the
+    // way a full-resend response would have required). Verified for
+    // real against a running instance of this exact example before
+    // writing these assertions -- the Home->About transition (2-child
+    // About vbox -> 8-child Home vbox at the same tree position) compiles
+    // to a genuine mix of `update`/`replace`/`insert` ops, not something
+    // guessed from the wire protocol docs alone.
+    let numfield_id = find_id_before_type(&init, "NumberField", 0);
+    let about_link_id = find_id_before_type(&init, "Link", 1);
+    let home_link_id = find_id_before_type(&init, "Link", 0);
+
     // Set the number field to 42 -- exercises the exact closure shape
     // fixed by issue #218 (Component::numberField wraps a
     // fnc(Float64)->Nothing closure).
-    let numfield_id = find_id_before_type(&init, "NumberField", 0);
     let ev1 = format!("{{\"kind\":\"event\",\"id\":\"{numfield_id}\",\"value\":\"42\"}}");
     send_masked_text_frame(&mut stream, ev1.as_bytes());
-    let upd1 = read_text_frame(&mut stream);
-    assert!(upd1.contains("Quantity: 42"), "expected quantity 42 after setting numberField, got: {upd1}");
-    assert!(upd1.contains("\"value\":\"42\""), "expected ProgressBar value 42, got: {upd1}");
+    let patch1 = read_text_frame(&mut stream);
+    assert!(patch1.contains("\"kind\":\"patch\""), "expected patch message, got: {patch1}");
+    assert!(patch1.contains("Quantity: 42"), "expected quantity 42 after setting numberField, got: {patch1}");
+    assert!(patch1.contains("\"value\":\"42\""), "expected ProgressBar value 42, got: {patch1}");
 
     // Navigate to About via the second Link ("About", index 1).
-    let about_link_id = find_id_before_type(&upd1, "Link", 1);
     let ev2 = format!("{{\"kind\":\"event\",\"id\":\"{about_link_id}\",\"value\":\"/about\"}}");
     send_masked_text_frame(&mut stream, ev2.as_bytes());
-    let upd2 = read_text_frame(&mut stream);
-    assert!(upd2.contains("\"text\":\"About\""), "expected the About view, got: {upd2}");
-    assert!(!upd2.contains("\"type\":\"NumberField\""), "About view should not contain the home view's widgets, got: {upd2}");
+    let patch2 = read_text_frame(&mut stream);
+    assert!(patch2.contains("\"kind\":\"patch\""), "expected patch message, got: {patch2}");
+    assert!(patch2.contains("\"text\":\"About\""), "expected the About view, got: {patch2}");
+    assert!(!patch2.contains("\"type\":\"NumberField\""), "About view should not contain the home view's widgets, got: {patch2}");
 
     // Navigate back Home via the first Link ("Home", index 0) -- state
     // (quantity=42) must have survived the round trip.
-    let home_link_id = find_id_before_type(&upd2, "Link", 0);
     let ev3 = format!("{{\"kind\":\"event\",\"id\":\"{home_link_id}\",\"value\":\"/\"}}");
     send_masked_text_frame(&mut stream, ev3.as_bytes());
-    let upd3 = read_text_frame(&mut stream);
-    assert!(upd3.contains("Quantity: 42"), "expected quantity to survive the About/Home round trip, got: {upd3}");
+    let patch3 = read_text_frame(&mut stream);
+    assert!(patch3.contains("\"kind\":\"patch\""), "expected patch message, got: {patch3}");
+    assert!(patch3.contains("Quantity: 42"), "expected quantity to survive the About/Home round trip, got: {patch3}");
 
     let _ = std::fs::remove_dir_all(&workdir);
 }

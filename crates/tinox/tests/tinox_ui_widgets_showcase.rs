@@ -194,40 +194,60 @@ fn tinox_ui_widgets_showcase_end_to_end() {
     assert!(init.contains("\"open\":\"false\""), "expected dialog closed initially, got: {init}");
     assert!(init.contains("\"type\":\"Notification\"") && init.contains("Loaded 2 people"), "expected a Notification, got: {init}");
 
+    // issue #225: @TinoxUIApp now renders via TinoxUIRuntime::diff/
+    // sendPatch (stable ids across renders) instead of Phase 1's
+    // full-tree resend. A "patch" message only carries the ops that
+    // actually changed -- an `update` op on an existing node (e.g. the
+    // Dialog's `open` prop flipping) does NOT re-include that node's own
+    // `"type"` field, only `id`/`text`/`props` -- so every id this test
+    // needs is captured ONCE from the initial full-tree `init` message
+    // (ids are stable now, that's the whole point) rather than re-parsed
+    // out of each response the way the old full-resend version of this
+    // test did. A `replace`/`insert` op (a genuinely NEW subtree, e.g.
+    // switching to the Form tab) DOES carry a full `node` with real
+    // `"type"` markers for everything newly appeared at that position --
+    // confirmed by actually running this example against the diff-based
+    // renderer and inspecting the real wire messages before writing the
+    // assertions below, not guessed from the protocol docs alone.
+
     // Click "Open Dialog" (the render tree's only Button).
-    let button_marker = "\"type\":\"Button\"";
-    let btn_pos = init.find(button_marker).expect("no Button in render");
-    let before_btn = &init[..btn_pos];
-    let id_key = before_btn.rfind("\"id\":\"").expect("no id before Button");
-    let after_key = &before_btn[id_key + "\"id\":\"".len()..];
-    let open_btn_id = after_key[..after_key.find('"').unwrap()].to_string();
+    let open_btn_id = find_id_before_type(&init, "Button", 0);
+    let dialog_id = find_id_before_type(&init, "Dialog", 0);
+    let tabs_id = find_id_before_type(&init, "Tabs", 0);
 
     let ev1 = format!("{{\"kind\":\"event\",\"id\":\"{open_btn_id}\",\"value\":\"\"}}");
     send_masked_text_frame(&mut stream, ev1.as_bytes());
-    let upd1 = read_text_frame(&mut stream);
-    assert!(upd1.contains("\"open\":\"true\""), "expected dialog open after button click, got: {upd1}");
+    let patch1 = read_text_frame(&mut stream);
+    assert!(patch1.contains("\"kind\":\"patch\""), "expected patch message, got: {patch1}");
+    assert!(patch1.contains("\"open\":\"true\""), "expected dialog open after button click, got: {patch1}");
 
-    // Close it via the Dialog's own id (its onEvent = onClose).
-    let dialog_id = find_id_before_type(&upd1, "Dialog", 0);
+    // Close it via the Dialog's own (stable) id (its onEvent = onClose).
     let ev2 = format!("{{\"kind\":\"event\",\"id\":\"{dialog_id}\",\"value\":\"\"}}");
     send_masked_text_frame(&mut stream, ev2.as_bytes());
-    let upd2 = read_text_frame(&mut stream);
-    assert!(upd2.contains("\"open\":\"false\""), "expected dialog closed again, got: {upd2}");
+    let patch2 = read_text_frame(&mut stream);
+    assert!(patch2.contains("\"kind\":\"patch\""), "expected patch message, got: {patch2}");
+    assert!(patch2.contains("\"open\":\"false\""), "expected dialog closed again, got: {patch2}");
 
-    // Switch to the Form tab (index 1) via the Tabs component's id.
-    let tabs_id = find_id_before_type(&upd2, "Tabs", 0);
+    // Switch to the Form tab (index 1) via the Tabs component's (stable)
+    // id -- this swaps the DataGrid subtree out for an entirely new one,
+    // so unlike the two ops above, this DOES arrive as a `replace` op
+    // carrying a full `node` (with real `"type"` markers) for everything
+    // that just appeared.
     let ev3 = format!("{{\"kind\":\"event\",\"id\":\"{tabs_id}\",\"value\":\"1\"}}");
     send_masked_text_frame(&mut stream, ev3.as_bytes());
-    let upd3 = read_text_frame(&mut stream);
-    assert!(upd3.contains("\"active\":\"1\""), "expected active tab 1, got: {upd3}");
-    assert!(upd3.contains("\"type\":\"DatePicker\""), "expected DatePicker on Form tab, got: {upd3}");
-    assert!(upd3.contains("\"type\":\"RadioGroup\""), "expected RadioGroup on Form tab, got: {upd3}");
-    assert!(upd3.contains("\"type\":\"FileUpload\""), "expected FileUpload on Form tab, got: {upd3}");
-    assert!(upd3.contains("\"type\":\"Accordion\"") && upd3.contains("\"type\":\"AccordionSection\""), "expected Accordion, got: {upd3}");
-    assert!(upd3.contains("red|green|blue"), "expected RadioGroup options, got: {upd3}");
+    let patch3 = read_text_frame(&mut stream);
+    assert!(patch3.contains("\"kind\":\"patch\""), "expected patch message, got: {patch3}");
+    assert!(patch3.contains("\"active\":\"1\""), "expected active tab 1, got: {patch3}");
+    assert!(patch3.contains("\"type\":\"DatePicker\""), "expected DatePicker on Form tab, got: {patch3}");
+    assert!(patch3.contains("\"type\":\"RadioGroup\""), "expected RadioGroup on Form tab, got: {patch3}");
+    assert!(patch3.contains("\"type\":\"FileUpload\""), "expected FileUpload on Form tab, got: {patch3}");
+    assert!(patch3.contains("\"type\":\"Accordion\"") && patch3.contains("\"type\":\"AccordionSection\""), "expected Accordion, got: {patch3}");
+    assert!(patch3.contains("red|green|blue"), "expected RadioGroup options, got: {patch3}");
 
-    // Simulate a file selection.
-    let file_id = find_id_before_type(&upd3, "FileUpload", 0);
+    // Simulate a file selection -- FileUpload is one of the freshly
+    // inserted nodes above, so its id only exists from here on (it
+    // wasn't part of `init`, unlike open_btn_id/dialog_id/tabs_id).
+    let file_id = find_id_before_type(&patch3, "FileUpload", 0);
     let ev4 = format!("{{\"kind\":\"event\",\"id\":\"{file_id}\",\"value\":\"report.pdf\"}}");
     send_masked_text_frame(&mut stream, ev4.as_bytes());
     let upd4 = read_text_frame(&mut stream);

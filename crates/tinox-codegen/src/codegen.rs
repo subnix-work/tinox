@@ -3126,23 +3126,39 @@ impl CodeGen {
     /// `HttpServer` on `httpPort` serving `"/"` (`Assets::shellHtml`) and
     /// `"/ui.js"` (`Assets::clientJs`), and a WebSocket accept loop on
     /// `wsPort` that calls the class's own `@View` method to build the
-    /// initial tree (`TinoxUIRuntime::buildHandlers` + `sendInit`), then on
-    /// every incoming event: `dispatchEvent`, rebuild via `@View` again,
-    /// `sendUpdate` -- Phase 1's full-resend "automatic reactivity" shape,
-    /// generated instead of hand-written. Diff-based rendering (Phase 3)
-    /// deliberately stays a manual, lower-level opt-in -- it needs an
+    /// initial tree, then on every incoming event rebuilds via `@View`
+    /// again and sends only what changed.
+    ///
+    /// Diff-based (v2) rendering (issue #225) -- `TinoxUIRuntime::
+    /// assignIdsOnly`/`diff`/`collectHandlers`/`sendPatch`, reusing a
+    /// component's old id when it stays at the same tree position across
+    /// renders -- instead of Phase 1's full-tree resend (`buildHandlers`+
+    /// `sendUpdate`, which reassigned every id fresh on every single
+    /// render). Ports `examples/tinox_ui_diff_counter/DiffCounterApp.tnx`'s
+    /// hand-wired sequence into generated IR; that example (and its own
+    /// compiled `.ll`) is the ground truth this was written against for
+    /// the exact `tinox_array_new`/`tinox_array_get`/`tinox_map_create`
+    /// calling convention a List<Int64>/List<TinoxUIPatchOp> literal and a
+    /// fresh handlers Map compile to.
+    ///
+    /// An EARLIER version of this comment claimed diffing needed "an
     /// app-owned persistent id-counter field this sugar has no class
-    /// layout to put one on (the synthesized per-connection state below
-    /// lives in plain local `alloca`s inside this hand-emitted function,
-    /// not on the app class itself, so it can't survive past one
-    /// connection's worker function the way a real instance field could).
+    /// layout to put one on" and stayed a manual opt-in for that reason.
+    /// That turned out not to hold up: the per-connection state below
+    /// (`root_slot`, `handlers_slot`, and now `idcounter_slot`) already
+    /// lives in plain local `alloca`s inside `worker_fn` -- which is fine,
+    /// because `worker_fn` is called ONCE per accepted connection and the
+    /// whole `tui_msg_loop` is just basic blocks branching within that one
+    /// invocation, not a fresh call per message. A local alloca survives
+    /// exactly as long as the connection does, which is exactly the
+    /// lifetime an id counter needs -- no class field required.
     ///
     /// Modeled directly on `emit_ws_code` (identical accept-loop /
     /// detached-per-connection-worker structure, reusing
     /// `tinox_task_spawn_detached` + `emit_spawn_wrapper`) plus
     /// `emit_route_code`'s shim-function convention for the two GET
     /// routes -- calling already-compiled `tinox.core.ui`/`http_server`
-    /// methods by their mangled name (`TinoxUIRuntime_buildHandlers`,
+    /// methods by their mangled name (`TinoxUIRuntime_diff`,
     /// `HttpResponse_html`, ...) rather than re-implementing any of their
     /// logic here, the same "call the real compiled function directly"
     /// technique `emit_ws_code` already uses for
@@ -3408,19 +3424,57 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br label %tui_init_done").unwrap();
             writeln!(&mut self.lambda_ir, "tui_init_done:").unwrap();
             let root_builder = route_dispatch_fn.clone().unwrap_or_else(|| format!("{}_{}", app.class_name, app.view_method));
+            // Diff-based (v2) rendering instead of Phase 1's full-tree
+            // resend (issue #225): ids stay stable across renders for a
+            // component that keeps the same tree position, by reusing
+            // `TinoxUIRuntime::assignIdsOnly`/`diff`/`collectHandlers`/
+            // `sendPatch` -- the exact sequence `examples/
+            // tinox_ui_diff_counter/DiffCounterApp.tnx` already
+            // demonstrates hand-wired, just generated here instead. The
+            // per-connection id counter (`idcounter_slot`) needs to
+            // persist across the whole connection the same way
+            // `root_slot`/`handlers_slot` already do -- and it can: this
+            // whole message loop is basic blocks within ONE invocation of
+            // `worker_fn` (one call per accepted connection, not one per
+            // message), so a plain `alloca` here survives exactly as long
+            // as `root_slot` already proves it does. (An earlier version of
+            // this doc comment claimed diffing needed "an app-owned
+            // persistent id-counter field this sugar has no class layout
+            // to put one on" -- that reasoning didn't hold up once traced
+            // through: the counter is per-CONNECTION state, not
+            // per-instance-forever state, so a local alloca alongside
+            // root_slot/handlers_slot is exactly the right lifetime, no
+            // class field needed.)
             writeln!(&mut self.lambda_ir, "  %root0 = call i64* @{root_builder}(i64* %inst)").unwrap();
-            writeln!(&mut self.lambda_ir, "  %handlers0 = call i8* @TinoxUIRuntime_buildHandlers(i64* %root0)").unwrap();
             writeln!(&mut self.lambda_ir, "  %root_slot = alloca i64*").unwrap();
             writeln!(&mut self.lambda_ir, "  store i64* %root0, i64** %root_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idcounter_slot = alloca i64").unwrap();
+            // idc0 = [0] -- a fresh 1-element List<Int64> literal, same
+            // `tinox_array_new`+raw-element-store shape the normal Tinox
+            // codegen path emits for any `[x]` list literal (verified by
+            // compiling DiffCounterApp.tnx and reading its own IR for
+            // `let idc: List<Int64> = [this.idCounter];`).
+            writeln!(&mut self.lambda_ir, "  %idc0_arr = call i64* @tinox_array_new(i64 1, i64 0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_data_field = getelementptr i64, ptr %idc0_arr, i64 2").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_data_i64 = load i64, i64* %idc0_data_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_data_ptr = inttoptr i64 %idc0_data_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_elem0 = getelementptr i64, ptr %idc0_data_ptr, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 0, i64* %idc0_elem0").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_assignIdsOnly(i64* %root0, i64* %idc0_arr)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_new = call i64 @tinox_array_get(i64* %idc0_arr, i64 0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %idc0_new, i64* %idcounter_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers0 = call i8* @tinox_map_create()").unwrap();
             writeln!(&mut self.lambda_ir, "  %handlers_slot = alloca i8*").unwrap();
             writeln!(&mut self.lambda_ir, "  store i8* %handlers0, i8** %handlers_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_collectHandlers(i64* %root0, i8* %handlers0)").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_sendInit(i64 %conn, i64* %root0)").unwrap();
             writeln!(&mut self.lambda_ir, "  br label %tui_msg_loop").unwrap();
 
-            // opcode 1 (text) -> dispatch + rebuild + resend; anything else
-            // (binary, close, EOF, protocol error -- Ping/Pong are already
-            // auto-handled inside Ws::readMessage) ends the connection,
-            // same convention emit_ws_code's own msg_loop uses.
+            // opcode 1 (text) -> dispatch + rebuild + diff + patch (if
+            // anything changed); anything else (binary, close, EOF,
+            // protocol error -- Ping/Pong are already auto-handled inside
+            // Ws::readMessage) ends the connection, same convention
+            // emit_ws_code's own msg_loop uses.
             writeln!(&mut self.lambda_ir, "tui_msg_loop:").unwrap();
             writeln!(&mut self.lambda_ir, "  %f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
             writeln!(&mut self.lambda_ir, "  %opcode_ptr = getelementptr %class.WsFrame, ptr %f, i32 0, i32 1").unwrap();
@@ -3432,11 +3486,41 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
             writeln!(&mut self.lambda_ir, "  %handlers_cur = load i8*, i8** %handlers_slot").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_dispatchEvent(i8* %handlers_cur, i8* %msg)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %root_old = load i64*, i64** %root_slot").unwrap();
             writeln!(&mut self.lambda_ir, "  %root_new = call i64* @{root_builder}(i64* %inst)").unwrap();
+            // ops = [] -- an empty List<TinoxUIPatchOp>, diff() appends to
+            // it in place.
+            writeln!(&mut self.lambda_ir, "  %ops_arr = call i64* @tinox_array_new(i64 0, i64 0)").unwrap();
+            // idc = [idcounter_slot] -- same 1-element-literal shape as
+            // idc0 above, seeded from the counter's current value instead
+            // of a literal 0.
+            writeln!(&mut self.lambda_ir, "  %idcounter_cur = load i64, i64* %idcounter_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_arr = call i64* @tinox_array_new(i64 1, i64 0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_data_field = getelementptr i64, ptr %idc_arr, i64 2").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_data_i64 = load i64, i64* %idc_data_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_data_ptr = inttoptr i64 %idc_data_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_elem0 = getelementptr i64, ptr %idc_data_ptr, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %idcounter_cur, i64* %idc_elem0").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_diff(i64* %root_old, i64* %root_new, i64* %idc_arr, i64* %ops_arr)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idcounter_new = call i64 @tinox_array_get(i64* %idc_arr, i64 0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %idcounter_new, i64* %idcounter_slot").unwrap();
             writeln!(&mut self.lambda_ir, "  store i64* %root_new, i64** %root_slot").unwrap();
-            writeln!(&mut self.lambda_ir, "  %handlers_new = call i8* @TinoxUIRuntime_buildHandlers(i64* %root_new)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers_new = call i8* @tinox_map_create()").unwrap();
             writeln!(&mut self.lambda_ir, "  store i8* %handlers_new, i8** %handlers_slot").unwrap();
-            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_sendUpdate(i64 %conn, i64* %root_new)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_collectHandlers(i64* %root_new, i8* %handlers_new)").unwrap();
+            // Only send a patch message at all if diff() actually produced
+            // ops -- an event whose handler didn't change anything visible
+            // (rare, but e.g. a no-op toggle) shouldn't push an empty
+            // patch over the wire. `ops_arr`'s length lives at raw offset
+            // 0 of the array header, same convention DiffCounterApp's own
+            // `ops.len() > 0` compiles to.
+            writeln!(&mut self.lambda_ir, "  %ops_len_field = getelementptr i64, ptr %ops_arr, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ops_len = load i64, i64* %ops_len_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ops_nonempty = icmp sgt i64 %ops_len, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %ops_nonempty, label %tui_send_patch, label %tui_msg_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "tui_send_patch:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_sendPatch(i64 %conn, i64* %ops_arr)").unwrap();
             writeln!(&mut self.lambda_ir, "  br label %tui_msg_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "tui_conn_end:").unwrap();

@@ -196,15 +196,26 @@ fn tinox_ui_annotated_hello_click_counter_end_to_end() {
     let event = format!("{{\"kind\":\"event\",\"id\":\"{button_id}\",\"value\":\"\"}}");
     send_masked_text_frame(&mut stream, event.as_bytes());
 
-    let update1 = read_text_frame(&mut stream);
-    assert!(update1.contains("\"kind\":\"update\""), "expected update message, got: {update1}");
-    assert!(update1.contains("Clicks: 1"), "expected click count 1 after one click, got: {update1}");
+    // issue #225: @TinoxUIApp now renders via TinoxUIRuntime::diff/
+    // sendPatch (stable ids across renders) instead of Phase 1's
+    // full-tree resend -- a click sends a "patch" message (an `ops`
+    // array), not a whole new "update" tree, and the label/button ids
+    // stay the SAME across renders since neither moved position.
+    let patch1 = read_text_frame(&mut stream);
+    assert!(patch1.contains("\"kind\":\"patch\""), "expected patch message, got: {patch1}");
+    assert!(patch1.contains("Clicks: 1"), "expected click count 1 after one click, got: {patch1}");
 
-    let button_id2 = find_button_id(&update1);
-    let event2 = format!("{{\"kind\":\"event\",\"id\":\"{button_id2}\",\"value\":\"\"}}");
+    // The button's id is stable now -- reusing the SAME id (rather than
+    // re-parsing it from the response, which no longer carries a full
+    // Button node at all for an unrelated-label-only patch) is itself
+    // part of what this test is confirming: a second event dispatch
+    // against that stable id still finds its handler after the server
+    // re-ran TinoxUIRuntime::collectHandlers.
+    let event2 = format!("{{\"kind\":\"event\",\"id\":\"{button_id}\",\"value\":\"\"}}");
     send_masked_text_frame(&mut stream, event2.as_bytes());
-    let update2 = read_text_frame(&mut stream);
-    assert!(update2.contains("Clicks: 2"), "expected click count 2 after two clicks, got: {update2}");
+    let patch2 = read_text_frame(&mut stream);
+    assert!(patch2.contains("\"kind\":\"patch\""), "expected patch message, got: {patch2}");
+    assert!(patch2.contains("Clicks: 2"), "expected click count 2 after two clicks, got: {patch2}");
 
     let _ = std::fs::remove_dir_all(&workdir);
 }
