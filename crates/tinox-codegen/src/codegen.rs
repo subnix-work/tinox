@@ -6178,14 +6178,14 @@ impl CodeGen {
                 let fields_clone = fields.to_vec();
                 if let Some(col) = orm_extract_field(obj, param_name, &fields_clone) {
                     let col = col.to_string();
-                    if args.len() == 1 {
+                    if args.len() == 1 && matches!(method.as_str(), "startsWith" | "endsWith" | "contains") {
+                        let n = param_offset + 1;
                         if let ExprKind::Literal(Literal::String(s)) = &args[0].node {
-                            let n = param_offset + 1;
                             let like_val = match method.as_str() {
                                 "startsWith" => format!("{}%", s),
                                 "endsWith"   => format!("%{}", s),
                                 "contains"   => format!("%{}%", s),
-                                _ => return None,
+                                _ => unreachable!(),
                             };
                             let label = format!("__orm_like_{}", self.strings.len());
                             self.strings.insert(label.clone(), like_val.clone());
@@ -6193,6 +6193,48 @@ impl CodeGen {
                             let like_reg = self.temp();
                             writeln!(&mut self.ir, "  {like_reg} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
                             return Some((format!("{} LIKE ${}", col, n), vec![like_reg]));
+                        }
+                        // Non-literal argument (a local variable, a
+                        // `this.field` access, any other runtime
+                        // expression) -- issue #238: this used to fall
+                        // straight through to the `None` below, silently
+                        // dropping the WHOLE filter predicate instead of
+                        // erroring or working (the ==/!=/</> arm above
+                        // already supports this via emit_orm_param_value's
+                        // runtime-expression fallback; only the LIKE
+                        // family lacked the equivalent, since building the
+                        // %..% pattern was only ever done at compile time
+                        // via Rust string formatting). Fixed by evaluating
+                        // the argument and building the pattern at RUNTIME
+                        // via tinox_string_concat instead.
+                        if let Ok((val_reg, val_ty)) = self.gen_expr(&args[0], ctx) {
+                            if val_ty == "i8*" {
+                                let pct_label = format!("__orm_like_pct_{}", self.strings.len());
+                                self.strings.insert(pct_label.clone(), "%".to_string());
+                                let pct_reg = self.temp();
+                                writeln!(&mut self.ir, "  {pct_reg} = getelementptr [2 x i8], [2 x i8]* @{pct_label}, i64 0, i64 0").unwrap();
+                                let like_reg = match method.as_str() {
+                                    "startsWith" => {
+                                        let r = self.temp();
+                                        writeln!(&mut self.ir, "  {r} = call i8* @tinox_string_concat(i8* {val_reg}, i8* {pct_reg})").unwrap();
+                                        r
+                                    }
+                                    "endsWith" => {
+                                        let r = self.temp();
+                                        writeln!(&mut self.ir, "  {r} = call i8* @tinox_string_concat(i8* {pct_reg}, i8* {val_reg})").unwrap();
+                                        r
+                                    }
+                                    "contains" => {
+                                        let r1 = self.temp();
+                                        writeln!(&mut self.ir, "  {r1} = call i8* @tinox_string_concat(i8* {pct_reg}, i8* {val_reg})").unwrap();
+                                        let r2 = self.temp();
+                                        writeln!(&mut self.ir, "  {r2} = call i8* @tinox_string_concat(i8* {r1}, i8* {pct_reg})").unwrap();
+                                        r2
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                return Some((format!("{} LIKE ${}", col, n), vec![like_reg]));
+                            }
                         }
                     }
                 }
