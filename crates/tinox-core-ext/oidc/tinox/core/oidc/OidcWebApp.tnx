@@ -60,7 +60,7 @@ namespace tinox.core.oidc
          */
         fn new(client: OidcClient, cookieSecret: String) -> OidcWebApp
         {
-            if cookieSecret == ""
+            if (cookieSecret == "")
             {
                 throw "OidcWebApp::new: cookieSecret must not be empty";
             }
@@ -100,7 +100,7 @@ namespace tinox.core.oidc
                 let stateParam: String = QueryString::get(ctx.request.queryString, "state");
 
                 let pendingSealed: String = OidcWebApp::readCookie(ctx, pendingCookieName);
-                if pendingSealed == ""
+                if (pendingSealed == "")
                 {
                     ctx.response.status(400).text("no pending login (missing or expired state cookie)");
                     return;
@@ -116,19 +116,19 @@ namespace tinox.core.oidc
                 {
                     unsealError = e;
                 }
-                if unsealError != ""
+                if (unsealError != "")
                 {
                     ctx.response.status(400).text("invalid login attempt: " + unsealError);
                     return;
                 }
 
                 let now: Int64 = Time::now() / 1000;
-                if !pending.contains("exp") || now > pending["exp"].asInt()
+                if (!pending.contains("exp") || now > pending["exp"].asInt())
                 {
                     ctx.response.status(400).text("login attempt expired, please try again");
                     return;
                 }
-                if !pending.contains("state") || pending["state"].getString() != stateParam
+                if (!pending.contains("state") || pending["state"].getString() != stateParam)
                 {
                     ctx.response.status(400).text("state mismatch (possible CSRF)");
                     return;
@@ -136,7 +136,7 @@ namespace tinox.core.oidc
                 let codeVerifier: String = pending["codeVerifier"].getString();
 
                 let tokens: OidcTokenResponse = client.exchangeCode(code, codeVerifier);
-                if !tokens.ok
+                if (!tokens.ok)
                 {
                     ctx.response.status(401).text("login failed: " + tokens.errorMessage);
                     return;
@@ -160,7 +160,7 @@ namespace tinox.core.oidc
         fn requireLogin(ctx: HttpContext) -> Bool
         {
             let sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName);
-            if sealed == ""
+            if (sealed == "")
             {
                 ctx.response.redirect(this.loginPath);
                 return false;
@@ -176,14 +176,14 @@ namespace tinox.core.oidc
             {
                 err = e;
             }
-            if err != ""
+            if (err != "")
             {
                 ctx.response.redirect(this.loginPath);
                 return false;
             }
 
             let now: Int64 = Time::now() / 1000;
-            if claims.contains("exp") && now > claims["exp"].asInt()
+            if (claims.contains("exp") && now > claims["exp"].asInt())
             {
                 ctx.response.redirect(this.loginPath);
                 return false;
@@ -225,7 +225,7 @@ namespace tinox.core.oidc
         fnc readCookie(ctx: HttpContext, name: String) -> String
         {
             let cookieHeader: String = ctx.request.getHeader("Cookie");
-            if cookieHeader == ""
+            if (cookieHeader == "")
             {
                 return "";
             }
@@ -235,7 +235,7 @@ namespace tinox.core.oidc
             {
                 let part: String = parts[i].trim();
                 let eq: Int64 = part.indexOf("=");
-                if eq > 0 && part.substring(0, eq) == name
+                if (eq > 0 && part.substring(0, eq) == name)
                 {
                     return part.substring(eq + 1, part.len());
                 }

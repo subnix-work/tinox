@@ -26,7 +26,7 @@ namespace tinox.core.base64
                 let c3: Int64 = b2 & 63;
 
                 result = result + alphabet.substring(c0, c0 + 1) + alphabet.substring(c1, c1 + 1);
-                if hasB1
+                if (hasB1)
                 {
                     result = result + alphabet.substring(c2, c2 + 1);
                 }
@@ -34,7 +34,7 @@ namespace tinox.core.base64
                 {
                     result = result + "=";
                 }
-                if hasB2
+                if (hasB2)
                 {
                     result = result + alphabet.substring(c3, c3 + 1);
                 }
@@ -60,28 +60,28 @@ namespace tinox.core.base64
 
         fn charToValue(c: String) -> Int64
         {
-            if c == "="
+            if (c == "=")
             {
                 return 0;
             }
             let code: Int64 = c.charCodeAt(0);
-            if code >= 65 && code <= 90
+            if (code >= 65 && code <= 90)
             {
                 return code - 65;
             }
-            if code >= 97 && code <= 122
+            if (code >= 97 && code <= 122)
             {
                 return code - 97 + 26;
             }
-            if code >= 48 && code <= 57
+            if (code >= 48 && code <= 57)
             {
                 return code - 48 + 52;
             }
-            if code == 43
+            if (code == 43)
             {
                 return 62;
             }
-            if code == 47
+            if (code == 47)
             {
                 return 63;
             }
@@ -119,7 +119,7 @@ namespace tinox.core.base64
                 let c3: Int64 = b2 & 63;
 
                 result = result + alphabet.substring(c0, c0 + 1) + alphabet.substring(c1, c1 + 1);
-                if hasB1
+                if (hasB1)
                 {
                     result = result + alphabet.substring(c2, c2 + 1);
                 }
@@ -127,7 +127,7 @@ namespace tinox.core.base64
                 {
                     result = result + "=";
                 }
-                if hasB2
+                if (hasB2)
                 {
                     result = result + alphabet.substring(c3, c3 + 1);
                 }
@@ -169,11 +169,11 @@ namespace tinox.core.base64
                 let c3: Int64 = b2 & 63;
 
                 result = result + alphabet.substring(c0, c0 + 1) + alphabet.substring(c1, c1 + 1);
-                if hasB1
+                if (hasB1)
                 {
                     result = result + alphabet.substring(c2, c2 + 1);
                 }
-                if hasB2
+                if (hasB2)
                 {
                     result = result + alphabet.substring(c3, c3 + 1);
                 }
@@ -209,12 +209,12 @@ namespace tinox.core.base64
                 let b0: Int64 = ((v0 << 2) | (v1 >> 4)) & 255;
                 result.push(b0);
 
-                if c2 != "="
+                if (c2 != "=")
                 {
                     let b1: Int64 = ((v1 << 4) | (v2 >> 2)) & 255;
                     result.push(b1);
                 }
-                if c3 != "="
+                if (c3 != "=")
                 {
                     let b2: Int64 = ((v2 << 6) | v3) & 255;
                     result.push(b2);
@@ -228,23 +228,23 @@ namespace tinox.core.base64
         fn urlCharToValue(c: String) -> Int64
         {
             let code: Int64 = c.charCodeAt(0);
-            if code >= 65 && code <= 90
+            if (code >= 65 && code <= 90)
             {
                 return code - 65;
             }
-            if code >= 97 && code <= 122
+            if (code >= 97 && code <= 122)
             {
                 return code - 97 + 26;
             }
-            if code >= 48 && code <= 57
+            if (code >= 48 && code <= 57)
             {
                 return code - 48 + 52;
             }
-            if code == 45
+            if (code == 45)
             {
                 return 62;
             }
-            if code == 95
+            if (code == 95)
             {
                 return 63;
             }
@@ -277,13 +277,13 @@ namespace tinox.core.base64
                 i = i + 4;
             }
             let remaining: Int64 = len - i;
-            if remaining == 2
+            if (remaining == 2)
             {
                 let v0: Int64 = Base64::urlCharToValue(encoded.substring(i, i + 1));
                 let v1: Int64 = Base64::urlCharToValue(encoded.substring(i + 1, i + 2));
                 result.push(((v0 << 2) | (v1 >> 4)) & 255);
             }
-            else if remaining == 3
+            else if (remaining == 3)
             {
                 let v0: Int64 = Base64::urlCharToValue(encoded.substring(i, i + 1));
                 let v1: Int64 = Base64::urlCharToValue(encoded.substring(i + 1, i + 2));

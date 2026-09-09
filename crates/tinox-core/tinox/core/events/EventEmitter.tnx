@@ -13,7 +13,7 @@ namespace tinox.core.events
 
         fn on(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Nothing) -> Nothing
         {
-            if emitter.listeners.contains(event) == false
+            if (emitter.listeners.contains(event) == false)
             {
                 emitter.listeners[event] = [];
             }
@@ -31,7 +31,7 @@ namespace tinox.core.events
 
         fn emit(emitter: EventEmitter, event: String, data: JsonValue) -> Nothing
         {
-            if emitter.listeners.contains(event) == false
+            if (emitter.listeners.contains(event) == false)
             {
                 return;
             }
@@ -46,7 +46,7 @@ namespace tinox.core.events
 
         fn removeListener(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Nothing) -> Nothing
         {
-            if emitter.listeners.contains(event) == false
+            if (emitter.listeners.contains(event) == false)
             {
                 return;
             }
@@ -54,7 +54,7 @@ namespace tinox.core.events
             var i: Int64 = 0;
             while i < handlers.len()
             {
-                if handlers[i] == handler
+                if (handlers[i] == handler)
                 {
                     handlers.removeAt(i);
                     break;
@@ -70,7 +70,7 @@ namespace tinox.core.events
 
         fn listenerCount(emitter: EventEmitter, event: String) -> Int64
         {
-            if emitter.listeners.contains(event) == false
+            if (emitter.listeners.contains(event) == false)
             {
                 return 0;
             }

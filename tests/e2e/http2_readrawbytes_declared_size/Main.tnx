@@ -32,7 +32,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -53,16 +53,16 @@ class Main
         httpConnWriteBytes(cconn, bytes);
 
         let got = httpServerReadRawBytes(clientFd, 10000);
-        if got.len() == 10000 {
+        if (got.len() == 10000) {
             println("ok-len");
         }
         var allX: Bool = true;
         for i in 0..got.len() {
-            if got.charCodeAt(i) != 120 {
+            if (got.charCodeAt(i) != 120) {
                 allX = false;
             }
         }
-        if allX {
+        if (allX) {
             println("ok-content");
         }
 
@@ -80,7 +80,7 @@ class Main
         httpConnClose(cconn2);
 
         let got2 = httpServerReadRawBytes(clientFd2, 5000);
-        if got2.len() == 100 {
+        if (got2.len() == 100) {
             println("ok-short-read");
         }
 

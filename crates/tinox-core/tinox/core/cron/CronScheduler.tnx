@@ -30,7 +30,7 @@ namespace tinox.core.cron
 
         fn tick(scheduler: CronScheduler) -> Nothing
         {
-            if scheduler.running == false
+            if (scheduler.running == false)
             {
                 return;
             }
@@ -39,7 +39,7 @@ namespace tinox.core.cron
             while i < scheduler.jobs.len()
             {
                 let job: CronJob = scheduler.jobs[i];
-                if Cron::matches(job.expr, now)
+                if (Cron::matches(job.expr, now))
                 {
                     job.callback();
                     job.lastRun = now;

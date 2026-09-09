@@ -30,7 +30,7 @@ class Main
         let pAttach = Amqp10::decodePerformative(fAttach.body);
         Amqp10::writeFrame(sconn, 0, chanId, Amqp10::encodePerformative(0x12, pAttach.fields));
         var handle: Int64 = -1;
-        if pAttach.fields.len() > 1 {
+        if (pAttach.fields.len() > 1) {
             match pAttach.fields[1] { UIntVal(n) => { handle = n; } _ => {} }
         }
         var flowFields: List<Amqp10Value> = [
@@ -89,21 +89,21 @@ class Main
         let f1a = Amqp10::readFrame(sconn);
         let p1a = Amqp10::decodePerformative(f1a.body);
         var t1aHandle: Int64 = -1;
-        if p1a.fields.len() > 0 { match p1a.fields[0] { UIntVal(n) => { t1aHandle = n; } _ => {} } }
+        if (p1a.fields.len() > 0) { match p1a.fields[0] { UIntVal(n) => { t1aHandle = n; } _ => {} } }
 
         // --- attach 1b (session 1, second link) / flow ---
         let handle1b = attachOkAndGrantFlow(sconn, fBegin1.chanId);
         let f1b = Amqp10::readFrame(sconn);
         let p1b = Amqp10::decodePerformative(f1b.body);
         var t1bHandle: Int64 = -1;
-        if p1b.fields.len() > 0 { match p1b.fields[0] { UIntVal(n) => { t1bHandle = n; } _ => {} } }
+        if (p1b.fields.len() > 0) { match p1b.fields[0] { UIntVal(n) => { t1bHandle = n; } _ => {} } }
 
         // --- attach 2a (session 2) / flow ---
         let handle2a = attachOkAndGrantFlow(sconn, fBegin2.chanId);
         let f2a = Amqp10::readFrame(sconn);
         let p2a = Amqp10::decodePerformative(f2a.body);
         var t2aHandle: Int64 = -1;
-        if p2a.fields.len() > 0 { match p2a.fields[0] { UIntVal(n) => { t2aHandle = n; } _ => {} } }
+        if (p2a.fields.len() > 0) { match p2a.fields[0] { UIntVal(n) => { t2aHandle = n; } _ => {} } }
 
         httpConnClose(sconn);
 
@@ -120,11 +120,11 @@ class Main
         println("broker-transfer2a-handle:" + t2aHandle.toString());
 
         var result: Int64 = 0;
-        if fBegin1.chanId == 1 { if fBegin2.chanId == 2 {
-            if handle1a == 0 { if handle1b == 1 { if handle2a == 0 {
-                if f1a.chanId == 1 { if t1aHandle == 0 {
-                    if f1b.chanId == 1 { if t1bHandle == 1 {
-                        if f2a.chanId == 2 { if t2aHandle == 0 {
+        if (fBegin1.chanId == 1) { if (fBegin2.chanId == 2) {
+            if (handle1a == 0) { if (handle1b == 1) { if (handle2a == 0) {
+                if (f1a.chanId == 1) { if (t1aHandle == 0) {
+                    if (f1b.chanId == 1) { if (t1bHandle == 1) {
+                        if (f2a.chanId == 2) { if (t2aHandle == 0) {
                             result = 1;
                         } }
                     } }
@@ -138,14 +138,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
-        if conn.conn <= 0 {
+        if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
@@ -164,7 +164,7 @@ class Main
         link2a.publish([67], "text/plain");
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

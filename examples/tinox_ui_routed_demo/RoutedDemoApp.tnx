@@ -35,12 +35,12 @@ class RoutedDemoApp
     @View
     fn render() -> Component
     {
-        if !this.initialized
+        if (!this.initialized)
         {
             this.color = "red";
             this.initialized = true;
         }
-        if this.isAbout
+        if (this.isAbout)
         {
             return this.shell(this.aboutView());
         }

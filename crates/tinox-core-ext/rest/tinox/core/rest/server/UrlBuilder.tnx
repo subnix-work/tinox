@@ -20,23 +20,23 @@ namespace tinox.core.rest.server
          */
         fn join(base: String, path: String) -> String
         {
-            if base.len() == 0
+            if (base.len() == 0)
             {
                 return path;
             }
-            if path.len() == 0
+            if (path.len() == 0)
             {
                 return base;
             }
-            if base == "/"
+            if (base == "/")
             {
                 return path;
             }
-            if base.endsWith("/") && path.startsWith("/")
+            if (base.endsWith("/") && path.startsWith("/"))
             {
                 return base.substring(0, base.len() - 1) + path;
             }
-            if base.endsWith("/") || path.startsWith("/")
+            if (base.endsWith("/") || path.startsWith("/"))
             {
                 return base + path;
             }

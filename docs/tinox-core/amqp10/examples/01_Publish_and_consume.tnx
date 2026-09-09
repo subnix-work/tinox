@@ -15,7 +15,7 @@ class Main
         let receiver: Amqp10Link = Amqp10Link::attach(session, "consumer", true, "orders");
         receiver.grantCredit(1);
         let msg: Amqp10Message = receiver.nextMessage();
-        if msg.ok
+        if (msg.ok)
         {
             println(tinoxBytesToString(msg.body));
             receiver.ack(msg.deliveryId);

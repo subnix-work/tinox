@@ -14,8 +14,8 @@ class Main
 
 
     fnc main() -> Int32 {
-        if has(bug14_match_string_contains::Str("say hello!"), "hello") { println("yes"); } else { println("-"); }
-        if has(bug14_match_string_contains::Str("say hello!"), "xyz") { println("-"); } else { println("no"); }
+        if (has(bug14_match_string_contains::Str("say hello!"), "hello")) { println("yes"); } else { println("-"); }
+        if (has(bug14_match_string_contains::Str("say hello!"), "xyz")) { println("-"); } else { println("no"); }
         return 0;
     }
 }

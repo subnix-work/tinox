@@ -24,7 +24,7 @@ namespace tinox.core.bitmap
 
         fn getPixel(bitmap: Bitmap, x: Int64, y: Int64) -> Int64
         {
-            if x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height
+            if (x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height)
             {
                 return 0;
             }
@@ -33,7 +33,7 @@ namespace tinox.core.bitmap
 
         fn setPixel(bitmap: Bitmap, x: Int64, y: Int64, color: Int64) -> Nothing
         {
-            if x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height
+            if (x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height)
             {
                 return;
             }
@@ -67,17 +67,17 @@ namespace tinox.core.bitmap
             while true
             {
                 Bitmap::setPixel(bitmap, x, y, color);
-                if x == x1 && y == y1
+                if (x == x1 && y == y1)
                 {
                     break;
                 }
                 let e2: Int64 = 2 * err;
-                if e2 > -dy
+                if (e2 > -dy)
                 {
                     err = err - dy;
                     x = x + sx;
                 }
-                if e2 < dx
+                if (e2 < dx)
                 {
                     err = err + dx;
                     y = y + sy;
@@ -102,7 +102,7 @@ namespace tinox.core.bitmap
                 Bitmap::setPixel(bitmap, cx + x, cy - y, color);
                 y = y + 1;
                 err = err + 1 + 2 * y;
-                if 2 * (err - x) + 1 > 0
+                if (2 * (err - x) + 1 > 0)
                 {
                     x = x - 1;
                     err = err - 2 * x;

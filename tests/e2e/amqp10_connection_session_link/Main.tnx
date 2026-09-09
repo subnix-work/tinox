@@ -68,7 +68,7 @@ class Main
         var ok3: Bool = pAttach.descriptor == 0x12;
         var sawRole: Bool = false;
         var linkName: String = "";
-        if pAttach.fields.len() >= 3 {
+        if (pAttach.fields.len() >= 3) {
             match pAttach.fields[0] { StrVal(s) => { linkName = s; } _ => {} }
             match pAttach.fields[2] { BoolVal(b) => { sawRole = !b; } _ => {} } // client attaches as sender (role=false)
         }
@@ -98,12 +98,12 @@ class Main
 
         httpConnClose(sconn);
 
-        if sawRole {
+        if (sawRole) {
             println("ok-broker-saw-role");
         }
-        if linkName == "test-link" {
+        if (linkName == "test-link") {
             var allOk: Int64 = 0;
-            if ok1 { if ok2 { if ok3 { if ok4 { if ok5 { if ok6 {
+            if (ok1) { if (ok2) { if (ok3) { if (ok4) { if (ok5) { if (ok6) {
                 allOk = 1;
             } } } } } }
             return allOk;
@@ -115,26 +115,26 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
-        if conn.conn <= 0 {
+        if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
 
         let session = Amqp10Session::begin(conn);
-        if session.chanId <= 0 {
+        if (session.chanId <= 0) {
             println("begin failed: " + session.errorMessage);
             return 1;
         }
 
         let link = Amqp10Link::attach(session, "test-link", false, "test-queue");
-        if link.handle < 0 {
+        if (link.handle < 0) {
             println("attach failed: " + link.errorMessage);
             return 1;
         }
@@ -145,19 +145,19 @@ class Main
 
         let brokerOk = await handle;
 
-        if conn.conn > 0 {
+        if (conn.conn > 0) {
             println("ok-connect");
         }
-        if conn.maxFrameSize == 131072 {
+        if (conn.maxFrameSize == 131072) {
             println("ok-framemax");
         }
-        if session.chanId == 1 {
+        if (session.chanId == 1) {
             println("ok-session");
         }
-        if link.handle == 0 {
+        if (link.handle == 0) {
             println("ok-link");
         }
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

@@ -81,10 +81,10 @@ class Main
         for i in 0..2 {
             let f = Amqp091::readFrame(sconn);
             let mf = Amqp091::decodeMethodPayload(f.payload);
-            if mf.classId == 50 && mf.methodId == 10 {
+            if (mf.classId == 50 && mf.methodId == 10) {
                 declChanOk = f.chanId == 1;
             }
-            if mf.classId == 60 && mf.methodId == 20 {
+            if (mf.classId == 60 && mf.methodId == 20) {
                 consChanOk = f.chanId == 2;
                 let wConsOk = AmqpWriter091::new();
                 wConsOk.shortstr("chan2-consumer");
@@ -133,12 +133,12 @@ class Main
         httpConnClose(sconn);
 
         var allOk: Int64 = 0;
-        if chan1Ok {
-            if chan2Ok {
-                if declChanOk {
-                    if consChanOk {
-                        if ackChanOk {
-                            if ackMethodOk {
+        if (chan1Ok) {
+            if (chan2Ok) {
+                if (declChanOk) {
+                    if (consChanOk) {
+                        if (ackChanOk) {
+                            if (ackMethodOk) {
                                 allOk = 1;
                             }
                         }
@@ -160,12 +160,12 @@ class Main
     async fnc consumeChan2(ch2: AmqpChannel091) -> Int64 {
         ch2.consume("chan2-queue");
         let m = ch2.nextMessage();
-        if m.ok {
+        if (m.ok) {
             var received: String = "";
             for i in 0..m.body.len() {
                 received = received + fromCharCode(m.body[i]);
             }
-            if received == "chan2-payload" {
+            if (received == "chan2-payload") {
                 ch2.ack(m.deliveryTag);
                 return 1;
             }
@@ -177,7 +177,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -187,10 +187,10 @@ class Main
         let ch1 = AmqpChannel091::open(c);
         let ch2 = AmqpChannel091::open(c);
 
-        if ch1.chanId == 1 {
+        if (ch1.chanId == 1) {
             println("ok-chan1-id");
         }
-        if ch2.chanId == 2 {
+        if (ch2.chanId == 2) {
             println("ok-chan2-id");
         }
 
@@ -200,19 +200,19 @@ class Main
         // pushes channel 2 traffic first -- must still return channel 1's
         // OWN reply, not misinterpret channel 2's basic.deliver.
         let queueName = ch1.declareQueue("chan1-queue", true, false, false);
-        if queueName == "chan1-queue" {
-            if ch1.errorMessage == "" {
+        if (queueName == "chan1-queue") {
+            if (ch1.errorMessage == "") {
                 println("ok-chan1-not-confused");
             }
         }
 
         let chan2Result = await chan2Handle;
-        if chan2Result == 1 {
+        if (chan2Result == 1) {
             println("ok-chan2-message");
         }
 
         let brokerOk = await brokerHandle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

@@ -22,7 +22,7 @@ class ShowcaseApp
             Component::link("Home", "/", fn(p: String) { app.isAbout = false; }),
             Component::link("About", "/about", fn(p: String) { app.isAbout = true; })
         ]);
-        if this.isAbout
+        if (this.isAbout)
         {
             return Component::vbox([nav, Component::heading("About", 1)]);
         }

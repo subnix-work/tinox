@@ -39,7 +39,7 @@ namespace tinox.core.ui
                     // these `let`-typed locals are load-bearing, not
                     // stylistic: they're what makes each closure call's
                     // result usable as a real String/Component afterward.
-                    if col.isComponent
+                    if (col.isComponent)
                     {
                         let cellComponent: Component = col.componentAccessor(item);
                         cells.push(Component::gridCellComponent(cellComponent, false));

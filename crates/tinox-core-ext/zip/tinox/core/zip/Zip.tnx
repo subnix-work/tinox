@@ -54,7 +54,7 @@ namespace tinox.core.zip
             var i: Int64 = 0;
             while i < archive.entries.len()
             {
-                if archive.entries[i].name != entryName
+                if (archive.entries[i].name != entryName)
                 {
                     newEntries.push(archive.entries[i]);
                 }

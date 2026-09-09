@@ -19,13 +19,13 @@ class Main
 
 
     fnc helper(i: Int64) -> Nothing {
-        if i == 3 { throw "boom"; }
+        if (i == 3) { throw "boom"; }
         println("iter " + i.toString());
     }
 
 
     fnc compute(x: Int64) -> Int64 {
-        if x < 0 { throw "negative"; }
+        if (x < 0) { throw "negative"; }
         return x * 2;
     }
 

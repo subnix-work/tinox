@@ -49,7 +49,7 @@ namespace tinox.core.kubernetes
         fn basePath() -> String
         {
             var apiRoot: String = "";
-            if this.group.len() == 0
+            if (this.group.len() == 0)
             {
                 apiRoot = "/api/" + this.version;
             }
@@ -57,7 +57,7 @@ namespace tinox.core.kubernetes
             {
                 apiRoot = "/apis/" + this.group + "/" + this.version;
             }
-            if this.namespaced
+            if (this.namespaced)
             {
                 return apiRoot + "/namespaces/" + this.namespace + "/" + this.plural;
             }

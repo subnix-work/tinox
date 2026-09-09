@@ -6,7 +6,7 @@ namespace tinox.core.yaml
     {
         fn render(value: YamlValue, indent: Int64) -> String
         {
-            if value.isMap()
+            if (value.isMap())
             {
                 var result: String = "";
                 let keys: List<String> = value.mapValue.keys();
@@ -19,7 +19,7 @@ namespace tinox.core.yaml
                 }
                 return result;
             }
-            if value.isList()
+            if (value.isList())
             {
                 var result: String = "";
                 var i: Int64 = 0;
@@ -31,19 +31,19 @@ namespace tinox.core.yaml
                 }
                 return result;
             }
-            if value.isString()
+            if (value.isString())
             {
                 return YamlRenderer::indent(indent) + value.stringValue + "\n";
             }
-            if value.isInt()
+            if (value.isInt())
             {
                 return YamlRenderer::indent(indent) + value.intValue.toString() + "\n";
             }
-            if value.isFloat()
+            if (value.isFloat())
             {
                 return YamlRenderer::indent(indent) + value.floatValue.toString() + "\n";
             }
-            if value.isBool()
+            if (value.isBool())
             {
                 return YamlRenderer::indent(indent) + (value.boolValue ? "true" : "false") + "\n";
             }

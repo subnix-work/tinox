@@ -22,13 +22,13 @@ class Main
     fnc main() -> Int32 {
         // --- dial() against a port with no listener: fast, hard failure ---
         let refused = Amqp091::dial("127.0.0.1", 39218);
-        if refused == -1 {
+        if (refused == -1) {
             println("ok-dial-refused");
         }
 
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -39,15 +39,15 @@ class Main
         Amqp091::sendProtocolHeader(conn1);
         let sconn1 = httpServerAcceptConnHandle(srv);
         let hdr1 = httpConnReadN(sconn1, 8);
-        if hdr1.len() == 8 {
-            if hdr1[0] == 65 {
-                if hdr1[1] == 77 {
-                    if hdr1[2] == 81 {
-                        if hdr1[3] == 80 {
-                            if hdr1[4] == 0 {
-                                if hdr1[5] == 0 {
-                                    if hdr1[6] == 9 {
-                                        if hdr1[7] == 1 {
+        if (hdr1.len() == 8) {
+            if (hdr1[0] == 65) {
+                if (hdr1[1] == 77) {
+                    if (hdr1[2] == 81) {
+                        if (hdr1[3] == 80) {
+                            if (hdr1[4] == 0) {
+                                if (hdr1[5] == 0) {
+                                    if (hdr1[6] == 9) {
+                                        if (hdr1[7] == 1) {
                                             println("ok-header-bytes");
                                         }
                                     }
@@ -59,7 +59,7 @@ class Main
             }
         }
         httpConnWriteBytes(sconn1, [1]);
-        if Amqp091::checkHandshakeResponse(conn1) {
+        if (Amqp091::checkHandshakeResponse(conn1)) {
             println("ok-handshake-success");
         }
         httpConnClose(conn1);
@@ -72,7 +72,7 @@ class Main
         let sconn2 = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn2, 8);
         httpConnWriteBytes(sconn2, [65, 77, 81, 80, 0, 0, 9, 1]);
-        if !Amqp091::checkHandshakeResponse(conn2) {
+        if (!Amqp091::checkHandshakeResponse(conn2)) {
             println("ok-handshake-mismatch");
         }
         httpConnClose(conn2);
@@ -84,7 +84,7 @@ class Main
         let sconn3 = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn3, 8);
         httpConnClose(sconn3);
-        if !Amqp091::checkHandshakeResponse(conn3) {
+        if (!Amqp091::checkHandshakeResponse(conn3)) {
             println("ok-handshake-eof");
         }
         httpConnClose(conn3);

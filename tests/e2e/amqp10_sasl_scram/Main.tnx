@@ -43,7 +43,7 @@ class Main
         let pInit = Amqp10::decodePerformative(fInit.body);
         var mechanismOk: Bool = false;
         var clientFirstMessage: String = "";
-        match pInit.fields[0] { SymbolVal(m) => { if m == "SCRAM-SHA-256" { mechanismOk = true; } } _ => {} }
+        match pInit.fields[0] { SymbolVal(m) => { if (m == "SCRAM-SHA-256") { mechanismOk = true; } } _ => {} }
         match pInit.fields[1] { BinaryVal(b) => { clientFirstMessage = Amqp10::bytesToString(b); } _ => {} }
 
         // gs2 header "n,," is a fixed 3 characters long.
@@ -52,7 +52,7 @@ class Main
         var clientNonce: String = "";
         for i in 0..bareParts.len() {
             let part = bareParts[i];
-            if part.startsWith("r=") {
+            if (part.startsWith("r=")) {
                 clientNonce = part.substring(2, part.len());
             }
         }
@@ -79,9 +79,9 @@ class Main
         var cField: String = "";
         for i in 0..finalParts.len() {
             let part = finalParts[i];
-            if part.startsWith("c=") { cField = part.substring(2, part.len()); }
-            if part.startsWith("r=") { recvNonce = part.substring(2, part.len()); }
-            if part.startsWith("p=") { recvProofB64 = part.substring(2, part.len()); }
+            if (part.startsWith("c=")) { cField = part.substring(2, part.len()); }
+            if (part.startsWith("r=")) { recvNonce = part.substring(2, part.len()); }
+            if (part.startsWith("p=")) { recvProofB64 = part.substring(2, part.len()); }
         }
         let clientFinalMessageWithoutProof = "c=" + cField + ",r=" + recvNonce;
         let authMessage = bare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof;
@@ -96,12 +96,12 @@ class Main
         let expectedProofB64 = Base64::encodeBytes(expectedProof);
         let proofOk: Bool = expectedProofB64 == recvProofB64;
 
-        if !proofOk {
+        if (!proofOk) {
             var failFields: List<Amqp10Value> = [Amqp10Value::UByteVal(1)];
             Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x44, failFields));
             httpConnClose(sconn);
             var negResult: Int64 = 0;
-            if mechanismOk { negResult = 1; }
+            if (mechanismOk) { negResult = 1; }
             return negResult;
         }
 
@@ -123,7 +123,7 @@ class Main
 
         httpConnClose(sconn);
         var result: Int64 = 0;
-        if mechanismOk { if proofOk { result = 1; } }
+        if (mechanismOk) { if (proofOk) { result = 1; } }
         return result;
     }
 
@@ -132,22 +132,22 @@ class Main
         // --- Success path: correct password ---
         let srv1 = httpServerCreate(0);
         let port1 = httpServerBoundPort(srv1);
-        if srv1 < 0 {
+        if (srv1 < 0) {
             println("bind failed");
             return 1;
         }
         let handle1 = spawn scramBroker(srv1, "correctpass");
         let conn1 = Amqp10Connection::connect("127.0.0.1", port1, "testuser", "correctpass");
         let broker1Ok = await handle1;
-        if conn1.conn > 0 {
+        if (conn1.conn > 0) {
             println("ok-scram-connect");
         } else {
             println("connect failed: " + conn1.errorMessage);
         }
-        if broker1Ok == 1 {
+        if (broker1Ok == 1) {
             println("ok-broker-verified-proof");
         }
-        if conn1.conn > 0 {
+        if (conn1.conn > 0) {
             conn1.close();
         }
         httpServerClose(srv1);
@@ -158,7 +158,7 @@ class Main
         let handle2 = spawn scramBroker(srv2, "correctpass");
         let conn2 = Amqp10Connection::connect("127.0.0.1", port2, "testuser", "wrongpass");
         await handle2;
-        if conn2.conn <= 0 {
+        if (conn2.conn <= 0) {
             println("ok-wrong-password-rejected");
         }
         httpServerClose(srv2);

@@ -123,8 +123,8 @@ fn tinox_ui_routed_demo_widgets_and_routing_end_to_end() {
             .unwrap_or_else(|e| panic!("copy {name}: {e}"));
     }
     let staged_toml = "[package]\nname = \"tinox_ui_routed_demo_test\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.0.1\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.0.1\"\n\n\
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.0.3\"\n\n\
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.0.3\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.0.0\"\n";
     std::fs::write(workdir.join("tinox.toml"), staged_toml).expect("write staged tinox.toml");
 

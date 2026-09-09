@@ -5,7 +5,7 @@ class MsgpackDriver
     fnc tinoxMsgpackDecode(bytes: List<Int64>) -> Int64
     {
         let value: MsgpackValue = Msgpack::decode(bytes);
-        if value.isNull()
+        if (value.isNull())
         {
             return 0;
         }

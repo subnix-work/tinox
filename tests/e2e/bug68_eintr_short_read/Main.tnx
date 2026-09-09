@@ -85,7 +85,7 @@ class Main
         httpConnClose(sconn);
 
         var allOk: Int64 = 0;
-        if ok1 { if ok2 { allOk = 1; } }
+        if (ok1) { if (ok2) { allOk = 1; } }
         return allOk;
     }
 
@@ -103,20 +103,20 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
-        if c.conn > 0 {
+        if (c.conn > 0) {
             println("ok-connect");
         }
         let ch = AmqpChannel091::open(c);
 
         let queueName = ch.declareQueue(makeName(240), true, false, false);
-        if queueName.len() == 240 {
+        if (queueName.len() == 240) {
             println("ok-declare1");
         }
 
@@ -124,19 +124,19 @@ class Main
         // allocation pressure (300 single-character concatenations) is part
         // of the original reproduction.
         let skipped = ch.declareQueue(makeName(300), true, false, false);
-        if skipped.len() == 0 {
-            if ch.errorMessage.len() > 0 {
+        if (skipped.len() == 0) {
+            if (ch.errorMessage.len() > 0) {
                 println("ok-declare2-rejected");
             }
         }
 
         let bound = ch.bindQueue(queueName, "amq.direct", queueName);
-        if bound {
+        if (bound) {
             println("ok-bind");
         }
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

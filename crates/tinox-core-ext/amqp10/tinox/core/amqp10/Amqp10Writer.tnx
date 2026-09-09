@@ -76,7 +76,7 @@ namespace tinox.core.amqp10
         fn writeBoolean(v: Bool) -> Nothing
         {
             this.pushU8(0x56);
-            if v {
+            if (v) {
                 this.pushU8(1);
             } else {
                 this.pushU8(0);

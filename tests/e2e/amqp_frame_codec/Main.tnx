@@ -25,8 +25,8 @@ class Main
         let w1 = AmqpWriter091::new();
         w1.shortstr("hi");
         let r1 = AmqpReader091::new(w1.bytes);
-        if r1.shortstr() == "hi" {
-            if r1.pos == w1.bytes.len() {
+        if (r1.shortstr() == "hi") {
+            if (r1.pos == w1.bytes.len()) {
                 println("ok-shortstr");
             }
         }
@@ -34,8 +34,8 @@ class Main
         let w2 = AmqpWriter091::new();
         w2.longstr("a longer string value");
         let r2 = AmqpReader091::new(w2.bytes);
-        if r2.longstr() == "a longer string value" {
-            if r2.pos == w2.bytes.len() {
+        if (r2.longstr() == "a longer string value") {
+            if (r2.pos == w2.bytes.len()) {
                 println("ok-longstr");
             }
         }
@@ -55,7 +55,7 @@ class Main
         let decoded3 = r3.fieldValue();
         match decoded3 {
             TableVal(t) => {
-                if t.len() == 6 {
+                if (t.len() == 6) {
                     var flagOk: Bool = false;
                     match t.get("flag") { BoolVal(b) => { flagOk = b; } _ => {} }
                     var smallOk: Bool = false;
@@ -68,12 +68,12 @@ class Main
                     match t.get("when") { TimestampVal(ts) => { whenOk = ts == 1700000000; } _ => {} }
                     var voidOk: Bool = false;
                     match t.get("nothing") { VoidVal => { voidOk = true; } _ => {} }
-                    if flagOk {
-                        if smallOk {
-                            if bigOk {
-                                if nameOk {
-                                    if whenOk {
-                                        if voidOk {
+                    if (flagOk) {
+                        if (smallOk) {
+                            if (bigOk) {
+                                if (nameOk) {
+                                    if (whenOk) {
+                                        if (voidOk) {
                                             println("ok-fieldtable-mixed");
                                         }
                                     }
@@ -101,7 +101,7 @@ class Main
                 match t.get("capabilities") {
                     TableVal(inner2) => {
                         match inner2.get("publisher_confirms") {
-                            BoolVal(b) => { if b { println("ok-nested-table"); } }
+                            BoolVal(b) => { if (b) { println("ok-nested-table"); } }
                             _ => {}
                         }
                     }
@@ -118,7 +118,7 @@ class Main
         let r5 = AmqpReader091::new(w5.bytes);
         match r5.fieldValue() {
             ArrayVal(a) => {
-                if a.len() == 3 {
+                if (a.len() == 3) {
                     println("ok-array");
                 }
             }
@@ -137,10 +137,10 @@ class Main
         let args: List<Int64> = [1, 2, 3, 4, 5];
         let payload = Amqp091::encodeMethodPayload(10, 10, args);
         let mf = Amqp091::decodeMethodPayload(payload);
-        if mf.classId == 10 {
-            if mf.methodId == 10 {
-                if mf.args.len() == 5 {
-                    if mf.args[4] == 5 {
+        if (mf.classId == 10) {
+            if (mf.methodId == 10) {
+                if (mf.args.len() == 5) {
+                    if (mf.args[4] == 5) {
                         println("ok-method-envelope");
                     }
                 }
@@ -150,7 +150,7 @@ class Main
         // --- readFrame/writeFrame over a real loopback conn ---
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -164,10 +164,10 @@ class Main
         let framePayload: List<Int64> = [10, 10, 1, 2, 3];
         Amqp091::writeFrame(cconn, 1, 0, framePayload);
         let f = Amqp091::readFrame(sconn);
-        if f.frameType == 1 {
-            if f.chanId == 0 {
-                if f.payload.len() == 5 {
-                    if f.payload[4] == 3 {
+        if (f.frameType == 1) {
+            if (f.chanId == 0) {
+                if (f.payload.len() == 5) {
+                    if (f.payload[4] == 3) {
                         println("ok-frame-roundtrip");
                     }
                 }
@@ -177,20 +177,20 @@ class Main
         // --- protocol error: wrong frame terminator instead of 0xCE ---
         httpConnWriteBytes(cconn, [1, 0, 0, 0, 0, 0, 1, 42, 0xFF]);
         let fBad = Amqp091::readFrame(sconn);
-        if fBad.frameType == -2 {
+        if (fBad.frameType == -2) {
             println("ok-frame-badend");
         }
 
         // --- payload cap exceeded (size > 16 MB, no actual read) ---
         httpConnWriteBytes(cconn, [1, 0, 0, 127, 255, 255, 255]);
         let fCap = Amqp091::readFrame(sconn);
-        if fCap.frameType == -2 {
+        if (fCap.frameType == -2) {
             println("ok-frame-cap");
         }
 
         httpConnClose(cconn);
         let fEof = Amqp091::readFrame(sconn);
-        if fEof.frameType == -1 {
+        if (fEof.frameType == -1) {
             println("ok-frame-eof");
         }
 

@@ -37,10 +37,10 @@ namespace tinox.core.websocket
         fn accept(srv: Int64) -> Int64
         {
             let conn = httpServerAcceptConnHandle(srv);
-            if conn <= 0 {
+            if (conn <= 0) {
                 return -1;
             }
-            if !Ws::handshake(conn) {
+            if (!Ws::handshake(conn)) {
                 httpConnClose(conn);
                 return -1;
             }
@@ -69,10 +69,10 @@ namespace tinox.core.websocket
         fn acceptTls(srv: Int64) -> Int64
         {
             let conn = httpServerAcceptTls(srv);
-            if conn <= 0 {
+            if (conn <= 0) {
                 return -1;
             }
-            if !Ws::handshake(conn) {
+            if (!Ws::handshake(conn)) {
                 httpConnClose(conn);
                 return -1;
             }

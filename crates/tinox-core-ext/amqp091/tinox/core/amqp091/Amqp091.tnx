@@ -13,7 +13,7 @@ namespace tinox.core.amqp091
         fn dial(host: String, port: Int64) -> Int64
         {
             let fd = socketCreateTcp();
-            if !socketConnect(fd, host, port) {
+            if (!socketConnect(fd, host, port)) {
                 // Bug 90: used to leak `fd` on every failed connect — a
                 // reconnect loop against an unreachable/refusing broker
                 // could exhaust the process fd limit over time.
@@ -35,7 +35,7 @@ namespace tinox.core.amqp091
         fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
         {
             let fd = socketCreateTcp();
-            if !socketConnect(fd, host, port) {
+            if (!socketConnect(fd, host, port)) {
                 // Bug 90: same fd leak as dial() above.
                 socketClose(fd);
                 return -1;
@@ -65,7 +65,7 @@ namespace tinox.core.amqp091
         fn checkHandshakeResponse(conn: Int64) -> Bool
         {
             let resp = httpConnReadN(conn, 1);
-            if resp.len() < 1 {
+            if (resp.len() < 1) {
                 return false;
             }
             return resp[0] == 1;
@@ -81,28 +81,28 @@ namespace tinox.core.amqp091
         {
             let bad = AmqpFrame091 { frameType: -1, chanId: 0, payload: [] };
             let hdr = httpConnReadN(conn, 7);
-            if hdr.len() < 7 {
+            if (hdr.len() < 7) {
                 return bad;
             }
             let frameType = hdr[0];
             let chanId = (hdr[1] << 8) | hdr[2];
             let size = (hdr[3] << 24) | (hdr[4] << 16) | (hdr[5] << 8) | hdr[6];
-            if size < 0 || size > 16777216 {
+            if (size < 0 || size > 16777216) {
                 return AmqpFrame091 { frameType: -2, chanId: chanId, payload: [] };
             }
             var payload: List<Int64> = [];
-            if size > 0 {
+            if (size > 0) {
                 let raw = httpConnReadN(conn, size);
-                if raw.len() < size {
+                if (raw.len() < size) {
                     return bad;
                 }
                 payload = raw;
             }
             let end = httpConnReadN(conn, 1);
-            if end.len() < 1 {
+            if (end.len() < 1) {
                 return bad;
             }
-            if end[0] != 0xCE {
+            if (end[0] != 0xCE) {
                 return AmqpFrame091 { frameType: -2, chanId: chanId, payload: [] };
             }
             return AmqpFrame091 { frameType: frameType, chanId: chanId, payload: payload };

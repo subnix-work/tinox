@@ -13,7 +13,7 @@ namespace tinox.core.set
 
         fn add(set: Set<T>, item: T) -> Nothing
         {
-            if Set::contains(set, item) == false
+            if (Set::contains(set, item) == false)
             {
                 set.items.push(item);
             }
@@ -24,7 +24,7 @@ namespace tinox.core.set
             var i: Int64 = 0;
             while i < set.items.len()
             {
-                if set.items[i] == item
+                if (set.items[i] == item)
                 {
                     set.items.removeAt(i);
                     return true;
@@ -39,7 +39,7 @@ namespace tinox.core.set
             var i: Int64 = 0;
             while i < set.items.len()
             {
-                if set.items[i] == item
+                if (set.items[i] == item)
                 {
                     return true;
                 }
@@ -82,7 +82,7 @@ namespace tinox.core.set
             var i: Int64 = 0;
             while i < a.items.len()
             {
-                if Set::contains(b, a.items[i])
+                if (Set::contains(b, a.items[i]))
                 {
                     Set::add(result, a.items[i]);
                 }
@@ -97,7 +97,7 @@ namespace tinox.core.set
             var i: Int64 = 0;
             while i < a.items.len()
             {
-                if Set::contains(b, a.items[i]) == false
+                if (Set::contains(b, a.items[i]) == false)
                 {
                     Set::add(result, a.items[i]);
                 }
@@ -111,7 +111,7 @@ namespace tinox.core.set
             var i: Int64 = 0;
             while i < a.items.len()
             {
-                if Set::contains(b, a.items[i]) == false
+                if (Set::contains(b, a.items[i]) == false)
                 {
                     return false;
                 }

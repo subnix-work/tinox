@@ -15,19 +15,19 @@ class Main
 {
     fnc main() -> Int32 {
         let conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
-        if conn.conn <= 0 {
+        if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
 
         let ch = AmqpChannel091::open(conn);
-        if ch.chanId <= 0 {
+        if (ch.chanId <= 0) {
             println("channel failed: " + ch.errorMessage);
             return 1;
         }
 
         let queueName = ch.declareQueue("tinox-demo-queue", true, false, false);
-        if queueName.len() == 0 {
+        if (queueName.len() == 0) {
             println("queue.declare failed: " + ch.errorMessage);
             return 1;
         }
@@ -48,7 +48,7 @@ class Main
         }
 
         let consumerTag = ch.consume(queueName);
-        if consumerTag.len() == 0 {
+        if (consumerTag.len() == 0) {
             println("basic.consume failed: " + ch.errorMessage);
             return 1;
         }
@@ -56,7 +56,7 @@ class Main
         var received: Int64 = 0;
         while received < 3 {
             let m = ch.nextMessage();
-            if !m.ok {
+            if (!m.ok) {
                 println("receive failed: " + m.errorMessage);
                 return 1;
             }

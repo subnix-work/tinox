@@ -39,29 +39,29 @@ namespace tinox.core.tpl
             while current < template.len()
             {
                 let tagStart: Int64 = template.indexOf("{{", current);
-                if tagStart == -1
+                if (tagStart == -1)
                 {
-                    if current < template.len()
+                    if (current < template.len())
                     {
                         sections.push(TemplateSection { kind: "text", content: template.substring(current, template.len()) });
                     }
                     break;
                 }
-                if tagStart > current
+                if (tagStart > current)
                 {
                     sections.push(TemplateSection { kind: "text", content: template.substring(current, tagStart) });
                 }
                 let tagEnd: Int64 = template.indexOf("}}", tagStart);
-                if tagEnd == -1
+                if (tagEnd == -1)
                 {
                     break;
                 }
                 let tagContent: String = template.substring(tagStart + 2, tagEnd);
-                if tagContent.startsWith("#")
+                if (tagContent.startsWith("#"))
                 {
                     sections.push(TemplateSection { kind: "section", content: tagContent.substring(1, tagContent.len()) });
                 }
-                else if tagContent.startsWith("/")
+                else if (tagContent.startsWith("/"))
                 {
                     sections.push(TemplateSection { kind: "end", content: tagContent.substring(1, tagContent.len()) });
                 }
@@ -81,13 +81,13 @@ namespace tinox.core.tpl
             while i < tpl.sections.len()
             {
                 let section: TemplateSection = tpl.sections[i];
-                if section.kind == "text"
+                if (section.kind == "text")
                 {
                     result = result + section.content;
                 }
-                else if section.kind == "var"
+                else if (section.kind == "var")
                 {
-                    if data.contains(section.content)
+                    if (data.contains(section.content))
                     {
                         result = result + Json::stringify(data[section.content]);
                     }

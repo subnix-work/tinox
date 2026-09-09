@@ -64,40 +64,40 @@ namespace tinox.core.msgpack
 
         fn encodeInto(value: MsgpackValue, out: List<Int64>) -> Nothing
         {
-            if value.isNull() { out.push(0xc0); return; }
-            if value.isBool() { out.push(value.getBool() ? 0xc3 : 0xc2); return; }
-            if value.isInt() { Msgpack::encodeInt(value.getInt(), out); return; }
-            if value.isFloat() { Msgpack::encodeFloat(value.getFloat(), out); return; }
-            if value.isString() { Msgpack::encodeString(value.getString(), out); return; }
-            if value.isArray() { Msgpack::encodeArray(value.asArray(), out); return; }
-            if value.isObject() { Msgpack::encodeMap(value.asMap(), out); return; }
+            if (value.isNull()) { out.push(0xc0); return; }
+            if (value.isBool()) { out.push(value.getBool() ? 0xc3 : 0xc2); return; }
+            if (value.isInt()) { Msgpack::encodeInt(value.getInt(), out); return; }
+            if (value.isFloat()) { Msgpack::encodeFloat(value.getFloat(), out); return; }
+            if (value.isString()) { Msgpack::encodeString(value.getString(), out); return; }
+            if (value.isArray()) { Msgpack::encodeArray(value.asArray(), out); return; }
+            if (value.isObject()) { Msgpack::encodeMap(value.asMap(), out); return; }
         }
 
         fn encodeInt(n: Int64, out: List<Int64>) -> Nothing
         {
-            if n >= 0 && n <= 127
+            if (n >= 0 && n <= 127)
             {
                 out.push(n);
                 return;
             }
-            if n >= -32 && n < 0
+            if (n >= -32 && n < 0)
             {
                 out.push(n & 0xff);
                 return;
             }
-            if n >= -128 && n <= 127
+            if (n >= -128 && n <= 127)
             {
                 out.push(0xd0);
                 out.push(n & 0xff);
                 return;
             }
-            if n >= -32768 && n <= 32767
+            if (n >= -32768 && n <= 32767)
             {
                 out.push(0xd1);
                 Msgpack::pushBE(n, 2, out);
                 return;
             }
-            if n >= -2147483648 && n <= 2147483647
+            if (n >= -2147483648 && n <= 2147483647)
             {
                 out.push(0xd2);
                 Msgpack::pushBE(n, 4, out);
@@ -116,16 +116,16 @@ namespace tinox.core.msgpack
         fn encodeString(s: String, out: List<Int64>) -> Nothing
         {
             let len: Int64 = s.len();
-            if len < 32
+            if (len < 32)
             {
                 out.push(0xa0 | len);
             }
-            else if len <= 255
+            else if (len <= 255)
             {
                 out.push(0xd9);
                 out.push(len);
             }
-            else if len <= 65535
+            else if (len <= 65535)
             {
                 out.push(0xda);
                 Msgpack::pushBE(len, 2, out);
@@ -146,11 +146,11 @@ namespace tinox.core.msgpack
         fn encodeArray(items: List<MsgpackValue>, out: List<Int64>) -> Nothing
         {
             let len: Int64 = items.len();
-            if len < 16
+            if (len < 16)
             {
                 out.push(0x90 | len);
             }
-            else if len <= 65535
+            else if (len <= 65535)
             {
                 out.push(0xdc);
                 Msgpack::pushBE(len, 2, out);
@@ -172,11 +172,11 @@ namespace tinox.core.msgpack
         {
             let keys: List<String> = m.keys();
             let len: Int64 = keys.len();
-            if len < 16
+            if (len < 16)
             {
                 out.push(0x80 | len);
             }
-            else if len <= 65535
+            else if (len <= 65535)
             {
                 out.push(0xde);
                 Msgpack::pushBE(len, 2, out);
@@ -213,70 +213,70 @@ namespace tinox.core.msgpack
         fn decodeValue(reader: MsgpackReader) -> MsgpackValue
         {
             let tag: Int64 = reader.readByte();
-            if reader.failed
+            if (reader.failed)
             {
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
 
-            if tag <= 0x7f
+            if (tag <= 0x7f)
             {
                 return MsgpackValue { kind: "int", stringValue: "", intValue: tag, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
-            if tag >= 0xe0
+            if (tag >= 0xe0)
             {
                 return MsgpackValue { kind: "int", stringValue: "", intValue: tag - 256, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
-            if tag >= 0x80 && tag <= 0x8f
+            if (tag >= 0x80 && tag <= 0x8f)
             {
                 return Msgpack::decodeMap(reader, tag & 0x0f);
             }
-            if tag >= 0x90 && tag <= 0x9f
+            if (tag >= 0x90 && tag <= 0x9f)
             {
                 return Msgpack::decodeArray(reader, tag & 0x0f);
             }
-            if tag >= 0xa0 && tag <= 0xbf
+            if (tag >= 0xa0 && tag <= 0xbf)
             {
                 return Msgpack::decodeString(reader, tag & 0x1f);
             }
-            if tag == 0xc0
+            if (tag == 0xc0)
             {
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
-            if tag == 0xc2
+            if (tag == 0xc2)
             {
                 return MsgpackValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
-            if tag == 0xc3
+            if (tag == 0xc3)
             {
                 return MsgpackValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: true, arrayValue: [], objectValue: Map::new() };
             }
-            if tag == 0xca
+            if (tag == 0xca)
             {
                 let bits: Int64 = reader.readBE(4);
-                if reader.failed { return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }; }
+                if (reader.failed) { return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }; }
                 return MsgpackValue { kind: "float", stringValue: "", intValue: 0, floatValue: msgpackBitsToFloat32(bits), boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
-            if tag == 0xcb
+            if (tag == 0xcb)
             {
                 let bits: Int64 = reader.readBE(8);
-                if reader.failed { return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }; }
+                if (reader.failed) { return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }; }
                 return MsgpackValue { kind: "float", stringValue: "", intValue: 0, floatValue: msgpackBitsToFloat64(bits), boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
-            if tag == 0xcc { return Msgpack::intResult(reader, reader.readBE(1)); }
-            if tag == 0xcd { return Msgpack::intResult(reader, reader.readBE(2)); }
-            if tag == 0xce { return Msgpack::intResult(reader, reader.readBE(4)); }
-            if tag == 0xcf { return Msgpack::intResult(reader, reader.readBE(8)); }
-            if tag == 0xd0 { return Msgpack::intResult(reader, Msgpack::signExtend(reader.readBE(1), 1)); }
-            if tag == 0xd1 { return Msgpack::intResult(reader, Msgpack::signExtend(reader.readBE(2), 2)); }
-            if tag == 0xd2 { return Msgpack::intResult(reader, Msgpack::signExtend(reader.readBE(4), 4)); }
-            if tag == 0xd3 { return Msgpack::intResult(reader, reader.readBE(8)); }
-            if tag == 0xd9 { return Msgpack::decodeString(reader, reader.readBE(1)); }
-            if tag == 0xda { return Msgpack::decodeString(reader, reader.readBE(2)); }
-            if tag == 0xdb { return Msgpack::decodeString(reader, reader.readBE(4)); }
-            if tag == 0xdc { return Msgpack::decodeArray(reader, reader.readBE(2)); }
-            if tag == 0xdd { return Msgpack::decodeArray(reader, reader.readBE(4)); }
-            if tag == 0xde { return Msgpack::decodeMap(reader, reader.readBE(2)); }
-            if tag == 0xdf { return Msgpack::decodeMap(reader, reader.readBE(4)); }
+            if (tag == 0xcc) { return Msgpack::intResult(reader, reader.readBE(1)); }
+            if (tag == 0xcd) { return Msgpack::intResult(reader, reader.readBE(2)); }
+            if (tag == 0xce) { return Msgpack::intResult(reader, reader.readBE(4)); }
+            if (tag == 0xcf) { return Msgpack::intResult(reader, reader.readBE(8)); }
+            if (tag == 0xd0) { return Msgpack::intResult(reader, Msgpack::signExtend(reader.readBE(1), 1)); }
+            if (tag == 0xd1) { return Msgpack::intResult(reader, Msgpack::signExtend(reader.readBE(2), 2)); }
+            if (tag == 0xd2) { return Msgpack::intResult(reader, Msgpack::signExtend(reader.readBE(4), 4)); }
+            if (tag == 0xd3) { return Msgpack::intResult(reader, reader.readBE(8)); }
+            if (tag == 0xd9) { return Msgpack::decodeString(reader, reader.readBE(1)); }
+            if (tag == 0xda) { return Msgpack::decodeString(reader, reader.readBE(2)); }
+            if (tag == 0xdb) { return Msgpack::decodeString(reader, reader.readBE(4)); }
+            if (tag == 0xdc) { return Msgpack::decodeArray(reader, reader.readBE(2)); }
+            if (tag == 0xdd) { return Msgpack::decodeArray(reader, reader.readBE(4)); }
+            if (tag == 0xde) { return Msgpack::decodeMap(reader, reader.readBE(2)); }
+            if (tag == 0xdf) { return Msgpack::decodeMap(reader, reader.readBE(4)); }
 
             // 0xc1 (never used), bin8/16/32 (0xc4-0xc6), ext8/16/32
             // (0xc7-0xc9), fixext1/2/4/8/16 (0xd4-0xd8): not supported in
@@ -288,7 +288,7 @@ namespace tinox.core.msgpack
 
         fn intResult(reader: MsgpackReader, v: Int64) -> MsgpackValue
         {
-            if reader.failed
+            if (reader.failed)
             {
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
@@ -299,7 +299,7 @@ namespace tinox.core.msgpack
         {
             let bits: Int64 = byteWidth * 8;
             let signBit: Int64 = 1 << (bits - 1);
-            if (v & signBit) != 0
+            if ((v & signBit) != 0)
             {
                 return v - (signBit << 1);
             }
@@ -308,7 +308,7 @@ namespace tinox.core.msgpack
 
         fn decodeString(reader: MsgpackReader, len: Int64) -> MsgpackValue
         {
-            if reader.failed || len < 0 || len > reader.remaining()
+            if (reader.failed || len < 0 || len > reader.remaining())
             {
                 reader.failed = true;
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
@@ -331,7 +331,7 @@ namespace tinox.core.msgpack
 
         fn decodeArray(reader: MsgpackReader, len: Int64) -> MsgpackValue
         {
-            if reader.failed || len < 0 || len > reader.remaining()
+            if (reader.failed || len < 0 || len > reader.remaining())
             {
                 reader.failed = true;
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
@@ -340,7 +340,7 @@ namespace tinox.core.msgpack
             var i: Int64 = 0;
             while i < len
             {
-                if reader.failed
+                if (reader.failed)
                 {
                     return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
                 }
@@ -352,7 +352,7 @@ namespace tinox.core.msgpack
 
         fn decodeMap(reader: MsgpackReader, len: Int64) -> MsgpackValue
         {
-            if reader.failed || len < 0 || len > reader.remaining()
+            if (reader.failed || len < 0 || len > reader.remaining())
             {
                 reader.failed = true;
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
@@ -361,13 +361,13 @@ namespace tinox.core.msgpack
             var i: Int64 = 0;
             while i < len
             {
-                if reader.failed
+                if (reader.failed)
                 {
                     return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
                 }
                 let keyValue: MsgpackValue = Msgpack::decodeValue(reader);
                 let value: MsgpackValue = Msgpack::decodeValue(reader);
-                if !keyValue.isString()
+                if (!keyValue.isString())
                 {
                     reader.failed = true;
                     return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };

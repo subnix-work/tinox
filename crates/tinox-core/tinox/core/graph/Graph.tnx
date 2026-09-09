@@ -15,7 +15,7 @@ namespace tinox.core.graph
         fn addNode(graph: Graph<V>, id: String, value: V) -> Nothing
         {
             graph.nodes[id] = value;
-            if graph.edges.contains(id) == false
+            if (graph.edges.contains(id) == false)
             {
                 graph.edges[id] = [];
             }
@@ -23,7 +23,7 @@ namespace tinox.core.graph
 
         fn addEdge(graph: Graph<V>, from: String, to: String, weight: Float64) -> Nothing
         {
-            if graph.edges.contains(from) == false
+            if (graph.edges.contains(from) == false)
             {
                 graph.edges[from] = [];
             }
@@ -32,7 +32,7 @@ namespace tinox.core.graph
 
         fn neighbors(graph: Graph<V>, id: String) -> List<GraphEdge>
         {
-            if graph.edges.contains(id) == false
+            if (graph.edges.contains(id) == false)
             {
                 return [];
             }
@@ -47,7 +47,7 @@ namespace tinox.core.graph
             {
                 let current: String = queue[0];
                 queue.removeAt(0);
-                if visited.contains(current)
+                if (visited.contains(current))
                 {
                     continue;
                 }
@@ -57,7 +57,7 @@ namespace tinox.core.graph
                 var i: Int64 = 0;
                 while i < neighbors.len()
                 {
-                    if visited.contains(neighbors[i].to) == false
+                    if (visited.contains(neighbors[i].to) == false)
                     {
                         queue.push(neighbors[i].to);
                     }
@@ -80,7 +80,7 @@ namespace tinox.core.graph
             var i: Int64 = 0;
             while i < neighbors.len()
             {
-                if visited.contains(neighbors[i].to) == false
+                if (visited.contains(neighbors[i].to) == false)
                 {
                     Graph::dfsHelper(graph, neighbors[i].to, visited, visitor);
                 }
@@ -108,14 +108,14 @@ namespace tinox.core.graph
                 while j < unvisited.len()
                 {
                     let d: Float64 = distances[unvisited[j]];
-                    if d >= 0.0 && (minDist < 0.0 || d < minDist)
+                    if (d >= 0.0 && (minDist < 0.0 || d < minDist))
                     {
                         minNode = unvisited[j];
                         minDist = d;
                     }
                     j = j + 1;
                 }
-                if minNode == end
+                if (minNode == end)
                 {
                     return minDist;
                 }
@@ -123,14 +123,14 @@ namespace tinox.core.graph
                 var k: Int64 = 0;
                 while k < unvisited.len()
                 {
-                    if unvisited[k] == minNode
+                    if (unvisited[k] == minNode)
                     {
                         removeIdx = k;
                         break;
                     }
                     k = k + 1;
                 }
-                if removeIdx != -1
+                if (removeIdx != -1)
                 {
                     unvisited.removeAt(removeIdx);
                 }
@@ -140,7 +140,7 @@ namespace tinox.core.graph
                 {
                     let edge: GraphEdge = neighbors[j];
                     let newDist: Float64 = minDist + edge.weight;
-                    if distances[edge.to] < 0.0 || newDist < distances[edge.to]
+                    if (distances[edge.to] < 0.0 || newDist < distances[edge.to])
                     {
                         distances[edge.to] = newDist;
                         unvisited.push(edge.to);

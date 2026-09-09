@@ -32,7 +32,7 @@ namespace tinox.core.option
 
         fn unwrap() -> T
         {
-            if this.values.len() == 0
+            if (this.values.len() == 0)
             {
                 throw "Option is None";
             }
@@ -41,7 +41,7 @@ namespace tinox.core.option
 
         fn unwrapOr(defaultValue: T) -> T
         {
-            if this.values.len() == 0
+            if (this.values.len() == 0)
             {
                 return defaultValue;
             }
@@ -50,7 +50,7 @@ namespace tinox.core.option
 
         fn map<U>(transform: fnc(T) -> U) -> Option<U>
         {
-            if this.values.len() == 0
+            if (this.values.len() == 0)
             {
                 return Option<U>::none();
             }
@@ -59,7 +59,7 @@ namespace tinox.core.option
 
         fn andThen<U>(transform: fnc(T) -> Option<U>) -> Option<U>
         {
-            if this.values.len() == 0
+            if (this.values.len() == 0)
             {
                 return Option<U>::none();
             }
@@ -68,7 +68,7 @@ namespace tinox.core.option
 
         fn orElse(fallback: fnc() -> Option<T>) -> Option<T>
         {
-            if this.values.len() == 0
+            if (this.values.len() == 0)
             {
                 return fallback();
             }

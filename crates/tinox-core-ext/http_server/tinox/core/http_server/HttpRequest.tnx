@@ -64,7 +64,7 @@ namespace tinox.core.http_server
          */
         fn getHeader(name: String) -> String
         {
-            if this.headers.contains(name)
+            if (this.headers.contains(name))
             {
                 return this.headers[name];
             }
@@ -73,7 +73,7 @@ namespace tinox.core.http_server
             let keys: List<String> = this.headers.keys();
             while key < keys.len()
             {
-                if keys[key].toLowerCase() == lower
+                if (keys[key].toLowerCase() == lower)
                 {
                     return this.headers[keys[key]];
                 }
@@ -90,7 +90,7 @@ namespace tinox.core.http_server
          */
         fn getParam(name: String) -> String
         {
-            if this.params.contains(name)
+            if (this.params.contains(name))
             {
                 return this.params[name];
             }

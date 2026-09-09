@@ -20,7 +20,7 @@ namespace tinox.core.ratelimit
         fn allow(bucket: TokenBucket) -> Bool
         {
             TokenBucket::refill(bucket);
-            if bucket.tokens >= 1.0
+            if (bucket.tokens >= 1.0)
             {
                 bucket.tokens = bucket.tokens - 1.0;
                 return true;

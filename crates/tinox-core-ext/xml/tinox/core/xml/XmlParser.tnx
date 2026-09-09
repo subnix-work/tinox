@@ -16,7 +16,7 @@ namespace tinox.core.xml
         {
             let tagStart: Int64 = text.indexOf("<");
             let tagEnd: Int64 = text.indexOf(">");
-            if tagStart == -1 || tagEnd == -1
+            if (tagStart == -1 || tagEnd == -1)
             {
                 return XmlNode { tagName: "", text: text, attrs: Map::new(), children: [] };
             }
@@ -26,11 +26,11 @@ namespace tinox.core.xml
             let selfClosing: Bool = tagContent.endsWith("/");
             let children: List<XmlNode> = [];
             var content: String = "";
-            if selfClosing == false
+            if (selfClosing == false)
             {
                 let endTag: String = "</" + tagName + ">";
                 let endPos: Int64 = text.indexOf(endTag);
-                if endPos != -1
+                if (endPos != -1)
                 {
                     content = text.substring(tagEnd + 1, endPos);
                 }
@@ -44,7 +44,7 @@ namespace tinox.core.xml
             while i < tagContent.len()
             {
                 let c: String = tagContent.substring(i, i + 1);
-                if c == " " || c == "/" || c == ">"
+                if (c == " " || c == "/" || c == ">")
                 {
                     return tagContent.substring(0, i);
                 }
@@ -61,10 +61,10 @@ namespace tinox.core.xml
             while i < parts.len()
             {
                 let attr: String = Strings::trim(parts[i]);
-                if attr.len() > 0 && attr != "/"
+                if (attr.len() > 0 && attr != "/")
                 {
                     let eqPos: Int64 = attr.indexOf("=");
-                    if eqPos != -1
+                    if (eqPos != -1)
                     {
                         let name: String = attr.substring(0, eqPos);
                         let value: String = attr.substring(eqPos + 1, attr.len());

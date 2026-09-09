@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>http2_server — Tinox Docs</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --bg:        #070b14;
+  --bg2:       rgba(17, 25, 43, 0.6);
+  --bg3:       rgba(34, 211, 238, 0.07);
+  --sidebar:   rgba(7, 11, 20, 0.72);
+  --border:    rgba(103, 232, 249, 0.16);
+  --accent:    #22d3ee;
+  --accent2:   #a78bfa;
+  --link:      #67e8f9;
+  --green:     #34d399;
+  --text:      #e2e8f0;
+  --text2:     #93a4bd;
+  --text3:     #64748b;
+  --code-bg:   rgba(5, 7, 13, 0.65);
+  --tag-bg:    rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+  background-attachment: fixed;
+  color: var(--text);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, black, transparent 75%);
+}
+nav { position: sticky; top: 0; z-index: 1; width: 270px; min-width: 270px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--border); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 32px 0; overflow-y: auto; flex-shrink: 0; }
+nav h1 { padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-family: 'Space Grotesk', 'JetBrains Mono', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+nav ul { list-style: none; }
+nav li.nav-section { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }
+nav li a { display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }
+nav li a:hover { color: var(--text); background: var(--bg3); border-left-color: var(--accent); }
+main { position: relative; z-index: 1; flex: 1; min-width: 0; padding: 56px clamp(2rem, 4vw, 4rem); }
+main h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }
+main > p.generated-by { color: var(--text3); margin-bottom: 28px; font-size: 0.78rem; }
+.tool-tag { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text3); }
+.item { border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.item-name { font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.kw { color: #c792ea; }
+.doc { color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }
+h3 { font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }
+table.members { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.members tr { border-bottom: 1px solid var(--border); }
+table.members td { padding: 8px 10px; vertical-align: top; }
+.member-name { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); width: 35%; }
+.member-type { color: #ffcb6b; width: 20%; }
+.method-sig { background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }
+.method-doc { color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }
+.ann { color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }
+code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--link); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>📦 http2_server</h1>
+  <ul><li class="nav-section">Overview</li><li><a href="#overview">Description</a></li><li class="nav-section">Dependencies</li><li><a href="#dependencies">Dependencies</a></li><li class="nav-section">Examples</li><li><a href="#ex-hello-server">Hello server</a></li><li class="nav-section">Classes</li><li><a href="#class-Http2Conn">Http2Conn</a></li><li><a href="#class-Http2Error">Http2Error</a></li><li><a href="#class-Http2Flags">Http2Flags</a></li><li><a href="#class-Http2Frame">Http2Frame</a></li><li><a href="#class-Http2FrameType">Http2FrameType</a></li><li><a href="#class-Http2Server">Http2Server</a></li><li><a href="#class-Http2Settings">Http2Settings</a></li><li><a href="#class-Http2Stream">Http2Stream</a></li><li class="nav-section">Functions</li><li><a href="#fn-httpServerReadRawBytes">httpServerReadRawBytes</a></li><li><a href="#fn-tinoxBytesToString">tinoxBytesToString</a></li></ul>
+</nav>
+<main>
+  <h1>http2_server</h1>
+  <p class="generated-by">Generated by <span class="tool-tag">tinox doc</span></p>
+  <section id="overview" class="item"><p class="doc" style="margin-bottom:0">tinox.core.http2_server, split out of the bundled stdlib as a standalone tinox-central package.</p></section><section id="dependencies" class="item"><table class="members"><tr><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Module</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Version</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Group</th></tr><tr><td class="member-name"><a href="../../hpack/1-0-1/docs.html"><code>hpack</code></a></td><td class="member-type"><code>1.0.1</code></td><td>tinox.core</td></tr><tr><td class="member-name"><a href="../../http_server/1-0-3/docs.html"><code>http_server</code></a></td><td class="member-type"><code>1.0.3</code></td><td>tinox.core</td></tr></table></section><section id="ex-hello-server" class="item"><h3 style="margin-top:0">Hello server</h3><pre><code><span class="kw">import</span> tinox.core.http2_server;
+
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="kw">let</span> server: <span class="type">Http2Server</span> = <span class="type">Http2Server</span>::<span class="kw">new</span>(<span class="num">8443</span>);
+        server.get(<span class="str">&quot;/hello&quot;</span>, ctx =&gt; {
+            ctx.response.text(<span class="str">&quot;Hello over HTTP/2!&quot;</span>);
+        });
+        server.listen();
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+}
+</code></pre></section><section id="class-Http2Conn" class="item"><h2 class="item-name"><span class="kw">class</span> Http2Conn</h2><p class="doc">
+     * State for one HTTP/2 client connection.
+     * Holds all active streams and both encoder/decoder HPACK tables.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>handle</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>streams</code></td><td class="member-type"><code>Map&lt;String, Http2Stream&gt;</code></td><td></td></tr><tr><td class="member-name"><code>recvDynTable</code></td><td class="member-type"><code>HpackDynTable</code></td><td></td></tr><tr><td class="member-name"><code>sendDynTable</code></td><td class="member-type"><code>HpackDynTable</code></td><td></td></tr><tr><td class="member-name"><code>peerMaxFrameSize</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>peerInitWindowSize</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>lastStreamId</code></td><td class="member-type"><code>Int64</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(handle: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Http2Conn</span></div></section><section id="class-Http2Error" class="item"><h2 class="item-name"><span class="kw">class</span> Http2Error</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> NO_ERROR() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> PROTOCOL_ERROR() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> INTERNAL_ERROR() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> FLOW_CONTROL_ERROR() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> STREAM_CLOSED() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> FRAME_SIZE_ERROR() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> REFUSED_STREAM() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> CANCEL() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> COMPRESSION_ERROR() → <span style="color:#ffcb6b">Int64</span></div></section><section id="class-Http2Flags" class="item"><h2 class="item-name"><span class="kw">class</span> Http2Flags</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> END_STREAM() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> END_HEADERS() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> PADDED() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> PRIORITY() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> ACK() → <span style="color:#ffcb6b">Int64</span></div></section><section id="class-Http2Frame" class="item"><h2 class="item-name"><span class="kw">class</span> Http2Frame</h2><p class="doc">
+     * An HTTP/2 frame with its 9-byte fixed header fields and payload.
+     * The payload is a list of raw byte values (Int64, each 0–255).
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>length</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>type</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>flags</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>streamId</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>payload</code></td><td class="member-type"><code>List&lt;Int64&gt;</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(type: <span style="color:#ffcb6b">Int64</span>, flags: <span style="color:#ffcb6b">Int64</span>, streamId: <span style="color:#ffcb6b">Int64</span>, payload: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">Http2Frame</span></div></section><section id="class-Http2FrameType" class="item"><h2 class="item-name"><span class="kw">class</span> Http2FrameType</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> DATA() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> HEADERS() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> PRIORITY() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> RST_STREAM() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> SETTINGS() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> PUSH_PROMISE() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> PING() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> GOAWAY() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> WINDOW_UPDATE() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> CONTINUATION() → <span style="color:#ffcb6b">Int64</span></div></section><section id="fn-httpServerReadRawBytes" class="item"><h2 class="item-name"><span class="kw">fn</span> httpServerReadRawBytes(fd: <span style="color:#ffcb6b">Int64</span>, count: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">String</span></h2></section><section id="fn-tinoxBytesToString" class="item"><h2 class="item-name"><span class="kw">fn</span> tinoxBytesToString(bytes: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">String</span></h2></section><section id="class-Http2Server" class="item"><h2 class="item-name"><span class="kw">class</span> Http2Server</h2><p class="doc">
+     * HTTP/2 server with a fluent route-registration API identical to HttpServer.
+     *
+     * Handles the full HTTP/2 connection lifecycle per RFC 7540:
+     * connection preface validation, SETTINGS exchange, binary frame I/O,
+     * HPACK decoding for requests and encoding for responses,
+     * multi-stream multiplexing, and graceful GOAWAY shutdown.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>port</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>routes</code></td><td class="member-type"><code>List&lt;Route&gt;</code></td><td></td></tr><tr><td class="member-name"><code>middleware</code></td><td class="member-type"><code>List&lt;fn(HttpContext) -&gt; Bool&gt;</code></td><td></td></tr><tr><td class="member-name"><code>socketHandle</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>running</code></td><td class="member-type"><code>Bool</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(port: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Http2Server</span></div><div class="method-sig"><span class="kw">fn</span> get(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Http2Server</span></div><div class="method-sig"><span class="kw">fn</span> post(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Http2Server</span></div><div class="method-sig"><span class="kw">fn</span> put(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Http2Server</span></div><div class="method-sig"><span class="kw">fn</span> patch(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Http2Server</span></div><div class="method-sig"><span class="kw">fn</span> delete(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">Http2Server</span></div><div class="method-sig"><span class="kw">fn</span> use(mware: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Bool</span>) → <span style="color:#ffcb6b">Http2Server</span></div><div class="method-sig"><span class="kw">fn</span> stop() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> listen() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Starts listening and enters the connection accept loop.
+         * Each accepted connection is handled synchronously (blocking per connection).
+         </div><div class="method-sig"><span class="kw">fn</span> readBytes(fd: <span style="color:#ffcb6b">Int64</span>, count: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">List&lt;Int64&gt;</span></div><div class="method-sig"><span class="kw">fn</span> sendBytes(fd: <span style="color:#ffcb6b">Int64</span>, bytes: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> appendBytes(dest: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>, src: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> readFrame(conn: <span style="color:#ffcb6b">Http2Conn</span>) → <span style="color:#ffcb6b">Http2Frame</span></div><div class="method-sig"><span class="kw">fn</span> writeFrame(conn: <span style="color:#ffcb6b">Http2Conn</span>, frame: <span style="color:#ffcb6b">Http2Frame</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendServerSettings(conn: <span style="color:#ffcb6b">Http2Conn</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendSettingsAck(conn: <span style="color:#ffcb6b">Http2Conn</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendPong(conn: <span style="color:#ffcb6b">Http2Conn</span>, pingPayload: <span style="color:#ffcb6b">List&lt;Int64&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendGoaway(conn: <span style="color:#ffcb6b">Http2Conn</span>, errorCode: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> sendRstStream(conn: <span style="color:#ffcb6b">Http2Conn</span>, streamId: <span style="color:#ffcb6b">Int64</span>, errorCode: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> processSettings(conn: <span style="color:#ffcb6b">Http2Conn</span>, frame: <span style="color:#ffcb6b">Http2Frame</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> processHeaders(conn: <span style="color:#ffcb6b">Http2Conn</span>, frame: <span style="color:#ffcb6b">Http2Frame</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> processContinuation(conn: <span style="color:#ffcb6b">Http2Conn</span>, frame: <span style="color:#ffcb6b">Http2Frame</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> processData(conn: <span style="color:#ffcb6b">Http2Conn</span>, frame: <span style="color:#ffcb6b">Http2Frame</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> dispatchStream(conn: <span style="color:#ffcb6b">Http2Conn</span>, stream: <span style="color:#ffcb6b">Http2Stream</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Decodes a completed stream into an HttpContext, runs middleware and
+         * route matching, then sends the HEADERS + DATA response frames.
+         </div><div class="method-sig"><span class="kw">fn</span> sendResponse(conn: <span style="color:#ffcb6b">Http2Conn</span>, streamId: <span style="color:#ffcb6b">Int64</span>, response: <span style="color:#ffcb6b">HttpResponse</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Encodes an HttpResponse as HTTP/2 HEADERS + DATA frames and sends them.
+         * HEADERS carries the :status pseudo-header plus all response headers.
+         * DATA carries the body (omitted for empty bodies; END_STREAM on HEADERS instead).
+         </div><div class="method-sig"><span class="kw">fn</span> handleConnection(fd: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Manages a single HTTP/2 connection from preface validation through GOAWAY.
+         *
+         * Steps:
+         *  1. Read and validate the 24-byte client connection preface
+         *  2. Send server SETTINGS
+         *  3. Enter the frame-processing loop:
+         *     - SETTINGS → update peer params, send ACK
+         *     - HEADERS  → accumulate header block, dispatch when END_HEADERS + END_STREAM
+         *     - CONTINUATION → append to header block, dispatch when END_HEADERS
+         *     - DATA     → accumulate body, dispatch on END_STREAM
+         *     - PING     → echo back with ACK flag
+         *     - RST_STREAM → mark stream closed
+         *     - GOAWAY   → graceful shutdown
+         *     - WINDOW_UPDATE → acknowledged but not tracked (basic flow control)
+         *  4. Send GOAWAY and close the connection
+         </div><div class="method-sig"><span class="kw">fn</span> runMiddleware(ctx: <span style="color:#ffcb6b">HttpContext</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-sig"><span class="kw">fn</span> matchRoute(ctx: <span style="color:#ffcb6b">HttpContext</span>) → <span style="color:#ffcb6b">Bool</span></div></section><section id="class-Http2Settings" class="item"><h2 class="item-name"><span class="kw">class</span> Http2Settings</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> HEADER_TABLE_SIZE() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> ENABLE_PUSH() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> MAX_CONCURRENT_STREAMS() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> INITIAL_WINDOW_SIZE() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> MAX_FRAME_SIZE() → <span style="color:#ffcb6b">Int64</span></div><div class="method-sig"><span class="kw">fn</span> MAX_HEADER_LIST_SIZE() → <span style="color:#ffcb6b">Int64</span></div></section><section id="class-Http2Stream" class="item"><h2 class="item-name"><span class="kw">class</span> Http2Stream</h2><p class="doc">
+     * Per-stream state for an HTTP/2 connection.
+     *
+     * Accumulates the HPACK-encoded header block across one or more
+     * HEADERS/CONTINUATION frames, and body bytes from DATA frames.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>id</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>state</code></td><td class="member-type"><code>String</code></td><td> &quot;open&quot; | &quot;half_closed_remote&quot; | &quot;closed&quot; </td></tr><tr><td class="member-name"><code>headerBlock</code></td><td class="member-type"><code>List&lt;Int64&gt;</code></td><td></td></tr><tr><td class="member-name"><code>body</code></td><td class="member-type"><code>List&lt;Int64&gt;</code></td><td></td></tr><tr><td class="member-name"><code>endStream</code></td><td class="member-type"><code>Bool</code></td><td></td></tr><tr><td class="member-name"><code>expectingContinuation</code></td><td class="member-type"><code>Bool</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(id: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Http2Stream</span></div></section>
+</main>
+</body>
+</html>

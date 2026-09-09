@@ -142,8 +142,8 @@ fn tinox_ui_hello_click_counter_end_to_end() {
     // already-published deps written directly, kept in sync by hand with
     // examples/tinox_ui_hello/tinox.toml.
     let staged_toml = "[package]\nname = \"tinox_ui_hello_test\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.0.1\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.0.1\"\n\n\
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.0.3\"\n\n\
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.0.3\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.0.0\"\n";
     std::fs::write(workdir.join("tinox.toml"), staged_toml).expect("write staged tinox.toml");
 

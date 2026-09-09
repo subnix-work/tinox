@@ -18,7 +18,7 @@ namespace tinox.core.trie
             while i < word.len()
             {
                 let c: String = word.substring(i, i + 1);
-                if current.children.contains(c) == false
+                if (current.children.contains(c) == false)
                 {
                     current.children[c] = TrieNode::new();
                 }
@@ -35,7 +35,7 @@ namespace tinox.core.trie
             while i < word.len()
             {
                 let c: String = word.substring(i, i + 1);
-                if current.children.contains(c) == false
+                if (current.children.contains(c) == false)
                 {
                     return false;
                 }
@@ -52,7 +52,7 @@ namespace tinox.core.trie
             while i < prefix.len()
             {
                 let c: String = prefix.substring(i, i + 1);
-                if current.children.contains(c) == false
+                if (current.children.contains(c) == false)
                 {
                     return false;
                 }
@@ -69,7 +69,7 @@ namespace tinox.core.trie
             while i < prefix.len()
             {
                 let c: String = prefix.substring(i, i + 1);
-                if current.children.contains(c) == false
+                if (current.children.contains(c) == false)
                 {
                     return [];
                 }
@@ -82,7 +82,7 @@ namespace tinox.core.trie
         fn collectWords(node: TrieNode, prefix: String) -> List<String>
         {
             var results: List<String> = [];
-            if node.isEnd
+            if (node.isEnd)
             {
                 results.push(prefix);
             }

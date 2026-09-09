@@ -38,7 +38,7 @@ namespace tinox.core.msgpack
 
         fn readByte() -> Int64
         {
-            if this.failed || this.pos >= this.bytes.len()
+            if (this.failed || this.pos >= this.bytes.len())
             {
                 this.failed = true;
                 return 0;

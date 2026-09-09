@@ -76,7 +76,7 @@ namespace tinox.core.amqp091
          * field names/method arguments the spec declares as shortstr. */
         fn shortstr(s: String) -> Nothing
         {
-            if s.len() > 255 {
+            if (s.len() > 255) {
                 this.tooLong = true;
                 return;
             }
@@ -106,7 +106,7 @@ namespace tinox.core.amqp091
             {
                 BoolVal(b) => {
                     this.octet(116); // 't'
-                    if b {
+                    if (b) {
                         this.octet(1);
                     } else {
                         this.octet(0);

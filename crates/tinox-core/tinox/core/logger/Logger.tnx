@@ -23,7 +23,7 @@ namespace tinox.core.logger
 
         fn debug(logger: Logger, message: String) -> Nothing
         {
-            if logger.level <= LogLevel::Debug
+            if (logger.level <= LogLevel::Debug)
             {
                 Logger::log(logger, "DEBUG", message);
             }
@@ -31,7 +31,7 @@ namespace tinox.core.logger
 
         fn info(logger: Logger, message: String) -> Nothing
         {
-            if logger.level <= LogLevel::Info
+            if (logger.level <= LogLevel::Info)
             {
                 Logger::log(logger, "INFO", message);
             }
@@ -39,7 +39,7 @@ namespace tinox.core.logger
 
         fn warn(logger: Logger, message: String) -> Nothing
         {
-            if logger.level <= LogLevel::Warn
+            if (logger.level <= LogLevel::Warn)
             {
                 Logger::log(logger, "WARN", message);
             }
@@ -47,7 +47,7 @@ namespace tinox.core.logger
 
         fn error(logger: Logger, message: String) -> Nothing
         {
-            if logger.level <= LogLevel::Error
+            if (logger.level <= LogLevel::Error)
             {
                 Logger::log(logger, "ERROR", message);
             }
@@ -61,7 +61,7 @@ namespace tinox.core.logger
         fn log(logger: Logger, level: String, message: String) -> Nothing
         {
             let timestamp: String = Time::now().toString();
-            if logger.jsonFormat
+            if (logger.jsonFormat)
             {
                 let record: LogRecord = LogRecord { timestamp: timestamp, level: level, logger: logger.name, message: message };
                 println(Logger::toJson(record));

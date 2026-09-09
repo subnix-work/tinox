@@ -377,6 +377,25 @@ namespace tinox.core.ui
   // rewiring needed.
   function applyUpdate(el, op) {
     var props = op.props || {};
+    // Custom-element tag names are required (by spec) to contain a hyphen
+    // -- JsComponent is the only widget kind that ever builds one, so this
+    // is a reliable, bookkeeping-free way to recognize a live JsComponent
+    // instance here and update it via real DOM attributes (letting its own
+    // observedAttributes/attributeChangedCallback react), instead of
+    // falling through the switch below (which has no case for an
+    // arbitrary custom tag) and silently doing nothing beyond `style`.
+    // Never touches innerHTML/children -- see build()'s own "JsComponent"
+    // case doc comment for why that's exactly what keeps the widget's own
+    // internal state (an open WebSocket, a terminal's scrollback, ...)
+    // alive across this update instead of being torn down.
+    if (el.tagName.indexOf("-") !== -1) {
+      for (var jk in props) {
+        if (props.hasOwnProperty(jk) && jk !== "__tinoxModule") {
+          el.setAttribute(jk, props[jk]);
+        }
+      }
+      return;
+    }
     switch (el.tagName) {
       case "SPAN":
       case "BUTTON":
@@ -392,19 +411,32 @@ namespace tinox.core.ui
         el.textContent = op.text;
         break;
       case "DIV":
-        // Notification is the one DIV-rendered leaf with real text to
-        // patch here -- every other DIV-rendered type (RadioGroup, Tabs,
-        // Dialog, Accordion, AccordionSection, FileUpload's container...)
-        // is structural (its "content" is child elements it built itself
-        // in build(), not a single text/innerHTML string) and isn't safe
-        // to blindly overwrite with `op.text` the way the plain Html
-        // widget's DIV already is below -- a props-only diff "update" on
-        // one of those currently only re-applies `style` (see the bottom
-        // of this function), same pre-existing gap this comment already
-        // documented for any unlisted tag before this widget batch.
+        // Notification and Html are the only two DIV-rendered types with
+        // real text/markup to patch here -- every other DIV-rendered type
+        // (VBox, HBox, RadioGroup, Tabs, Dialog, Accordion,
+        // AccordionSection, FileUpload's container...) is structural (its
+        // "content" is child elements it built itself in build(), not a
+        // single text/innerHTML string) and must NOT be touched here --
+        // a props-only diff "update" on one of those only ever needs to
+        // re-apply `style` (see the bottom of this function).
+        //
+        // Found and fixed live (issue tracked separately) while verifying
+        // Component::jsComponent against a real app: this branch used to
+        // unconditionally `el.innerHTML = op.text` for every non-
+        // notification DIV, which for a Dialog/etc (whose own `text` is
+        // always "") silently WIPED its entire built structure (title,
+        // close button, every child) the instant its `open`/other props
+        // changed and the diff picked "update" over "replace" -- exactly
+        // the class of bug this project's own "no silent garbage"
+        // philosophy targets, just never caught before since no existing
+        // example clicked a dialog open through the newer diff-based
+        // rendering path. `build()`'s "Html" case below now tags its own
+        // div with `tinox-html` specifically so this branch can tell it
+        // apart from every structural container, which all render as a
+        // plain, unmarked `<div>` (or their own distinct className).
         if (el.className.indexOf("tinox-notification") === 0) {
           el.textContent = op.text;
-        } else {
+        } else if (el.className === "tinox-html") {
           el.innerHTML = op.text;
         }
         break;
@@ -455,7 +487,24 @@ namespace tinox.core.ui
   // HttpStatusHelper.
   function build(node) {
     if (!node || node.visible === false) {
-      return document.createElement("span");
+      // Found and fixed live alongside the DIV-innerHTML-wipe bug above
+      // (same investigation, same root cause class): this placeholder
+      // used to come back with NO data-tinox-id at all, so a later
+      // "replace" patch addressing it by that id (e.g. a dialog's
+      // content going from Component::none() while closed to the real
+      // content once opened -- see TinoxUIRuntime.diff, which always
+      // treats a visible/type change as a replace) could never find it
+      // via findEl() and silently no-opped -- the dialog's box/title
+      // would show (once the DIV-wipe bug above was fixed) but its
+      // actual content never appeared. `node` is null for a couple of
+      // call sites (this same function's own recursion has none that
+      // pass null today, but the guard was already defensive for it),
+      // hence the extra null check.
+      var placeholder = document.createElement("span");
+      if (node && node.id) {
+        placeholder.setAttribute("data-tinox-id", node.id);
+      }
+      return placeholder;
     }
     var el;
     // Most widgets append their `children` directly into `el` itself --
@@ -564,6 +613,7 @@ namespace tinox.core.ui
         break;
       case "Html":
         el = document.createElement("div");
+        el.className = "tinox-html";
         el.innerHTML = node.text;
         // <script> tags set via innerHTML are inert -- a standard DOM
         // safety behavior, not a bug in this code -- so a naive
@@ -585,6 +635,51 @@ namespace tinox.core.ui
           }
           newScript.textContent = oldScript.textContent;
           oldScript.parentNode.replaceChild(newScript, oldScript);
+        }
+        break;
+      case "JsComponent":
+        // Vaadin-@Tag/@JsModule equivalent -- see Component::jsComponent's
+        // own doc comment (Component.tnx) for the server-side contract.
+        // `node.text` is the tag name; every prop except the reserved
+        // "__tinoxModule"/"style" keys becomes a real HTML attribute, so
+        // the module's own standard observedAttributes/
+        // attributeChangedCallback is how it reacts -- nothing
+        // Tinox-specific for it to implement beyond that. "style" is left
+        // to the shared trailing block below (same as every other widget
+        // case), not applied here.
+        el = document.createElement(node.text);
+        for (var jck in props) {
+          if (props.hasOwnProperty(jck) && jck !== "__tinoxModule" && jck !== "style") {
+            el.setAttribute(jck, props[jck]);
+          }
+        }
+        // Bridges the loaded module's own element back to this
+        // connection's real event pipe -- the per-instance counterpart to
+        // window.tinoxSendEvent (exposed globally further down for
+        // Component::html()-embedded scripts): a JsComponent widget
+        // behaves like a real DOM element with its own method, not a
+        // global.
+        el.tinoxSendEvent = function (value) { sendEvent(node.id, value); };
+        // Dynamic import() is idempotent per resolved URL (the browser's
+        // own ES module cache) -- safe to call again on every build(),
+        // including once per additional instance of the same widget on
+        // one page. The module is expected to
+        // customElements.define(tag, ...) itself; until that resolves,
+        // the browser just treats this as a plain, un-upgraded element --
+        // standard Custom Elements behavior, not an error state.
+        var jsModuleUrl = props.__tinoxModule;
+        if (jsModuleUrl) {
+          // A moduleUrl starting with ":" is a cross-port reference (see
+          // Component::jsComponent's own doc comment) -- expanded against
+          // the browser's OWN actual hostname here, never a compile-time
+          // "localhost", same rule connect()'s wsUrl already follows. A
+          // plain path resolves as a normal same-origin URL untouched.
+          var resolvedModuleUrl = jsModuleUrl.charAt(0) === ":"
+            ? (window.location.protocol === "https:" ? "https://" : "http://") + window.location.hostname + jsModuleUrl
+            : jsModuleUrl;
+          import(resolvedModuleUrl).catch(function (e) {
+            console.error("tinox-ui: failed to load JsComponent module", resolvedModuleUrl, e);
+          });
         }
         break;
       case "DatePicker":

@@ -56,7 +56,7 @@ namespace tinox.core.amqp10
         fn connect(host: String, port: Int64, user: String, pass: String) -> Amqp10Connection
         {
             let conn = Amqp10::dial(host, port);
-            if conn <= 0 {
+            if (conn <= 0) {
                 return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "dial failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
             return Amqp10Connection::negotiateOnConn(conn, host, port, user, pass);
@@ -75,7 +75,7 @@ namespace tinox.core.amqp10
         fn connectTls(host: String, port: Int64, user: String, pass: String, verify: Bool) -> Amqp10Connection
         {
             let conn = Amqp10::dialTls(host, port, verify);
-            if conn <= 0 {
+            if (conn <= 0) {
                 return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "TLS dial failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
             return Amqp10Connection::negotiateOnConn(conn, host, port, user, pass);
@@ -91,19 +91,19 @@ namespace tinox.core.amqp10
         {
             // --- SASL header + negotiation ---
             Amqp10::sendSaslProtocolHeader(conn);
-            if !Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 3, 1, 0, 0]) {
+            if (!Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 3, 1, 0, 0])) {
                 httpConnClose(conn);
                 return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "SASL protocol-header handshake failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
             let sasl = Amqp10::negotiateSasl(conn, user, pass);
-            if !sasl.ok {
+            if (!sasl.ok) {
                 httpConnClose(conn);
                 return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: sasl.errorMessage, host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
 
             // --- AMQP header ---
             Amqp10::sendAmqpProtocolHeader(conn);
-            if !Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 0, 1, 0, 0]) {
+            if (!Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 0, 1, 0, 0])) {
                 httpConnClose(conn);
                 return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "AMQP protocol-header handshake failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
@@ -122,12 +122,12 @@ namespace tinox.core.amqp10
 
             // --- receive open ---
             let f = Amqp10::readFrame(conn);
-            if f.frameType != 0 {
+            if (f.frameType != 0) {
                 httpConnClose(conn);
                 return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
             let p = Amqp10::decodePerformative(f.body);
-            if p.descriptor != 0x10 {
+            if (p.descriptor != 0x10) {
                 httpConnClose(conn);
                 return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "expected open (0x10), got descriptor=" + p.descriptor.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
             }
@@ -138,13 +138,13 @@ namespace tinox.core.amqp10
             var maxFrameSize: Int64 = 4294967295;
             var channelMax: Int64 = 65535;
             var idleTimeoutMs: Int64 = 0;
-            if p.fields.len() > 2 {
+            if (p.fields.len() > 2) {
                 match p.fields[2] { UIntVal(n) => { maxFrameSize = n; } _ => {} }
             }
-            if p.fields.len() > 3 {
+            if (p.fields.len() > 3) {
                 match p.fields[3] { UShortVal(n) => { channelMax = n; } _ => {} }
             }
-            if p.fields.len() > 4 {
+            if (p.fields.len() > 4) {
                 match p.fields[4] { UIntVal(n) => { idleTimeoutMs = n; } _ => {} }
             }
             return Amqp10Connection { conn: conn, maxFrameSize: maxFrameSize, channelMax: channelMax, errorMessage: "", host: host, port: port, user: user, pass: pass, idleTimeoutMs: idleTimeoutMs, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
@@ -193,7 +193,7 @@ namespace tinox.core.amqp10
          */
         fn stopHeartbeat() -> Nothing
         {
-            if this.heartbeatRunning {
+            if (this.heartbeatRunning) {
                 this.heartbeatRunning = false;
                 await this.heartbeatHandle;
             }
@@ -244,7 +244,7 @@ namespace tinox.core.amqp10
         {
             while conn.heartbeatRunning {
                 sleep_ms(intervalMs);
-                if conn.heartbeatRunning {
+                if (conn.heartbeatRunning) {
                     conn.sendHeartbeat();
                 }
             }

@@ -48,7 +48,7 @@ class DiffCounterApp
         this.root = newRoot;
         this.handlers = Map::new();
         TinoxUIRuntime::collectHandlers(this.root, this.handlers);
-        if ops.len() > 0
+        if (ops.len() > 0)
         {
             TinoxUIRuntime::sendPatch(conn, ops);
         }

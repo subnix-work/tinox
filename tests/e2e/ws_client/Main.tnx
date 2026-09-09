@@ -16,11 +16,11 @@ class Main
 
     async fnc fakeServer(srv: Int64) -> Int64 {
         let conn = WsServer::accept(srv);
-        if conn <= 0 {
+        if (conn <= 0) {
             return 0;
         }
         let f = Ws::readMessage(conn);
-        if f.opcode != 1 {
+        if (f.opcode != 1) {
             return 0;
         }
         Ws::sendText(conn, Ws::text(f));
@@ -29,7 +29,7 @@ class Main
         // below) before it reaches the client's subsequent Close.
         let f2 = Ws::readMessage(conn);
         Ws::close(conn);
-        if f2.opcode == 8 {
+        if (f2.opcode == 8) {
             return 1;
         }
         return 0;
@@ -38,26 +38,26 @@ class Main
 
     fnc main() -> Int32 {
         let srv = WsServer::listen(47633);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeServer(srv);
 
         let conn = WsClient::connect("127.0.0.1", 47633, "/chat");
-        if conn > 0 {
+        if (conn > 0) {
             println("ok-accept");
         }
 
         WsClient::sendText(conn, "hello from client");
         let f = WsClient::readMessage(conn);
-        if WsClient::text(f) == "hello from client" {
+        if (WsClient::text(f) == "hello from client") {
             println("ok-echo");
         }
 
         WsClient::sendPing(conn);
         let pongFrame = WsClient::readFrame(conn);
-        if pongFrame.opcode == 10 {
+        if (pongFrame.opcode == 10) {
             println("ok-ping");
         }
 
@@ -65,7 +65,7 @@ class Main
         WsClient::close(conn);
 
         let result = await handle;
-        if result == 1 {
+        if (result == 1) {
             println("ok-close");
         }
 

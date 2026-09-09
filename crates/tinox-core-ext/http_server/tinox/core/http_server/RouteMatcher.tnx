@@ -25,11 +25,11 @@ namespace tinox.core.http_server
             let patternParts: List<String> = RouteMatcher::splitPath(pattern);
             let pathParts: List<String> = RouteMatcher::splitPath(path);
 
-            if patternParts.len() != pathParts.len()
+            if (patternParts.len() != pathParts.len())
             {
-                if patternParts.len() > 0 && patternParts[patternParts.len() - 1] == "*"
+                if (patternParts.len() > 0 && patternParts[patternParts.len() - 1] == "*")
                 {
-                    if pathParts.len() >= patternParts.len() - 1
+                    if (pathParts.len() >= patternParts.len() - 1)
                     {
                         return true;
                     }
@@ -43,13 +43,13 @@ namespace tinox.core.http_server
                 let pPart: String = patternParts[i];
                 let pathPart: String = pathParts[i];
 
-                if pPart.startsWith(":") || pPart == "*"
+                if (pPart.startsWith(":") || pPart == "*")
                 {
                     i = i + 1;
                     continue;
                 }
 
-                if pPart != pathPart
+                if (pPart != pathPart)
                 {
                     return false;
                 }
@@ -75,7 +75,7 @@ namespace tinox.core.http_server
             while i < patternParts.len() && i < pathParts.len()
             {
                 let pPart: String = patternParts[i];
-                if pPart.startsWith(":")
+                if (pPart.startsWith(":"))
                 {
                     let paramName: String = pPart.substring(1, pPart.len());
                     params[paramName] = pathParts[i];
@@ -101,7 +101,7 @@ namespace tinox.core.http_server
         fn param(pattern: String, path: String, name: String) -> String
         {
             let params: Map<String, String> = RouteMatcher::extractParams(pattern, path);
-            if params.contains(name)
+            if (params.contains(name))
             {
                 return params.get(name);
             }
@@ -122,9 +122,9 @@ namespace tinox.core.http_server
             while i < path.len()
             {
                 let ch: String = path.substring(i, i + 1);
-                if ch == "/"
+                if (ch == "/")
                 {
-                    if current.len() > 0
+                    if (current.len() > 0)
                     {
                         parts.push(current);
                         current = "";
@@ -136,7 +136,7 @@ namespace tinox.core.http_server
                 }
                 i = i + 1;
             }
-            if current.len() > 0
+            if (current.len() > 0)
             {
                 parts.push(current);
             }

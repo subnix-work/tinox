@@ -56,60 +56,60 @@ class Main
             _ => {}
         }
         match roundtrip(Amqp10Value::BoolVal(true)) {
-            BoolVal(b) => { if b { println("ok-bool-true"); } }
+            BoolVal(b) => { if (b) { println("ok-bool-true"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::BoolVal(false)) {
-            BoolVal(b) => { if !b { println("ok-bool-false"); } }
+            BoolVal(b) => { if (!b) { println("ok-bool-false"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::UByteVal(200)) {
-            UByteVal(n) => { if n == 200 { println("ok-ubyte"); } }
+            UByteVal(n) => { if (n == 200) { println("ok-ubyte"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::UShortVal(60000)) {
-            UShortVal(n) => { if n == 60000 { println("ok-ushort"); } }
+            UShortVal(n) => { if (n == 60000) { println("ok-ushort"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::UIntVal(4000000000)) {
-            UIntVal(n) => { if n == 4000000000 { println("ok-uint"); } }
+            UIntVal(n) => { if (n == 4000000000) { println("ok-uint"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::ULongVal(9000000000000000000)) {
-            ULongVal(n) => { if n == 9000000000000000000 { println("ok-ulong"); } }
+            ULongVal(n) => { if (n == 9000000000000000000) { println("ok-ulong"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::ByteVal(-42)) {
-            ByteVal(n) => { if n == -42 { println("ok-byte-neg"); } }
+            ByteVal(n) => { if (n == -42) { println("ok-byte-neg"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::ShortVal(-1000)) {
-            ShortVal(n) => { if n == -1000 { println("ok-short-neg"); } }
+            ShortVal(n) => { if (n == -1000) { println("ok-short-neg"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::IntVal(-100000)) {
-            IntVal(n) => { if n == -100000 { println("ok-int-neg"); } }
+            IntVal(n) => { if (n == -100000) { println("ok-int-neg"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::LongVal(-5000000000)) {
-            LongVal(n) => { if n == -5000000000 { println("ok-long-neg"); } }
+            LongVal(n) => { if (n == -5000000000) { println("ok-long-neg"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::CharVal(9731)) { // Unicode Snowman U+2603
-            CharVal(n) => { if n == 9731 { println("ok-char"); } }
+            CharVal(n) => { if (n == 9731) { println("ok-char"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::TimestampVal(1753344000000)) {
-            TimestampVal(n) => { if n == 1753344000000 { println("ok-timestamp"); } }
+            TimestampVal(n) => { if (n == 1753344000000) { println("ok-timestamp"); } }
             _ => {}
         }
         var uuidBytes: List<Int64> = [];
         for i in 0..16 { uuidBytes.push(i + 1); }
         match roundtrip(Amqp10Value::UuidVal(uuidBytes)) {
             UuidVal(b) => {
-                if b.len() == 16 {
-                    if b[0] == 1 {
-                        if b[15] == 16 {
+                if (b.len() == 16) {
+                    if (b[0] == 1) {
+                        if (b[15] == 16) {
                             println("ok-uuid");
                         }
                     }
@@ -119,8 +119,8 @@ class Main
         }
         match roundtrip(Amqp10Value::BinaryVal([1, 2, 3, 255])) {
             BinaryVal(b) => {
-                if b.len() == 4 {
-                    if b[3] == 255 {
+                if (b.len() == 4) {
+                    if (b[3] == 255) {
                         println("ok-binary");
                     }
                 }
@@ -128,15 +128,15 @@ class Main
             _ => {}
         }
         match roundtrip(Amqp10Value::StrVal("hello amqp 1.0")) {
-            StrVal(s) => { if s == "hello amqp 1.0" { println("ok-string"); } }
+            StrVal(s) => { if (s == "hello amqp 1.0") { println("ok-string"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::SymbolVal("amqp:accepted:list")) {
-            SymbolVal(s) => { if s == "amqp:accepted:list" { println("ok-symbol"); } }
+            SymbolVal(s) => { if (s == "amqp:accepted:list") { println("ok-symbol"); } }
             _ => {}
         }
         match roundtrip(Amqp10Value::ListVal([])) {
-            ListVal(items) => { if items.len() == 0 { println("ok-list-empty"); } }
+            ListVal(items) => { if (items.len() == 0) { println("ok-list-empty"); } }
             _ => {}
         }
 
@@ -149,14 +149,14 @@ class Main
         ];
         match roundtrip(Amqp10Value::ListVal(nested)) {
             ListVal(items) => {
-                if items.len() == 3 {
+                if (items.len() == 3) {
                     var ok1: Bool = false;
                     var ok2: Bool = false;
                     var ok3: Bool = false;
                     match items[0] { ULongVal(n) => { ok1 = n == 7; } _ => {} }
                     match items[1] {
                         ListVal(inner) => {
-                            if inner.len() == 2 {
+                            if (inner.len() == 2) {
                                 match inner[0] { StrVal(s) => { ok2 = s == "x"; } _ => {} }
                             }
                         }
@@ -164,13 +164,13 @@ class Main
                     }
                     match items[2] {
                         MapVal(pairs) => {
-                            if pairs.len() == 2 {
+                            if (pairs.len() == 2) {
                                 match pairs[0] { StrVal(s) => { ok3 = s == "k"; } _ => {} }
                             }
                         }
                         _ => {}
                     }
-                    if ok1 { if ok2 { if ok3 { println("ok-list-nested"); } } }
+                    if (ok1) { if (ok2) { if (ok3) { println("ok-list-nested"); } } }
                 }
             }
             _ => {}
@@ -182,12 +182,12 @@ class Main
         ];
         match roundtrip(Amqp10Value::MapVal(mapPairs)) {
             MapVal(pairs) => {
-                if pairs.len() == 2 {
+                if (pairs.len() == 2) {
                     var k: String = "";
                     var v: String = "";
                     match pairs[0] { SymbolVal(s) => { k = s; } _ => {} }
                     match pairs[1] { SymbolVal(s) => { v = s; } _ => {} }
-                    if k == "content-type" { if v == "text/plain" { println("ok-map"); } }
+                    if (k == "content-type") { if (v == "text/plain") { println("ok-map"); } }
                 }
             }
             _ => {}
@@ -197,11 +197,11 @@ class Main
         let described = Amqp10Described { descriptor: 0x10, value: Amqp10Value::ListVal([Amqp10Value::StrVal("container")]) };
         match roundtrip(Amqp10Value::DescribedVal(described)) {
             DescribedVal(d) => {
-                if d.descriptor == 0x10 {
+                if (d.descriptor == 0x10) {
                     match d.value {
                         ListVal(items) => {
-                            if items.len() == 1 {
-                                match items[0] { StrVal(s) => { if s == "container" { println("ok-described"); } } _ => {} }
+                            if (items.len() == 1) {
+                                match items[0] { StrVal(s) => { if (s == "container") { println("ok-described"); } } _ => {} }
                             }
                         }
                         _ => {}
@@ -218,7 +218,7 @@ class Main
             ErrorVal(_msg) => {
                 let next = rFloat.readValue();
                 match next {
-                    UByteVal(n) => { if n == 99 { println("ok-error-float"); } }
+                    UByteVal(n) => { if (n == 99) { println("ok-error-float"); } }
                     _ => {}
                 }
             }
@@ -234,36 +234,36 @@ class Main
 
         // --- Short forms that ONLY the reader needs to know (the writer never writes them) ---
         let rSmalluint = Amqp10Reader::new([0x52, 200]);
-        match rSmalluint.readValue() { UIntVal(n) => { if n == 200 { println("ok-smalluint"); } } _ => {} }
+        match rSmalluint.readValue() { UIntVal(n) => { if (n == 200) { println("ok-smalluint"); } } _ => {} }
 
         let rUint0 = Amqp10Reader::new([0x43]);
-        match rUint0.readValue() { UIntVal(n) => { if n == 0 { println("ok-uint0"); } } _ => {} }
+        match rUint0.readValue() { UIntVal(n) => { if (n == 0) { println("ok-uint0"); } } _ => {} }
 
         let rSmallulong = Amqp10Reader::new([0x53, 42]);
-        match rSmallulong.readValue() { ULongVal(n) => { if n == 42 { println("ok-smallulong"); } } _ => {} }
+        match rSmallulong.readValue() { ULongVal(n) => { if (n == 42) { println("ok-smallulong"); } } _ => {} }
 
         let rUlong0 = Amqp10Reader::new([0x44]);
-        match rUlong0.readValue() { ULongVal(n) => { if n == 0 { println("ok-ulong0"); } } _ => {} }
+        match rUlong0.readValue() { ULongVal(n) => { if (n == 0) { println("ok-ulong0"); } } _ => {} }
 
         let rSmallint = Amqp10Reader::new([0x54, 256 - 5]); // -5 as a signed byte
-        match rSmallint.readValue() { IntVal(n) => { if n == -5 { println("ok-smallint"); } } _ => {} }
+        match rSmallint.readValue() { IntVal(n) => { if (n == -5) { println("ok-smallint"); } } _ => {} }
 
         let rSmalllong = Amqp10Reader::new([0x55, 256 - 7]); // -7
-        match rSmalllong.readValue() { LongVal(n) => { if n == -7 { println("ok-smalllong"); } } _ => {} }
+        match rSmalllong.readValue() { LongVal(n) => { if (n == -7) { println("ok-smalllong"); } } _ => {} }
 
         let rList0 = Amqp10Reader::new([0x45]);
-        match rList0.readValue() { ListVal(items) => { if items.len() == 0 { println("ok-list0"); } } _ => {} }
+        match rList0.readValue() { ListVal(items) => { if (items.len() == 0) { println("ok-list0"); } } _ => {} }
 
         // array8 of 2 symbols: format=0xe0, size, count=2, element-code=0xa3, "ab", "cd"
         let rArray = Amqp10Reader::new([0xe0, 8, 2, 0xa3, 2, 97, 98, 2, 99, 100]);
         match rArray.readValue() {
             ListVal(items) => {
-                if items.len() == 2 {
+                if (items.len() == 2) {
                     var s0: String = "";
                     var s1: String = "";
                     match items[0] { SymbolVal(s) => { s0 = s; } _ => {} }
                     match items[1] { SymbolVal(s) => { s1 = s; } _ => {} }
-                    if s0 == "ab" { if s1 == "cd" { println("ok-array-symbols"); } }
+                    if (s0 == "ab") { if (s1 == "cd") { println("ok-array-symbols"); } }
                 }
             }
             _ => {}

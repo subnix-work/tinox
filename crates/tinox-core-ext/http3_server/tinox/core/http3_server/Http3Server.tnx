@@ -150,7 +150,7 @@ namespace tinox.core.http3_server
         fn listen() -> Nothing
         {
             this.serverHandle = http3ServerCreate(this.port, this.certPath, this.keyPath, this.requireRetry, this.earlyDataEnabled, this.maxEarlyDataSize);
-            if this.serverHandle < 0
+            if (this.serverHandle < 0)
             {
                 throw "Failed to create HTTP/3 (QUIC) server on port " + this.port.toString() + " (runtime built without TINOX_HTTP3, or TLS cert/key invalid)";
             }
@@ -158,11 +158,11 @@ namespace tinox.core.http3_server
             while this.running
             {
                 let requestId: Int64 = http3ServerPumpOnce(this.serverHandle);
-                if requestId >= 0
+                if (requestId >= 0)
                 {
                     this.dispatchRequest(requestId);
                 }
-                else if requestId == -2
+                else if (requestId == -2)
                 {
                     this.running = false;
                 }
@@ -188,7 +188,7 @@ namespace tinox.core.http3_server
             let ctx: HttpContext = HttpContext::new(request, response);
 
             let middlewareContinue: Bool = this.runMiddleware(ctx);
-            if middlewareContinue == false
+            if (middlewareContinue == false)
             {
                 ctx.response.statusCode = 403;
                 ctx.response.text("Forbidden");
@@ -196,7 +196,7 @@ namespace tinox.core.http3_server
             else
             {
                 let matched: Bool = this.matchRoute(ctx);
-                if matched == false
+                if (matched == false)
                 {
                     ctx.response.statusCode = 404;
                     ctx.response.text("Not Found");
@@ -213,7 +213,7 @@ namespace tinox.core.http3_server
             while i < this.middleware.len()
             {
                 let result: Bool = this.middleware[i](ctx);
-                if result == false
+                if (result == false)
                 {
                     return false;
                 }
@@ -228,7 +228,7 @@ namespace tinox.core.http3_server
             while i < this.routes.len()
             {
                 let route: Route = this.routes[i];
-                if route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path)
+                if (route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path))
                 {
                     let params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
                     ctx.request.setParams(params);

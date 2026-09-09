@@ -141,7 +141,7 @@ namespace tinox.core.http_server
         fn listen() -> Nothing
         {
             this.socketHandle = httpServerCreate(this.port);
-            if this.socketHandle < 0
+            if (this.socketHandle < 0)
             {
                 throw "Failed to create HTTP server on port " + this.port.toString();
             }
@@ -149,10 +149,10 @@ namespace tinox.core.http_server
             while this.running
             {
                 let conn: Int64 = httpServerAcceptConnHandle(this.socketHandle);
-                if conn > 0
+                if (conn > 0)
                 {
                     let raw: String = httpConnReadRequest(conn);
-                    if raw.len() > 0
+                    if (raw.len() > 0)
                     {
                         let ctx: HttpContext = this.parseRawRequest(raw);
                         this.handleRequest(ctx, conn);
@@ -185,7 +185,7 @@ namespace tinox.core.http_server
         fn listenTls(certPath: String, keyPath: String) -> Nothing
         {
             this.socketHandle = httpServerCreateTls(this.port, certPath, keyPath);
-            if this.socketHandle < 0
+            if (this.socketHandle < 0)
             {
                 throw "Failed to create HTTPS server on port " + this.port.toString() + " (TLS setup failed — runtime built with TINOX_TLS=0, or cert/key invalid)";
             }
@@ -193,10 +193,10 @@ namespace tinox.core.http_server
             while this.running
             {
                 let conn: Int64 = httpServerAcceptTls(this.socketHandle);
-                if conn > 0
+                if (conn > 0)
                 {
                     let raw: String = httpConnReadRequest(conn);
-                    if raw.len() > 0
+                    if (raw.len() > 0)
                     {
                         let ctx: HttpContext = this.parseRawRequest(raw);
                         this.handleRequest(ctx, conn);
@@ -218,16 +218,16 @@ namespace tinox.core.http_server
             let request: HttpRequest = HttpRequest::new("", "", "", Map::new(), "");
             let response: HttpResponse = HttpResponse::new();
             let lines: List<String> = raw.split("\r\n");
-            if lines.len() > 0
+            if (lines.len() > 0)
             {
                 let firstLine: String = lines[0];
                 let parts: List<String> = firstLine.split(" ");
-                if parts.len() >= 2
+                if (parts.len() >= 2)
                 {
                     request.method = parts[0];
                     let fullPath: String = parts[1];
                     let qIdx: Int64 = fullPath.indexOf("?");
-                    if qIdx >= 0
+                    if (qIdx >= 0)
                     {
                         request.path = fullPath.substring(0, qIdx);
                         request.queryString = fullPath.substring(qIdx + 1, fullPath.len());
@@ -242,13 +242,13 @@ namespace tinox.core.http_server
             while i < lines.len()
             {
                 let line: String = lines[i];
-                if line.len() == 0
+                if (line.len() == 0)
                 {
                     i = i + 1;
                     break;
                 }
                 let colonIdx: Int64 = line.indexOf(":");
-                if colonIdx > 0
+                if (colonIdx > 0)
                 {
                     let key: String = line.substring(0, colonIdx).trim();
                     let hdrVal: String = line.substring(colonIdx + 1, line.len()).trim();
@@ -259,7 +259,7 @@ namespace tinox.core.http_server
             var body: String = "";
             while i < lines.len()
             {
-                if body.len() > 0
+                if (body.len() > 0)
                 {
                     body = body + "\r\n";
                 }
@@ -296,17 +296,17 @@ namespace tinox.core.http_server
          */
         fn statusText(code: Int64) -> String
         {
-            if code == 200 { return "OK"; }
-            if code == 201 { return "Created"; }
-            if code == 204 { return "No Content"; }
-            if code == 301 { return "Moved Permanently"; }
-            if code == 302 { return "Found"; }
-            if code == 400 { return "Bad Request"; }
-            if code == 401 { return "Unauthorized"; }
-            if code == 403 { return "Forbidden"; }
-            if code == 404 { return "Not Found"; }
-            if code == 405 { return "Method Not Allowed"; }
-            if code == 500 { return "Internal Server Error"; }
+            if (code == 200) { return "OK"; }
+            if (code == 201) { return "Created"; }
+            if (code == 204) { return "No Content"; }
+            if (code == 301) { return "Moved Permanently"; }
+            if (code == 302) { return "Found"; }
+            if (code == 400) { return "Bad Request"; }
+            if (code == 401) { return "Unauthorized"; }
+            if (code == 403) { return "Forbidden"; }
+            if (code == 404) { return "Not Found"; }
+            if (code == 405) { return "Method Not Allowed"; }
+            if (code == 500) { return "Internal Server Error"; }
             return "Unknown";
         }
 
@@ -328,7 +328,7 @@ namespace tinox.core.http_server
         fn handleRequest(ctx: HttpContext, conn: Int64) -> Nothing
         {
             let middlewareContinue: Bool = this.runMiddleware(ctx);
-            if middlewareContinue == false
+            if (middlewareContinue == false)
             {
                 ctx.response.statusCode = 403;
                 ctx.response.text("Forbidden");
@@ -336,7 +336,7 @@ namespace tinox.core.http_server
             else
             {
                 let matched: Bool = this.matchRoute(ctx);
-                if matched == false
+                if (matched == false)
                 {
                     ctx.response.statusCode = 404;
                     ctx.response.text("Not Found");
@@ -359,7 +359,7 @@ namespace tinox.core.http_server
             while i < this.middleware.len()
             {
                 let result: Bool = this.middleware[i](ctx);
-                if result == false
+                if (result == false)
                 {
                     return false;
                 }
@@ -383,7 +383,7 @@ namespace tinox.core.http_server
             while i < this.routes.len()
             {
                 let route: Route = this.routes[i];
-                if route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path)
+                if (route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path))
                 {
                     let params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
                     ctx.request.setParams(params);

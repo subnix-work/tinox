@@ -24,14 +24,14 @@ namespace tinox.core.ratelimit
             var i: Int64 = 0;
             while i < limiter.requests.len()
             {
-                if limiter.requests[i] > windowStart
+                if (limiter.requests[i] > windowStart)
                 {
                     validRequests.push(limiter.requests[i]);
                 }
                 i = i + 1;
             }
             limiter.requests = validRequests;
-            if limiter.requests.len() < limiter.maxRequests
+            if (limiter.requests.len() < limiter.maxRequests)
             {
                 limiter.requests.push(now);
                 return true;
@@ -52,7 +52,7 @@ namespace tinox.core.ratelimit
             var i: Int64 = 0;
             while i < limiter.requests.len()
             {
-                if limiter.requests[i] > windowStart
+                if (limiter.requests[i] > windowStart)
                 {
                     count = count + 1;
                 }

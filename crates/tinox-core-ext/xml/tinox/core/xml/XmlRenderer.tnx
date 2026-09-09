@@ -14,12 +14,12 @@ namespace tinox.core.xml
                 result = result + " " + keys[i] + "=\"" + node.attrs[keys[i]] + "\"";
                 i = i + 1;
             }
-            if node.children.len() == 0 && node.text == ""
+            if (node.children.len() == 0 && node.text == "")
             {
                 return result + "/>";
             }
             result = result + ">";
-            if node.text != ""
+            if (node.text != "")
             {
                 result = result + node.text;
             }

@@ -37,7 +37,7 @@ class TaskController
         var i: Int64 = 0;
         while i < tasks.len()
         {
-            if tasks[i].id == id
+            if (tasks[i].id == id)
             {
                 return i;
             }
@@ -52,7 +52,7 @@ class TaskController
         var i: Int64 = 0;
         while i < tasks.len()
         {
-            if tasks[i].id > maxId
+            if (tasks[i].id > maxId)
             {
                 maxId = tasks[i].id;
             }
@@ -74,7 +74,7 @@ class TaskController
 
     fn ensureInit() -> Nothing
     {
-        if !this.initialized
+        if (!this.initialized)
         {
             this.tasks = [
                 Task { id: 1, title: "Try tinox.core.http3_server", done: false },
@@ -98,7 +98,7 @@ class TaskController
     {
         this.ensureInit();
         let idx: Int64 = findTaskIndex(this.tasks, id);
-        if idx < 0
+        if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
             return ctx;
@@ -124,7 +124,7 @@ class TaskController
     {
         this.ensureInit();
         let idx: Int64 = findTaskIndex(this.tasks, id);
-        if idx < 0
+        if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
             return ctx;
@@ -141,7 +141,7 @@ class TaskController
     {
         this.ensureInit();
         let idx: Int64 = findTaskIndex(this.tasks, id);
-        if idx < 0
+        if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
             return ctx;
@@ -158,7 +158,7 @@ class TaskController
     {
         this.ensureInit();
         let idx: Int64 = findTaskIndex(this.tasks, id);
-        if idx < 0
+        if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
             return ctx;

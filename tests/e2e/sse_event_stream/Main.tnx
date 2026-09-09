@@ -17,7 +17,7 @@ class Main
 {
     async fnc fakeServer(srv: Int64) -> Int64 {
         let conn = SseServer::accept(srv);
-        if conn <= 0 {
+        if (conn <= 0) {
             return 0;
         }
         Sse::sendEvent(conn, "message", "hello");
@@ -29,7 +29,7 @@ class Main
 
     fnc main() -> Int32 {
         let srv = SseServer::listen(47821);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -37,7 +37,7 @@ class Main
 
         let fd = Socket::createTcp();
         let connected = Socket::connect(fd, "127.0.0.1", 47821);
-        if connected {
+        if (connected) {
             println("ok-accept");
         }
         Socket::send(fd, "GET /events HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n\r\n");
@@ -46,10 +46,10 @@ class Main
         var attempts: Int64 = 0;
         while attempts < 50 {
             let chunk = Socket::receive(fd, 4096);
-            if chunk.len() > 0 {
+            if (chunk.len() > 0) {
                 received = received + chunk;
             }
-            if received.contains(": keepalive") {
+            if (received.contains(": keepalive")) {
                 break;
             }
             Time::sleep(20);
@@ -57,16 +57,16 @@ class Main
         }
         Socket::close(fd);
 
-        if received.contains("HTTP/1.1 200 OK") && received.contains("Content-Type: text/event-stream") && received.contains("Connection: keep-alive") {
+        if (received.contains("HTTP/1.1 200 OK") && received.contains("Content-Type: text/event-stream") && received.contains("Connection: keep-alive")) {
             println("ok-headers");
         }
-        if received.contains("event: message\ndata: hello\n\n") {
+        if (received.contains("event: message\ndata: hello\n\n")) {
             println("ok-event1");
         }
-        if received.contains("event: update\ndata: line1\ndata: line2\ndata: line3\n\n") {
+        if (received.contains("event: update\ndata: line1\ndata: line2\ndata: line3\n\n")) {
             println("ok-multiline-event");
         }
-        if received.contains(": keepalive\n\n") {
+        if (received.contains(": keepalive\n\n")) {
             println("ok-comment");
         }
 

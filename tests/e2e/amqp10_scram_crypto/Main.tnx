@@ -37,22 +37,22 @@ class Main
 
         // python3: hashlib.pbkdf2_hmac('sha256', b'testpass', salt, 4096, dklen=32)
         let saltedPassword = Amqp10::pbkdf2HmacSha256(password, salt, iterations);
-        if bytesToHex(saltedPassword) == "7903ae83ca06b339de2328863b4ec0cc644b2c8aa4b652f5b9c07518583c3a1d" {
+        if (bytesToHex(saltedPassword) == "7903ae83ca06b339de2328863b4ec0cc644b2c8aa4b652f5b9c07518583c3a1d") {
             println("salted:match");
         }
 
         let clientKey = hmacSha256Bytes(Amqp10::stringToBytes("Client Key"), saltedPassword);
-        if bytesToHex(clientKey) == "26dac491d44395986aeb09a9d74ce281f017f99ef3e4ec74d3d6de68ad5d7ca9" {
+        if (bytesToHex(clientKey) == "26dac491d44395986aeb09a9d74ce281f017f99ef3e4ec74d3d6de68ad5d7ca9") {
             println("clientKey:match");
         }
 
         let storedKey = sha256Bytes(clientKey);
-        if bytesToHex(storedKey) == "3832fa4072bda8c81f24a25517f44244526072ef8c6cd5264bce4b8eb6c940ca" {
+        if (bytesToHex(storedKey) == "3832fa4072bda8c81f24a25517f44244526072ef8c6cd5264bce4b8eb6c940ca") {
             println("storedKey:match");
         }
 
         let serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword);
-        if bytesToHex(serverKey) == "7164272d3414f671296fdd7b449969ab608d7ea694a0cc9978a62821c34146df" {
+        if (bytesToHex(serverKey) == "7164272d3414f671296fdd7b449969ab608d7ea694a0cc9978a62821c34146df") {
             println("serverKey:match");
         }
 
@@ -70,12 +70,12 @@ class Main
 
         let clientSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), storedKey);
         let clientProof = Amqp10::xorBytes(clientKey, clientSignature);
-        if Base64::encodeBytes(clientProof) == "YX9Lo8AZrX4iE+CvhAJLrMLrRjvkz5cYGFG3lBi0e+w=" {
+        if (Base64::encodeBytes(clientProof) == "YX9Lo8AZrX4iE+CvhAJLrMLrRjvkz5cYGFG3lBi0e+w=") {
             println("clientProof:match");
         }
 
         let serverSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey);
-        if Base64::encodeBytes(serverSignature) == "Yl+LLICJz9+jDX0tXsvB4pwH3J0kK/kdutaT6iy4OOs=" {
+        if (Base64::encodeBytes(serverSignature) == "Yl+LLICJz9+jDX0tXsvB4pwH3J0kK/kdutaT6iy4OOs=") {
             println("serverSig:match");
         }
 

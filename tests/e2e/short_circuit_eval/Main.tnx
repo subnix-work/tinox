@@ -23,23 +23,23 @@ class Main
     fnc main() -> Int32 {
         // false && X : X must not run (no "RHS-RAN")
         let a: Bool = false && noisy();
-        if a { println("FAIL-and"); } else { println("se-skipped-and"); }
+        if (a) { println("FAIL-and"); } else { println("se-skipped-and"); }
         // true || X : X must not run
         let b: Bool = true || noisy();
-        if b { println("se-skipped-or"); }
+        if (b) { println("se-skipped-or"); }
 
         // Guard protects against out-of-bounds array access
         let xs: List<Int64> = [10, 20, 30];
         let i: Int64 = 99;
-        if i < xs.len() && xs[i] > 0 { println("FAIL-oob"); } else { println("guard-protects-oob"); }
+        if (i < xs.len() && xs[i] > 0) { println("FAIL-oob"); } else { println("guard-protects-oob"); }
 
         // Guard protects against division by zero
         let d: Int64 = 0;
-        if d != 0 && (10 / d) > 0 { println("FAIL-div0"); } else { println("guard-protects-div0"); }
+        if (d != 0 && (10 / d) > 0) { println("FAIL-div0"); } else { println("guard-protects-div0"); }
 
         // Boolean logic stays correct (cascaded + mixed)
         let x: Int64 = 5;
-        if x > 0 && x < 10 && x != 7 && (x < 0 || x == 5) { println("logic-ok"); }
+        if (x > 0 && x < 10 && x != 7 && (x < 0 || x == 5)) { println("logic-ok"); }
 
         // valid bounds-checked ops
         println("valid: " + xs[2].toString() + " " + (17 / 5).toString() + " " + (17 % 5).toString());

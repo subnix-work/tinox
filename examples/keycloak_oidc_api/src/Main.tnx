@@ -35,7 +35,7 @@ class Main
     fnc requiredEnv(name: String) -> String
     {
         let value: String = Env::getVar(name);
-        if value == ""
+        if (value == "")
         {
             println("Missing required environment variable: " + name);
             Process::exit(1);
@@ -45,12 +45,12 @@ class Main
 
     fnc hasRole(claims: Map<String, JsonValue>, role: String) -> Bool
     {
-        if !claims.contains("realm_access")
+        if (!claims.contains("realm_access"))
         {
             return false;
         }
         let realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable();
-        if !realmAccess.contains("roles")
+        if (!realmAccess.contains("roles"))
         {
             return false;
         }
@@ -58,7 +58,7 @@ class Main
         var i: Int64 = 0;
         while i < roles.len()
         {
-            if roles[i].getString() == role
+            if (roles[i].getString() == role)
             {
                 return true;
             }
@@ -88,7 +88,7 @@ class Main
 
         var port: Int64 = 8096;
         let portEnv: String = Env::getVar("PORT");
-        if portEnv != ""
+        if (portEnv != "")
         {
             port = portEnv.toInt();
         }
@@ -100,12 +100,12 @@ class Main
         app.install(server);
 
         server.get("/", ctx => {
-            if !app.requireLogin(ctx)
+            if (!app.requireLogin(ctx))
             {
                 return;
             }
             let claims: Map<String, JsonValue> = app.currentUser(ctx);
-            if !hasRole(claims, requiredRole)
+            if (!hasRole(claims, requiredRole))
             {
                 ctx.response.status(403).html("<p>Logged in as <b>" + claims["sub"].getString() + "</b>, but missing required role \"" + requiredRole + "\". <a href=\"/logout\">Log out</a></p>");
                 return;

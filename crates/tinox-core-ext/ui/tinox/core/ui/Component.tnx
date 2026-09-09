@@ -336,6 +336,75 @@ namespace tinox.core.ui
             return Component { id: "", type: "HBox", text: "", props: Map::new(), children: children, visible: true, onEvent: fn(v: String) { } };
         }
 
+        // Vaadin-@Tag/@JsModule equivalent: wraps a real, third-party or
+        // custom browser custom element (xterm.js, a live log viewer, ...)
+        // as a typed, reusable widget instead of hand-rolling
+        // Component::html() + a manually stitched <script> bootstrap. `tag`
+        // is the custom element's tag name (reused via the `text` field,
+        // unused by every other non-label widget); `moduleUrl` is dynamic-
+        // import()ed client-side once, and is expected to
+        // `customElements.define(tag, ...)` itself -- see ui.js's own
+        // "JsComponent" case for the exact client-side contract. Every
+        // entry in `props` is set as a real HTML attribute on the element,
+        // so the widget's own `observedAttributes`/`attributeChangedCallback`
+        // (standard Custom Elements API, nothing Tinox-specific) is how it
+        // reacts to server-side state changes -- same idiom a real Vaadin
+        // JS-wrapper component uses. Deliberately does NOT tear the element
+        // down on a prop-only re-render (see ui.js's applyUpdate): a
+        // JsComponent slot's `type` never changes across renders, so
+        // TinoxUIRuntime.diff always emits an in-place "update" for it, not
+        // a "replace" -- this is what lets the widget's own internal state
+        // (an open WebSocket, a terminal's scrollback, ...) survive an
+        // unrelated re-render elsewhere on the page, without a
+        // window-global survival hack.
+        //
+        // `__tinoxModule` is a reserved props key carrying `moduleUrl` --
+        // never set as a real DOM attribute (ui.js's build()/applyUpdate
+        // both skip it) -- chosen over a dedicated Component field since
+        // `props: Map<String,String>` is already the one shape every
+        // widget shares, and adding a second field just for this one
+        // widget isn't worth the extra @JsonSerializable surface (same
+        // reasoning dropdown's own doc comment gives for options/selected).
+        //
+        // `moduleUrl` shape: a same-origin path (e.g. "/widget.js",
+        // served by this SAME @TinoxUIApp/app's own HTTP shell) resolves
+        // the normal way, no special handling needed. For a module served
+        // by a DIFFERENT port on the same machine (e.g. a companion static
+        // -asset HttpServer, needed whenever the app's own HTTP shell port
+        // is compiler-generated and can't take extra routes -- see
+        // tinox-k8s-ui's PodsView for a real example), prefix it with just
+        // a colon+port instead of a full URL: ":8302/widget.js". ui.js
+        // expands that against the BROWSER's own actual hostname at
+        // import time, never a compile-time "localhost" -- the exact same
+        // rule connect()'s own WebSocket URL construction already follows
+        // (a Docker port mapping / reverse proxy / remote dev box would
+        // otherwise silently try to load the module from the wrong host).
+        // A literal `moduleUrl` never needs to know or guess that
+        // hostname itself.
+        //
+        // Cross-port note, found live (not obvious ahead of time): a
+        // dynamic `import()` of a cross-ORIGIN module is a real CORS-mode
+        // fetch -- unlike a plain cross-origin `<script src>`, the browser
+        // enforces this even though both ports are on the SAME machine.
+        // The companion server backing a ":port/path" moduleUrl therefore
+        // MUST send `Access-Control-Allow-Origin` on that response (e.g.
+        // `ctx.response.content(...).header("Access-Control-Allow-Origin", "*")`)
+        // or the import silently fails with a CORS console error -- a
+        // same-origin plain-path moduleUrl needs no such header.
+        fnc jsComponent(tag: String, moduleUrl: String, props: Map<String, String>, onEvent: fnc(String) -> Nothing) -> Component
+        {
+            let p: Map<String, String> = Map::new();
+            let keys: List<String> = props.keys();
+            var i: Int64 = 0;
+            while i < keys.len()
+            {
+                p.insert(keys[i], props.get(keys[i]));
+                i = i + 1;
+            }
+            p.insert("__tinoxModule", moduleUrl);
+            return Component { id: "", type: "JsComponent", text: tag, props: p, children: [], visible: true, onEvent: onEvent };
+        }
+
         // Escape hatch for anything the v1 widget set doesn't cover yet --
         // raw HTML string, rendered as-is client-side. Mirrors the same
         // "generic client alongside the typed convenience layer" shape

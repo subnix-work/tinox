@@ -23,7 +23,7 @@ class ShowcaseApp
     fn render() -> Component
     {
         let app: ShowcaseApp = this;
-        if !this.initialized
+        if (!this.initialized)
         {
             this.selectedDate = "2026-01-01";
             this.selectedColor = "red";
@@ -46,7 +46,7 @@ class ShowcaseApp
 
     fn tabContent() -> Component
     {
-        if this.activeTab == 1
+        if (this.activeTab == 1)
         {
             return this.formTab();
         }

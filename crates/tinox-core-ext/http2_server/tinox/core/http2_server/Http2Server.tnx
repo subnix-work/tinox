@@ -84,7 +84,7 @@ namespace tinox.core.http2_server
         fn listen() -> Nothing
         {
             this.socketHandle = httpServerCreate(this.port);
-            if this.socketHandle < 0
+            if (this.socketHandle < 0)
             {
                 throw "Failed to create HTTP/2 server on port " + this.port.toString();
             }
@@ -92,7 +92,7 @@ namespace tinox.core.http2_server
             while this.running
             {
                 let clientFd: Int64 = httpServerAcceptConn(this.socketHandle);
-                if clientFd >= 0
+                if (clientFd >= 0)
                 {
                     this.handleConnection(clientFd);
                 }
@@ -153,7 +153,7 @@ namespace tinox.core.http2_server
         fn readFrame(conn: Http2Conn) -> Http2Frame
         {
             let header: List<Int64> = this.readBytes(conn.handle, 9);
-            if header.len() < 9
+            if (header.len() < 9)
             {
                 // Connection closed or error — signal with type -1
                 return Http2Frame { length: 0, type: -1, flags: 0, streamId: 0, payload: [] };
@@ -249,7 +249,7 @@ namespace tinox.core.http2_server
 
         fn processSettings(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
-            if (frame.flags & Http2Flags::ACK()) != 0
+            if ((frame.flags & Http2Flags::ACK()) != 0)
             {
                 return;
             }
@@ -258,15 +258,15 @@ namespace tinox.core.http2_server
             {
                 let settingId: Int64 = (frame.payload[i] << 8) | frame.payload[i + 1];
                 let settingVal: Int64 = (frame.payload[i + 2] << 24) | (frame.payload[i + 3] << 16) | (frame.payload[i + 4] << 8) | frame.payload[i + 5];
-                if settingId == Http2Settings::HEADER_TABLE_SIZE()
+                if (settingId == Http2Settings::HEADER_TABLE_SIZE())
                 {
                     conn.recvDynTable.setMaxSize(settingVal);
                 }
-                if settingId == Http2Settings::INITIAL_WINDOW_SIZE()
+                if (settingId == Http2Settings::INITIAL_WINDOW_SIZE())
                 {
                     conn.peerInitWindowSize = settingVal;
                 }
-                if settingId == Http2Settings::MAX_FRAME_SIZE()
+                if (settingId == Http2Settings::MAX_FRAME_SIZE())
                 {
                     conn.peerMaxFrameSize = settingVal;
                 }
@@ -283,7 +283,7 @@ namespace tinox.core.http2_server
         {
             let sid: String = frame.streamId.toString();
             var stream: Http2Stream;
-            if conn.streams.contains(sid)
+            if (conn.streams.contains(sid))
             {
                 stream = conn.streams[sid];
             }
@@ -291,7 +291,7 @@ namespace tinox.core.http2_server
             {
                 stream = Http2Stream::new(frame.streamId);
                 conn.streams[sid] = stream;
-                if frame.streamId > conn.lastStreamId
+                if (frame.streamId > conn.lastStreamId)
                 {
                     conn.lastStreamId = frame.streamId;
                 }
@@ -299,12 +299,12 @@ namespace tinox.core.http2_server
 
             var payloadOffset: Int64 = 0;
             var padLength: Int64 = 0;
-            if (frame.flags & Http2Flags::PADDED()) != 0
+            if ((frame.flags & Http2Flags::PADDED()) != 0)
             {
                 padLength = frame.payload[0];
                 payloadOffset = 1;
             }
-            if (frame.flags & Http2Flags::PRIORITY()) != 0
+            if ((frame.flags & Http2Flags::PRIORITY()) != 0)
             {
                 // Skip 4-byte stream dependency + 1-byte weight
                 payloadOffset = payloadOffset + 5;
@@ -325,7 +325,7 @@ namespace tinox.core.http2_server
             // client can otherwise grow one stream's headerBlock without
             // bound just by sending more CONTINUATION frames. Cap the
             // cumulative size and abort the stream instead of the connection.
-            if stream.headerBlock.len() > 1048576
+            if (stream.headerBlock.len() > 1048576)
             {
                 this.sendRstStream(conn, frame.streamId, Http2Error::FRAME_SIZE_ERROR());
                 stream.state = "closed";
@@ -334,14 +334,14 @@ namespace tinox.core.http2_server
 
             let endHeaders: Bool = (frame.flags & Http2Flags::END_HEADERS()) != 0;
             let endStream: Bool = (frame.flags & Http2Flags::END_STREAM()) != 0;
-            if endStream
+            if (endStream)
             {
                 stream.endStream = true;
             }
-            if endHeaders
+            if (endHeaders)
             {
                 stream.expectingContinuation = false;
-                if stream.endStream
+                if (stream.endStream)
                 {
                     stream.state = "half_closed_remote";
                     this.dispatchStream(conn, stream);
@@ -360,7 +360,7 @@ namespace tinox.core.http2_server
         fn processContinuation(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
             let sid: String = frame.streamId.toString();
-            if conn.streams.contains(sid) == false
+            if (conn.streams.contains(sid) == false)
             {
                 return;
             }
@@ -370,17 +370,17 @@ namespace tinox.core.http2_server
             // Bug 94: same cumulative cap as processHeaders() — this is the
             // actual CONTINUATION-flood path (RFC 7540 §6.10 sets no limit
             // on how many CONTINUATION frames may follow a HEADERS frame).
-            if stream.headerBlock.len() > 1048576
+            if (stream.headerBlock.len() > 1048576)
             {
                 this.sendRstStream(conn, frame.streamId, Http2Error::FRAME_SIZE_ERROR());
                 stream.state = "closed";
                 return;
             }
 
-            if (frame.flags & Http2Flags::END_HEADERS()) != 0
+            if ((frame.flags & Http2Flags::END_HEADERS()) != 0)
             {
                 stream.expectingContinuation = false;
-                if stream.endStream
+                if (stream.endStream)
                 {
                     stream.state = "half_closed_remote";
                     this.dispatchStream(conn, stream);
@@ -395,7 +395,7 @@ namespace tinox.core.http2_server
         fn processData(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
             let sid: String = frame.streamId.toString();
-            if conn.streams.contains(sid) == false
+            if (conn.streams.contains(sid) == false)
             {
                 this.sendRstStream(conn, frame.streamId, Http2Error::STREAM_CLOSED());
                 return;
@@ -404,7 +404,7 @@ namespace tinox.core.http2_server
 
             var payloadOffset: Int64 = 0;
             var padLength: Int64 = 0;
-            if (frame.flags & Http2Flags::PADDED()) != 0
+            if ((frame.flags & Http2Flags::PADDED()) != 0)
             {
                 padLength = frame.payload[0];
                 payloadOffset = 1;
@@ -420,18 +420,18 @@ namespace tinox.core.http2_server
             // Bug 94: a single DATA frame is already bounded by the 24-bit
             // wire length field (~16MB), but a stream's body accumulates
             // across an unbounded number of DATA frames with no overall cap.
-            if stream.body.len() > 16777216
+            if (stream.body.len() > 16777216)
             {
                 this.sendRstStream(conn, frame.streamId, Http2Error::FRAME_SIZE_ERROR());
                 stream.state = "closed";
                 return;
             }
 
-            if (frame.flags & Http2Flags::END_STREAM()) != 0
+            if ((frame.flags & Http2Flags::END_STREAM()) != 0)
             {
                 stream.endStream = true;
                 stream.state = "half_closed_remote";
-                if stream.expectingContinuation == false
+                if (stream.expectingContinuation == false)
                 {
                     this.dispatchStream(conn, stream);
                 }
@@ -455,14 +455,14 @@ namespace tinox.core.http2_server
             while i < rawHeaders.len()
             {
                 let h: HpackHeader = rawHeaders[i];
-                if h.name == ":method"
+                if (h.name == ":method")
                 {
                     request.method = h.value;
                 }
-                else if h.name == ":path"
+                else if (h.name == ":path")
                 {
                     let qIdx: Int64 = h.value.indexOf("?");
-                    if qIdx >= 0
+                    if (qIdx >= 0)
                     {
                         request.path = h.value.substring(0, qIdx);
                         request.queryString = h.value.substring(qIdx + 1, h.value.len());
@@ -472,7 +472,7 @@ namespace tinox.core.http2_server
                         request.path = h.value;
                     }
                 }
-                else if h.name.startsWith(":") == false
+                else if (h.name.startsWith(":") == false)
                 {
                     request.headers[h.name] = h.value;
                 }
@@ -488,7 +488,7 @@ namespace tinox.core.http2_server
             let ctx: HttpContext = HttpContext::new(request, response);
 
             let middlewareContinue: Bool = this.runMiddleware(ctx);
-            if middlewareContinue == false
+            if (middlewareContinue == false)
             {
                 ctx.response.statusCode = 403;
                 ctx.response.text("Forbidden");
@@ -496,7 +496,7 @@ namespace tinox.core.http2_server
             else
             {
                 let matched: Bool = this.matchRoute(ctx);
-                if matched == false
+                if (matched == false)
                 {
                     ctx.response.statusCode = 404;
                     ctx.response.text("Not Found");
@@ -524,7 +524,7 @@ namespace tinox.core.http2_server
                 responseHeaders.push(HpackHeader::new(headerKeys[i].toLowerCase(), response.headers[headerKeys[i]]));
                 i = i + 1;
             }
-            if response.body.len() > 0
+            if (response.body.len() > 0)
             {
                 responseHeaders.push(HpackHeader::new("content-length", response.body.len().toString()));
             }
@@ -532,13 +532,13 @@ namespace tinox.core.http2_server
             let encodedHeaders: List<Int64> = Hpack::encode(responseHeaders, conn.sendDynTable);
 
             var headersFlags: Int64 = Http2Flags::END_HEADERS();
-            if response.body.len() == 0
+            if (response.body.len() == 0)
             {
                 headersFlags = headersFlags | Http2Flags::END_STREAM();
             }
             this.writeFrame(conn, Http2Frame::new(Http2FrameType::HEADERS(), headersFlags, streamId, encodedHeaders));
 
-            if response.body.len() > 0
+            if (response.body.len() > 0)
             {
                 let bodyBytes: List<Int64> = [];
                 var j: Int64 = 0;
@@ -576,7 +576,7 @@ namespace tinox.core.http2_server
         {
             // RFC 7540 §3.5: client connection preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
             let prefaceBytes: List<Int64> = this.readBytes(fd, 24);
-            if prefaceBytes.len() < 24
+            if (prefaceBytes.len() < 24)
             {
                 httpServerCloseConn(fd);
                 return;
@@ -586,7 +586,7 @@ namespace tinox.core.http2_server
             // in a loop (issue #167; bounded to 24 bytes here, but kept
             // consistent with the rest of this module's byte->string sites).
             let prefaceStr: String = tinoxBytesToString(prefaceBytes);
-            if prefaceStr != "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+            if (prefaceStr != "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
             {
                 httpServerCloseConn(fd);
                 return;
@@ -600,39 +600,39 @@ namespace tinox.core.http2_server
             {
                 let frame: Http2Frame = this.readFrame(conn);
 
-                if frame.type == -1
+                if (frame.type == -1)
                 {
                     active = false;
                 }
-                else if frame.type == Http2FrameType::SETTINGS()
+                else if (frame.type == Http2FrameType::SETTINGS())
                 {
                     this.processSettings(conn, frame);
                 }
-                else if frame.type == Http2FrameType::HEADERS()
+                else if (frame.type == Http2FrameType::HEADERS())
                 {
                     this.processHeaders(conn, frame);
                 }
-                else if frame.type == Http2FrameType::CONTINUATION()
+                else if (frame.type == Http2FrameType::CONTINUATION())
                 {
                     this.processContinuation(conn, frame);
                 }
-                else if frame.type == Http2FrameType::DATA()
+                else if (frame.type == Http2FrameType::DATA())
                 {
                     this.processData(conn, frame);
                 }
-                else if frame.type == Http2FrameType::PING()
+                else if (frame.type == Http2FrameType::PING())
                 {
                     this.sendPong(conn, frame.payload);
                 }
-                else if frame.type == Http2FrameType::RST_STREAM()
+                else if (frame.type == Http2FrameType::RST_STREAM())
                 {
                     let sid: String = frame.streamId.toString();
-                    if conn.streams.contains(sid)
+                    if (conn.streams.contains(sid))
                     {
                         conn.streams[sid].state = "closed";
                     }
                 }
-                else if frame.type == Http2FrameType::GOAWAY()
+                else if (frame.type == Http2FrameType::GOAWAY())
                 {
                     active = false;
                 }
@@ -653,7 +653,7 @@ namespace tinox.core.http2_server
             while i < this.middleware.len()
             {
                 let result: Bool = this.middleware[i](ctx);
-                if result == false
+                if (result == false)
                 {
                     return false;
                 }
@@ -668,7 +668,7 @@ namespace tinox.core.http2_server
             while i < this.routes.len()
             {
                 let route: Route = this.routes[i];
-                if route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path)
+                if (route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path))
                 {
                     let params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
                     ctx.request.setParams(params);

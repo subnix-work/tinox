@@ -54,7 +54,7 @@ class Main
         let fAttach1 = Amqp10::readFrame(sconn);
         let pAttach1 = Amqp10::decodePerformative(fAttach1.body);
         var plainNoUnsettled: Bool = false;
-        if pAttach1.fields.len() > 7 {
+        if (pAttach1.fields.len() > 7) {
             match pAttach1.fields[7] { NullVal => { plainNoUnsettled = true; } _ => {} }
         }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach1.fields));
@@ -71,7 +71,7 @@ class Main
         var sawTagA: Bool = false;
         var sawTagB: Bool = false;
         var unsettledPairCount: Int64 = 0;
-        if pAttach2.fields.len() > 7 {
+        if (pAttach2.fields.len() > 7) {
             match pAttach2.fields[7] {
                 MapVal(pairs) => {
                     unsettledPairCount = pairs.len() / 2;
@@ -79,9 +79,9 @@ class Main
                     while i + 1 < pairs.len() {
                         match pairs[i] {
                             BinaryVal(tag) => {
-                                if tag.len() == 1 {
-                                    if tag[0] == 65 { sawTagA = true; }
-                                    if tag[0] == 66 { sawTagB = true; }
+                                if (tag.len() == 1) {
+                                    if (tag[0] == 65) { sawTagA = true; }
+                                    if (tag[0] == 66) { sawTagB = true; }
                                 }
                             }
                             _ => {}
@@ -104,7 +104,7 @@ class Main
         httpConnClose(sconn);
 
         var result: Int64 = 0;
-        if plainNoUnsettled { if sawTagA { if sawTagB { if unsettledPairCount == 2 {
+        if (plainNoUnsettled) { if (sawTagA) { if (sawTagB) { if (unsettledPairCount == 2) {
             result = 1;
         } } } }
         return result;
@@ -114,14 +114,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn recoveryBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
-        if conn.conn <= 0 {
+        if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
@@ -129,7 +129,7 @@ class Main
 
         // --- Plain attach() without recovery ---
         let link1 = Amqp10Link::attach(session, "plain-link", true, "queue-a");
-        if link1.recoveredUnsettledTags.len() == 0 {
+        if (link1.recoveredUnsettledTags.len() == 0) {
             println("ok-plain-attach-no-unsettled");
         }
         link1.detach();
@@ -141,20 +141,20 @@ class Main
         var tagBReoffered: Bool = false;
         for i in 0..link2.recoveredUnsettledTags.len() {
             let tag = link2.recoveredUnsettledTags[i];
-            if tag.len() == 1 {
-                if tag[0] == 65 { tagAConfirmed = true; }
-                if tag[0] == 66 { tagBReoffered = true; }
+            if (tag.len() == 1) {
+                if (tag[0] == 65) { tagAConfirmed = true; }
+                if (tag[0] == 66) { tagBReoffered = true; }
             }
         }
-        if tagAConfirmed {
+        if (tagAConfirmed) {
             println("ok-recovery-tag-confirmed");
         }
-        if !tagBReoffered {
+        if (!tagBReoffered) {
             println("ok-recovery-tag-not-reoffered");
         }
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-unsettled-map");
         }
 

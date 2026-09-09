@@ -143,7 +143,7 @@ fn test_if_else() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
     let x = 10;
-    if x > 5 {
+    if (x > 5) {
         println("big");
     } else {
         println("small");
@@ -222,7 +222,7 @@ fn test_recursive_function() {
 namespace math {
     class Seq {
         fnc fib(n: Int64) -> Int64 {
-            if n <= 1 {
+            if (n <= 1) {
                 return n;
             }
             return Seq.fib(n - 1) + Seq.fib(n - 2);
@@ -381,10 +381,10 @@ fn test_map_contains() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
     let m = @{ "key" => 42 };
-    if m.contains("key") {
+    if (m.contains("key")) {
         println("found");
     }
-    if m.contains("missing") {
+    if (m.contains("missing")) {
         println("wrong");
     } else {
         println("not found");

@@ -28,7 +28,7 @@ namespace tinox.core.hpack
                 this.currentSize = this.currentSize - (last.name.len() + last.value.len() + 32);
                 this.entries.removeAt(this.entries.len() - 1);
             }
-            if entrySize <= this.maxSize
+            if (entrySize <= this.maxSize)
             {
                 this.entries.insert(0, header);
                 this.currentSize = this.currentSize + entrySize;

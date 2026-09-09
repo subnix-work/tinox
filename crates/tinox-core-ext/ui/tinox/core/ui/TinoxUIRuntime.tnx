@@ -83,7 +83,7 @@ namespace tinox.core.ui
         // "fix narrowly, not broadly"), not an oversight.
         fnc diff(old: Component, new_: Component, counter: List<Int64>, ops: List<TinoxUIPatchOp>) -> Nothing
         {
-            if old.type != new_.type || old.visible != new_.visible
+            if (old.type != new_.type || old.visible != new_.visible)
             {
                 TinoxUIRuntime::assignIdsOnly(new_, counter);
                 ops.push(TinoxUIPatchOp { op: "replace", id: old.id, text: "", props: Map::new(), node: new_, parentId: "", index: 0 });
@@ -98,7 +98,7 @@ namespace tinox.core.ui
             // their own -- see Component.tnx's doc comment).
             new_.id = old.id;
 
-            if old.text != new_.text || !TinoxUIRuntime::propsEqual(old.props, new_.props)
+            if (old.text != new_.text || !TinoxUIRuntime::propsEqual(old.props, new_.props))
             {
                 ops.push(TinoxUIPatchOp { op: "update", id: new_.id, text: new_.text, props: new_.props, node: Component::none(), parentId: "", index: 0 });
             }
@@ -154,7 +154,7 @@ namespace tinox.core.ui
 
         fnc propsEqual(a: Map<String, String>, b: Map<String, String>) -> Bool
         {
-            if a.len() != b.len()
+            if (a.len() != b.len())
             {
                 return false;
             }
@@ -162,11 +162,11 @@ namespace tinox.core.ui
             var i: Int64 = 0;
             while i < keys.len()
             {
-                if !b.contains(keys[i])
+                if (!b.contains(keys[i]))
                 {
                     return false;
                 }
-                if a.get(keys[i]) != b.get(keys[i])
+                if (a.get(keys[i]) != b.get(keys[i]))
                 {
                     return false;
                 }
@@ -192,7 +192,7 @@ namespace tinox.core.ui
             let event: JsonValue = Json::parse(msg);
             let id: String = event.getField("id").getString();
             let value: String = event.getField("value").getString();
-            if handlers.contains(id)
+            if (handlers.contains(id))
             {
                 let handler: fnc(String) -> Nothing = handlers.get(id);
                 handler(value);

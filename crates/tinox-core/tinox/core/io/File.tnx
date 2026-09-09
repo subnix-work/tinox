@@ -42,7 +42,7 @@ namespace tinox.core.io
          */
         fn close() -> Nothing
         {
-            if this.handle != 0
+            if (this.handle != 0)
             {
                 fileClose(this.handle);
                 this.handle = 0;

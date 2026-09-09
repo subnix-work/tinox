@@ -42,7 +42,7 @@ namespace tinox.core.math
          */
         fn abs(x: Int64) -> Int64
         {
-            if x < 0
+            if (x < 0)
             {
                 return -x;
             }
@@ -57,7 +57,7 @@ namespace tinox.core.math
          */
         fn min(a: Int64, b: Int64) -> Int64
         {
-            if a < b
+            if (a < b)
             {
                 return a;
             }
@@ -72,7 +72,7 @@ namespace tinox.core.math
          */
         fn max(a: Int64, b: Int64) -> Int64
         {
-            if a > b
+            if (a > b)
             {
                 return a;
             }
@@ -116,7 +116,7 @@ namespace tinox.core.math
          */
         fn factorial(n: Int64) -> Int64
         {
-            if n <= 1
+            if (n <= 1)
             {
                 return 1;
             }

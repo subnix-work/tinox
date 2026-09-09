@@ -33,7 +33,7 @@ class Main
 
     fnc factorial(n: Int32) -> Int32
     {
-        if n <= 1
+        if (n <= 1)
         {
             return 1;
         }
@@ -70,11 +70,11 @@ class Main
     fnc example_control_flow(x: Int32) -> Int32
     {
         // If-else
-        if x > 0
+        if (x > 0)
         {
             print("positive\n");
         }
-        else if x < 0
+        else if (x < 0)
         {
             print("negative\n");
         }
@@ -209,7 +209,7 @@ class Main
     // ============================================================
     fnc divide(a: Int32, b: Int32) -> Int32
     {
-        if b == 0
+        if (b == 0)
         {
             throw "Division by zero";
         }
@@ -244,7 +244,7 @@ class Main
     // ============================================================
     fnc fibonacci(n: Int32) -> Int32
     {
-        if n <= 1
+        if (n <= 1)
         {
             return n;
         }

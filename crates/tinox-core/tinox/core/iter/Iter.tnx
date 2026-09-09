@@ -76,7 +76,7 @@ namespace tinox.core.iter
             var i: Int64 = 0;
             while i < list.len()
             {
-                if predicate(list[i])
+                if (predicate(list[i]))
                 {
                     result.push(list[i]);
                 }

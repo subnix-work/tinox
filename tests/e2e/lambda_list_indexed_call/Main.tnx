@@ -10,7 +10,7 @@ class Main
         var checks: List<fnc(Int64) -> Bool> = [];
         checks.push(x => x > 10);
         checks.push(x => {
-            if x == 5 {
+            if (x == 5) {
                 return true;
             }
             return false;
@@ -19,8 +19,8 @@ class Main
         while i < checks.len() {
             let a: Bool = checks[i](42);
             let b: Bool = checks[i](5);
-            if a { println("a"); } else { println("-"); }
-            if b { println("b"); } else { println("-"); }
+            if (a) { println("a"); } else { println("-"); }
+            if (b) { println("b"); } else { println("-"); }
             i = i + 1;
         }
         return 0;

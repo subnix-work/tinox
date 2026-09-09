@@ -8,7 +8,7 @@ class Main
         client.bearerAuth("my-token");
 
         let response: RestResponse = client.get("/users/42");
-        if response.isOk()
+        if (response.isOk())
         {
             println("body: " + response.text());
         }

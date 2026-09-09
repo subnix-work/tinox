@@ -24,22 +24,22 @@ namespace tinox.core.mathx
 
         fn isPrime(n: Int64) -> Bool
         {
-            if n < 2
+            if (n < 2)
             {
                 return false;
             }
-            if n == 2
+            if (n == 2)
             {
                 return true;
             }
-            if n % 2 == 0
+            if (n % 2 == 0)
             {
                 return false;
             }
             var i: Int64 = 3;
             while i * i <= n
             {
-                if n % i == 0
+                if (n % i == 0)
                 {
                     return false;
                 }
@@ -51,7 +51,7 @@ namespace tinox.core.mathx
         fn nextPrime(n: Int64) -> Int64
         {
             var candidate: Int64 = n;
-            if candidate < 2
+            if (candidate < 2)
             {
                 candidate = 2;
             }
@@ -64,7 +64,7 @@ namespace tinox.core.mathx
 
         fn fibonacci(n: Int64) -> Int64
         {
-            if n <= 1
+            if (n <= 1)
             {
                 return n;
             }
@@ -83,11 +83,11 @@ namespace tinox.core.mathx
 
         fn combinations(n: Int64, k: Int64) -> Int64
         {
-            if k > n
+            if (k > n)
             {
                 return 0;
             }
-            if k == 0 || k == n
+            if (k == 0 || k == n)
             {
                 return 1;
             }
@@ -96,7 +96,7 @@ namespace tinox.core.mathx
 
         fn permutations(n: Int64, k: Int64) -> Int64
         {
-            if k > n
+            if (k > n)
             {
                 return 0;
             }
@@ -105,7 +105,7 @@ namespace tinox.core.mathx
 
         fn factorial(n: Int64) -> Int64
         {
-            if n <= 1
+            if (n <= 1)
             {
                 return 1;
             }
@@ -126,7 +126,7 @@ namespace tinox.core.mathx
             var e: Int64 = exp;
             while e > 0
             {
-                if e % 2 == 1
+                if (e % 2 == 1)
                 {
                     result = (result * b) % mod;
                 }
@@ -140,7 +140,7 @@ namespace tinox.core.mathx
         {
             var sum: Int64 = 0;
             var value: Int64 = n;
-            if value < 0
+            if (value < 0)
             {
                 value = -value;
             }
@@ -154,13 +154,13 @@ namespace tinox.core.mathx
 
         fn digitCount(n: Int64) -> Int64
         {
-            if n == 0
+            if (n == 0)
             {
                 return 1;
             }
             var count: Int64 = 0;
             var value: Int64 = n;
-            if value < 0
+            if (value < 0)
             {
                 value = -value;
             }

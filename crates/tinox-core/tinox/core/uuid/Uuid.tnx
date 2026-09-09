@@ -10,7 +10,7 @@ namespace tinox.core.uuid
 
         fn nibbleToHex(n: Int64) -> String
         {
-            if n < 10
+            if (n < 10)
             {
                 return fromCharCode(n + 48);
             }
@@ -31,16 +31,16 @@ namespace tinox.core.uuid
             while i < 16
             {
                 var byteVal: Int64 = Random::nextInt(256);
-                if i == 6
+                if (i == 6)
                 {
                     byteVal = (byteVal & 15) | 64; // version 4
                 }
-                if i == 8
+                if (i == 8)
                 {
                     byteVal = (byteVal & 63) | 128; // variant 10xx
                 }
                 result = result + Uuid::byteToHex(byteVal);
-                if i == 3 || i == 5 || i == 7 || i == 9
+                if (i == 3 || i == 5 || i == 7 || i == 9)
                 {
                     result = result + "-";
                 }
@@ -61,7 +61,7 @@ namespace tinox.core.uuid
 
         fn isValid(s: String) -> Bool
         {
-            if s.len() != 36
+            if (s.len() != 36)
             {
                 return false;
             }

@@ -61,12 +61,12 @@ class SignupApp
             Component::label("I agree to the terms")
         ]));
 
-        if this.errorMsg.len() > 0
+        if (this.errorMsg.len() > 0)
         {
             children.push(Component::label(this.errorMsg).withStyle("color: #c0392b;"));
         }
 
-        if this.submitted
+        if (this.submitted)
         {
             children.push(Component::label("Thanks, " + this.name + "!").withStyle("color: #27ae60; font-weight: bold;"));
         }
@@ -80,11 +80,11 @@ class SignupApp
 
     fn trySubmit() -> Nothing
     {
-        if this.name.len() == 0
+        if (this.name.len() == 0)
         {
             this.errorMsg = "Name is required";
         }
-        else if !this.agreed
+        else if (!this.agreed)
         {
             this.errorMsg = "You must agree to the terms";
         }

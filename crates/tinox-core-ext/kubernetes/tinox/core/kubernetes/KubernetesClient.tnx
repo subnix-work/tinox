@@ -89,15 +89,15 @@ namespace tinox.core.kubernetes
 
         fn applyTlsConfig() -> Nothing
         {
-            if this.auth.caCertPath.len() > 0
+            if (this.auth.caCertPath.len() > 0)
             {
                 Http::setTlsCaCertFile(this.auth.caCertPath);
             }
-            if this.auth.clientCertPath.len() > 0 && this.auth.clientKeyPath.len() > 0
+            if (this.auth.clientCertPath.len() > 0 && this.auth.clientKeyPath.len() > 0)
             {
                 Http::setTlsClientCertFile(this.auth.clientCertPath, this.auth.clientKeyPath);
             }
-            if this.auth.insecureSkipTlsVerify
+            if (this.auth.insecureSkipTlsVerify)
             {
                 Http::setTlsInsecureSkipVerify(true);
             }
@@ -131,7 +131,7 @@ namespace tinox.core.kubernetes
         fn requestWithContentType(method: String, path: String, body: String, contentType: String) -> KubeResponse
         {
             this.applyTlsConfig();
-            if this.auth.bearerToken.len() > 0
+            if (this.auth.bearerToken.len() > 0)
             {
                 Http::setHeader("Authorization", "Bearer " + this.auth.bearerToken);
             }
@@ -142,31 +142,31 @@ namespace tinox.core.kubernetes
             var statusCode: Int64 = 0;
             var respBody: String = "";
 
-            if method == "GET"
+            if (method == "GET")
             {
                 let resp: HttpClientResponse = Http::get(url);
                 statusCode = resp.statusCode();
                 respBody = resp.body();
             }
-            else if method == "POST"
+            else if (method == "POST")
             {
                 let resp: HttpClientResponse = Http::post(url, body);
                 statusCode = resp.statusCode();
                 respBody = resp.body();
             }
-            else if method == "PUT"
+            else if (method == "PUT")
             {
                 let resp: HttpClientResponse = Http::put(url, body);
                 statusCode = resp.statusCode();
                 respBody = resp.body();
             }
-            else if method == "PATCH"
+            else if (method == "PATCH")
             {
                 let resp: HttpClientResponse = Http::patch(url, body);
                 statusCode = resp.statusCode();
                 respBody = resp.body();
             }
-            else if method == "DELETE"
+            else if (method == "DELETE")
             {
                 let resp: HttpClientResponse = Http::delete(url);
                 statusCode = resp.statusCode();

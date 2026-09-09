@@ -1,0 +1,50 @@
+// Tinox-UI JsComponent demo: shows Component::jsComponent (the
+// Vaadin-@Tag/@JsModule equivalent added for issue tracked in
+// tinox.core:ui 1.0.7) wrapping a REAL browser custom element
+// (assets/tinox-counter.js's <tinox-counter>) instead of dropping to
+// Component::html() + a hand-stitched <script> bootstrap.
+//
+// Two independent counters prove the mechanism end to end:
+// - `serverClicks` is normal server-driven state (a plain
+//   Component::button), forcing a re-render (and therefore an "update"
+//   patch onto the <tinox-counter> element, since its own `label` prop
+//   changes every time) on every click.
+// - <tinox-counter>'s OWN internal click count lives purely in the
+//   browser, on the custom element instance itself -- it must NOT reset
+//   when `serverClicks` changes and the widget's `label` attribute gets
+//   patched, proving the element is never torn down by an unrelated
+//   re-render (see Assets.tnx's applyUpdate: a JsComponent slot only
+//   ever gets attribute updates, never innerHTML replacement).
+// - Clicking the widget's own button calls its `tinoxSendEvent`, which
+//   reports back through the normal onEvent pipe into
+//   `lastReportedFromWidget` -- proving the event round trip.
+//
+// The widget module is served from a SEPARATE port (see Main.tnx) since
+// @TinoxUIApp's generated HTTP shell server can't take extra routes --
+// referenced here via the ":port/path" cross-port convention (see
+// Component::jsComponent's own doc comment), not a baked-in host.
+import tinox.core.ui;
+import tinox.core.websocket;
+import tinox.core.http_server;
+
+@TinoxUIApp(8288, 8289)
+class CounterDemoApp
+{
+    var serverClicks: Int64;
+    var lastReportedFromWidget: String;
+
+    @View
+    fn render() -> Component
+    {
+        let app: CounterDemoApp = this;
+        var widgetProps: Map<String, String> = Map::new();
+        widgetProps.insert("label", "server clicks: " + this.serverClicks.toString());
+        return Component::vbox([
+            Component::label("Tinox-UI JsComponent Demo"),
+            Component::label("Server clicks: " + this.serverClicks.toString()),
+            Component::button("Increment server counter", fn(v: String) { app.serverClicks = app.serverClicks + 1; }),
+            Component::label("Last value reported by widget: " + this.lastReportedFromWidget),
+            Component::jsComponent("tinox-counter", ":8290/tinox-counter.js", widgetProps, fn(v: String) { app.lastReportedFromWidget = v; })
+        ]);
+    }
+}

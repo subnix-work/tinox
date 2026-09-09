@@ -64,7 +64,7 @@ class Main
 {
 fnc main() -> Int32 {
     let srv = httpServerCreate(5873);
-    if srv < 0 {
+    if (srv < 0) {
         println("bind failed");
         return 1;
     }
@@ -100,7 +100,7 @@ fnc main() -> Int32 {
     let fAttach = Amqp10::readFrame(sconn);
     let pAttach = Amqp10::decodePerformative(fAttach.body);
     var linkHandle: Int64 = 0;
-    if pAttach.fields.len() > 1 {
+    if (pAttach.fields.len() > 1) {
         match pAttach.fields[1] { UIntVal(n) => { linkHandle = n; } _ => {} }
     }
     Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach.fields));
@@ -122,7 +122,7 @@ fnc main() -> Int32 {
 
     let fDisp = Amqp10::readFrame(sconn);
     let pDisp = Amqp10::decodePerformative(fDisp.body);
-    if pDisp.descriptor == 0x15 {
+    if (pDisp.descriptor == 0x15) {
         println("ok-broker-saw-ack");
     }
 

@@ -1,0 +1,21 @@
+import CounterDemoApp;
+import tinox.core.fs;
+import tinox.core.http_server;
+
+class Main
+{
+    // Serves the widget's own JS module on a companion port, since
+    // @TinoxUIApp's generated HTTP shell server (port 8080) can't take
+    // extra custom routes -- see CounterDemoApp's own doc comment.
+    fnc main() -> Int32
+    {
+        let widgetJs: String = Fs::readFile("assets/tinox-counter.js");
+        let server: HttpServer = HttpServer::new(8082);
+        server.get("/tinox-counter.js", ctx => {
+            ctx.response.content(widgetJs, "application/javascript; charset=utf-8")
+                .header("Access-Control-Allow-Origin", "*");
+        });
+        server.listen();
+        return 0;
+    }
+}

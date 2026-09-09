@@ -35,12 +35,12 @@ class Main
         // connection, so connect-before-accept works single-threaded).
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let cfd = socketCreateTcp();
-        if !socketConnect(cfd, "127.0.0.1", port) {
+        if (!socketConnect(cfd, "127.0.0.1", port)) {
             println("connect failed");
             return 1;
         }

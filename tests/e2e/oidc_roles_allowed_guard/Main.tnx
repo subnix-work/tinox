@@ -41,7 +41,7 @@ class Main
         while i < 3 {
             let conn = httpServerAcceptConnHandle(srv);
             let req = httpConnReadRequest(conn);
-            if !req.contains("GET") || !req.contains("/jwks.json") {
+            if (!req.contains("GET") || !req.contains("/jwks.json")) {
                 allOk = 0;
             }
             let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + jwksBody.len().toString() + "\r\nConnection: close\r\n\r\n" + jwksBody;
@@ -55,7 +55,7 @@ class Main
 
     fnc makeCtx(bearer: String) -> HttpContext {
         var headers: Map<String, String> = Map::new();
-        if bearer != "" {
+        if (bearer != "") {
             headers.insert("Authorization", bearer);
         }
         let req: HttpRequest = HttpRequest::new("GET", "/api/hello", "", headers, "");
@@ -66,7 +66,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -82,8 +82,8 @@ class Main
         // 1. No token -> 401, no network call.
         let ctx1: HttpContext = makeCtx("");
         let ok1: Bool = OidcGuard::checkRoles(ctx1, "api-user");
-        if !ok1 {
-            if ctx1.response.statusCode == 401 {
+        if (!ok1) {
+            if (ctx1.response.statusCode == 401) {
                 println("ok-no-token");
             }
         }
@@ -91,15 +91,15 @@ class Main
         // 2. Valid token, matching role -> true, response untouched.
         let ctx2: HttpContext = makeCtx("Bearer " + validToken);
         let ok2: Bool = OidcGuard::checkRoles(ctx2, "api-user");
-        if ok2 {
+        if (ok2) {
             println("ok-role-match");
         }
 
         // 3. Valid token, non-matching required role -> 403, false.
         let ctx3: HttpContext = makeCtx("Bearer " + validToken);
         let ok3: Bool = OidcGuard::checkRoles(ctx3, "admin");
-        if !ok3 {
-            if ctx3.response.statusCode == 403 {
+        if (!ok3) {
+            if (ctx3.response.statusCode == 403) {
                 println("ok-role-mismatch");
             }
         }
@@ -107,7 +107,7 @@ class Main
         // 4. Valid token matches the second entry in a multi-role allowed list.
         let ctx4: HttpContext = makeCtx("Bearer " + validToken);
         let ok4: Bool = OidcGuard::checkRoles(ctx4, "admin|api-user");
-        if ok4 {
+        if (ok4) {
             println("ok-multi-role-match");
         }
 
@@ -116,14 +116,14 @@ class Main
         //    provider expects).
         let ctx5: HttpContext = makeCtx("Bearer " + malformedIdToken);
         let ok5: Bool = OidcGuard::checkRoles(ctx5, "api-user");
-        if !ok5 {
-            if ctx5.response.statusCode == 401 {
+        if (!ok5) {
+            if (ctx5.response.statusCode == 401) {
                 println("ok-malformed-alg-rejected");
             }
         }
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-correct-requests");
         }
 

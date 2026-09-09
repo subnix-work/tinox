@@ -2997,6 +2997,43 @@ impl CodeGen {
     /// same as any other port-already-in-use situation). No-op without a
     /// user `main` shape issue; skipped entirely once a legacy top-level
     /// `fn main()` already claims `has_main`.
+    /// Zero-initializes every String-typed field on a freshly `tinox_alloc`ed
+    /// instance to a real, valid empty-string object instead of leaving it a
+    /// raw null pointer. `tinox_alloc` is a plain `GC_malloc`, which zeroes
+    /// memory -- a valid default for a scalar field (0/false), but NOT for a
+    /// String field: its "zero value" is a null `i8*`, and any later read of
+    /// it (concatenation, `.len()`, ...) dereferences that null pointer and
+    /// segfaults instead of behaving like an empty string. Found live while
+    /// building the JsComponent demo (a `var label: String;` field read on
+    /// the very first @View render, before ever being assigned, crashed
+    /// inside `tinox_string_concat` with SIGSEGV) -- this only matters for
+    /// the four call sites that allocate a fresh per-connection/per-consumer
+    /// instance directly via `tinox_alloc` (@WebsocketEndpoint, @TinoxUIApp,
+    /// @Amqp10Consumer, @Amqp091Consumer); every other path to a new
+    /// instance goes through a `ClassName { field: value, ... }` struct
+    /// literal, which the typechecker already requires to give every field
+    /// an explicit value, so this gap can't occur there.
+    fn emit_string_field_defaults(&mut self, class_name: &str, inst_reg: &str) {
+        let fields = match self.struct_layouts.get(class_name) {
+            Some(f) => f.clone(),
+            None => return,
+        };
+        let field_types = self.struct_field_llvm_types.get(class_name).cloned().unwrap_or_default();
+        let string_fields: Vec<usize> = fields.iter().enumerate()
+            .filter(|(_, name)| field_types.get(name.as_str()).map(|t| t == "i8*").unwrap_or(false))
+            .map(|(i, _)| i)
+            .collect();
+        if string_fields.is_empty() {
+            return;
+        }
+        let empty_str_ptr = self.emit_lambda_string_literal("");
+        for idx in string_fields {
+            let field_ptr = self.temp();
+            writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i8* {empty_str_ptr}, i8** {field_ptr}").unwrap();
+        }
+    }
+
     fn emit_ws_code(&mut self) {
         if self.ws_endpoints.is_empty() || self.has_main {
             return;
@@ -3080,6 +3117,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_string_field_defaults(&ep.class_name, "%inst");
             if let Some(ref on_open) = ep.on_open {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_open).unwrap();
             }
@@ -3398,6 +3436,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_string_field_defaults(&app.class_name, "%inst");
             // The client's very first WS frame is always its
             // `window.location.pathname` at connect time (Assets.tnx's
             // `connect()`: `ws.send(...)` on `ws.onopen`, before anything
@@ -3627,6 +3666,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_string_field_defaults(&c.class_name, "%inst");
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
@@ -3741,6 +3781,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_string_field_defaults(&c.class_name, "%inst");
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
@@ -16051,7 +16092,7 @@ mod tests {
 
     #[test]
     fn test_if_expr() {
-        let src = "fn main() -> Int64 {\n  let x = if true { 42; } else { 0; };\n  return x;\n}";
+        let src = "fn main() -> Int64 {\n  let x = if (true) { 42; } else { 0; };\n  return x;\n}";
         let ir = compile_to_ir(src);
         assert!(ir.contains("if_then"), "should have if_then block");
         assert!(ir.contains("if_merge"), "should have if_merge block");
@@ -16411,14 +16452,14 @@ mod tests {
     #[test]
     fn test_if_without_else_stmt_ir() {
         // Statement-level if uses block labels: then/else/ifcont
-        let ir = compile_to_ir("fn main() -> Int64 { if true { } return 0; }");
+        let ir = compile_to_ir("fn main() -> Int64 { if (true) { } return 0; }");
         assert!(ir.contains("then"), "should have then block");
         assert!(ir.contains("ifcont"), "should have ifcont merge block");
     }
 
     #[test]
     fn test_if_else_stmt_ir() {
-        let ir = compile_to_ir("fn main() -> Int64 { if true { } else { } return 0; }");
+        let ir = compile_to_ir("fn main() -> Int64 { if (true) { } else { } return 0; }");
         assert!(ir.contains("then"), "should have then block");
         assert!(ir.contains("else"), "should have else block");
         assert!(ir.contains("ifcont"), "should have ifcont merge block");
@@ -16649,7 +16690,7 @@ mod tests {
     fn test_recursive_function_ir() {
         let ir = compile_to_ir(concat!(
             "fn fib(n: Int64) -> Int64 {\n",
-            "    if n <= 1 { return n; }\n",
+            "    if (n <= 1) { return n; }\n",
             "    return fib(n - 1) + fib(n - 2);\n",
             "}\n",
             "fn main() -> Int64 { return fib(5); }",
@@ -16940,7 +16981,7 @@ mod tests {
         let ir = compile_to_ir(concat!(
             "fn main() -> Int64 {\n",
             "    let p = null;\n",
-            "    if p == null { return 1; }\n",
+            "    if (p == null) { return 1; }\n",
             "    return 0;\n",
             "}",
         ));
@@ -17010,7 +17051,7 @@ mod tests {
     fn test_if_expr_value_used_ir() {
         let ir = compile_to_ir(concat!(
             "fn abs(x: Int64) -> Int64 {\n",
-            "    return if x < 0 { -x; } else { x; };\n",
+            "    return if (x < 0) { -x; } else { x; };\n",
             "}",
             "fn main() -> Int64 { return abs(-3); }",
         ));
@@ -17356,7 +17397,7 @@ mod tests {
     fn test_recursive_fibonacci_ir() {
         let ir = compile_to_ir(concat!(
             "fn fib(n: Int64) -> Int64 {\n",
-            "    if n <= 1 { return n; }\n",
+            "    if (n <= 1) { return n; }\n",
             "    return fib(n - 1) + fib(n - 2);\n",
             "}\n",
             "fn main() -> Int64 { return fib(10); }"
@@ -17370,7 +17411,7 @@ mod tests {
     fn test_recursive_countdown_ir() {
         let ir = compile_to_ir(concat!(
             "fn countdown(n: Int64) -> Nothing {\n",
-            "    if n <= 0 { return; }\n",
+            "    if (n <= 0) { return; }\n",
             "    countdown(n - 1);\n",
             "}\n",
             "fn main() -> Int64 { countdown(5); return 0; }"
@@ -17484,9 +17525,9 @@ mod tests {
     fn test_nested_if_else_ir() {
         let ir = compile_to_ir(concat!(
             "fn classify(n: Int64) -> String {\n",
-            "    if n < 0 {\n",
+            "    if (n < 0) {\n",
             "        return \"negative\";\n",
-            "    } else if n == 0 {\n",
+            "    } else if (n == 0) {\n",
             "        return \"zero\";\n",
             "    } else {\n",
             "        return \"positive\";\n",
@@ -17663,7 +17704,7 @@ mod tests {
             "fn main() -> Int64 {\n",
             "    var i = 0;\n",
             "    loop {\n",
-            "        if i >= 5 { break; }\n",
+            "        if (i >= 5) { break; }\n",
             "        i += 1;\n",
             "    }\n",
             "    return i;\n",
@@ -17681,7 +17722,7 @@ mod tests {
             "    var i = 0;\n",
             "    while i < 10 {\n",
             "        i += 1;\n",
-            "        if i == 5 { continue; }\n",
+            "        if (i == 5) { continue; }\n",
             "        sum += i;\n",
             "    }\n",
             "    return sum;\n",

@@ -16,7 +16,7 @@ class Main
 {
     fnc main() -> Int32 {
         let srv = WsServer::listen(47632);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -27,7 +27,7 @@ class Main
         httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
         let conn = WsServer::accept(srv);
         let resp = httpConnReadRequest(cconn);
-        if resp.contains("101") {
+        if (resp.contains("101")) {
             println("ok-accept");
         }
 
@@ -51,12 +51,12 @@ class Main
         httpConnWriteBytes(cconn, [128, 129, 0, 0, 0, 0, 8]);
         let f2 = Ws::readMessage(conn);
         let pong = httpConnReadN(cconn, 2);
-        if f2.opcode == 2 {
-            if f2.payload.len() == 2 {
-                if f2.payload[0] == 9 {
-                    if f2.payload[1] == 8 {
-                        if pong[0] == 138 {
-                            if pong[1] == 0 {
+        if (f2.opcode == 2) {
+            if (f2.payload.len() == 2) {
+                if (f2.payload[0] == 9) {
+                    if (f2.payload[1] == 8) {
+                        if (pong[0] == 138) {
+                            if (pong[1] == 0) {
                                 println("ok-ping-mid-fragment");
                             }
                         }
@@ -70,10 +70,10 @@ class Main
         httpConnWriteBytes(cconn, [128, 128, 0, 0, 0, 0]);
         let f3 = Ws::readMessage(conn);
         let closeFrame1 = httpConnReadN(cconn, 4);
-        if f3.opcode == -2 {
-            if closeFrame1[0] == 136 {
-                if closeFrame1[2] == 3 {
-                    if closeFrame1[3] == 234 {
+        if (f3.opcode == -2) {
+            if (closeFrame1[0] == 136) {
+                if (closeFrame1[2] == 3) {
+                    if (closeFrame1[3] == 234) {
                         println("ok-bare-continuation");
                     }
                 }
@@ -96,10 +96,10 @@ class Main
         httpConnWriteBytes(cconn2, [1, 129, 0, 0, 0, 0, 66]);
         let f4 = Ws::readMessage(conn2);
         let closeFrame2 = httpConnReadN(cconn2, 4);
-        if f4.opcode == -2 {
-            if closeFrame2[0] == 136 {
-                if closeFrame2[2] == 3 {
-                    if closeFrame2[3] == 234 {
+        if (f4.opcode == -2) {
+            if (closeFrame2[0] == 136) {
+                if (closeFrame2[2] == 3) {
+                    if (closeFrame2[3] == 234) {
                         println("ok-new-message-mid-fragment");
                     }
                 }

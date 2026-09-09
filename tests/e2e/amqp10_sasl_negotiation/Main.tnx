@@ -31,9 +31,9 @@ class Main
         let f1 = Amqp10::readFrame(sconn);
         let p1 = Amqp10::decodePerformative(f1.body);
         var sawPlain: Int64 = 0;
-        if p1.descriptor == 0x41 {
+        if (p1.descriptor == 0x41) {
             match p1.fields[0] {
-                SymbolVal(s) => { if s == "PLAIN" { sawPlain = 1; } }
+                SymbolVal(s) => { if (s == "PLAIN") { sawPlain = 1; } }
                 _ => {}
             }
         }
@@ -51,7 +51,7 @@ class Main
         // --- Success path ---
         let srv1 = httpServerCreate(0);
         let port1 = httpServerBoundPort(srv1);
-        if srv1 < 0 {
+        if (srv1 < 0) {
             println("bind failed");
             return 1;
         }
@@ -63,12 +63,12 @@ class Main
         let result1 = Amqp10::negotiateSasl(conn1, "guest", "guest");
         let sawPlain1 = await handle1;
 
-        if echoOk1 {
-            if result1.ok {
+        if (echoOk1) {
+            if (result1.ok) {
                 println("ok-sasl-success");
             }
         }
-        if sawPlain1 == 1 {
+        if (sawPlain1 == 1) {
             println("ok-broker-saw-plain");
         }
         httpConnClose(conn1);
@@ -77,7 +77,7 @@ class Main
         // --- Rejected auth (sasl-outcome code = 1) ---
         let srv2 = httpServerCreate(0);
         let port2 = httpServerBoundPort(srv2);
-        if srv2 < 0 {
+        if (srv2 < 0) {
             println("bind failed");
             return 1;
         }
@@ -89,8 +89,8 @@ class Main
         let result2 = Amqp10::negotiateSasl(conn2, "guest", "wrong-password");
         await handle2;
 
-        if !result2.ok {
-            if result2.errorMessage.contains("sasl-outcome-code=1") {
+        if (!result2.ok) {
+            if (result2.errorMessage.contains("sasl-outcome-code=1")) {
                 println("ok-sasl-rejected");
             }
         }
