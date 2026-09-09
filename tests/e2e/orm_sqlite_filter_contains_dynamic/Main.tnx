@@ -1,0 +1,36 @@
+// db: CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, age INTEGER NOT NULL);
+// db: INSERT INTO users (name, age) VALUES ('Alice', 30), ('Carol', 35), ('Charlie', 22);
+// expect: 2
+// expect: 1
+
+// Regression test for issue #238: .startsWith()/.endsWith()/.contains()
+// used to only translate to a SQL LIKE clause when the argument was a
+// string literal written directly in the lambda -- a local variable (the
+// normal shape for e.g. a user-typed search box) silently fell through
+// and the WHOLE filter predicate was dropped, returning every row with
+// no error. orm_sqlite_filter_startswith (this fixture's sibling) covers
+// the literal-argument path; this one exercises the local-variable path
+// that was actually broken.
+
+import tinox.core.db;
+import orm_sqlite_filter_contains_dynamic;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let prefix: String = "C";
+        let cs: List<orm_sqlite_filter_contains_dynamic> = DB.of(orm_sqlite_filter_contains_dynamic)
+            .filter(u => u.name.startsWith(prefix))
+            .list();
+        println(cs.len());
+
+        let needle: String = "rol";
+        let containing: List<orm_sqlite_filter_contains_dynamic> = DB.of(orm_sqlite_filter_contains_dynamic)
+            .filter(u => u.name.contains(needle))
+            .list();
+        println(containing.len());
+
+        return 0;
+    }
+}

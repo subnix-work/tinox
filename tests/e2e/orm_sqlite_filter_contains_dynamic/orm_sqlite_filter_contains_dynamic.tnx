@@ -1,0 +1,11 @@
+@Entity
+@Table("users")
+class orm_sqlite_filter_contains_dynamic
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("age")
+    var age: Int64;
+}
