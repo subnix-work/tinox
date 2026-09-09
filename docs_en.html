@@ -1269,6 +1269,9 @@
         <tr><td><code>@OnClose</code></td><td>Method</td><td>WebSocket: called when the connection ends, signature <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
         <tr><td><code>@Amqp10Consumer(host, port, user, pass, address)</code></td><td>Class</td><td>AMQP-1.0: generates a connect/attach/receive loop, spawned alongside <code>class Main</code> (multiple consumer classes allowed, even against the same broker/port with different queues)</td></tr>
         <tr><td><code>@Amqp091Consumer(host, port, vhost, user, pass, queue)</code></td><td>Class</td><td>AMQP-0-9-1: generates a connect/open/qos/consume/receive loop, spawned alongside <code>class Main</code> (multiple consumer classes allowed); prefetch is fixed at 1 in v1</td></tr>
+        <tr><td><code>@TinoxUIApp(httpPort, wsPort)</code></td><td>Class</td><td>Tinox-UI: generates the HTTP shell/client-JS server on <code>httpPort</code> and a WebSocket accept loop on <code>wsPort</code> that calls the <code>@View</code> method and re-renders the component tree diff-based (only patches are sent, no full resend); at most one <code>@TinoxUIApp</code> class per program, with exactly one <code>@View</code> method</td></tr>
+        <tr><td><code>@View</code></td><td>Method</td><td>Tinox-UI: marks the method that builds/rebuilds the <code>@TinoxUIApp</code>'s component tree, signature <code>fn() -&gt; Component</code>; also serves as the fallback/404 view when <code>@Route</code> is used and the current route matches no pattern</td></tr>
+        <tr><td><code>@Route("/path/:param")</code></td><td>Method</td><td>Tinox-UI: registers a <code>fn() -&gt; Component</code> method inside a <code>@TinoxUIApp</code> class as that path's builder (Vaadin-style route dispatch). Requires a <code>var currentRoute: String</code> field; matched <code>:name</code> path segments are auto-assigned into a same-named field on the class, if one exists</td></tr>
       </tbody>
     </table>
   </section>
