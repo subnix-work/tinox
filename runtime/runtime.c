@@ -5946,7 +5946,21 @@ void tinox_HttpServer_listen(int64_t* server) {
 
     // Main thread creates its own SO_REUSEPORT socket
     int64_t server_fd = httpServerCreateOn(port, srv->bind_addr);
-    if (server_fd < 0) { fprintf(stderr, "HttpServer: failed to bind\n"); return; }
+    if (server_fd < 0) {
+        // A failed bind used to just log and return here, leaving the
+        // process running with its worker threads spawned above (which
+        // fail the same bind and quietly return too) but no listener ever
+        // actually up -- silent garbage: the program looks alive while
+        // serving nothing, and any already-listening process on the same
+        // port silently absorbs every request instead (see issue #226,
+        // where this masked as a false HTTP-server/GC regression report).
+        // Hard-fail instead, matching this runtime's convention for a
+        // fatal setup error (see e.g. processSpawnInteractive above).
+        int saved_errno = errno;
+        fprintf(stderr, "runtime error: HttpServer::listen(): failed to bind port %lld (%s)\n",
+                (long long)port, strerror(saved_errno));
+        exit(1);
+    }
     tinox_handle_connections(srv, server_fd);
     httpServerClose(server_fd);
 }
