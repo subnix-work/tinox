@@ -7,7 +7,7 @@ namespace tinox.core.cron
         fn parse(expr: String) -> CronExpr
         {
             let parts: List<String> = expr.split(" ");
-            if parts.len() != 5
+            if (parts.len() != 5)
             {
                 throw "Invalid cron expression";
             }
@@ -34,12 +34,12 @@ namespace tinox.core.cron
 
         fn nextMinute(current: Int64, field: String) -> Int64
         {
-            if field == "*"
+            if (field == "*")
             {
                 return current;
             }
             let target: Int64 = (Int64)field;
-            if target > current
+            if (target > current)
             {
                 return target;
             }

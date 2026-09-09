@@ -87,21 +87,21 @@ class Main
         let pDisp1 = Amqp10::decodePerformative(fDisp1.body);
         var rejectOk: Bool = false;
         var rejectErrorOk: Bool = false;
-        if pDisp1.descriptor == 0x15 {
-            if pDisp1.fields.len() > 4 {
+        if (pDisp1.descriptor == 0x15) {
+            if (pDisp1.fields.len() > 4) {
                 match pDisp1.fields[4] {
                     DescribedVal(d) => {
-                        if d.descriptor == 0x25 {
+                        if (d.descriptor == 0x25) {
                             rejectOk = true;
                             match d.value {
                                 ListVal(ef) => {
-                                    if ef.len() > 0 {
+                                    if (ef.len() > 0) {
                                         match ef[0] {
                                             DescribedVal(errD) => {
                                                 match errD.value {
                                                     ListVal(errFields) => {
-                                                        if errFields.len() > 1 {
-                                                            match errFields[0] { SymbolVal(s) => { if s == "amqp:decode-error" { rejectErrorOk = true; } } _ => {} }
+                                                        if (errFields.len() > 1) {
+                                                            match errFields[0] { SymbolVal(s) => { if (s == "amqp:decode-error") { rejectErrorOk = true; } } _ => {} }
                                                         }
                                                     }
                                                     _ => {}
@@ -125,13 +125,13 @@ class Main
         let pDisp2 = Amqp10::decodePerformative(fDisp2.body);
         var releaseOk: Bool = false;
         var releaseEmptyOk: Bool = false;
-        if pDisp2.descriptor == 0x15 {
-            if pDisp2.fields.len() > 4 {
+        if (pDisp2.descriptor == 0x15) {
+            if (pDisp2.fields.len() > 4) {
                 match pDisp2.fields[4] {
                     DescribedVal(d) => {
-                        if d.descriptor == 0x26 {
+                        if (d.descriptor == 0x26) {
                             releaseOk = true;
-                            match d.value { ListVal(rf) => { if rf.len() == 0 { releaseEmptyOk = true; } } _ => {} }
+                            match d.value { ListVal(rf) => { if (rf.len() == 0) { releaseEmptyOk = true; } } _ => {} }
                         }
                     }
                     _ => {}
@@ -144,20 +144,20 @@ class Main
         let pDisp3 = Amqp10::decodePerformative(fDisp3.body);
         var modifyOk: Bool = false;
         var modifyFieldsOk: Bool = false;
-        if pDisp3.descriptor == 0x15 {
-            if pDisp3.fields.len() > 4 {
+        if (pDisp3.descriptor == 0x15) {
+            if (pDisp3.fields.len() > 4) {
                 match pDisp3.fields[4] {
                     DescribedVal(d) => {
-                        if d.descriptor == 0x27 {
+                        if (d.descriptor == 0x27) {
                             modifyOk = true;
                             match d.value {
                                 ListVal(mf) => {
-                                    if mf.len() > 1 {
+                                    if (mf.len() > 1) {
                                         var failedOk: Bool = false;
                                         var undelOk: Bool = false;
-                                        match mf[0] { BoolVal(b) => { if b { failedOk = true; } } _ => {} }
-                                        match mf[1] { BoolVal(b) => { if !b { undelOk = true; } } _ => {} }
-                                        if failedOk { if undelOk { modifyFieldsOk = true; } }
+                                        match mf[0] { BoolVal(b) => { if (b) { failedOk = true; } } _ => {} }
+                                        match mf[1] { BoolVal(b) => { if (!b) { undelOk = true; } } _ => {} }
+                                        if (failedOk) { if (undelOk) { modifyFieldsOk = true; } }
                                     }
                                 }
                                 _ => {}
@@ -179,7 +179,7 @@ class Main
         println("broker-saw-modify-fields:" + modifyFieldsOk.toString());
 
         var result: Int64 = 0;
-        if rejectOk { if rejectErrorOk { if releaseOk { if releaseEmptyOk { if modifyOk { if modifyFieldsOk {
+        if (rejectOk) { if (rejectErrorOk) { if (releaseOk) { if (releaseEmptyOk) { if (modifyOk) { if (modifyFieldsOk) {
             result = 1;
         } } } } } }
         return result;
@@ -189,14 +189,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
-        if conn.conn <= 0 {
+        if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
@@ -216,7 +216,7 @@ class Main
         link.modify(m3.deliveryId, true, false);
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

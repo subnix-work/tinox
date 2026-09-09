@@ -75,7 +75,7 @@ namespace tinox.core.http
             // header block early and inject a body -- into the outbound
             // HTTP request. This is the single choke point all higher-level
             // header-setting APIs go through, so validating here covers them.
-            if name.contains("\r") || name.contains("\n") || value.contains("\r") || value.contains("\n")
+            if (name.contains("\r") || name.contains("\n") || value.contains("\r") || value.contains("\n"))
             {
                 throw "invalid HTTP header: name/value must not contain CR or LF";
             }

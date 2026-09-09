@@ -27,7 +27,7 @@ class Main
 {
     fnc main() -> Int32 {
         let srv = WsServer::listen(47614);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -38,13 +38,13 @@ class Main
         let cconn = httpConnFromFd(cfd);
         httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
         let conn = WsServer::accept(srv);
-        if conn <= 0 {
+        if (conn <= 0) {
             println("handshake failed");
             return 1;
         }
         let resp = httpConnReadRequest(cconn);
-        if resp.contains("101") {
-            if resp.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") {
+        if (resp.contains("101")) {
+            if (resp.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")) {
                 println("ok-accept");
             }
         }
@@ -58,10 +58,10 @@ class Main
         // Echo back: [0x81, 3, 'H','i','!']
         Ws::sendText(conn, Ws::text(f1));
         let echo = httpConnReadN(cconn, 5);
-        if echo.len() == 5 {
-            if echo[0] == 129 {
-                if echo[1] == 3 {
-                    if echo[2] == 72 {
+        if (echo.len() == 5) {
+            if (echo[0] == 129) {
+                if (echo[1] == 3) {
+                    if (echo[2] == 72) {
                         println("ok-echo");
                     }
                 }
@@ -73,11 +73,11 @@ class Main
         let f2 = Ws::readMessage(conn);
         println(Ws::text(f2));
         let pong = httpConnReadN(cconn, 4);
-        if pong.len() == 4 {
-            if pong[0] == 138 {
-                if pong[1] == 2 {
-                    if pong[2] == 97 {
-                        if pong[3] == 98 {
+        if (pong.len() == 4) {
+            if (pong[0] == 138) {
+                if (pong[1] == 2) {
+                    if (pong[2] == 97) {
+                        if (pong[3] == 98) {
                             println("ok-pong");
                         }
                     }
@@ -102,12 +102,12 @@ class Main
         Ws::sendBinary(conn, bigOut);
         let hdr = httpConnReadN(cconn, 4);
         let body = httpConnReadN(cconn, 200);
-        if hdr[0] == 130 {
-            if hdr[1] == 126 {
-                if hdr[2] == 0 {
-                    if hdr[3] == 200 {
-                        if body.len() == 200 {
-                            if body[199] == 66 {
+        if (hdr[0] == 130) {
+            if (hdr[1] == 126) {
+                if (hdr[2] == 0) {
+                    if (hdr[3] == 200) {
+                        if (body.len() == 200) {
+                            if (body[199] == 66) {
                                 println("ok-big");
                             }
                         }
@@ -119,14 +119,14 @@ class Main
         // --- 5.2 boundary case: payload length 0 (empty text frame), mask [9,9,9,9] ---
         httpConnWriteBytes(cconn, [129, 128, 9, 9, 9, 9]);
         let fEmpty = Ws::readMessage(conn);
-        if fEmpty.opcode == 1 {
-            if fEmpty.payload.len() == 0 {
-                if Ws::text(fEmpty) == "" {
+        if (fEmpty.opcode == 1) {
+            if (fEmpty.payload.len() == 0) {
+                if (Ws::text(fEmpty) == "") {
                     Ws::sendText(conn, "");
                     let emptyEcho = httpConnReadN(cconn, 2);
-                    if emptyEcho.len() == 2 {
-                        if emptyEcho[0] == 129 {
-                            if emptyEcho[1] == 0 {
+                    if (emptyEcho.len() == 2) {
+                        if (emptyEcho[0] == 129) {
+                            if (emptyEcho[1] == 0) {
                                 println("ok-empty");
                             }
                         }
@@ -143,10 +143,10 @@ class Main
         Ws::sendBinary(conn, out125);
         let hdr125 = httpConnReadN(cconn, 2);
         let body125 = httpConnReadN(cconn, 125);
-        if hdr125[0] == 130 {
-            if hdr125[1] == 125 {
-                if body125.len() == 125 {
-                    if body125[124] == 67 {
+        if (hdr125[0] == 130) {
+            if (hdr125[1] == 125) {
+                if (body125.len() == 125) {
+                    if (body125[124] == 67) {
                         println("ok-125");
                     }
                 }
@@ -161,12 +161,12 @@ class Main
         Ws::sendBinary(conn, out126);
         let hdr126 = httpConnReadN(cconn, 4);
         let body126 = httpConnReadN(cconn, 126);
-        if hdr126[0] == 130 {
-            if hdr126[1] == 126 {
-                if hdr126[2] == 0 {
-                    if hdr126[3] == 126 {
-                        if body126.len() == 126 {
-                            if body126[125] == 68 {
+        if (hdr126[0] == 130) {
+            if (hdr126[1] == 126) {
+                if (hdr126[2] == 0) {
+                    if (hdr126[3] == 126) {
+                        if (body126.len() == 126) {
+                            if (body126[125] == 68) {
                                 println("ok-boundary126");
                             }
                         }
@@ -180,10 +180,10 @@ class Main
         let f4 = Ws::readMessage(conn);
         println(f4.opcode.toString());
         let closeEcho = httpConnReadN(cconn, 4);
-        if closeEcho[0] == 136 {
-            if closeEcho[1] == 2 {
-                if closeEcho[2] == 3 {
-                    if closeEcho[3] == 232 {
+        if (closeEcho[0] == 136) {
+            if (closeEcho[1] == 2) {
+                if (closeEcho[2] == 3) {
+                    if (closeEcho[3] == 232) {
                         println("ok-close");
                     }
                 }
@@ -198,7 +198,7 @@ class Main
         let cconn2 = httpConnFromFd(cfd2);
         httpConnSendRaw(cconn2, "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 8\r\n\r\n");
         let rejected = WsServer::accept(srv);
-        if rejected == -1 {
+        if (rejected == -1) {
             println("ok-reject");
         }
         httpConnClose(cconn2);

@@ -42,14 +42,14 @@ namespace tinox.core.rest.server
             let issuer: String = Env::getVar("OIDC_ISSUER");
             let jwksUri: String = Env::getVar("OIDC_JWKS_URI");
             let audience: String = Env::getVar("OIDC_AUDIENCE");
-            if issuer == "" || jwksUri == "" || audience == ""
+            if (issuer == "" || jwksUri == "" || audience == "")
             {
                 println("@OIDCRolesAllowed: missing required environment variable(s) -- OIDC_ISSUER, OIDC_JWKS_URI and OIDC_AUDIENCE must all be set");
                 Process::exit(1);
             }
 
             let auth: String = ctx.request.getHeader("Authorization");
-            if !auth.startsWith("Bearer ")
+            if (!auth.startsWith("Bearer "))
             {
                 ctx.response.status(401).json("{\"error\":\"missing bearer token\"}");
                 return false;
@@ -67,7 +67,7 @@ namespace tinox.core.rest.server
                 verifyError = e;
             }
 
-            if verifyError != ""
+            if (verifyError != "")
             {
                 ctx.response.status(401).json("{\"error\":\"invalid token: " + verifyError + "\"}");
                 return false;
@@ -75,10 +75,10 @@ namespace tinox.core.rest.server
 
             let allowedRoles: List<String> = rolesCsv.split("|");
             var hasRole: Bool = false;
-            if claims.contains("realm_access")
+            if (claims.contains("realm_access"))
             {
                 let realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable();
-                if realmAccess.contains("roles")
+                if (realmAccess.contains("roles"))
                 {
                     let tokenRoles: List<JsonValue> = realmAccess["roles"].asList();
                     var i: Int64 = 0;
@@ -87,7 +87,7 @@ namespace tinox.core.rest.server
                         var j: Int64 = 0;
                         while j < allowedRoles.len()
                         {
-                            if tokenRoles[i].getString() == allowedRoles[j]
+                            if (tokenRoles[i].getString() == allowedRoles[j])
                             {
                                 hasRole = true;
                             }
@@ -97,7 +97,7 @@ namespace tinox.core.rest.server
                     }
                 }
             }
-            if !hasRole
+            if (!hasRole)
             {
                 ctx.response.status(403).json("{\"error\":\"missing required role (one of: " + rolesCsv + ")\"}");
                 return false;
@@ -115,12 +115,12 @@ namespace tinox.core.rest.server
         fnc verifyToken(token: String, issuer: String, jwksUri: String, audience: String) -> Map<String, JsonValue>
         {
             let header: Map<String, JsonValue> = Jwt::extractHeader(token);
-            if !header.contains("alg") || header["alg"].getString() != "RS256"
+            if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
                 throw "unsupported token alg (expected RS256)";
             }
             var kid: String = "";
-            if header.contains("kid")
+            if (header.contains("kid"))
             {
                 kid = header["kid"].getString();
             }
@@ -128,25 +128,25 @@ namespace tinox.core.rest.server
             let key: Map<String, String> = Jwks::fetchRsaKey(jwksUri, kid);
             let claims: Map<String, JsonValue> = Jwt::decodeRs256(token, key["n"], key["e"]);
 
-            if !claims.contains("iss") || claims["iss"].getString() != issuer
+            if (!claims.contains("iss") || claims["iss"].getString() != issuer)
             {
                 throw "token issuer mismatch";
             }
 
             var audMatches: Bool = false;
-            if claims.contains("aud")
+            if (claims.contains("aud"))
             {
-                if claims["aud"].isString()
+                if (claims["aud"].isString())
                 {
                     audMatches = claims["aud"].getString() == audience;
                 }
-                else if claims["aud"].isArray()
+                else if (claims["aud"].isArray())
                 {
                     let auds: List<JsonValue> = claims["aud"].asList();
                     var i: Int64 = 0;
                     while i < auds.len()
                     {
-                        if auds[i].getString() == audience
+                        if (auds[i].getString() == audience)
                         {
                             audMatches = true;
                         }
@@ -154,7 +154,7 @@ namespace tinox.core.rest.server
                     }
                 }
             }
-            if !audMatches
+            if (!audMatches)
             {
                 throw "token audience mismatch";
             }

@@ -237,6 +237,39 @@ pub struct Http3RestControllerInfo {
     pub key_path: String,
 }
 
+/// @TinoxUIApp(httpPort, wsPort) on a class (issue #215, Phase 4) --
+/// annotation sugar over the hand-wired @WebsocketEndpoint + HttpServer
+/// shell-serving boilerplate every Tinox-UI app (tinox_ui_hello,
+/// tinox_ui_signup) previously had to write by hand: the compiler
+/// generates an HTTP server on httpPort serving the shell page ("/") and
+/// client JS ("/ui.js"), plus a WebSocket accept loop on wsPort driving
+/// the class's own @View method -- diff-based rendering (since #225):
+/// TinoxUIRuntime::assignIdsOnly/diff/collectHandlers/sendPatch run on both
+/// the init path and every message, so only patches go over the wire, not
+/// a full tree resend. The per-connection id-counter state this needs
+/// lives in a local alloca inside the generated worker function (which
+/// already runs once per connection for the whole message loop), not a
+/// class field -- an earlier version of this comment claimed the sugar
+/// had nowhere to put that state, which turned out to be wrong.
+/// `view_methods` collects every method carrying
+/// @View so the caller (main.rs) can validate "exactly one", the same
+/// place Http3RestControllerInfo's "at most one class" cardinality is
+/// enforced today.
+#[derive(Debug, Clone)]
+pub struct TinoxUIAppInfo {
+    pub class_name: String,
+    pub http_port: i64,
+    pub ws_port: i64,
+    pub view_methods: Vec<String>,
+    /// @Route(path)-annotated methods on this class, in declaration order
+    /// (first-match-wins at dispatch time) -- (path pattern, method name).
+    /// Empty when the app doesn't use @Route at all (the common case,
+    /// unchanged from pre-@Route behavior: `view_methods[0]` alone builds
+    /// every render). See annotations.rs's "Route" registry entry for the
+    /// pattern syntax.
+    pub route_entries: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct MetricInfo {
     pub kind: MetricKind,
@@ -278,6 +311,7 @@ pub struct AnnotationProcessingResult {
     pub amqp10_consumers: Vec<Amqp10ConsumerInfo>,
     pub amqp091_consumers: Vec<Amqp091ConsumerInfo>,
     pub http3_rest_controllers: Vec<Http3RestControllerInfo>,
+    pub tinoxui_apps: Vec<TinoxUIAppInfo>,
 }
 
 pub struct AnnotationProcessor {
@@ -520,6 +554,38 @@ impl AnnotationProcessor {
                 min_args: 3,
                 max_args: 3,
                 description: "@Http3RestController(port, certPath, keyPath) — marks a class whose @GET/@POST/@PUT/@PATCH/@DELETE methods (anywhere in the program) should be served over HTTP/3 (QUIC) via tinox.core.http3_server.Http3Server, instead of the TCP auto-server. Requires `import tinox.core.http3_server;` and a runtime built with TINOX_HTTP3=1. Only valid when the file defines no `main`, has exactly one @Http3RestController class, and no @WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer.".to_string(),
+            },
+        );
+
+        // Tinox-UI annotation sugar (issue #215, Phase 4)
+        registry.insert(
+            "TinoxUIApp".to_string(),
+            AnnotationInfo {
+                name: "TinoxUIApp".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 2,
+                max_args: 2,
+                description: "@TinoxUIApp(httpPort, wsPort) — marks a class as a Tinox-UI application; the compiler generates the HTTP shell/client-JS server on httpPort and a WebSocket accept loop on wsPort that calls the class's own @View method to build/rebuild the component tree (diff-based rendering: only patches are sent, not a full resend, after every event). Requires `import tinox.core.ui;`, `import tinox.core.websocket;`, and `import tinox.core.http_server;`. At most one @TinoxUIApp class per program, with exactly one @View method.".to_string(),
+            },
+        );
+        registry.insert(
+            "View".to_string(),
+            AnnotationInfo {
+                name: "View".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 0,
+                description: "Marks the method that builds this @TinoxUIApp's component tree; signature fn() -> Component".to_string(),
+            },
+        );
+        registry.insert(
+            "Route".to_string(),
+            AnnotationInfo {
+                name: "Route".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 1,
+                description: "@Route(\"/path/:param\") -- on a `fn() -> Component` method inside a @TinoxUIApp class, registers it as that path's builder (Vaadin-style route dispatch). The class must declare `var currentRoute: String;`: the compiler seeds it from the browser's initial request path at WS connect time, and the app's own navigation (e.g. Component::link's onNavigate handler) is expected to assign it on every subsequent navigation -- the compiler re-dispatches off its current value on every render. Patterns may use `:name` path-parameter segments (RouteMatcher syntax); a matched `:name` is auto-assigned into a same-named String field on the class, if one exists, before the method runs. When the current route matches no @Route pattern, the class's plain @View method renders instead (fallback/404 case) -- @View stays required even when @Route is used. Also registers the HTTP shell at each literal @Route path so a hard reload/deep link doesn't 404.".to_string(),
             },
         );
 
@@ -928,6 +994,7 @@ impl AnnotationProcessor {
         let mut amqp10_consumer_args: Option<(String, i64, String, String, String)> = None;
         let mut amqp091_consumer_args: Option<(String, i64, String, String, String, String)> = None;
         let mut http3_rest_controller_args: Option<(i64, String, String)> = None;
+        let mut tinoxui_app_args: Option<(i64, i64)> = None;
 
         for ann in &class.annotations {
             match ann.name.as_str() {
@@ -971,6 +1038,13 @@ impl AnnotationProcessor {
                     let key_path = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(2) { Some(s.clone()) } else { None };
                     if let (Some(port), Some(cert_path), Some(key_path)) = (port, cert_path, key_path) {
                         http3_rest_controller_args = Some((port, cert_path, key_path));
+                    }
+                }
+                "TinoxUIApp" => {
+                    let http_port = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.first() { Some(*p) } else { None };
+                    let ws_port = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.get(1) { Some(*p) } else { None };
+                    if let (Some(http_port), Some(ws_port)) = (http_port, ws_port) {
+                        tinoxui_app_args = Some((http_port, ws_port));
                     }
                 }
                 "Auth" => {
@@ -1246,6 +1320,30 @@ impl AnnotationProcessor {
                 port,
                 cert_path,
                 key_path,
+            });
+        }
+
+        if let Some((http_port, ws_port)) = tinoxui_app_args {
+            let mut view_methods: Vec<String> = Vec::new();
+            let mut route_entries: Vec<(String, String)> = Vec::new();
+            for method in &class.methods {
+                for ann in &method.annotations {
+                    if ann.name == "View" {
+                        view_methods.push(method.name.clone());
+                    }
+                    if ann.name == "Route" {
+                        if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(path))) = ann.args.first() {
+                            route_entries.push((path.clone(), method.name.clone()));
+                        }
+                    }
+                }
+            }
+            result.tinoxui_apps.push(TinoxUIAppInfo {
+                class_name: class.name.clone(),
+                http_port,
+                ws_port,
+                view_methods,
+                route_entries,
             });
         }
     }

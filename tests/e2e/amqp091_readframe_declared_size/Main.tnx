@@ -57,7 +57,7 @@ class Main
     fnc main() -> Int32 {
         let srv1 = httpServerCreate(0);
         let port1 = httpServerBoundPort(srv1);
-        if srv1 < 0 {
+        if (srv1 < 0) {
             println("bind failed");
             return 1;
         }
@@ -67,7 +67,7 @@ class Main
         socketConnect(cfd1, "127.0.0.1", port1);
         let cconn1 = httpConnFromFd(cfd1);
         let f1 = Amqp091::readFrame(cconn1);
-        if f1.frameType == -1 {
+        if (f1.frameType == -1) {
             println("ok-short-declared-frame");
         }
         httpConnClose(cconn1);
@@ -76,7 +76,7 @@ class Main
 
         let srv2 = httpServerCreate(0);
         let port2 = httpServerBoundPort(srv2);
-        if srv2 < 0 {
+        if (srv2 < 0) {
             println("bind failed");
             return 1;
         }
@@ -86,7 +86,7 @@ class Main
         socketConnect(cfd2, "127.0.0.1", port2);
         let cconn2 = httpConnFromFd(cfd2);
         let f2 = Amqp091::readFrame(cconn2);
-        if f2.frameType == -2 {
+        if (f2.frameType == -2) {
             println("ok-huge-declared-size-rejected");
         }
         httpConnClose(cconn2);

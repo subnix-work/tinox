@@ -136,13 +136,13 @@ class Main
         httpConnClose(sconn);
 
         var allOk: Int64 = 0;
-        if ok1 {
-            if ok2 {
-                if ok3 {
-                    if ok4 {
-                        if ok5 {
-                            if ok6 {
-                                if ok7 {
+        if (ok1) {
+            if (ok2) {
+                if (ok3) {
+                    if (ok4) {
+                        if (ok5) {
+                            if (ok6) {
+                                if (ok7) {
                                     allOk = 1;
                                 }
                             }
@@ -158,7 +158,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -180,38 +180,38 @@ class Main
 
         let tag = ch.consume(queueName);
         let m = ch.nextMessage();
-        if m.ok {
+        if (m.ok) {
             var received: String = "";
             for i in 0..m.body.len() {
                 received = received + fromCharCode(m.body[i]);
             }
-            if received == "roundtrip" {
+            if (received == "roundtrip") {
                 ch.ack(m.deliveryTag);
             }
         }
 
         let brokerOk = await handle;
 
-        if queueName == "loopback-test-queue" {
+        if (queueName == "loopback-test-queue") {
             println("ok-declare");
         }
-        if bound {
+        if (bound) {
             println("ok-bind");
         }
-        if qosOk {
+        if (qosOk) {
             println("ok-qos");
         }
-        if tag == "fake-consumer-tag" {
+        if (tag == "fake-consumer-tag") {
             println("ok-consume");
         }
-        if m.ok {
-            if m.contentType == "text/plain" {
-                if m.routingKey == queueName {
+        if (m.ok) {
+            if (m.contentType == "text/plain") {
+                if (m.routingKey == queueName) {
                     println("ok-message");
                 }
             }
         }
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

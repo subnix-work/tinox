@@ -143,7 +143,7 @@ fn test_if_else() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
     let x = 10;
-    if x > 5 {
+    if (x > 5) {
         println("big");
     } else {
         println("small");
@@ -222,7 +222,7 @@ fn test_recursive_function() {
 namespace math {
     class Seq {
         fnc fib(n: Int64) -> Int64 {
-            if n <= 1 {
+            if (n <= 1) {
                 return n;
             }
             return Seq.fib(n - 1) + Seq.fib(n - 2);
@@ -381,10 +381,10 @@ fn test_map_contains() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
     let m = @{ "key" => 42 };
-    if m.contains("key") {
+    if (m.contains("key")) {
         println("found");
     }
-    if m.contains("missing") {
+    if (m.contains("missing")) {
         println("wrong");
     } else {
         println("not found");
@@ -663,6 +663,103 @@ fn main() -> Int64 {
     return 0;
 }
 "#), "ok");
+}
+
+// ── Lambda naming across independent generic specializations ──────────────────
+
+#[test]
+fn test_independent_generic_specializations_dont_collide_on_lambda_names() {
+    // Two DIFFERENT generic classes (Box<T>/Bag<T>), each with its own
+    // static factory method containing an inline lambda literal, both
+    // specialized for the same T (Person) in the same program. Lambda
+    // names used to be derived from `temp_count` (codegen.rs), which is
+    // deliberately saved/restored around generic-specialization
+    // generation for an unrelated reason (so the CALLER's own SSA temp
+    // numbering doesn't skip ahead) -- but that same save/restore meant
+    // two independently-generated specializations could start from the
+    // same restored baseline and emit an identically-named `__lambda_N`,
+    // failing with "internal compiler error: generated invalid LLVM IR
+    // ... invalid redefinition of function '__lambda_4'". Found live
+    // while building tinox.core:ui's DataGrid<T>/GridColumn<T> widgets
+    // (this exact shape: two small generic helper classes, each with
+    // their own inline lambda, both specialized for the same T). Fixed
+    // with a separate, never-reset `lambda_counter` field. This test
+    // must actually RUN (not just compile) and print the right values --
+    // a bug in the ret_ty/argument plumbing around the collision could
+    // still "fix the redefinition" while leaving the wrong lambda
+    // bodies wired to the wrong names.
+    assert_eq!(run(r#"
+class Person {
+    var name: String;
+}
+
+class Box<T> {
+    var accessor: fnc(T) -> String;
+    fnc make(accessor: fnc(T) -> String) -> Box<T> {
+        return Box<T> { accessor: accessor };
+    }
+    fnc makeDummy() -> Box<T> {
+        return Box<T> { accessor: fn(item: T) { return "box-dummy"; } };
+    }
+}
+
+class Bag<T> {
+    var accessor: fnc(T) -> String;
+    fnc make(accessor: fnc(T) -> String) -> Bag<T> {
+        return Bag<T> { accessor: accessor };
+    }
+    fnc makeDummy() -> Bag<T> {
+        return Bag<T> { accessor: fn(item: T) { return "bag-dummy"; } };
+    }
+}
+
+fn main() -> Int64 {
+    let p: Person = Person { name: "Ada" };
+    let b1: Box<Person> = Box::make(fn(person: Person) { return "box:" + person.name; });
+    let b2: Bag<Person> = Bag::make(fn(person: Person) { return "bag:" + person.name; });
+    let d1: Box<Person> = Box::makeDummy();
+    let d2: Bag<Person> = Bag::makeDummy();
+
+    let r1: String = b1.accessor(p);
+    let r2: String = b2.accessor(p);
+    let r3: String = d1.accessor(p);
+    let r4: String = d2.accessor(p);
+    println(r1);
+    println(r2);
+    println(r3);
+    println(r4);
+    return 0;
+}
+"#), "box:Ada\nbag:Ada\nbox-dummy\nbag-dummy");
+}
+
+#[test]
+fn test_float64_to_int_method_call() {
+    // issue #223: `x.toInt()` on a Float64 receiver -- typecheck already
+    // registers `Float64_toInt` as valid (Float64 math methods block,
+    // tinox-typecheck/src/lib.rs), but codegen had no matching arm for
+    // it in the numeric method dispatch block (only `toString`/`sqrt`
+    // were handled), so a typecheck-accepted call fell through to the
+    // generic declared-type-mangled-name method call path, which
+    // synthesized a call to an undeclared `@Float_toInt` symbol (not
+    // even the same mangled name typecheck itself uses) and produced
+    // invalid LLVM IR (an ICE) -- for a PLAIN variable receiver, not
+    // just an inline expression. `x as Int64` (cast syntax) was the
+    // only working float->int conversion until this fix. Covers a bare
+    // Float64 variable and an inline Float64 arithmetic expression (the
+    // shape that first surfaced this while building tinox-k8s-ui2's
+    // Quantity.tnx CPU-quantity parser).
+    assert_eq!(run(r#"
+fn main() -> Int64 {
+    let f: Float64 = 2.5;
+    let a: Int64 = f.toInt();
+    println(a.toString());
+
+    let b: Int64 = (f * 1000.0).toInt();
+    println(b.toString());
+    return 0;
+}
+"#), "2\n2500");
 }
 
 #[test]

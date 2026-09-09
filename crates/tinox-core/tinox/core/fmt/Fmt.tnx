@@ -13,54 +13,54 @@ namespace tinox.core.fmt
             var i: Int64 = 0;
             while i < format.len()
             {
-                if format.substring(i, i + 1) == "%"
+                if (format.substring(i, i + 1) == "%")
                 {
-                    if i + 1 >= format.len()
+                    if (i + 1 >= format.len())
                     {
                         result = result + "%";
                         i = i + 1;
                         continue;
                     }
                     let spec: String = format.substring(i + 1, i + 2);
-                    if spec == "%"
+                    if (spec == "%")
                     {
                         result = result + "%";
                     }
-                    else if spec == "s"
+                    else if (spec == "s")
                     {
-                        if argIndex < args.len()
+                        if (argIndex < args.len())
                         {
                             result = result + args[argIndex];
                             argIndex = argIndex + 1;
                         }
                     }
-                    else if spec == "d"
+                    else if (spec == "d")
                     {
-                        if argIndex < args.len()
+                        if (argIndex < args.len())
                         {
                             result = result + args[argIndex];
                             argIndex = argIndex + 1;
                         }
                     }
-                    else if spec == "f"
+                    else if (spec == "f")
                     {
-                        if argIndex < args.len()
+                        if (argIndex < args.len())
                         {
                             result = result + args[argIndex];
                             argIndex = argIndex + 1;
                         }
                     }
-                    else if spec == "x"
+                    else if (spec == "x")
                     {
-                        if argIndex < args.len()
+                        if (argIndex < args.len())
                         {
                             result = result + Format::intToHex((Int64)args[argIndex]);
                             argIndex = argIndex + 1;
                         }
                     }
-                    else if spec == "b"
+                    else if (spec == "b")
                     {
-                        if argIndex < args.len()
+                        if (argIndex < args.len())
                         {
                             result = result + Format::intToBinary((Int64)args[argIndex]);
                             argIndex = argIndex + 1;

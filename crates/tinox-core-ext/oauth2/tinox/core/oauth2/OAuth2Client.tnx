@@ -76,7 +76,7 @@ namespace tinox.core.oauth2
             let codeChallenge: String = Base64::encodeUrlBytes(challengeBytes);
 
             var url: String = this.authorizeUrl;
-            if url.contains("?")
+            if (url.contains("?"))
             {
                 url = url + "&";
             }
@@ -143,50 +143,50 @@ namespace tinox.core.oauth2
             let resp = Http::post(url, body);
             Http::clearHeaders();
 
-            if resp.statusCode() == 0
+            if (resp.statusCode() == 0)
             {
                 return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "network error contacting token endpoint (connection failed or TLS/certificate error)" };
             }
 
             let fields: Map<String, JsonValue> = Json::parse(resp.body()).asTable();
 
-            if fields.contains("error")
+            if (fields.contains("error"))
             {
                 var msg: String = fields["error"].getString();
-                if fields.contains("error_description")
+                if (fields.contains("error_description"))
                 {
                     msg = msg + ": " + fields["error_description"].getString();
                 }
                 return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: msg };
             }
 
-            if resp.statusCode() < 200 || resp.statusCode() >= 300
+            if (resp.statusCode() < 200 || resp.statusCode() >= 300)
             {
                 return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "token endpoint returned HTTP " + resp.statusCode().toString() };
             }
 
-            if !fields.contains("access_token")
+            if (!fields.contains("access_token"))
             {
                 return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "token endpoint response has no access_token field" };
             }
 
             var refreshTok: String = "";
-            if fields.contains("refresh_token")
+            if (fields.contains("refresh_token"))
             {
                 refreshTok = fields["refresh_token"].getString();
             }
             var tokType: String = "Bearer";
-            if fields.contains("token_type")
+            if (fields.contains("token_type"))
             {
                 tokType = fields["token_type"].getString();
             }
             var expIn: Int64 = 0;
-            if fields.contains("expires_in")
+            if (fields.contains("expires_in"))
             {
                 expIn = fields["expires_in"].asInt();
             }
             var idTok: String = "";
-            if fields.contains("id_token")
+            if (fields.contains("id_token"))
             {
                 idTok = fields["id_token"].getString();
             }

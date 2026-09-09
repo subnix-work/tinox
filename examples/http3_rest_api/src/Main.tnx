@@ -33,7 +33,7 @@ class Main
         var i: Int64 = 0;
         while i < tasks.len()
         {
-            if tasks[i].id == id
+            if (tasks[i].id == id)
             {
                 return i;
             }
@@ -48,7 +48,7 @@ class Main
         var i: Int64 = 0;
         while i < tasks.len()
         {
-            if tasks[i].id > maxId
+            if (tasks[i].id > maxId)
             {
                 maxId = tasks[i].id;
             }
@@ -98,7 +98,7 @@ class Main
         server.get("/tasks/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
             let idx: Int64 = findTaskIndex(tasks, id);
-            if idx < 0
+            if (idx < 0)
             {
                 notFound(ctx);
                 return;
@@ -116,7 +116,7 @@ class Main
         server.put("/tasks/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
             let idx: Int64 = findTaskIndex(tasks, id);
-            if idx < 0
+            if (idx < 0)
             {
                 notFound(ctx);
                 return;
@@ -130,7 +130,7 @@ class Main
         server.patch("/tasks/:id/done", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
             let idx: Int64 = findTaskIndex(tasks, id);
-            if idx < 0
+            if (idx < 0)
             {
                 notFound(ctx);
                 return;
@@ -142,7 +142,7 @@ class Main
         server.delete("/tasks/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
             let idx: Int64 = findTaskIndex(tasks, id);
-            if idx < 0
+            if (idx < 0)
             {
                 notFound(ctx);
                 return;

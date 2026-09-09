@@ -1,0 +1,24 @@
+[package]
+name = "tinox_ui_widgets_showcase"
+version = "0.1.0"
+description = "Tinox-UI widget-library showcase: DataGrid<T>, DatePicker, RadioGroup, FileUpload, Tabs, Dialog, Notification, Accordion, all in one app."
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "ui"
+version = "1.0.7"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http_server"
+version = "1.0.3"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "websocket"
+version = "1.0.3"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "json"
+version = "1.0.0"

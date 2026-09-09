@@ -27,7 +27,7 @@ class Main
 {
     async fnc fakeServer(srv: Int64) -> Int64 {
         let conn = httpServerAcceptConnHandle(srv);
-        if conn <= 0 {
+        if (conn <= 0) {
             return 0;
         }
         httpConnSendRaw(conn, "220 fake.smtp.test ESMTP\r\n");
@@ -42,7 +42,7 @@ class Main
         let authLine1 = httpConnReadLine(conn); // "AUTH PLAIN <base64>"
         let payload1 = authLine1.substring(11, authLine1.len());
         let decoded1 = Base64::decodeBytes(payload1);
-        if Main::checkAuth(decoded1, "testuser", "testpass") {
+        if (Main::checkAuth(decoded1, "testuser", "testpass")) {
             httpConnSendRaw(conn, "235 OK\r\n");
         } else {
             httpConnSendRaw(conn, "535 Authentication failed\r\n");
@@ -51,7 +51,7 @@ class Main
         let authLine2 = httpConnReadLine(conn);
         let payload2 = authLine2.substring(11, authLine2.len());
         let decoded2 = Base64::decodeBytes(payload2);
-        if Main::checkAuth(decoded2, "testuser", "testpass") {
+        if (Main::checkAuth(decoded2, "testuser", "testpass")) {
             httpConnSendRaw(conn, "235 OK\r\n");
         } else {
             httpConnSendRaw(conn, "535 Authentication failed\r\n");
@@ -69,11 +69,11 @@ class Main
         var done: Bool = false;
         while !done {
             let line = httpConnReadLine(conn);
-            if line == "." {
+            if (line == ".") {
                 done = true;
             } else {
                 var actual = line;
-                if line.startsWith("..") {
+                if (line.startsWith("..")) {
                     actual = line.substring(1, line.len());
                 }
                 received = received + actual + "\n";
@@ -83,7 +83,7 @@ class Main
         httpConnClose(conn);
 
         let expected = "From: sender@example.org\nTo: recipient@example.org\nSubject: Dot Test\n\nline one\n.dotline\nline three\n";
-        if received == expected {
+        if (received == expected) {
             return 1;
         }
         return 0;
@@ -103,12 +103,12 @@ class Main
             expected.push(pass.charCodeAt(j));
             j = j + 1;
         }
-        if decoded.len() != expected.len() {
+        if (decoded.len() != expected.len()) {
             return false;
         }
         var k: Int64 = 0;
         while k < decoded.len() {
-            if decoded[k] != expected[k] {
+            if (decoded[k] != expected[k]) {
                 return false;
             }
             k = k + 1;
@@ -119,14 +119,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeServer(srv);
 
         let client: SmtpClient = SmtpClient::connect("127.0.0.1", port);
-        if client.conn <= 0 {
+        if (client.conn <= 0) {
             println("connect failed: " + client.errorMessage);
             return 1;
         }

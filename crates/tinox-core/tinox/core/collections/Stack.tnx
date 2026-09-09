@@ -22,7 +22,7 @@ namespace tinox.core.collections
         fn pop() -> T
         {
             let len: Int64 = this.data.len();
-            if len == 0
+            if (len == 0)
             {
                 throw "Stack is empty";
             }
@@ -34,7 +34,7 @@ namespace tinox.core.collections
         fn peek() -> T
         {
             let len: Int64 = this.data.len();
-            if len == 0
+            if (len == 0)
             {
                 throw "Stack is empty";
             }

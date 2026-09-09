@@ -26,7 +26,7 @@ class Main
 {
     fnc main() -> Int32 {
         let srv = WsServer::listen(47640);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -38,8 +38,8 @@ class Main
         httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n");
         let conn = WsServer::accept(srv);
         let resp = httpConnReadRequest(cconn);
-        if resp.contains("101") {
-            if resp.contains("permessage-deflate") {
+        if (resp.contains("101")) {
+            if (resp.contains("permessage-deflate")) {
                 println("ok-negotiated");
             }
         }
@@ -66,8 +66,8 @@ class Main
         httpConnWriteBytes(cconn, frame1);
 
         let f1 = Ws::readMessage(conn);
-        if f1.opcode == 1 {
-            if Ws::text(f1) == msg1 {
+        if (f1.opcode == 1) {
+            if (Ws::text(f1) == msg1) {
                 println("ok-client-to-server-compressed");
             }
         }
@@ -109,8 +109,8 @@ class Main
         httpConnWriteBytes(cconn, contFrame);
 
         let fFrag = Ws::readMessage(conn);
-        if fFrag.opcode == 1 {
-            if Ws::text(fFrag) == msgFrag {
+        if (fFrag.opcode == 1) {
+            if (Ws::text(fFrag) == msgFrag) {
                 println("ok-fragmented-compressed");
             }
         }
@@ -128,14 +128,14 @@ class Main
         let rsv1Bit = hdr2[0] & 0x40;
         var plen2: Int64 = hdr2[1] & 0x7F;
         let payload2 = httpConnReadN(cconn, plen2);
-        if rsv1Bit != 0 {
+        if (rsv1Bit != 0) {
             let decompressed2 = tinoxInflateRaw(payload2);
-            if wsLastInflateOk() {
+            if (wsLastInflateOk()) {
                 var text2: String = "";
                 for i in 0..decompressed2.len() {
                     text2 = text2 + fromCharCode(decompressed2[i]);
                 }
-                if text2 == msg2 {
+                if (text2 == msg2) {
                     println("ok-server-to-client-compressed");
                 }
             }
@@ -151,8 +151,8 @@ class Main
         httpConnSendRaw(cconn2, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
         let conn2 = WsServer::accept(srv);
         let resp2 = httpConnReadRequest(cconn2);
-        if resp2.contains("101") {
-            if !resp2.contains("permessage-deflate") {
+        if (resp2.contains("101")) {
+            if (!resp2.contains("permessage-deflate")) {
                 println("ok-not-negotiated");
             }
         }
@@ -167,8 +167,8 @@ class Main
         for i in 0..payload3.len() {
             text3 = text3 + fromCharCode(payload3[i]);
         }
-        if rsv1Bit3 == 0 {
-            if text3 == msg3 {
+        if (rsv1Bit3 == 0) {
+            if (text3 == msg3) {
                 println("ok-uncompressed-when-not-negotiated");
             }
         }

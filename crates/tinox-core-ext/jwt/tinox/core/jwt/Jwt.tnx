@@ -46,7 +46,7 @@ namespace tinox.core.jwt
         fn decode(token: String, secret: String) -> Map<String, JsonValue>
         {
             let parts: List<String> = token.split(".");
-            if parts.len() != 3
+            if (parts.len() != 3)
             {
                 throw "Invalid JWT format";
             }
@@ -56,14 +56,14 @@ namespace tinox.core.jwt
             // with a different/weaker scheme (or "none") could slip past
             // a signature check whose secret happens to still validate it.
             let header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0]);
-            if !header.contains("alg") || header["alg"].getString() != "HS256"
+            if (!header.contains("alg") || header["alg"].getString() != "HS256")
             {
                 throw "Unexpected alg header (expected HS256)";
             }
             let message: String = parts[0] + "." + parts[1];
             let expectedSigBytes: List<Int64> = hmacSha256Bytes(Jwt::stringToBytes(message), Jwt::stringToBytes(secret));
             let expectedSig: String = Base64::encodeUrlBytes(expectedSigBytes);
-            if expectedSig != parts[2]
+            if (expectedSig != parts[2])
             {
                 throw "Invalid signature";
             }
@@ -78,29 +78,29 @@ namespace tinox.core.jwt
         fn verify(token: String, secret: String) -> Bool
         {
             let parts: List<String> = token.split(".");
-            if parts.len() != 3
+            if (parts.len() != 3)
             {
                 return false;
             }
             let header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0]);
-            if !header.contains("alg") || header["alg"].getString() != "HS256"
+            if (!header.contains("alg") || header["alg"].getString() != "HS256")
             {
                 return false;
             }
             let message: String = parts[0] + "." + parts[1];
             let expectedSigBytes: List<Int64> = hmacSha256Bytes(Jwt::stringToBytes(message), Jwt::stringToBytes(secret));
             let expectedSig: String = Base64::encodeUrlBytes(expectedSigBytes);
-            if expectedSig != parts[2]
+            if (expectedSig != parts[2])
             {
                 return false;
             }
             let payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1]);
             let now: Int64 = Time::now() / 1000;
-            if payload.contains("exp") && now > payload["exp"].asInt()
+            if (payload.contains("exp") && now > payload["exp"].asInt())
             {
                 return false;
             }
-            if payload.contains("nbf") && now < payload["nbf"].asInt()
+            if (payload.contains("nbf") && now < payload["nbf"].asInt())
             {
                 return false;
             }
@@ -118,12 +118,12 @@ namespace tinox.core.jwt
         fn decodeRs256(token: String, n: String, e: String) -> Map<String, JsonValue>
         {
             let parts: List<String> = token.split(".");
-            if parts.len() != 3
+            if (parts.len() != 3)
             {
                 throw "Invalid JWT format";
             }
             let header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0]);
-            if !header.contains("alg") || header["alg"].getString() != "RS256"
+            if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
                 throw "Unexpected alg header (expected RS256)";
             }
@@ -131,7 +131,7 @@ namespace tinox.core.jwt
             let sigBytes: List<Int64> = Base64::decodeUrlBytes(parts[2]);
             let nBytes: List<Int64> = Base64::decodeUrlBytes(n);
             let eBytes: List<Int64> = Base64::decodeUrlBytes(e);
-            if !rsaVerifySha256(Jwt::stringToBytes(message), sigBytes, nBytes, eBytes)
+            if (!rsaVerifySha256(Jwt::stringToBytes(message), sigBytes, nBytes, eBytes))
             {
                 throw "Invalid signature";
             }
@@ -143,12 +143,12 @@ namespace tinox.core.jwt
         fn verifyRs256(token: String, n: String, e: String) -> Bool
         {
             let parts: List<String> = token.split(".");
-            if parts.len() != 3
+            if (parts.len() != 3)
             {
                 return false;
             }
             let header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0]);
-            if !header.contains("alg") || header["alg"].getString() != "RS256"
+            if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
                 return false;
             }
@@ -156,17 +156,17 @@ namespace tinox.core.jwt
             let sigBytes: List<Int64> = Base64::decodeUrlBytes(parts[2]);
             let nBytes: List<Int64> = Base64::decodeUrlBytes(n);
             let eBytes: List<Int64> = Base64::decodeUrlBytes(e);
-            if !rsaVerifySha256(Jwt::stringToBytes(message), sigBytes, nBytes, eBytes)
+            if (!rsaVerifySha256(Jwt::stringToBytes(message), sigBytes, nBytes, eBytes))
             {
                 return false;
             }
             let payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1]);
             let now: Int64 = Time::now() / 1000;
-            if payload.contains("exp") && now > payload["exp"].asInt()
+            if (payload.contains("exp") && now > payload["exp"].asInt())
             {
                 return false;
             }
-            if payload.contains("nbf") && now < payload["nbf"].asInt()
+            if (payload.contains("nbf") && now < payload["nbf"].asInt())
             {
                 return false;
             }
@@ -181,11 +181,11 @@ namespace tinox.core.jwt
         fn checkTemporalClaims(payload: Map<String, JsonValue>) -> Nothing
         {
             let now: Int64 = Time::now() / 1000;
-            if payload.contains("exp") && now > payload["exp"].asInt()
+            if (payload.contains("exp") && now > payload["exp"].asInt())
             {
                 throw "Token expired";
             }
-            if payload.contains("nbf") && now < payload["nbf"].asInt()
+            if (payload.contains("nbf") && now < payload["nbf"].asInt())
             {
                 throw "Token not yet valid (nbf)";
             }
@@ -207,7 +207,7 @@ namespace tinox.core.jwt
         fn extractHeader(token: String) -> Map<String, JsonValue>
         {
             let parts: List<String> = token.split(".");
-            if parts.len() != 3
+            if (parts.len() != 3)
             {
                 throw "Invalid JWT format";
             }
@@ -217,7 +217,7 @@ namespace tinox.core.jwt
         fn extractPayload(token: String) -> Map<String, JsonValue>
         {
             let parts: List<String> = token.split(".");
-            if parts.len() != 3
+            if (parts.len() != 3)
             {
                 throw "Invalid JWT format";
             }
@@ -227,7 +227,7 @@ namespace tinox.core.jwt
         fn isExpired(token: String) -> Bool
         {
             let payload: Map<String, JsonValue> = Jwt::extractPayload(token);
-            if payload.contains("exp")
+            if (payload.contains("exp"))
             {
                 let exp: Int64 = payload["exp"].asInt();
                 let now: Int64 = Time::now() / 1000;

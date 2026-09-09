@@ -16,7 +16,7 @@ namespace tinox.core.io
         fn getExtension(filename: String) -> String
         {
             var dotIndex: Int64 = filename.lastIndexOf(".");
-            if dotIndex == -1
+            if (dotIndex == -1)
             {
                 return "";
             }
@@ -32,7 +32,7 @@ namespace tinox.core.io
         fn getFileName(filePath: String) -> String
         {
             var lastSlash: Int64 = filePath.lastIndexOf("/");
-            if lastSlash == -1
+            if (lastSlash == -1)
             {
                 return filePath;
             }
@@ -48,7 +48,7 @@ namespace tinox.core.io
         fn getDirectory(filePath: String) -> String
         {
             var lastSlash: Int64 = filePath.lastIndexOf("/");
-            if lastSlash == -1
+            if (lastSlash == -1)
             {
                 return "";
             }

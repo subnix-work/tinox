@@ -197,7 +197,7 @@ namespace tinox.core.rest.server
             this.corsOrigin = origin;
             this.server.use(ctx => {
                 ctx.response.cors(origin);
-                if ctx.request.method == "OPTIONS"
+                if (ctx.request.method == "OPTIONS")
                 {
                     ctx.response.status(204);
                     return false;
@@ -215,7 +215,7 @@ namespace tinox.core.rest.server
         fn defaultJson() -> RestApi
         {
             this.server.use(ctx => {
-                if ctx.response.headers.contains("Content-Type") == false
+                if (ctx.response.headers.contains("Content-Type") == false)
                 {
                     ctx.response.header("Content-Type", "application/json; charset=utf-8");
                 }
@@ -255,23 +255,23 @@ namespace tinox.core.rest.server
             {
                 let entry: RouteEntry = this.routeEntries[i];
                 let handler: fnc(HttpContext) -> Nothing = this.wrapHandler(entry);
-                if entry.method == "GET"
+                if (entry.method == "GET")
                 {
                     this.server.get(entry.path, handler);
                 }
-                else if entry.method == "POST"
+                else if (entry.method == "POST")
                 {
                     this.server.post(entry.path, handler);
                 }
-                else if entry.method == "PUT"
+                else if (entry.method == "PUT")
                 {
                     this.server.put(entry.path, handler);
                 }
-                else if entry.method == "PATCH"
+                else if (entry.method == "PATCH")
                 {
                     this.server.patch(entry.path, handler);
                 }
-                else if entry.method == "DELETE"
+                else if (entry.method == "DELETE")
                 {
                     this.server.delete(entry.path, handler);
                 }
@@ -299,31 +299,31 @@ namespace tinox.core.rest.server
             let authenticator: fnc(String, String) -> Bool = this.authValidator;
 
             return fnc(ctx: HttpContext) -> Nothing {
-                if consumes != MediaType::None
+                if (consumes != MediaType::None)
                 {
                     let expected: String = MediaTypeHelper::toString(consumes);
                     let ct: String = ctx.request.getHeader("Content-Type");
-                    if ct.startsWith(expected) == false
+                    if (ct.startsWith(expected) == false)
                     {
                         ctx.response.status(415).text("Unsupported Media Type. Expected: " + expected);
                         return;
                     }
                 }
 
-                if authType.len() > 0
+                if (authType.len() > 0)
                 {
                     let authHeader: String = ctx.request.getHeader("Authorization");
-                    if authHeader.len() == 0
+                    if (authHeader.len() == 0)
                     {
                         ctx.response.status(401).header("WWW-Authenticate", authType).text("Unauthorized");
                         return;
                     }
-                    if authType == "bearer" && authHeader.startsWith("Bearer ") == false
+                    if (authType == "bearer" && authHeader.startsWith("Bearer ") == false)
                     {
                         ctx.response.status(401).text("Unauthorized: Bearer token required");
                         return;
                     }
-                    if authType == "basic" && authHeader.startsWith("Basic ") == false
+                    if (authType == "basic" && authHeader.startsWith("Basic ") == false)
                     {
                         ctx.response.status(401).text("Unauthorized: Basic auth required");
                         return;
@@ -333,21 +333,21 @@ namespace tinox.core.rest.server
                     // correct but arbitrary "Bearer ..."/"Basic ..." header
                     // passed. Actually validate the credential now.
                     var credential: String = authHeader;
-                    if authType == "bearer" { credential = authHeader.substring(7, authHeader.len()); }
-                    if authType == "basic" { credential = authHeader.substring(6, authHeader.len()); }
-                    if credential.len() == 0 || authenticator(authType, credential) == false
+                    if (authType == "bearer") { credential = authHeader.substring(7, authHeader.len()); }
+                    if (authType == "basic") { credential = authHeader.substring(6, authHeader.len()); }
+                    if (credential.len() == 0 || authenticator(authType, credential) == false)
                     {
                         ctx.response.status(401).text("Unauthorized");
                         return;
                     }
                 }
 
-                if statusCode != 200
+                if (statusCode != 200)
                 {
                     ctx.response.status(statusCode);
                 }
 
-                if produces != MediaType::None && ctx.response.headers.contains("Content-Type") == false
+                if (produces != MediaType::None && ctx.response.headers.contains("Content-Type") == false)
                 {
                     ctx.response.header("Content-Type", MediaTypeHelper::toString(produces));
                 }

@@ -7,7 +7,7 @@ namespace tinox.core.format
         fn padLeft(s: String, width: Int64, char: String) -> String
         {
             let len: Int64 = s.len();
-            if width <= len
+            if (width <= len)
             {
                 return s;
             }
@@ -25,7 +25,7 @@ namespace tinox.core.format
         fn padRight(s: String, width: Int64, char: String) -> String
         {
             let len: Int64 = s.len();
-            if width <= len
+            if (width <= len)
             {
                 return s;
             }
@@ -42,7 +42,7 @@ namespace tinox.core.format
 
         fn intToBinary(n: Int64) -> String
         {
-            if n == 0
+            if (n == 0)
             {
                 return "0";
             }
@@ -50,7 +50,7 @@ namespace tinox.core.format
             var value: Int64 = n;
             while value > 0
             {
-                if (value & 1) == 1
+                if ((value & 1) == 1)
                 {
                     result = "1" + result;
                 }
@@ -65,7 +65,7 @@ namespace tinox.core.format
 
         fn intToHex(n: Int64) -> String
         {
-            if n == 0
+            if (n == 0)
             {
                 return "0";
             }

@@ -42,30 +42,46 @@ namespace tinox.core.kubernetes
 
         // `path` is the resource's own base path, e.g. from
         // GenericResourceOperations::basePath() -- GenericResourceOperations::watch()
-        // is the normal entry point, not this directly.
+        // is the normal entry point, not this directly. Appends
+        // `watch=true` itself -- for anything that needs the SAME
+        // chunked-streaming connection machinery against a path that must
+        // NOT have `watch=true` forced onto it (e.g. the pod log
+        // subresource's own `?follow=true`), use `openRaw` instead.
         fnc open(client: KubernetesClient, path: String) -> Watch
+        {
+            let watchPath: String = path.contains("?") ? (path + "&watch=true") : (path + "?watch=true");
+            return Watch::openRaw(client, watchPath);
+        }
+
+        // Same chunked-transfer streaming connection as `open`, but
+        // `path` is used EXACTLY as given -- no `watch=true` appended.
+        // For the pod log subresource (`GET .../pods/{name}/log?
+        // follow=true&timestamps=true`), which is chunked-transfer HTTP
+        // structurally identical to a `?watch=true` stream but needs its
+        // own, different query parameters instead.
+        fnc openRaw(client: KubernetesClient, path: String) -> Watch
         {
             let auth: ClusterAuth = client.auth;
             let parsed: ParsedUrl = ParsedUrl::parse(auth.serverUrl);
 
             let fd: Int64 = socketCreateTcp();
-            if !socketConnect(fd, parsed.host, parsed.port)
+            if (!socketConnect(fd, parsed.host, parsed.port))
             {
-                throw "Watch::open: failed to connect to " + parsed.host + ":" + parsed.port.toString();
+                throw "Watch::openRaw: failed to connect to " + parsed.host + ":" + parsed.port.toString();
             }
 
             var conn: Int64 = 0;
-            if parsed.isHttps
+            if (parsed.isHttps)
             {
-                if auth.caCertPath.len() > 0
+                if (auth.caCertPath.len() > 0)
                 {
                     Http::setTlsCaCertFile(auth.caCertPath);
                 }
-                if auth.clientCertPath.len() > 0 && auth.clientKeyPath.len() > 0
+                if (auth.clientCertPath.len() > 0 && auth.clientKeyPath.len() > 0)
                 {
                     Http::setTlsClientCertFile(auth.clientCertPath, auth.clientKeyPath);
                 }
-                if auth.insecureSkipTlsVerify
+                if (auth.insecureSkipTlsVerify)
                 {
                     Http::setTlsInsecureSkipVerify(true);
                 }
@@ -76,16 +92,15 @@ namespace tinox.core.kubernetes
             {
                 conn = httpConnFromFd(fd);
             }
-            if conn <= 0
+            if (conn <= 0)
             {
-                throw "Watch::open: TLS handshake / connection setup failed for " + parsed.host + ":" + parsed.port.toString();
+                throw "Watch::openRaw: TLS handshake / connection setup failed for " + parsed.host + ":" + parsed.port.toString();
             }
 
-            let watchPath: String = path.contains("?") ? (path + "&watch=true") : (path + "?watch=true");
-            var req: String = "GET " + watchPath + " HTTP/1.1\r\n";
+            var req: String = "GET " + path + " HTTP/1.1\r\n";
             req = req + "Host: " + parsed.host + "\r\n";
             req = req + "Accept: application/json\r\n";
-            if auth.bearerToken.len() > 0
+            if (auth.bearerToken.len() > 0)
             {
                 req = req + "Authorization: Bearer " + auth.bearerToken + "\r\n";
             }
@@ -99,15 +114,15 @@ namespace tinox.core.kubernetes
             // to stop at). httpConnReadLine reads one byte at a time, so it
             // can never over-read past the blank line ending the headers.
             let statusLine: String = httpConnReadLine(conn);
-            if !statusLine.contains("200")
+            if (!statusLine.contains("200"))
             {
                 httpConnClose(conn);
-                throw "Watch::open: unexpected response: " + statusLine;
+                throw "Watch::openRaw: unexpected response: " + statusLine;
             }
             while true
             {
                 let line: String = httpConnReadLine(conn);
-                if line.len() == 0
+                if (line.len() == 0)
                 {
                     break;
                 }
@@ -122,23 +137,23 @@ namespace tinox.core.kubernetes
             while true
             {
                 let nlIdx: Int64 = this.buffer.indexOf("\n");
-                if nlIdx >= 0
+                if (nlIdx >= 0)
                 {
                     let line: String = this.buffer.substring(0, nlIdx);
                     this.buffer = this.buffer.substring(nlIdx + 1, this.buffer.len());
                     let trimmed: String = line.trim();
-                    if trimmed.len() > 0
+                    if (trimmed.len() > 0)
                     {
                         return trimmed;
                     }
                     continue;
                 }
-                if this.streamEnded
+                if (this.streamEnded)
                 {
                     return "";
                 }
                 let chunk: String = this.readNextChunk();
-                if chunk.len() == 0
+                if (chunk.len() == 0)
                 {
                     this.streamEnded = true;
                     continue;
@@ -157,24 +172,24 @@ namespace tinox.core.kubernetes
         fn readNextChunk() -> String
         {
             let sizeLine: String = httpConnReadLine(this.conn);
-            if sizeLine.len() == 0
+            if (sizeLine.len() == 0)
             {
                 return "";
             }
             var hexPart: String = sizeLine;
             let semi: Int64 = hexPart.indexOf(";");
-            if semi >= 0
+            if (semi >= 0)
             {
                 hexPart = hexPart.substring(0, semi);
             }
             hexPart = hexPart.trim();
             let size: Int64 = Watch::parseHex(hexPart);
-            if size <= 0
+            if (size <= 0)
             {
                 return "";
             }
             let bytes: List<Int64> = httpConnReadN(this.conn, size);
-            if bytes.len() < size
+            if (bytes.len() < size)
             {
                 this.streamEnded = true;
             }
@@ -191,15 +206,15 @@ namespace tinox.core.kubernetes
                 let c: String = s.substring(i, i + 1).toLower();
                 let code: Int64 = c.charCodeAt(0);
                 var digit: Int64 = -1;
-                if code >= 48 && code <= 57
+                if (code >= 48 && code <= 57)
                 {
                     digit = code - 48;
                 }
-                else if code >= 97 && code <= 102
+                else if (code >= 97 && code <= 102)
                 {
                     digit = code - 97 + 10;
                 }
-                if digit < 0
+                if (digit < 0)
                 {
                     return result;
                 }

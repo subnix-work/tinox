@@ -1,0 +1,14 @@
+import CounterApp;
+
+// Every Tinox program still needs its own class Main as the mandatory
+// entry point (since 2026-08-09) -- @TinoxUIApp's generated HTTP/WS
+// servers spawn and run alongside it on their own threads, they don't
+// replace it. This is the required sibling file for the annotated app
+// above.
+class Main
+{
+    fnc main() -> Int32
+    {
+        return 0;
+    }
+}

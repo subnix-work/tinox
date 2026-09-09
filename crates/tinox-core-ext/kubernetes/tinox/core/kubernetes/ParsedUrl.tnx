@@ -16,25 +16,25 @@ namespace tinox.core.kubernetes
         {
             var isHttps: Bool = true;
             var rest: String = url;
-            if rest.startsWith("https://")
+            if (rest.startsWith("https://"))
             {
                 isHttps = true;
                 rest = rest.substring(8, rest.len());
             }
-            else if rest.startsWith("http://")
+            else if (rest.startsWith("http://"))
             {
                 isHttps = false;
                 rest = rest.substring(7, rest.len());
             }
             let slashIdx: Int64 = rest.indexOf("/");
-            if slashIdx >= 0
+            if (slashIdx >= 0)
             {
                 rest = rest.substring(0, slashIdx);
             }
             var host: String = rest;
             var port: Int64 = isHttps ? 443 : 80;
             let colonIdx: Int64 = rest.indexOf(":");
-            if colonIdx >= 0
+            if (colonIdx >= 0)
             {
                 host = rest.substring(0, colonIdx);
                 port = rest.substring(colonIdx + 1, rest.len()).toInt();

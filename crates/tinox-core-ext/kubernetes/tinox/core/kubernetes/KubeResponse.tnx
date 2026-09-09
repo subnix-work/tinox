@@ -21,7 +21,7 @@ namespace tinox.core.kubernetes
 
         fn throwIfError(context: String) -> Nothing
         {
-            if !this.isSuccess()
+            if (!this.isSuccess())
             {
                 throw "Kubernetes API error (" + context + "): HTTP " + this.statusCode.toString() + " - " + this.body;
             }

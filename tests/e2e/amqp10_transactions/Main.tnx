@@ -61,7 +61,7 @@ class Main
         let fAttachPub = Amqp10::readFrame(sconn);
         let pAttachPub = Amqp10::decodePerformative(fAttachPub.body);
         var pubHandle: Int64 = -1;
-        if pAttachPub.fields.len() > 1 { match pAttachPub.fields[1] { UIntVal(n) => { pubHandle = n; } _ => {} } }
+        if (pAttachPub.fields.len() > 1) { match pAttachPub.fields[1] { UIntVal(n) => { pubHandle = n; } _ => {} } }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachPub.fields));
         // The flow for pubLink is deliberately NOT sent here, right after the
         // attach-ok: the client only reads it later, during
@@ -76,16 +76,16 @@ class Main
         let fDeclare = Amqp10::readFrame(sconn);
         let pDeclareXfer = Amqp10::decodePerformative(fDeclare.body);
         var declareDeliveryId: Int64 = -1;
-        if pDeclareXfer.fields.len() > 1 { match pDeclareXfer.fields[1] { UIntVal(n) => { declareDeliveryId = n; } _ => {} } }
+        if (pDeclareXfer.fields.len() > 1) { match pDeclareXfer.fields[1] { UIntVal(n) => { declareDeliveryId = n; } _ => {} } }
         let rDeclare = Amqp10Reader::new(fDeclare.body);
         rDeclare.readValue(); // skip the transfer performative (already decoded)
         let declareSection = rDeclare.readValue();
         var sawDeclare: Bool = false;
         match declareSection {
             DescribedVal(sd) => {
-                if sd.descriptor == 0x77 {
+                if (sd.descriptor == 0x77) {
                     match sd.value {
-                        DescribedVal(dd) => { if dd.descriptor == 0x31 { sawDeclare = true; } }
+                        DescribedVal(dd) => { if (dd.descriptor == 0x31) { sawDeclare = true; } }
                         _ => {}
                     }
                 }
@@ -115,18 +115,18 @@ class Main
         let fTxnXfer = Amqp10::readFrame(sconn);
         let pTxnXfer = Amqp10::decodePerformative(fTxnXfer.body);
         var sawTxnTransfer: Bool = false;
-        if pTxnXfer.fields.len() > 7 {
+        if (pTxnXfer.fields.len() > 7) {
             match pTxnXfer.fields[7] {
                 DescribedVal(sd) => {
-                    if sd.descriptor == 0x34 {
+                    if (sd.descriptor == 0x34) {
                         match sd.value {
                             ListVal(sf) => {
-                                if sf.len() > 0 {
+                                if (sf.len() > 0) {
                                     match sf[0] {
                                         BinaryVal(tid) => {
-                                            if tid.len() == txnId.len() {
+                                            if (tid.len() == txnId.len()) {
                                                 var same: Bool = true;
-                                                for i in 0..tid.len() { if tid[i] != txnId[i] { same = false; } }
+                                                for i in 0..tid.len() { if (tid[i] != txnId[i]) { same = false; } }
                                                 sawTxnTransfer = same;
                                             }
                                         }
@@ -147,20 +147,20 @@ class Main
         let fDischarge1 = Amqp10::readFrame(sconn);
         let pDischarge1Xfer = Amqp10::decodePerformative(fDischarge1.body);
         var discharge1DeliveryId: Int64 = -1;
-        if pDischarge1Xfer.fields.len() > 1 { match pDischarge1Xfer.fields[1] { UIntVal(n) => { discharge1DeliveryId = n; } _ => {} } }
+        if (pDischarge1Xfer.fields.len() > 1) { match pDischarge1Xfer.fields[1] { UIntVal(n) => { discharge1DeliveryId = n; } _ => {} } }
         let rDischarge1 = Amqp10Reader::new(fDischarge1.body);
         rDischarge1.readValue();
         let discharge1Section = rDischarge1.readValue();
         var sawCommit: Bool = false;
         match discharge1Section {
             DescribedVal(sd) => {
-                if sd.descriptor == 0x77 {
+                if (sd.descriptor == 0x77) {
                     match sd.value {
                         DescribedVal(dd) => {
-                            if dd.descriptor == 0x32 {
+                            if (dd.descriptor == 0x32) {
                                 match dd.value {
                                     ListVal(df) => {
-                                        if df.len() > 1 {
+                                        if (df.len() > 1) {
                                             match df[1] { BoolVal(fail) => { sawCommit = !fail; } _ => {} }
                                         }
                                     }
@@ -186,7 +186,7 @@ class Main
         let fDeclare2 = Amqp10::readFrame(sconn);
         let pDeclare2Xfer = Amqp10::decodePerformative(fDeclare2.body);
         var declare2DeliveryId: Int64 = -1;
-        if pDeclare2Xfer.fields.len() > 1 { match pDeclare2Xfer.fields[1] { UIntVal(n) => { declare2DeliveryId = n; } _ => {} } }
+        if (pDeclare2Xfer.fields.len() > 1) { match pDeclare2Xfer.fields[1] { UIntVal(n) => { declare2DeliveryId = n; } _ => {} } }
         let txnId2: List<Int64> = [9, 9, 9, 9];
         let declared2Desc = Amqp10Described { descriptor: 0x33, value: Amqp10Value::ListVal([Amqp10Value::BinaryVal(txnId2)]) };
         var declared2DispFields: List<Amqp10Value> = [
@@ -198,20 +198,20 @@ class Main
         let fDischarge2 = Amqp10::readFrame(sconn);
         let pDischarge2Xfer = Amqp10::decodePerformative(fDischarge2.body);
         var discharge2DeliveryId: Int64 = -1;
-        if pDischarge2Xfer.fields.len() > 1 { match pDischarge2Xfer.fields[1] { UIntVal(n) => { discharge2DeliveryId = n; } _ => {} } }
+        if (pDischarge2Xfer.fields.len() > 1) { match pDischarge2Xfer.fields[1] { UIntVal(n) => { discharge2DeliveryId = n; } _ => {} } }
         let rDischarge2 = Amqp10Reader::new(fDischarge2.body);
         rDischarge2.readValue();
         let discharge2Section = rDischarge2.readValue();
         var sawRollback: Bool = false;
         match discharge2Section {
             DescribedVal(sd) => {
-                if sd.descriptor == 0x77 {
+                if (sd.descriptor == 0x77) {
                     match sd.value {
                         DescribedVal(dd) => {
-                            if dd.descriptor == 0x32 {
+                            if (dd.descriptor == 0x32) {
                                 match dd.value {
                                     ListVal(df) => {
-                                        if df.len() > 1 {
+                                        if (df.len() > 1) {
                                             match df[1] { BoolVal(fail) => { sawRollback = fail; } _ => {} }
                                         }
                                     }
@@ -237,7 +237,7 @@ class Main
         let fAttachSub = Amqp10::readFrame(sconn);
         let pAttachSub = Amqp10::decodePerformative(fAttachSub.body);
         var subHandle: Int64 = -1;
-        if pAttachSub.fields.len() > 1 { match pAttachSub.fields[1] { UIntVal(n) => { subHandle = n; } _ => {} } }
+        if (pAttachSub.fields.len() > 1) { match pAttachSub.fields[1] { UIntVal(n) => { subHandle = n; } _ => {} } }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachSub.fields));
         Amqp10::readFrame(sconn); // flow from the client (credit)
 
@@ -256,19 +256,19 @@ class Main
         let fTxnDisp = Amqp10::readFrame(sconn);
         let pTxnDisp = Amqp10::decodePerformative(fTxnDisp.body);
         var sawTxnDisposition: Bool = false;
-        if pTxnDisp.fields.len() > 4 {
+        if (pTxnDisp.fields.len() > 4) {
             match pTxnDisp.fields[4] {
                 DescribedVal(sd) => {
-                    if sd.descriptor == 0x34 {
+                    if (sd.descriptor == 0x34) {
                         match sd.value {
                             ListVal(sf) => {
-                                if sf.len() > 1 {
+                                if (sf.len() > 1) {
                                     var tidOk: Bool = false;
                                     match sf[0] {
                                         BinaryVal(tid) => {
-                                            if tid.len() == txnId.len() {
+                                            if (tid.len() == txnId.len()) {
                                                 var same2: Bool = true;
-                                                for i in 0..tid.len() { if tid[i] != txnId[i] { same2 = false; } }
+                                                for i in 0..tid.len() { if (tid[i] != txnId[i]) { same2 = false; } }
                                                 tidOk = same2;
                                             }
                                         }
@@ -276,7 +276,7 @@ class Main
                                     }
                                     var outcomeOk: Bool = false;
                                     match sf[1] {
-                                        DescribedVal(od) => { if od.descriptor == 0x24 { outcomeOk = true; } }
+                                        DescribedVal(od) => { if (od.descriptor == 0x24) { outcomeOk = true; } }
                                         _ => {}
                                     }
                                     sawTxnDisposition = tidOk && outcomeOk;
@@ -294,7 +294,7 @@ class Main
         httpConnClose(sconn);
 
         var result: Int64 = 0;
-        if sawDeclare { if sawTxnTransfer { if sawCommit { if sawRollback { if sawTxnDisposition {
+        if (sawDeclare) { if (sawTxnTransfer) { if (sawCommit) { if (sawRollback) { if (sawTxnDisposition) {
             result = 1;
         } } } } }
         return result;
@@ -304,14 +304,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn txnBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
-        if conn.conn <= 0 {
+        if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
@@ -323,21 +323,21 @@ class Main
 
         // --- Round 1: declare -> transactional publish -> commit ---
         let txn1 = coordinator.declare();
-        if txn1.ok {
+        if (txn1.ok) {
             println("ok-declared");
         } else {
             println("declare failed: " + txn1.errorMessage);
         }
         pubLink.publishTransactional([42], "text/plain", txn1.txnId);
         let commitOk = coordinator.discharge(txn1.txnId, false);
-        if commitOk {
+        if (commitOk) {
             println("ok-commit-discharge");
         }
 
         // --- Round 2: declare -> discharge(fail=true), rollback ---
         let txn2 = coordinator.declare();
         let rollbackOk = coordinator.discharge(txn2.txnId, true);
-        if rollbackOk {
+        if (rollbackOk) {
             println("ok-rollback-discharge");
         }
 
@@ -345,12 +345,12 @@ class Main
         let subLink = Amqp10Link::attach(session, "txn-sub-link", true, "txn-source");
         subLink.grantCredit(5);
         let msg = subLink.nextMessage();
-        if msg.ok {
+        if (msg.ok) {
             subLink.ackTransactional(msg.deliveryId, txn1.txnId);
         }
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

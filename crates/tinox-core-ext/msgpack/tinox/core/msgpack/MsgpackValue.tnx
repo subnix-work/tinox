@@ -51,7 +51,7 @@ namespace tinox.core.msgpack
 
         fn getField(key: String) -> MsgpackValue
         {
-            if this.kind != "object" || !this.objectValue.contains(key)
+            if (this.kind != "object" || !this.objectValue.contains(key))
             {
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
             }

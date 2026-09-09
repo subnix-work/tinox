@@ -22,7 +22,7 @@ namespace tinox.core.collections
         fn dequeue() -> T
         {
             let len: Int64 = this.data.len();
-            if len == 0
+            if (len == 0)
             {
                 throw "Queue is empty";
             }
@@ -33,7 +33,7 @@ namespace tinox.core.collections
 
         fn peek() -> T
         {
-            if this.data.len() == 0
+            if (this.data.len() == 0)
             {
                 throw "Queue is empty";
             }

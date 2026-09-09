@@ -18,11 +18,11 @@ namespace tinox.core.rest.client
         fn build(baseUrl: String, path: String) -> String
         {
             let base: String = baseUrl.trim();
-            if base.endsWith("/") && path.startsWith("/")
+            if (base.endsWith("/") && path.startsWith("/"))
             {
                 return base.substring(0, base.len() - 1) + path;
             }
-            if base.endsWith("/") || path.startsWith("/")
+            if (base.endsWith("/") || path.startsWith("/"))
             {
                 return base + path;
             }
@@ -40,7 +40,7 @@ namespace tinox.core.rest.client
         fn buildWithParams(baseUrl: String, path: String, params: Map<String, String>) -> String
         {
             let url: String = Url::build(baseUrl, path);
-            if params.len() == 0
+            if (params.len() == 0)
             {
                 return url;
             }
@@ -50,7 +50,7 @@ namespace tinox.core.rest.client
             var i: Int64 = 0;
             while i < keys.len()
             {
-                if first == false
+                if (first == false)
                 {
                     result = result + "&";
                 }
@@ -78,7 +78,7 @@ namespace tinox.core.rest.client
             {
                 let ch: String = s.substring(i, i + 1);
                 let code: Int64 = ch.charCodeAt(0);
-                if Url::isUnreserved(ch)
+                if (Url::isUnreserved(ch))
                 {
                     result = result + ch;
                 }
@@ -102,19 +102,19 @@ namespace tinox.core.rest.client
         fn isUnreserved(ch: String) -> Bool
         {
             let code: Int64 = ch.charCodeAt(0);
-            if code >= 65 && code <= 90
+            if (code >= 65 && code <= 90)
             {
                 return true;
             }
-            if code >= 97 && code <= 122
+            if (code >= 97 && code <= 122)
             {
                 return true;
             }
-            if code >= 48 && code <= 57
+            if (code >= 48 && code <= 57)
             {
                 return true;
             }
-            if ch == "-" || ch == "_" || ch == "." || ch == "~"
+            if (ch == "-" || ch == "_" || ch == "." || ch == "~")
             {
                 return true;
             }
@@ -150,9 +150,9 @@ namespace tinox.core.rest.client
             while i < segments.len()
             {
                 let seg: String = segments[i].trim();
-                if seg.len() > 0
+                if (seg.len() > 0)
                 {
-                    if result.len() > 0 && result.endsWith("/") == false && seg.startsWith("/") == false
+                    if (result.len() > 0 && result.endsWith("/") == false && seg.startsWith("/") == false)
                     {
                         result = result + "/";
                     }

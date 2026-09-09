@@ -6,7 +6,7 @@ namespace tinox.core.debug
     {
         fn assert(condition: Bool, message: String) -> Nothing
         {
-            if condition == false
+            if (condition == false)
             {
                 Debug::panic(message);
             }

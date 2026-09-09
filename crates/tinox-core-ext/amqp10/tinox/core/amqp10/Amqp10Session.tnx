@@ -56,11 +56,11 @@ namespace tinox.core.amqp10
             Amqp10::writeFrame(connection.conn, 0, chanId, beginBody);
 
             let f = Amqp10::readFrame(connection.conn);
-            if f.frameType != 0 {
+            if (f.frameType != 0) {
                 return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), nextLinkHandle: 0 };
             }
             let p = Amqp10::decodePerformative(f.body);
-            if p.descriptor != 0x11 {
+            if (p.descriptor != 0x11) {
                 return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected begin (0x11), got descriptor=" + p.descriptor.toString(), nextLinkHandle: 0 };
             }
             return Amqp10Session { conn: connection.conn, chanId: chanId, maxFrameSize: connection.maxFrameSize, errorMessage: "", nextLinkHandle: 0 };

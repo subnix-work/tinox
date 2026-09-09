@@ -185,13 +185,13 @@ namespace tinox.core.rest.client
         fn buildUrl(path: String) -> String
         {
             var url: String = Url::build(this.baseUrl, path);
-            if this.queryParams.len() > 0
+            if (this.queryParams.len() > 0)
             {
                 url = url + "?";
                 var i: Int64 = 0;
                 while i < this.queryParams.len()
                 {
-                    if i > 0
+                    if (i > 0)
                     {
                         url = url + "&";
                     }

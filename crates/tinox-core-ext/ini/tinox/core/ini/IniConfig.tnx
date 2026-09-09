@@ -13,11 +13,11 @@ namespace tinox.core.ini
 
         fn getString(config: IniConfig, section: String, key: String, default: String) -> String
         {
-            if config.sections.contains(section) == false
+            if (config.sections.contains(section) == false)
             {
                 return default;
             }
-            if config.sections[section].contains(key) == false
+            if (config.sections[section].contains(key) == false)
             {
                 return default;
             }
@@ -27,7 +27,7 @@ namespace tinox.core.ini
         fn getInt(config: IniConfig, section: String, key: String, default: Int64) -> Int64
         {
             let strVal: String = IniConfig::getString(config, section, key, "");
-            if strVal == ""
+            if (strVal == "")
             {
                 return default;
             }
@@ -36,7 +36,7 @@ namespace tinox.core.ini
 
         fn setString(config: IniConfig, section: String, key: String, value: String) -> Nothing
         {
-            if config.sections.contains(section) == false
+            if (config.sections.contains(section) == false)
             {
                 config.sections[section] = Map::new();
             }

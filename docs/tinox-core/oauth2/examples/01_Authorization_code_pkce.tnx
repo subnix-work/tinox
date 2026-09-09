@@ -20,7 +20,7 @@ class Main
         // Step 2: in the callback handler, after checking req.state against
         // the callback's "state" query param:
         let tokens: OAuth2TokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier);
-        if tokens.ok
+        if (tokens.ok)
         {
             println("access token: " + tokens.accessToken);
         }

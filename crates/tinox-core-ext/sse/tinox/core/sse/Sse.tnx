@@ -44,7 +44,7 @@ namespace tinox.core.sse
         fn handshake(conn: Int64) -> Bool
         {
             let req = httpConnReadRequest(conn);
-            if req.len() == 0 {
+            if (req.len() == 0) {
                 return false;
             }
             let response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
@@ -65,7 +65,7 @@ namespace tinox.core.sse
             let lines = data.split("\n");
             for i in 0..lines.len() {
                 var line = lines[i];
-                if line.endsWith("\r") {
+                if (line.endsWith("\r")) {
                     line = line.substring(0, line.len() - 1);
                 }
                 out = out + "data: " + line + "\n";

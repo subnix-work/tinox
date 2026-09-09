@@ -6,4 +6,4 @@ description = ""
 [[dependencies]]
 group = "tinox.core"
 artifactId = "amqp091"
-version = "1.0.2"
+version = "1.0.3"

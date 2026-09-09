@@ -50,12 +50,12 @@ namespace tinox.core.redis
         fn connect(host: String, port: Int64) -> RedisClient
         {
             let fd = socketCreateTcp();
-            if !socketConnect(fd, host, port) {
+            if (!socketConnect(fd, host, port)) {
                 socketClose(fd);
                 return RedisClient { conn: -1, errorMessage: "connect failed", getFound: false, incrOk: false };
             }
             var client: RedisClient = RedisClient { conn: httpConnFromFd(fd), errorMessage: "", getFound: false, incrOk: false };
-            if !client.ping() {
+            if (!client.ping()) {
                 httpConnClose(client.conn);
                 client.conn = -1;
                 client.errorMessage = "PING failed";
@@ -80,7 +80,7 @@ namespace tinox.core.redis
         {
             this.sendCommand(["GET", key]);
             let header = httpConnReadLine(this.conn);
-            if !header.startsWith("$") || header == "$-1" {
+            if (!header.startsWith("$") || header == "$-1") {
                 this.getFound = false;
                 return "";
             }
@@ -124,7 +124,7 @@ namespace tinox.core.redis
         {
             this.sendCommand(["DEL", key]);
             let line = httpConnReadLine(this.conn);
-            if !line.startsWith(":") {
+            if (!line.startsWith(":")) {
                 return false;
             }
             return line.substring(1, line.len()).toInt() > 0;
@@ -134,7 +134,7 @@ namespace tinox.core.redis
         {
             this.sendCommand(["EXPIRE", key, ttlSeconds.toString()]);
             let line = httpConnReadLine(this.conn);
-            if !line.startsWith(":") {
+            if (!line.startsWith(":")) {
                 return false;
             }
             return line.substring(1, line.len()).toInt() == 1;
@@ -150,7 +150,7 @@ namespace tinox.core.redis
         {
             this.sendCommand(["INCR", key]);
             let line = httpConnReadLine(this.conn);
-            if !line.startsWith(":") {
+            if (!line.startsWith(":")) {
                 this.incrOk = false;
                 return 0;
             }

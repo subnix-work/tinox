@@ -16,7 +16,7 @@ namespace tinox.core.mathf
 
         fn sqrt(x: Float64) -> Float64
         {
-            if x < 0.0
+            if (x < 0.0)
             {
                 throw "Cannot compute square root of negative number";
             }
@@ -25,7 +25,7 @@ namespace tinox.core.mathf
             while i < 100
             {
                 let nextGuess: Float64 = (guess + x / guess) / 2.0;
-                if Mathf::abs(nextGuess - guess) < 0.0000001
+                if (Mathf::abs(nextGuess - guess) < 0.0000001)
                 {
                     return nextGuess;
                 }
@@ -49,7 +49,7 @@ namespace tinox.core.mathf
 
         fn abs(x: Float64) -> Float64
         {
-            if x < 0.0
+            if (x < 0.0)
             {
                 return -x;
             }
@@ -63,11 +63,11 @@ namespace tinox.core.mathf
 
         fn ceil(x: Float64) -> Int64
         {
-            if (Float64)(Int64)x == x
+            if ((Float64)(Int64)x == x)
             {
                 return (Int64)x;
             }
-            if x > 0.0
+            if (x > 0.0)
             {
                 return (Int64)x + 1;
             }
@@ -78,7 +78,7 @@ namespace tinox.core.mathf
         {
             let floorVal: Int64 = Mathf::floor(x);
             let frac: Float64 = x - (Float64)floorVal;
-            if frac >= 0.5
+            if (frac >= 0.5)
             {
                 return floorVal + 1;
             }
@@ -87,7 +87,7 @@ namespace tinox.core.mathf
 
         fn min(a: Float64, b: Float64) -> Float64
         {
-            if a < b
+            if (a < b)
             {
                 return a;
             }
@@ -96,7 +96,7 @@ namespace tinox.core.mathf
 
         fn max(a: Float64, b: Float64) -> Float64
         {
-            if a > b
+            if (a > b)
             {
                 return a;
             }
@@ -105,11 +105,11 @@ namespace tinox.core.mathf
 
         fn clamp(value: Float64, min: Float64, max: Float64) -> Float64
         {
-            if value < min
+            if (value < min)
             {
                 return min;
             }
-            if value > max
+            if (value > max)
             {
                 return max;
             }

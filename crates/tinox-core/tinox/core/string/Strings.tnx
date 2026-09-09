@@ -184,7 +184,7 @@ namespace tinox.core.string
             var i: Int64 = 0;
             while i < parts.len()
             {
-                if i > 0
+                if (i > 0)
                 {
                     result = result + separator;
                 }

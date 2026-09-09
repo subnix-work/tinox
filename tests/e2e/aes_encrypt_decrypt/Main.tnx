@@ -44,7 +44,7 @@ class Main
         var tamperedThrew: Bool = false;
         let firstNibble: String = ciphertext.substring(0, 1);
         var flipped: String = "0";
-        if firstNibble == "0" {
+        if (firstNibble == "0") {
             flipped = "1";
         }
         let tampered: String = flipped + ciphertext.substring(1, ciphertext.len());

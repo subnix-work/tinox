@@ -41,7 +41,7 @@ namespace tinox.core.websocket
         fn connect(host: String, port: Int64, path: String) -> Int64
         {
             let fd = socketCreateTcp();
-            if !socketConnect(fd, host, port) {
+            if (!socketConnect(fd, host, port)) {
                 return -1;
             }
             let conn = httpConnFromFd(fd);
@@ -56,7 +56,7 @@ namespace tinox.core.websocket
             httpConnSendRaw(conn, "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n");
 
             let resp = httpConnReadRequest(conn);
-            if resp.len() == 0 || !resp.contains("101") {
+            if (resp.len() == 0 || !resp.contains("101")) {
                 httpConnClose(conn);
                 return -1;
             }
@@ -64,11 +64,11 @@ namespace tinox.core.websocket
             let lines = resp.split("\r\n");
             for i in 0..lines.len() {
                 let line = lines[i];
-                if line.toLowerCase().startsWith("sec-websocket-accept:") {
+                if (line.toLowerCase().startsWith("sec-websocket-accept:")) {
                     actualAccept = line.substring(21, line.len()).trim();
                 }
             }
-            if actualAccept != expectedAccept {
+            if (actualAccept != expectedAccept) {
                 httpConnClose(conn);
                 return -1;
             }

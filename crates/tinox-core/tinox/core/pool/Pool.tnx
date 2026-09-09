@@ -23,13 +23,13 @@ namespace tinox.core.pool
 
         fn acquire(pool: Pool<T>) -> T
         {
-            if pool.available.len() > 0
+            if (pool.available.len() > 0)
             {
                 let obj: T = pool.available[pool.available.len() - 1];
                 pool.available.pop();
                 return obj;
             }
-            if pool.inUse.len() < pool.maxSize
+            if (pool.inUse.len() < pool.maxSize)
             {
                 let obj: T = pool.factory();
                 pool.inUse.push(obj);
@@ -44,14 +44,14 @@ namespace tinox.core.pool
             var i: Int64 = 0;
             while i < pool.inUse.len()
             {
-                if pool.inUse[i] == obj
+                if (pool.inUse[i] == obj)
                 {
                     found = true;
                     break;
                 }
                 i = i + 1;
             }
-            if found
+            if (found)
             {
                 pool.inUse.removeAt(i);
                 pool.available.push(obj);

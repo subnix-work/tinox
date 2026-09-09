@@ -834,6 +834,7 @@ impl TypeChecker {
         symbols.functions.insert("httpConnReadN".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("n".to_string(), ValueType::Int)], return_type: ValueType::Array(Box::new(ValueType::Int)) });
         symbols.functions.insert("httpConnWriteBytes".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("bytes".to_string(), ValueType::Array(Box::new(ValueType::Int)))], return_type: ValueType::Int });
         symbols.functions.insert("httpConnClose".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        symbols.functions.insert("httpConnClearRecvTimeout".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         // File I/O builtins
         symbols.functions.insert("open".to_string(), FunctionSignature {
             params: vec![("path".to_string(), ValueType::String), ("mode".to_string(), ValueType::String)],
@@ -4404,7 +4405,7 @@ interface IDrawable extends IDoesNotExist {
 
     #[test]
     fn test_recursive_function_ok() {
-        ok("fn fact(n: Int32) -> Int32 { if n > 0 { return fact(n); } return 1; }");
+        ok("fn fact(n: Int32) -> Int32 { if (n > 0) { return fact(n); } return 1; }");
     }
 
     #[test]
@@ -4487,7 +4488,7 @@ interface IDrawable extends IDoesNotExist {
 
     #[test]
     fn test_if_bool_cond_ok() {
-        ok("fn f() { if true { } }");
+        ok("fn f() { if (true) { } }");
     }
 
     #[test]
@@ -4751,19 +4752,19 @@ fn f() { new Builder().step().build(); }
 
     #[test]
     fn test_multiple_return_paths_ok() {
-        ok("fn f(x: Int32) -> Int32 { if x > 0 { return x; } return 0; }");
+        ok("fn f(x: Int32) -> Int32 { if (x > 0) { return x; } return 0; }");
     }
 
     // --- Undefined variable in different scopes ---
 
     #[test]
     fn test_undefined_variable_in_if_branch_err() {
-        err_contains("fn f() { if true { return z; } }", "undefined variable");
+        err_contains("fn f() { if (true) { return z; } }", "undefined variable");
     }
 
     #[test]
     fn test_var_defined_in_outer_scope_accessible_in_inner() {
-        ok("fn f() { let x = 5; if true { let y = x; } }");
+        ok("fn f() { let x = 5; if (true) { let y = x; } }");
     }
 
     // --- Float operations ---
@@ -5265,12 +5266,12 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_nested_if_ok() {
-        ok("fn f(x: Int64, y: Int64) -> Nothing { if x > 0 { if y > 0 { return; } } }");
+        ok("fn f(x: Int64, y: Int64) -> Nothing { if (x > 0) { if (y > 0) { return; } } }");
     }
 
     #[test]
     fn test_else_if_ok() {
-        ok("fn f(x: Int64) -> Nothing { if x > 0 { return; } else if x < 0 { return; } else { return; } }");
+        ok("fn f(x: Int64) -> Nothing { if (x > 0) { return; } else if (x < 0) { return; } else { return; } }");
     }
 
     // ================================================================
@@ -5540,7 +5541,7 @@ class Jogger implements Runner {
     #[test]
     fn test_var_in_if_block_not_visible_outside_err() {
         err_contains(
-            "fn f() -> Int64 { if true { var x = 1; } return x; }",
+            "fn f() -> Int64 { if (true) { var x = 1; } return x; }",
             "undefined",
         );
     }
@@ -5595,12 +5596,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_multiple_return_paths_v2_ok() {
-        ok("fn abs(x: Int64) -> Int64 { if x < 0 { return -x; } return x; }");
+        ok("fn abs(x: Int64) -> Int64 { if (x < 0) { return -x; } return x; }");
     }
 
     #[test]
     fn test_early_return_type_mismatch() {
-        err_contains("fn f() -> Int64 { if true { return \"oops\"; } return 1; }", "expected Int64");
+        err_contains("fn f() -> Int64 { if (true) { return \"oops\"; } return 1; }", "expected Int64");
     }
 
     // ================================================================
@@ -5685,7 +5686,7 @@ class Jogger implements Runner {
     #[test]
     fn test_ternary_ok() {
         // if-else as expression with explicit returns in branches
-        ok("fn f(x: Int64) -> Int64 { if x > 0 { return x; } return -x; }");
+        ok("fn f(x: Int64) -> Int64 { if (x > 0) { return x; } return -x; }");
     }
 
     // ================================================================
@@ -5856,7 +5857,7 @@ class Jogger implements Runner {
 
     #[test]
     fn test_recursive_fn_ok() {
-        ok("fn fib(n: Int64) -> Int64 { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); }");
+        ok("fn fib(n: Int64) -> Int64 { if (n <= 1) { return n; } return fib(n - 1) + fib(n - 2); }");
     }
 
     #[test]
@@ -6097,7 +6098,7 @@ class Jogger implements Runner {
 
     #[test]
     fn test_nested_ternary_style_ok() {
-        ok("fn clamp(x: Int64, lo: Int64, hi: Int64) -> Int64 { if x < lo { return lo; } if x > hi { return hi; } return x; }");
+        ok("fn clamp(x: Int64, lo: Int64, hi: Int64) -> Int64 { if (x < lo) { return lo; } if (x > hi) { return hi; } return x; }");
     }
 
     #[test]

@@ -19,7 +19,7 @@ namespace tinox.core.queue
 
         fn dequeue(q: PriorityQueue<T>) -> T
         {
-            if q.items.len() == 0
+            if (q.items.len() == 0)
             {
                 throw "Priority queue is empty";
             }
@@ -30,7 +30,7 @@ namespace tinox.core.queue
 
         fn peek(q: PriorityQueue<T>) -> T
         {
-            if q.items.len() == 0
+            if (q.items.len() == 0)
             {
                 throw "Priority queue is empty";
             }

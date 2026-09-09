@@ -1,0 +1,24 @@
+module tinox.core.ui;
+
+import tinox.core.json;
+
+namespace tinox.core.ui
+{
+    // One diff-produced patch operation. Not every field applies to
+    // every `op` kind (e.g. `node` is only meaningful for "replace"/
+    // "insert") -- unused fields carry an inert default (empty string/
+    // Component::none()) rather than being optional, since this compiler
+    // has no null-field/optional-field support for a @JsonSerializable
+    // class. A little wasted serialization, never a correctness problem.
+    @JsonSerializable
+    class TinoxUIPatchOp
+    {
+        var op: String;         // "update" | "replace" | "remove" | "insert"
+        var id: String;         // update/replace/remove: the target node's id
+        var text: String;       // update: new text
+        var props: Map<String, String>; // update: new props
+        var node: Component;    // replace/insert: the new subtree
+        var parentId: String;   // insert: id of the parent to insert into
+        var index: Int64;       // insert: position among the parent's children
+    }
+}

@@ -55,7 +55,7 @@ namespace tinox.core.hex
 
         fn nibbleToChar(n: Int64) -> String
         {
-            if n < 10
+            if (n < 10)
             {
                 return fromCharCode(n + 48);
             }
@@ -65,15 +65,15 @@ namespace tinox.core.hex
         fn charToNibble(c: String) -> Int64
         {
             let code: Int64 = c.charCodeAt(0);
-            if code >= 48 && code <= 57
+            if (code >= 48 && code <= 57)
             {
                 return code - 48;
             }
-            if code >= 97 && code <= 102
+            if (code >= 97 && code <= 102)
             {
                 return code - 87;
             }
-            if code >= 65 && code <= 70
+            if (code >= 65 && code <= 70)
             {
                 return code - 55;
             }
@@ -86,7 +86,7 @@ namespace tinox.core.hex
             var i: Int64 = 0;
             while i < data.len()
             {
-                if i > 0
+                if (i > 0)
                 {
                     result = result + " ";
                 }

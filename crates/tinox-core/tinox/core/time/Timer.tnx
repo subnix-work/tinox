@@ -52,7 +52,7 @@ namespace tinox.core.time
          */
         fn elapsed() -> Int64
         {
-            if this.endTime == 0
+            if (this.endTime == 0)
             {
                 return now() - this.startTime;
             }

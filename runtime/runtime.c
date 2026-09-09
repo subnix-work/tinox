@@ -762,6 +762,29 @@ int64_t tinox_task_await(void* handle) {
     return (int64_t)(uintptr_t)retval;
 }
 
+// Fire-and-forget variant of tinox_task_spawn -- no TinoxTask handle, no
+// tinox_task_await ever expected. Reuses the SAME tinox_spawn_trampoline
+// (still gets the GC thread-root registration a spawned thread needs --
+// Bug 140), just pthread_detach()s instead of leaving the thread joinable.
+// For @WebsocketEndpoint's per-connection worker threads (codegen.rs,
+// emit_ws_code): a real, long-running server accepts and drops many
+// connections over its lifetime, and tinox_task_spawn's own joinable
+// threads would leak one pthread's kernel resources per connection
+// forever unless something calls tinox_task_await on every single one --
+// nothing sensibly can, since the accept loop's whole point is to keep
+// accepting without waiting on any one connection. Mirrors the exact
+// pthread_create+pthread_detach pattern tinox_HttpServer_listen's own
+// epoll worker pool already uses for the same "never joined, must not
+// leak" reason.
+void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
+    TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
+    t->fn = fn;
+    t->args = args;
+    pthread_t tid;
+    pthread_create(&tid, NULL, tinox_spawn_trampoline, t);
+    pthread_detach(tid);
+}
+
 void* tinox_channel_create(void) {
     TinoxChannel* ch = calloc(1, sizeof(TinoxChannel));
     pthread_mutex_init(&ch->mutex, NULL);
@@ -3995,6 +4018,35 @@ void httpConnClose(int64_t conn) {
     conn_close((TinoxConn*)(intptr_t)conn);
 }
 
+// Removes the 5s "zombie guard" SO_RCVTIMEO that httpServerAcceptConn/
+// httpServerAcceptTls set on every accepted fd (meant to stop a slow-loris
+// HTTP client from blocking the single-threaded accept loop forever by
+// never finishing a request) -- that guard's own doc comment already notes
+// it "persists on `fd` for the life of the connection, so it also protects
+// later blocking reads after a successful handshake", which is exactly
+// backwards for a WEBSOCKET connection: a legitimately idle WS client (the
+// normal, expected state between user interactions, not a slow/broken one)
+// hits this same 5s recv() timeout on every blocking Ws::readMessage call,
+// gets treated as a dead connection, and is force-closed -- found live via
+// a real Tinox-UI app (issue #215's tinox.core:ui) whose WS connection was
+// silently reconnecting every ~5-6 seconds of user inactivity, discarding
+// all server-side state each time (no session persistence across a
+// reconnect, a separate documented v1 limitation) -- from the browser this
+// looked like "my clicks keep getting reverted to the initial state for no
+// reason". WsServer::accept/acceptTls (tinox.core:websocket) call this
+// right after a successful WS handshake -- the zombie guard already did
+// its job protecting the HANDSHAKE itself (which reuses the same blocking
+// httpServerAcceptConnHandle path), it just has no business staying active
+// for the rest of a legitimate long-lived connection's whole lifetime.
+// {0,0} is standard POSIX for "no timeout, block indefinitely" (the
+// default when SO_RCVTIMEO was never set at all).
+void httpConnClearRecvTimeout(int64_t conn) {
+    if (conn <= 0) return;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
+    setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
 // Reads a single '\n'-terminated line from a conn (issue #134, SMTP
 // client: RFC 5321 is a line-based, \r\n-terminated command/response
 // protocol -- unlike HTTP's blank-line-terminated request blocks
@@ -5894,7 +5946,21 @@ void tinox_HttpServer_listen(int64_t* server) {
 
     // Main thread creates its own SO_REUSEPORT socket
     int64_t server_fd = httpServerCreateOn(port, srv->bind_addr);
-    if (server_fd < 0) { fprintf(stderr, "HttpServer: failed to bind\n"); return; }
+    if (server_fd < 0) {
+        // A failed bind used to just log and return here, leaving the
+        // process running with its worker threads spawned above (which
+        // fail the same bind and quietly return too) but no listener ever
+        // actually up -- silent garbage: the program looks alive while
+        // serving nothing, and any already-listening process on the same
+        // port silently absorbs every request instead (see issue #226,
+        // where this masked as a false HTTP-server/GC regression report).
+        // Hard-fail instead, matching this runtime's convention for a
+        // fatal setup error (see e.g. processSpawnInteractive above).
+        int saved_errno = errno;
+        fprintf(stderr, "runtime error: HttpServer::listen(): failed to bind port %lld (%s)\n",
+                (long long)port, strerror(saved_errno));
+        exit(1);
+    }
     tinox_handle_connections(srv, server_fd);
     httpServerClose(server_fd);
 }

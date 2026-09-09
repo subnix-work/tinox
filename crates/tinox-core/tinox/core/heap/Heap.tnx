@@ -25,14 +25,14 @@ namespace tinox.core.heap
 
         fn pop(heap: Heap<T>) -> T
         {
-            if heap.items.len() == 0
+            if (heap.items.len() == 0)
             {
                 throw "Heap is empty";
             }
             let result: T = heap.items[0];
             let last: T = heap.items[heap.items.len() - 1];
             heap.items.pop();
-            if heap.items.len() > 0
+            if (heap.items.len() > 0)
             {
                 heap.items[0] = last;
                 Heap::siftDown(heap, 0);
@@ -42,7 +42,7 @@ namespace tinox.core.heap
 
         fn peek(heap: Heap<T>) -> T
         {
-            if heap.items.len() == 0
+            if (heap.items.len() == 0)
             {
                 throw "Heap is empty";
             }
@@ -55,7 +55,7 @@ namespace tinox.core.heap
             while index > 0
             {
                 let parent: Int64 = (index - 1) / 2;
-                if heap.comparator(heap.items[index], heap.items[parent])
+                if (heap.comparator(heap.items[index], heap.items[parent]))
                 {
                     let temp: T = heap.items[index];
                     heap.items[index] = heap.items[parent];
@@ -78,15 +78,15 @@ namespace tinox.core.heap
                 let left: Int64 = 2 * index + 1;
                 let right: Int64 = 2 * index + 2;
                 var smallest: Int64 = index;
-                if left < len && heap.comparator(heap.items[left], heap.items[smallest])
+                if (left < len && heap.comparator(heap.items[left], heap.items[smallest]))
                 {
                     smallest = left;
                 }
-                if right < len && heap.comparator(heap.items[right], heap.items[smallest])
+                if (right < len && heap.comparator(heap.items[right], heap.items[smallest]))
                 {
                     smallest = right;
                 }
-                if smallest != index
+                if (smallest != index)
                 {
                     let temp: T = heap.items[index];
                     heap.items[index] = heap.items[smallest];

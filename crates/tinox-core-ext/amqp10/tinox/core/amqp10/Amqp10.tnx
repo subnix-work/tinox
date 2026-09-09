@@ -16,7 +16,7 @@ namespace tinox.core.amqp10
         fn dial(host: String, port: Int64) -> Int64
         {
             let fd = socketCreateTcp();
-            if !socketConnect(fd, host, port) {
+            if (!socketConnect(fd, host, port)) {
                 // Bug 90 (same leak found in the sibling amqp091 module):
                 // a reconnect loop against an unreachable/refusing broker
                 // used to leak `fd` on every attempt.
@@ -37,7 +37,7 @@ namespace tinox.core.amqp10
         fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
         {
             let fd = socketCreateTcp();
-            if !socketConnect(fd, host, port) {
+            if (!socketConnect(fd, host, port)) {
                 // Bug 90: same fd leak as dial() above.
                 socketClose(fd);
                 return -1;
@@ -77,11 +77,11 @@ namespace tinox.core.amqp10
         fn checkProtocolHeaderEcho(conn: Int64, sent: List<Int64>) -> Bool
         {
             let resp = httpConnReadN(conn, 8);
-            if resp.len() != 8 {
+            if (resp.len() != 8) {
                 return false;
             }
             for i in 0..8 {
-                if resp[i] != sent[i] {
+                if (resp[i] != sent[i]) {
                     return false;
                 }
             }
@@ -103,35 +103,35 @@ namespace tinox.core.amqp10
         {
             let bad = Amqp10Frame { frameType: -1, chanId: 0, body: [] };
             let hdr = httpConnReadN(conn, 8);
-            if hdr.len() < 8 {
+            if (hdr.len() < 8) {
                 return bad;
             }
             let size = (hdr[0] << 24) | (hdr[1] << 16) | (hdr[2] << 8) | hdr[3];
             let doff = hdr[4];
             let frameType = hdr[5];
             let chanId = (hdr[6] << 8) | hdr[7];
-            if size < 8 || doff < 2 {
+            if (size < 8 || doff < 2) {
                 return Amqp10Frame { frameType: -2, chanId: chanId, body: [] };
             }
             let headerBytes = doff * 4;
-            if headerBytes > size {
+            if (headerBytes > size) {
                 return Amqp10Frame { frameType: -2, chanId: chanId, body: [] };
             }
             let extendedBytes = headerBytes - 8;
-            if extendedBytes > 0 {
+            if (extendedBytes > 0) {
                 let ext = httpConnReadN(conn, extendedBytes);
-                if ext.len() < extendedBytes {
+                if (ext.len() < extendedBytes) {
                     return bad;
                 }
             }
             let bodyBytes = size - headerBytes;
-            if bodyBytes > 16777216 {
+            if (bodyBytes > 16777216) {
                 return Amqp10Frame { frameType: -2, chanId: chanId, body: [] };
             }
             var body: List<Int64> = [];
-            if bodyBytes > 0 {
+            if (bodyBytes > 0) {
                 let raw = httpConnReadN(conn, bodyBytes);
-                if raw.len() < bodyBytes {
+                if (raw.len() < bodyBytes) {
                     return bad;
                 }
                 body = raw;
@@ -159,10 +159,10 @@ namespace tinox.core.amqp10
         {
             while true {
                 let f = Amqp10::readFrame(conn);
-                if f.frameType < 0 {
+                if (f.frameType < 0) {
                     return f; // EOF/protocol error, passed through unchanged
                 }
-                if f.body.len() > 0 {
+                if (f.body.len() > 0) {
                     return f; // a real frame
                 }
                 // Empty body = heartbeat: absorb, keep waiting.
@@ -308,14 +308,14 @@ namespace tinox.core.amqp10
         {
             // --- receive sasl-mechanisms ---
             let f1 = Amqp10::readFrame(conn);
-            if f1.frameType != 1 {
+            if (f1.frameType != 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1), got frameType=" + f1.frameType.toString() };
             }
             let p1 = Amqp10::decodePerformative(f1.body);
-            if p1.descriptor != 0x40 {
+            if (p1.descriptor != 0x40) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-mechanisms (0x40), got descriptor=" + p1.descriptor.toString() };
             }
-            if p1.fields.len() < 1 {
+            if (p1.fields.len() < 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "sasl-mechanisms with no mechanisms field" };
             }
             var hasPlain: Bool = false;
@@ -331,23 +331,23 @@ namespace tinox.core.amqp10
                     for i in 0..mechs.len() {
                         match mechs[i] {
                             SymbolVal(s) => {
-                                if s == "PLAIN" { hasPlain = true; }
-                                if s == "SCRAM-SHA-256" { hasScram = true; }
+                                if (s == "PLAIN") { hasPlain = true; }
+                                if (s == "SCRAM-SHA-256") { hasScram = true; }
                             }
                             _ => {}
                         }
                     }
                 }
                 SymbolVal(s) => {
-                    if s == "PLAIN" { hasPlain = true; }
-                    if s == "SCRAM-SHA-256" { hasScram = true; }
+                    if (s == "PLAIN") { hasPlain = true; }
+                    if (s == "SCRAM-SHA-256") { hasScram = true; }
                 }
                 _ => {}
             }
-            if hasScram {
+            if (hasScram) {
                 return Amqp10::negotiateSaslScram(conn, user, pass);
             }
-            if !hasPlain {
+            if (!hasPlain) {
                 return Amqp10SaslResult { ok: false, errorMessage: "broker offers neither SCRAM-SHA-256 nor PLAIN" };
             }
 
@@ -362,14 +362,14 @@ namespace tinox.core.amqp10
 
             // --- receive sasl-outcome ---
             let f2 = Amqp10::readFrame(conn);
-            if f2.frameType != 1 {
+            if (f2.frameType != 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1), got frameType=" + f2.frameType.toString() };
             }
             let p2 = Amqp10::decodePerformative(f2.body);
-            if p2.descriptor != 0x44 {
+            if (p2.descriptor != 0x44) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-outcome (0x44), got descriptor=" + p2.descriptor.toString() };
             }
-            if p2.fields.len() < 1 {
+            if (p2.fields.len() < 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "sasl-outcome with no code field" };
             }
             var code: Int64 = -1;
@@ -378,7 +378,7 @@ namespace tinox.core.amqp10
                 UByteVal(n) => { code = n; }
                 _ => {}
             }
-            if code != 0 {
+            if (code != 0) {
                 return Amqp10SaslResult { ok: false, errorMessage: "SASL auth failed, sasl-outcome-code=" + code.toString() };
             }
             return Amqp10SaslResult { ok: true, errorMessage: "" };
@@ -503,14 +503,14 @@ namespace tinox.core.amqp10
 
             // --- receive sasl-challenge (server-first-message) ---
             let f2 = Amqp10::readFrame(conn);
-            if f2.frameType != 1 {
+            if (f2.frameType != 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1) for SCRAM challenge, got frameType=" + f2.frameType.toString() };
             }
             let p2 = Amqp10::decodePerformative(f2.body);
-            if p2.descriptor != 0x42 {
+            if (p2.descriptor != 0x42) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-challenge (0x42), got descriptor=" + p2.descriptor.toString() };
             }
-            if p2.fields.len() < 1 {
+            if (p2.fields.len() < 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "sasl-challenge with no challenge field" };
             }
             var serverFirstMessage: String = "";
@@ -518,7 +518,7 @@ namespace tinox.core.amqp10
                 BinaryVal(b) => { serverFirstMessage = Amqp10::bytesToString(b); }
                 _ => {}
             }
-            if serverFirstMessage.len() == 0 {
+            if (serverFirstMessage.len() == 0) {
                 return Amqp10SaslResult { ok: false, errorMessage: "sasl-challenge with an empty/invalid challenge field" };
             }
 
@@ -529,20 +529,20 @@ namespace tinox.core.amqp10
             var iterations: Int64 = 0;
             for i in 0..parts.len() {
                 let part = parts[i];
-                if part.startsWith("r=") {
+                if (part.startsWith("r=")) {
                     combinedNonce = part.substring(2, part.len());
                 }
-                if part.startsWith("s=") {
+                if (part.startsWith("s=")) {
                     saltB64 = part.substring(2, part.len());
                 }
-                if part.startsWith("i=") {
+                if (part.startsWith("i=")) {
                     iterations = part.substring(2, part.len()).toInt();
                 }
             }
-            if !combinedNonce.startsWith(clientNonce) {
+            if (!combinedNonce.startsWith(clientNonce)) {
                 return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: broker nonce doesn't start with the client nonce (possible downgrade attack)" };
             }
-            if saltB64.len() == 0 || iterations <= 0 {
+            if (saltB64.len() == 0 || iterations <= 0) {
                 return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-first-message with no valid salt/iterations field" };
             }
             // Bug 87: `iterations` is broker-controlled and fed straight into
@@ -551,7 +551,7 @@ namespace tinox.core.amqp10
             // could otherwise force unbounded CPU consumption during connect()
             // with an absurd `i=` value. 200000 is well above real-world
             // broker defaults (typically 4096-100000) but caps the worst case.
-            if iterations > 200000 {
+            if (iterations > 200000) {
                 return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: iteration count " + iterations.toString() + " exceeds safety cap (200000)" };
             }
 
@@ -576,35 +576,35 @@ namespace tinox.core.amqp10
 
             // --- receive sasl-outcome (additional-data = server-final-message) ---
             let f3 = Amqp10::readFrame(conn);
-            if f3.frameType != 1 {
+            if (f3.frameType != 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1) for SCRAM outcome, got frameType=" + f3.frameType.toString() };
             }
             let p3 = Amqp10::decodePerformative(f3.body);
-            if p3.descriptor != 0x44 {
+            if (p3.descriptor != 0x44) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-outcome (0x44), got descriptor=" + p3.descriptor.toString() };
             }
-            if p3.fields.len() < 1 {
+            if (p3.fields.len() < 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "sasl-outcome with no code field" };
             }
             var code: Int64 = -1;
             match p3.fields[0] { UByteVal(n) => { code = n; } _ => {} }
-            if code != 0 {
+            if (code != 0) {
                 return Amqp10SaslResult { ok: false, errorMessage: "SCRAM auth failed, sasl-outcome-code=" + code.toString() };
             }
 
             // --- verify the server signature (mutual authentication,
             // not just client -> server) — no silent trust ---
             var serverFinalMessage: String = "";
-            if p3.fields.len() > 1 {
+            if (p3.fields.len() > 1) {
                 match p3.fields[1] {
                     BinaryVal(b) => { serverFinalMessage = Amqp10::bytesToString(b); }
                     _ => {}
                 }
             }
-            if serverFinalMessage.len() == 0 {
+            if (serverFinalMessage.len() == 0) {
                 return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: sasl-outcome with no additional-data (server-final-message) — server identity not verifiable" };
             }
-            if !serverFinalMessage.startsWith("v=") {
+            if (!serverFinalMessage.startsWith("v=")) {
                 return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-final-message with no 'v=' field" };
             }
             let serverSignatureB64 = serverFinalMessage.substring(2, serverFinalMessage.len());
@@ -612,12 +612,12 @@ namespace tinox.core.amqp10
             let serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword);
             let expectedServerSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey);
             var sigMatch: Bool = receivedServerSignature.len() == expectedServerSignature.len();
-            if sigMatch {
+            if (sigMatch) {
                 for i in 0..expectedServerSignature.len() {
-                    if receivedServerSignature[i] != expectedServerSignature[i] { sigMatch = false; }
+                    if (receivedServerSignature[i] != expectedServerSignature[i]) { sigMatch = false; }
                 }
             }
-            if !sigMatch {
+            if (!sigMatch) {
                 return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server signature mismatch — server identity NOT verified (possible MITM)" };
             }
 

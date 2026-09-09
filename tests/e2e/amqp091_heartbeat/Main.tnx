@@ -51,7 +51,7 @@ class Main
         tuneOkArgs.long();  // frame-max, unchecked
         let echoedHeartbeat = tuneOkArgs.short();
         var ok2: Bool = false;
-        if echoedHeartbeat == 2 {
+        if (echoedHeartbeat == 2) {
             ok2 = true;
         }
 
@@ -68,10 +68,10 @@ class Main
         var i: Int64 = 0;
         while i < 20 {
             let f = Amqp091::readFrame(sconn);
-            if f.frameType == 8 {
+            if (f.frameType == 8) {
                 sawHeartbeat = true;
             }
-            if f.frameType == 1 {
+            if (f.frameType == 1) {
                 break;
             }
             i = i + 1;
@@ -87,8 +87,8 @@ class Main
         httpConnClose(sconn);
 
         var result: Int64 = 0;
-        if ok2 {
-            if sawHeartbeat {
+        if (ok2) {
+            if (sawHeartbeat) {
                 result = 1;
             }
         }
@@ -99,17 +99,17 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
-        if c.conn > 0 {
+        if (c.conn > 0) {
             println("ok-connect");
         }
-        if c.heartbeat == 2 {
+        if (c.heartbeat == 2) {
             println("ok-heartbeat-negotiated");
         }
 
@@ -119,7 +119,7 @@ class Main
         c.close();
 
         let brokerResult = await handle;
-        if brokerResult == 1 {
+        if (brokerResult == 1) {
             println("ok-broker-saw-echo");
             println("ok-broker-saw-heartbeat-frame");
         }

@@ -20,7 +20,7 @@ class Main
         webApp.install(server); // registers /login and /callback
 
         server.get("/", ctx => {
-            if !webApp.requireLogin(ctx)
+            if (!webApp.requireLogin(ctx))
             {
                 return; // already redirected to /login
             }

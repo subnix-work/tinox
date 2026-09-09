@@ -1,4 +1,4 @@
 [package]
 name = "hpack"
-version = "1.0.0"
+version = "1.0.1"
 description = "tinox.core.hpack, split out of the bundled stdlib as a standalone tinox-central package."

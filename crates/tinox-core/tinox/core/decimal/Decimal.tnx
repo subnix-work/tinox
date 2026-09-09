@@ -55,7 +55,7 @@ namespace tinox.core.decimal
 
         fn scaleValue(value: String, digits: Int64) -> String
         {
-            if digits == 0
+            if (digits == 0)
             {
                 return value;
             }
@@ -92,11 +92,11 @@ namespace tinox.core.decimal
 
         fn toString(d: Decimal) -> String
         {
-            if d.scale == 0
+            if (d.scale == 0)
             {
                 return d.value;
             }
-            if d.value.len() <= d.scale
+            if (d.value.len() <= d.scale)
             {
                 let zeros: String = "0";
                 let leading: String = Strings::repeat(zeros, d.scale - d.value.len() + 1);

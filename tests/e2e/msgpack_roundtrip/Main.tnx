@@ -79,7 +79,7 @@ class Main
         // read out of bounds.
         var truncated: List<Int64> = [0xdb, 0xff, 0xff, 0xff, 0xff];
         let badResult: MsgpackValue = Msgpack::decode(truncated);
-        if !badResult.isNull() {
+        if (!badResult.isNull()) {
             println(false);
         }
 

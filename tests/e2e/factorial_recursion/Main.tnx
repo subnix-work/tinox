@@ -4,7 +4,7 @@ class Main
 {
     fnc factorial(n: Int64) -> Int64
     {
-        if n <= 1 { return 1; }
+        if (n <= 1) { return 1; }
         return n * factorial(n - 1);
     }
 

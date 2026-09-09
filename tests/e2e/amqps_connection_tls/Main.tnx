@@ -20,7 +20,7 @@ class Main
 
     async fnc fakeBrokerTls(srv: Int64) -> Int64 {
         let sconn = httpServerAcceptTls(srv);
-        if sconn <= 0 {
+        if (sconn <= 0) {
             return 0;
         }
         httpConnReadN(sconn, 8); // protocol header, see amqp10_phase1_handshake.tnx
@@ -70,7 +70,7 @@ class Main
 
     fnc main() -> Int32 {
         let srv = httpServerCreateTls(47705, "tls_cert.pem", "tls_key.pem");
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -80,20 +80,20 @@ class Main
         let c = AmqpConnection091::connectTls("127.0.0.1", 47705, "/", "guest", "guest", false);
         let brokerOk = await handle;
 
-        if c.conn > 0 {
+        if (c.conn > 0) {
             println("ok-connect");
         }
-        if c.frameMax == 131072 {
+        if (c.frameMax == 131072) {
             println("ok-framemax");
         }
-        if brokerOk != 1 {
+        if (brokerOk != 1) {
             println("broker-error: " + c.errorMessage);
         }
 
         // --- Negative path: verify=true must reject the self-signed cert ---
         let handle2 = spawn acceptRejected(srv);
         let c2 = AmqpConnection091::connectTls("127.0.0.1", 47705, "/", "guest", "guest", true);
-        if c2.conn <= 0 {
+        if (c2.conn <= 0) {
             println("ok-verify-reject");
         }
         await handle2;

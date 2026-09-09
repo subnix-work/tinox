@@ -10,26 +10,26 @@ class Main
 {
     fnc main() -> Int32 {
         let srv = WsServer::listen(8790);
-        if srv < 0 {
+        if (srv < 0) {
             println("port 8790 in use");
             return 1;
         }
         println("ws://localhost:8790 ready");
         while true {
             let conn = WsServer::accept(srv);
-            if conn <= 0 {
+            if (conn <= 0) {
                 continue;
             }
             println("client connected");
             while true {
                 let f = Ws::readMessage(conn);
-                if f.opcode == 1 {
+                if (f.opcode == 1) {
                     let msg = Ws::text(f);
                     println("received: " + msg);
                     Ws::sendText(conn, "echo: " + msg);
                     continue;
                 }
-                if f.opcode == 2 {
+                if (f.opcode == 2) {
                     Ws::sendBinary(conn, f.payload);
                     continue;
                 }

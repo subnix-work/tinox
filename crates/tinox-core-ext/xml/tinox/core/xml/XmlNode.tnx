@@ -21,7 +21,7 @@ namespace tinox.core.xml
 
         fn attr(name: String) -> String
         {
-            if this.attrs.contains(name)
+            if (this.attrs.contains(name))
             {
                 return this.attrs[name];
             }
@@ -39,7 +39,7 @@ namespace tinox.core.xml
             var i: Int64 = 0;
             while i < children.len()
             {
-                if children[i].tagName() == tag
+                if (children[i].tagName() == tag)
                 {
                     return children[i];
                 }

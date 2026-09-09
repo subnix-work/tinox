@@ -16,26 +16,26 @@ class Main
 {
     fnc main() -> Int32 {
         let srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
-        if srv < 0 {
+        if (srv < 0) {
             println("listenTls failed (port in use, runtime built with TINOX_TLS=0, or cert.pem/key.pem missing/invalid)");
             return 1;
         }
         println("wss://localhost:8791 ready");
         while true {
             let conn = WsServer::acceptTls(srv);
-            if conn <= 0 {
+            if (conn <= 0) {
                 continue;
             }
             println("client connected");
             while true {
                 let f = Ws::readMessage(conn);
-                if f.opcode == 1 {
+                if (f.opcode == 1) {
                     let msg = Ws::text(f);
                     println("received: " + msg);
                     Ws::sendText(conn, "echo: " + msg);
                     continue;
                 }
-                if f.opcode == 2 {
+                if (f.opcode == 2) {
                     Ws::sendBinary(conn, f.payload);
                     continue;
                 }

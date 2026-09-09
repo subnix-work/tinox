@@ -30,7 +30,7 @@ class Main
         println("exp=" + expVal.getInt().toString());
         let subStr = subVal.getString();
         println("sub=" + subStr);
-        if subStr == "hello-world-value-1234567890" {
+        if (subStr == "hello-world-value-1234567890") {
             println("ok-not-corrupted-string");
         }
 
@@ -41,7 +41,7 @@ class Main
         Json::parse("[1,2,3,4,5]");
         Json::parse("\"throwaway\"");
         println("nested=" + objVal.getField("inner").getInt().toString());
-        if objVal.getField("tag").getString() == "keep-me" {
+        if (objVal.getField("tag").getString() == "keep-me") {
             println("ok-not-corrupted-object");
         }
 
@@ -56,7 +56,7 @@ class Main
             sum = sum + arr[i];
         }
         println("arr-sum=" + sum.toString());
-        if sum == 6 {
+        if (sum == 6) {
             println("ok-not-corrupted-array");
         }
 

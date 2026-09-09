@@ -45,7 +45,7 @@ namespace tinox.core.smtp
         fn connect(host: String, port: Int64) -> SmtpClient
         {
             let fd = socketCreateTcp();
-            if !socketConnect(fd, host, port) {
+            if (!socketConnect(fd, host, port)) {
                 socketClose(fd);
                 return SmtpClient { conn: -1, host: host, errorMessage: "connect failed" };
             }
@@ -63,12 +63,12 @@ namespace tinox.core.smtp
         fn connectTls(host: String, port: Int64, verify: Bool) -> SmtpClient
         {
             let fd = socketCreateTcp();
-            if !socketConnect(fd, host, port) {
+            if (!socketConnect(fd, host, port)) {
                 socketClose(fd);
                 return SmtpClient { conn: -1, host: host, errorMessage: "connect failed (TLS)" };
             }
             let conn = httpConnFromFdTls(fd, host, verify);
-            if conn <= 0 {
+            if (conn <= 0) {
                 return SmtpClient { conn: -1, host: host, errorMessage: "TLS handshake failed" };
             }
             return SmtpClient::finishConnect(conn, host);
@@ -77,16 +77,16 @@ namespace tinox.core.smtp
         // Shared tail of connect()/connectTls(): greeting + EHLO.
         fn finishConnect(conn: Int64, host: String) -> SmtpClient
         {
-            if conn <= 0 {
+            if (conn <= 0) {
                 return SmtpClient { conn: -1, host: host, errorMessage: "connect failed" };
             }
             let greeting = SmtpClient::readReply(conn);
-            if !greeting.startsWith("2") {
+            if (!greeting.startsWith("2")) {
                 httpConnClose(conn);
                 return SmtpClient { conn: -1, host: host, errorMessage: "unexpected greeting: " + greeting };
             }
             var client: SmtpClient = SmtpClient { conn: conn, host: host, errorMessage: "" };
-            if !client.ehlo() {
+            if (!client.ehlo()) {
                 httpConnClose(conn);
                 client.conn = -1;
                 client.errorMessage = "EHLO failed";
@@ -112,15 +112,15 @@ namespace tinox.core.smtp
         fn startTls() -> Bool
         {
             httpConnSendRaw(this.conn, "STARTTLS\r\n");
-            if SmtpClient::readReply(this.conn) != "220" {
+            if (SmtpClient::readReply(this.conn) != "220") {
                 return false;
             }
             let fd = httpConnTakeFd(this.conn);
-            if fd < 0 {
+            if (fd < 0) {
                 return false;
             }
             let tlsConn = httpConnFromFdTls(fd, this.host, true);
-            if tlsConn <= 0 {
+            if (tlsConn <= 0) {
                 return false;
             }
             this.conn = tlsConn;
@@ -169,28 +169,28 @@ namespace tinox.core.smtp
         fn send(from: String, to: List<String>, subject: String, body: String) -> Bool
         {
             httpConnSendRaw(this.conn, "MAIL FROM:<" + from + ">\r\n");
-            if !SmtpClient::readReply(this.conn).startsWith("2") {
+            if (!SmtpClient::readReply(this.conn).startsWith("2")) {
                 return false;
             }
 
             var i: Int64 = 0;
             while i < to.len() {
                 httpConnSendRaw(this.conn, "RCPT TO:<" + to[i] + ">\r\n");
-                if !SmtpClient::readReply(this.conn).startsWith("2") {
+                if (!SmtpClient::readReply(this.conn).startsWith("2")) {
                     return false;
                 }
                 i = i + 1;
             }
 
             httpConnSendRaw(this.conn, "DATA\r\n");
-            if SmtpClient::readReply(this.conn) != "354" {
+            if (SmtpClient::readReply(this.conn) != "354") {
                 return false;
             }
 
             var toHeader: String = "";
             var k: Int64 = 0;
             while k < to.len() {
-                if k > 0 {
+                if (k > 0) {
                     toHeader = toHeader + ", ";
                 }
                 toHeader = toHeader + to[k];
@@ -202,10 +202,10 @@ namespace tinox.core.smtp
             var m: Int64 = 0;
             while m < lines.len() {
                 var line = lines[m];
-                if line.endsWith("\r") {
+                if (line.endsWith("\r")) {
                     line = line.substring(0, line.len() - 1);
                 }
-                if line.startsWith(".") {
+                if (line.startsWith(".")) {
                     line = "." + line;
                 }
                 httpConnSendRaw(this.conn, line + "\r\n");
@@ -236,11 +236,11 @@ namespace tinox.core.smtp
             var done: Bool = false;
             while !done {
                 let line = httpConnReadLine(conn);
-                if line.len() < 4 {
+                if (line.len() < 4) {
                     return "";
                 }
                 code = line.substring(0, 3);
-                if line.substring(3, 4) == " " {
+                if (line.substring(3, 4) == " ") {
                     done = true;
                 }
             }

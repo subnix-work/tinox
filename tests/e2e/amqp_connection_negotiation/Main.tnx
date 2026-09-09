@@ -41,8 +41,8 @@ class Main
         let f1 = Amqp091::readFrame(sconn);
         let startOk = Amqp091::decodeMethodPayload(f1.payload);
         var ok1: Bool = false;
-        if startOk.classId == 10 {
-            if startOk.methodId == 11 {
+        if (startOk.classId == 10) {
+            if (startOk.methodId == 11) {
                 ok1 = true;
             }
         }
@@ -58,8 +58,8 @@ class Main
         let f2 = Amqp091::readFrame(sconn);
         let tuneOk = Amqp091::decodeMethodPayload(f2.payload);
         var ok2: Bool = false;
-        if tuneOk.classId == 10 {
-            if tuneOk.methodId == 31 {
+        if (tuneOk.classId == 10) {
+            if (tuneOk.methodId == 31) {
                 ok2 = true;
             }
         }
@@ -68,8 +68,8 @@ class Main
         let f3 = Amqp091::readFrame(sconn);
         let openM = Amqp091::decodeMethodPayload(f3.payload);
         var ok3: Bool = false;
-        if openM.classId == 10 {
-            if openM.methodId == 40 {
+        if (openM.classId == 10) {
+            if (openM.methodId == 40) {
                 ok3 = true;
             }
         }
@@ -83,9 +83,9 @@ class Main
         let f4 = Amqp091::readFrame(sconn);
         let chanOpenM = Amqp091::decodeMethodPayload(f4.payload);
         var ok4: Bool = false;
-        if chanOpenM.classId == 20 {
-            if chanOpenM.methodId == 10 {
-                if f4.chanId == 1 {
+        if (chanOpenM.classId == 20) {
+            if (chanOpenM.methodId == 10) {
+                if (f4.chanId == 1) {
                     ok4 = true;
                 }
             }
@@ -99,10 +99,10 @@ class Main
         httpConnClose(sconn);
 
         var allOk: Int64 = 0;
-        if ok1 {
-            if ok2 {
-                if ok3 {
-                    if ok4 {
+        if (ok1) {
+            if (ok2) {
+                if (ok3) {
+                    if (ok4) {
                         allOk = 1;
                     }
                 }
@@ -115,7 +115,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -126,16 +126,16 @@ class Main
 
         let brokerOk = await handle;
 
-        if c.conn > 0 {
+        if (c.conn > 0) {
             println("ok-connect");
         }
-        if c.frameMax == 131072 {
+        if (c.frameMax == 131072) {
             println("ok-framemax");
         }
-        if ch.chanId == 1 {
+        if (ch.chanId == 1) {
             println("ok-channel");
         }
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

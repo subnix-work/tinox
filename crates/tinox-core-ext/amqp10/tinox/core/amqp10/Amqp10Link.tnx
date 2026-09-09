@@ -85,7 +85,7 @@ namespace tinox.core.amqp10
 
             var sourceVal: Amqp10Value = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x28, value: Amqp10Value::ListVal([]) });
             var targetVal: Amqp10Value = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x29, value: Amqp10Value::ListVal([]) });
-            if role {
+            if (role) {
                 sourceVal = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x28, value: Amqp10Value::ListVal([Amqp10Value::StrVal(address)]) });
             } else {
                 targetVal = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x29, value: Amqp10Value::ListVal([Amqp10Value::StrVal(address)]) });
@@ -98,7 +98,7 @@ namespace tinox.core.amqp10
             // empty map (identical to the previous attach() behavior,
             // no behavior change).
             var unsettledVal: Amqp10Value = Amqp10Value::NullVal;
-            if priorUnsettledTags.len() > 0 {
+            if (priorUnsettledTags.len() > 0) {
                 var pairs: List<Amqp10Value> = [];
                 for i in 0..priorUnsettledTags.len() {
                     pairs.push(Amqp10Value::BinaryVal(priorUnsettledTags[i]));
@@ -129,11 +129,11 @@ namespace tinox.core.amqp10
             Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody);
 
             let f = Amqp10::readFrame(session.conn);
-            if f.frameType != 0 {
+            if (f.frameType != 0) {
                 return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
             }
             let p = Amqp10::decodePerformative(f.body);
-            if p.descriptor != 0x12 {
+            if (p.descriptor != 0x12) {
                 return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
             }
             // Evaluate the broker's own unsettled field (position 7) —
@@ -141,7 +141,7 @@ namespace tinox.core.amqp10
             // class comment), which is enough in practice to know WHICH
             // deliveries the broker still considers open.
             var recoveredTags: List<List<Int64>> = [];
-            if p.fields.len() > 7 {
+            if (p.fields.len() > 7) {
                 match p.fields[7] {
                     MapVal(pairs) => {
                         var i: Int64 = 0;
@@ -185,7 +185,7 @@ namespace tinox.core.amqp10
         fn awaitFlow() -> Nothing
         {
             let f = Amqp10::readFrame(this.conn);
-            if f.frameType != 0 {
+            if (f.frameType != 0) {
                 this.errorMessage = "expected AMQP frame (type=0) while waiting for flow, got frameType=" + f.frameType.toString();
                 return;
             }
@@ -193,19 +193,19 @@ namespace tinox.core.amqp10
             // a flow from a DIFFERENT session from wrongly being applied
             // as credit for this link (no real frame dispatcher in v1,
             // see the class comment).
-            if f.chanId != this.chanId {
+            if (f.chanId != this.chanId) {
                 this.errorMessage = "flow received on the wrong channel " + f.chanId.toString() + " (expected: " + this.chanId.toString() + ") — no frame dispatcher in v1, see issue 76";
                 return;
             }
             let p = Amqp10::decodePerformative(f.body);
-            if p.descriptor != 0x13 {
+            if (p.descriptor != 0x13) {
                 this.errorMessage = "expected flow (0x13), got descriptor=" + p.descriptor.toString();
                 return;
             }
             // Field positions: next-incoming-id(0), incoming-window(1),
             // next-outgoing-id(2), outgoing-window(3), handle(4),
             // delivery-count(5), link-credit(6).
-            if p.fields.len() > 6 {
+            if (p.fields.len() > 6) {
                 match p.fields[6] { UIntVal(n) => { this.linkCredit = n; } _ => {} }
             }
         }
@@ -273,12 +273,12 @@ namespace tinox.core.amqp10
 
         fn publishCore(body: List<Int64>, contentType: String, txnState: Amqp10Value) -> Nothing
         {
-            if this.linkCredit <= 0 {
+            if (this.linkCredit <= 0) {
                 this.awaitFlow();
-                if this.errorMessage.len() > 0 {
+                if (this.errorMessage.len() > 0) {
                     return;
                 }
-                if this.linkCredit <= 0 {
+                if (this.linkCredit <= 0) {
                     this.errorMessage = "no link credit received despite a flow frame";
                     return;
                 }
@@ -292,7 +292,7 @@ namespace tinox.core.amqp10
             // — v1 deliberately estimates generously instead of
             // computing exactly.
             var maxBodyPerFrame: Int64 = this.maxFrameSize - 64;
-            if maxBodyPerFrame < 1 {
+            if (maxBodyPerFrame < 1) {
                 maxBodyPerFrame = 1;
             }
 
@@ -301,11 +301,11 @@ namespace tinox.core.amqp10
             while offset < msgBytes.len() || isFirst {
                 var remaining: Int64 = msgBytes.len() - offset;
                 var chunkSize: Int64 = remaining;
-                if chunkSize > maxBodyPerFrame {
+                if (chunkSize > maxBodyPerFrame) {
                     chunkSize = maxBodyPerFrame;
                 }
                 var more: Bool = false;
-                if (offset + chunkSize) < msgBytes.len() {
+                if ((offset + chunkSize) < msgBytes.len()) {
                     more = true;
                 }
                 var chunk: List<Int64> = [];
@@ -358,7 +358,7 @@ namespace tinox.core.amqp10
         fn nextMessage() -> Amqp10Message
         {
             let f = Amqp10::readFrameSkipHeartbeats(this.conn);
-            if f.frameType != 0 {
+            if (f.frameType != 0) {
                 return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() };
             }
             // Issue 76: there is no real frame dispatcher — with
@@ -368,7 +368,7 @@ namespace tinox.core.amqp10
             // its own message (a wrong message body would be a classic
             // case of silent garbage). Channel first (cheap, from the
             // frame header, no performative decoding needed).
-            if f.chanId != this.chanId {
+            if (f.chanId != this.chanId) {
                 return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "frame received on the wrong channel " + f.chanId.toString() + " (expected: " + this.chanId.toString() + ") — no frame dispatcher in v1, see issue 76" };
             }
             let r = Amqp10Reader::new(f.body);
@@ -382,13 +382,13 @@ namespace tinox.core.amqp10
                 }
                 _ => {}
             }
-            if descriptor != 0x14 {
+            if (descriptor != 0x14) {
                 return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "expected transfer (0x14), got descriptor=" + descriptor.toString() };
             }
-            if fields.len() > 0 {
+            if (fields.len() > 0) {
                 match fields[0] {
                     UIntVal(fh) => {
-                        if fh != this.handle {
+                        if (fh != this.handle) {
                             return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "transfer received for the wrong link handle " + fh.toString() + " (expected: " + this.handle.toString() + ") — no frame dispatcher in v1, see issue 76" };
                         }
                     }
@@ -396,13 +396,13 @@ namespace tinox.core.amqp10
                 }
             }
             var deliveryId: Int64 = -1;
-            if fields.len() > 1 {
+            if (fields.len() > 1) {
                 match fields[1] { UIntVal(n) => { deliveryId = n; } _ => {} }
             }
-            if fields.len() > 5 {
+            if (fields.len() > 5) {
                 match fields[5] {
                     BoolVal(more) => {
-                        if more {
+                        if (more) {
                             return Amqp10Message { body: [], contentType: "", deliveryId: deliveryId, ok: false, errorMessage: "multi-frame transfer (more=true) is not reassembled in v1" };
                         }
                     }
@@ -435,10 +435,10 @@ namespace tinox.core.amqp10
                 match sv
                 {
                     DescribedVal(sd) => {
-                        if sd.descriptor == 0x75 {
+                        if (sd.descriptor == 0x75) {
                             match sd.value { BinaryVal(b) => { body = b; bodyFound = true; } _ => {} }
                         }
-                        if sd.descriptor == 0x77 {
+                        if (sd.descriptor == 0x77) {
                             match sd.value {
                                 BinaryVal(b) => { body = b; bodyFound = true; }
                                 StrVal(s) => {
@@ -450,10 +450,10 @@ namespace tinox.core.amqp10
                                 _ => {}
                             }
                         }
-                        if sd.descriptor == 0x73 {
+                        if (sd.descriptor == 0x73) {
                             match sd.value {
                                 ListVal(propFields) => {
-                                    if propFields.len() > 6 {
+                                    if (propFields.len() > 6) {
                                         match propFields[6] { SymbolVal(s) => { contentType = s; } _ => {} }
                                     }
                                 }
@@ -464,7 +464,7 @@ namespace tinox.core.amqp10
                     _ => {}
                 }
             }
-            if !bodyFound {
+            if (!bodyFound) {
                 return Amqp10Message { body: [], contentType: contentType, deliveryId: deliveryId, ok: false, errorMessage: "no recognized body section (data/amqp-value) found in the transfer" };
             }
 
@@ -517,7 +517,7 @@ namespace tinox.core.amqp10
         fn reject(deliveryId: Int64, condition: String, description: String) -> Nothing
         {
             var rejectedFields: List<Amqp10Value> = [];
-            if condition.len() > 0 {
+            if (condition.len() > 0) {
                 let errorDesc = Amqp10Described { descriptor: 0x1d, value: Amqp10Value::ListVal([
                     Amqp10Value::SymbolVal(condition),
                     Amqp10Value::StrVal(description)
@@ -617,11 +617,11 @@ namespace tinox.core.amqp10
             Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody);
 
             let f = Amqp10::readFrame(session.conn);
-            if f.frameType != 0 {
+            if (f.frameType != 0) {
                 return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
             }
             let p = Amqp10::decodePerformative(f.body);
-            if p.descriptor != 0x12 {
+            if (p.descriptor != 0x12) {
                 return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
             }
             // Coordinator links never receive flow -- the broker accepts
@@ -661,14 +661,14 @@ namespace tinox.core.amqp10
             this.deliveryCount = this.deliveryCount + 1;
 
             let f = Amqp10::readFrame(this.conn);
-            if f.frameType != 0 {
+            if (f.frameType != 0) {
                 return Amqp10Value::ErrorVal("expected AMQP frame (type=0), got frameType=" + f.frameType.toString());
             }
             let p = Amqp10::decodePerformative(f.body);
-            if p.descriptor != 0x15 {
+            if (p.descriptor != 0x15) {
                 return Amqp10Value::ErrorVal("expected disposition (0x15), got descriptor=" + p.descriptor.toString());
             }
-            if p.fields.len() < 5 {
+            if (p.fields.len() < 5) {
                 return Amqp10Value::ErrorVal("disposition with no state field");
             }
             return p.fields[4];
@@ -689,10 +689,10 @@ namespace tinox.core.amqp10
             let state = this.sendCoordinatorControl(Amqp10Value::DescribedVal(declareDesc));
             match state {
                 DescribedVal(d) => {
-                    if d.descriptor == 0x33 {
+                    if (d.descriptor == 0x33) {
                         match d.value {
                             ListVal(fields) => {
-                                if fields.len() > 0 {
+                                if (fields.len() > 0) {
                                     match fields[0] {
                                         BinaryVal(txnId) => { return Amqp10Transaction { txnId: txnId, ok: true, errorMessage: "" }; }
                                         _ => {}
@@ -727,7 +727,7 @@ namespace tinox.core.amqp10
             ]) };
             let state = this.sendCoordinatorControl(Amqp10Value::DescribedVal(dischargeDesc));
             match state {
-                DescribedVal(d) => { if d.descriptor == 0x24 { return true; } } // accepted
+                DescribedVal(d) => { if (d.descriptor == 0x24) { return true; } } // accepted
                 _ => {}
             }
             this.errorMessage = "discharge: did not receive an accepted disposition state";

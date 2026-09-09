@@ -25,7 +25,7 @@ namespace tinox.core.yaml
         // isMap()/isList() check by hand.
         fn get(key: String) -> YamlValue
         {
-            if !this.isMap() || !this.mapValue.contains(key)
+            if (!this.isMap() || !this.mapValue.contains(key))
             {
                 return YamlValue::ofNull();
             }
@@ -39,7 +39,7 @@ namespace tinox.core.yaml
 
         fn at(index: Int64) -> YamlValue
         {
-            if !this.isList() || index < 0 || index >= this.listValue.len()
+            if (!this.isList() || index < 0 || index >= this.listValue.len())
             {
                 return YamlValue::ofNull();
             }
@@ -48,8 +48,8 @@ namespace tinox.core.yaml
 
         fn len() -> Int64
         {
-            if this.isList() { return this.listValue.len(); }
-            if this.isMap() { return this.mapValue.len(); }
+            if (this.isList()) { return this.listValue.len(); }
+            if (this.isMap()) { return this.mapValue.len(); }
             return 0;
         }
 

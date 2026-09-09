@@ -32,14 +32,14 @@ class Main
         let sconn1 = httpServerAcceptConnHandle(srv);
         let req1 = httpConnReadRequest(sconn1);
         var exchangeOk: Int64 = 0;
-        if req1.contains("POST /token") {
-            if req1.contains("Content-Type: application/x-www-form-urlencoded") {
-                if req1.contains("grant_type=authorization_code") {
-                    if req1.contains("code=abc123") {
-                        if req1.contains("redirect_uri=https%3A%2F%2Fmyapp.example.com%2Fcallback") {
-                            if req1.contains("client_id=my-client-id") {
-                                if req1.contains("client_secret=my-client-secret") {
-                                    if req1.contains("code_verifier=") {
+        if (req1.contains("POST /token")) {
+            if (req1.contains("Content-Type: application/x-www-form-urlencoded")) {
+                if (req1.contains("grant_type=authorization_code")) {
+                    if (req1.contains("code=abc123")) {
+                        if (req1.contains("redirect_uri=https%3A%2F%2Fmyapp.example.com%2Fcallback")) {
+                            if (req1.contains("client_id=my-client-id")) {
+                                if (req1.contains("client_secret=my-client-secret")) {
+                                    if (req1.contains("code_verifier=")) {
                                         exchangeOk = 1;
                                     }
                                 }
@@ -58,10 +58,10 @@ class Main
         let sconn2 = httpServerAcceptConnHandle(srv);
         let req2 = httpConnReadRequest(sconn2);
         var refreshOk: Int64 = 0;
-        if req2.contains("POST /token") {
-            if req2.contains("grant_type=refresh_token") {
-                if req2.contains("refresh_token=rt-67890") {
-                    if req2.contains("client_id=my-client-id") {
+        if (req2.contains("POST /token")) {
+            if (req2.contains("grant_type=refresh_token")) {
+                if (req2.contains("refresh_token=rt-67890")) {
+                    if (req2.contains("client_id=my-client-id")) {
                         refreshOk = 1;
                     }
                 }
@@ -81,8 +81,8 @@ class Main
         httpConnClose(sconn3);
 
         var allOk: Int64 = 0;
-        if exchangeOk == 1 {
-            if refreshOk == 1 {
+        if (exchangeOk == 1) {
+            if (refreshOk == 1) {
                 allOk = 1;
             }
         }
@@ -93,7 +93,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -108,29 +108,29 @@ class Main
         );
 
         let authReq = client.buildAuthorizeUrl("openid email");
-        if authReq.url.contains("response_type=code") {
-            if authReq.url.contains("code_challenge=") {
-                if authReq.url.contains("code_challenge_method=S256") {
-                    if authReq.url.contains("client_id=my-client-id") {
-                        if authReq.url.contains("scope=openid%20email") {
+        if (authReq.url.contains("response_type=code")) {
+            if (authReq.url.contains("code_challenge=")) {
+                if (authReq.url.contains("code_challenge_method=S256")) {
+                    if (authReq.url.contains("client_id=my-client-id")) {
+                        if (authReq.url.contains("scope=openid%20email")) {
                             println("ok-authorize-url");
                         }
                     }
                 }
             }
         }
-        if authReq.state.len() == 43 {
-            if authReq.codeVerifier.len() == 43 {
+        if (authReq.state.len() == 43) {
+            if (authReq.codeVerifier.len() == 43) {
                 println("ok-state-length");
             }
         }
 
         let tokens1 = client.exchangeCode("abc123", authReq.codeVerifier);
-        if tokens1.ok {
-            if tokens1.accessToken == "at-12345" {
-                if tokens1.refreshToken == "rt-67890" {
-                    if tokens1.tokenType == "Bearer" {
-                        if tokens1.expiresIn == 3600 {
+        if (tokens1.ok) {
+            if (tokens1.accessToken == "at-12345") {
+                if (tokens1.refreshToken == "rt-67890") {
+                    if (tokens1.tokenType == "Bearer") {
+                        if (tokens1.expiresIn == 3600) {
                             println("ok-exchange-response");
                         }
                     }
@@ -139,23 +139,23 @@ class Main
         }
 
         let tokens2 = client.refresh(tokens1.refreshToken);
-        if tokens2.ok {
-            if tokens2.accessToken == "at-new-99999" {
+        if (tokens2.ok) {
+            if (tokens2.accessToken == "at-new-99999") {
                 println("ok-refresh-response");
             }
         }
 
         let tokens3 = client.exchangeCode("expired-code", authReq.codeVerifier);
-        if !tokens3.ok {
-            if tokens3.errorMessage.contains("invalid_grant") {
-                if tokens3.errorMessage.contains("code expired") {
+        if (!tokens3.ok) {
+            if (tokens3.errorMessage.contains("invalid_grant")) {
+                if (tokens3.errorMessage.contains("code expired")) {
                     println("ok-error-surfaced");
                 }
             }
         }
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-correct-fields");
         }
 

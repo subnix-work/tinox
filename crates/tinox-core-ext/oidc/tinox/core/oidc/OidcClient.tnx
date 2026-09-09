@@ -45,13 +45,13 @@ namespace tinox.core.oidc
             var i: Int64 = 0;
             while i < parts.len()
             {
-                if parts[i] == "openid"
+                if (parts[i] == "openid")
                 {
                     hasOpenid = true;
                 }
                 i = i + 1;
             }
-            if !hasOpenid
+            if (!hasOpenid)
             {
                 throw "OidcClient::buildAuthorizeUrl: scope must include \"openid\" (no id_token will be issued otherwise)";
             }
@@ -61,11 +61,11 @@ namespace tinox.core.oidc
         fn exchangeCode(code: String, codeVerifier: String) -> OidcTokenResponse
         {
             let tr: OAuth2TokenResponse = this.oauth.exchangeCode(code, codeVerifier);
-            if !tr.ok
+            if (!tr.ok)
             {
                 return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: tr.errorMessage };
             }
-            if tr.idToken == ""
+            if (tr.idToken == "")
             {
                 return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: "token endpoint response has no id_token field (was \"openid\" included in the requested scope?)" };
             }
@@ -80,11 +80,11 @@ namespace tinox.core.oidc
         fn refresh(refreshToken: String) -> OidcTokenResponse
         {
             let tr: OAuth2TokenResponse = this.oauth.refresh(refreshToken);
-            if !tr.ok
+            if (!tr.ok)
             {
                 return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: tr.errorMessage };
             }
-            if tr.idToken == ""
+            if (tr.idToken == "")
             {
                 return OidcTokenResponse { accessToken: tr.accessToken, refreshToken: tr.refreshToken, tokenType: tr.tokenType, expiresIn: tr.expiresIn, idToken: "", claims: Map::new(), ok: true, errorMessage: "" };
             }
@@ -104,7 +104,7 @@ namespace tinox.core.oidc
                 verifyError = e;
             }
 
-            if verifyError != ""
+            if (verifyError != "")
             {
                 return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: "id_token verification failed: " + verifyError };
             }
@@ -121,12 +121,12 @@ namespace tinox.core.oidc
         fn verifyIdToken(idToken: String) -> Map<String, JsonValue>
         {
             let header: Map<String, JsonValue> = Jwt::extractHeader(idToken);
-            if !header.contains("alg") || header["alg"].getString() != "RS256"
+            if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
                 throw "unsupported id_token alg (expected RS256)";
             }
             var kid: String = "";
-            if header.contains("kid")
+            if (header.contains("kid"))
             {
                 kid = header["kid"].getString();
             }
@@ -134,34 +134,34 @@ namespace tinox.core.oidc
             let key: Map<String, String> = Jwks::fetchRsaKey(this.jwksUri, kid);
             let claims: Map<String, JsonValue> = Jwt::decodeRs256(idToken, key["n"], key["e"]);
 
-            if !claims.contains("iss") || claims["iss"].getString() != this.issuer
+            if (!claims.contains("iss") || claims["iss"].getString() != this.issuer)
             {
                 throw "id_token iss claim does not match expected issuer \"" + this.issuer + "\"";
             }
 
-            if !claims.contains("aud")
+            if (!claims.contains("aud"))
             {
                 throw "id_token missing aud claim";
             }
             var audMatches: Bool = false;
-            if claims["aud"].isString()
+            if (claims["aud"].isString())
             {
                 audMatches = claims["aud"].getString() == this.clientId;
             }
-            else if claims["aud"].isArray()
+            else if (claims["aud"].isArray())
             {
                 let auds: List<JsonValue> = claims["aud"].asList();
                 var i: Int64 = 0;
                 while i < auds.len()
                 {
-                    if auds[i].getString() == this.clientId
+                    if (auds[i].getString() == this.clientId)
                     {
                         audMatches = true;
                     }
                     i = i + 1;
                 }
             }
-            if !audMatches
+            if (!audMatches)
             {
                 throw "id_token aud claim does not include this client_id";
             }

@@ -33,7 +33,7 @@ namespace tinox.core.result
 
         fn unwrap() -> T
         {
-            if this.values.len() == 0
+            if (this.values.len() == 0)
             {
                 throw this.error;
             }
@@ -42,7 +42,7 @@ namespace tinox.core.result
 
         fn unwrapOr(defaultValue: T) -> T
         {
-            if this.values.len() == 0
+            if (this.values.len() == 0)
             {
                 return defaultValue;
             }
@@ -56,7 +56,7 @@ namespace tinox.core.result
 
         fn map<U>(transform: fnc(T) -> U) -> Result<U>
         {
-            if this.values.len() == 0
+            if (this.values.len() == 0)
             {
                 return Result<U>::err(this.error);
             }
@@ -65,7 +65,7 @@ namespace tinox.core.result
 
         fn andThen<U>(transform: fnc(T) -> Result<U>) -> Result<U>
         {
-            if this.values.len() == 0
+            if (this.values.len() == 0)
             {
                 return Result<U>::err(this.error);
             }
@@ -74,7 +74,7 @@ namespace tinox.core.result
 
         fn mapErr(transform: fnc(String) -> String) -> Result<T>
         {
-            if this.values.len() > 0
+            if (this.values.len() > 0)
             {
                 return this;
             }

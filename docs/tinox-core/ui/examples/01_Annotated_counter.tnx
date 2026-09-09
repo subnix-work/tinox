@@ -1,0 +1,24 @@
+import tinox.core.ui;
+import tinox.core.websocket;
+import tinox.core.http_server;
+
+// Annotation-driven: no HttpServer/WsServer wiring anywhere in the
+// program -- @TinoxUIApp generates the HTTP shell/client-JS server and
+// the WebSocket accept loop, calling the class's own @View method to
+// build/rebuild the component tree (full-resend rendering, automatic
+// re-render after every event).
+@TinoxUIApp(8080, 8081)
+class CounterApp
+{
+    var clicks: Int64;
+
+    @View
+    fn render() -> Component
+    {
+        let app: CounterApp = this;
+        return Component::vbox([
+            Component::label("Clicks: " + this.clicks.toString()),
+            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1; })
+        ]);
+    }
+}

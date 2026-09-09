@@ -27,10 +27,10 @@ namespace tinox.core.sse
         fn accept(srv: Int64) -> Int64
         {
             let conn = httpServerAcceptConnHandle(srv);
-            if conn <= 0 {
+            if (conn <= 0) {
                 return -1;
             }
-            if !Sse::handshake(conn) {
+            if (!Sse::handshake(conn)) {
                 httpConnClose(conn);
                 return -1;
             }
@@ -47,10 +47,10 @@ namespace tinox.core.sse
         fn acceptTls(srv: Int64) -> Int64
         {
             let conn = httpServerAcceptTls(srv);
-            if conn <= 0 {
+            if (conn <= 0) {
                 return -1;
             }
-            if !Sse::handshake(conn) {
+            if (!Sse::handshake(conn)) {
                 httpConnClose(conn);
                 return -1;
             }

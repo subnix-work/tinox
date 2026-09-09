@@ -12,7 +12,7 @@ namespace tinox.core.iter
 
         fn hasNext() -> Bool
         {
-            if this.cycled
+            if (this.cycled)
             {
                 return true;
             }
@@ -21,7 +21,7 @@ namespace tinox.core.iter
 
         fn next() -> Int64
         {
-            if this.cycled
+            if (this.cycled)
             {
                 let idx: Int64 = this.current % this.end;
                 this.current = this.current + 1;

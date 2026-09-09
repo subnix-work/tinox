@@ -2038,6 +2038,10 @@ struct DocField  { name: String, ty: String, doc: Option<String>, annotations: V
 enum DocItem {
     Class {
         name: String,
+        /// Generic type parameters (`["T"]` for `class Foo<T>`), rendered
+        /// as an HTML-escaped `<T>` suffix next to the class name --
+        /// `name` itself stays the plain, anchor/id-safe class name.
+        type_params: Vec<String>,
         doc: Option<String>,
         annotations: Vec<String>,
         fields: Vec<DocField>,
@@ -2062,7 +2066,23 @@ enum DocItem {
 fn collect_doc_items(decl: &tinox_parser::DeclKind, out: &mut Vec<DocItem>) {
     use tinox_parser::DeclKind;
     match decl {
-        DeclKind::Class(c) if c.type_params.is_empty() => {
+        DeclKind::Class(c) => {
+            // Generic classes (type_params non-empty, e.g. `class
+            // GridColumn<T>`) used to be silently excluded from generated
+            // docs entirely -- the original guard here was `if
+            // c.type_params.is_empty()`, with no arm at all for the
+            // generic case, so a module's own generic classes just never
+            // appeared on its docs page, no error or warning either.
+            // Found while publishing tinox.core:ui 1.0.1 (issue #215
+            // follow-up): GridColumn<T>/DataGrid<T> compiled and worked
+            // fine, but were completely invisible in the generated
+            // docs.html. Fixed by documenting generic classes too --
+            // `name` stays the plain, anchor/id-safe class name (used
+            // verbatim in `id="class-{name}"`), `type_params` is rendered
+            // separately, HTML-escaped, as a `<T>` suffix next to it (see
+            // render_docs_html) so a raw `<T>` never ends up unescaped in
+            // the page, which would otherwise be parsed as a real HTML
+            // tag rather than displayed as text.
             let annotations = c.annotations.iter().map(|a| a.name.clone()).collect();
             let fields = c.fields.iter().map(|f| DocField {
                 name: f.name.clone(),
@@ -2073,6 +2093,7 @@ fn collect_doc_items(decl: &tinox_parser::DeclKind, out: &mut Vec<DocItem>) {
             let methods = c.methods.iter().map(method_to_doc).collect();
             out.push(DocItem::Class {
                 name: c.name.clone(),
+                type_params: c.type_params.clone(),
                 doc: c.doc.clone(),
                 annotations,
                 fields,
@@ -2235,15 +2256,20 @@ fn render_docs_html(
 
     for item in items {
         match item {
-            DocItem::Class { name, doc, annotations, fields, methods, implements, extends } => {
+            DocItem::Class { name, type_params, doc, annotations, fields, methods, implements, extends } => {
                 let anns = render_annotations(annotations);
+                let type_params_suffix = if type_params.is_empty() {
+                    String::new()
+                } else {
+                    format!("&lt;{}&gt;", html_escape(&type_params.join(", ")))
+                };
                 let mut subtitle = String::new();
                 if let Some(p) = extends { subtitle.push_str(&format!(" extends <code>{p}</code>")); }
                 if !implements.is_empty() {
                     subtitle.push_str(&format!(" implements {}", implements.iter().map(|i| format!("<code>{i}</code>")).collect::<Vec<_>>().join(", ")));
                 }
                 body.push_str(&format!(
-                    "<section id=\"class-{name}\" class=\"item\"><h2 class=\"item-name\">{anns}<span class=\"kw\">class</span> {name}{subtitle}</h2>"
+                    "<section id=\"class-{name}\" class=\"item\"><h2 class=\"item-name\">{anns}<span class=\"kw\">class</span> {name}{type_params_suffix}{subtitle}</h2>"
                 ));
                 if let Some(d) = doc { body.push_str(&format!("<p class=\"doc\">{}</p>", html_escape(d))); }
 
@@ -3816,6 +3842,44 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             ann_result.http3_rest_controllers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
         ));
     }
+    // @TinoxUIApp (issue #215, Phase 4): at most one class per program
+    // (same v1 restriction as @Http3RestController -- multiple apps in one
+    // program is architecturally ambiguous for now), and exactly one
+    // @View method on that class (zero = nothing to render; more than one
+    // = ambiguous which builds the tree).
+    if ann_result.tinoxui_apps.len() > 1 {
+        return Err(format!(
+            "found {} @TinoxUIApp classes ({}); v1 supports exactly one Tinox-UI app per program",
+            ann_result.tinoxui_apps.len(),
+            ann_result.tinoxui_apps.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let tinoxui_app: Option<tinox_codegen::TinoxUIAppEntry> = match ann_result.tinoxui_apps.first() {
+        Some(app) => {
+            if app.view_methods.is_empty() {
+                return Err(format!(
+                    "@TinoxUIApp class '{}' has no @View method -- exactly one method returning Component is required to build its UI",
+                    app.class_name
+                ));
+            }
+            if app.view_methods.len() > 1 {
+                return Err(format!(
+                    "@TinoxUIApp class '{}' has {} @View methods ({}); exactly one is required",
+                    app.class_name,
+                    app.view_methods.len(),
+                    app.view_methods.join(", ")
+                ));
+            }
+            Some(tinox_codegen::TinoxUIAppEntry {
+                class_name: app.class_name.clone(),
+                http_port: app.http_port,
+                ws_port: app.ws_port,
+                view_method: app.view_methods[0].clone(),
+                route_entries: app.route_entries.clone(),
+            })
+        }
+        None => None,
+    };
     // Cross-kind combos (@Http3RestController + @WebsocketEndpoint/@Amqp10Consumer/
     // @Amqp091Consumer, or any of those + plain @GET/@Path routes) used to be
     // rejected here because each auto-run kind generated its own competing
@@ -3957,6 +4021,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     codegen.set_amqp10_consumers(amqp10_consumers);
     codegen.set_amqp091_consumers(amqp091_consumers);
     codegen.set_http3_rest_controller(http3_rest_controller);
+    codegen.set_tinoxui_apps(tinoxui_app.into_iter().collect());
     let db_config_for_codegen = read_database_config();
     codegen.set_db_url(db_config_for_codegen.as_ref().map(|c| c.url.clone()));
     codegen.set_db_pool_size(db_config_for_codegen.as_ref().map(|c| c.pool as i64).unwrap_or(5));

@@ -115,7 +115,7 @@ namespace tinox.core.rest.client
          */
         fn ensureSuccess() -> RestResponse
         {
-            if this.ok == false
+            if (this.ok == false)
             {
                 let msg: String = "HTTP " + this.statusCode.toString() + ": " + this.body;
                 throw msg;

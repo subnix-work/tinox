@@ -88,7 +88,7 @@ class Main
 
         httpConnClose(sconn);
 
-        if ok1 {
+        if (ok1) {
             return 1;
         }
         return 0;
@@ -98,7 +98,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -108,7 +108,7 @@ class Main
         let ch = AmqpChannel091::open(c);
 
         let selected = ch.confirmSelect();
-        if selected {
+        if (selected) {
             println("ok-confirm-select");
         }
 
@@ -126,32 +126,32 @@ class Main
         }
         let tag2 = ch.publish("amq.direct", "rk", body2, "text/plain");
 
-        if tag1 == 1 {
-            if tag2 == 2 {
+        if (tag1 == 1) {
+            if (tag2 == 2) {
                 println("ok-publish-tags");
             }
         }
 
         let c1 = ch.waitForConfirm();
-        if c1.ok {
-            if c1.ack {
-                if c1.deliveryTag == 1 {
+        if (c1.ok) {
+            if (c1.ack) {
+                if (c1.deliveryTag == 1) {
                     println("ok-ack");
                 }
             }
         }
 
         let c2 = ch.waitForConfirm();
-        if c2.ok {
-            if !c2.ack {
-                if c2.deliveryTag == 2 {
+        if (c2.ok) {
+            if (!c2.ack) {
+                if (c2.deliveryTag == 2) {
                     println("ok-nack");
                 }
             }
         }
 
         let brokerOk = await handle;
-        if brokerOk != 1 {
+        if (brokerOk != 1) {
             println("broker-mismatch");
         }
 

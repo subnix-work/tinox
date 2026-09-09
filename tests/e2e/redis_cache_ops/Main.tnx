@@ -41,7 +41,7 @@ class Main
 
     async fnc fakeServer(srv: Int64) -> Int64 {
         let conn = httpServerAcceptConnHandle(srv);
-        if conn <= 0 {
+        if (conn <= 0) {
             return 0;
         }
 
@@ -70,14 +70,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeServer(srv);
 
         let client: RedisClient = RedisClient::connect("127.0.0.1", port);
-        if client.conn <= 0 {
+        if (client.conn <= 0) {
             println("connect failed: " + client.errorMessage);
             return 1;
         }

@@ -19,7 +19,7 @@ namespace tinox.core.array
             var i: Int64 = 0;
             while i < arr.len()
             {
-                if arr[i] == value
+                if (arr[i] == value)
                 {
                     return true;
                 }
@@ -39,7 +39,7 @@ namespace tinox.core.array
             var i: Int64 = 0;
             while i < arr.len()
             {
-                if arr[i] == value
+                if (arr[i] == value)
                 {
                     return i;
                 }
@@ -59,7 +59,7 @@ namespace tinox.core.array
             var i: Int64 = 1;
             while i < arr.len()
             {
-                if arr[i] < min
+                if (arr[i] < min)
                 {
                     min = arr[i];
                 }
@@ -79,7 +79,7 @@ namespace tinox.core.array
             var i: Int64 = 1;
             while i < arr.len()
             {
-                if arr[i] > max
+                if (arr[i] > max)
                 {
                     max = arr[i];
                 }
@@ -150,7 +150,7 @@ namespace tinox.core.array
             var i: Int64 = 0;
             while i < arr.len()
             {
-                if arr[i] > 0
+                if (arr[i] > 0)
                 {
                     result.push(arr[i]);
                 }
@@ -174,7 +174,7 @@ namespace tinox.core.array
                 var j: Int64 = 0;
                 while j < n - i - 1
                 {
-                    if result[j] > result[j + 1]
+                    if (result[j] > result[j + 1])
                     {
                         var temp: Int64 = result[j];
                         result[j] = result[j + 1];
@@ -197,7 +197,7 @@ namespace tinox.core.array
             var i: Int64 = 1;
             while i < arr.len()
             {
-                if arr[i] < arr[i - 1]
+                if (arr[i] < arr[i - 1])
                 {
                     return false;
                 }

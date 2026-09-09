@@ -1,0 +1,13 @@
+module tinox.core.ui;
+
+import tinox.core.json;
+
+namespace tinox.core.ui
+{
+    @JsonSerializable
+    class TinoxUIPatchMessage
+    {
+        var kind: String; // always "patch"
+        var ops: List<TinoxUIPatchOp>;
+    }
+}
