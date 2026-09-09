@@ -1,0 +1,11 @@
+class Widget
+{
+    // Field-level @Getter (no class-level blanket annotation): only THIS
+    // field gets an accessor, and only a getter -- no setLabel is
+    // generated, and internalCounter stays genuinely private (no
+    // annotation on it at all).
+    @Getter
+    private var label: String;
+
+    private var internalCounter: Int64;
+}

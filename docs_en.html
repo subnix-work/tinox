@@ -1263,6 +1263,8 @@
         <tr><td><code>@deprecated("msg")</code></td><td>All</td><td>Deprecation warning</td></tr>
         <tr><td><code>@Command("name")</code></td><td>Class</td><td>CLI command</td></tr>
         <tr><td><code>@annotation</code></td><td>Class</td><td>Define custom annotation</td></tr>
+        <tr><td><code>@Getter</code></td><td>Class / Field</td><td>Generates <code>get&lt;Field&gt;()</code> — for every field on a class, or just the annotated field on a field; never overrides an already hand-written method of the same name</td></tr>
+        <tr><td><code>@Setter</code></td><td>Class / Field</td><td>Generates <code>set&lt;Field&gt;(value)</code> — same rules as <code>@Getter</code></td></tr>
         <tr><td><code>@WebsocketEndpoint("/path"[, port])</code></td><td>Class</td><td>WebSocket: generates an accept/message loop, spawned alongside <code>class Main</code> (multiple classes allowed, each its own port)</td></tr>
         <tr><td><code>@OnOpen</code></td><td>Method</td><td>WebSocket: called on new connection, signature <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
         <tr><td><code>@OnMessage</code></td><td>Method</td><td>WebSocket: called per text message, signature <code>fn(conn: Int64, msg: String) -&gt; Nothing</code>. AMQP-1.0: called per received message, signature <code>fn(msg: Amqp10Message) -&gt; Nothing</code>. AMQP-0-9-1: called per received message, signature <code>fn(msg: AmqpMessage091) -&gt; Nothing</code></td></tr>

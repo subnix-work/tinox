@@ -1,0 +1,35 @@
+// expect: Ada
+// expect: 1036
+// expect: Grace
+// expect: 1085
+// expect: hi
+
+// Regression test for @Getter/@Setter (Lombok-style accessor synthesis,
+// crates/tinox/src/main.rs's synthesize_accessors): class-level blanket
+// generation, a hand-written override winning over the synthesized
+// version, and field-level (non-blanket) generation, all against fields
+// that are genuinely `private` -- if synthesis didn't run, or ran but
+// generated a method the private-field-access check didn't recognize as
+// "inside its own class", this program wouldn't compile at all.
+
+import Person;
+import Widget;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let p: Person = Person { name: "Ada", age: 36 };
+        println(p.getName());
+        println(p.getAge().toString());
+        p.setName("Grace");
+        println(p.getName());
+        p.setAge(85);
+        println(p.getAge().toString());
+
+        let w: Widget = Widget { label: "hi", internalCounter: 0 };
+        println(w.getLabel());
+
+        return 0;
+    }
+}
