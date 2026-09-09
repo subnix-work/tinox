@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rest — Tinox Docs</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --bg:        #070b14;
+  --bg2:       rgba(17, 25, 43, 0.6);
+  --bg3:       rgba(34, 211, 238, 0.07);
+  --sidebar:   rgba(7, 11, 20, 0.72);
+  --border:    rgba(103, 232, 249, 0.16);
+  --accent:    #22d3ee;
+  --accent2:   #a78bfa;
+  --link:      #67e8f9;
+  --green:     #34d399;
+  --text:      #e2e8f0;
+  --text2:     #93a4bd;
+  --text3:     #64748b;
+  --code-bg:   rgba(5, 7, 13, 0.65);
+  --tag-bg:    rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+  background-attachment: fixed;
+  color: var(--text);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, black, transparent 75%);
+}
+nav { position: sticky; top: 0; z-index: 1; width: 270px; min-width: 270px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--border); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 32px 0; overflow-y: auto; flex-shrink: 0; }
+nav h1 { padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-family: 'Space Grotesk', 'JetBrains Mono', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+nav ul { list-style: none; }
+nav li.nav-section { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }
+nav li a { display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }
+nav li a:hover { color: var(--text); background: var(--bg3); border-left-color: var(--accent); }
+main { position: relative; z-index: 1; flex: 1; min-width: 0; padding: 56px clamp(2rem, 4vw, 4rem); }
+main h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }
+main > p.generated-by { color: var(--text3); margin-bottom: 28px; font-size: 0.78rem; }
+.tool-tag { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text3); }
+.item { border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.item-name { font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.kw { color: #c792ea; }
+.doc { color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }
+h3 { font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }
+table.members { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.members tr { border-bottom: 1px solid var(--border); }
+table.members td { padding: 8px 10px; vertical-align: top; }
+.member-name { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); width: 35%; }
+.member-type { color: #ffcb6b; width: 20%; }
+.method-sig { background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }
+.method-doc { color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }
+.ann { color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }
+code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--link); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>📦 rest</h1>
+  <ul><li class="nav-section">Overview</li><li><a href="#overview">Description</a></li><li class="nav-section">Dependencies</li><li><a href="#dependencies">Dependencies</a></li><li class="nav-section">Examples</li><li><a href="#ex-client-call">Client call</a></li><li><a href="#ex-annotated-controller">Annotated controller</a></li><li><a href="#ex-annotated-controller-entry-point">Annotated controller entry point</a></li><li class="nav-section">Classes</li><li><a href="#class-HttpStatusHelper">HttpStatusHelper</a></li><li><a href="#class-MediaTypeHelper">MediaTypeHelper</a></li><li><a href="#class-RequestBuilder">RequestBuilder</a></li><li><a href="#class-RestClient">RestClient</a></li><li><a href="#class-RestResponse">RestResponse</a></li><li><a href="#class-Url">Url</a></li><li><a href="#class-ApplicationComponent">ApplicationComponent</a></li><li><a href="#class-Auth">Auth</a></li><li><a href="#class-Consumes">Consumes</a></li><li><a href="#class-DELETE">DELETE</a></li><li><a href="#class-GET">GET</a></li><li><a href="#class-HttpRequestScoped">HttpRequestScoped</a></li><li><a href="#class-Inject">Inject</a></li><li><a href="#class-MediaTypeHelper">MediaTypeHelper</a></li><li><a href="#class-OIDCRolesAllowed">OIDCRolesAllowed</a></li><li><a href="#class-OidcGuard">OidcGuard</a></li><li><a href="#class-PATCH">PATCH</a></li><li><a href="#class-POST">POST</a></li><li><a href="#class-PUT">PUT</a></li><li><a href="#class-Path">Path</a></li><li><a href="#class-Produces">Produces</a></li><li><a href="#class-RestApi">RestApi</a></li><li><a href="#class-RestController">RestController</a></li><li><a href="#class-RouteEntry">RouteEntry</a></li><li><a href="#class-Startup">Startup</a></li><li><a href="#class-StatusCode">StatusCode</a></li><li><a href="#class-UrlBuilder">UrlBuilder</a></li></ul>
+</nav>
+<main>
+  <h1>rest</h1>
+  <p class="generated-by">Generated by <span class="tool-tag">tinox doc</span></p>
+  <section id="overview" class="item"><p class="doc" style="margin-bottom:0">tinox.core.rest, split out of the bundled stdlib as a standalone tinox-central package.</p></section><section id="dependencies" class="item"><table class="members"><tr><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Module</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Version</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Group</th></tr><tr><td class="member-name"><a href="../../http/1-0-3/docs.html"><code>http</code></a></td><td class="member-type"><code>1.0.3</code></td><td>tinox.core</td></tr><tr><td class="member-name"><a href="../../http_server/1-0-3/docs.html"><code>http_server</code></a></td><td class="member-type"><code>1.0.3</code></td><td>tinox.core</td></tr><tr><td class="member-name"><a href="../../json/1-0-0/docs.html"><code>json</code></a></td><td class="member-type"><code>1.0.0</code></td><td>tinox.core</td></tr><tr><td class="member-name"><a href="../../jwt/1-0-2/docs.html"><code>jwt</code></a></td><td class="member-type"><code>1.0.2</code></td><td>tinox.core</td></tr></table></section><section id="ex-client-call" class="item"><h3 style="margin-top:0">Client call</h3><pre><code><span class="kw">import</span> tinox.core.rest.client;
+
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="kw">let</span> client: <span class="type">RestClient</span> = <span class="type">RestClient</span>::<span class="kw">new</span>(<span class="str">&quot;https://api.example.com&quot;</span>);
+        client.bearerAuth(<span class="str">&quot;my-token&quot;</span>);
+
+        <span class="kw">let</span> response: <span class="type">RestResponse</span> = client.get(<span class="str">&quot;/users/42&quot;</span>);
+        <span class="kw">if</span> (response.isOk())
+        {
+            println(<span class="str">&quot;body: &quot;</span> + response.text());
+        }
+        <span class="kw">else</span>
+        {
+            println(<span class="str">&quot;request failed with status &quot;</span> + response.status().toString());
+        }
+
+        <span class="kw">let</span> created: <span class="type">RestResponse</span> = client.post(<span class="str">&quot;/users&quot;</span>, <span class="str">&quot;{\&quot;name\&quot;:\&quot;Ada\&quot;}&quot;</span>);
+        created.ensureSuccess();
+        println(<span class="str">&quot;created: &quot;</span> + created.text());
+
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+}
+</code></pre></section><section id="ex-annotated-controller" class="item"><h3 style="margin-top:0">Annotated controller</h3><pre><code><span class="kw">import</span> tinox.core.rest.server;
+<span class="kw">import</span> tinox.core.json;
+
+// Annotation-driven: no explicit main()/RestApi anywhere in the program —
+// the compiler discovers @ApplicationComponent classes and generates the
+// server entry point itself.<span class="type">
+@ApplicationCompone</span>nt<span class="type">
+@Pa</span>t<span class="str">h(&quot;/api/v</span>1&quot;<span class="kw">)
+cla</span>s<span class="type">s GreetControll</span>er
+{
+   <span class="type"> @G</span>ET
+   <span class="type"> @Pa</span>t<span class="str">h(&quot;/hello/:nam</span>e&quot;)
+   <span class="type"> @Produc</span>e<span class="str">s(&quot;application/jso</span>n&quot;)
+  <span class="kw">  </span>fn hello<span class="type">(@PathPar</span>am name<span class="type">: Stri</span>ng,<span class="type"> @HttpConte</span>xt ctx<span class="type">: HttpConte</span>xt) -<span class="type">&gt; HttpConte</span>xt
+    {
+        ctx.response.jso<span class="str">n(&quot;{\&quot;message\&quot;:\&quot;Hello,</span> &quot; + name <span class="str">+ &quot;!\&quot;</span>}&quot;);
+      <span class="kw">  retu</span>rn ctx;
+    }
+}
+</code></pre></section><section id="ex-annotated-controller-entry-point" class="item"><h3 style="margin-top:0">Annotated controller entry point</h3><pre><code><span class="kw">import</span> <span class="type">GreetController</span>;
+
+// Every Tinox program still needs its own class Main as the mandatory
+// entry point (since 2026-08-09) -- @ApplicationComponent's REST server
+// spawns and runs alongside it on its own thread, it doesn't replace it.
+// This is the required sibling file for the annotated controller above.
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+}
+</code></pre></section><section id="class-HttpStatusHelper" class="item"><h2 class="item-name"><span class="kw">class</span> HttpStatusHelper</h2><p class="doc">
+     * Helper to convert between HttpStatus enum and status code integers
+     </p><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> fromCode(code: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">HttpStatus</span></div><div class="method-doc">
+         * Converts an HTTP status integer to a HttpStatus enum value
+         *
+         * @param code the numeric status code
+         * @return the matching HttpStatus enum value, or NotFound as fallback
+         </div><div class="method-sig"><span class="kw">fn</span> toCode(status: <span style="color:#ffcb6b">HttpStatus</span>) → <span style="color:#ffcb6b">Int64</span></div><div class="method-doc">
+         * Converts a HttpStatus enum value to its numeric status code
+         *
+         * @param status the HttpStatus enum value
+         * @return the numeric HTTP status code
+         </div><div class="method-sig"><span class="kw">fn</span> isSuccess(code: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Checks if a status code represents a success (2xx)
+         *
+         * @param code the numeric status code
+         * @return true if the code is in the 200-299 range
+         </div><div class="method-sig"><span class="kw">fn</span> isClientError(code: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Checks if a status code represents a client error (4xx)
+         *
+         * @param code the numeric status code
+         * @return true if the code is in the 400-499 range
+         </div><div class="method-sig"><span class="kw">fn</span> isServerError(code: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Checks if a status code represents a server error (5xx)
+         *
+         * @param code the numeric status code
+         * @return true if the code is in the 500-599 range
+         </div></section><section id="class-MediaTypeHelper" class="item"><h2 class="item-name"><span class="kw">class</span> MediaTypeHelper</h2><p class="doc">
+     * Helper to convert MediaType enum values to their string representations
+     </p><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> toString(mediaType: <span style="color:#ffcb6b">MediaType</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Converts a MediaType enum value to its MIME type string
+         *
+         * @param mediaType the MediaType enum value
+         * @return the MIME type string (e.g., &quot;application/json&quot;)
+         </div></section><section id="class-RequestBuilder" class="item"><h2 class="item-name"><span class="kw">class</span> RequestBuilder</h2><p class="doc">
+     * HTTP request builder for constructing requests
+     * with a fluent API (method chaining pattern)
+     *
+     * Example usage:
+     *   RequestBuilder::new(&quot;https://api.example.com&quot;)
+     *       .header(&quot;Accept&quot;, &quot;application/json&quot;)
+     *       .get(&quot;/users&quot;)
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>baseUrl</code></td><td class="member-type"><code>String</code></td><td> The base URL </td></tr><tr><td class="member-name"><code>reqHeaders</code></td><td class="member-type"><code>List&lt;String&gt;</code></td><td> Custom headers for this request </td></tr><tr><td class="member-name"><code>queryParams</code></td><td class="member-type"><code>List&lt;String&gt;</code></td><td> Query parameters for this request </td></tr><tr><td class="member-name"><code>reqBody</code></td><td class="member-type"><code>String</code></td><td> The request body </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(baseUrl: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RequestBuilder</span></div><div class="method-doc">
+         * Creates a new RequestBuilder
+         *
+         * @param baseUrl the base URL for requests
+         * @return a new RequestBuilder instance
+         </div><div class="method-sig"><span class="kw">fn</span> header(name: <span style="color:#ffcb6b">String</span>, value: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RequestBuilder</span></div><div class="method-doc">
+         * Adds a header to the request
+         *
+         * @param name the header name
+         * @param value the header value
+         * @return this builder for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> query(key: <span style="color:#ffcb6b">String</span>, value: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RequestBuilder</span></div><div class="method-doc">
+         * Adds a query parameter
+         *
+         * @param key the parameter key
+         * @param value the parameter value
+         * @return this builder for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> body(body: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RequestBuilder</span></div><div class="method-doc">
+         * Sets the request body
+         *
+         * @param body the request body string
+         * @return this builder for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> jsonBody(jsonBody: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RequestBuilder</span></div><div class="method-doc">
+         * Sets the request body as JSON with Content-Type header
+         *
+         * @param jsonBody the JSON string to send
+         * @return this builder for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> bearer(token: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RequestBuilder</span></div><div class="method-doc">
+         * Adds Bearer authentication header
+         *
+         * @param token the bearer token
+         * @return this builder for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> get(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Executes a GET request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         </div><div class="method-sig"><span class="kw">fn</span> post(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Executes a POST request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         </div><div class="method-sig"><span class="kw">fn</span> put(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Executes a PUT request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         </div><div class="method-sig"><span class="kw">fn</span> patch(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Executes a PATCH request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         </div><div class="method-sig"><span class="kw">fn</span> delete(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Executes a DELETE request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         </div><div class="method-sig"><span class="kw">fn</span> buildUrl(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Builds the full URL with query parameters
+         *
+         * @param path the endpoint path
+         * @return the complete URL string
+         </div><div class="method-sig"><span class="kw">fn</span> applyHeaders() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Applies all stored headers to the HTTP client
+         </div></section><section id="class-RestClient" class="item"><h2 class="item-name"><span class="kw">class</span> RestClient</h2><p class="doc">
+     * REST client for making HTTP requests to RESTful APIs
+     *
+     * Supports building requests with custom headers,
+     * query parameters, and JSON request/response bodies.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>baseUrl</code></td><td class="member-type"><code>String</code></td><td> The base URL for all requests </td></tr><tr><td class="member-name"><code>headers</code></td><td class="member-type"><code>List&lt;String&gt;</code></td><td> Default headers applied to every request </td></tr><tr><td class="member-name"><code>timeout</code></td><td class="member-type"><code>Int64</code></td><td> Request timeout in milliseconds </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(baseUrl: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestClient</span></div><div class="method-doc">
+         * Creates a new RestClient with the given base URL
+         *
+         * @param baseUrl the base URL for all requests (e.g., &quot;https://api.example.com&quot;)
+         * @return a new RestClient instance
+         </div><div class="method-sig"><span class="kw">fn</span> newWithHeaders(baseUrl: <span style="color:#ffcb6b">String</span>, defaultHeaders: <span style="color:#ffcb6b">List&lt;String&gt;</span>) → <span style="color:#ffcb6b">RestClient</span></div><div class="method-doc">
+         * Creates a new RestClient with base URL and default headers
+         *
+         * @param baseUrl the base URL for all requests
+         * @param defaultHeaders list of &quot;Key: Value&quot; header strings
+         * @return a new RestClient instance
+         </div><div class="method-sig"><span class="kw">fn</span> setTimeout(timeoutMs: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Sets the request timeout
+         *
+         * @param timeoutMs timeout in milliseconds
+         </div><div class="method-sig"><span class="kw">fn</span> addHeader(name: <span style="color:#ffcb6b">String</span>, value: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Adds a default header to all requests
+         *
+         * @param name the header name
+         * @param value the header value
+         </div><div class="method-sig"><span class="kw">fn</span> clearHeaders() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Clears all default headers
+         </div><div class="method-sig"><span class="kw">fn</span> get(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Performs a GET request
+         *
+         * @param path the endpoint path (appended to baseUrl)
+         * @return the server response
+         </div><div class="method-sig"><span class="kw">fn</span> getWithParams(path: <span style="color:#ffcb6b">String</span>, params: <span style="color:#ffcb6b">Map&lt;String, String&gt;</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Performs a GET request with query parameters
+         *
+         * @param path the endpoint path
+         * @param params map of query parameter key-value pairs
+         * @return the server response
+         </div><div class="method-sig"><span class="kw">fn</span> post(path: <span style="color:#ffcb6b">String</span>, body: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Performs a POST request with a JSON body
+         *
+         * @param path the endpoint path
+         * @param body the request body as a string
+         * @return the server response
+         </div><div class="method-sig"><span class="kw">fn</span> put(path: <span style="color:#ffcb6b">String</span>, body: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Performs a PUT request with a JSON body
+         *
+         * @param path the endpoint path
+         * @param body the request body as a string
+         * @return the server response
+         </div><div class="method-sig"><span class="kw">fn</span> patch(path: <span style="color:#ffcb6b">String</span>, body: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Performs a PATCH request with a JSON body
+         *
+         * @param path the endpoint path
+         * @param body the request body as a string
+         * @return the server response
+         </div><div class="method-sig"><span class="kw">fn</span> delete(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Performs a DELETE request
+         *
+         * @param path the endpoint path
+         * @return the server response
+         </div><div class="method-sig"><span class="kw">fn</span> bearerAuth(token: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Adds Bearer token authentication header
+         *
+         * @param token the bearer token
+         </div><div class="method-sig"><span class="kw">fn</span> basicAuth(username: <span style="color:#ffcb6b">String</span>, password: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Adds Basic authentication header
+         *
+         * @param username the username
+         * @param password the password
+         </div></section><section id="class-RestResponse" class="item"><h2 class="item-name"><span class="kw">class</span> RestResponse</h2><p class="doc">
+     * REST response wrapper providing convenient access to
+     * status codes, headers, and parsed JSON bodies
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>statusCode</code></td><td class="member-type"><code>Int64</code></td><td> The HTTP status code </td></tr><tr><td class="member-name"><code>body</code></td><td class="member-type"><code>String</code></td><td> The response body as a string </td></tr><tr><td class="member-name"><code>ok</code></td><td class="member-type"><code>Bool</code></td><td> Whether the request was successful (status 2xx) </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(statusCode: <span style="color:#ffcb6b">Int64</span>, body: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Creates a new RestResponse
+         *
+         * @param statusCode the HTTP status code
+         * @param body the response body
+         * @return a new RestResponse instance
+         </div><div class="method-sig"><span class="kw">fn</span> fromHttp(response: <span style="color:#ffcb6b">HttpClientResponse</span>) → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Creates a RestResponse from an HttpClientResponse
+         *
+         * @param response the raw HTTP response
+         * @return a RestResponse instance
+         </div><div class="method-sig"><span class="kw">fn</span> text() → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Returns the response body as a string
+         *
+         * @return the response body
+         </div><div class="method-sig"><span class="kw">fn</span> json() → <span style="color:#ffcb6b">JsonValue</span></div><div class="method-doc">
+         * Parses the response body as JSON
+         *
+         * @return a JsonValue representing the parsed JSON
+         </div><div class="method-sig"><span class="kw">fn</span> isOk() → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Checks if the response status is a success (2xx)
+         *
+         * @return true if status code is between 200 and 299
+         </div><div class="method-sig"><span class="kw">fn</span> isClientError() → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Checks if the response status is a client error (4xx)
+         *
+         * @return true if status code is between 400 and 499
+         </div><div class="method-sig"><span class="kw">fn</span> isServerError() → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Checks if the response status is a server error (5xx)
+         *
+         * @return true if status code is between 500 and 599
+         </div><div class="method-sig"><span class="kw">fn</span> status() → <span style="color:#ffcb6b">Int64</span></div><div class="method-doc">
+         * Returns the HTTP status code
+         *
+         * @return the status code (e.g., 200, 404, 500)
+         </div><div class="method-sig"><span class="kw">fn</span> ensureSuccess() → <span style="color:#ffcb6b">RestResponse</span></div><div class="method-doc">
+         * Throws an error if the response was not successful
+         *
+         * @return this response for chaining
+         * @throws an error message with status code and body if not 2xx
+         </div></section><section id="class-Url" class="item"><h2 class="item-name"><span class="kw">class</span> Url</h2><p class="doc">
+     * URL builder utility for constructing URLs with
+     * path segments, query parameters, and fragments
+     </p><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> build(baseUrl: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Builds a full URL from a base URL and a path
+         *
+         * @param baseUrl the base URL (e.g., &quot;https://api.example.com&quot;)
+         * @param path the path to append (e.g., &quot;/users&quot;)
+         * @return the combined URL
+         </div><div class="method-sig"><span class="kw">fn</span> buildWithParams(baseUrl: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>, params: <span style="color:#ffcb6b">Map&lt;String, String&gt;</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Builds a URL with query parameters
+         *
+         * @param baseUrl the base URL
+         * @param path the endpoint path
+         * @param params map of query parameter key-value pairs
+         * @return the full URL with encoded query string
+         </div><div class="method-sig"><span class="kw">fn</span> encode(s: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Encodes a string for use in a URL (percent-encoding)
+         *
+         * Replaces reserved characters with their percent-encoded equivalents.
+         * Characters A-Z, a-z, 0-9, -, _, ., ~ are left unencoded.
+         *
+         * @param s the string to encode
+         * @return the percent-encoded string
+         </div><div class="method-sig"><span class="kw">fn</span> isUnreserved(ch: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Checks if a character is unreserved in URL encoding
+         *
+         * Unreserved characters are A-Z, a-z, 0-9, -, _, ., ~
+         *
+         * @param ch a single character string
+         * @return true if the character is unreserved
+         </div><div class="method-sig"><span class="kw">fn</span> toHex(n: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Converts an integer to a two-digit uppercase hex string
+         *
+         * @param n the value to convert (0-255)
+         * @return the hex string (e.g., &quot;0F&quot; for 15)
+         </div><div class="method-sig"><span class="kw">fn</span> joinPath(segments: <span style="color:#ffcb6b">List&lt;String&gt;</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Joins multiple path segments into a single path
+         *
+         * Removes duplicate slashes between segments
+         *
+         * @param segments list of path segments
+         * @return a clean joined path
+         </div></section><section id="class-ApplicationComponent" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> ApplicationComponent</h2><p class="doc">
+     * Lazy singleton — one instance for the entire lifetime of the application.
+     * Created on first access.
+     </p></section><section id="class-Auth" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> Auth</h2><p class="doc">
+     * Marks a method or class as requiring authentication.
+     * @Auth(&quot;bearer&quot;)
+     * @Auth(&quot;basic&quot;)
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>value</code></td><td class="member-type"><code>String</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(value: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Auth</span></div></section><section id="class-Consumes" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> Consumes</h2><p class="doc">
+     * Specifies the accepted request content type.
+     * @Consumes(MediaType::Json)
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>value</code></td><td class="member-type"><code>MediaType</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(value: <span style="color:#ffcb6b">MediaType</span>) → <span style="color:#ffcb6b">Consumes</span></div></section><section id="class-DELETE" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> DELETE</h2><p class="doc">
+     * Marks a method as a DELETE endpoint.
+     * @DELETE(&quot;/path&quot;) or @DELETE for the class base path
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>path</code></td><td class="member-type"><code>String</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">DELETE</span></div><div class="method-sig"><span class="kw">fn</span> default() → <span style="color:#ffcb6b">DELETE</span></div></section><section id="class-GET" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> GET</h2><p class="doc">
+     * Marks a method as a GET endpoint.
+     * @GET(&quot;/path&quot;) or @GET for the class base path
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>path</code></td><td class="member-type"><code>String</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">GET</span></div><div class="method-sig"><span class="kw">fn</span> default() → <span style="color:#ffcb6b">GET</span></div></section><section id="class-HttpRequestScoped" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> HttpRequestScoped</h2><p class="doc">
+     * One instance per HTTP request. Created fresh for each incoming request
+     * and lives exactly as long as that request.
+     </p></section><section id="class-Inject" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> Inject</h2><p class="doc">
+     * Marks a field for compile-time dependency injection.
+     * The compiler resolves the dependency from the DI container and
+     * wires it up without any runtime lookup.
+     *
+     * Example:
+     *   @ApplicationComponent
+     *   class UserController
+     *   {
+     *       @Inject
+     *       var service: UserService;
+     *   }
+     </p></section><section id="class-MediaTypeHelper" class="item"><h2 class="item-name"><span class="kw">class</span> MediaTypeHelper</h2><p class="doc">
+     * Converts MediaType enum values to their MIME type strings.
+     </p><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> toString(mediaType: <span style="color:#ffcb6b">MediaType</span>) → <span style="color:#ffcb6b">String</span></div></section><section id="class-OIDCRolesAllowed" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> OIDCRolesAllowed</h2><p class="doc">
+     * Requires a verified OIDC access token carrying at least one of the
+     * listed realm roles. The Authorization: Bearer &lt;token&gt; header is
+     * verified (RS256 signature via the IdP's JWKS, issuer, audience,
+     * exp/nbf) live against the IdP configured via the OIDC_ISSUER/
+     * OIDC_JWKS_URI/OIDC_AUDIENCE environment variables -- no key
+     * material or role list is ever hardcoded.
+     *
+     * @OIDCRolesAllowed([&quot;admin&quot;, &quot;api-user&quot;])
+     * fn adminOnly(ctx: HttpContext) -&gt; Nothing { ... }
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>roles</code></td><td class="member-type"><code>List&lt;String&gt;</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(roles: <span style="color:#ffcb6b">List&lt;String&gt;</span>) → <span style="color:#ffcb6b">OIDCRolesAllowed</span></div></section><section id="class-OidcGuard" class="item"><h2 class="item-name"><span class="kw">class</span> OidcGuard</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fnc</span> checkRoles(ctx: <span style="color:#ffcb6b">HttpContext</span>, rolesCsv: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-sig"><span class="kw">fnc</span> verifyToken(token: <span style="color:#ffcb6b">String</span>, issuer: <span style="color:#ffcb6b">String</span>, jwksUri: <span style="color:#ffcb6b">String</span>, audience: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Map&lt;String, JsonValue&gt;</span></div></section><section id="class-PATCH" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> PATCH</h2><p class="doc">
+     * Marks a method as a PATCH endpoint.
+     * @PATCH(&quot;/path&quot;) or @PATCH for the class base path
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>path</code></td><td class="member-type"><code>String</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">PATCH</span></div><div class="method-sig"><span class="kw">fn</span> default() → <span style="color:#ffcb6b">PATCH</span></div></section><section id="class-POST" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> POST</h2><p class="doc">
+     * Marks a method as a POST endpoint.
+     * @POST(&quot;/path&quot;) or @POST for the class base path
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>path</code></td><td class="member-type"><code>String</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">POST</span></div><div class="method-sig"><span class="kw">fn</span> default() → <span style="color:#ffcb6b">POST</span></div></section><section id="class-PUT" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> PUT</h2><p class="doc">
+     * Marks a method as a PUT endpoint.
+     * @PUT(&quot;/path&quot;) or @PUT for the class base path
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>path</code></td><td class="member-type"><code>String</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">PUT</span></div><div class="method-sig"><span class="kw">fn</span> default() → <span style="color:#ffcb6b">PUT</span></div></section><section id="class-Path" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> Path</h2><p class="doc">
+     * Sets the base path for a controller class or a path prefix for a method.
+     * @Path(&quot;/api/v1&quot;)
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>value</code></td><td class="member-type"><code>String</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(value: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Path</span></div></section><section id="class-Produces" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> Produces</h2><p class="doc">
+     * Specifies the response content type (Content-Type header).
+     * @Produces(MediaType::Json)
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>value</code></td><td class="member-type"><code>MediaType</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(value: <span style="color:#ffcb6b">MediaType</span>) → <span style="color:#ffcb6b">Produces</span></div></section><section id="class-RestApi" class="item"><h2 class="item-name"><span class="kw">class</span> RestApi</h2><p class="doc">
+     * Main REST framework class for building and starting an HTTP API server.
+     *
+     * Combines the annotation-driven approach with explicit registration,
+     * supporting graceful migration once the compiler processes annotations natively.
+     *
+     * Example:
+     *   let app: RestApi = RestApi::new(8080);
+     *
+     *   // Register an annotated controller
+     *   app.register(userController);
+     *
+     *   // Or use fluent API directly
+     *   app.get(&quot;/ping&quot;, ctx =&gt; {
+     *       ctx.response.text(&quot;pong&quot;);
+     *   });
+     *
+     *   // Add global middleware
+     *   app.use(loggingMiddleware);
+     *   app.use(corsMiddleware);
+     *
+     *   app.start();
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>server</code></td><td class="member-type"><code>HttpServer</code></td><td> The underlying HTTP server </td></tr><tr><td class="member-name"><code>routeEntries</code></td><td class="member-type"><code>List&lt;RouteEntry&gt;</code></td><td> All registered route entries from controllers </td></tr><tr><td class="member-name"><code>globalMiddleware</code></td><td class="member-type"><code>List&lt;fn(HttpContext) -&gt; Bool&gt;</code></td><td> Global middleware functions </td></tr><tr><td class="member-name"><code>corsEnabled</code></td><td class="member-type"><code>Bool</code></td><td> Whether CORS is enabled </td></tr><tr><td class="member-name"><code>corsOrigin</code></td><td class="member-type"><code>String</code></td><td> Allowed origins for CORS </td></tr><tr><td class="member-name"><code>authValidator</code></td><td class="member-type"><code>fn(String, String) -&gt; Bool</code></td><td>
+         * Validates the credential extracted from an @Auth-protected route's
+         * Authorization header: called as (authType, credential) where
+         * credential is the header value with the &quot;Bearer &quot;/&quot;Basic &quot; scheme
+         * prefix already stripped. Defaults to rejecting everything (Bug
+         * 104) -- previously @Auth only checked that the header started
+         * with the right scheme prefix and never validated the credential
+         * itself, so any syntactically-shaped Authorization header passed.
+         * Wire up real validation with setAuthValidator(), e.g. checking a
+         * bearer token against Jwt::verify() or a basic-auth credential
+         * against a user store.
+         </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(port: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-sig"><span class="kw">fn</span> setAuthValidator(validator: <span style="color:#ffcb6b">fn(String, String) -&gt; Bool</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Registers the credential validator used by @Auth-protected routes
+         * (see authValidator). Must be set explicitly -- without it, every
+         * @Auth-protected route rejects all requests.
+         *
+         * @param validator fn(authType, credential) -&gt; Bool
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> register(controller: <span style="color:#ffcb6b">RestController</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Registers all routes from a RestController.
+         *
+         * Routes defined via the controller's .route() calls are added
+         * to the framework's routing table and the underlying server.
+         *
+         * @param controller the controller to register
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> get(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Registers a GET route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> post(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Registers a POST route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> put(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Registers a PUT route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> patch(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Registers a PATCH route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> delete(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Registers a DELETE route directly (fluent API)
+         *
+         * @param path the URL path pattern
+         * @param handler the handler function
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> use(mware: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Bool</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Adds a global middleware function.
+         * Middleware runs before route handlers in registration order.
+         * Return false to stop the request chain (sends 403).
+         *
+         * @param mware the middleware function
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> enableCors(origin: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Enables CORS for all responses
+         *
+         * @param origin the allowed origin (default &quot;*&quot;)
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> defaultJson() → <span style="color:#ffcb6b">RestApi</span></div><div class="method-doc">
+         * Adds default JSON Content-Type to all responses
+         *
+         * @return this RestApi for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> start() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Starts the REST API server.
+         *
+         * Registers all route entries with the underlying HttpServer
+         * and begins listening for connections. This is a blocking call.
+         </div><div class="method-sig"><span class="kw">fn</span> stop() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Stops the REST API server.
+         </div><div class="method-sig"><span class="kw">fn</span> registerRoutes() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Registers all collected route entries with the underlying HttpServer,
+         * applying annotation metadata (status code, content types, auth).
+         </div><div class="method-sig"><span class="kw">fn</span> wrapHandler(entry: <span style="color:#ffcb6b">RouteEntry</span>) → <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span></div><div class="method-doc">
+         * Wraps a route handler to apply annotation metadata:
+         * - @StatusCode sets the default response status
+         * - @Produces sets Content-Type if not already set
+         * - @Consumes validates the request Content-Type
+         * - @Auth validates authentication
+         *
+         * @param entry the route entry with metadata
+         * @return a wrapped handler that applies metadata before calling the original
+         </div><div class="method-sig"><span class="kw">fn</span> addRouteEntry(entry: <span style="color:#ffcb6b">RouteEntry</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Adds a RouteEntry to the internal list
+         </div></section><section id="class-RestController" class="item"><h2 class="item-name"><span class="kw">class</span> RestController</h2><p class="doc">
+     * Abstract base class for REST controllers.
+     *
+     * Extend this class and use annotations on your methods.
+     * Register the controller with RestApi.register().
+     *
+     * Example:
+     *   @Path(&quot;/api/users&quot;)
+     *   class UserController : RestController
+     *   {
+     *       @GET(&quot;/&quot;)
+     *       @Produces(&quot;application/json&quot;)
+     *       fn list(ctx: HttpContext) -&gt; Nothing
+     *       {
+     *           ctx.response.json(&quot;[]&quot;);
+     *       }
+     *   }
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>routes</code></td><td class="member-type"><code>List&lt;RouteEntry&gt;</code></td><td> Route entries registered for this controller </td></tr><tr><td class="member-name"><code>basePath</code></td><td class="member-type"><code>String</code></td><td> Base path for all routes in this controller </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new() → <span style="color:#ffcb6b">RestController</span></div><div class="method-sig"><span class="kw">fn</span> route(method: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">RouteEntry</span></div><div class="method-doc">
+         * Manually registers a route on this controller.
+         * Called by the framework during register() to wire up annotated methods.
+         *
+         * @param method the HTTP method
+         * @param path the route path (appended to basePath)
+         * @param handler the handler function
+         * @return the RouteEntry for further configuration
+         </div></section><section id="class-RouteEntry" class="item"><h2 class="item-name"><span class="kw">class</span> RouteEntry</h2><p class="doc">
+     * Represents a registered route with its method, path, handler,
+     * and metadata extracted from annotations.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>method</code></td><td class="member-type"><code>String</code></td><td> HTTP method (GET, POST, PUT, PATCH, DELETE) </td></tr><tr><td class="member-name"><code>path</code></td><td class="member-type"><code>String</code></td><td> Full URL path pattern </td></tr><tr><td class="member-name"><code>handler</code></td><td class="member-type"><code>fn(HttpContext) -&gt; Nothing</code></td><td> Handler function </td></tr><tr><td class="member-name"><code>statusCode</code></td><td class="member-type"><code>Int64</code></td><td> Default status code from @StatusCode annotation </td></tr><tr><td class="member-name"><code>produces</code></td><td class="member-type"><code>MediaType</code></td><td> Response content type from @Produces annotation </td></tr><tr><td class="member-name"><code>consumes</code></td><td class="member-type"><code>MediaType</code></td><td> Request content type from @Consumes annotation </td></tr><tr><td class="member-name"><code>authType</code></td><td class="member-type"><code>String</code></td><td> Auth type from @Auth annotation (&quot;bearer&quot;, &quot;basic&quot;, or empty) </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(method: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">RouteEntry</span></div><div class="method-sig"><span class="kw">fn</span> withStatus(code: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">RouteEntry</span></div><div class="method-sig"><span class="kw">fn</span> withProduces(mediaType: <span style="color:#ffcb6b">MediaType</span>) → <span style="color:#ffcb6b">RouteEntry</span></div><div class="method-sig"><span class="kw">fn</span> withConsumes(mediaType: <span style="color:#ffcb6b">MediaType</span>) → <span style="color:#ffcb6b">RouteEntry</span></div><div class="method-sig"><span class="kw">fn</span> withAuth(authType: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">RouteEntry</span></div></section><section id="class-Startup" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> Startup</h2><p class="doc">
+     * Eager singleton — created immediately at application startup, before any
+     * request is handled. Useful for services that need initialization work
+     * (e.g. DB connection pools, background workers).
+     </p></section><section id="class-StatusCode" class="item"><h2 class="item-name"><span class="ann">@annotation</span><span class="kw">class</span> StatusCode</h2><p class="doc">
+     * Sets the default HTTP status code for the response.
+     * @StatusCode(201)
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>value</code></td><td class="member-type"><code>Int64</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(value: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">StatusCode</span></div></section><section id="class-UrlBuilder" class="item"><h2 class="item-name"><span class="kw">class</span> UrlBuilder</h2><p class="doc">
+     * URL path builder for joining base paths and route paths
+     </p><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> join(base: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Joins a base path and a route path, avoiding duplicate slashes
+         *
+         * @param base the base path (e.g., &quot;/api/users&quot;)
+         * @param path the route path (e.g., &quot;/:id&quot;)
+         * @return the combined path
+         </div></section>
+</main>
+</body>
+</html>

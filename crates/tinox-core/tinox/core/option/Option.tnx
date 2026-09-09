@@ -1,0 +1,78 @@
+module tinox.core.option;
+
+namespace tinox.core.option
+{
+    /**
+     * Represents an optional value of type T.
+     * Uses a List<T> internally to avoid requiring a zero value for T.
+     */
+    class Option<T>
+    {
+        var values: List<T>;
+
+        fn none() -> Option<T>
+        {
+            return Option<T> { values: [] };
+        }
+
+        fn some(value: T) -> Option<T>
+        {
+            return Option<T> { values: [value] };
+        }
+
+        fn isSome() -> Bool
+        {
+            return this.values.len() > 0;
+        }
+
+        fn isNone() -> Bool
+        {
+            return this.values.len() == 0;
+        }
+
+        fn unwrap() -> T
+        {
+            if (this.values.len() == 0)
+            {
+                throw "Option is None";
+            }
+            return this.values[0];
+        }
+
+        fn unwrapOr(defaultValue: T) -> T
+        {
+            if (this.values.len() == 0)
+            {
+                return defaultValue;
+            }
+            return this.values[0];
+        }
+
+        fn map<U>(transform: fnc(T) -> U) -> Option<U>
+        {
+            if (this.values.len() == 0)
+            {
+                return Option<U>::none();
+            }
+            return Option<U>::some(transform(this.values[0]));
+        }
+
+        fn andThen<U>(transform: fnc(T) -> Option<U>) -> Option<U>
+        {
+            if (this.values.len() == 0)
+            {
+                return Option<U>::none();
+            }
+            return transform(this.values[0]);
+        }
+
+        fn orElse(fallback: fnc() -> Option<T>) -> Option<T>
+        {
+            if (this.values.len() == 0)
+            {
+                return fallback();
+            }
+            return this;
+        }
+    }
+}

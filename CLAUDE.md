@@ -38,6 +38,27 @@ several bugs were sometimes merged into a single issue, e.g. "Bugs
 by title (`gh issue list --repo subnix-work/tinox --state all --search
 "Bug 40"`), not by assumed number.
 
+## Branching Model (since 2026-08-13)
+
+Three-tier flow: `main` → `develop` → `feature/*`.
+
+- **`main`** is always the stable, releasable state. Nothing is pushed
+  to it directly — it only advances via a merge (PR) from `develop`
+  once a batch of features is verified there.
+- **`develop`** is the integration branch. Finished features land here
+  first, via PR from a `feature/*` branch. This is the default base
+  branch for day-to-day work — branch new feature work off `develop`,
+  not `main`.
+- **`feature/<name>`** branches are cut from `develop` for individual
+  pieces of work (e.g. `feature/rest-param-binding`). Merge back into
+  `develop` via PR once `make check` is green; delete the feature
+  branch after merge.
+- Both `main` and `develop` have GitHub branch protection enabled (PR
+  required, no direct pushes) — configured via `gh api repos/
+  subnix-work/tinox/branches/<branch>/protection`.
+- Releasing to `main` = opening a PR `develop` → `main` once `develop`
+  is in a shippable state; no separate release-branch tier for now.
+
 ## Core Philosophy (distilled from 70+ documented bugs)
 
 - **No silent garbage.** Every error case gets a hard, visible failure
@@ -180,12 +201,17 @@ enforces this link).
 
 **How to generate one:** `tinox doc` only auto-discovers files under a
 project's `src/` next to its `tinox.toml` (for the Description/Dependencies
-sections) — but `crates/tinox-core-ext/<module>/` is flat (`.tnx` files
-and `tinox.toml` directly in the module dir, no `src/`, matching the live
+sections) — but `crates/tinox-core-ext/<module>/` has no `src/` layer of
+its own (`tinox.toml` sits directly in the module dir; since issue #185's
+namespace-mirroring migration, its `.tnx` files live one level further in,
+under the module's own `tinox/core/<module>/` subtree, matching the live
 archive layout `publish-stdlib-ext.sh` uploads). So stage a throwaway
 project first: create a temp dir, copy the module's `tinox.toml` in as-is
-and copy its `.tnx` file(s) into a `src/` subdirectory (recursively for
-multi-directory modules like `rest`'s `client/`/`server/`), then run
+and copy the CONTENTS of its `tinox/core/<module>/` subtree — not the
+module dir itself, or the `tinox/core/<module>/` prefix would end up
+literally inside `src/` — into a `src/` subdirectory (recursively for
+multi-directory modules like `rest`'s `tinox/core/rest/client/`/`server/`,
+which should land at plain `src/client/`/`src/server/`), then run
 `tinox doc --out <path-to-repo>/docs/<group>/<artifactId>/<version>/
 docs.html` from inside that staged dir. The Dependencies section is read
 straight from the copied `tinox.toml`'s `[[dependencies]]` and links to
@@ -270,6 +296,136 @@ unaffected — the rule is "at most one", not "exactly one".
   exact pattern breaks again silently (a silent-garbage trap: compiles
   unchanged for single-file programs, only multi-file programs with an
   interface upcast are affected).
+
+## Namespace-Mirroring Folder Structure (issue #185, since 2026-08-14)
+
+Finishes what the one-type-per-file convention above started: previously
+only the LAST namespace segment became a directory (`tinox.core.amqp10` →
+`crates/tinox-core-ext/amqp10/`); now a type declared inside a
+`namespace a.b.c { ... }` block must live at a file path that mirrors the
+**full** dotted namespace, hard-enforced at the compiler level exactly like
+the one-type-per-file rule (`check_namespace_path_matches`,
+`crates/tinox/src/main.rs`, wired at the same 5 call sites as
+`check_one_type_per_file`).
+
+- **Strictly opt-in, keyed off the `namespace {}` block, not a separate
+  annotation.** A type declared with no enclosing `namespace` block is
+  exempt — this matched 0% adoption in project-local code at migration
+  time (every file under `examples/**` skips `namespace` entirely), so the
+  check only ever fires for stdlib-style code that already declares one.
+  There is no `namespace a.b.c;` semicolon form — the parser has a
+  `module a.b.c;` statement (parsed but completely discarded, never
+  affects resolution or this check) and a real `namespace a.b.c { ... }`
+  block (`ast.rs`'s `Namespace` struct); only the latter carries any
+  meaning.
+- **Root resolution walks up for the nearest `tinox.toml`**
+  (`pm::find_project_root_from`), then checks the mirrored path against
+  whichever of `<manifest_dir>/src`, `<manifest_dir>/tests`, or
+  `<manifest_dir>` itself the file actually resolves under (most specific
+  first). `tests/` has to be a recognized root in its own right, not just
+  a `src/` fallback — a `namespace`-wrapped test file legitimately lives
+  under `tests/<namespace-path>/<TypeName>Test.tnx`, and checking it only
+  against `src/...` rejects it outright (hit live while adding the first
+  example test below: the check initially only knew about `src/`/bare
+  `manifest_dir`, so a correctly-placed `tests/tinox/core/array/
+  ArraysTest.tnx` was hard-rejected with "must be located at
+  crates/tinox-core/tinox/core/array/ArraysTest.tnx" — i.e. `src/`'s
+  fallback path — until `tests/` was added as its own candidate root). No
+  `tinox.toml` ancestor at all, or the file isn't under any of the three
+  candidates → the check is skipped, nothing to validate against.
+- **Never applied to a file inside an INSTALLED dependency** (detected by
+  a literal `.tinox` path component anywhere in the file's canonicalized
+  path — covers both project-local `.tinox/deps/...` and the global
+  `~/.tinox/repository/...` cache, `pm::dep_install_dir`/
+  `global_dep_install_dir`'s own layout). Hit live during `make check`,
+  not hypothetical: `socket` (core-tier, `CORE_MODULES`) is ALSO declared
+  as an explicit dependency by an older e2e fixture and gets installed as
+  a real package — but that published package predates this migration and
+  has no `tinox.toml` of its own inside its installed directory, so
+  `find_project_root_from` walked straight past it and anchored on the
+  CONSUMING e2e project's own manifest instead, producing a nonsensical
+  "must be located at `<consumer project root>/tinox/core/socket/
+  Socket.tnx`" error for a file that project doesn't even own. Installed
+  dependencies are pre-vetted, address-scoped, immutable content this
+  check has no business re-validating in the first place — only this
+  project's own source is in scope.
+- **Core tier and extended tier ended up with DIFFERENT physical shapes —
+  this asymmetry is load-bearing, not an inconsistency to "fix" later.**
+  - `crates/tinox-core/` (core tier) has no per-module directory identity
+    anymore: ALL modules now live under one shared
+    `crates/tinox-core/tinox/core/<module>/` tree, because
+    `stdlib_dir()`/the `tinox.core.X` resolution branch in
+    `resolve_imports()` (main.rs) always resolves EVERY core module from
+    the same single root — there's no per-module scoping to preserve. A
+    minimal `crates/tinox-core/tinox.toml` was added purely as the
+    `find_project_root_from` anchor for the namespace check (it has no
+    role in dependency resolution).
+  - `crates/tinox-core-ext/<module>/` (extended tier) KEEPS its own
+    per-module top-level directory (that's how `tinox.toml`+dependency
+    resolution scopes each published package) — only the module's
+    *content* moved one level deeper, to
+    `crates/tinox-core-ext/<module>/tinox/core/<module>/...` (preserving
+    any existing internal nesting, e.g. `rest`'s `client/`/`server/` →
+    `tinox/core/rest/client/`, `tinox/core/rest/server/`). The module's
+    own `tinox.toml` stays at the module root, a sibling of the new
+    `tinox/` subtree, not inside it.
+  - Getting this backwards for either tier silently breaks resolution:
+    core-tier modules are found via `stdlib_dir()` (one shared root, no
+    per-module directory), extended-tier modules are found via
+    `resolve_in_dep_dirs` against each dependency's own install directory
+    (necessarily per-module) — mixing the two shapes up during any future
+    change here reproduces exactly the "Cannot resolve stdlib import"
+    failure this migration hit and fixed once already.
+  - **This local-tree change is invisible to consumers.** Published/
+    downloaded extended-tier packages already shipped with this exact
+    `tinox/core/<module>/` nesting inside the archive before this
+    migration (`scripts/publish-stdlib-ext.sh` staged it that way, and
+    `resolve_in_dep_dirs` already resolves full paths under each
+    dependency dir) — only the *local dev* source tree was flat. So
+    `examples/**/tinox.toml`'s coordinate-based `[[dependencies]]` on
+    extended-tier packages (resolved against the real tinox-central
+    registry / `~/.tinox/repository/...` cache, never against
+    `crates/tinox-core-ext/` directly) needed zero changes.
+- **Test convention**: `tests/<namespace-path>/<TypeName>Test.tnx`
+  (distinct from the existing scenario-named e2e fixtures at
+  `tests/e2e/<scenario>/Main.tnx`, which are unaffected and keep their own
+  shape/location — they don't declare a namespace and this check doesn't
+  apply to them). Two representative examples exist so far, one per tier,
+  both verified passing:
+  `crates/tinox-core/tests/tinox/core/array/ArraysTest.tnx` (`tinox test
+  crates/tinox-core/tests/tinox/core/array/ArraysTest.tnx` — resolves and
+  runs directly, since core-tier imports always resolve via `stdlib_dir()`
+  unconditionally) and `crates/tinox-core-ext/crypto/tests/tinox/core/
+  crypto/CryptoTest.tnx` (content verified passing the same way
+  `stdlib_smoke.rs`/`amqp10_consumer_annotation.rs` already verify
+  extended-tier code: copied into a throwaway project with a synthesized
+  `[[dependencies]] group="tinox.core" artifactId="crypto"` entry,
+  `tinox install`, then `tinox test`). Backfilling this convention across
+  every stdlib module is a separate, larger test-coverage initiative, not
+  part of this layout migration.
+- **Extended-tier test files can't be run directly with `tinox test
+  <path>` from inside this repo, and that's pre-existing, not something
+  this migration introduced.** Unlike core-tier (always resolves via
+  `stdlib_dir()`), an extended-tier module's own `tinox.toml` declares no
+  dependency on itself, so `import tinox.core.<module>;` inside its own
+  `tests/` file has nothing to resolve against locally — exactly the same
+  gap `stdlib_smoke.rs`'s own doc comment already describes for its SMOKES
+  cases ("no longer resolve via `stdlib_dir()`/`TINOX_PATH` at build
+  time"). Verifying an extended-tier test's actual logic therefore always
+  goes through an installed (published) version of the module, the same
+  way `stdlib_smoke.rs` and `amqp10_consumer_annotation.rs` already do it
+  — not against the workspace's own uncommitted edits to that module.
+- `crates/tinox/tests/stdlib_smoke.rs`'s `scan_module_dir` (the
+  per-module inventory scan behind `stdlib_smoke_completeness`) needed a
+  matching update: it transparently unwraps each extended-tier module's
+  own `tinox/core/<name>/` prefix before applying its existing "does this
+  dir have its own `.tnx` files, or is it a pure grouping dir" logic, so
+  module names it reports (`amqp10`, `rest.client`, `rest.server`, ...)
+  are unchanged from before the migration. Core tier didn't need a
+  `scan_module_dir` change at all — its `stdlib_dir()` test helper is
+  simply repointed straight at the shared `crates/tinox-core/tinox/core/`
+  tree, which has the exact same per-module-subdirectory shape the old
+  `crates/tinox-core/` root used to have.
 
 ## Mandatory Entry Point: `class Main` + CDI-Style Bootstrap (since 2026-08-09)
 
@@ -969,3 +1125,619 @@ fixtures that build a JWKS/token-endpoint URL as a string -- those splice via
   behavior, not just test plumbing, and each already uses one distinct,
   non-colliding port. Out of scope here (fix narrowly, not broadly) -- a
   separate follow-up if wanted.
+
+## `tinox graph`: Mermaid Call-Graph From Entry Points (issue #186, since 2026-08-14)
+
+`tinox graph [file] [--out <path>]` (`gen_call_graph` in `crates/tinox/src/
+main.rs`, graph construction/rendering in the new `crates/tinox/src/
+callgraph.rs`) statically analyzes a project and writes a Mermaid
+`flowchart TD` call graph (default `docs/callgraph.mmd`) seeded from every
+auto-run entry point: `@GET`/`@POST`/etc (including `@Http3RestController`
+routes, since those flow through the same `route_entries`),
+`@WebsocketEndpoint`'s `@OnOpen`/`@OnMessage`/`@OnClose`,
+`@Amqp10Consumer`/`@Amqp091Consumer`, and `@Command` (CLI). v1 scope,
+settled via AskUserQuestion before implementation: per-METHOD nodes (not
+per-class), the full entry-point matrix including AMQP (not deferred as
+the issue itself first suggested), and no `--from`/`--depth` filtering yet
+(fast-follow once the base output is confirmed useful -- exactly the
+"prototype first" step the issue asked for, done against
+`examples/rest_with_mini`, see below).
+
+- **No new discovery logic needed at all** -- `tinox_typecheck::
+  annotations::process_annotations(&ast)` already returns every entry
+  point's `class_name` + handler method name(s) (`RouteInfo`,
+  `WsEndpointInfo`, `Amqp10ConsumerInfo`/`Amqp091ConsumerInfo`,
+  `CliCommandInfo`), the exact same structs `codegen.rs` already consumes
+  for the real annotation-driven bootstrap. `@Command`'s entry method has
+  no per-method annotation to discover (unlike the other three kinds) --
+  it's a fixed convention, `run` (verified against `codegen.rs`'s `call
+  i64 @{class}_run(...)` and `examples/GreetCommand.tnx`), hardcoded in
+  `build_call_graph`.
+- **No `tinox-typecheck` coupling for interface fan-out beyond
+  `TypeChecker::interface_info()`, already called on this same pipeline's
+  AST anyway** (`gen_call_graph` runs the identical parse -> resolve_imports
+  -> typecheck -> process_annotations sequence `compile_file` uses, since a
+  real type-checked AST is needed either way). `interface_info()` returns
+  `(iface_methods: HashMap<interface, Vec<method>>, class_implements:
+  HashMap<class, Vec<interface>>)` -- inverted once into `interface ->
+  implementing classes` for fan-out. `interface_implementations` itself
+  does NOT walk the `extends` chain (each class's own direct `implements`
+  only, confirmed by reading `check_class`'s population site) -- so this
+  is exactly equivalent to what a hand-rolled AST walk over
+  `Class.implements` would have given anyway, just reusing tested logic
+  instead of duplicating it.
+- **`MethodCall { obj, method, args }` represents BOTH `ClassName.method(...)`
+  (static) and `var.method(...)` (instance) calls** -- disambiguated by
+  resolving `obj`: `Ident` matching a known class = static call; `Ident`
+  matching a local var/param with a STATICALLY declared type (explicit
+  `var x: Foo = ...`, or inferred from a `var x = new Foo()` initializer
+  only -- no real type inference, a single flat non-scope-aware pass over
+  the method body, deliberate v1 simplification) = instance call through
+  that type; `This` = self-call; `New { class, .. }` = a chained `new
+  Foo().method(...)`. Anything else is **unresolved** -- shown via a
+  shared `unresolved` sink node + `%%`-comment detail lines in the `.mmd`
+  output, never silently dropped (this project's "no silent garbage"
+  philosophy, applied to a read-only analysis tool same as everywhere
+  else).
+- **Real, load-bearing edge case, found via the issue's own suggested
+  prototype target (`examples/rest_with_mini/UserController.tnx`)**:
+  `getUser` calls `findUserIndex(users, id)` with NO receiver at all. Since
+  top-level free functions are banned (issue #149), this parses as
+  `ExprKind::Call { func: Ident("findUserIndex"), .. }`, not `MethodCall`
+  -- syntactically identical to a lambda-variable invocation at parse
+  time. The walker special-cases a bare `Call` to a same-class method
+  name (checked via `find_method`, which also walks the `extends` chain)
+  before falling back to "unresolved (lambda call)".
+- **A second real, load-bearing edge case, found live while smoke-testing
+  `examples/ws_echo_annotated` (not from the prototype target above)**:
+  `Ws::sendText(conn, ...)` was completely invisible in the graph at
+  first -- neither an edge nor an unresolved entry. `X::y(...)` is the
+  SAME `ExprKind::EnumValue` AST node for a real enum-variant literal
+  (`Color::Red`, `Option::Some(value)`) and this static-call-like
+  reference -- there's no separate call syntax for it. Fixed by handling
+  `EnumValue` as a call site too: a known project class -> a real static
+  call; a known project enum -> not a call at all (skip, matches a real
+  variant construction); anything else (e.g. `Ws`/`Json`, merged in via
+  `import tinox.core.*`) -> unresolved rather than silently dropped, since
+  it's genuinely ambiguous without cross-crate type info.
+- **A third real bug, also found via the SAME `examples/ws_echo_annotated`
+  smoke test, worse than the second one**: once `Ws::sendText` started
+  resolving, the traversal recursed straight into `tinox.core.websocket`'s
+  OWN internals (`Ws.sendText` -> `Ws.writeFrame` -> ... ->
+  `httpConnWriteBytes`) -- exactly the "expanding into tinox.core.*
+  internals" the issue explicitly asks to avoid, and the plan explicitly
+  designed against. Root cause: `resolve_imports` merges every imported
+  file's decls into the SAME flat list before this module ever sees the
+  AST, so a `class_ast_map`-style lookup built from those merged decls
+  can't tell "this project's own class" from "a class pulled in via
+  import" apart on its own -- `Ws` was structurally indistinguishable
+  from `UserController`. Fixed by `project_owned_classes`
+  (`callgraph.rs`): since one-type-per-file guarantees every method of a
+  class shares one originating file, and `stamp_file_identity` (main.rs)
+  already stamps that onto every `Method.file` for both the entry file
+  and every imported file uniformly, a class only counts as
+  project-owned if its first method's file is a descendant of
+  `project_root` and NOT inside a `.tinox` (installed-dependency)
+  subtree -- the same `.tinox`-component heuristic issue #185's
+  `check_namespace_path_matches` already uses to recognize installed
+  dependencies. The FULL merged class map is still used for name
+  resolution (so `Ws::sendText` still correctly resolves as a real call,
+  not "unresolved") -- only the RECURSION decision (expand further or
+  stop) consults the project-owned subset.
+- **Cycle/depth safety is a single global `expanded: HashSet<"Class.method">`
+  set plus a depth cap (40), not a fresh per-entry-point set** -- a
+  deliberate simplification over the devui `visiting`-set pattern this
+  feature was modeled on (see the REST "Try it out" Example Schemas
+  section below): since the goal is ONE combined graph across every entry
+  point (not a separate graph per entry point), reusing one global
+  "already expanded" set both dedupes edges when multiple entry points
+  reach the same subtree AND makes a genuine call cycle (A calls B calls
+  A) safe for free -- the second visit to an already-expanded node just
+  returns immediately, after its inbound edge was already recorded, so
+  the cycle still shows correctly in the output without needing a
+  separate on-stack/visiting-vs-expanded distinction.
+- **Verified against 4 real example projects, one per entry-point kind**
+  (`crates/tinox/tests/callgraph.rs`, spawns the real compiled `tinox`
+  binary, not a direct call into `callgraph.rs`'s functions): REST
+  (`rest_with_mini`, asserting on the two edge cases above by name), CLI
+  (`GreetCommand`, the `run` convention), WebSocket (`ws_echo_annotated`,
+  asserting the stdlib boundary actually stops expansion), AMQP 1.0
+  (`amqp10_consumer_annotated`). Every generated `.mmd` in this
+  investigation was also rendered with real `@mermaid-js/mermaid-cli`
+  (`npx @mermaid-js/mermaid-cli`) to confirm valid Mermaid syntax, not
+  just eyeballed -- the prototype step the issue's own "Suggested next
+  step" asked for before committing to the full entry-point matrix.
+- **A fourth real bug, caught by CI, not local testing**: `gen_call_graph`'s
+  every failure path (unreadable file, lex/parse error, import error, type
+  error, unwritable output) originally did `eprintln!(...); return;` --
+  returning from the function normally instead of `std::process::exit(1)`
+  the way `build()`'s equivalent paths already do. `run()`'s dispatch
+  match doesn't propagate a callee's "did this fail" status at all, so
+  this meant the PROCESS exited 0 even after printing an error and never
+  writing the output file -- exactly the kind of silent-success failure
+  this project's philosophy exists to prevent. Every one of the 3 example
+  projects this feature is tested against (`rest_with_mini`,
+  `ws_echo_annotated`, `amqp10_consumer_annotated`) declares an
+  extended-tier dependency that needs `tinox install` first; this
+  dev machine already had all three cached from earlier work, so the bug
+  was invisible locally -- a genuinely fresh CI checkout (nothing in
+  `~/.tinox/repository`) hit the "declare it in tinox.toml... then run
+  tinox install" import error immediately, and with the missing
+  `exit(1)`, that printed error was silently treated as success by the
+  test harness's own `output.status.success()` check, which only then
+  failed on the SEPARATE, more confusing symptom of the output file not
+  existing. Fixed by switching every failure path to
+  `std::process::exit(1)`, and by adding the same `install_deps_if_needed`
+  step (`tinox install`, cwd'd at the entry file's own directory) the
+  existing `amqp10_consumer_annotation.rs` test already uses, to
+  `callgraph.rs`'s own test helper -- re-verified by temporarily moving
+  `~/.tinox/repository` aside to force a real, fresh-machine install path
+  locally, not just trusting the CI rerun.
+
+## Editor Support: Eclipse + VS Code (`editors/`, since 2026-08-14)
+
+`editors/eclipse/` (moved here from a top-level `eclipse/`, no other path
+in the repo referenced the old location) and `editors/vscode/` are both
+thin LSP CLIENTS over the same `tinox-lsp` binary (`crates/tinox-lsp`,
+tower-lsp based) -- neither has its own language-analysis logic. Every
+feature (diagnostics, hover, completion, go-to-definition, outline) comes
+from `tinox-lsp` itself; each editor plugin is just wiring.
+
+- **Shared `editors/install-lsp.sh`** (hoisted out of `editors/eclipse/`,
+  which used to have its own copy — nothing in the script was
+  Eclipse-specific): `cargo build --release -p tinox-lsp` +
+  `cp target/release/tinox-lsp ~/.cargo/bin/tinox-lsp`. Both editors'
+  READMEs point at this one copy.
+- **Binary path resolution is identical in both editors, deliberately**:
+  a user-configurable setting (Eclipse: `tinox.lsp.path` preference;
+  VS Code: `tinox.lsp.path` setting), defaulting to probing
+  `~/.cargo/bin/tinox-lsp`, `/usr/local/bin/tinox-lsp`,
+  `/usr/bin/tinox-lsp` in that order
+  (`TinoxPreferenceInitializer.java` / `defaultLspPath()` in
+  `editors/vscode/src/extension.ts`). The "Run File" command in both
+  derives the `tinox` compiler binary's path the same way, too: swap
+  `tinox-lsp` for `tinox` in the resolved LSP path (assumes both
+  binaries live in the same directory, true for a normal cargo
+  build/install) -- `RunTinoxHandler.java`'s `getTinoxBinary()` and
+  `resolveTinoxBinaryPath()` in `extension.ts` are the same logic in two
+  languages.
+- **The TextMate grammar (`tinox.tmLanguage.json`) is a genuine
+  duplicate, not a shared file** —
+  `editors/eclipse/tinox-eclipse/grammars/tinox.tmLanguage.json` and
+  `editors/vscode/syntaxes/tinox.tmLanguage.json` are byte-identical as
+  of this writing, but there is no build step or symlink keeping them
+  that way. **Must be kept in sync by hand** — same deliberate
+  duplication convention this repo already uses for `docs.html`/
+  `docs_en.html`, chosen for the same reason: each editor ecosystem
+  expects the grammar file living in its own conventional location
+  (`grammars/` for TM4E, `syntaxes/` for VS Code), and a shared file
+  outside either directory would need its own copy/build step for two
+  genuinely small, rarely-changing files. (Aside, not acted on here,
+  scope was "add VS Code support" not "improve the grammar": the shared
+  grammar is missing `namespace`/`fnc` from `keyword_declaration` even
+  though both are real Tinox keywords used throughout this repo — a
+  pre-existing gap in the Eclipse-era grammar, inherited as-is by the
+  VS Code copy rather than silently fixed as a drive-by change.)
+- **Neither is published anywhere** — no Eclipse update site, no VS Code
+  Marketplace listing (a deliberate choice, confirmed with the user:
+  local-only distribution matches the Eclipse plugin's own existing
+  precedent exactly). Eclipse: manual Export → deployable plug-in →
+  `.jar` into `dropins/`. VS Code: `npx @vscode/vsce package` → `.vsix`
+  → "Install from VSIX...". No CI wiring for either.
+- **VS Code packaging note**: `package.json` needs a `repository` field
+  or `vsce package` prints a (non-blocking) warning; added, pointing at
+  this repo with `directory: "editors/vscode"`. A missing `LICENSE`
+  file in `editors/vscode/` itself also warns (non-blocking) — not
+  added, since the repo's root `LICENSE-APACHE`/`LICENSE-MIT` already
+  cover the whole tree including this directory, and duplicating full
+  license text into a third location would just be one more place to
+  keep in sync for a cosmetic warning.
+- **A real bug, found only by the user actually testing a real,
+  installed VS Code window (build-time checks alone did NOT catch this
+  — see below)**: syntax highlighting worked, but completion never
+  showed anything object-specific (`ctx.` fell back to VS Code's own
+  generic word-based suggestions, e.g. literal string fragments already
+  present in the file, instead of `tinox-lsp`'s real, type-aware
+  member list) — and the "Tinox Language Server" output channel didn't
+  even exist in the Output panel dropdown, meaning the `LanguageClient`
+  was never constructed at all. Root cause: `.vscodeignore`'s
+  `node_modules/**` line strips `vscode-languageclient` (a real
+  `dependencies` entry, not `devDependencies`) out of the packaged
+  `.vsix` — but plain `tsc` compilation leaves
+  `require("vscode-languageclient/node")` as a literal Node `require`
+  call, which doesn't bundle anything. The require throws the instant
+  VS Code tries to load the extension, so `activate()` never runs —
+  with no visibly obvious error dialog for the user to notice, since a
+  module-load failure in one extension doesn't interrupt anything else
+  (syntax highlighting, being pure declarative grammar, works
+  regardless, since it needs no JS to run at all — this is exactly why
+  it looked "half-working" instead of "not working"). Fixed by bundling
+  the extension with esbuild (`editors/vscode/esbuild.js`) into a
+  single self-contained `out/extension.js` with only `vscode` itself
+  left external (real VS Code injects that at runtime; every other
+  dependency, including all of `vscode-languageclient`'s own transitive
+  deps, gets inlined) — `node_modules/**` in `.vscodeignore` is now
+  correct rather than the bug, since the bundle genuinely needs nothing
+  from it at runtime. `npm run compile` is now `tsc --noEmit` (type
+  -checking only) followed by the esbuild bundle step, not `tsc`'s own
+  emit.
+- **Verification note**: build-time correctness was checked twice —
+  once before the bug above was found (compiles clean, packages into a
+  `.vsix`, installs via CLI — none of which caught the missing-bundle
+  bug, since none of those steps actually LOAD the extension inside a
+  JS host the way VS Code itself does) and once after the fix, this
+  time including a non-GUI load test: extracting the packaged `.vsix`
+  and `require()`-ing the bundled `out/extension.js` under a real
+  Node process with a minimal mocked `vscode` module, confirming zero
+  "Cannot find module" errors for anything other than `vscode` itself
+  (the mock's remaining gaps, e.g. `vscode.CodeLens` not being a real
+  class, are artifacts of the mock's incompleteness, not the
+  extension — real VS Code provides all of these for real). This is a
+  meaningfully stronger check than the pre-fix verification, but still
+  short of a full live GUI pass — the actual confirmation that
+  highlighting/hover/completion/diagnostics/Run File all work came from
+  the user testing a real installed build, not from anything automated
+  in this repo. If touching this extension again: a `tsc`-compiles /
+  `vsce`-packages / `--install-extension`-succeeds check is NOT
+  sufficient on its own to catch an activation-time bundling bug like
+  this one — either do the `require()`-under-mock check above, or get
+  a real human to open a `.tnx` file and confirm completion/hover
+  actually populate, not just that highlighting renders.
+- **A second real bug, found in the SAME live-testing round, layered on
+  top of the first**: after fixing the bundling bug above, completion
+  populated but was drowned out by VS Code's own generic word-based
+  suggester (literal word/string fragments already present in the file
+  -- e.g. `"Alice"`/`"Bob"` from unrelated string literals elsewhere in
+  the same file -- mixed in alongside, and vastly outnumbering, the
+  real `tinox-lsp` member completions). VS Code adds these by default
+  for every language unless a language extension opts out. Fixed via
+  `contributes.configurationDefaults`: `"[tinox]": {
+  "editor.wordBasedSuggestions": "off" }` in `package.json` -- ships as
+  the DEFAULT for anyone installing the extension, but is only a
+  default, so it can still be silently overridden by a pre-existing
+  user/workspace setting (a real snag hit live during this same
+  session: setting it a second time, explicitly, directly in the user's
+  own `settings.json`, was needed to confirm the fix before the
+  packaged default's effect could be verified against a genuinely clean
+  reinstall).
+- **Both bugs together are why a clean reinstall matters when verifying
+  a fix to this extension, not just re-running `vsce package`**: VS
+  Code does not always fully unload/reactivate an extension just
+  because its `.vsix` was reinstalled over the same version number --
+  confirming a fix required Uninstall -> Reload Window -> Install from
+  VSIX -> Reload Window again, checked by confirming the "Tinox
+  Language Server" entry actually appears in the Output panel's
+  channel dropdown (compare against another real, working
+  LSP-based extension's own entry, e.g. "JSON Language Server", as a
+  sanity check that the mechanism itself is functioning) before
+  re-testing completion.
+- **`editors/eclipse/build.sh`** (added after the user pointed out that
+  "install the plugin" originally meant "import a PDE project into
+  Eclipse and Run As Eclipse Application" -- real friction compared to
+  a normal Eclipse plugin install): builds a real, installable OSGi
+  bundle JAR from the command line, no Eclipse GUI/PDE Export wizard
+  needed. Auto-detects an Eclipse bundle pool to compile against --
+  verified live on this dev machine that an Eclipse-Installer
+  -provisioned install's actual bundle jars live in the SHARED pool at
+  `~/.p2/pool/plugins`, not the installation's own near-empty
+  `plugins/` directory (only 1 jar there); `ECLIPSE_PLUGINS_DIR`
+  overrides the guess. Compiles with `--release 17` (matching
+  `Bundle-RequiredExecutionEnvironment: JavaSE-17` in `MANIFEST.MF` --
+  the system `javac` here is Java 26, so an unqualified compile would
+  silently produce bytecode newer than what the manifest declares
+  supported) against a classpath of every jar in the pool (a real,
+  proper OSGi dependency resolution would only need the bundles listed
+  in `Require-Bundle`, but globbing the whole pool is simpler and
+  robust enough for a plugin this small). Substitutes a real build
+  timestamp for `MANIFEST.MF`'s checked-in `1.0.0.qualifier` PDE/Tycho
+  placeholder (`sed`), since a raw manual build has no Tycho build
+  process to fill that in itself. Verified (without launching Eclipse,
+  which needs the same live-desktop caution as the VS Code work above):
+  the produced JAR is a well-formed bundle (`META-INF/MANIFEST.MF` +
+  `plugin.xml` + `grammars/` + compiled `.class` files, matching
+  `build.properties`'s `bin.includes` exactly) and its class files are
+  genuinely Java 17 bytecode (`javap -verbose` -> `major version: 61`).
+  Actually dropping the jar into a running Eclipse's `dropins/` and
+  confirming it loads is the one step left to a real human, same
+  caveat as the VS Code extension's own verification note above.
+  **Found and fixed a real, pre-existing documentation gap while
+  writing this**: both `README.md` and `SETUP.md` only ever mentioned
+  LSP4E as a prerequisite, never TM4E -- but `MANIFEST.MF`'s
+  `Require-Bundle` has always required both (TM4E renders the grammar;
+  without it, syntax highlighting silently wouldn't have worked even
+  though nothing else would have visibly failed). Not something this
+  build.sh work introduced, just a gap noticed while reading
+  `Require-Bundle` closely enough to know what to check for on the
+  compile classpath -- fixed in both docs alongside this change.
+- **`File → Import → Tinox → Import Existing Tinox Project` wizard**
+  (`TinoxImportWizard`/`TinoxImportWizardPage`, `org.eclipse.ui.importWizards`)
+  imports a project in place (no file copy -- `newProjectDescription` +
+  `setLocation` + `create`/`open`, the same sequence "Import Existing
+  Projects into Workspace" uses structurally) from a picked
+  `tinox.toml`. `TinoxToml.parsePackageName` is a minimal line-scanning
+  `[package]` reader mirroring `pm.rs`'s own hand-rolled parser (no TOML
+  library dependency for one field). `src/` is required (matches
+  `pm.rs:1117-1121`'s own "no src/, no package" rule); `tests/` is
+  optional and rare in real Tinox projects (only `crates/tinox-core` has
+  one anywhere in this repo) -- the wizard must not require it.
+  `src/`/`tests/` get a real icon swap (not just a corner badge) via
+  `TinoxSourceFolderDecorator` using `IDecoration.REPLACE`, gated on a
+  new `TinoxProjectNature` (`org.eclipse.core.resources.natures`) so it
+  never fires outside actual Tinox projects -- the decorator itself
+  registers globally (no per-folder-name enablement exists in the
+  extension point), so that gate has to live in code, not XML. Icons
+  (`icons/source_folder.png`/`tests_folder.png`) are freshly generated
+  (ImageMagick), not copies of JDT's own art -- there's no
+  functional distinction to justify depending on JDT for this (Tinox
+  isn't Java, `IClasspathEntry` doesn't apply, and there's no
+  tinox-lsp/tooling concept of a "test source root" to hook into yet;
+  confirmed with the user this is meant to be visual/organizational
+  only for now). No new `Require-Bundle` entries needed -- `plugin.xml`
+  additions are all additive, `org.eclipse.core.resources`/
+  `org.eclipse.ui.ide` were already present. `icons/test_folder.png`
+  was renamed to `tests_folder.png` after discovering the root
+  `.gitignore`'s `test_*` rule (meant for excluded compiled test
+  binaries elsewhere in the repo) was silently matching it too --
+  more accurate anyway, since the real folder is named `tests`, not
+  `test`.
+- **A real bug, found only by the user actually dropping the JAR into a
+  real running Eclipse and checking the Error Log (build-time checks --
+  `javac`, `jar`, `unzip -l`, `javap` -- caught none of this, since
+  none of them parse `plugin.xml` as Eclipse itself does)**: the new
+  `importWizards`/`natures`/`decorators` extensions never showed up at
+  all -- not just the import wizard, EVERYTHING in `plugin.xml`
+  silently stopped registering (LSP, syntax highlighting, the Run
+  command, all of it), yet the bundle itself still showed up as
+  installed in `Installation Details -> Plug-ins`, giving no obvious
+  signal anything was wrong from that view alone. Root cause: one of
+  the new `<!-- -->` comments contained a bare `--` in its body (a
+  prose double-hyphen, this project's usual "aside" punctuation) --
+  which the XML spec forbids ANYWHERE inside a comment, not just at
+  its boundaries. Confirmed via the actual Error Log entry the user
+  found: `org.eclipse.equinox.registry` logs "Could not parse XML
+  contribution... Any contributed extensions and extension points will
+  be ignored" and fails the ENTIRE file's parse, not just the one
+  malformed comment -- a single stray `--` anywhere in `plugin.xml`
+  is a full-file outage, not a localized one. Fixed the comment, and
+  -- so this exact mistake can't silently ship again -- added an
+  `xmllint --noout plugin.xml` validation step to `build.sh` itself,
+  verified live to actually catch it (reintroduced the bug in a
+  throwaway copy, confirmed `xmllint` reports the exact line/column
+  and a non-zero exit; confirmed it passes clean on the real, fixed
+  file). Generalizes beyond this one mistake: `plugin.xml` is
+  hand-written XML with no other syntax check anywhere in this
+  project's tooling (Eclipse's own PDE editor would flag this
+  instantly, but nothing does when editing the file directly) --
+  `xmllint` is now the one thing standing between a typo here and a
+  silent full-plugin outage that only surfaces in a real user's Error
+  Log.
+- **A second, different real bug, found in the SAME live-testing
+  round, one step further**: with `plugin.xml` now well-formed, the
+  import wizard itself showed up correctly, but selecting a
+  `tinox.toml` triggered Eclipse's own "Marketplace solutions
+  available" dialog ("Your IDE is missing natures to properly support
+  your projects") naming `tinox.eclipse.tinoxNature` -- i.e. the
+  nature extension was well-formed XML but still wasn't actually
+  registering. `xmllint` only proves a file parses as XML, not that
+  its content matches a given extension point's SCHEMA -- a distinct,
+  narrower kind of correctness. Root cause: wrote
+  `<runtime id="..." class="..."/>` (attributes directly on
+  `<runtime>`) instead of the real
+  `org.eclipse.core.resources.natures` shape, confirmed by grepping
+  three real, already-installed plugin.xmls in the local bundle pool
+  (JDT's `javanature`, m2e's `maven2Nature`, PDE's own
+  `PluginProject`/`FeatureProject`/etc.) -- all three, with zero
+  exceptions, use `id`/`name` on the `<extension>` element itself,
+  then a nested `<runtime><run class="..."/></runtime>`, never
+  attributes directly on `<runtime>`. Cross-checked the OTHER two new
+  extension points the same way (grepped 8 real decorator
+  declarations, 2 real import-wizard declarations, across
+  debug/JDT/EGit/Buildship/m2e/Mylyn/EclEmma) while fixing this, and
+  found the decorator was ALSO missing a `location` attribute that
+  literally every single real-world example includes (`TOP_LEFT`/
+  `TOP_RIGHT`/`BOTTOM_RIGHT`) even for class-based lightweight
+  decorators that pick their own `IDecoration` position
+  programmatically -- added defensively to match universal real-world
+  convention rather than trusting that it's "probably optional" from
+  a schema default I hadn't actually verified. Lesson for editing
+  `plugin.xml` again: don't trust memory of a given extension point's
+  exact attribute shape, even when the XML itself is well-formed --
+  grep a handful of real, already-installed plugin.xmls for the same
+  extension point first (`~/.p2/pool/plugins/*.jar` on this dev
+  machine has hundreds of real examples to check against), the same
+  way this repo's own CLAUDE.md philosophy already insists on
+  verifying against real, independent systems rather than
+  self-consistent assumptions.
+- **A third real bug, found by the user importing a genuine real-world
+  project (`~/git/demo`) through the now-working import wizard above --
+  this one in `tinox-typecheck` itself, not in the plugin, and affecting
+  BOTH editor integrations equally (Eclipse and VS Code, since both go
+  through the same `tinox-lsp` binary)**: a plain `@JsonSerializable
+  class Person { ... }` and its `PersonController` (`@PostParam`/
+  auto-serialize REST handlers) were flagged with `unknown annotation:
+  @JsonSerializable` and cascading `@PostParam`/return-type errors --
+  despite compiling cleanly with the real `tinox` compiler. Root cause:
+  `tinox-lsp`'s `typecheck_with_prelude` (`crates/tinox-typecheck/src/
+  lib.rs`) deliberately keeps the file being edited and its stdlib
+  "preludes" as SEPARATE `SourceFile`s (registering each prelude's decls
+  via `register_declarations` before checking the real source), unlike
+  the real compiler's `compile_file` pipeline, which fully merges every
+  import into one `decls` list via `resolve_imports` before typechecking
+  ever runs. `annotations::validate_annotations` (`crates/tinox-
+  typecheck/src/annotations.rs`) documented and relied on exactly that
+  merged-list assumption ("imports are already merged into source.decls
+  by this point") for its two registration passes (custom `@annotation`
+  classes, `@JsonSerializable` class names) -- true for the compiler,
+  false for the LSP's split model, so a custom annotation declared in a
+  prelude (`@JsonSerializable` itself is declared via `@annotation class
+  JsonSerializable {}` inside `tinox.core.json`'s own
+  `JsonSerializable.tnx`) was invisible to any file that merely imported
+  it. Fixed with a new `TypeChecker.prelude_decls: Vec<Decl>` field,
+  accumulated by `register_declarations` on every call (harmlessly
+  redundant for the compiler's own single, already-merged call; the
+  actual fix for the LSP's multiple prelude-then-source calls) and
+  threaded into `validate_annotations` as a second `extra_decls`
+  parameter, scanned by both registration passes alongside `source.decls`
+  itself. Verified: `cargo test -p tinox-typecheck` (367 tests) still
+  green, and confirmed live against the real `~/git/demo` project after
+  rebuilding+reinstalling `tinox-lsp` (`mv` over the running binary
+  rather than `cp`, since Eclipse's LSP4E immediately respawns a killed
+  `tinox-lsp` process, making the target "busy" for a `cp`-based
+  overwrite -- `mv`'s atomic rename works even while the old binary is
+  still running).
+
+## Postgres Connection Pool + `@Transactional` (issue #191, since 2026-08-14)
+
+Real database transaction handling, replacing what used to be a single
+global DB connection shared by every thread for the whole process
+lifetime. Postgres only in v1 (deliberate scope, tracked as follow-up
+for SQLite/MySQL) — the ORM itself (`tinox.core.db`: `@Entity`/`@Table`/
+`@Column`/`@Id`/`@GeneratedValue`, `DB.of(Class).filter()...`) is
+unchanged and already existed; this adds real pooling and a
+`@Transactional` annotation underneath it.
+
+- **The old model, found while investigating the user's ask for "a proper
+  driver layer and proper transaction handling"**: `runtime.c` opened ONE
+  connection per process at startup (`tinox_db_connect`, called from an
+  LLVM `@llvm.global_ctors` entry) and every thread funneled every query
+  through it — Postgres/MySQL serialized access with a mutex (`Bug 103`),
+  SQLite serialized through its statement cache (`Bug 102`). `[database]
+  pool` in `tinox.toml` was parsed (`DbConfig.pool` in `crates/tinox/src/
+  main.rs`) but was `#[allow(dead_code)]` — never wired to anything. No
+  `BEGIN`/`COMMIT`/`ROLLBACK` existed anywhere in the runtime.
+- **New driver-layer C ABI, deliberately small and uniform across all
+  three drivers** (`runtime/runtime.c`): `tinox_db_pool_init(url,
+  pool_size)`, `tinox_db_acquire_stmt_conn()` /
+  `tinox_db_release_stmt_conn(conn)`, `tinox_db_tx_begin()` /
+  `tinox_db_tx_commit()` / `tinox_db_tx_rollback()` /
+  `tinox_db_tx_active()` — replacing `tinox_db_connect`/`tinox_db_get_conn`
+  everywhere, for every driver, not just Postgres. This uniform shape is
+  the "generic driver layer" part of the ask: adding real pooling/
+  transactions for SQLite/MySQL later means implementing these same
+  functions for that driver, not an architecture change.
+  - **Postgres**: a real fixed-size pool (`TINOX_DB_POOL_MAX = 64`,
+    eagerly connected at `tinox_db_pool_init` so a broken DB fails loudly
+    at startup, not on the first lazy query), free-list + mutex/condvar
+    for acquire/release, and a `static __thread PGconn*` holding the
+    calling thread's active transaction connection (if any) — deliberately
+    a plain foreign pointer, not something needing
+    `tinox_gc_register_thread_roots`, since a `PGconn*` from libpq's own
+    malloc is never GC memory (the exact gap that helper exists for only
+    applies to GC-managed pointers reachable solely via `__thread`
+    storage). `tinox_db_exec`'s old `_tinox_db_mu` mutex (Bug 103's fix)
+    is gone — it existed because every thread shared the SAME connection;
+    the pool now guarantees each checked-out connection is exclusively
+    owned by one thread until released/committed/rolled back, so the
+    mutex would only have re-serialized the pool it was meant to
+    parallelize.
+  - **SQLite/MySQL**: kept on their exact pre-#191 single-connection,
+    auto-commit model, completely unchanged — `tinox_db_pool_init` for
+    these drivers just calls the old connect logic and ignores
+    `pool_size`. `tinox_db_tx_begin/commit/rollback` are stubs that
+    `fprintf`+`exit(1)` with a clear "not supported for this driver"
+    message rather than silently no-opping — defense in depth for the
+    hard compile-time check below, not the primary enforcement mechanism.
+- **`[database] pool` now actually does something**: default 5 when
+  omitted (was silently 1 before, back when the field was dead code and
+  every driver had exactly one connection regardless of what it said); an
+  unparseable value is now a hard compile error (`main.rs`'s
+  `read_database_config`) instead of a silently-swallowed fallback to 1 —
+  a newly load-bearing field deserves this project's usual "no silent
+  garbage" treatment, unlike when it did nothing.
+- **`@Transactional`** (class-level or method-level, same
+  class-overrides/extends-to-methods precedence pattern as `@Auth`/`@Log`;
+  registered in `tinox-typecheck/src/annotations.rs` exactly like every
+  other built-in annotation, arity 0, valid on `Method`/`Class`).
+  Propagation is `REQUIRED` (Spring's default, no savepoints in v1): a
+  transactional method calls `tinox_db_tx_active()` at entry — if a
+  transaction is already open on this thread (a nested `@Transactional`
+  call), it joins it instead of nesting a second `BEGIN`; only the
+  outermost call actually begins/commits/rolls back. Any exception
+  propagating out of the method's body rolls back (and always re-throws —
+  `@Transactional` never swallows an error, same as a `try` with no catch
+  clauses); a normal return commits.
+  - **Codegen (`gen_transactional_wrapper`, `tinox-codegen/src/
+    codegen.rs`) reuses the SAME low-level try/catch primitives
+    `gen_try_stmt` uses** (an `alloca i64` error slot, `ctx.error_catch`
+    redirect, `emit_post_stmt_throw_check` after the body,
+    `emit_unwind_defers_to`/`emit_unwind_defers` + `emit_ret_default` for
+    the rethrow) rather than inventing new unwinding machinery — the
+    difference is a fixed BEGIN/COMMIT/ROLLBACK action (gated on an
+    `i1` "do I own this transaction" flag) instead of user-written catch/
+    finally blocks. Wired into `gen_class_method` as an alternative to a
+    plain `gen_stmt_body` call, gated on a new `transactional_methods:
+    HashSet<(String, String)>` populated by annotation processing exactly
+    like the existing `inline_methods` set.
+  - **Postgres-only is a HARD compile error, not a silent ignore**,
+    checked in `compile_file` (`main.rs`) right after `ann_result` is
+    computed (before it's moved into `set_annotation_info` further down —
+    a real move-before-use bug hit once while placing this check near the
+    `db_pool_size`/`db_url` wiring further down the function, fixed by
+    checking earlier instead of cloning): any `@Transactional` method with
+    `[database] driver` unset or not `"postgres"` fails the build with a
+    message naming the offending class/method, before codegen ever runs.
+  - **ORM codegen (`gen_orm_query`/`gen_orm_save_delete`) already had
+    exactly one connection-acquisition call site each** (`tinox_db_get_conn`,
+    now `tinox_db_acquire_stmt_conn`) — renaming those two call sites and
+    adding a matching `tinox_db_release_stmt_conn` at every exit path (3
+    in `gen_orm_query`'s count/first/list branches, 2 in
+    `gen_orm_save_delete`'s delete/save-done paths) was the entire ORM-side
+    change. No other codegen changes were needed: a statement issued
+    outside any `@Transactional` method transparently gets a
+    fresh-pool-connection-per-statement (auto-commit, unchanged behavior),
+    one issued inside one transparently reuses the TLS-bound transaction
+    connection, purely because `tinox_db_acquire_stmt_conn` makes that
+    decision internally.
+- **Verified against a REAL Postgres, not a simulated/mocked driver**
+  (`crates/tinox/tests/postgres_transactional.rs`, this project's
+  established "verify against real, independent systems" rule) — starts
+  its own `postgres:16-alpine` via `docker run -P` (dynamic host port,
+  same "don't hardcode a literal port" convention the e2e fixtures already
+  use), compiles+runs `tests/fixtures/postgres_transactional/` (an
+  `Account` entity + a `BankService.transfer` method doing two `save()`
+  calls inside one `@Transactional`, throwing if the sender would go
+  negative), then verifies the FINAL row state with a separate `psql`
+  query — independent of the compiled program's own stdout, the same
+  "don't just trust the system under test's own report of what it did"
+  principle bug 70/71 established. Confirms both directions: a successful
+  transfer's two `save()`s both commit, and a failing transfer's two
+  `save()`s are BOTH rolled back (not just the one nearest the `throw`).
+  Re-run 3× to rule out flakiness (real docker/network I/O); SKIPs
+  gracefully if `docker`/`psql` aren't installed, matching `e2e.rs`'s own
+  sqlite3-not-installed SKIP. CI's `check.yml` installs `libpq-dev`
+  (compiles the driver) and `postgresql-client` (the `psql` CLI) so this
+  test actually runs there rather than silently skipping.
+- **A real, serious bug found only by using the feature for real work**
+  (building a layered demo app in a separate project, not part of this
+  repo's own test suite): `@Transactional` methods that end in an
+  explicit `return` never actually committed — found live when a
+  Postgres-backed `PersonService.createPerson` returned a real,
+  successfully-inserted row over HTTP, yet a follow-up `GET` for that same
+  id came back 404, and `psql` confirmed the row was never actually
+  there. Root cause: `StmtKind::Return`'s codegen emits its `ret`
+  instruction directly with zero awareness of `gen_transactional_wrapper`'s
+  own try/catch-style structure around it — the exact same gap a plain
+  `try { return x; } finally { ... }` already has today (confirmed with a
+  throwaway repro: the `finally` block's `println` never printed). That
+  general `try`/`finally` bug is real but deliberately left unfixed here
+  (a separate, pre-existing issue, out of this feature's scope, tracked
+  as issue #193) — but
+  unacceptable for `@Transactional` specifically, since virtually every
+  real method ends with an explicit `return`. Fixed with a new
+  `GenCtx.transactional_commit: Option<String>` field (the owning
+  transaction's `i1` "do I own this" alloca slot), set for the duration of
+  an `@Transactional` method's body and consulted directly by
+  `StmtKind::Return`'s own codegen (`emit_transactional_commit_before_return`,
+  called right before every `ret` it emits) — correctly fires for a
+  `return` at any nesting depth inside the method body, not just a
+  top-level one. `postgres_transactional.rs`'s fixture gained a second
+  `@Transactional` method (`getBalanceAndTouch`, ending in `return
+  acct.balance;`) specifically to keep this covered by a real test — the
+  original `transfer` method didn't catch it because a `Nothing`-returning
+  method with no explicit `return` never exercised the bug at all.
+- **Explicitly out of scope for v1** (see issue #191): SQLite/MySQL
+  pooling and transactions, savepoints / nested propagation modes other
+  than `REQUIRED`, and a manual (non-annotation) transaction API. Also
+  pre-existing, not caused by this work: `docs.html`/`docs_en.html` have
+  no `tinox.core.db` module section at all yet (unlike every other stdlib
+  module) — filling that gap is a separate, still-open task.

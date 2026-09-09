@@ -1,0 +1,33 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    // `volumes` (and Container.volumeMounts) are deliberately NOT modeled:
+    // VolumeSource is a real upstream "exactly one of ~20 source fields"
+    // union, and this compiler's @JsonSerializable always emits every
+    // declared field (no conditional/null omission) -- modeling it as a
+    // fixed struct would mean every Pod created through this client sends
+    // every unused source variant's field to the API server too, which
+    // real validation rejects for a union type. Build a Pod needing
+    // volumes through GenericResourceClient's raw JSON instead.
+    @JsonSerializable
+    class PodSpec
+    {
+        var containers: List<Container>;
+        var initContainers: List<Container>;
+        var restartPolicy: String;
+        var serviceAccountName: String;
+        var nodeName: String;
+        var hostNetwork: Bool;
+
+        fnc withContainers(containers: List<Container>) -> PodSpec
+        {
+            return PodSpec {
+                containers: containers, initContainers: [], restartPolicy: "Always",
+                serviceAccountName: "", nodeName: "", hostNetwork: false
+            };
+        }
+    }
+}

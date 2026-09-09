@@ -1,0 +1,14 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class ContainerPort
+    {
+        var name: String;
+        var containerPort: Int64;
+        var protocol: String;
+    }
+}

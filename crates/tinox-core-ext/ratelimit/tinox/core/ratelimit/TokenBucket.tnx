@@ -1,0 +1,39 @@
+module tinox.core.ratelimit;
+
+import tinox.core.time;
+import tinox.core.mathf;
+
+namespace tinox.core.ratelimit
+{
+    class TokenBucket
+    {
+        var capacity: Int64;
+        var tokens: Float64;
+        var refillRate: Float64;
+        var lastRefill: Int64;
+
+        fn new(capacity: Int64, refillRate: Float64) -> TokenBucket
+        {
+            return TokenBucket { capacity: capacity, tokens: (Float64)capacity, refillRate: refillRate, lastRefill: Time::now() };
+        }
+
+        fn allow(bucket: TokenBucket) -> Bool
+        {
+            TokenBucket::refill(bucket);
+            if (bucket.tokens >= 1.0)
+            {
+                bucket.tokens = bucket.tokens - 1.0;
+                return true;
+            }
+            return false;
+        }
+
+        fn refill(bucket: TokenBucket) -> Nothing
+        {
+            let now: Int64 = Time::now();
+            let elapsed: Float64 = (Float64)(now - bucket.lastRefill) / 1000.0;
+            bucket.tokens = Mathf::min((Float64)bucket.capacity, bucket.tokens + elapsed * bucket.refillRate);
+            bucket.lastRefill = now;
+        }
+    }
+}

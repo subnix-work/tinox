@@ -1,0 +1,93 @@
+/**
+ * Tinox Standard Library - Server-Sent Events (SSE) Module
+ * Lightweight, one-way server push over plain HTTP (`text/event-stream`,
+ * W3C EventSource protocol) for the common case (live dashboards,
+ * progress/notification streams) where a full WebSocket handshake and
+ * binary framing (tinox.core.websocket) is more than what's needed.
+ *
+ * Follows the same conn-handle-hijack shape as WsServer/Ws: accept()
+ * sends the initial HTTP response headers, then hands back a raw conn
+ * for the caller to push events over directly with sendEvent(), instead
+ * of going through HttpServer's one-shot buffered request/response
+ * model (which has no incremental/chunked-write API to hold a
+ * connection open and write to it over time).
+ *
+ *   let srv: Int64 = SseServer::listen(8080);
+ *   let conn: Int64 = SseServer::accept(srv);
+ *   if conn > 0 {
+ *       Sse::sendEvent(conn, "message", "hello");
+ *       Sse::sendComment(conn); // keepalive
+ *       Sse::close(conn);
+ *   }
+ *
+ * v1 scope, deliberately not covered (see issue #133):
+ *   - No Last-Event-ID / reconnection-resume handling. EventSource
+ *     auto-reconnects and sends this header on retry; the server side
+ *     here doesn't special-case it (every reconnect starts a fresh
+ *     stream from the caller's perspective).
+ *   - No `retry:` field (client reconnection-interval hint).
+ */
+module tinox.core.sse;
+
+namespace tinox.core.sse
+{
+    class Sse
+    {
+        /*
+         * Handshake on a freshly accepted connection: reads the HTTP
+         * request (SSE has no headers of its own worth validating --
+         * any GET to any path can receive an event stream) and responds
+         * with the event-stream headers. Only fails if the request is
+         * unreadable/empty (connection already gone), mirroring
+         * Ws::handshake's analogous check.
+         */
+        fn handshake(conn: Int64) -> Bool
+        {
+            let req = httpConnReadRequest(conn);
+            if (req.len() == 0) {
+                return false;
+            }
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+            httpConnSendRaw(conn, response);
+            return true;
+        }
+
+        /*
+         * Sends one SSE event: `event: <event>\ndata: <line>\n...\n\n`.
+         * A multi-line `data` gets one `data:` field per line (a single
+         * event's data is the concatenation of all its `data:` lines,
+         * per the EventSource spec) -- a common naive-implementation bug
+         * spot the issue itself flagged.
+         */
+        fn sendEvent(conn: Int64, event: String, data: String) -> Nothing
+        {
+            var out: String = "event: " + event + "\n";
+            let lines = data.split("\n");
+            for i in 0..lines.len() {
+                var line = lines[i];
+                if (line.endsWith("\r")) {
+                    line = line.substring(0, line.len() - 1);
+                }
+                out = out + "data: " + line + "\n";
+            }
+            out = out + "\n";
+            httpConnSendRaw(conn, out);
+        }
+
+        /*
+         * Sends an SSE comment line (`: keepalive\n\n`) -- ignored by
+         * EventSource clients, but proxies/load balancers often need
+         * periodic traffic on an otherwise-idle connection so they don't
+         * time it out.
+         */
+        fn sendComment(conn: Int64) -> Nothing
+        {
+            httpConnSendRaw(conn, ": keepalive\n\n");
+        }
+
+        fn close(conn: Int64) -> Nothing
+        {
+            httpConnClose(conn);
+        }
+    }
+}

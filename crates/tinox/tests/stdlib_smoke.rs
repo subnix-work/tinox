@@ -118,7 +118,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "crypto",
         imports: &["tinox.core.crypto"],
-        body: r#"if Crypto::sha256("abc").len() > 0 { println("yes"); } else { println("no"); }"#,
+        body: r#"if (Crypto::sha256("abc").len() > 0) { println("yes"); } else { println("no"); }"#,
         expects: &["yes"],
         contains: &[],
     },
@@ -195,7 +195,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "hash",
         imports: &["tinox.core.hash"],
-        body: r#"if Hash::hashString("a") == Hash::hashString("a") { println("yes"); } else { println("no"); }"#,
+        body: r#"if (Hash::hashString("a") == Hash::hashString("a")) { println("yes"); } else { println("no"); }"#,
         expects: &["yes"],
         contains: &[],
     },
@@ -272,7 +272,19 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "jwt",
         imports: &["tinox.core.jwt", "tinox.core.json"],
-        body: "var p: Map<String, JsonValue> = Map::new();\n    let t: String = Jwt::encode(p, \"secret\");\n    if t.len() > 0 { println(\"yes\"); } else { println(\"no\"); }",
+        body: "var p: Map<String, JsonValue> = Map::new();\n    let t: String = Jwt::encode(p, \"secret\");\n    if (t.len() > 0) { println(\"yes\"); } else { println(\"no\"); }",
+        expects: &["yes"],
+        contains: &[],
+    },
+    Smoke {
+        key: "kubernetes",
+        // No network I/O here on purpose (CI has no live cluster to talk
+        // to) -- this only needs to catch ghost-builtin/codegen breakage
+        // in the module itself, the same job every other SMOKES case
+        // does. Real CRUD/Watch behavior is verified manually against a
+        // live minikube cluster (see the module's own commit history).
+        imports: &["tinox.core.kubernetes", "tinox.core.json"],
+        body: "var containers: List<Container> = [];\n    containers.push(Container::simple(\"c\", \"nginx:alpine\"));\n    let pod: Pod = Pod::create(\"smoke-pod\", \"default\", containers);\n    let j: String = Json::serialize(pod);\n    if (j.contains(\"nginx:alpine\")) { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
         contains: &[],
     },
@@ -321,14 +333,14 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "oauth2",
         imports: &["tinox.core.oauth2"],
-        body: "let c: OAuth2Client = OAuth2Client::new(\"https://example.com/authorize\", \"https://example.com/token\", \"cid\", \"csecret\", \"https://app.example.com/cb\");\n    let r: OAuth2AuthorizeRequest = c.buildAuthorizeUrl(\"openid\");\n    if r.url.contains(\"code_challenge=\") { println(\"yes\"); } else { println(\"no\"); }",
+        body: "let c: OAuth2Client = OAuth2Client::new(\"https://example.com/authorize\", \"https://example.com/token\", \"cid\", \"csecret\", \"https://app.example.com/cb\");\n    let r: OAuth2AuthorizeRequest = c.buildAuthorizeUrl(\"openid\");\n    if (r.url.contains(\"code_challenge=\")) { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
         contains: &[],
     },
     Smoke {
         key: "oidc",
         imports: &["tinox.core.oidc"],
-        body: "let c: OidcClient = OidcClient::new(\"https://issuer.example.com\", \"https://example.com/authorize\", \"https://example.com/token\", \"https://example.com/jwks.json\", \"cid\", \"csecret\", \"https://app.example.com/cb\");\n    let r: OAuth2AuthorizeRequest = c.buildAuthorizeUrl(\"openid email\");\n    if r.url.contains(\"code_challenge=\") { println(\"yes\"); } else { println(\"no\"); }",
+        body: "let c: OidcClient = OidcClient::new(\"https://issuer.example.com\", \"https://example.com/authorize\", \"https://example.com/token\", \"https://example.com/jwks.json\", \"cid\", \"csecret\", \"https://app.example.com/cb\");\n    let r: OAuth2AuthorizeRequest = c.buildAuthorizeUrl(\"openid email\");\n    if (r.url.contains(\"code_challenge=\")) { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
         contains: &[],
     },
@@ -351,7 +363,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "process",
         imports: &["tinox.core.process"],
-        body: "if Process::pid() > 0 { println(\"yes\"); } else { println(\"no\"); }",
+        body: "if (Process::pid() > 0) { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
         contains: &[],
     },
@@ -365,14 +377,14 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "random",
         imports: &["tinox.core.random"],
-        body: "let x: Int64 = Random::nextInt(6);\n    if x >= 0 { println(\"ok\"); } else { println(\"ok\"); }",
+        body: "let x: Int64 = Random::nextInt(6);\n    if (x >= 0) { println(\"ok\"); } else { println(\"ok\"); }",
         expects: &["ok"],
         contains: &[],
     },
     Smoke {
         key: "ratelimit",
         imports: &["tinox.core.ratelimit"],
-        body: "let r: RateLimiter = RateLimiter::new(2, 1000);\n    if RateLimiter::allow(r) { println(\"yes\"); } else { println(\"no\"); }",
+        body: "let r: RateLimiter = RateLimiter::new(2, 1000);\n    if (RateLimiter::allow(r)) { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
         contains: &[],
     },
@@ -386,7 +398,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "regex",
         imports: &["tinox.core.regex"],
-        body: r#"if Regex::isMatch("ab+", "abb") { println("yes"); } else { println("no"); }"#,
+        body: r#"if (Regex::isMatch("ab+", "abb")) { println("yes"); } else { println("no"); }"#,
         expects: &["yes"],
         contains: &[],
     },
@@ -414,7 +426,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "semaphore",
         imports: &["tinox.core.semaphore"],
-        body: "let s: Semaphore = Semaphore::new(1);\n    if Semaphore::tryAcquire(s) { println(\"yes\"); } else { println(\"no\"); }",
+        body: "let s: Semaphore = Semaphore::new(1);\n    if (Semaphore::tryAcquire(s)) { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
         contains: &[],
     },
@@ -470,7 +482,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "toml",
         imports: &["tinox.core.toml"],
-        body: "let v: TomlValue = Toml::parse(\"a = 1\");\n    if v.isTable() { println(\"yes\"); } else { println(\"no\"); }",
+        body: "let v: TomlValue = Toml::parse(\"a = 1\");\n    if (v.isTable()) { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
         contains: &[],
     },
@@ -484,8 +496,21 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "trie",
         imports: &["tinox.core.trie"],
-        body: "let t: Trie = Trie::new();\n    Trie::insert(t, \"ab\");\n    if Trie::search(t, \"ab\") { println(\"yes\"); } else { println(\"no\"); }",
+        body: "let t: Trie = Trie::new();\n    Trie::insert(t, \"ab\");\n    if (Trie::search(t, \"ab\")) { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
+        contains: &[],
+    },
+    Smoke {
+        key: "ui",
+        // No WebSocket/HTTP I/O here on purpose (matches kubernetes' own
+        // "no live cluster in CI" reasoning) -- this only needs to catch
+        // ghost-builtin/codegen breakage in the module itself. Real
+        // client/server protocol behavior is covered by
+        // crates/tinox/tests/tinox_ui_*.rs (real compiled examples, live
+        // WebSocket round-trips).
+        imports: &["tinox.core.ui", "tinox.core.json"],
+        body: "let c: Component = Component::label(\"hi\");\n    println(c.type);\n    let j: String = Json::serialize(c);\n    if (j.contains(\"\\\"type\\\":\\\"Label\\\"\")) { println(\"yes\"); } else { println(\"no\"); }",
+        expects: &["Label", "yes"],
         contains: &[],
     },
     Smoke {
@@ -534,7 +559,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "validation",
         imports: &["tinox.core.validation"],
-        body: r#"if Validation::isNumeric("123") { println("yes"); } else { println("no"); }"#,
+        body: r#"if (Validation::isNumeric("123")) { println("yes"); } else { println("no"); }"#,
         expects: &["yes"],
         contains: &[],
     },
@@ -548,7 +573,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "yaml",
         imports: &["tinox.core.yaml"],
-        body: "let v: YamlValue = Yaml::parse(\"a: 1\");\n    if v.isMap() { println(\"yes\"); } else { println(\"no\"); }",
+        body: "let v: YamlValue = Yaml::parse(\"a: 1\");\n    if (v.isMap()) { println(\"yes\"); } else { println(\"no\"); }",
         expects: &["yes"],
         contains: &[],
     },
@@ -561,8 +586,15 @@ const SMOKES: &[Smoke] = &[
     },
 ];
 
+/// Issue #185: crates/tinox-core is now one shared `tinox/core/` tree at
+/// the crate root (every core-tier module resolves through `stdlib_dir()`
+/// unconditionally, with no per-module scoping the way extended-tier
+/// dependency dirs have) — repointed straight at that tree so every
+/// existing per-module scan below it (`array/`, `base64/`, ...) is found
+/// exactly like before the migration, no `scan_module_dir` changes needed
+/// for this tier.
 fn stdlib_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core/tinox/core")
 }
 
 /// The extended-tier stdlib split off crates/tinox-core into its own
@@ -617,6 +649,19 @@ fn scan_module_dir(dir: &Path) -> Vec<String> {
             if p.is_dir() {
                 let name = p.file_name().map(|n| n.to_string_lossy().to_string());
                 let Some(name) = name else { return vec![] };
+                // Issue #185: extended-tier modules now nest their real
+                // content one more level deeper, under their own
+                // module-name-scoped `tinox/core/<name>/` prefix
+                // (crates/tinox-core-ext/<name>/tinox/core/<name>/...,
+                // matching what a published/downloaded package already
+                // looks like on disk) — transparently unwrap it here so
+                // the module's top-level identity (`name`) keeps keying
+                // the smoke-test inventory exactly like before the
+                // migration. Core-tier (`stdlib_dir()`, repointed straight
+                // at its own shared `tinox/core/` tree above) never hits
+                // this branch, since it has no such per-module prefix.
+                let nested = p.join("tinox").join("core").join(&name);
+                let p = if nested.is_dir() { nested } else { p };
                 let has_own_tnx = fs::read_dir(&p)
                     .map(|entries| {
                         entries

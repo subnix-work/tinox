@@ -1,0 +1,14 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    // matchExpressions is deliberately not modeled -- matchLabels covers
+    // the overwhelming majority of real-world selectors.
+    @JsonSerializable
+    class LabelSelector
+    {
+        var matchLabels: Map<String, String>;
+    }
+}

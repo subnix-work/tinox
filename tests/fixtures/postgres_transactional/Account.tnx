@@ -1,0 +1,11 @@
+@Entity
+@Table("accounts")
+class Account
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    @Column("name")
+    var name: String;
+    @Column("balance")
+    var balance: Int64;
+}

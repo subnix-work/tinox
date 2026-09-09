@@ -32,7 +32,7 @@ class Main
         let fOpen = Amqp10::readFrame(sconn);
         let pOpen = Amqp10::decodePerformative(fOpen.body);
         var clientProposedIdle: Int64 = -1;
-        if pOpen.fields.len() > 4 {
+        if (pOpen.fields.len() > 4) {
             match pOpen.fields[4] { UIntVal(n) => { clientProposedIdle = n; } _ => {} }
         }
         var openFields: List<Amqp10Value> = [
@@ -88,10 +88,10 @@ class Main
         var heartbeatsSeen: Int64 = 0;
         while heartbeatsSeen < 2 {
             let f = Amqp10::readFrame(sconn);
-            if f.frameType < 0 {
+            if (f.frameType < 0) {
                 break;
             }
-            if f.body.len() == 0 {
+            if (f.body.len() == 0) {
                 heartbeatsSeen = heartbeatsSeen + 1;
             }
         }
@@ -99,8 +99,8 @@ class Main
         httpConnClose(sconn);
 
         var result: Int64 = 0;
-        if clientProposedIdle == 30000 {
-            if heartbeatsSeen >= 2 {
+        if (clientProposedIdle == 30000) {
+            if (heartbeatsSeen >= 2) {
                 result = 1;
             }
         }
@@ -134,18 +134,18 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn heartbeatBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
-        if conn.conn <= 0 {
+        if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
-        if conn.idleTimeoutMs == 4000 {
+        if (conn.idleTimeoutMs == 4000) {
             println("ok-idletimeout");
         }
 
@@ -157,8 +157,8 @@ class Main
         conn.startHeartbeat(50);
 
         let msg = link.nextMessage();
-        if msg.ok {
-            if msg.body.len() == 2 {
+        if (msg.ok) {
+            if (msg.body.len() == 2) {
                 println("ok-heartbeat-tolerant-nextmessage");
             }
         } else {
@@ -167,7 +167,7 @@ class Main
 
         let brokerOk = await handle;
         conn.stopHeartbeat();
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-client-proposed-idletimeout-and-sent-heartbeats");
         }
 
@@ -178,14 +178,14 @@ class Main
         // (SO_REUSEADDR lets the fresh listen socket reuse the just-closed
         // port immediately). ---
         let srv2 = httpServerCreate(port);
-        if srv2 < 0 {
+        if (srv2 < 0) {
             println("srv2 bind failed");
             return 1;
         }
         let handle2 = spawn reconnectBroker(srv2);
         let conn2 = conn.reconnect();
         await handle2;
-        if conn2.conn > 0 {
+        if (conn2.conn > 0) {
             println("ok-reconnect");
         }
         conn2.close();

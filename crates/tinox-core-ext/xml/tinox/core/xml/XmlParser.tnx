@@ -1,0 +1,79 @@
+module tinox.core.xml;
+
+import tinox.core.string;
+
+namespace tinox.core.xml
+{
+    class XmlParser
+    {
+        fn parse(text: String) -> XmlNode
+        {
+            let trimmed: String = Strings::trim(text);
+            return XmlParser::parseNode(trimmed);
+        }
+
+        fn parseNode(text: String) -> XmlNode
+        {
+            let tagStart: Int64 = text.indexOf("<");
+            let tagEnd: Int64 = text.indexOf(">");
+            if (tagStart == -1 || tagEnd == -1)
+            {
+                return XmlNode { tagName: "", text: text, attrs: Map::new(), children: [] };
+            }
+            let tagContent: String = text.substring(tagStart + 1, tagEnd);
+            let tagName: String = XmlParser::extractTagName(tagContent);
+            let attrs: Map<String, String> = XmlParser::parseAttrs(tagContent);
+            let selfClosing: Bool = tagContent.endsWith("/");
+            let children: List<XmlNode> = [];
+            var content: String = "";
+            if (selfClosing == false)
+            {
+                let endTag: String = "</" + tagName + ">";
+                let endPos: Int64 = text.indexOf(endTag);
+                if (endPos != -1)
+                {
+                    content = text.substring(tagEnd + 1, endPos);
+                }
+            }
+            return XmlNode { tagName: tagName, text: content, attrs: attrs, children: children };
+        }
+
+        fn extractTagName(tagContent: String) -> String
+        {
+            var i: Int64 = 0;
+            while i < tagContent.len()
+            {
+                let c: String = tagContent.substring(i, i + 1);
+                if (c == " " || c == "/" || c == ">")
+                {
+                    return tagContent.substring(0, i);
+                }
+                i = i + 1;
+            }
+            return tagContent;
+        }
+
+        fn parseAttrs(tagContent: String) -> Map<String, String>
+        {
+            let attrs: Map<String, String> = Map::new();
+            let parts: List<String> = tagContent.split(" ");
+            var i: Int64 = 1;
+            while i < parts.len()
+            {
+                let attr: String = Strings::trim(parts[i]);
+                if (attr.len() > 0 && attr != "/")
+                {
+                    let eqPos: Int64 = attr.indexOf("=");
+                    if (eqPos != -1)
+                    {
+                        let name: String = attr.substring(0, eqPos);
+                        let value: String = attr.substring(eqPos + 1, attr.len());
+                        attrs[name] = value.replace("\"", "");
+                    }
+                }
+                i = i + 1;
+            }
+            return attrs;
+        }
+    }
+}

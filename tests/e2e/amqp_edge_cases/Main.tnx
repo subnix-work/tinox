@@ -177,7 +177,7 @@ class Main
         let dn = body.len();
         while dOffset < dn {
             var dEnd: Int64 = dOffset + dChunkSize;
-            if dEnd > dn {
+            if (dEnd > dn) {
                 dEnd = dn;
             }
             var dChunk: List<Int64> = [];
@@ -199,15 +199,15 @@ class Main
         httpConnClose(sconn);
 
         var allOk: Int64 = 0;
-        if ok0 {
-            if ok1 {
-                if ok2 {
-                    if ok3 {
-                        if ok4 {
-                            if ok4b {
-                                if ok5 {
-                                    if ok6 {
-                                        if ok7 {
+        if (ok0) {
+            if (ok1) {
+                if (ok2) {
+                    if (ok3) {
+                        if (ok4) {
+                            if (ok4b) {
+                                if (ok5) {
+                                    if (ok6) {
+                                        if (ok7) {
                                             allOk = 1;
                                         }
                                     }
@@ -225,7 +225,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -250,51 +250,51 @@ class Main
         let tag = ch.consume(queueName);
         let m0 = ch.nextMessage();
         var emptyOk: Bool = m0.ok && m0.body.len() == 0;
-        if emptyOk {
+        if (emptyOk) {
             ch.ack(m0.deliveryTag);
         }
 
         let m = ch.nextMessage();
         var contentOk: Bool = m.ok && m.body.len() == 250;
-        if contentOk {
+        if (contentOk) {
             for i in 0..250 {
-                if m.body[i] != (i % 256) {
+                if (m.body[i] != (i % 256)) {
                     contentOk = false;
                 }
             }
         }
-        if contentOk {
+        if (contentOk) {
             ch.ack(m.deliveryTag);
         }
 
         let brokerOk = await handle;
 
-        if queueName == "loopback-test-queue" {
+        if (queueName == "loopback-test-queue") {
             println("ok-declare");
         }
-        if bound {
+        if (bound) {
             println("ok-bind");
         }
-        if qosOk {
+        if (qosOk) {
             println("ok-qos");
         }
-        if tag == "fake-consumer-tag" {
+        if (tag == "fake-consumer-tag") {
             println("ok-consume");
         }
-        if emptyOk {
+        if (emptyOk) {
             println("ok-empty-body");
         }
-        if contentOk {
+        if (contentOk) {
             println("ok-multiframe-body");
         }
-        if m.ok {
-            if m.contentType == "text/plain" {
-                if m.routingKey == queueName {
+        if (m.ok) {
+            if (m.contentType == "text/plain") {
+                if (m.routingKey == queueName) {
                     println("ok-message");
                 }
             }
         }
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

@@ -1,0 +1,61 @@
+module tinox.core.msgpack;
+
+namespace tinox.core.msgpack
+{
+    /**
+     * A dynamically-typed MessagePack value -- mirrors tinox.core.json's
+     * JsonValue API shape (isString/getString/isInt/getInt/isArray/
+     * asArray/isObject/getField/... same names) since MessagePack's data
+     * model is the same object/array/string/int/float/bool/null tree
+     * JsonValue already represents, just with a compact binary wire
+     * format instead of text. Unlike JsonValue (a C-backed opaque
+     * handle), this is a plain Tinox tagged union: construct one
+     * directly via a struct literal for encoding (e.g.
+     * `MsgpackValue { kind: "string", stringValue: "hi", intValue: 0,
+     * floatValue: 0.0, boolValue: false, arrayValue: [], objectValue:
+     * Map::new() }`), the same convention tinox.core.toml's TomlValue
+     * already uses. EVERY field must be given (Bug 130: an omitted field
+     * left the corresponding heap slot as uninitialized garbage) -- only
+     * `kind` and the one field it selects are ever actually read, the
+     * rest are inert placeholders.
+     *
+     * Map keys are always String (matching JsonValue's object model) --
+     * MessagePack itself allows any value as a map key, but a decoded
+     * map with a non-string key fails the whole decode rather than
+     * silently coercing or dropping it (see MsgpackReader.failed).
+     */
+    class MsgpackValue
+    {
+        kind: String;
+        stringValue: String;
+        intValue: Int64;
+        floatValue: Float64;
+        boolValue: Bool;
+        arrayValue: List<MsgpackValue>;
+        objectValue: Map<String, MsgpackValue>;
+
+        fn isNull() -> Bool { return this.kind == "null"; }
+        fn isBool() -> Bool { return this.kind == "bool"; }
+        fn isInt() -> Bool { return this.kind == "int"; }
+        fn isFloat() -> Bool { return this.kind == "float"; }
+        fn isString() -> Bool { return this.kind == "string"; }
+        fn isArray() -> Bool { return this.kind == "array"; }
+        fn isObject() -> Bool { return this.kind == "object"; }
+
+        fn getBool() -> Bool { return this.boolValue; }
+        fn getInt() -> Int64 { return this.intValue; }
+        fn getFloat() -> Float64 { return this.floatValue; }
+        fn getString() -> String { return this.stringValue; }
+        fn asArray() -> List<MsgpackValue> { return this.arrayValue; }
+        fn asMap() -> Map<String, MsgpackValue> { return this.objectValue; }
+
+        fn getField(key: String) -> MsgpackValue
+        {
+            if (this.kind != "object" || !this.objectValue.contains(key))
+            {
+                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
+            }
+            return this.objectValue[key];
+        }
+    }
+}

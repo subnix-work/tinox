@@ -1,0 +1,18 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    // Read-only in practice (nodes are managed by the kubelet/cloud
+    // provider, not typically created through the API) -- no create()
+    // factory, just the shape to deserialize into via `Node::fromJson(...)`.
+    @JsonSerializable
+    class Node
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var status: NodeStatus;
+    }
+}

@@ -1,0 +1,119 @@
+{
+  "name": "Tinox",
+  "scopeName": "source.tinox",
+  "fileTypes": ["tnx"],
+  "patterns": [
+    { "include": "#line_comment" },
+    { "include": "#block_comment" },
+    { "include": "#string" },
+    { "include": "#raw_string" },
+    { "include": "#char" },
+    { "include": "#number" },
+    { "include": "#keyword_control" },
+    { "include": "#keyword_declaration" },
+    { "include": "#keyword_modifier" },
+    { "include": "#keyword_other" },
+    { "include": "#constant" },
+    { "include": "#type_builtin" },
+    { "include": "#function_call" },
+    { "include": "#function_def" }
+  ],
+  "repository": {
+    "line_comment": {
+      "name": "comment.line.double-slash.tinox",
+      "match": "//.*$"
+    },
+    "block_comment": {
+      "name": "comment.block.tinox",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": [{ "include": "#block_comment" }]
+    },
+    "string": {
+      "name": "string.quoted.double.tinox",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.tinox",
+          "match": "\\\\[nrt\\\\\"'0]|\\\\x[0-9a-fA-F]{2}|\\\\u\\{[0-9a-fA-F]+\\}"
+        },
+        {
+          "name": "meta.embedded.line.tinox",
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "patterns": [{ "include": "$self" }]
+        }
+      ]
+    },
+    "raw_string": {
+      "name": "string.quoted.other.raw.tinox",
+      "match": "r#*\"[\\s\\S]*?\"#*"
+    },
+    "char": {
+      "name": "string.quoted.single.tinox",
+      "match": "'([^'\\\\]|\\\\[nrt\\\\\"'0]|\\\\x[0-9a-fA-F]{2})'"
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.tinox",
+          "match": "\\b0[xX][0-9a-fA-F_]+"
+        },
+        {
+          "name": "constant.numeric.binary.tinox",
+          "match": "\\b0[bB][01_]+"
+        },
+        {
+          "name": "constant.numeric.octal.tinox",
+          "match": "\\b0[oO][0-7_]+"
+        },
+        {
+          "name": "constant.numeric.float.tinox",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9_]+)?"
+        },
+        {
+          "name": "constant.numeric.integer.tinox",
+          "match": "\\b[0-9][0-9_]*"
+        }
+      ]
+    },
+    "keyword_control": {
+      "name": "keyword.control.tinox",
+      "match": "\\b(if|else|while|for|loop|return|break|continue|match|case|try|catch|finally|defer|throw|throws|select|default)\\b"
+    },
+    "keyword_declaration": {
+      "name": "keyword.other.declaration.tinox",
+      "match": "\\b(fn|class|interface|trait|enum|module|import|export|let|var|val|const|spawn|channel|send|recv|async|await|new)\\b"
+    },
+    "keyword_modifier": {
+      "name": "storage.modifier.tinox",
+      "match": "\\b(pub|public|private|protected|static|final|abstract|override|readonly|mut|ref|extern|unsafe)\\b"
+    },
+    "keyword_other": {
+      "name": "keyword.other.tinox",
+      "match": "\\b(as|in|where|is|cast|sizeof|typeof|this|super|self|Self|extends|implements)\\b"
+    },
+    "constant": {
+      "name": "constant.language.tinox",
+      "match": "\\b(true|false|null|Unit|Never|Any)\\b"
+    },
+    "type_builtin": {
+      "name": "support.type.tinox",
+      "match": "\\b(Int8|Int16|Int32|Int64|Uint8|Uint16|Uint32|Uint64|Float32|Float64|Bool|String|Char|Byte)\\b"
+    },
+    "function_def": {
+      "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.other.declaration.tinox" },
+        "2": { "name": "entity.name.function.tinox" }
+      }
+    },
+    "function_call": {
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.tinox" }
+      }
+    }
+  }
+}

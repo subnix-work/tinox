@@ -5,13 +5,19 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// `[package]`'s `name`/`version`/`description` — parsed/written by
+/// `[package]`'s `name`/`version`/`description`/`group` — parsed/written by
 /// `parse_manifest`/`write_manifest` (hand-rolled, see there for why).
+///
+/// `group` is optional (most projects never publish, so most manifests
+/// have no reason to declare one) — only `tinox publish` (issue #172)
+/// requires it, since `name`/`version` alone aren't full registry
+/// coordinates without it.
 #[derive(Debug, Clone)]
 pub struct Package {
     pub name: String,
     pub version: String,
     pub description: String,
+    pub group: Option<String>,
 }
 
 /// One `[[repositories]]` table — a named base URL a `Dependency` can
@@ -86,6 +92,27 @@ pub fn effective_download_url(dep: &Dependency, owning_manifest: &TinoxManifest)
         dep.artifact_id,
         dep.version
     ))
+}
+
+/// Resolves a registry base URL (no trailing slash, no `/api/v1/...` path
+/// yet) for a command that isn't resolving one specific `Dependency` — the
+/// `cmd_publish`/`cmd_search` (issue #172) equivalent of
+/// `effective_download_url`'s `[[repositories]]` lookup. `explicit_repo`
+/// is a `--repository <id>` CLI flag; `None` falls back to
+/// `TINOX_CENTRAL_URL` (matching `scripts/publish-stdlib-ext.sh`'s own
+/// override, handy for pointing at a local/staging instance without
+/// editing tinox.toml) and finally `DEFAULT_REPOSITORY_URL`.
+fn resolve_registry_base_url(explicit_repo: Option<&str>, manifest: &TinoxManifest) -> Result<String, String> {
+    let base = match explicit_repo {
+        Some(id) => manifest
+            .repositories
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.url.clone())
+            .ok_or_else(|| format!("no [[repositories]] entry with id \"{}\"", id))?,
+        None => std::env::var("TINOX_CENTRAL_URL").unwrap_or_else(|_| DEFAULT_REPOSITORY_URL.to_string()),
+    };
+    Ok(base.trim_end_matches('/').to_string())
 }
 
 #[derive(Debug, Default)]
@@ -217,6 +244,7 @@ fn parse_manifest(content: &str) -> TinoxManifest {
     let mut pkg_name = String::new();
     let mut pkg_version = String::new();
     let mut pkg_description = String::new();
+    let mut pkg_group: Option<String> = None;
     let mut have_package = false;
 
     fn empty_dep() -> Dependency {
@@ -261,6 +289,7 @@ fn parse_manifest(content: &str) -> TinoxManifest {
                 "name" => pkg_name = value,
                 "version" => pkg_version = value,
                 "description" => pkg_description = value,
+                "group" if !value.is_empty() => pkg_group = Some(value),
                 _ => {}
             },
             ManifestSection::Dependency => match key {
@@ -287,7 +316,7 @@ fn parse_manifest(content: &str) -> TinoxManifest {
         repositories.push(cur_repo);
     }
 
-    let package = have_package.then_some(Package { name: pkg_name, version: pkg_version, description: pkg_description });
+    let package = have_package.then_some(Package { name: pkg_name, version: pkg_version, description: pkg_description, group: pkg_group });
     TinoxManifest { package, dependencies, repositories }
 }
 
@@ -859,6 +888,89 @@ fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
     None
 }
 
+/// One row of tinox-central's `GET /api/v1/packages` catalog response
+/// (`PackageSummary.tnx` in the registry backend) — only the three string
+/// fields `cmd_search` (issue #172) actually displays/filters on;
+/// `versionCount`/`latestPublishedAt` are intentionally not parsed (no
+/// `extract_json_int_field` exists in this file, and search has no use
+/// for them yet).
+struct PackageSummaryRow {
+    group: String,
+    artifact_id: String,
+    latest_version: String,
+}
+
+/// Splits a top-level JSON array of objects (`[{...}, {...}, ...]`) into
+/// each object's own substring, respecting nested `{}`/`[]` and skipping
+/// braces inside quoted strings — needed because `extract_json_string_field`
+/// only ever looks at ONE object's fields, and the catalog response is an
+/// array of them. Same "one fixed, well-known shape, not a JSON crate"
+/// rationale as the rest of this file's hand-rolled JSON handling.
+fn split_json_object_array(json: &str) -> Option<Vec<&str>> {
+    let start = json.find('[')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut obj_start: Option<usize> = None;
+    let mut out = Vec::new();
+    for (i, c) in json[start..].char_indices() {
+        let byte_pos = start + i;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    obj_start = Some(byte_pos);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let s = obj_start.take()?;
+                    out.push(&json[s..=byte_pos]);
+                }
+            }
+            ']' if depth == 0 => break,
+            _ => {}
+        }
+    }
+    Some(out)
+}
+
+fn parse_package_summaries(bytes: &[u8]) -> Option<Vec<PackageSummaryRow>> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    split_json_object_array(text).map(|objects| {
+        objects
+            .into_iter()
+            .filter_map(|obj| {
+                Some(PackageSummaryRow {
+                    group: extract_json_string_field(obj, "group")?,
+                    artifact_id: extract_json_string_field(obj, "artifactId")?,
+                    latest_version: extract_json_string_field(obj, "latestVersion")?,
+                })
+            })
+            .collect()
+    })
+}
+
+/// Case-insensitive substring match against `group:artifactId` — matches
+/// either half, so `tinox search json` finds `tinox.core:json` via the
+/// artifactId half without requiring the group to be typed too.
+fn matches_search_query(row: &PackageSummaryRow, query: &str) -> bool {
+    let q = query.to_lowercase();
+    row.group.to_lowercase().contains(&q) || row.artifact_id.to_lowercase().contains(&q)
+}
+
 /// Standard base64 (RFC 4648, with `=` padding) decoder — the alphabet
 /// `tinox.core.base64`'s `Base64::encodeBytes` uses on the server side.
 /// Hand-rolled for the same reason as `parse_registry_envelope`: one
@@ -904,6 +1016,55 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
         i += 4;
     }
     Some(out)
+}
+
+/// Standard base64 (RFC 4648, with `=` padding) encoder — the counterpart
+/// to `base64_decode` above, needed by `cmd_publish` (issue #172) to build
+/// the `contentBase64` field of a tinox-central publish request. Same
+/// hand-rolled rationale as `base64_decode`.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied();
+        let b2 = chunk.get(2).copied();
+        out.push(ALPHABET[(b0 >> 2) as usize] as char);
+        out.push(ALPHABET[(((b0 & 0x03) << 4) | (b1.unwrap_or(0) >> 4)) as usize] as char);
+        match (b1, b2) {
+            (Some(b1), Some(b2)) => {
+                out.push(ALPHABET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+                out.push(ALPHABET[(b2 & 0x3f) as usize] as char);
+            }
+            (Some(b1), None) => {
+                out.push(ALPHABET[((b1 & 0x0f) << 2) as usize] as char);
+                out.push('=');
+            }
+            (None, _) => {
+                out.push('=');
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Escapes `\` and `"` (the only characters `extract_json_string_field`
+/// unescapes on the way in, kept symmetric on the way out) — enough for
+/// the plain-ASCII filename/base64 fields `cmd_publish`'s request body
+/// needs. Not a general JSON string escaper (no control-character/unicode
+/// handling), matching this file's existing "one fixed shape, not a JSON
+/// crate" convention (see `parse_registry_envelope`).
+fn json_escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn extract_tar_gz(bytes: &[u8], dest: &Path) -> Result<(), String> {
@@ -1114,48 +1275,248 @@ pub fn cmd_package() {
         }
     };
 
+    match build_package_archive(&root, &pkg) {
+        Ok(archive_path) => println!("Packaged: {}", archive_path.file_name().unwrap().to_string_lossy()),
+        Err(e) => eprintln!("error: {}", e),
+    }
+}
+
+/// Shared by `cmd_package` and `cmd_publish` (issue #172): stages `src/`
+/// (plus `tinox.toml` at the archive root) into `<name>-<version>.tar.gz`
+/// under `root`.
+///
+/// Archive entries are relative to src/, not to the project root: a
+/// consumer's `tinox install` extracts this archive directly into
+/// .tinox/deps/<group>/<artifactId>/<version>/, and import resolution
+/// (resolve_in_dep_dirs in main.rs) looks for the imported module path
+/// right under THAT directory — a leading "src/" in the archive would
+/// put every file one level too deep and break every import of this
+/// package (confirmed by hand: a consumer importing `foo.Bar` expects
+/// <dep-dir>/foo/Bar.tnx, not <dep-dir>/src/foo/Bar.tnx).
+///
+/// tinox.toml itself rides along at the archive root (i.e. also
+/// directly under the extracted dep dir), NOT relative to src/ like the
+/// .tnx files — it's what makes this package's own [[dependencies]]
+/// discoverable at all. Without it, install_dep_transitively's
+/// `read_manifest(&install_dir)` silently sees "no manifest" (its
+/// documented behavior for a dependency that "doesn't ship its own
+/// tinox.toml") and drops every transitive dependency this package
+/// declares — confirmed by hand: a package depending on this one
+/// installed fine but silently missing everything BUT this package's
+/// own direct files.
+fn build_package_archive(root: &Path, pkg: &Package) -> Result<PathBuf, String> {
     let src_dir = root.join("src");
     if !src_dir.exists() {
-        eprintln!("error: src/ directory not found");
-        return;
+        return Err("src/ directory not found".to_string());
     }
 
-    // Collect all .tnx files from src/
     let mut tnx_files: Vec<PathBuf> = Vec::new();
     collect_tnx_files(&src_dir, &mut tnx_files);
-
     if tnx_files.is_empty() {
-        eprintln!("error: no .tnx source files found in src/");
-        return;
+        return Err("no .tnx source files found in src/".to_string());
     }
 
     let archive_name = format!("{}-{}.tar.gz", pkg.name, pkg.version);
     let archive_path = root.join(&archive_name);
-
-    // Archive entries are relative to src/, not to the project root: a
-    // consumer's `tinox install` extracts this archive directly into
-    // .tinox/deps/<group>/<artifactId>/<version>/, and import resolution
-    // (resolve_in_dep_dirs in main.rs) looks for the imported module path
-    // right under THAT directory — a leading "src/" in the archive would
-    // put every file one level too deep and break every import of this
-    // package (confirmed by hand: a consumer importing `foo.Bar` expects
-    // <dep-dir>/foo/Bar.tnx, not <dep-dir>/src/foo/Bar.tnx).
-    //
-    // tinox.toml itself rides along at the archive root (i.e. also
-    // directly under the extracted dep dir), NOT relative to src/ like the
-    // .tnx files — it's what makes this package's own [[dependencies]]
-    // discoverable at all. Without it, install_dep_transitively's
-    // `read_manifest(&install_dir)` silently sees "no manifest" (its
-    // documented behavior for a dependency that "doesn't ship its own
-    // tinox.toml") and drops every transitive dependency this package
-    // declares — confirmed by hand: a package depending on this one
-    // installed fine but silently missing everything BUT this package's
-    // own direct files.
     let manifest_path = root.join("tinox.toml");
     let extra: &[(&Path, &str)] = &[(manifest_path.as_path(), "tinox.toml")];
-    match build_tar_gz(&archive_path, &src_dir, &tnx_files, extra) {
-        Ok(_) => println!("Packaged: {}", archive_name),
-        Err(e) => eprintln!("error: {}", e),
+    build_tar_gz(&archive_path, &src_dir, &tnx_files, extra)?;
+    Ok(archive_path)
+}
+
+/// `tinox publish [--repository <id>]` (issue #172): packages the current
+/// project the same way `tinox package` does and uploads it to a
+/// tinox-central-shaped registry (`POST /api/v1/{group}/{artifactId}/
+/// {version}`, the same endpoint/payload shape `scripts/
+/// publish-stdlib-ext.sh` already uses for the stdlib itself — see that
+/// script's own doc comment for the API contract this mirrors).
+///
+/// Requires `TINOX_CENTRAL_ADMIN_KEY` — the registry backend's
+/// `AuthValidator` only recognizes one shared admin bearer token today
+/// (no per-user/per-package auth model exists yet), so this is,
+/// deliberately, exactly as admin-scoped as the existing stdlib publish
+/// script; a real multi-tenant auth model is future registry-side work,
+/// not something this CLI command can paper over on its own.
+pub fn cmd_publish(args: &[String]) {
+    let mut explicit_repo: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--repository" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("error: --repository requires a value");
+                    return;
+                };
+                explicit_repo = Some(v.clone());
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unknown argument '{}'", other);
+                eprintln!("Usage: tinox publish [--repository <id>]");
+                return;
+            }
+        }
+    }
+
+    let root = match find_project_root() {
+        Some(r) => r,
+        None => {
+            eprintln!("error: no tinox.toml found");
+            return;
+        }
+    };
+    let manifest = match read_manifest(&root) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return;
+        }
+    };
+    let pkg = match &manifest.package {
+        Some(p) => p.clone(),
+        None => {
+            eprintln!("error: tinox.toml is missing [package] section");
+            return;
+        }
+    };
+    let Some(group) = pkg.group.clone() else {
+        eprintln!("error: tinox.toml's [package] section is missing `group` — publishing needs a full group:artifactId:version coordinate (artifactId/version come from `name`/`version`), e.g.:\n\n  [package]\n  name = \"{}\"\n  version = \"{}\"\n  group = \"your.group\"", pkg.name, pkg.version);
+        return;
+    };
+    let Ok(admin_key) = std::env::var("TINOX_CENTRAL_ADMIN_KEY") else {
+        eprintln!("error: TINOX_CENTRAL_ADMIN_KEY is not set (admin bearer token for the target registry)");
+        return;
+    };
+
+    let base = match resolve_registry_base_url(explicit_repo.as_deref(), &manifest) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return;
+        }
+    };
+
+    let archive_path = match build_package_archive(&root, &pkg) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return;
+        }
+    };
+    let archive_name = archive_path.file_name().unwrap().to_string_lossy().to_string();
+
+    let result = (|| -> Result<(), String> {
+        let content = fs::read(&archive_path).map_err(|e| format!("Cannot read archive: {}", e))?;
+        let content_base64 = base64_encode(&content);
+        let body = format!(
+            "{{\"filename\":\"{}\",\"contentBase64\":\"{}\"}}",
+            json_escape_string(&archive_name),
+            content_base64
+        );
+
+        let url = format!("{}/api/v1/{}/{}/{}", base, group, pkg.name, pkg.version);
+        println!("Publishing {}:{} {} to {} ...", group, pkg.name, pkg.version, base);
+        let response = ureq::post(&url)
+            .set("Authorization", &format!("Bearer {}", admin_key))
+            .set("Content-Type", "application/json")
+            .send_string(&body);
+
+        match response {
+            Ok(resp) => {
+                println!("Published: {}:{} {}", group, pkg.name, pkg.version);
+                let _ = resp;
+                Ok(())
+            }
+            Err(ureq::Error::Status(409, _)) => Err(format!(
+                "{}:{} {} already exists on {} — bump the version in tinox.toml to republish",
+                group, pkg.name, pkg.version, base
+            )),
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                Err(format!("publish failed (HTTP {}): {}", code, body))
+            }
+            Err(e) => Err(format!("publish failed: {}", e)),
+        }
+    })();
+
+    let _ = fs::remove_file(&archive_path);
+    if let Err(e) = result {
+        eprintln!("error: {}", e);
+    }
+}
+
+/// `tinox search <query> [--repository <id>]` (issue #172): queries a
+/// tinox-central-shaped registry's `GET /api/v1/packages` catalog and
+/// prints every `group:artifactId` whose group or artifactId contains
+/// `query` (case-insensitive), alongside its latest published version.
+/// Doesn't require a project (`tinox.toml`) unless `--repository` is
+/// given — the default registry needs no local project context to query.
+pub fn cmd_search(args: &[String]) {
+    let mut query: Option<String> = None;
+    let mut explicit_repo: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--repository" => {
+                let Some(v) = args.get(i + 1) else {
+                    eprintln!("error: --repository requires a value");
+                    return;
+                };
+                explicit_repo = Some(v.clone());
+                i += 2;
+            }
+            other if query.is_none() => {
+                query = Some(other.to_string());
+                i += 1;
+            }
+            other => {
+                eprintln!("error: unexpected argument '{}'", other);
+                eprintln!("Usage: tinox search <query> [--repository <id>]");
+                return;
+            }
+        }
+    }
+    let Some(query) = query else {
+        eprintln!("Usage: tinox search <query> [--repository <id>]");
+        return;
+    };
+
+    let manifest = find_project_root()
+        .and_then(|root| read_manifest(&root).ok())
+        .unwrap_or_default();
+    let base = match resolve_registry_base_url(explicit_repo.as_deref(), &manifest) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return;
+        }
+    };
+
+    let url = format!("{}/api/v1/packages", base);
+    let response = match get_with_retry(&url) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: search failed ({}): {}", url, e);
+            return;
+        }
+    };
+    let mut raw_bytes: Vec<u8> = Vec::new();
+    if let Err(e) = response.into_reader().read_to_end(&mut raw_bytes) {
+        eprintln!("error: search failed: {}", e);
+        return;
+    }
+    let Some(rows) = parse_package_summaries(&raw_bytes) else {
+        eprintln!("error: search failed: could not parse catalog response from {}", base);
+        return;
+    };
+
+    let matches: Vec<&PackageSummaryRow> = rows.iter().filter(|r| matches_search_query(r, &query)).collect();
+    if matches.is_empty() {
+        println!("No packages found matching \"{}\" on {}", query, base);
+        return;
+    }
+    for row in matches {
+        println!("{}:{}  {}", row.group, row.artifact_id, row.latest_version);
     }
 }
 
@@ -1566,7 +1927,7 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let mut manifest = TinoxManifest {
-            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new() }),
+            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new(), group: None }),
             dependencies: vec![dep("com.example", "mylib", "1.0.0")],
             repositories: Vec::new(),
         };
@@ -1605,7 +1966,7 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let manifest = TinoxManifest {
-            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new() }),
+            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new(), group: None }),
             dependencies: vec![],
             repositories: vec![Repository { id: "internal".to_string(), url: "https://pkg.example.internal".to_string() }],
         };
@@ -1809,6 +2170,104 @@ mod tests {
         // Precomputed standard base64 of the bytes above.
         let encoded = "AAH/AEH+";
         assert_eq!(base64_decode(encoded).unwrap(), raw);
+    }
+
+    #[test]
+    fn base64_encode_matches_known_vectors() {
+        // Same RFC 4648 vectors as base64_decode_matches_known_vectors, the
+        // other direction — round-trips through base64_decode too, since
+        // that's exactly how cmd_publish's payload gets consumed server-side.
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn base64_encode_decode_roundtrips_binary_with_embedded_nul() {
+        let raw: Vec<u8> = vec![0x00, 0x01, 0xff, 0x00, b'A', 0xfe];
+        assert_eq!(base64_decode(&base64_encode(&raw)).unwrap(), raw);
+    }
+
+    #[test]
+    fn json_escape_string_escapes_backslash_and_quote() {
+        assert_eq!(json_escape_string(r#"weird"name\.tnx"#), r#"weird\"name\\.tnx"#);
+        assert_eq!(json_escape_string("plain-1.0.0.tar.gz"), "plain-1.0.0.tar.gz");
+    }
+
+    #[test]
+    fn parse_package_summaries_parses_catalog_array() {
+        let json = br#"[
+            {"group":"tinox.core","artifactId":"json","latestVersion":"1.0.0","versionCount":1,"latestPublishedAt":123},
+            {"group":"tinox.core","artifactId":"rest","latestVersion":"1.0.2","versionCount":3,"latestPublishedAt":456}
+        ]"#;
+        let rows = parse_package_summaries(json).expect("catalog should parse");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].group, "tinox.core");
+        assert_eq!(rows[0].artifact_id, "json");
+        assert_eq!(rows[0].latest_version, "1.0.0");
+        assert_eq!(rows[1].artifact_id, "rest");
+        assert_eq!(rows[1].latest_version, "1.0.2");
+    }
+
+    #[test]
+    fn parse_package_summaries_empty_catalog() {
+        let rows = parse_package_summaries(b"[]").expect("empty catalog should parse");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn matches_search_query_matches_group_or_artifact_id_case_insensitively() {
+        let row = PackageSummaryRow {
+            group: "tinox.core".to_string(),
+            artifact_id: "json".to_string(),
+            latest_version: "1.0.0".to_string(),
+        };
+        assert!(matches_search_query(&row, "json"));
+        assert!(matches_search_query(&row, "JSON"));
+        assert!(matches_search_query(&row, "tinox.core"));
+        assert!(matches_search_query(&row, "core"));
+        assert!(!matches_search_query(&row, "rest"));
+    }
+
+    #[test]
+    fn resolve_registry_base_url_defaults_to_central_with_no_explicit_repo() {
+        let m = TinoxManifest::default();
+        assert_eq!(resolve_registry_base_url(None, &m).unwrap(), DEFAULT_REPOSITORY_URL);
+    }
+
+    #[test]
+    fn resolve_registry_base_url_resolves_named_repository() {
+        let m = TinoxManifest {
+            package: None,
+            dependencies: vec![],
+            repositories: vec![Repository { id: "internal".to_string(), url: "https://pkg.example.com/".to_string() }],
+        };
+        assert_eq!(resolve_registry_base_url(Some("internal"), &m).unwrap(), "https://pkg.example.com");
+    }
+
+    #[test]
+    fn resolve_registry_base_url_unknown_repository_id_is_a_hard_error() {
+        let m = TinoxManifest::default();
+        let err = resolve_registry_base_url(Some("nope"), &m).unwrap_err();
+        assert!(err.contains("nope"), "{err}");
+    }
+
+    #[test]
+    fn parse_manifest_reads_package_group() {
+        let content = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\ngroup = \"com.example\"\n";
+        let m = parse_manifest(content);
+        assert_eq!(m.package.expect("package").group.as_deref(), Some("com.example"));
+    }
+
+    #[test]
+    fn parse_manifest_missing_group_is_none() {
+        let content = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\n";
+        let m = parse_manifest(content);
+        assert_eq!(m.package.expect("package").group, None);
     }
 
     #[test]

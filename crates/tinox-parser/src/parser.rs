@@ -344,6 +344,14 @@ impl Parser {
                     Keyword::Return => "return",
                     Keyword::Is => "is",
                     Keyword::As => "as",
+                    // A field/method literally named `namespace` is
+                    // extremely common in real code (e.g. any Kubernetes-
+                    // style API client: ObjectMeta.namespace) and already
+                    // parses fine as a field/parameter declaration and as
+                    // a struct-literal key -- only postfix access
+                    // (`obj.namespace`) went through this allowlist and
+                    // rejected it. Found while adding tinox.core.kubernetes.
+                    Keyword::Namespace => "namespace",
                     _ => return Err(Error::new(self.mk_span(), "expected method name")),
                 };
                 self.bump();
@@ -1209,9 +1217,39 @@ impl Parser {
         })
     }
 
+    // Hard-enforced style rule: an `if`'s condition must be parenthesized
+    // (`if (cond) { ... }`, not `if cond { ... }`) -- shared by both the
+    // statement form (parse_if_stmt) and the expression form (parse_if_expr,
+    // e.g. `let x = if (cond) a else b;`). Parens are otherwise just a
+    // transparent grouping in this grammar (`parse_tuple_or_grouped`
+    // discards them, leaving no AST-level trace), so this can't be enforced
+    // as a later, separate semantic check on the parsed condition
+    // expression -- it has to happen here, at the one point where the `(`/
+    // `)` tokens themselves are still visible, by consuming them explicitly
+    // instead of letting the normal primary-expression parser swallow them
+    // as an ordinary grouped expression.
+    fn parse_parenthesized_if_cond(&mut self) -> Result<Expr, Error> {
+        if !self.check(TokenKind::LParen) {
+            return Err(Error::new(
+                self.mk_span(),
+                "if condition must be parenthesized: use `if (condition) { ... }`".to_string(),
+            ));
+        }
+        self.bump(); // (
+        let cond = self.parse_expr()?;
+        if !self.check(TokenKind::RParen) {
+            return Err(Error::new(
+                self.mk_span(),
+                format!("expected ')' to close the if condition, found {:?}", self.peek().kind),
+            ));
+        }
+        self.bump(); // )
+        Ok(cond)
+    }
+
     fn parse_if_stmt(&mut self) -> Result<StmtKind, Error> {
         self.expect_keyword(Keyword::If)?;
-        let cond = self.parse_expr()?;
+        let cond = self.parse_parenthesized_if_cond()?;
         let then_branch = Box::new(self.parse_block()?);
         let else_branch = if self.consume_keyword(Keyword::Else) {
             Some(if self.check_keyword(Keyword::If) {
@@ -2369,6 +2407,12 @@ impl Parser {
                     Keyword::Send => "send",
                     Keyword::Recv => "recv",
                     Keyword::Is => "is",
+                    // Same reasoning as parse_ident's/parse_method_name's
+                    // own allowlists: a `namespace` parameter/field/local
+                    // referenced as a plain value (e.g. `foo(name,
+                    // namespace)`) needs to parse as ExprKind::Ident here
+                    // too, not just at its declaration site.
+                    Keyword::Namespace => "namespace",
                     _ => return Err(Error::new(token.span, format!("unexpected token: {:?}", token.kind))),
                 };
                 self.bump();
@@ -2384,7 +2428,7 @@ impl Parser {
     fn parse_if_expr(&mut self) -> Result<Expr, Error> {
         let span = self.mk_span();
         self.expect_keyword(Keyword::If)?;
-        let cond = self.parse_expr()?;
+        let cond = self.parse_parenthesized_if_cond()?;
         let then_branch = Box::new(self.parse_expr()?);
         let else_branch = if self.consume_keyword(Keyword::Else) {
             Some(Box::new(self.parse_expr()?))
@@ -2854,6 +2898,12 @@ impl Parser {
                     Keyword::Send => "send",
                     Keyword::Recv => "recv",
                     Keyword::Is => "is",
+                    // Same reasoning as parse_method_name's own allowlist:
+                    // `namespace` is an extremely common field/param/
+                    // variable name in real code (e.g. every Kubernetes
+                    // resource's ObjectMeta.namespace) despite also being
+                    // this language's `namespace { ... }` block keyword.
+                    Keyword::Namespace => "namespace",
                     _ => return Err(Error::new(self.mk_span(), "expected identifier")),
                 };
                 self.bump();
@@ -3386,7 +3436,7 @@ mod tests {
 
     #[test]
     fn test_if_stmt() {
-        let d = first_decl("fn f() { if true { } }");
+        let d = first_decl("fn f() { if (true) { } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::If { .. }));
@@ -3395,7 +3445,7 @@ mod tests {
     #[test]
     fn test_if_else_stmt() {
         // bare ident before { would be parsed as struct literal, use comparison instead
-        let d = first_decl("fn f() { if x > 0 { } else { } }");
+        let d = first_decl("fn f() { if (x > 0) { } else { } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::If { else_branch, .. } = &stmts[0].node else { panic!() };
@@ -4818,7 +4868,7 @@ mod tests {
 
     #[test]
     fn test_stmt_if_else() {
-        let d = first_decl("fn f() -> Int64 { if true { return 1; } else { return 2; } }");
+        let d = first_decl("fn f() -> Int64 { if (true) { return 1; } else { return 2; } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::If { else_branch, .. } = &stmts[0].node else { panic!() };
@@ -4827,7 +4877,7 @@ mod tests {
 
     #[test]
     fn test_stmt_if_no_else() {
-        let d = first_decl("fn f() { if true { return; } }");
+        let d = first_decl("fn f() { if (true) { return; } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::If { else_branch, .. } = &stmts[0].node else { panic!() };

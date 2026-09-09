@@ -1,0 +1,423 @@
+module tinox.core.hpack;
+
+namespace tinox.core.hpack
+{
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
+    /**
+     * HPACK encoder/decoder
+     *
+     * Decodes header blocks received from HTTP/2 clients and encodes
+     * header lists into header blocks for HTTP/2 responses.
+     */
+    class Hpack
+    {
+        /**
+         * Returns the header name for a static table index (1-based, RFC 7541 Appendix A)
+         */
+        fn staticName(index: Int64) -> String
+        {
+            if (index == 1)  { return ":authority"; }
+            if (index == 2)  { return ":method"; }
+            if (index == 3)  { return ":method"; }
+            if (index == 4)  { return ":path"; }
+            if (index == 5)  { return ":path"; }
+            if (index == 6)  { return ":scheme"; }
+            if (index == 7)  { return ":scheme"; }
+            if (index == 8)  { return ":status"; }
+            if (index == 9)  { return ":status"; }
+            if (index == 10) { return ":status"; }
+            if (index == 11) { return ":status"; }
+            if (index == 12) { return ":status"; }
+            if (index == 13) { return ":status"; }
+            if (index == 14) { return ":status"; }
+            if (index == 15) { return "accept-charset"; }
+            if (index == 16) { return "accept-encoding"; }
+            if (index == 17) { return "accept-language"; }
+            if (index == 18) { return "accept-ranges"; }
+            if (index == 19) { return "accept"; }
+            if (index == 20) { return "access-control-allow-origin"; }
+            if (index == 21) { return "age"; }
+            if (index == 22) { return "allow"; }
+            if (index == 23) { return "authorization"; }
+            if (index == 24) { return "cache-control"; }
+            if (index == 25) { return "content-disposition"; }
+            if (index == 26) { return "content-encoding"; }
+            if (index == 27) { return "content-language"; }
+            if (index == 28) { return "content-length"; }
+            if (index == 29) { return "content-location"; }
+            if (index == 30) { return "content-range"; }
+            if (index == 31) { return "content-type"; }
+            if (index == 32) { return "cookie"; }
+            if (index == 33) { return "date"; }
+            if (index == 34) { return "etag"; }
+            if (index == 35) { return "expect"; }
+            if (index == 36) { return "expires"; }
+            if (index == 37) { return "from"; }
+            if (index == 38) { return "host"; }
+            if (index == 39) { return "if-match"; }
+            if (index == 40) { return "if-modified-since"; }
+            if (index == 41) { return "if-none-match"; }
+            if (index == 42) { return "if-range"; }
+            if (index == 43) { return "if-unmodified-since"; }
+            if (index == 44) { return "last-modified"; }
+            if (index == 45) { return "link"; }
+            if (index == 46) { return "location"; }
+            if (index == 47) { return "max-forwards"; }
+            if (index == 48) { return "proxy-authenticate"; }
+            if (index == 49) { return "proxy-authorization"; }
+            if (index == 50) { return "range"; }
+            if (index == 51) { return "referer"; }
+            if (index == 52) { return "refresh"; }
+            if (index == 53) { return "retry-after"; }
+            if (index == 54) { return "server"; }
+            if (index == 55) { return "set-cookie"; }
+            if (index == 56) { return "strict-transport-security"; }
+            if (index == 57) { return "transfer-encoding"; }
+            if (index == 58) { return "user-agent"; }
+            if (index == 59) { return "vary"; }
+            if (index == 60) { return "via"; }
+            if (index == 61) { return "www-authenticate"; }
+            return "";
+        }
+
+        /**
+         * Returns the header value for a static table index (only entries with non-empty values)
+         */
+        fn staticValue(index: Int64) -> String
+        {
+            if (index == 2)  { return "GET"; }
+            if (index == 3)  { return "POST"; }
+            if (index == 4)  { return "/"; }
+            if (index == 5)  { return "/index.html"; }
+            if (index == 6)  { return "http"; }
+            if (index == 7)  { return "https"; }
+            if (index == 8)  { return "200"; }
+            if (index == 9)  { return "204"; }
+            if (index == 10) { return "206"; }
+            if (index == 11) { return "304"; }
+            if (index == 12) { return "400"; }
+            if (index == 13) { return "404"; }
+            if (index == 14) { return "500"; }
+            if (index == 16) { return "gzip, deflate"; }
+            return "";
+        }
+
+        /**
+         * Looks up a header from the combined static + dynamic index table (1-based)
+         */
+        fn lookupHeader(dynTable: HpackDynTable, index: Int64) -> HpackHeader
+        {
+            if (index >= 1 && index <= 61)
+            {
+                return HpackHeader::new(Hpack::staticName(index), Hpack::staticValue(index));
+            }
+            let dynIndex: Int64 = index - 62;
+            if (dynIndex >= 0 && dynIndex < dynTable.entries.len())
+            {
+                return dynTable.entries[dynIndex];
+            }
+            return HpackHeader::new("", "");
+        }
+
+        /**
+         * Decodes an HPACK integer with the given prefix bit width (RFC 7541 §5.1)
+         *
+         * @param data  the raw byte list
+         * @param offset  byte position of the first byte containing the prefix
+         * @param prefixBits  number of prefix bits (1–8)
+         * @return HpackIntResult with decoded value and the offset of the next unconsumed byte
+         */
+        fn decodeInt(data: List<Int64>, offset: Int64, prefixBits: Int64) -> HpackIntResult
+        {
+            // offset comes from a caller-computed nextOffset (e.g. decodeStr
+            // re-entering at exactly data.len() on a truncated header block)
+            // — reject before the unconditional data[offset] below instead
+            // of hitting the array-bounds check, which exit()s the whole
+            // process, not just this connection.
+            if (offset < 0 || offset >= data.len())
+            {
+                return HpackIntResult { value: 0, nextOffset: data.len() };
+            }
+            let mask: Int64 = (1 << prefixBits) - 1;
+            var value: Int64 = data[offset] & mask;
+            var pos: Int64 = offset + 1;
+            if (value < mask)
+            {
+                return HpackIntResult { value: value, nextOffset: pos };
+            }
+            var m: Int64 = 0;
+            // RFC 7541 §5.1 continuation bytes are unbounded on the wire;
+            // cap at m < 63 (9 continuation bytes — enough for the largest
+            // value an Int64 can hold) so a hostile run of 0x80-prefixed
+            // bytes can't shift `m` up to/past 64 and hit shift-overflow.
+            while pos < data.len() && m < 63
+            {
+                let b: Int64 = data[pos];
+                pos = pos + 1;
+                value = value + ((b & 127) << m);
+                m = m + 7;
+                if ((b & 128) == 0)
+                {
+                    break;
+                }
+            }
+            return HpackIntResult { value: value, nextOffset: pos };
+        }
+
+        /**
+         * Decodes an HPACK string literal (RFC 7541 §5.2)
+         * Huffman-encoded strings are not supported; they are read as raw bytes.
+         *
+         * @param data  the raw byte list
+         * @param offset  byte position of the string length/flag byte
+         * @return HpackStrResult with the decoded string and next offset
+         */
+        fn decodeStr(data: List<Int64>, offset: Int64) -> HpackStrResult
+        {
+            let lenResult: HpackIntResult = Hpack::decodeInt(data, offset, 7);
+            let strLen: Int64 = lenResult.value;
+            let pos: Int64 = lenResult.nextOffset;
+            var bytes: List<Int64> = [];
+            var i: Int64 = 0;
+            // strLen comes straight off the wire (decodeInt) and can claim
+            // far more bytes than are actually left in `data` — stop at the
+            // buffer end instead of reading past it (was: unconditional
+            // data[pos + i] for i in [0, strLen), so a truncated/malformed
+            // length crashed the whole process via tinox_array_get's bounds
+            // check, not just this connection).
+            //
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `str = str + fromCharCode(...)`
+            // in the loop, which is O(n^2) over the string length (issue #167).
+            while i < strLen && (pos + i) < data.len()
+            {
+                bytes.push(data[pos + i]);
+                i = i + 1;
+            }
+            return HpackStrResult { value: tinoxBytesToString(bytes), nextOffset: pos + i };
+        }
+
+        /**
+         * Decodes a complete HPACK header block into a list of headers
+         *
+         * Handles all four representation types from RFC 7541 §6:
+         *   - Indexed header field (§6.1)
+         *   - Literal with incremental indexing (§6.2.1)
+         *   - Dynamic table size update (§6.3)
+         *   - Literal without/never indexed (§6.2.2, §6.2.3)
+         *
+         * @param data  the raw HPACK-encoded header block bytes
+         * @param dynTable  the per-connection dynamic table (mutated by indexing)
+         * @return list of decoded headers in field-section order
+         */
+        fn decode(data: List<Int64>, dynTable: HpackDynTable) -> List<HpackHeader>
+        {
+            let headers: List<HpackHeader> = [];
+            var offset: Int64 = 0;
+            while offset < data.len()
+            {
+                let b: Int64 = data[offset];
+                if ((b & 128) != 0)
+                {
+                    // §6.1 Indexed header field representation
+                    let result: HpackIntResult = Hpack::decodeInt(data, offset, 7);
+                    let header: HpackHeader = Hpack::lookupHeader(dynTable, result.value);
+                    headers.push(header);
+                    offset = result.nextOffset;
+                }
+                else if ((b & 64) != 0)
+                {
+                    // §6.2.1 Literal with incremental indexing
+                    let nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 6);
+                    offset = nameResult.nextOffset;
+                    var name: String = "";
+                    if (nameResult.value == 0)
+                    {
+                        let nameStr: HpackStrResult = Hpack::decodeStr(data, offset);
+                        name = nameStr.value;
+                        offset = nameStr.nextOffset;
+                    }
+                    else
+                    {
+                        name = Hpack::lookupHeader(dynTable, nameResult.value).name;
+                    }
+                    let valStr: HpackStrResult = Hpack::decodeStr(data, offset);
+                    offset = valStr.nextOffset;
+                    let header: HpackHeader = HpackHeader::new(name, valStr.value);
+                    dynTable.add(header);
+                    headers.push(header);
+                }
+                else if ((b & 32) != 0)
+                {
+                    // §6.3 Dynamic table size update
+                    let result: HpackIntResult = Hpack::decodeInt(data, offset, 5);
+                    dynTable.setMaxSize(result.value);
+                    offset = result.nextOffset;
+                }
+                else
+                {
+                    // §6.2.2 / §6.2.3 Literal without indexing / never indexed
+                    let nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 4);
+                    offset = nameResult.nextOffset;
+                    var name: String = "";
+                    if (nameResult.value == 0)
+                    {
+                        let nameStr: HpackStrResult = Hpack::decodeStr(data, offset);
+                        name = nameStr.value;
+                        offset = nameStr.nextOffset;
+                    }
+                    else
+                    {
+                        name = Hpack::lookupHeader(dynTable, nameResult.value).name;
+                    }
+                    let valStr: HpackStrResult = Hpack::decodeStr(data, offset);
+                    offset = valStr.nextOffset;
+                    headers.push(HpackHeader::new(name, valStr.value));
+                }
+            }
+            return headers;
+        }
+
+        /**
+         * Encodes an integer with a given prefix bit width and high-byte mask (RFC 7541 §5.1)
+         */
+        fn encodeInt(value: Int64, prefixBits: Int64, firstByteMask: Int64) -> List<Int64>
+        {
+            let result: List<Int64> = [];
+            let maxPrefix: Int64 = (1 << prefixBits) - 1;
+            if (value < maxPrefix)
+            {
+                result.push(firstByteMask | value);
+                return result;
+            }
+            result.push(firstByteMask | maxPrefix);
+            var remaining: Int64 = value - maxPrefix;
+            while remaining >= 128
+            {
+                result.push((remaining % 128) + 128);
+                remaining = remaining / 128;
+            }
+            result.push(remaining);
+            return result;
+        }
+
+        /**
+         * Encodes a string literal without Huffman coding (RFC 7541 §5.2)
+         */
+        fn encodeStr(s: String) -> List<Int64>
+        {
+            let result: List<Int64> = [];
+            let lenBytes: List<Int64> = Hpack::encodeInt(s.len(), 7, 0);
+            var i: Int64 = 0;
+            while i < lenBytes.len()
+            {
+                result.push(lenBytes[i]);
+                i = i + 1;
+            }
+            i = 0;
+            while i < s.len()
+            {
+                result.push(s.charCodeAt(i));
+                i = i + 1;
+            }
+            return result;
+        }
+
+        /**
+         * Searches the static table for a matching name+value pair.
+         * Returns the index of a full match, or the index of the first name-only match,
+         * or -1 if the name is not found at all.
+         */
+        fn findStatic(name: String, value: String) -> Int64
+        {
+            var nameMatch: Int64 = -1;
+            var i: Int64 = 1;
+            while i <= 61
+            {
+                if (Hpack::staticName(i) == name)
+                {
+                    if (Hpack::staticValue(i) == value)
+                    {
+                        return i;
+                    }
+                    if (nameMatch == -1)
+                    {
+                        nameMatch = i;
+                    }
+                }
+                i = i + 1;
+            }
+            return nameMatch;
+        }
+
+        /**
+         * Encodes a list of headers into an HPACK header block.
+         *
+         * Uses indexed representation for full static-table hits,
+         * and literal with incremental indexing for everything else,
+         * updating the dynamic table accordingly.
+         *
+         * @param headers  list of headers to encode
+         * @param dynTable  the per-connection dynamic table (mutated)
+         * @return raw HPACK-encoded bytes
+         */
+        fn encode(headers: List<HpackHeader>, dynTable: HpackDynTable) -> List<Int64>
+        {
+            let result: List<Int64> = [];
+            var i: Int64 = 0;
+            while i < headers.len()
+            {
+                let h: HpackHeader = headers[i];
+                let staticIdx: Int64 = Hpack::findStatic(h.name, h.value);
+                if (staticIdx > 0 && Hpack::staticValue(staticIdx) == h.value)
+                {
+                    // §6.1 Indexed header field — full static table hit
+                    let encoded: List<Int64> = Hpack::encodeInt(staticIdx, 7, 128);
+                    var j: Int64 = 0;
+                    while j < encoded.len()
+                    {
+                        result.push(encoded[j]);
+                        j = j + 1;
+                    }
+                }
+                else
+                {
+                    // §6.2.1 Literal with incremental indexing
+                    var nameIdx: Int64 = 0;
+                    if (staticIdx > 0)
+                    {
+                        nameIdx = staticIdx;
+                    }
+                    let nameEncoded: List<Int64> = Hpack::encodeInt(nameIdx, 6, 64);
+                    var j: Int64 = 0;
+                    while j < nameEncoded.len()
+                    {
+                        result.push(nameEncoded[j]);
+                        j = j + 1;
+                    }
+                    if (nameIdx == 0)
+                    {
+                        let nameBytes: List<Int64> = Hpack::encodeStr(h.name);
+                        j = 0;
+                        while j < nameBytes.len()
+                        {
+                            result.push(nameBytes[j]);
+                            j = j + 1;
+                        }
+                    }
+                    let valBytes: List<Int64> = Hpack::encodeStr(h.value);
+                    j = 0;
+                    while j < valBytes.len()
+                    {
+                        result.push(valBytes[j]);
+                        j = j + 1;
+                    }
+                    dynTable.add(h);
+                }
+                i = i + 1;
+            }
+            return result;
+        }
+    }
+}

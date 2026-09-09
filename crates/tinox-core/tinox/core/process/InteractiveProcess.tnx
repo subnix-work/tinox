@@ -1,0 +1,45 @@
+namespace tinox.core.process
+{
+    /**
+     * A long-lived, incrementally-driven subprocess -- unlike
+     * Process::run() (blocks until exit, returns the full captured
+     * output), this spawns and returns immediately; the caller drives it
+     * for the duration of an interactive session (e.g. `kubectl exec -i`
+     * bridged to a terminal) via writeStdin/readOutput. stdout and stderr
+     * are merged into one stream (a real terminal has no separate
+     * channels either).
+     */
+    class InteractiveProcess
+    {
+        var handle: Int64;
+
+        /** argv[0] is the program (resolved via PATH like execvp), argv[1..] its arguments -- same argv-based, no-shell contract as Process::run(). Named start(), not spawn(): `spawn` is a reserved keyword (the language's own thread-spawn construct). */
+        fn start(argv: List<String>) -> InteractiveProcess
+        {
+            return InteractiveProcess { handle: processSpawnInteractive(argv) };
+        }
+
+        /** Writes to the process's stdin. Best-effort: silently stops writing if the process has already exited -- check isAlive() to detect that. */
+        fn writeStdin(proc: InteractiveProcess, data: String) -> Nothing
+        {
+            processWriteStdin(proc.handle, data);
+        }
+
+        /** Blocks up to timeoutMs waiting for output; returns "" on timeout, EOF, or if the process exited. */
+        fn readOutput(proc: InteractiveProcess, timeoutMs: Int64) -> String
+        {
+            return processReadOutput(proc.handle, timeoutMs);
+        }
+
+        fn isAlive(proc: InteractiveProcess) -> Bool
+        {
+            return processIsAlive(proc.handle) != 0;
+        }
+
+        /** Kills the process (if still running) and closes its pipes. Safe to call even if it already exited. */
+        fn kill(proc: InteractiveProcess) -> Nothing
+        {
+            processKillInteractive(proc.handle);
+        }
+    }
+}

@@ -1,0 +1,38 @@
+// Real concurrency test for tinox.core.semaphore's Mutex -- the previous
+// implementation (a plain "if not locked { locked = true }" check-then-act)
+// would lose increments under real concurrent access (a classic race: two
+// threads both read locked==false before either writes true). 8 threads x
+// 20000 increments each MUST total exactly 160000 with a real mutex; a
+// flaky/lower total would mean the mutex isn't providing real exclusion.
+import Counter;
+
+// expect: 160000
+class Main
+{
+    fnc main() -> Int32
+    {
+        let counter: Counter = Counter::new();
+        let perThread: Int64 = 20000;
+
+        let h1 = spawn Counter::incrementMany(counter, perThread);
+        let h2 = spawn Counter::incrementMany(counter, perThread);
+        let h3 = spawn Counter::incrementMany(counter, perThread);
+        let h4 = spawn Counter::incrementMany(counter, perThread);
+        let h5 = spawn Counter::incrementMany(counter, perThread);
+        let h6 = spawn Counter::incrementMany(counter, perThread);
+        let h7 = spawn Counter::incrementMany(counter, perThread);
+        let h8 = spawn Counter::incrementMany(counter, perThread);
+
+        await h1;
+        await h2;
+        await h3;
+        await h4;
+        await h5;
+        await h6;
+        await h7;
+        await h8;
+
+        println(counter.value);
+        return 0;
+    }
+}

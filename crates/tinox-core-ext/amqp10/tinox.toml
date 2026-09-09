@@ -1,4 +1,4 @@
 [package]
 name = "amqp10"
-version = "1.0.1"
+version = "1.0.2"
 description = "tinox.core.amqp10, split out of the bundled stdlib as a standalone tinox-central package."

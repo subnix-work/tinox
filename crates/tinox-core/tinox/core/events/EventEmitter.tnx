@@ -1,0 +1,80 @@
+module tinox.core.events;
+
+namespace tinox.core.events
+{
+    class EventEmitter
+    {
+        var listeners: Map<String, List<fnc(JsonValue) -> Nothing>>;
+
+        fn new() -> EventEmitter
+        {
+            return EventEmitter { listeners: Map::new() };
+        }
+
+        fn on(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Nothing) -> Nothing
+        {
+            if (emitter.listeners.contains(event) == false)
+            {
+                emitter.listeners[event] = [];
+            }
+            let handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
+            handlers.push(handler);
+        }
+
+        fn once(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Nothing) -> Nothing
+        {
+            let wrapper: fnc(JsonValue) -> Nothing = ev => {
+                handler(ev);
+            };
+            EventEmitter::on(emitter, event, wrapper);
+        }
+
+        fn emit(emitter: EventEmitter, event: String, data: JsonValue) -> Nothing
+        {
+            if (emitter.listeners.contains(event) == false)
+            {
+                return;
+            }
+            let handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
+            var i: Int64 = 0;
+            while i < handlers.len()
+            {
+                handlers[i](data);
+                i = i + 1;
+            }
+        }
+
+        fn removeListener(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Nothing) -> Nothing
+        {
+            if (emitter.listeners.contains(event) == false)
+            {
+                return;
+            }
+            let handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
+            var i: Int64 = 0;
+            while i < handlers.len()
+            {
+                if (handlers[i] == handler)
+                {
+                    handlers.removeAt(i);
+                    break;
+                }
+                i = i + 1;
+            }
+        }
+
+        fn removeAllListeners(emitter: EventEmitter, event: String) -> Nothing
+        {
+            emitter.listeners.remove(event);
+        }
+
+        fn listenerCount(emitter: EventEmitter, event: String) -> Int64
+        {
+            if (emitter.listeners.contains(event) == false)
+            {
+                return 0;
+            }
+            return emitter.listeners[event].len();
+        }
+    }
+}

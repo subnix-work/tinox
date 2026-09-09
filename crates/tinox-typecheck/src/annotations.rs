@@ -237,6 +237,39 @@ pub struct Http3RestControllerInfo {
     pub key_path: String,
 }
 
+/// @TinoxUIApp(httpPort, wsPort) on a class (issue #215, Phase 4) --
+/// annotation sugar over the hand-wired @WebsocketEndpoint + HttpServer
+/// shell-serving boilerplate every Tinox-UI app (tinox_ui_hello,
+/// tinox_ui_signup) previously had to write by hand: the compiler
+/// generates an HTTP server on httpPort serving the shell page ("/") and
+/// client JS ("/ui.js"), plus a WebSocket accept loop on wsPort driving
+/// the class's own @View method -- diff-based rendering (since #225):
+/// TinoxUIRuntime::assignIdsOnly/diff/collectHandlers/sendPatch run on both
+/// the init path and every message, so only patches go over the wire, not
+/// a full tree resend. The per-connection id-counter state this needs
+/// lives in a local alloca inside the generated worker function (which
+/// already runs once per connection for the whole message loop), not a
+/// class field -- an earlier version of this comment claimed the sugar
+/// had nowhere to put that state, which turned out to be wrong.
+/// `view_methods` collects every method carrying
+/// @View so the caller (main.rs) can validate "exactly one", the same
+/// place Http3RestControllerInfo's "at most one class" cardinality is
+/// enforced today.
+#[derive(Debug, Clone)]
+pub struct TinoxUIAppInfo {
+    pub class_name: String,
+    pub http_port: i64,
+    pub ws_port: i64,
+    pub view_methods: Vec<String>,
+    /// @Route(path)-annotated methods on this class, in declaration order
+    /// (first-match-wins at dispatch time) -- (path pattern, method name).
+    /// Empty when the app doesn't use @Route at all (the common case,
+    /// unchanged from pre-@Route behavior: `view_methods[0]` alone builds
+    /// every render). See annotations.rs's "Route" registry entry for the
+    /// pattern syntax.
+    pub route_entries: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct MetricInfo {
     pub kind: MetricKind,
@@ -254,6 +287,13 @@ pub struct AnnotationProcessingResult {
     pub route_entries: Vec<RouteInfo>,
     pub inline_functions: HashSet<String>,
     pub inline_methods: HashSet<(String, String)>,
+    /// (class, method) pairs that should run inside a DB transaction --
+    /// either the method itself carries @Transactional, or its class does
+    /// (class-level applies to every method, same precedence pattern as
+    /// @Auth; a method-level annotation on top of a class-level one is
+    /// simply redundant, not an override, since there's no argument to
+    /// override — unlike @Auth's "bearer"/"basic" choice).
+    pub transactional_methods: HashSet<(String, String)>,
     pub deprecated_warnings: Vec<String>,
     pub custom_annotation_names: Vec<String>,
     pub di_components: Vec<DiComponentInfo>,
@@ -271,6 +311,7 @@ pub struct AnnotationProcessingResult {
     pub amqp10_consumers: Vec<Amqp10ConsumerInfo>,
     pub amqp091_consumers: Vec<Amqp091ConsumerInfo>,
     pub http3_rest_controllers: Vec<Http3RestControllerInfo>,
+    pub tinoxui_apps: Vec<TinoxUIAppInfo>,
 }
 
 pub struct AnnotationProcessor {
@@ -394,6 +435,16 @@ impl AnnotationProcessor {
                 description: "Requires a verified OIDC access token (RS256/JWKS, IdP config via OIDC_ISSUER/OIDC_JWKS_URI/OIDC_AUDIENCE env vars) carrying at least one of the listed realm roles".to_string(),
             },
         );
+        registry.insert(
+            "Transactional".to_string(),
+            AnnotationInfo {
+                name: "Transactional".to_string(),
+                valid_targets: vec![AnnotationTarget::Method, AnnotationTarget::Class],
+                min_args: 0,
+                max_args: 0,
+                description: "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Postgres only in v1 (issue #191) -- a hard compile error on any other [database] driver".to_string(),
+            },
+        );
         // REST parameter binding annotations -- exactly one required on
         // every parameter of an @GET/@POST/etc. handler (see
         // extract_route_from_method's validation and CLAUDE.md's REST
@@ -503,6 +554,38 @@ impl AnnotationProcessor {
                 min_args: 3,
                 max_args: 3,
                 description: "@Http3RestController(port, certPath, keyPath) — marks a class whose @GET/@POST/@PUT/@PATCH/@DELETE methods (anywhere in the program) should be served over HTTP/3 (QUIC) via tinox.core.http3_server.Http3Server, instead of the TCP auto-server. Requires `import tinox.core.http3_server;` and a runtime built with TINOX_HTTP3=1. Only valid when the file defines no `main`, has exactly one @Http3RestController class, and no @WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer.".to_string(),
+            },
+        );
+
+        // Tinox-UI annotation sugar (issue #215, Phase 4)
+        registry.insert(
+            "TinoxUIApp".to_string(),
+            AnnotationInfo {
+                name: "TinoxUIApp".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 2,
+                max_args: 2,
+                description: "@TinoxUIApp(httpPort, wsPort) — marks a class as a Tinox-UI application; the compiler generates the HTTP shell/client-JS server on httpPort and a WebSocket accept loop on wsPort that calls the class's own @View method to build/rebuild the component tree (diff-based rendering: only patches are sent, not a full resend, after every event). Requires `import tinox.core.ui;`, `import tinox.core.websocket;`, and `import tinox.core.http_server;`. At most one @TinoxUIApp class per program, with exactly one @View method.".to_string(),
+            },
+        );
+        registry.insert(
+            "View".to_string(),
+            AnnotationInfo {
+                name: "View".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 0,
+                description: "Marks the method that builds this @TinoxUIApp's component tree; signature fn() -> Component".to_string(),
+            },
+        );
+        registry.insert(
+            "Route".to_string(),
+            AnnotationInfo {
+                name: "Route".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 1,
+                description: "@Route(\"/path/:param\") -- on a `fn() -> Component` method inside a @TinoxUIApp class, registers it as that path's builder (Vaadin-style route dispatch). The class must declare `var currentRoute: String;`: the compiler seeds it from the browser's initial request path at WS connect time, and the app's own navigation (e.g. Component::link's onNavigate handler) is expected to assign it on every subsequent navigation -- the compiler re-dispatches off its current value on every render. Patterns may use `:name` path-parameter segments (RouteMatcher syntax); a matched `:name` is auto-assigned into a same-named String field on the class, if one exists, before the method runs. When the current route matches no @Route pattern, the class's plain @View method renders instead (fallback/404 case) -- @View stays required even when @Route is used. Also registers the HTTP shell at each literal @Route path so a hard reload/deep link doesn't 404.".to_string(),
             },
         );
 
@@ -904,12 +987,14 @@ impl AnnotationProcessor {
     ) {
         let mut class_base_path: Option<String> = None;
         let mut class_auth: Option<String> = None;
+        let mut class_transactional = false;
         let mut di_scope: Option<DiScope> = None;
         let mut ws_endpoint_path: Option<String> = None;
         let mut ws_endpoint_port: Option<i64> = None;
         let mut amqp10_consumer_args: Option<(String, i64, String, String, String)> = None;
         let mut amqp091_consumer_args: Option<(String, i64, String, String, String, String)> = None;
         let mut http3_rest_controller_args: Option<(i64, String, String)> = None;
+        let mut tinoxui_app_args: Option<(i64, i64)> = None;
 
         for ann in &class.annotations {
             match ann.name.as_str() {
@@ -955,10 +1040,20 @@ impl AnnotationProcessor {
                         http3_rest_controller_args = Some((port, cert_path, key_path));
                     }
                 }
+                "TinoxUIApp" => {
+                    let http_port = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.first() { Some(*p) } else { None };
+                    let ws_port = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.get(1) { Some(*p) } else { None };
+                    if let (Some(http_port), Some(ws_port)) = (http_port, ws_port) {
+                        tinoxui_app_args = Some((http_port, ws_port));
+                    }
+                }
                 "Auth" => {
                     if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         class_auth = Some(s.clone());
                     }
+                }
+                "Transactional" => {
+                    class_transactional = true;
                 }
                 "deprecated" => {
                     let msg = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
@@ -1103,6 +1198,10 @@ impl AnnotationProcessor {
                 result.route_entries.push(route);
             }
 
+            if class_transactional || method.annotations.iter().any(|a| a.name == "Transactional") {
+                result.transactional_methods.insert((class.name.clone(), method.name.clone()));
+            }
+
             for ann in &method.annotations {
                 match ann.name.as_str() {
                     "inline" => {
@@ -1221,6 +1320,30 @@ impl AnnotationProcessor {
                 port,
                 cert_path,
                 key_path,
+            });
+        }
+
+        if let Some((http_port, ws_port)) = tinoxui_app_args {
+            let mut view_methods: Vec<String> = Vec::new();
+            let mut route_entries: Vec<(String, String)> = Vec::new();
+            for method in &class.methods {
+                for ann in &method.annotations {
+                    if ann.name == "View" {
+                        view_methods.push(method.name.clone());
+                    }
+                    if ann.name == "Route" {
+                        if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(path))) = ann.args.first() {
+                            route_entries.push((path.clone(), method.name.clone()));
+                        }
+                    }
+                }
+            }
+            result.tinoxui_apps.push(TinoxUIAppInfo {
+                class_name: class.name.clone(),
+                http_port,
+                ws_port,
+                view_methods,
+                route_entries,
             });
         }
     }
@@ -1644,13 +1767,29 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
     }
 }
 
+/// `extra_decls` covers declarations that are visible to `source` but not
+/// physically present in `source.decls` -- true for tinox-lsp's
+/// `typecheck_with_prelude`, which keeps the main file and its stdlib
+/// preludes as separate `SourceFile`s instead of merging them the way the
+/// real compiler's `resolve_imports` does before typechecking ever runs.
+/// Without this, a custom annotation declared in a prelude (e.g.
+/// `@JsonSerializable`, itself declared via `@annotation class
+/// JsonSerializable {}` inside `tinox.core.json`'s own
+/// `JsonSerializable.tnx`) reads as "unknown annotation" for any file that
+/// merely imports it, since the registration passes below never saw it.
+/// The real compiler's own call site passes an empty slice here -- its
+/// `source.decls` is already fully merged, so there's nothing extra to add.
 pub fn validate_annotations(
     source: &tinox_parser::SourceFile,
+    extra_decls: &[tinox_parser::Decl],
 ) -> Vec<Error> {
     let mut processor = AnnotationProcessor::new();
 
     // First pass: register all @annotation-class definitions so they are valid in the second pass
     for decl in &source.decls {
+        collect_custom_annotation_classes(&decl.node, &mut processor);
+    }
+    for decl in extra_decls {
         collect_custom_annotation_classes(&decl.node, &mut processor);
     }
 
@@ -1660,6 +1799,7 @@ pub fn validate_annotations(
     // so this also sees classes defined in other files.
     let mut json_serializable: HashSet<String> = HashSet::new();
     collect_json_serializable_classes(&source.decls, &mut json_serializable);
+    collect_json_serializable_classes(extra_decls, &mut json_serializable);
 
     let mut errors = Vec::new();
     for decl in &source.decls {
@@ -1698,7 +1838,7 @@ mod tests {
     }
 
     fn valid(src: &str) -> Vec<Error> {
-        validate_annotations(&parse(src))
+        validate_annotations(&parse(src), &[])
     }
 
     // --- validate: unknown annotation ---
@@ -2528,5 +2668,46 @@ class TaskController {
     fn test_process_custom_annotation_registered() {
         let result = proc("@annotation\nclass MyAnn {}");
         assert!(result.custom_annotation_names.contains(&"MyAnn".to_string()));
+    }
+
+    // --- @Transactional ---
+
+    #[test]
+    fn test_process_transactional_on_method() {
+        let result = proc(r#"
+class Svc {
+    @Transactional
+    fn transfer() -> Nothing {}
+    fn readOnly() -> Nothing {}
+}
+"#);
+        assert!(result.transactional_methods.contains(&("Svc".to_string(), "transfer".to_string())));
+        assert!(!result.transactional_methods.contains(&("Svc".to_string(), "readOnly".to_string())));
+    }
+
+    #[test]
+    fn test_process_transactional_on_class_applies_to_every_method() {
+        let result = proc(r#"
+@Transactional
+class Svc {
+    fn a() -> Nothing {}
+    fn b() -> Nothing {}
+}
+"#);
+        assert!(result.transactional_methods.contains(&("Svc".to_string(), "a".to_string())));
+        assert!(result.transactional_methods.contains(&("Svc".to_string(), "b".to_string())));
+    }
+
+    #[test]
+    fn test_validate_transactional_on_class_ok() {
+        let errors = valid("@Transactional\nclass Svc { fn a() -> Nothing {} }");
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_transactional_on_function_err() {
+        let errors = valid("@Transactional\nfn f() -> Nothing {}");
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("cannot be applied"));
     }
 }

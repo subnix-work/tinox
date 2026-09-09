@@ -1,0 +1,65 @@
+module tinox.core.yaml;
+
+namespace tinox.core.yaml
+{
+    class YamlRenderer
+    {
+        fn render(value: YamlValue, indent: Int64) -> String
+        {
+            if (value.isMap())
+            {
+                var result: String = "";
+                let keys: List<String> = value.mapValue.keys();
+                var i: Int64 = 0;
+                while i < keys.len()
+                {
+                    result = result + YamlRenderer::indent(indent) + keys[i] + ":\n";
+                    result = result + YamlRenderer::render(value.mapValue[keys[i]], indent + 1);
+                    i = i + 1;
+                }
+                return result;
+            }
+            if (value.isList())
+            {
+                var result: String = "";
+                var i: Int64 = 0;
+                while i < value.listValue.len()
+                {
+                    result = result + YamlRenderer::indent(indent) + "-\n";
+                    result = result + YamlRenderer::render(value.listValue[i], indent + 1);
+                    i = i + 1;
+                }
+                return result;
+            }
+            if (value.isString())
+            {
+                return YamlRenderer::indent(indent) + value.stringValue + "\n";
+            }
+            if (value.isInt())
+            {
+                return YamlRenderer::indent(indent) + value.intValue.toString() + "\n";
+            }
+            if (value.isFloat())
+            {
+                return YamlRenderer::indent(indent) + value.floatValue.toString() + "\n";
+            }
+            if (value.isBool())
+            {
+                return YamlRenderer::indent(indent) + (value.boolValue ? "true" : "false") + "\n";
+            }
+            return YamlRenderer::indent(indent) + "null\n";
+        }
+
+        fn indent(level: Int64) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            while i < level * 2
+            {
+                result = result + " ";
+                i = i + 1;
+            }
+            return result;
+        }
+    }
+}

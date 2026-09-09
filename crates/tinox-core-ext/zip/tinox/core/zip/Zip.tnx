@@ -1,0 +1,71 @@
+module tinox.core.zip;
+
+namespace tinox.core.zip
+{
+    // STORED-only ZIP (no compression, text content only). The C runtime
+    // provides scalar accessors; the List<ZipEntry> is built here in
+    // Tinox, so C doesn't depend on the class ABI.
+    extern fn zipEntryCount(path: String) -> Int64;
+    extern fn zipEntryName(path: String, idx: Int64) -> String;
+    extern fn zipEntrySize(path: String, idx: Int64) -> Int64;
+    extern fn zipExtractFile(path: String, name: String) -> String;
+    extern fn zipAddFile(path: String, name: String, content: String) -> Nothing;
+    extern fn zipRemoveFile(path: String, name: String) -> Nothing;
+
+    class Zip
+    {
+        fn open(path: String) -> ZipArchive
+        {
+            return ZipArchive { path: path, entries: Zip::listEntries(path) };
+        }
+
+        fn create(path: String) -> ZipArchive
+        {
+            return ZipArchive { path: path, entries: [] };
+        }
+
+        fn listEntries(path: String) -> List<ZipEntry>
+        {
+            var entries: List<ZipEntry> = [];
+            let count: Int64 = zipEntryCount(path);
+            var i: Int64 = 0;
+            while i < count
+            {
+                entries.push(ZipEntry { name: zipEntryName(path, i), size: zipEntrySize(path, i) });
+                i = i + 1;
+            }
+            return entries;
+        }
+
+        fn extractFile(archive: ZipArchive, entryName: String) -> String
+        {
+            return zipExtractFile(archive.path, entryName);
+        }
+
+        fn addFile(archive: ZipArchive, name: String, content: String) -> Nothing
+        {
+            archive.entries.push(ZipEntry { name: name, size: content.len() });
+            zipAddFile(archive.path, name, content);
+        }
+
+        fn removeFile(archive: ZipArchive, entryName: String) -> Nothing
+        {
+            var newEntries: List<ZipEntry> = [];
+            var i: Int64 = 0;
+            while i < archive.entries.len()
+            {
+                if (archive.entries[i].name != entryName)
+                {
+                    newEntries.push(archive.entries[i]);
+                }
+                i = i + 1;
+            }
+            archive.entries = newEntries;
+            zipRemoveFile(archive.path, entryName);
+        }
+
+        fn close(archive: ZipArchive) -> Nothing
+        {
+        }
+    }
+}

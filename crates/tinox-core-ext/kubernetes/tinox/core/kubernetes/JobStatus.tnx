@@ -1,0 +1,14 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class JobStatus
+    {
+        var succeeded: Int64;
+        var failed: Int64;
+        var active: Int64;
+    }
+}

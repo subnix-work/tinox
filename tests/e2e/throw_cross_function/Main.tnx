@@ -7,7 +7,7 @@
 class Main
 {
     fnc divide(a: Int64, b: Int64) -> Int64 {
-        if b == 0 {
+        if (b == 0) {
             throw "broken";
         }
         return a / b;

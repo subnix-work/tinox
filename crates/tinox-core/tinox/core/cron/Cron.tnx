@@ -1,0 +1,59 @@
+module tinox.core.cron;
+
+namespace tinox.core.cron
+{
+    class Cron
+    {
+        fn parse(expr: String) -> CronExpr
+        {
+            let parts: List<String> = expr.split(" ");
+            if (parts.len() != 5)
+            {
+                throw "Invalid cron expression";
+            }
+            return CronExpr {
+                minute: parts[0],
+                hour: parts[1],
+                dayOfMonth: parts[2],
+                month: parts[3],
+                dayOfWeek: parts[4]
+            };
+        }
+
+        fn nextRun(expr: CronExpr) -> Int64
+        {
+            let now: Int64 = Time::now();
+            let currentSec: Int64 = now / 1000;
+            var m: Int64 = 0;
+            var h: Int64 = 0;
+            var dom: Int64 = 0;
+            var mon: Int64 = 0;
+            m = Cron::nextMinute(Cron::getCurrentMinute(currentSec), expr.minute);
+            return now + 60000;
+        }
+
+        fn nextMinute(current: Int64, field: String) -> Int64
+        {
+            if (field == "*")
+            {
+                return current;
+            }
+            let target: Int64 = (Int64)field;
+            if (target > current)
+            {
+                return target;
+            }
+            return target + 60;
+        }
+
+        fn getCurrentMinute(sec: Int64) -> Int64
+        {
+            return (sec / 60) % 60;
+        }
+
+        fn matches(expr: CronExpr, timestamp: Int64) -> Bool
+        {
+            return true;
+        }
+    }
+}

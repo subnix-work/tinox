@@ -1,0 +1,44 @@
+import tinox.core.ui;
+import tinox.core.websocket;
+import tinox.core.http_server;
+
+// Component::jsComponent wraps a real browser custom element (a
+// Vaadin-@Tag/@JsModule equivalent) instead of dropping to
+// Component::html() + a hand-stitched <script> bootstrap whenever the
+// v1 widget catalog doesn't cover something (a third-party JS library,
+// a stateful client-only widget, ...). `tag` names the custom element;
+// `moduleUrl` is dynamic-import()ed once client-side and is expected to
+// customElements.define(tag, ...) itself. Every entry in `props`
+// becomes a real HTML attribute, so the widget reacts to server-side
+// state changes via its own standard observedAttributes/
+// attributeChangedCallback -- and since a JsComponent slot's `type`
+// never changes across renders, the element is never torn down by an
+// unrelated re-render, so its own internal state (an open WebSocket, a
+// terminal's scrollback, ...) survives just fine.
+@TinoxUIApp(8080, 8081)
+class CounterDemoApp
+{
+    var serverClicks: Int64;
+    var lastReportedFromWidget: String;
+
+    @View
+    fn render() -> Component
+    {
+        let app: CounterDemoApp = this;
+        var widgetProps: Map<String, String> = Map::new();
+        widgetProps.insert("label", "server clicks: " + this.serverClicks.toString());
+        // ":8082/..." -- served by a companion static-asset HttpServer
+        // (see the entry point below), since @TinoxUIApp's own generated
+        // HTTP shell (port 8080) can't take extra routes. ui.js expands
+        // this against the browser's own real hostname at import time --
+        // see Component::jsComponent's own doc comment, including why the
+        // companion server must send an Access-Control-Allow-Origin
+        // header on that response.
+        return Component::vbox([
+            Component::label("Server clicks: " + this.serverClicks.toString()),
+            Component::button("Increment server counter", fn(v: String) { app.serverClicks = app.serverClicks + 1; }),
+            Component::label("Last value reported by widget: " + this.lastReportedFromWidget),
+            Component::jsComponent("tinox-counter", ":8082/tinox-counter.js", widgetProps, fn(v: String) { app.lastReportedFromWidget = v; })
+        ]);
+    }
+}

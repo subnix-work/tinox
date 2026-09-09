@@ -1,0 +1,81 @@
+module tinox.core.http_server;
+
+namespace tinox.core.http_server
+{
+    /**
+     * Utility for parsing and working with query strings
+     */
+    class QueryString
+    {
+        /**
+         * Parses a query string into a map of key-value pairs
+         *
+         * @param qs the raw query string (e.g., "page=1&limit=10")
+         * @return a map of parameter names to values
+         */
+        fn parse(qs: String) -> Map<String, String>
+        {
+            let params: Map<String, String> = Map::new();
+            if (qs.len() == 0)
+            {
+                return params;
+            }
+
+            var i: Int64 = 0;
+            var key: String = "";
+            var value: String = "";
+            var inKey: Bool = true;
+
+            while i < qs.len()
+            {
+                let ch: String = qs.substring(i, i + 1);
+                if (ch == "&")
+                {
+                    if (key.len() > 0)
+                    {
+                        params[key] = value;
+                    }
+                    key = "";
+                    value = "";
+                    inKey = true;
+                }
+                else if (ch == "=" && inKey)
+                {
+                    inKey = false;
+                }
+                else if (inKey)
+                {
+                    key = key + ch;
+                }
+                else
+                {
+                    value = value + ch;
+                }
+                i = i + 1;
+            }
+
+            if (key.len() > 0)
+            {
+                params[key] = value;
+            }
+            return params;
+        }
+
+        /**
+         * Gets a single value from a query string by parameter name
+         *
+         * @param qs the raw query string
+         * @param name the parameter name
+         * @return the parameter value, or empty string if not found
+         */
+        fn get(qs: String, name: String) -> String
+        {
+            let params: Map<String, String> = QueryString::parse(qs);
+            if (params.contains(name))
+            {
+                return params[name];
+            }
+            return "";
+        }
+    }
+}

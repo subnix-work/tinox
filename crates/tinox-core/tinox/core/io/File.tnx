@@ -1,0 +1,63 @@
+module tinox.core.io;
+
+namespace tinox.core.io
+{
+    /**
+     * Represents a file handle for reading and writing
+     *
+     * Provides methods for opening, reading, writing, and closing files.
+     * Uses the underlying runtime file operations.
+     */
+    class File
+    {
+        /** The file path */
+        path: String;
+
+        /** The file handle (0 if not open) */
+        handle: Int64;
+
+        /**
+         * Creates a new File instance (not yet opened)
+         *
+         * @param path the file path
+         * @return a new File instance
+         */
+        fn new(path: String) -> File
+        {
+            return File { path: path, handle: 0 };
+        }
+
+        /**
+         * Returns the file path
+         *
+         * @return the path string
+         */
+        fn getPath() -> String
+        {
+            return this.path;
+        }
+
+        /**
+         * Closes the file if it is open
+         */
+        fn close() -> Nothing
+        {
+            if (this.handle != 0)
+            {
+                fileClose(this.handle);
+                this.handle = 0;
+            }
+        }
+
+        /**
+         * Checks if a file exists at the given path
+         *
+         * @param path the file path to check
+         * @return true if the file exists
+         */
+        fn exists(path: String) -> Bool
+        {
+            return fileExists(path);
+        }
+    }
+}

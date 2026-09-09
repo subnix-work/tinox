@@ -1,0 +1,222 @@
+module tinox.core.rest.client;
+
+import tinox.core.http;
+
+namespace tinox.core.rest.client
+{
+    /**
+     * HTTP request builder for constructing requests
+     * with a fluent API (method chaining pattern)
+     *
+     * Example usage:
+     *   RequestBuilder::new("https://api.example.com")
+     *       .header("Accept", "application/json")
+     *       .get("/users")
+     */
+    class RequestBuilder
+    {
+        /** The base URL */
+        var baseUrl: String;
+
+        /** Custom headers for this request */
+        var reqHeaders: List<String>;
+
+        /** Query parameters for this request */
+        var queryParams: List<String>;
+
+        /** The request body */
+        var reqBody: String;
+
+        /**
+         * Creates a new RequestBuilder
+         *
+         * @param baseUrl the base URL for requests
+         * @return a new RequestBuilder instance
+         */
+        fn new(baseUrl: String) -> RequestBuilder
+        {
+            return RequestBuilder { baseUrl: baseUrl, reqHeaders: [], queryParams: [], reqBody: "" };
+        }
+
+        /**
+         * Adds a header to the request
+         *
+         * @param name the header name
+         * @param value the header value
+         * @return this builder for chaining
+         */
+        fn header(name: String, value: String) -> RequestBuilder
+        {
+            this.reqHeaders.push(name + ": " + value);
+            return this;
+        }
+
+        /**
+         * Adds a query parameter
+         *
+         * @param key the parameter key
+         * @param value the parameter value
+         * @return this builder for chaining
+         */
+        fn query(key: String, value: String) -> RequestBuilder
+        {
+            this.queryParams.push(Url::encode(key) + "=" + Url::encode(value));
+            return this;
+        }
+
+        /**
+         * Sets the request body
+         *
+         * @param body the request body string
+         * @return this builder for chaining
+         */
+        fn body(body: String) -> RequestBuilder
+        {
+            this.reqBody = body;
+            return this;
+        }
+
+        /**
+         * Sets the request body as JSON with Content-Type header
+         *
+         * @param jsonBody the JSON string to send
+         * @return this builder for chaining
+         */
+        fn jsonBody(jsonBody: String) -> RequestBuilder
+        {
+            this.reqHeaders.push("Content-Type: application/json");
+            this.reqBody = jsonBody;
+            return this;
+        }
+
+        /**
+         * Adds Bearer authentication header
+         *
+         * @param token the bearer token
+         * @return this builder for chaining
+         */
+        fn bearer(token: String) -> RequestBuilder
+        {
+            this.reqHeaders.push("Authorization: Bearer " + token);
+            return this;
+        }
+
+        /**
+         * Executes a GET request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         */
+        fn get(path: String) -> RestResponse
+        {
+            let url: String = this.buildUrl(path);
+            this.applyHeaders();
+            let response: HttpClientResponse = Http::get(url);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Executes a POST request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         */
+        fn post(path: String) -> RestResponse
+        {
+            let url: String = this.buildUrl(path);
+            this.applyHeaders();
+            let response: HttpClientResponse = Http::post(url, this.reqBody);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Executes a PUT request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         */
+        fn put(path: String) -> RestResponse
+        {
+            let url: String = this.buildUrl(path);
+            this.applyHeaders();
+            let response: HttpClientResponse = Http::put(url, this.reqBody);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Executes a PATCH request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         */
+        fn patch(path: String) -> RestResponse
+        {
+            let url: String = this.buildUrl(path);
+            this.applyHeaders();
+            let response: HttpClientResponse = Http::patch(url, this.reqBody);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Executes a DELETE request
+         *
+         * @param path the endpoint path
+         * @return the REST response
+         */
+        fn delete(path: String) -> RestResponse
+        {
+            let url: String = this.buildUrl(path);
+            this.applyHeaders();
+            let response: HttpClientResponse = Http::delete(url);
+            Http::clearHeaders();
+            return RestResponse::fromHttp(response);
+        }
+
+        /**
+         * Builds the full URL with query parameters
+         *
+         * @param path the endpoint path
+         * @return the complete URL string
+         */
+        fn buildUrl(path: String) -> String
+        {
+            var url: String = Url::build(this.baseUrl, path);
+            if (this.queryParams.len() > 0)
+            {
+                url = url + "?";
+                var i: Int64 = 0;
+                while i < this.queryParams.len()
+                {
+                    if (i > 0)
+                    {
+                        url = url + "&";
+                    }
+                    url = url + this.queryParams[i];
+                    i = i + 1;
+                }
+            }
+            return url;
+        }
+
+        /**
+         * Applies all stored headers to the HTTP client
+         */
+        fn applyHeaders() -> Nothing
+        {
+            var i: Int64 = 0;
+            while i < this.reqHeaders.len()
+            {
+                let header: String = this.reqHeaders[i];
+                let colonPos: Int64 = header.indexOf(":");
+                let name: String = header.substring(0, colonPos).trim();
+                let value: String = header.substring(colonPos + 1, header.len()).trim();
+                Http::setHeader(name, value);
+                i = i + 1;
+            }
+        }
+    }
+}

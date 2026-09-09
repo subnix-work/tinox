@@ -6,8 +6,8 @@ class Main
 {
     fnc classify(n: Int64) -> String
     {
-        if n < 0 { return "negative"; }
-        else if n == 0 { return "zero"; }
+        if (n < 0) { return "negative"; }
+        else if (n == 0) { return "zero"; }
         else { return "positive"; }
     }
 

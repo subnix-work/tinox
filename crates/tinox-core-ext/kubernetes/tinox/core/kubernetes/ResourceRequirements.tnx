@@ -1,0 +1,26 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    // requests/limits as Map<String, String> (e.g. {"cpu": "500m",
+    // "memory": "128Mi"}) rather than a fixed-field struct -- the real
+    // upstream type is itself an open map of resource-name -> quantity,
+    // and an empty map serializes as harmless "{}" (meaning "unset"),
+    // whereas a fixed struct would have to fill unused keys with an
+    // empty-string quantity, which the API server's quantity parser
+    // rejects. Also backs PersistentVolumeClaimSpec.resources (key
+    // "storage").
+    @JsonSerializable
+    class ResourceRequirements
+    {
+        var requests: Map<String, String>;
+        var limits: Map<String, String>;
+
+        fnc empty() -> ResourceRequirements
+        {
+            return ResourceRequirements { requests: Map::new(), limits: Map::new() };
+        }
+    }
+}

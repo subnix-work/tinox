@@ -1,0 +1,113 @@
+module tinox.core.logger;
+
+import tinox.core.time;
+import tinox.core.env;
+
+namespace tinox.core.logger
+{
+    class Logger
+    {
+        var name: String;
+        var level: Int64;
+        var jsonFormat: Bool;
+
+        // JSON output is opt-in via the TINOX_LOG_JSON=true environment
+        // variable, read once at construction time. This lets a @Log-
+        // injected `log: Logger` field (see the @Log annotation) switch to
+        // structured JSON logging without any code change in the annotated
+        // class — just set the env var before the process starts.
+        fn new(name: String) -> Logger
+        {
+            return Logger { name: name, level: LogLevel::Info, jsonFormat: Env::getVar("TINOX_LOG_JSON") == "true" };
+        }
+
+        fn debug(logger: Logger, message: String) -> Nothing
+        {
+            if (logger.level <= LogLevel::Debug)
+            {
+                Logger::log(logger, "DEBUG", message);
+            }
+        }
+
+        fn info(logger: Logger, message: String) -> Nothing
+        {
+            if (logger.level <= LogLevel::Info)
+            {
+                Logger::log(logger, "INFO", message);
+            }
+        }
+
+        fn warn(logger: Logger, message: String) -> Nothing
+        {
+            if (logger.level <= LogLevel::Warn)
+            {
+                Logger::log(logger, "WARN", message);
+            }
+        }
+
+        fn error(logger: Logger, message: String) -> Nothing
+        {
+            if (logger.level <= LogLevel::Error)
+            {
+                Logger::log(logger, "ERROR", message);
+            }
+        }
+
+        fn setLevel(logger: Logger, level: Int64) -> Nothing
+        {
+            logger.level = level;
+        }
+
+        fn log(logger: Logger, level: String, message: String) -> Nothing
+        {
+            let timestamp: String = Time::now().toString();
+            if (logger.jsonFormat)
+            {
+                let record: LogRecord = LogRecord { timestamp: timestamp, level: level, logger: logger.name, message: message };
+                println(Logger::toJson(record));
+            }
+            else
+            {
+                print("[");
+                print(timestamp);
+                print("] [");
+                print(level);
+                print("] [");
+                print(logger.name);
+                print("] ");
+                println(message);
+            }
+        }
+
+        // Hand-written serialization for LogRecord's fixed 4-string shape,
+        // matching the escaping Encoding::htmlEncode already does for HTML
+        // (see tinox.core.encoding) — deliberately not tinox.core.json's
+        // @JsonSerializable/Json::serialize, since that would make logger
+        // (core-tier) transitively require json (extended-tier). See
+        // LogRecord.tnx and CLAUDE.md's core/extended stdlib split notes.
+        fnc toJson(record: LogRecord) -> String
+        {
+            var s: String = "{\"timestamp\":\"";
+            s = s + Logger::escapeJson(record.timestamp);
+            s = s + "\",\"level\":\"";
+            s = s + Logger::escapeJson(record.level);
+            s = s + "\",\"logger\":\"";
+            s = s + Logger::escapeJson(record.logger);
+            s = s + "\",\"message\":\"";
+            s = s + Logger::escapeJson(record.message);
+            s = s + "\"}";
+            return s;
+        }
+
+        fnc escapeJson(s: String) -> String
+        {
+            var result: String = s;
+            result = result.replace("\\", "\\\\");
+            result = result.replace("\"", "\\\"");
+            result = result.replace("\n", "\\n");
+            result = result.replace("\r", "\\r");
+            result = result.replace("\t", "\\t");
+            return result;
+        }
+    }
+}

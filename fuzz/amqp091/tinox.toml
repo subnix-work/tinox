@@ -6,4 +6,4 @@ description = "Local-only manifest so Amqp091Driver.tnx can pull in the real tin
 [[dependencies]]
 group = "tinox.core"
 artifactId = "amqp091"
-version = "1.0.2"
+version = "1.0.3"

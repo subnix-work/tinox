@@ -162,6 +162,9 @@ struct EvaluatedReceiver<'a> {
 pub struct AnnotationInfo {
     pub inline_fns: HashSet<String>,
     pub inline_meths: HashSet<(String, String)>,
+    /// (class, method) pairs wrapped in a DB transaction (issue #191) --
+    /// see gen_transactional_wrapper.
+    pub transactional_methods: HashSet<(String, String)>,
     pub routes: Vec<RouteEntry>,
     pub di_components: Vec<DiComponentInfo>,
     pub log_classes: HashSet<String>,
@@ -222,6 +225,23 @@ pub struct Http3RestControllerEntry {
     pub key_path: String,
 }
 
+/// @TinoxUIApp(httpPort, wsPort) entry (issue #215, Phase 4). `view_method`
+/// is already resolved down to a single name here (main.rs enforces the
+/// "exactly one @View method" cardinality before building this entry, same
+/// place Http3RestControllerEntry's "at most one class" check lives).
+#[derive(Debug, Clone)]
+pub struct TinoxUIAppEntry {
+    pub class_name: String,
+    pub http_port: i64,
+    pub ws_port: i64,
+    pub view_method: String,
+    /// @Route(path)-annotated methods, in declaration order -- see
+    /// annotations.rs's "Route" registry entry. Empty for a plain
+    /// (non-routed) @TinoxUIApp, which keeps codegen byte-for-byte
+    /// identical to before @Route existed.
+    pub route_entries: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EntityFieldEntry {
     pub field_name: String,
@@ -244,6 +264,27 @@ pub struct CodeGen {
     lambda_ir: String,
     strings: HashMap<String, String>,
     temp_count: usize,
+    /// Source of `__lambda_N` names -- deliberately a SEPARATE counter
+    /// from `temp_count`, never saved/restored anywhere. `temp_count` is
+    /// legitimately saved-and-restored around generic-method-
+    /// specialization generation (so the CALLER's own subsequent SSA
+    /// temp numbering doesn't skip ahead unnecessarily) -- but lambda
+    /// names were previously derived from `temp_count` directly
+    /// (`gen_lambda`'s own `let lambda_id = self.temp_count;`), which
+    /// meant two INDEPENDENTLY generated generic specializations (e.g.
+    /// GridColumn<Person>::of and DataGrid<Person>::of, each containing
+    /// their own inline lambda literal) could both start from the SAME
+    /// restored `temp_count` baseline and emit an identically-named
+    /// `__lambda_N` if their own internal temp-counter progression up to
+    /// that lambda happened to coincide -- "invalid redefinition of
+    /// function '__lambda_4'", caught live while building a generic
+    /// `tinox.core:ui` DataGrid<T> widget (two of its own helper
+    /// classes' specializations collided this exact way). Every lambda
+    /// in the whole compiled program needs a permanently unique name
+    /// regardless of how many save/restore cycles happen around
+    /// `temp_count` elsewhere -- hence this always-monotonic, never-reset
+    /// counter instead.
+    lambda_counter: usize,
     /// DWARF debug info (issue #114): source file path (as stamped by
     /// `stamp_file_identity` in `tinox/src/main.rs`) -> its `!DIFile`
     /// metadata node id. Populated lazily the first time a given file is
@@ -400,6 +441,10 @@ pub struct CodeGen {
     inline_functions: HashSet<String>,
     /// Annotation processing: (class_name, method_name) pairs for methods annotated @inline
     inline_methods: HashSet<(String, String)>,
+    /// Annotation processing: (class_name, method_name) pairs wrapped in a
+    /// DB transaction, either directly @Transactional or via a class-level
+    /// @Transactional (issue #191). See gen_transactional_wrapper.
+    transactional_methods: HashSet<(String, String)>,
     /// REST route entries collected from annotation processing
     route_entries: Vec<RouteEntry>,
     /// DI component info from annotation processing
@@ -424,6 +469,8 @@ pub struct CodeGen {
     entity_entries: Vec<EntityEntry>,
     /// WebSocket endpoints from @WebsocketEndpoint annotation processing
     ws_endpoints: Vec<WsEndpointEntry>,
+    /// Tinox-UI apps from @TinoxUIApp annotation processing (issue #215, Phase 4)
+    tinoxui_apps: Vec<TinoxUIAppEntry>,
     /// AMQP-1.0 consumers from @Amqp10Consumer annotation processing (Issue #81)
     amqp10_consumers: Vec<Amqp10ConsumerEntry>,
     /// AMQP-0-9-1 consumers from @Amqp091Consumer annotation processing (Issue #126)
@@ -439,6 +486,11 @@ pub struct CodeGen {
     expr_value_types: HashMap<u32, tinox_typecheck::ValueType>,
     /// DB connection URL from tinox.toml [database] — emitted as compile-time constant
     db_url: Option<String>,
+    /// [database] pool size from tinox.toml, default 5 when omitted (see
+    /// crates/tinox/src/main.rs's read_database_config) — passed to
+    /// tinox_db_pool_init alongside db_url. Ignored by the sqlite/mysql
+    /// drivers (single-connection model, unchanged since before issue #191).
+    db_pool_size: i64,
     /// Whether a [metrics] endpoint is enabled (path to expose on)
     metrics_path: Option<String>,
     /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
@@ -532,6 +584,7 @@ impl CodeGen {
             lambda_ir: String::new(),
             strings: HashMap::new(),
             temp_count: 0,
+            lambda_counter: 0,
             di_file_ids: HashMap::new(),
             di_metadata: Vec::new(),
             di_next_id: 0,
@@ -570,6 +623,7 @@ impl CodeGen {
             variant_owner: HashMap::new(),
             inline_functions: HashSet::new(),
             inline_methods: HashSet::new(),
+            transactional_methods: HashSet::new(),
             route_entries: Vec::new(),
             di_components: Vec::new(),
             log_classes: HashSet::new(),
@@ -582,11 +636,13 @@ impl CodeGen {
             metric_entries: Vec::new(),
             entity_entries: Vec::new(),
             ws_endpoints: Vec::new(),
+            tinoxui_apps: Vec::new(),
             amqp10_consumers: Vec::new(),
             amqp091_consumers: Vec::new(),
             http3_rest_controller: None,
             expr_value_types: HashMap::new(),
             db_url: None,
+            db_pool_size: 5,
             metrics_path: None,
             test_entry: None,
             has_main: false,
@@ -617,6 +673,7 @@ impl CodeGen {
     pub fn set_annotation_info(&mut self, info: AnnotationInfo) {
         self.inline_functions = info.inline_fns;
         self.inline_methods = info.inline_meths;
+        self.transactional_methods = info.transactional_methods;
         self.route_entries = info.routes;
         self.di_components = info.di_components;
         self.log_classes = info.log_classes;
@@ -682,6 +739,10 @@ impl CodeGen {
         self.ws_endpoints = endpoints;
     }
 
+    pub fn set_tinoxui_apps(&mut self, apps: Vec<TinoxUIAppEntry>) {
+        self.tinoxui_apps = apps;
+    }
+
     pub fn set_amqp10_consumers(&mut self, consumers: Vec<Amqp10ConsumerEntry>) {
         self.amqp10_consumers = consumers;
     }
@@ -696,6 +757,10 @@ impl CodeGen {
 
     pub fn set_db_url(&mut self, url: Option<String>) {
         self.db_url = url;
+    }
+
+    pub fn set_db_pool_size(&mut self, pool_size: i64) {
+        self.db_pool_size = pool_size;
     }
 
     /// Register a string constant and return an inline `getelementptr` expression (i8*).
@@ -1361,6 +1426,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_task_spawn(i8* (i8*)*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_task_spawn_detached(i8* (i8*)*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_task_await(i8*)").unwrap();
         // Monotonic milliseconds -- used only by emit_tinox_main_bootstrap's
         // startup banner to measure/print bootstrap time.
@@ -1412,6 +1478,18 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i32 @jsonGetBoolField(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @jsonGetStringField(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @jsonGetIntListField(i64*, i8*)").unwrap();
+        // Map<String,String>/List<String>/List<class>/nested-class field
+        // kinds in @JsonSerializable toJson()/fromJson() (see
+        // emit_json_serialize_code/emit_json_deserialize_code). NOT
+        // including jsonGetField itself -- tinox.core.json's own `extern fn
+        // jsonGetField(...)` (Json.tnx, required to even use
+        // @JsonSerializable) already declares it with the same signature;
+        // a second `declare` here is a hard "invalid redefinition" error.
+        writeln!(&mut self.ir, "declare i8* @jsonGetStringMapField(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @jsonGetStringListField(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_string_list_serialize(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_string_map_serialize(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_json_list_deserialize(i64*, ptr)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.floor.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.ceil.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.round.f64(double)").unwrap();
@@ -1500,6 +1578,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @httpConnReadN(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpConnWriteBytes(i64, i64*)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnClose(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @httpConnClearRecvTimeout(i64)").unwrap();
         // CLI helpers (@Command / @Option / @Argument)
         writeln!(&mut self.ir, "declare i8* @tinox_cli_get_string(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_cli_has_flag(i8*, i8*)").unwrap();
@@ -1513,8 +1592,13 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_clock_nanos()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
         // DB / ORM runtime
-        writeln!(&mut self.ir, "declare void @tinox_db_connect(i8*)").unwrap();
-        writeln!(&mut self.ir, "declare i8* @tinox_db_get_conn()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_db_pool_init(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_db_acquire_stmt_conn()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_db_release_stmt_conn(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_db_tx_begin()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_db_tx_commit()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_db_tx_rollback()").unwrap();
+        writeln!(&mut self.ir, "declare i1 @tinox_db_tx_active()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_exec(i8*, i8*, i8**, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_db_nrows(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_db_ncols(i8*)").unwrap();
@@ -1557,6 +1641,29 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @isStdinTty()").unwrap();
         writeln!(&mut self.ir, "declare i64 @isStdoutTty()").unwrap();
         writeln!(&mut self.ir, "declare i64 @processId()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processRun(i64*, i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processResultStdout(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processResultStderr(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processResultExitCode(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processResultTimedOut(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @mutexNew()").unwrap();
+        writeln!(&mut self.ir, "declare void @mutexLock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @mutexUnlock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @mutexTryLock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @semaphoreNew(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @semaphoreAcquire(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @semaphoreRelease(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @semaphoreTryAcquire(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @rwlockNew()").unwrap();
+        writeln!(&mut self.ir, "declare void @rwlockReadLock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @rwlockReadUnlock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @rwlockWriteLock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @rwlockWriteUnlock(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processSpawnInteractive(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare void @processWriteStdin(i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processReadOutput(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processIsAlive(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @processKillInteractive(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @gcCollect()").unwrap();
         writeln!(&mut self.ir, "declare i64 @memoryUsage()").unwrap();
         writeln!(&mut self.ir, "declare void @printStackTrace()").unwrap();
@@ -1997,6 +2104,10 @@ impl CodeGen {
 
         // Emit the auto-run accept/message loop for a @WebsocketEndpoint class
         self.emit_ws_code();
+
+        // Emit the auto-run HTTP shell/client-JS server + WS accept loop for
+        // a @TinoxUIApp class (issue #215, Phase 4)
+        self.emit_tinoxui_code();
 
         // Emit the auto-run connect/receive loop for an @Amqp10Consumer class
         self.emit_amqp10_consumer_code();
@@ -2886,6 +2997,43 @@ impl CodeGen {
     /// same as any other port-already-in-use situation). No-op without a
     /// user `main` shape issue; skipped entirely once a legacy top-level
     /// `fn main()` already claims `has_main`.
+    /// Zero-initializes every String-typed field on a freshly `tinox_alloc`ed
+    /// instance to a real, valid empty-string object instead of leaving it a
+    /// raw null pointer. `tinox_alloc` is a plain `GC_malloc`, which zeroes
+    /// memory -- a valid default for a scalar field (0/false), but NOT for a
+    /// String field: its "zero value" is a null `i8*`, and any later read of
+    /// it (concatenation, `.len()`, ...) dereferences that null pointer and
+    /// segfaults instead of behaving like an empty string. Found live while
+    /// building the JsComponent demo (a `var label: String;` field read on
+    /// the very first @View render, before ever being assigned, crashed
+    /// inside `tinox_string_concat` with SIGSEGV) -- this only matters for
+    /// the four call sites that allocate a fresh per-connection/per-consumer
+    /// instance directly via `tinox_alloc` (@WebsocketEndpoint, @TinoxUIApp,
+    /// @Amqp10Consumer, @Amqp091Consumer); every other path to a new
+    /// instance goes through a `ClassName { field: value, ... }` struct
+    /// literal, which the typechecker already requires to give every field
+    /// an explicit value, so this gap can't occur there.
+    fn emit_string_field_defaults(&mut self, class_name: &str, inst_reg: &str) {
+        let fields = match self.struct_layouts.get(class_name) {
+            Some(f) => f.clone(),
+            None => return,
+        };
+        let field_types = self.struct_field_llvm_types.get(class_name).cloned().unwrap_or_default();
+        let string_fields: Vec<usize> = fields.iter().enumerate()
+            .filter(|(_, name)| field_types.get(name.as_str()).map(|t| t == "i8*").unwrap_or(false))
+            .map(|(i, _)| i)
+            .collect();
+        if string_fields.is_empty() {
+            return;
+        }
+        let empty_str_ptr = self.emit_lambda_string_literal("");
+        for idx in string_fields {
+            let field_ptr = self.temp();
+            writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i8* {empty_str_ptr}, i8** {field_ptr}").unwrap();
+        }
+    }
+
     fn emit_ws_code(&mut self) {
         if self.ws_endpoints.is_empty() || self.has_main {
             return;
@@ -2908,11 +3056,28 @@ impl CodeGen {
                 .or_else(|| std::env::var("TINOX_PORT").ok().and_then(|s| s.parse::<i64>().ok()))
                 .unwrap_or(8080);
 
-            // The accept/message loop lives in __tinox_run_ws_<idx>(), a
-            // plain callee (not @tinox_main directly), so
-            // emit_tinox_main_bootstrap can run it on its own thread instead
-            // of tail-calling it inline.
+            // The accept loop lives in __tinox_run_ws_<idx>(), a plain callee
+            // (not @tinox_main directly), so emit_tinox_main_bootstrap can
+            // run it on its own thread instead of tail-calling it inline.
+            //
+            // Each accepted connection is handed off to its OWN detached
+            // worker thread (__tinox_ws_conn_worker_<idx>, spawned via
+            // tinox_task_spawn_detached) instead of being handled inline —
+            // accept_loop immediately goes back to WsServer_accept without
+            // waiting for that connection to finish. The original version of
+            // this function ran conn_open/msg_loop/conn_end INLINE in the
+            // accept loop, which meant WsServer_accept was never called
+            // again until the current connection closed: a second client
+            // could not connect at all while the first was still open. Found
+            // while designing a multi-client server-driven UI framework on
+            // top of this — a single-client-at-a-time WS server is fine for
+            // a demo/echo endpoint (the only thing that ever exercised this
+            // path before) but not for anything meant to serve real
+            // concurrent users.
             let run_fn = format!("__tinox_run_ws_{idx}");
+            let worker_fn = format!("__tinox_ws_conn_worker_{idx}");
+            let worker_wrapper = format!("__tinox_ws_worker_wrapper_{idx}");
+
             writeln!(&mut self.lambda_ir, "define i64 @{run_fn}() {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %srv = call i64 @WsServer_listen(i64* null, i64 {port})").unwrap();
@@ -2925,11 +3090,34 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %conn_open").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %dispatch").unwrap();
 
-            writeln!(&mut self.lambda_ir, "conn_open:").unwrap();
+            // 2-slot args array [worker_fn_ptr, conn] -- same convention
+            // emit_spawn_wrapper's own caller (ExprKind::Spawn) already uses
+            // for passing arguments through tinox_task_spawn's fixed
+            // i8*(i8*) trampoline signature.
+            writeln!(&mut self.lambda_ir, "dispatch:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %args_raw = call i8* @tinox_alloc(i64 16)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %args_ap = bitcast i8* %args_raw to [2 x i64]*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %fp_i64 = ptrtoint i64 (i64)* @{worker_fn} to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  %fp_slot = getelementptr [2 x i64], [2 x i64]* %args_ap, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %fp_i64, i64* %fp_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_slot = getelementptr [2 x i64], [2 x i64]* %args_ap, i64 0, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %conn, i64* %conn_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_task_spawn_detached(i8* (i8*)* @{worker_wrapper}, i8* %args_raw)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            // Former conn_open/msg_loop/conn_end body, now its own real,
+            // separately-spawnable function taking the connection handle as
+            // its one argument.
+            writeln!(&mut self.lambda_ir, "define i64 @{worker_fn}(i64 %conn) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_string_field_defaults(&ep.class_name, "%inst");
             if let Some(ref on_open) = ep.on_open {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_open).unwrap();
             }
@@ -2957,13 +3145,434 @@ impl CodeGen {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_close).unwrap();
             }
             writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
+
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            self.emit_spawn_wrapper(&worker_wrapper, 2, "i64", &["i64".to_string()]);
+
+            self.background_run_fns.push(run_fn);
+            self.startup_endpoints.push(("WebSocket".to_string(), format!(":{port}")));
+        }
+    }
+
+    /// Generates the auto-run HTTP shell/client-JS server + WebSocket
+    /// accept loop for a `@TinoxUIApp` class (issue #215, Phase 4) --
+    /// annotation sugar over exactly the hand-wired shape
+    /// `examples/tinox_ui_hello/HelloApp.tnx` + `Main.tnx` already use: an
+    /// `HttpServer` on `httpPort` serving `"/"` (`Assets::shellHtml`) and
+    /// `"/ui.js"` (`Assets::clientJs`), and a WebSocket accept loop on
+    /// `wsPort` that calls the class's own `@View` method to build the
+    /// initial tree, then on every incoming event rebuilds via `@View`
+    /// again and sends only what changed.
+    ///
+    /// Diff-based (v2) rendering (issue #225) -- `TinoxUIRuntime::
+    /// assignIdsOnly`/`diff`/`collectHandlers`/`sendPatch`, reusing a
+    /// component's old id when it stays at the same tree position across
+    /// renders -- instead of Phase 1's full-tree resend (`buildHandlers`+
+    /// `sendUpdate`, which reassigned every id fresh on every single
+    /// render). Ports `examples/tinox_ui_diff_counter/DiffCounterApp.tnx`'s
+    /// hand-wired sequence into generated IR; that example (and its own
+    /// compiled `.ll`) is the ground truth this was written against for
+    /// the exact `tinox_array_new`/`tinox_array_get`/`tinox_map_create`
+    /// calling convention a List<Int64>/List<TinoxUIPatchOp> literal and a
+    /// fresh handlers Map compile to.
+    ///
+    /// An EARLIER version of this comment claimed diffing needed "an
+    /// app-owned persistent id-counter field this sugar has no class
+    /// layout to put one on" and stayed a manual opt-in for that reason.
+    /// That turned out not to hold up: the per-connection state below
+    /// (`root_slot`, `handlers_slot`, and now `idcounter_slot`) already
+    /// lives in plain local `alloca`s inside `worker_fn` -- which is fine,
+    /// because `worker_fn` is called ONCE per accepted connection and the
+    /// whole `tui_msg_loop` is just basic blocks branching within that one
+    /// invocation, not a fresh call per message. A local alloca survives
+    /// exactly as long as the connection does, which is exactly the
+    /// lifetime an id counter needs -- no class field required.
+    ///
+    /// Modeled directly on `emit_ws_code` (identical accept-loop /
+    /// detached-per-connection-worker structure, reusing
+    /// `tinox_task_spawn_detached` + `emit_spawn_wrapper`) plus
+    /// `emit_route_code`'s shim-function convention for the two GET
+    /// routes -- calling already-compiled `tinox.core.ui`/`http_server`
+    /// methods by their mangled name (`TinoxUIRuntime_diff`,
+    /// `HttpResponse_html`, ...) rather than re-implementing any of their
+    /// logic here, the same "call the real compiled function directly"
+    /// technique `emit_ws_code` already uses for
+    /// `Ws_readMessage`/`Ws_text`/`Ws_close`.
+    fn emit_tinoxui_code(&mut self) {
+        if self.tinoxui_apps.is_empty() || self.has_main {
+            return;
+        }
+
+        if !self.class_named_types.contains("Component") {
+            panic!("@TinoxUIApp requires `import tinox.core.ui;` (Component type not found)");
+        }
+        if !self.class_named_types.contains("WsFrame") {
+            panic!("@TinoxUIApp requires `import tinox.core.websocket;` (WsFrame type not found)");
+        }
+        if !self.class_named_types.contains("HttpResponse") {
+            panic!("@TinoxUIApp requires `import tinox.core.http_server;` (HttpResponse type not found)");
+        }
+
+        // tinox_HttpServer_get/_listen are NOT safe to unconditionally
+        // re-declare (opt hard-errors "invalid redefinition" on a second
+        // `declare` for an already-declared symbol, even with an
+        // identical signature) -- same guard emit_devui_code already uses
+        // to avoid colliding with emit_route_code's own copy.
+        // tinox_HttpServer_new has no return-type overlap risk here since
+        // every declarer uses the identical `i64* (i64)` signature, but is
+        // guarded the same way for consistency/symmetry.
+        let declare_http_fns = self.route_entries.is_empty() || self.http3_rest_controller.is_some();
+        if declare_http_fns {
+            writeln!(&mut self.lambda_ir, "declare i64* @tinox_HttpServer_new(i64)").unwrap();
+            writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_get(i64*, i8*, i64)").unwrap();
+            writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_listen(i64*)").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+        }
+
+        let apps = self.tinoxui_apps.clone();
+        for (idx, app) in apps.iter().enumerate() {
+            let inst_size = self.struct_layouts.get(app.class_name.as_str())
+                .map(|f| (f.len().max(1) * 8) as i64)
+                .unwrap_or(8);
+
+            // ── @Route dispatch ──────────────────────────────────────────
+            // Only generated for an app that actually uses @Route -- one
+            // that doesn't gets byte-for-byte the same codegen as before
+            // @Route existed, both here and at the two call sites below
+            // (route_dispatch_fn stays None, so they keep calling
+            // `@{class}_{view_method}` directly).
+            //
+            // `currentRoute: String` is a required-by-convention field (see
+            // annotations.rs's "Route" registry entry): the compiler seeds
+            // it from the browser's initial request path right after the
+            // WS handshake (below), and the app's own navigation (e.g. a
+            // Component::link's onNavigate handler, exactly like every
+            // other pre-@Route routed app already assigns its own
+            // `currentView`-style field) is expected to assign it on every
+            // subsequent in-app navigation -- this dispatcher just re-reads
+            // it fresh on every render and picks the matching @Route
+            // method, falling back to the plain @View method when nothing
+            // matches (unmatched route / true 404 case).
+            let route_dispatch_fn: Option<String> = if !app.route_entries.is_empty() {
+                // A snapshot (not a closure over `self`) -- the loop below
+                // needs to keep calling `self.emit_lambda_string_literal`/
+                // `self.temp()` (both `&mut self`) while also checking
+                // field types, which a closure borrowing `self` can't
+                // coexist with.
+                let app_field_llvm_types: HashMap<String, String> = self.struct_field_llvm_types
+                    .get(app.class_name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                let field_is_string = |field: &str| -> bool {
+                    app_field_llvm_types.get(field).map(|t| t == "i8*").unwrap_or(false)
+                };
+                let route_field_idx = self.struct_layouts.get(app.class_name.as_str())
+                    .and_then(|f| f.iter().position(|n| n == "currentRoute"))
+                    .unwrap_or_else(|| panic!(
+                        "@TinoxUIApp class '{}' uses @Route but declares no `var currentRoute: String;` field -- required so the compiler can seed it from the browser's initial request path and re-dispatch off its current value on every render",
+                        app.class_name
+                    ));
+                if !field_is_string("currentRoute") {
+                    panic!("@TinoxUIApp class '{}': `currentRoute` must be declared `String` (it's the field @Route dispatch reads/writes)", app.class_name);
+                }
+                if !self.class_named_types.contains("RouteMatcher") {
+                    panic!("@Route requires tinox.core.http_server's RouteMatcher class -- should already be available via @TinoxUIApp's own required `import tinox.core.http_server;`");
+                }
+
+                let dispatch_fn = format!("__tinox_tinoxui_dispatch_{idx}");
+                writeln!(&mut self.lambda_ir, "define i64* @{dispatch_fn}(i64* %inst) {{").unwrap();
+                writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+                writeln!(&mut self.lambda_ir, "  %route_field = getelementptr %class.{}, ptr %inst, i32 0, i32 {}", app.class_name, route_field_idx).unwrap();
+                writeln!(&mut self.lambda_ir, "  %path = load i8*, i8** %route_field").unwrap();
+                writeln!(&mut self.lambda_ir, "  br label %route_check0").unwrap();
+
+                for (ridx, (pattern, method)) in app.route_entries.iter().enumerate() {
+                    writeln!(&mut self.lambda_ir, "route_check{ridx}:").unwrap();
+                    let pat_ptr = self.emit_lambda_string_literal(pattern);
+                    let m = self.temp();
+                    writeln!(&mut self.lambda_ir, "  {m} = call i1 @RouteMatcher_matches(i64* null, i8* {pat_ptr}, i8* %path)").unwrap();
+                    writeln!(&mut self.lambda_ir, "  br i1 {m}, label %route_hit{ridx}, label %route_check{}", ridx + 1).unwrap();
+
+                    writeln!(&mut self.lambda_ir, "route_hit{ridx}:").unwrap();
+                    for seg in pattern.split('/') {
+                        if let Some(name) = seg.strip_prefix(':') {
+                            if !name.is_empty() {
+                                if let Some(field_idx) = self.struct_layouts.get(app.class_name.as_str()).and_then(|f| f.iter().position(|n| n == name)) {
+                                    if field_is_string(name) {
+                                        let name_ptr = self.emit_lambda_string_literal(name);
+                                        let pv = self.temp();
+                                        writeln!(&mut self.lambda_ir, "  {pv} = call i8* @RouteMatcher_param(i64* null, i8* {pat_ptr}, i8* %path, i8* {name_ptr})").unwrap();
+                                        let ff = self.temp();
+                                        writeln!(&mut self.lambda_ir, "  {ff} = getelementptr %class.{}, ptr %inst, i32 0, i32 {}", app.class_name, field_idx).unwrap();
+                                        writeln!(&mut self.lambda_ir, "  store i8* {pv}, i8** {ff}").unwrap();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let r = self.temp();
+                    writeln!(&mut self.lambda_ir, "  {r} = call i64* @{}_{}(i64* %inst)", app.class_name, method).unwrap();
+                    writeln!(&mut self.lambda_ir, "  ret i64* {r}").unwrap();
+                }
+
+                writeln!(&mut self.lambda_ir, "route_check{}:", app.route_entries.len()).unwrap();
+                let rf = self.temp();
+                writeln!(&mut self.lambda_ir, "  {rf} = call i64* @{}_{}(i64* %inst)", app.class_name, app.view_method).unwrap();
+                writeln!(&mut self.lambda_ir, "  ret i64* {rf}").unwrap();
+                writeln!(&mut self.lambda_ir, "}}").unwrap();
+                writeln!(&mut self.lambda_ir).unwrap();
+
+                Some(dispatch_fn)
+            } else {
+                None
+            };
+
+            // ── HTTP shell server: "/" (shell HTML) + "/ui.js" (client JS) ──
+            let shell_shim = format!("__tinoxui_shell_shim_{idx}");
+            let js_shim = format!("__tinoxui_js_shim_{idx}");
+            let run_http_fn = format!("__tinox_run_tinoxui_http_{idx}");
+
+            // HttpContext layout: [request: i64*, response: i64*] -- offset
+            // 1 is the response pointer, same convention emit_route_code's
+            // own shim bodies use (see its own doc comment on this layout).
+            writeln!(&mut self.lambda_ir, "define void @{shell_shim}(i64 %ctx_i64) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_i64 = load i64, i64* %resp_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_ptr = inttoptr i64 %resp_i64 to i64*").unwrap();
+            // Assets::shellHtml now takes only the WS PORT (Int64), not a
+            // full "ws://host:port/path" string -- the client builds the
+            // real URL itself from its own window.location.hostname at
+            // connect time (see Assets.tnx's own doc comment on why a
+            // baked-in "localhost" was a real bug).
+            writeln!(&mut self.lambda_ir, "  %html = call i8* @Assets_shellHtml(i64 {})", app.ws_port).unwrap();
+            writeln!(&mut self.lambda_ir, "  %shell_r = call i64* @HttpResponse_html(i64* %resp_ptr, i8* %html)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            writeln!(&mut self.lambda_ir, "define void @{js_shim}(i64 %ctx_i64) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_field = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_i64 = load i64, i64* %resp_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %resp_ptr = inttoptr i64 %resp_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %js = call i8* @Assets_clientJs()").unwrap();
+            let ct_ptr = self.emit_lambda_string_literal("application/javascript");
+            writeln!(&mut self.lambda_ir, "  %js_r = call i64* @HttpResponse_content(i64* %resp_ptr, i8* %js, i8* {ct_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            writeln!(&mut self.lambda_ir, "define i64 @{run_http_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %server = call i64* @tinox_HttpServer_new(i64 {})", app.http_port).unwrap();
+            let root_path_ptr = self.emit_lambda_string_literal("/");
+            writeln!(&mut self.lambda_ir, "  %shell_fn = ptrtoint void (i64)* @{shell_shim} to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_get(i64* %server, i8* {root_path_ptr}, i64 %shell_fn)").unwrap();
+            let js_path_ptr = self.emit_lambda_string_literal("/ui.js");
+            writeln!(&mut self.lambda_ir, "  %js_fn = ptrtoint void (i64)* @{js_shim} to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_get(i64* %server, i8* {js_path_ptr}, i64 %js_fn)").unwrap();
+            // Also serve the shell at every @Route path (literal or
+            // `:param`, the underlying route matcher already handles both)
+            // so a hard reload / directly-typed URL / shared deep link
+            // doesn't 404 -- the shell itself is identical regardless of
+            // path, @Route dispatch only kicks in once the WS connects and
+            // sends its initial path below.
+            for (pattern, _) in app.route_entries.iter() {
+                if pattern != "/" {
+                    let route_path_ptr = self.emit_lambda_string_literal(pattern);
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_get(i64* %server, i8* {route_path_ptr}, i64 %shell_fn)").unwrap();
+                }
+            }
+            writeln!(&mut self.lambda_ir, "  call void @tinox_HttpServer_listen(i64* %server)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            self.background_run_fns.push(run_http_fn);
+            self.startup_endpoints.push(("HTTP".to_string(), format!(":{}", app.http_port)));
+
+            // ── WebSocket accept loop -- identical shape to emit_ws_code's
+            // own accept_loop/dispatch/worker_fn/msg_loop, just driving
+            // @View instead of @OnOpen/@OnMessage/@OnClose. ──────────────
+            let run_ws_fn = format!("__tinox_run_tinoxui_ws_{idx}");
+            let worker_fn = format!("__tinox_tinoxui_conn_worker_{idx}");
+            let worker_wrapper = format!("__tinox_tinoxui_worker_wrapper_{idx}");
+
+            writeln!(&mut self.lambda_ir, "define i64 @{run_ws_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %srv = call i64 @WsServer_listen(i64* null, i64 {})", app.ws_port).unwrap();
+            writeln!(&mut self.lambda_ir, "  %srv_bad = icmp slt i64 %srv, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %srv_bad, label %bind_fail, label %accept_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "bind_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
+
+            writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %tui_dispatch").unwrap();
+
+            writeln!(&mut self.lambda_ir, "tui_dispatch:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %args_raw = call i8* @tinox_alloc(i64 16)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %args_ap = bitcast i8* %args_raw to [2 x i64]*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %fp_i64 = ptrtoint i64 (i64)* @{worker_fn} to i64").unwrap();
+            writeln!(&mut self.lambda_ir, "  %fp_slot = getelementptr [2 x i64], [2 x i64]* %args_ap, i64 0, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %fp_i64, i64* %fp_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %conn_slot = getelementptr [2 x i64], [2 x i64]* %args_ap, i64 0, i64 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %conn, i64* %conn_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_task_spawn_detached(i8* (i8*)* @{worker_wrapper}, i8* %args_raw)").unwrap();
             writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
 
-            self.background_run_fns.push(run_fn);
-            self.startup_endpoints.push(("WebSocket".to_string(), format!(":{port}")));
+            writeln!(&mut self.lambda_ir, "define i64 @{worker_fn}(i64 %conn) {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_string_field_defaults(&app.class_name, "%inst");
+            // The client's very first WS frame is always its
+            // `window.location.pathname` at connect time (Assets.tnx's
+            // `connect()`: `ws.send(...)` on `ws.onopen`, before anything
+            // else) -- read and discard it here, unconditionally, for
+            // EVERY @TinoxUIApp (routed or not), so a plain (non-routed)
+            // app's msg_loop below never misreads it as a stray client
+            // event. A routed app additionally stores it into
+            // `currentRoute` before the very first render, so a hard
+            // reload/deep link lands on the right view immediately instead
+            // of always starting at the fallback @View.
+            writeln!(&mut self.lambda_ir, "  %init_f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %init_opcode_field = getelementptr %class.WsFrame, ptr %init_f, i32 0, i32 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %init_opcode = load i64, i64* %init_opcode_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %init_is_text = icmp eq i64 %init_opcode, 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %init_is_text, label %tui_init_path, label %tui_init_done").unwrap();
+            writeln!(&mut self.lambda_ir, "tui_init_path:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %init_path = call i8* @Ws_text(i64* null, i64* %init_f)").unwrap();
+            if let Some(route_field_idx) = self.struct_layouts.get(app.class_name.as_str()).and_then(|f| f.iter().position(|n| n == "currentRoute")) {
+                if !app.route_entries.is_empty() {
+                    writeln!(&mut self.lambda_ir, "  %init_route_field = getelementptr %class.{}, ptr %inst, i32 0, i32 {}", app.class_name, route_field_idx).unwrap();
+                    writeln!(&mut self.lambda_ir, "  store i8* %init_path, i8** %init_route_field").unwrap();
+                }
+            }
+            writeln!(&mut self.lambda_ir, "  br label %tui_init_done").unwrap();
+            writeln!(&mut self.lambda_ir, "tui_init_done:").unwrap();
+            let root_builder = route_dispatch_fn.clone().unwrap_or_else(|| format!("{}_{}", app.class_name, app.view_method));
+            // Diff-based (v2) rendering instead of Phase 1's full-tree
+            // resend (issue #225): ids stay stable across renders for a
+            // component that keeps the same tree position, by reusing
+            // `TinoxUIRuntime::assignIdsOnly`/`diff`/`collectHandlers`/
+            // `sendPatch` -- the exact sequence `examples/
+            // tinox_ui_diff_counter/DiffCounterApp.tnx` already
+            // demonstrates hand-wired, just generated here instead. The
+            // per-connection id counter (`idcounter_slot`) needs to
+            // persist across the whole connection the same way
+            // `root_slot`/`handlers_slot` already do -- and it can: this
+            // whole message loop is basic blocks within ONE invocation of
+            // `worker_fn` (one call per accepted connection, not one per
+            // message), so a plain `alloca` here survives exactly as long
+            // as `root_slot` already proves it does. (An earlier version of
+            // this doc comment claimed diffing needed "an app-owned
+            // persistent id-counter field this sugar has no class layout
+            // to put one on" -- that reasoning didn't hold up once traced
+            // through: the counter is per-CONNECTION state, not
+            // per-instance-forever state, so a local alloca alongside
+            // root_slot/handlers_slot is exactly the right lifetime, no
+            // class field needed.)
+            writeln!(&mut self.lambda_ir, "  %root0 = call i64* @{root_builder}(i64* %inst)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %root_slot = alloca i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64* %root0, i64** %root_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idcounter_slot = alloca i64").unwrap();
+            // idc0 = [0] -- a fresh 1-element List<Int64> literal, same
+            // `tinox_array_new`+raw-element-store shape the normal Tinox
+            // codegen path emits for any `[x]` list literal (verified by
+            // compiling DiffCounterApp.tnx and reading its own IR for
+            // `let idc: List<Int64> = [this.idCounter];`).
+            writeln!(&mut self.lambda_ir, "  %idc0_arr = call i64* @tinox_array_new(i64 1, i64 0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_data_field = getelementptr i64, ptr %idc0_arr, i64 2").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_data_i64 = load i64, i64* %idc0_data_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_data_ptr = inttoptr i64 %idc0_data_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_elem0 = getelementptr i64, ptr %idc0_data_ptr, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 0, i64* %idc0_elem0").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_assignIdsOnly(i64* %root0, i64* %idc0_arr)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc0_new = call i64 @tinox_array_get(i64* %idc0_arr, i64 0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %idc0_new, i64* %idcounter_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers0 = call i8* @tinox_map_create()").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers_slot = alloca i8*").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i8* %handlers0, i8** %handlers_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_collectHandlers(i64* %root0, i8* %handlers0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_sendInit(i64 %conn, i64* %root0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tui_msg_loop").unwrap();
+
+            // opcode 1 (text) -> dispatch + rebuild + diff + patch (if
+            // anything changed); anything else (binary, close, EOF,
+            // protocol error -- Ping/Pong are already auto-handled inside
+            // Ws::readMessage) ends the connection, same convention
+            // emit_ws_code's own msg_loop uses.
+            writeln!(&mut self.lambda_ir, "tui_msg_loop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %opcode_ptr = getelementptr %class.WsFrame, ptr %f, i32 0, i32 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  %opcode = load i64, i64* %opcode_ptr").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_text = icmp eq i64 %opcode, 1").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_text, label %tui_handle_text, label %tui_conn_end").unwrap();
+
+            writeln!(&mut self.lambda_ir, "tui_handle_text:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers_cur = load i8*, i8** %handlers_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_dispatchEvent(i8* %handlers_cur, i8* %msg)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %root_old = load i64*, i64** %root_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %root_new = call i64* @{root_builder}(i64* %inst)").unwrap();
+            // ops = [] -- an empty List<TinoxUIPatchOp>, diff() appends to
+            // it in place.
+            writeln!(&mut self.lambda_ir, "  %ops_arr = call i64* @tinox_array_new(i64 0, i64 0)").unwrap();
+            // idc = [idcounter_slot] -- same 1-element-literal shape as
+            // idc0 above, seeded from the counter's current value instead
+            // of a literal 0.
+            writeln!(&mut self.lambda_ir, "  %idcounter_cur = load i64, i64* %idcounter_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_arr = call i64* @tinox_array_new(i64 1, i64 0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_data_field = getelementptr i64, ptr %idc_arr, i64 2").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_data_i64 = load i64, i64* %idc_data_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_data_ptr = inttoptr i64 %idc_data_i64 to i64*").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idc_elem0 = getelementptr i64, ptr %idc_data_ptr, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %idcounter_cur, i64* %idc_elem0").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_diff(i64* %root_old, i64* %root_new, i64* %idc_arr, i64* %ops_arr)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %idcounter_new = call i64 @tinox_array_get(i64* %idc_arr, i64 0)").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64 %idcounter_new, i64* %idcounter_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i64* %root_new, i64** %root_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handlers_new = call i8* @tinox_map_create()").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i8* %handlers_new, i8** %handlers_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_collectHandlers(i64* %root_new, i8* %handlers_new)").unwrap();
+            // Only send a patch message at all if diff() actually produced
+            // ops -- an event whose handler didn't change anything visible
+            // (rare, but e.g. a no-op toggle) shouldn't push an empty
+            // patch over the wire. `ops_arr`'s length lives at raw offset
+            // 0 of the array header, same convention DiffCounterApp's own
+            // `ops.len() > 0` compiles to.
+            writeln!(&mut self.lambda_ir, "  %ops_len_field = getelementptr i64, ptr %ops_arr, i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ops_len = load i64, i64* %ops_len_field").unwrap();
+            writeln!(&mut self.lambda_ir, "  %ops_nonempty = icmp sgt i64 %ops_len, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %ops_nonempty, label %tui_send_patch, label %tui_msg_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "tui_send_patch:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @TinoxUIRuntime_sendPatch(i64 %conn, i64* %ops_arr)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tui_msg_loop").unwrap();
+
+            writeln!(&mut self.lambda_ir, "tui_conn_end:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
+
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+
+            self.emit_spawn_wrapper(&worker_wrapper, 2, "i64", &["i64".to_string()]);
+
+            self.background_run_fns.push(run_ws_fn);
+            self.startup_endpoints.push(("WebSocket".to_string(), format!(":{}", app.ws_port)));
         }
     }
 
@@ -3057,6 +3666,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_string_field_defaults(&c.class_name, "%inst");
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
@@ -3171,6 +3781,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_string_field_defaults(&c.class_name, "%inst");
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
@@ -4405,6 +5016,8 @@ impl CodeGen {
             in_defer_exec: false,
             ret_type: ret_type.clone(),
             timed_metric: None,
+            transactional_commit: None,
+            finally_targets: Vec::new(),
         };
 
         for (i, p) in f.params.iter().enumerate() {
@@ -4523,6 +5136,8 @@ impl CodeGen {
             in_defer_exec: false,
             ret_type: ret_type.clone(),
             timed_metric: None,
+            transactional_commit: None,
+            finally_targets: Vec::new(),
         };
 
         let mut params_str = if method.static_ {
@@ -4594,7 +5209,11 @@ impl CodeGen {
             ctx.timed_metric = Some((label.clone(), start_reg));
         }
 
-        self.gen_stmt_body(&method.body, &mut ctx)?;
+        if self.transactional_methods.contains(&(class_name.to_string(), method.name.clone())) {
+            self.gen_transactional_wrapper(method, &mut ctx)?;
+        } else {
+            self.gen_stmt_body(&method.body, &mut ctx)?;
+        }
 
         let has_terminator = self.ir.lines().last().is_some_and(|l| {
             let t = l.trim();
@@ -5175,6 +5794,7 @@ impl CodeGen {
                 Some(m) => m.clone(),
                 None => continue,
             };
+            let field_class_types = self.struct_field_class_types.get(&class_name).cloned().unwrap_or_default();
 
             let data_fields: Vec<(String, usize, String)> = layout.iter()
                 .enumerate()
@@ -5206,7 +5826,30 @@ impl CodeGen {
                 writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %self, i64 {struct_idx}").unwrap();
                 writeln!(&mut self.ir, "  {raw}  = load i64, i64* {fptr}").unwrap();
 
+                let marker = field_class_types.get(field_name).cloned();
+
                 match llvm_ty.as_str() {
+                    // A Map<String, String> field (e.g. every Kubernetes-style
+                    // resource's labels/annotations) is ALSO "i8*" at this flat
+                    // level -- indistinguishable from a plain String field
+                    // without the marker, and previously always went through
+                    // jsonBuilderAddString (reading the TinoxMap* pointer as if
+                    // it were a C string: silent garbage, not a crash). Any
+                    // other Map<String, V> value type is out of scope here (no
+                    // current caller needs it) and falls back to a placeholder
+                    // rather than risking the same silent misread.
+                    "i8*" if marker.as_deref().map(|m| m.starts_with("Map:")).unwrap_or(false) => {
+                        if marker.as_deref() == Some("Map:String") {
+                            let map_ptr = self.temp();
+                            writeln!(&mut self.ir, "  {map_ptr} = inttoptr i64 {raw} to i8*").unwrap();
+                            let json = self.temp();
+                            writeln!(&mut self.ir, "  {json} = call i8* @tinox_json_string_map_serialize(i8* {map_ptr})").unwrap();
+                            writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                        } else {
+                            let placeholder = self.intern_json_placeholder_string();
+                            writeln!(&mut self.ir, "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {placeholder})").unwrap();
+                        }
+                    }
                     "i8*" => {
                         let str_val = self.temp();
                         writeln!(&mut self.ir, "  {str_val} = inttoptr i64 {raw} to i8*").unwrap();
@@ -5224,10 +5867,55 @@ impl CodeGen {
                         writeln!(&mut self.ir, "  {extended}  = zext i1 {truncated} to i32").unwrap();
                         writeln!(&mut self.ir, "  call void @jsonBuilderAddBool(i8* {builder}, i8* {key_ptr}, i32 {extended})").unwrap();
                     }
-                    "i64*" => {
+                    // "i64*" covers List<Int> (marker "Array"), List<String>
+                    // ("Array:String"), List<SomeClass> ("List:SomeClass") AND
+                    // a directly-nested @JsonSerializable class field (bare
+                    // class-name marker, e.g. Pod.metadata: ObjectMeta) --
+                    // all four are pointer-shaped and otherwise
+                    // indistinguishable, and previously ALL went through
+                    // jsonBuilderAddIntList regardless of which one they
+                    // actually were (issue found while modeling Kubernetes
+                    // resources: every nested spec/status/metadata field, and
+                    // every List<Container>-shaped field, serialized as
+                    // garbage int arrays).
+                    "i64*" if marker.as_deref() == Some("Array:String") => {
+                        let arr_ptr = self.temp();
+                        writeln!(&mut self.ir, "  {arr_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                        let json = self.temp();
+                        writeln!(&mut self.ir, "  {json} = call i8* @tinox_json_string_list_serialize(i64* {arr_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                    }
+                    "i64*" if marker.as_deref().and_then(|m| m.strip_prefix("List:"))
+                        .map(|cls| self.json_serializable_classes.iter().any(|c| c == cls))
+                        .unwrap_or(false) =>
+                    {
+                        let cls = marker.as_deref().and_then(|m| m.strip_prefix("List:")).unwrap().to_string();
+                        let list_ptr = self.temp();
+                        writeln!(&mut self.ir, "  {list_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                        let json = self.temp();
+                        writeln!(&mut self.ir, "  {json} = call i8* @tinox_json_list_serialize(i64* {list_ptr}, ptr @{cls}_toJson)").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                    }
+                    "i64*" if marker.as_deref()
+                        .map(|m| !m.starts_with("Array") && !m.starts_with("List:") && !m.starts_with("Map")
+                            && self.json_serializable_classes.iter().any(|c| c == m))
+                        .unwrap_or(false) =>
+                    {
+                        let cls = marker.clone().unwrap();
+                        let obj_ptr = self.temp();
+                        writeln!(&mut self.ir, "  {obj_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                        let json = self.temp();
+                        writeln!(&mut self.ir, "  {json} = call i8* @{cls}_toJson(i64* {obj_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                    }
+                    "i64*" if marker.as_deref() == Some("Array") || marker.is_none() => {
                         let arr_ptr = self.temp();
                         writeln!(&mut self.ir, "  {arr_ptr} = inttoptr i64 {raw} to i64*").unwrap();
                         writeln!(&mut self.ir, "  call void @jsonBuilderAddIntList(i8* {builder}, i8* {key_ptr}, i64* {arr_ptr})").unwrap();
+                    }
+                    "i64*" => {
+                        let placeholder = self.intern_json_placeholder_string();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {placeholder})").unwrap();
                     }
                     _ => {
                         // i64, i32, etc.
@@ -5244,6 +5932,22 @@ impl CodeGen {
         }
     }
 
+    /// Interns `"<unsupported field type>"` as a global string constant in
+    /// `self.ir` and returns a register holding a pointer to it -- the same
+    /// placeholder text/spirit `emit_devui_component_state_handlers` already
+    /// uses for a field kind it can't represent, reused here for
+    /// `_toJson`'s own narrower unsupported cases (Map<String, non-String>,
+    /// a pointer-shaped field with no recognizable marker at all).
+    fn intern_json_placeholder_string(&mut self) -> String {
+        let text = "<unsupported field type>";
+        let lbl = format!("str{}", self.strings.len());
+        self.strings.insert(lbl.clone(), text.to_string());
+        let len = text.len() + 1;
+        let ptr = self.temp();
+        writeln!(&mut self.ir, "  {ptr} = getelementptr [{len} x i8], [{len} x i8]* @{lbl}, i64 0, i64 0").unwrap();
+        ptr
+    }
+
     /// Emit `ClassName_fromJson(i64* %json_val) -> i64*` for every @JsonSerializable class.
     fn emit_json_deserialize_code(&mut self) {
         let class_names: Vec<String> = self.json_serializable_classes.clone();
@@ -5257,6 +5961,7 @@ impl CodeGen {
                 Some(m) => m.clone(),
                 None => continue,
             };
+            let field_class_types = self.struct_field_class_types.get(&class_name).cloned().unwrap_or_default();
 
             let n_slots  = layout.len().max(1);
             let byte_size = n_slots * 8;
@@ -5303,44 +6008,99 @@ impl CodeGen {
                 let fptr = self.temp();
                 writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {self_}, i64 {struct_idx}").unwrap();
 
-                let store_val = match llvm_ty.as_str() {
+                let marker = field_class_types.get(field_name).cloned();
+                let is_serializable_class = |m: &str| self.json_serializable_classes.iter().any(|c| c == m);
+
+                // Same four-way pointer-shaped split as emit_json_serialize_code's
+                // toJson (see the comment there for why "i64*"/"i8*" alone can't
+                // tell these apart) -- mirrored here field-for-field so a class's
+                // toJson/fromJson stay round-trip-consistent.
+                let store_val: Option<String> = match llvm_ty.as_str() {
+                    "i8*" if marker.as_deref() == Some("Map:String") => {
+                        let map_ptr = self.temp();
+                        let as_i64  = self.temp();
+                        writeln!(&mut self.ir, "  {map_ptr} = call i8* @jsonGetStringMapField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i8* {map_ptr} to i64").unwrap();
+                        Some(as_i64)
+                    }
+                    "i8*" if marker.as_deref().map(|m| m.starts_with("Map:")).unwrap_or(false) => None,
                     "i8*" => {
                         let str_val = self.temp();
                         let as_i64  = self.temp();
                         writeln!(&mut self.ir, "  {str_val} = call i8* @jsonGetStringField(i64* %json_val, i8* {key_ptr})").unwrap();
                         writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i8* {str_val} to i64").unwrap();
-                        as_i64
+                        Some(as_i64)
                     }
                     "double" | "float" => {
                         let dbl    = self.temp();
                         let as_i64 = self.temp();
                         writeln!(&mut self.ir, "  {dbl}    = call double @jsonGetFloatField(i64* %json_val, i8* {key_ptr})").unwrap();
                         writeln!(&mut self.ir, "  {as_i64} = bitcast double {dbl} to i64").unwrap();
-                        as_i64
+                        Some(as_i64)
                     }
                     "i1" => {
                         let b32    = self.temp();
                         let as_i64 = self.temp();
                         writeln!(&mut self.ir, "  {b32}    = call i32 @jsonGetBoolField(i64* %json_val, i8* {key_ptr})").unwrap();
                         writeln!(&mut self.ir, "  {as_i64} = zext i32 {b32} to i64").unwrap();
-                        as_i64
+                        Some(as_i64)
                     }
-                    "i64*" => {
+                    "i64*" if marker.as_deref() == Some("Array:String") => {
+                        let arr_ptr = self.temp();
+                        let as_i64  = self.temp();
+                        writeln!(&mut self.ir, "  {arr_ptr} = call i64* @jsonGetStringListField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i64* {arr_ptr} to i64").unwrap();
+                        Some(as_i64)
+                    }
+                    "i64*" if marker.as_deref().and_then(|m| m.strip_prefix("List:"))
+                        .map(is_serializable_class).unwrap_or(false) =>
+                    {
+                        let cls = marker.as_deref().and_then(|m| m.strip_prefix("List:")).unwrap().to_string();
+                        let field_val = self.temp();
+                        let arr_ptr   = self.temp();
+                        let as_i64    = self.temp();
+                        writeln!(&mut self.ir, "  {field_val} = call i64* @jsonGetField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {arr_ptr}   = call i64* @tinox_json_list_deserialize(i64* {field_val}, ptr @{cls}_fromJson)").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}    = ptrtoint i64* {arr_ptr} to i64").unwrap();
+                        Some(as_i64)
+                    }
+                    "i64*" if marker.as_deref()
+                        .map(|m| !m.starts_with("Array") && !m.starts_with("List:") && !m.starts_with("Map") && is_serializable_class(m))
+                        .unwrap_or(false) =>
+                    {
+                        let cls = marker.clone().unwrap();
+                        let field_val = self.temp();
+                        let obj_ptr   = self.temp();
+                        let as_i64    = self.temp();
+                        writeln!(&mut self.ir, "  {field_val} = call i64* @jsonGetField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  {obj_ptr}   = call i64* @{cls}_fromJson(i64* {field_val})").unwrap();
+                        writeln!(&mut self.ir, "  {as_i64}    = ptrtoint i64* {obj_ptr} to i64").unwrap();
+                        Some(as_i64)
+                    }
+                    "i64*" if marker.as_deref() == Some("Array") || marker.is_none() => {
                         let arr_ptr = self.temp();
                         let as_i64  = self.temp();
                         writeln!(&mut self.ir, "  {arr_ptr} = call i64* @jsonGetIntListField(i64* %json_val, i8* {key_ptr})").unwrap();
                         writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i64* {arr_ptr} to i64").unwrap();
-                        as_i64
+                        Some(as_i64)
                     }
+                    // Unsupported pointer-shaped field kind (e.g. Map<String,
+                    // non-String>, List<non-JsonSerializable class>): the slot
+                    // was already zeroed above, so leaving it alone is a safe
+                    // null default -- storing a value read via the wrong
+                    // accessor would silently corrupt it instead.
+                    "i64*" => None,
                     _ => {
                         // i64, i32, etc.
                         let val = self.temp();
                         writeln!(&mut self.ir, "  {val} = call i64 @jsonGetIntField(i64* %json_val, i8* {key_ptr})").unwrap();
-                        val
+                        Some(val)
                     }
                 };
 
-                writeln!(&mut self.ir, "  store i64 {store_val}, i64* {fptr}").unwrap();
+                if let Some(store_val) = store_val {
+                    writeln!(&mut self.ir, "  store i64 {store_val}, i64* {fptr}").unwrap();
+                }
             }
 
             writeln!(&mut self.ir, "  ret i64* {self_}").unwrap();
@@ -5561,8 +6321,9 @@ impl CodeGen {
         // Execute query
         let conn_reg = self.temp();
         let result_reg = self.temp();
-        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_get_conn()").unwrap();
+        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
         writeln!(&mut self.ir, "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {params_arr}, i64 {n_params})").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
 
         match chain.terminal.as_str() {
             "count" => {
@@ -5658,7 +6419,7 @@ impl CodeGen {
         };
 
         let conn_reg = self.temp();
-        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_get_conn()").unwrap();
+        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
 
         if op == "delete" {
             let id_ptr = self.temp();
@@ -5679,6 +6440,7 @@ impl CodeGen {
             )
             .unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
             let as_i64 = self.temp();
             writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
             return Ok((as_i64, "i64".to_string()));
@@ -5741,6 +6503,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
 
         writeln!(&mut self.ir, "{done_bb}:").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
         let as_i64 = self.temp();
         writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
         Ok((as_i64, "i64".to_string()))
@@ -5756,7 +6519,7 @@ impl CodeGen {
             writeln!(&mut self.ir, "define void @__tinox_db_init() {{").unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
             writeln!(&mut self.ir, "  %url = getelementptr [{url_len} x i8], [{url_len} x i8]* @__db_url, i64 0, i64 0").unwrap();
-            writeln!(&mut self.ir, "  call void @tinox_db_connect(i8* %url)").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_pool_init(i8* %url, i64 {})", self.db_pool_size).unwrap();
             writeln!(&mut self.ir, "  ret void").unwrap();
             writeln!(&mut self.ir, "}}").unwrap();
             writeln!(&mut self.ir, "@llvm.global_ctors = appending global [1 x {{ i32, void ()*, i8* }}] [{{ i32, void ()*, i8* }} {{ i32 10, void ()* @__tinox_db_init, i8* null }}]").unwrap();
@@ -6279,13 +7042,13 @@ impl CodeGen {
                 // tail is a void call, under the uniform i64 closure ABI) must
                 // yield a dummy of the expected type — never `ret void 0`.
                 if expected.as_str() == "void" {
-                    writeln!(&mut self.ir, "ret void").unwrap();
+                    self.emit_function_return(ctx, "void", "");
                     return Ok(());
                 }
                 if ty == "void" {
                     let rt = if expected.is_empty() { "i64" } else { expected.as_str() };
                     let z = if rt.ends_with('*') { "null" } else { "0" };
-                    writeln!(&mut self.ir, "ret {} {}", rt, z).unwrap();
+                    self.emit_function_return(ctx, rt, z);
                     return Ok(());
                 }
                 let (final_val, final_ty) = if !expected.is_empty() && &ty != expected {
@@ -6310,7 +7073,7 @@ impl CodeGen {
                 } else {
                     (val, ty)
                 };
-                writeln!(&mut self.ir, "ret {} {}", final_ty, final_val).unwrap();
+                self.emit_function_return(ctx, &final_ty, &final_val);
             }
             StmtKind::Return(None) => {
                 self.gen_defer_scope(ctx)?;
@@ -6322,11 +7085,11 @@ impl CodeGen {
                 // the expected type — otherwise `ret void` mismatches.
                 let expected = ctx.ret_type.as_str();
                 if expected.is_empty() || expected == "void" {
-                    writeln!(&mut self.ir, "ret void").unwrap();
+                    self.emit_function_return(ctx, "void", "");
                 } else if expected.ends_with('*') {
-                    writeln!(&mut self.ir, "ret {} null", expected).unwrap();
+                    self.emit_function_return(ctx, expected, "null");
                 } else {
-                    writeln!(&mut self.ir, "ret {} 0", expected).unwrap();
+                    self.emit_function_return(ctx, expected, "0");
                 }
             }
             StmtKind::Expr(expr) => {
@@ -8420,9 +9183,38 @@ impl CodeGen {
 
                 // Look up actual return type from pre-collected signatures
                 let ret_ty = if let ExprKind::Ident(callee) = &func.node {
-                    self.fn_sigs.get(callee)
-                        .map(|(r, _)| r.clone())
-                        .unwrap_or_else(|| arg_types.first().cloned().unwrap_or_else(|| "i64".to_string()))
+                    if ctx.locals.contains_key(callee) {
+                        // `callee` is a local variable holding a closure
+                        // value (a captured fn param/local, e.g. `onChange`
+                        // in `fn(v: String) { onChange(v.toFloat()); }`),
+                        // not a real named function -- `fn_sigs` never has
+                        // an entry for it, so this must NOT fall through to
+                        // the arg_types.first() fallback below. Every
+                        // closure call always returns i64 at the ABI level
+                        // (see the `is_local_fn` branch just below, which
+                        // unconditionally casts the callee to `i64 (i64,
+                        // i64*)*`) regardless of the Tinox-level declared
+                        // return type -- exactly like gen_lambda always
+                        // emits `ret i64 0` for a Nothing-returning lambda,
+                        // never `ret void`. Before this check, a closure
+                        // whose first PARAMETER happened to be Float64
+                        // (e.g. `fnc(Float64) -> Nothing`) got its call's
+                        // LLVM return type mistaken for that parameter's
+                        // type (double) via the fallback below, which then
+                        // propagated out through StmtKind::Return as an
+                        // ill-typed `ret double` inside a function actually
+                        // declared to return i64 -- caught as "internal
+                        // compiler error: generated invalid LLVM IR" the
+                        // first time a real program (Tinox-UI's
+                        // Component::numberField, issue #215 Phase 5)
+                        // called a captured Float64-taking closure as a
+                        // lambda body's tail statement.
+                        "i64".to_string()
+                    } else {
+                        self.fn_sigs.get(callee)
+                            .map(|(r, _)| r.clone())
+                            .unwrap_or_else(|| arg_types.first().cloned().unwrap_or_else(|| "i64".to_string()))
+                    }
                 } else {
                     // Indirect call through a fn value (e.g. handlers[i](ctx)):
                     // lambdas return their value as i64 at the ABI level.
@@ -9176,6 +9968,28 @@ impl CodeGen {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @sqrt(double {})", result, arg).unwrap();
                             return Ok((result, "double".to_string()));
+                        }
+                        // x.toInt() on a Float64 value (issue #223) — typecheck
+                        // already registers `Float64_toInt` (Float64 math methods
+                        // block, tinox-typecheck/src/lib.rs) as a valid, Int-
+                        // returning method, but codegen had no matching arm here
+                        // (only "toString"/"sqrt" were handled) — so a call that
+                        // typecheck correctly accepted fell through to the
+                        // generic declared-type-mangled-name method-call path
+                        // below, which synthesized a call to an undeclared
+                        // `@Float_toInt` symbol (note: NOT even the same mangled
+                        // name typecheck itself uses) and produced invalid LLVM
+                        // IR (an ICE), for a plain Float64 variable receiver, not
+                        // just an inline expression. `x as Int64` (cast syntax)
+                        // was the only working float→int conversion until this
+                        // fix. Only `double` is handled here — Int64/Bool/etc.
+                        // have no `.toInt()` method registered in typecheck at
+                        // all (correctly rejected at the typecheck stage, not a
+                        // bug), so there is nothing else for this arm to cover.
+                        "toInt" if args.is_empty() && obj_ty == "double" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = fptosi double {} to i64", result, obj_ptr).unwrap();
+                            return Ok((result, "i64".to_string()));
                         }
                         _ => {}
                     }
@@ -10713,7 +11527,20 @@ impl CodeGen {
                 let result_slot = self.temp();
                 writeln!(&mut self.ir, "{} = alloca i64", result_slot).unwrap();
 
-                let (cond_val, _) = self.gen_expr(cond, ctx)?;
+                let (cond_val, cond_ty) = self.gen_expr(cond, ctx)?;
+                // A condition that isn't already i1 (e.g. a direct Bool
+                // struct-field load, which comes back as a raw i64 word
+                // like every other field) needs the same icmp-to-i1
+                // coercion StmtKind::If already applies -- otherwise a
+                // ternary condition of the form `obj.boolField ? a : b`
+                // emits `br i1` on an i64 value and `opt` rejects the IR.
+                let cond_i1 = if cond_ty != "i1" {
+                    let tmp = self.temp();
+                    writeln!(&mut self.ir, "{} = icmp ne {} {}, 0", tmp, cond_ty, cond_val).unwrap();
+                    tmp
+                } else {
+                    cond_val
+                };
                 let then_bb = self.new_bb("if_then");
                 let else_bb = self.new_bb("if_else");
                 let merge_bb = self.new_bb("if_merge");
@@ -10721,7 +11548,7 @@ impl CodeGen {
                 writeln!(
                     &mut self.ir,
                     "br i1 {}, label %{}, label %{}",
-                    cond_val, then_bb, else_bb
+                    cond_i1, then_bb, else_bb
                 )
                 .unwrap();
 
@@ -10938,7 +11765,31 @@ impl CodeGen {
                     }
                 };
 
+                // A spawn target that's a non-static instance method (`fn`,
+                // not `fnc`) called via `Class::method(explicitArgsOnly)`
+                // must get the same "prepend a null self" treatment
+                // emit_static_dispatch_call already applies for the
+                // identical calling shape outside of spawn (see that
+                // function's own comment: args==declared → self unused →
+                // null-self; args==declared+1 → the receiver was passed
+                // explicitly, no null-self needed). Skipping this here was
+                // a real, previously-undiscovered bug: the compiled
+                // function for any non-static `fn` always has a leading
+                // `self` parameter regardless of how it's invoked, so
+                // omitting the null-self argument silently called it with
+                // one argument too few -- an LLVM call-site/definition
+                // arity mismatch, undefined behavior (this crashed with a
+                // real segfault the moment the method touched `self`,
+                // i.e. any field access at all, not just a type error).
+                let is_static = self.static_method_keys.contains(&fn_name);
+                let declared_len = self.method_param_types.get(&fn_name).map(|v| v.len());
+                let prepend_null_self = !is_static
+                    && declared_len.map(|d| args.len() != d + 1).unwrap_or(false);
+
                 let mut arg_vals: Vec<(String, String)> = Vec::new();
+                if prepend_null_self {
+                    arg_vals.push(("null".to_string(), "i64*".to_string()));
+                }
                 for arg in &args {
                     let (v, t) = self.gen_expr(arg, ctx)?;
                     arg_vals.push((v, t));
@@ -10956,11 +11807,14 @@ impl CodeGen {
                         // strings), just sourced from the class-method
                         // tables instead of fn_sigs.
                         self.method_ret_types.get(&fn_name).cloned().map(|rt| {
-                            let ptys = self
+                            let mut ptys: Vec<String> = self
                                 .method_param_types
                                 .get(&fn_name)
                                 .map(|v| v.iter().map(Self::type_to_llvm).collect())
                                 .unwrap_or_default();
+                            if prepend_null_self {
+                                ptys.insert(0, "i64*".to_string());
+                            }
                             (rt, ptys)
                         })
                     })
@@ -11874,8 +12728,13 @@ impl CodeGen {
         body: &tinox_parser::Expr,
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
-        let lambda_id = self.temp_count;
-        self.temp_count += 1;
+        // Deliberately `lambda_counter`, not `temp_count` -- see the
+        // struct field's own doc comment for why sharing `temp_count`
+        // (saved/restored around generic specialization generation)
+        // caused two independently-generated specializations to
+        // sometimes collide on the same `__lambda_N` name.
+        let lambda_id = self.lambda_counter;
+        self.lambda_counter += 1;
         let fn_name = format!("__lambda_{}", lambda_id);
         // LLVM type hints from the call site (array map/filter/…): take them so
         // a nested lambda in the body never inherits them.
@@ -11910,6 +12769,8 @@ impl CodeGen {
             in_defer_exec: false,
             ret_type: ret_ty.clone(),
             timed_metric: None,
+            transactional_commit: None,
+            finally_targets: Vec::new(),
         };
         for (i, p) in params.iter().enumerate() {
             if i > 0 {
@@ -12537,6 +13398,33 @@ impl CodeGen {
         writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
         writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
 
+        // Issue #193: a `return` anywhere inside the try body OR a catch
+        // clause must run this finally block before actually returning —
+        // set up the pending-flag/return-value slots `emit_function_return`
+        // routes through, and push them so it's visible to everything about
+        // to be generated below. See GenCtx.finally_targets' own doc comment
+        // for the full design (this mirrors error_catch's alloca-then-set
+        // shape, just as a stack instead of one slot, and popped again
+        // further down, before the finally block's OWN body is generated).
+        let finally_target = finally_bb.as_ref().map(|fb| {
+            let pending_flag = format!("%__finally_pending_{}__", self.temp_count);
+            self.temp_count += 1;
+            writeln!(&mut self.ir, "{} = alloca i1", pending_flag).unwrap();
+            writeln!(&mut self.ir, "store i1 false, i1* {}", pending_flag).unwrap();
+            let return_slot = if ctx.ret_type.is_empty() || ctx.ret_type == "void" {
+                None
+            } else {
+                let slot = format!("%__finally_retval_{}__", self.temp_count);
+                self.temp_count += 1;
+                writeln!(&mut self.ir, "{} = alloca {}", slot, ctx.ret_type).unwrap();
+                Some(slot)
+            };
+            FinallyTarget { finally_bb: fb.clone(), pending_flag, return_slot }
+        });
+        if let Some(target) = &finally_target {
+            ctx.finally_targets.push(target.clone());
+        }
+
         // --- try body ---
         writeln!(&mut self.ir, "br label %{}", try_bb).unwrap();
         writeln!(&mut self.ir, "{}:", try_bb).unwrap();
@@ -12637,9 +13525,16 @@ impl CodeGen {
         }
 
         // --- finally block ---
-        // Runs on both the normal and the error path (merge_target). Afterwards
-        // control reaches the convergence point.
+        // Runs on both the normal and the error path (merge_target), AND
+        // (issue #193) whenever a `return` inside the try body/a catch
+        // clause routed through here via emit_function_return. Popped from
+        // ctx.finally_targets BEFORE generating the finally body itself, so
+        // a `return` inside `finally { ... }` sees only any FURTHER-out
+        // enclosing finally (never re-enters this same one).
         if let Some(fb) = &finally_bb {
+            if finally_target.is_some() {
+                ctx.finally_targets.pop();
+            }
             writeln!(&mut self.ir, "{}:", fb).unwrap();
             if let Some(finally_stmt) = finally {
                 self.gen_stmt_body(finally_stmt, ctx)?;
@@ -12647,6 +13542,42 @@ impl CodeGen {
             let finally_ok_bb = self.new_bb("finally_ok");
             writeln!(&mut self.ir, "br label %{}", finally_ok_bb).unwrap();
             writeln!(&mut self.ir, "{}:", finally_ok_bb).unwrap();
+
+            // A `return` routed through here: propagate the pending value
+            // to any further-out enclosing finally, or actually `ret` if
+            // this was the outermost one. Otherwise (the ordinary normal-
+            // completion/exception path), fall through to the convergence
+            // point exactly as before this field existed.
+            let target = finally_target.expect("finally_bb implies finally_target");
+            let pending = self.temp();
+            writeln!(&mut self.ir, "{} = load i1, i1* {}", pending, target.pending_flag).unwrap();
+            let do_return_bb = self.new_bb("finally_do_return");
+            let normal_bb = self.new_bb("finally_normal");
+            writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", pending, do_return_bb, normal_bb).unwrap();
+
+            writeln!(&mut self.ir, "{}:", do_return_bb).unwrap();
+            let ret_ty = ctx.ret_type.clone();
+            let ret_val = target.return_slot.as_ref().map(|slot| {
+                let v = self.temp();
+                writeln!(&mut self.ir, "{} = load {}, {}* {}", v, ret_ty, ret_ty, slot).unwrap();
+                v
+            });
+            if let Some(outer) = ctx.finally_targets.last().cloned() {
+                if let (Some(v), Some(outer_slot)) = (&ret_val, &outer.return_slot) {
+                    writeln!(&mut self.ir, "store {} {}, {}* {}", ret_ty, v, ret_ty, outer_slot).unwrap();
+                }
+                writeln!(&mut self.ir, "store i1 true, i1* {}", outer.pending_flag).unwrap();
+                writeln!(&mut self.ir, "br label %{}", outer.finally_bb).unwrap();
+            } else {
+                self.emit_transactional_commit_before_return(ctx);
+                if ret_ty.is_empty() || ret_ty == "void" {
+                    writeln!(&mut self.ir, "ret void").unwrap();
+                } else {
+                    writeln!(&mut self.ir, "ret {} {}", ret_ty, ret_val.unwrap()).unwrap();
+                }
+            }
+
+            writeln!(&mut self.ir, "{}:", normal_bb).unwrap();
             writeln!(&mut self.ir, "br label %{}", converge_bb).unwrap();
         }
 
@@ -12681,6 +13612,162 @@ impl CodeGen {
             }
         } else {
             writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
+        }
+
+        writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+        Ok(())
+    }
+
+    /// The single point every `return` statement's codegen funnels through
+    /// (issue #193) instead of emitting `ret` directly: if there's an
+    /// enclosing `try { ... } finally { ... }` (`ctx.finally_targets` is
+    /// non-empty), the return value/pending-flag are stashed into that
+    /// finally's own slots and control branches into it instead — the
+    /// finally block's own tail (see `gen_try_stmt`) is what actually
+    /// performs the `ret`, after running (and possibly propagating further
+    /// through) every enclosing finally block, innermost first. With no
+    /// enclosing finally, this is exactly the previous direct-`ret`
+    /// behavior (still gated by `emit_transactional_commit_before_return`
+    /// for an @Transactional method's own commit).
+    ///
+    /// `ty`/`val` are ALREADY the final, cast-if-needed LLVM type/value —
+    /// callers do that work themselves first, same division of labor the
+    /// direct `ret` emission this replaces already had. `val` is ignored
+    /// when `ty == "void"`.
+    fn emit_function_return(&mut self, ctx: &GenCtx, ty: &str, val: &str) {
+        if let Some(target) = ctx.finally_targets.last().cloned() {
+            if let Some(slot) = &target.return_slot {
+                writeln!(&mut self.ir, "store {} {}, {}* {}", ty, val, ty, slot).unwrap();
+            }
+            writeln!(&mut self.ir, "store i1 true, i1* {}", target.pending_flag).unwrap();
+            writeln!(&mut self.ir, "br label %{}", target.finally_bb).unwrap();
+            return;
+        }
+        self.emit_transactional_commit_before_return(ctx);
+        if ty == "void" {
+            writeln!(&mut self.ir, "ret void").unwrap();
+        } else {
+            writeln!(&mut self.ir, "ret {} {}", ty, val).unwrap();
+        }
+    }
+
+    /// Emits the same "commit if I own this transaction" branch
+    /// gen_transactional_wrapper's own fall-through (implicit-return) path
+    /// emits, for use right before every `ret` a `return` statement
+    /// produces -- a no-op (emits nothing) outside an @Transactional
+    /// method's body, where ctx.transactional_commit is None. See the
+    /// field's own doc comment on GenCtx for why this is needed at all.
+    fn emit_transactional_commit_before_return(&mut self, ctx: &GenCtx) {
+        let Some(owned_slot) = ctx.transactional_commit.clone() else {
+            return;
+        };
+        let owned = self.temp();
+        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned, owned_slot).unwrap();
+        let commit_bb = self.new_bb("tx_early_commit");
+        let cont_bb = self.new_bb("tx_early_commit_cont");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned, commit_bb, cont_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", commit_bb).unwrap();
+        writeln!(&mut self.ir, "call void @tinox_db_tx_commit()").unwrap();
+        writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", cont_bb).unwrap();
+    }
+
+    /// Wraps an @Transactional method's body (issue #191): BEGIN before,
+    /// COMMIT on normal completion, ROLLBACK-then-rethrow on any error --
+    /// structurally the same try/no-catch/no-swallow shape gen_try_stmt
+    /// emits for `try { ... }` with no catch clauses (error_var alloca,
+    /// ctx.error_catch redirect, emit_post_stmt_throw_check per statement,
+    /// rethrow via ctx.error_catch if there's an enclosing try/@Transactional
+    /// in this same function, else via the global `@__tinox_err` slot), just
+    /// with a fixed BEGIN/COMMIT/ROLLBACK action instead of user catch/finally
+    /// blocks, and gated on whether THIS call actually owns the transaction.
+    ///
+    /// Propagation is REQUIRED (Spring's default, no savepoints): a nested
+    /// @Transactional call (or a plain call from inside one to another
+    /// @Transactional method) joins the caller's already-open transaction --
+    /// tinox_db_tx_active() is checked at entry, and only the outermost call
+    /// (the one that finds no active transaction) actually begins/commits/
+    /// rolls back. An inner call's own error still rolls back the whole
+    /// (shared) transaction: rollback happens whenever this frame RE-THROWS
+    /// past its own catch, regardless of ownership -- only the ACT of calling
+    /// tinox_db_tx_commit/_rollback (which also releases the pooled
+    /// connection) is gated on ownership, since only the outermost owner
+    /// may safely do that.
+    fn gen_transactional_wrapper(&mut self, method: &Method, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
+        let already_active = self.temp();
+        writeln!(&mut self.ir, "{} = call i1 @tinox_db_tx_active()", already_active).unwrap();
+        let owned_slot = self.temp();
+        writeln!(&mut self.ir, "{} = alloca i1", owned_slot).unwrap();
+        let owned_val = self.temp();
+        writeln!(&mut self.ir, "{} = xor i1 {}, true", owned_val, already_active).unwrap();
+        writeln!(&mut self.ir, "store i1 {}, i1* {}", owned_val, owned_slot).unwrap();
+
+        let begin_bb = self.new_bb("tx_begin");
+        let body_bb = self.new_bb("tx_body");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_val, begin_bb, body_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", begin_bb).unwrap();
+        writeln!(&mut self.ir, "call i8* @tinox_db_tx_begin()").unwrap();
+        writeln!(&mut self.ir, "br label %{}", body_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+
+        let error_var = format!("%__tx_error_{}__", self.temp_count);
+        self.temp_count += 1;
+        writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
+
+        let catch_bb = self.new_bb("tx_catch");
+        let end_bb = self.new_bb("tx_end");
+
+        let old_error_catch = ctx.error_catch.take();
+        let try_defer_depth = ctx.defer_stack.len();
+        ctx.error_catch = Some((catch_bb.clone(), error_var.clone(), try_defer_depth));
+        let old_transactional_commit = ctx.transactional_commit.replace(owned_slot.clone());
+
+        self.gen_stmt_body(&method.body, ctx)?;
+        if !self.last_is_terminator() {
+            self.emit_post_stmt_throw_check(ctx)?;
+        }
+        ctx.error_catch = old_error_catch;
+        ctx.transactional_commit = old_transactional_commit;
+
+        // Normal completion: commit (and release the pooled connection) if
+        // this call owns the transaction, then fall through to gen_class_method's
+        // own implicit-return handling.
+        let commit_bb = self.new_bb("tx_commit");
+        writeln!(&mut self.ir, "br label %{}", commit_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", commit_bb).unwrap();
+        let owned_at_commit = self.temp();
+        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned_at_commit, owned_slot).unwrap();
+        let do_commit_bb = self.new_bb("tx_do_commit");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_at_commit, do_commit_bb, end_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", do_commit_bb).unwrap();
+        writeln!(&mut self.ir, "call void @tinox_db_tx_commit()").unwrap();
+        writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
+
+        // Error path: rollback (and release) if we own the transaction, then
+        // ALWAYS re-throw -- @Transactional never swallows an error, it only
+        // reacts to one, exactly like gen_try_stmt's catches.is_empty() path.
+        writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
+        let owned_at_catch = self.temp();
+        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned_at_catch, owned_slot).unwrap();
+        let do_rollback_bb = self.new_bb("tx_do_rollback");
+        let after_rollback_bb = self.new_bb("tx_after_rollback");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_at_catch, do_rollback_bb, after_rollback_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", do_rollback_bb).unwrap();
+        writeln!(&mut self.ir, "call void @tinox_db_tx_rollback()").unwrap();
+        writeln!(&mut self.ir, "br label %{}", after_rollback_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", after_rollback_bb).unwrap();
+
+        let ev = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", ev, error_var).unwrap();
+        if let Some((outer_catch, outer_error_var, outer_depth)) = ctx.error_catch.clone() {
+            writeln!(&mut self.ir, "store i64 {}, i64* {}", ev, outer_error_var).unwrap();
+            self.emit_unwind_defers_to(ctx, outer_depth)?;
+            writeln!(&mut self.ir, "br label %{}", outer_catch).unwrap();
+        } else {
+            writeln!(&mut self.ir, "store i64 {}, i64* @__tinox_err", ev).unwrap();
+            self.emit_unwind_defers(ctx)?;
+            self.emit_ret_default(ctx);
         }
 
         writeln!(&mut self.ir, "{}:", end_bb).unwrap();
@@ -14491,6 +15578,51 @@ pub struct GenCtx {
     ret_type: String,
     /// If set, emit histogram_record before every return. (metric_name, start_reg)
     timed_metric: Option<(String, String)>,
+    /// Set for the duration of an @Transactional method's body (issue
+    /// #191, see gen_transactional_wrapper): the i1 alloca slot recording
+    /// whether THIS call owns the transaction. A bare `return` statement
+    /// (StmtKind::Return) emits its `ret` directly with no awareness of
+    /// gen_transactional_wrapper's own try/catch-style structure around
+    /// it -- exactly the same way a plain `try { return x; } finally {
+    /// ... }` already skips its finally block today (a real, pre-existing
+    /// bug found while building this, confirmed live: "finally ran" never
+    /// printed). Left as a documented, separate, deferred issue for plain
+    /// try/finally, but NOT acceptable for @Transactional, since virtually
+    /// every real method ends with an explicit `return` -- so `return`'s
+    /// own codegen checks this field directly and emits the same
+    /// commit-if-owned branch gen_transactional_wrapper's own fall-through
+    /// path emits, right before every `ret` it produces, regardless of
+    /// nesting depth inside the method body.
+    transactional_commit: Option<String>,
+    /// Stack of enclosing `try { ... } finally { ... }` blocks a `return`
+    /// statement (StmtKind::Return) must route through before actually
+    /// returning (issue #193) — innermost last, mirroring `error_catch`'s
+    /// single-slot shape but as a stack, since returns can be nested inside
+    /// multiple enclosing finally blocks at once. Pushed by `gen_try_stmt`
+    /// right before generating the try body/catch clauses (so a `return`
+    /// anywhere in either sees it), popped again right before generating
+    /// the finally block's OWN body (so a `return` inside `finally { ... }`
+    /// itself only sees any FURTHER-out enclosing finally, never re-enters
+    /// this same one). A try with no `finally` clause never pushes here at
+    /// all — nothing needs to run before such a `return` proceeds, same as
+    /// before this field existed.
+    finally_targets: Vec<FinallyTarget>,
+}
+
+/// One entry in `GenCtx.finally_targets` — see that field's doc comment.
+#[derive(Clone)]
+struct FinallyTarget {
+    finally_bb: String,
+    /// i1 alloca: set true by a `return` that routed through here, checked
+    /// by the finally block's own tail to decide whether to fall through to
+    /// its normal converge/rethrow path (false) or propagate the pending
+    /// return further out / actually `ret` (true).
+    pending_flag: String,
+    /// Alloca typed as the enclosing function's own return type, holding
+    /// the value a routed-through `return` will eventually produce. `None`
+    /// for a `void`-returning function — nothing to carry, `pending_flag`
+    /// alone is enough.
+    return_slot: Option<String>,
 }
 
 // ─── ORM: compile-time lambda→SQL translation ────────────────────────────────
@@ -14960,7 +16092,7 @@ mod tests {
 
     #[test]
     fn test_if_expr() {
-        let src = "fn main() -> Int64 {\n  let x = if true { 42; } else { 0; };\n  return x;\n}";
+        let src = "fn main() -> Int64 {\n  let x = if (true) { 42; } else { 0; };\n  return x;\n}";
         let ir = compile_to_ir(src);
         assert!(ir.contains("if_then"), "should have if_then block");
         assert!(ir.contains("if_merge"), "should have if_merge block");
@@ -15320,14 +16452,14 @@ mod tests {
     #[test]
     fn test_if_without_else_stmt_ir() {
         // Statement-level if uses block labels: then/else/ifcont
-        let ir = compile_to_ir("fn main() -> Int64 { if true { } return 0; }");
+        let ir = compile_to_ir("fn main() -> Int64 { if (true) { } return 0; }");
         assert!(ir.contains("then"), "should have then block");
         assert!(ir.contains("ifcont"), "should have ifcont merge block");
     }
 
     #[test]
     fn test_if_else_stmt_ir() {
-        let ir = compile_to_ir("fn main() -> Int64 { if true { } else { } return 0; }");
+        let ir = compile_to_ir("fn main() -> Int64 { if (true) { } else { } return 0; }");
         assert!(ir.contains("then"), "should have then block");
         assert!(ir.contains("else"), "should have else block");
         assert!(ir.contains("ifcont"), "should have ifcont merge block");
@@ -15558,7 +16690,7 @@ mod tests {
     fn test_recursive_function_ir() {
         let ir = compile_to_ir(concat!(
             "fn fib(n: Int64) -> Int64 {\n",
-            "    if n <= 1 { return n; }\n",
+            "    if (n <= 1) { return n; }\n",
             "    return fib(n - 1) + fib(n - 2);\n",
             "}\n",
             "fn main() -> Int64 { return fib(5); }",
@@ -15849,7 +16981,7 @@ mod tests {
         let ir = compile_to_ir(concat!(
             "fn main() -> Int64 {\n",
             "    let p = null;\n",
-            "    if p == null { return 1; }\n",
+            "    if (p == null) { return 1; }\n",
             "    return 0;\n",
             "}",
         ));
@@ -15919,7 +17051,7 @@ mod tests {
     fn test_if_expr_value_used_ir() {
         let ir = compile_to_ir(concat!(
             "fn abs(x: Int64) -> Int64 {\n",
-            "    return if x < 0 { -x; } else { x; };\n",
+            "    return if (x < 0) { -x; } else { x; };\n",
             "}",
             "fn main() -> Int64 { return abs(-3); }",
         ));
@@ -16265,7 +17397,7 @@ mod tests {
     fn test_recursive_fibonacci_ir() {
         let ir = compile_to_ir(concat!(
             "fn fib(n: Int64) -> Int64 {\n",
-            "    if n <= 1 { return n; }\n",
+            "    if (n <= 1) { return n; }\n",
             "    return fib(n - 1) + fib(n - 2);\n",
             "}\n",
             "fn main() -> Int64 { return fib(10); }"
@@ -16279,7 +17411,7 @@ mod tests {
     fn test_recursive_countdown_ir() {
         let ir = compile_to_ir(concat!(
             "fn countdown(n: Int64) -> Nothing {\n",
-            "    if n <= 0 { return; }\n",
+            "    if (n <= 0) { return; }\n",
             "    countdown(n - 1);\n",
             "}\n",
             "fn main() -> Int64 { countdown(5); return 0; }"
@@ -16393,9 +17525,9 @@ mod tests {
     fn test_nested_if_else_ir() {
         let ir = compile_to_ir(concat!(
             "fn classify(n: Int64) -> String {\n",
-            "    if n < 0 {\n",
+            "    if (n < 0) {\n",
             "        return \"negative\";\n",
-            "    } else if n == 0 {\n",
+            "    } else if (n == 0) {\n",
             "        return \"zero\";\n",
             "    } else {\n",
             "        return \"positive\";\n",
@@ -16572,7 +17704,7 @@ mod tests {
             "fn main() -> Int64 {\n",
             "    var i = 0;\n",
             "    loop {\n",
-            "        if i >= 5 { break; }\n",
+            "        if (i >= 5) { break; }\n",
             "        i += 1;\n",
             "    }\n",
             "    return i;\n",
@@ -16590,7 +17722,7 @@ mod tests {
             "    var i = 0;\n",
             "    while i < 10 {\n",
             "        i += 1;\n",
-            "        if i == 5 { continue; }\n",
+            "        if (i == 5) { continue; }\n",
             "        sum += i;\n",
             "    }\n",
             "    return sum;\n",

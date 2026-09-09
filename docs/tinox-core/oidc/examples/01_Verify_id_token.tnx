@@ -19,7 +19,7 @@ class Main
 
         // Callback handler, after the provider redirects back with ?code=...
         let tokens: OidcTokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier);
-        if tokens.ok
+        if (tokens.ok)
         {
             // id_token signature + iss/aud/exp/nbf already verified here
             println("subject: " + tokens.claims["sub"].getString());

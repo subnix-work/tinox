@@ -1,0 +1,377 @@
+module tinox.core.amqp091;
+
+import tinox.core.socket;
+
+namespace tinox.core.amqp091
+{
+    /*
+     * A negotiated AMQP-0-9-1 connection (after a complete
+     * connection.start/-ok/tune/-ok/open/-ok handshake, §1.4.2.1). `conn`
+     * is -1 on any failure (caller MUST check, no silent garbage) —
+     * `errorMessage` then describes the cause.
+     */
+    class AmqpConnection091
+    {
+        var conn: Int64;
+        var frameMax: Int64;
+        var channelMax: Int64;
+        var heartbeat: Int64;
+        var errorMessage: String;
+        var heartbeatRunning: Bool;
+        var heartbeatHandle: Int64;
+        /*
+         * Multi-channel frame dispatcher (issue #123). Previously, every
+         * synchronous call (declareQueue/qos/consume/...) read directly
+         * from the socket and assumed the NEXT frame on the wire was its
+         * own response — correct with exactly one channel, but wrong as
+         * soon as a second channel has independent traffic (e.g. channel
+         * 2 pushes basic.deliver while channel 1 is waiting on
+         * queue.declare-ok). Now ONE background task (dispatcherHandle,
+         * started in finishHandshake) reads every frame and routes it by
+         * chanId into the matching channel inbox (channelIds[i] <->
+         * channelInboxes[i], parallel lists instead of Map<Int64,_> —
+         * see issue #129, Map<Int64,V> segfaults). chanId==0
+         * (connection-level, e.g. a broker-initiated connection.close)
+         * goes to connectionInbox. AmqpChannel091::open() registers
+         * itself via registerChannelInbox() BEFORE sending its
+         * channel.open (otherwise the -ok response could arrive before
+         * the inbox exists and be silently dropped).
+         */
+        var channelIds: List<Int64>;
+        var channelInboxes: List<Channel<AmqpFrame091>>;
+        var connectionInbox: Channel<AmqpFrame091>;
+        var dispatcherRunning: Bool;
+        var dispatcherHandle: Int64;
+        var nextChanId: Int64;
+
+        /*
+         * Builds a complete AMQP-0-9-1 connection: dial + protocol
+         * header + receive connection.start + send start-ok (SASL
+         * PLAIN) + receive tune + send tune-ok + open + open-ok.
+         * `heartbeat` is the interval in seconds proposed by the BROKER
+         * in tune and confirmed by the client in tune-ok (0 = disabled
+         * by the broker); purely informational unless something calls
+         * startHeartbeat() — analogous to amqp10's idleTimeoutMs (see
+         * Amqp10Connection::startHeartbeat()), the v1 tradeoff is
+         * deliberately identical: no automatic heartbeat without an
+         * explicit call.
+         */
+        fn connect(host: String, port: Int64, vhost: String, user: String, pass: String) -> AmqpConnection091
+        {
+            let conn = Amqp091::dial(host, port);
+            if (conn <= 0) {
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial failed", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+            return AmqpConnection091::finishHandshake(conn, vhost, user, pass);
+        }
+
+        /*
+         * amqps:// — TLS variant of connect() (default broker port 5671).
+         * Otherwise identical to connect(): shares the entire handshake
+         * (finishHandshake), because that runs exclusively over httpConn*
+         * — transparent to TLS and plaintext (see dial/dialTls).
+         * verify=true (recommended for real broker certificates) checks
+         * the certificate chain + hostname against the system CA stores;
+         * verify=false is a deliberate opt-out for self-signed test
+         * certificates.
+         */
+        fn connectTls(host: String, port: Int64, vhost: String, user: String, pass: String, verify: Bool) -> AmqpConnection091
+        {
+            let conn = Amqp091::dialTls(host, port, verify);
+            if (conn <= 0) {
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial failed (TLS)", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+            return AmqpConnection091::finishHandshake(conn, vhost, user, pass);
+        }
+
+        /*
+         * Shared handshake core for connect()/connectTls() after the
+         * dial: protocol header + connection.start/-ok/tune/-ok/open/-ok
+         * (§1.4.2.1). `conn` is an already-connected handle (plaintext OR
+         * TLS — both are transparent over httpConn*).
+         */
+        fn finishHandshake(conn: Int64, vhost: String, user: String, pass: String) -> AmqpConnection091
+        {
+            Amqp091::sendProtocolHeader(conn);
+
+            // --- connection.start ---
+            let f1 = Amqp091::readFrame(conn);
+            if (f1.frameType != 1) {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "protocol header rejected or handshake failed (frameType=" + f1.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+            let startMethod = Amqp091::decodeMethodPayload(f1.payload);
+            if (startMethod.classId != 10 || startMethod.methodId != 10) {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.start, got class=" + startMethod.classId.toString() + " method=" + startMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+            let startArgs = AmqpReader091::new(startMethod.args);
+            startArgs.octet(); // version-major (not checked — already validated via the protocol header)
+            startArgs.octet(); // version-minor
+            startArgs.fieldTable(); // server-properties (v1: not evaluated)
+            let mechanisms = startArgs.longstr();
+            startArgs.longstr(); // locales (v1: always offers en_US)
+
+            if (!mechanisms.contains("PLAIN")) {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "broker does not offer SASL mechanism PLAIN (offered: " + mechanisms + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+
+            // --- connection.start-ok ---
+            let w1 = AmqpWriter091::new();
+            var clientProps: Map<String, AmqpFieldValue091> = Map::new();
+            clientProps.insert("product", AmqpFieldValue091::StrVal("tinox"));
+            clientProps.insert("platform", AmqpFieldValue091::StrVal("tinox-amqp091"));
+            clientProps.insert("version", AmqpFieldValue091::StrVal("0.1"));
+            w1.fieldTable(clientProps);
+            w1.shortstr("PLAIN");
+            w1.longstrBytes(Amqp091::saslPlainResponse(user, pass));
+            w1.shortstr("en_US");
+            let startOkPayload = Amqp091::encodeMethodPayload(10, 11, w1.bytes);
+            Amqp091::writeFrame(conn, 1, 0, startOkPayload);
+
+            // --- connection.tune ---
+            let f2 = Amqp091::readFrame(conn);
+            if (f2.frameType != 1) {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.tune (frameType=" + f2.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+            let tuneMethod = Amqp091::decodeMethodPayload(f2.payload);
+            if (tuneMethod.classId == 10 && tuneMethod.methodId == 50) {
+                let msg = Amqp091::describeAndAckClose(conn, 0, tuneMethod, 51);
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "SASL/handshake failed: " + msg, heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+            if (tuneMethod.classId != 10 || tuneMethod.methodId != 30) {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.tune, got class=" + tuneMethod.classId.toString() + " method=" + tuneMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+            let tuneArgs = AmqpReader091::new(tuneMethod.args);
+            let serverChannelMax = tuneArgs.short();
+            let serverFrameMax = tuneArgs.long();
+            let serverHeartbeat = tuneArgs.short();
+
+            // --- connection.tune-ok ---
+            var negotiatedFrameMax: Int64 = 131072;
+            if (serverFrameMax > 0) {
+                negotiatedFrameMax = serverFrameMax;
+            }
+            let w2 = AmqpWriter091::new();
+            w2.short(serverChannelMax);
+            w2.long(negotiatedFrameMax);
+            // Echo the broker's proposed heartbeat interval back as-is
+            // (RabbitMQ and most brokers default to 60s; 0 = broker
+            // disabled heartbeats). Sending doesn't start automatically —
+            // see startHeartbeat() below, same explicit-opt-in v1 design
+            // as Amqp10Connection::startHeartbeat().
+            w2.short(serverHeartbeat);
+            let tuneOkPayload = Amqp091::encodeMethodPayload(10, 31, w2.bytes);
+            Amqp091::writeFrame(conn, 1, 0, tuneOkPayload);
+
+            // --- connection.open ---
+            let w3 = AmqpWriter091::new();
+            w3.shortstr(vhost);
+            w3.shortstr(""); // reserved-1 (capabilities, deprecated)
+            w3.octet(0);     // reserved-2 (insist, deprecated bit)
+            let openPayload = Amqp091::encodeMethodPayload(10, 40, w3.bytes);
+            Amqp091::writeFrame(conn, 1, 0, openPayload);
+
+            let f3 = Amqp091::readFrame(conn);
+            if (f3.frameType != 1) {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.open-ok (frameType=" + f3.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+            let openMethod = Amqp091::decodeMethodPayload(f3.payload);
+            if (openMethod.classId == 10 && openMethod.methodId == 50) {
+                let msg = Amqp091::describeAndAckClose(conn, 0, openMethod, 51);
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "connection.open failed: " + msg, heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+            if (openMethod.classId != 10 || openMethod.methodId != 41) {
+                httpConnClose(conn);
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.open-ok, got class=" + openMethod.classId.toString() + " method=" + openMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 };
+            }
+
+            // The dispatcher (issue #123) must be running BEFORE any
+            // AmqpChannel091::open() can be called — so it's started
+            // here, right before the finished connection is returned,
+            // instead of relying on the caller to trigger it explicitly.
+            var result = AmqpConnection091 { conn: conn, frameMax: negotiatedFrameMax, channelMax: serverChannelMax, heartbeat: serverHeartbeat, errorMessage: "", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: true, dispatcherHandle: -1, nextChanId: 0 };
+            result.dispatcherHandle = spawn amqp091DispatchLoop(result);
+            return result;
+        }
+
+        /*
+         * Allocates a new channel ID (issue #123): sequential starting at
+         * 1, never reused within a connection (v1: there's no
+         * AmqpChannel091::close() that could free an ID — see the module
+         * comment above about channelIds/channelInboxes).
+         */
+        fn allocateChanId() -> Int64
+        {
+            this.nextChanId = this.nextChanId + 1;
+            return this.nextChanId;
+        }
+
+        /*
+         * Registers a freshly opened channel's inbox with the dispatcher
+         * (issue #123). MUST be called BEFORE the corresponding
+         * channel.open is sent — otherwise channel.open-ok could arrive
+         * before the inbox exists, and the dispatcher would drop the
+         * frame for lack of a registered chanId (see
+         * amqp091DispatchLoop).
+         */
+        fn registerChannelInbox(chanId: Int64, inbox: Channel<AmqpFrame091>) -> Nothing
+        {
+            this.channelIds.push(chanId);
+            this.channelInboxes.push(inbox);
+        }
+
+        /*
+         * Sends ONE heartbeat frame (frameType 8, channel 0, empty
+         * payload — §4.2.7). Can be called manually, but for the usual
+         * case see startHeartbeat().
+         */
+        fn sendHeartbeat() -> Nothing
+        {
+            Amqp091::writeFrame(this.conn, 8, 0, []);
+        }
+
+        /*
+         * Starts a background task (a real thread, see spawn) that sends
+         * a heartbeat every `intervalMs` until stopHeartbeat() (or
+         * close()) is called — the same pattern as
+         * Amqp10Connection::startHeartbeat() (see there for the
+         * thread-safety rationale: httpConnWriteBytes() is mutexed per
+         * connection handle, issue 82). `intervalMs` should be
+         * noticeably below `this.heartbeat * 1000` (spec recommendation:
+         * send more often than the negotiated interval, to allow for
+         * timing imprecision) — v1 deliberately leaves the concrete
+         * choice to the caller instead of deriving it automatically from
+         * heartbeat, analogous to the explicit grantCredit() pattern.
+         */
+        fn startHeartbeat(intervalMs: Int64) -> Nothing
+        {
+            this.heartbeatRunning = true;
+            this.heartbeatHandle = spawn amqp091HeartbeatLoop(this, intervalMs);
+        }
+
+        /*
+         * Stops the heartbeat task and waits until it has really ended
+         * (await joins the task) — IMPORTANT before close(), otherwise
+         * the heartbeat task might still try to write over an
+         * already-closed handle.
+         */
+        fn stopHeartbeat() -> Nothing
+        {
+            if (this.heartbeatRunning) {
+                this.heartbeatRunning = false;
+                await this.heartbeatHandle;
+            }
+        }
+
+        /*
+         * Closes the connection per spec: cleanly stop the heartbeat task
+         * first (see stopHeartbeat()), then send connection.close and
+         * wait for close-ok (unchecked in v1, now via connectionInbox
+         * instead of directly from the socket — issue #123), then close
+         * the socket and join the dispatcher task: the socket close makes
+         * its in-flight readFrame() call return with frameType -1, after
+         * which it ends itself — the await here ensures it has really
+         * finished (no unjoined thread), instead of relying on "it'll
+         * exit eventually".
+         */
+        fn close() -> Nothing
+        {
+            this.stopHeartbeat();
+            let w = AmqpWriter091::new();
+            w.short(200); // reply-code: normal shutdown (RabbitMQ convention)
+            w.shortstr("OK");
+            w.short(0); // class-id (not applicable)
+            w.short(0); // method-id (not applicable)
+            let closePayload = Amqp091::encodeMethodPayload(10, 50, w.bytes);
+            Amqp091::writeFrame(this.conn, 1, 0, closePayload);
+            recv this.connectionInbox; // expects close-ok, unchecked in v1
+            httpConnClose(this.conn);
+            await this.dispatcherHandle;
+        }
+
+        /*
+         * Background dispatcher (issue #123): reads every frame directly
+         * from the socket and routes it by chanId to the matching channel
+         * inbox (registered by AmqpChannel091::open() via
+         * registerChannelInbox()) instead of letting each synchronous
+         * call read from the socket itself — that was the actual reason
+         * multiple channels with independent traffic weren't safe before
+         * (see the class comment above). chanId==0 (connection-level,
+         * e.g. a broker-initiated connection.close) goes to
+         * connectionInbox.
+         *
+         * Heartbeat frames (frameType 8) are intercepted here and NEVER
+         * forwarded — a side effect that closes a pre-existing, never
+         * observed bug: without the dispatcher, an incoming heartbeat
+         * could have been misinterpreted as the response to a waiting
+         * synchronous request.
+         *
+         * On EOF/connection error (frameType -1), the dispatcher wakes up
+         * EVERY currently registered waiter (connectionInbox + every
+         * channel inbox) with the same synthetic error frame, instead of
+         * leaving them blocked forever — a hanging reader would otherwise
+         * look like a deadlock, not like a cleanly detected closed
+         * connection.
+         *
+         * A STATIC method rather than an instance method (since issue
+         * #149 stage 3), because spawn doesn't support a spawnable
+         * this-bound method call, only a standalone function or a static
+         * method.
+         */
+        async fnc amqp091DispatchLoop(connection: AmqpConnection091) -> Int64
+        {
+            while connection.dispatcherRunning {
+                let f = Amqp091::readFrame(connection.conn);
+                if (f.frameType == -1) {
+                    connection.dispatcherRunning = false;
+                    send connection.connectionInbox -> f;
+                    for i in 0..connection.channelInboxes.len() {
+                        send connection.channelInboxes[i] -> f;
+                    }
+                    break;
+                }
+                if (f.frameType == 8) {
+                    continue;
+                }
+                if (f.chanId == 0) {
+                    send connection.connectionInbox -> f;
+                } else {
+                    for i in 0..connection.channelIds.len() {
+                        if (connection.channelIds[i] == f.chanId) {
+                            send connection.channelInboxes[i] -> f;
+                        }
+                    }
+                    // Unknown chanId (e.g. a race during channel setup) --
+                    // drop the frame instead of blocking the dispatcher.
+                }
+            }
+            return 1;
+        }
+
+        /*
+         * Background loop for startHeartbeat() — a STATIC method instead
+         * of an instance method, for the same reason as
+         * amqp091DispatchLoop above; `conn` is the same (reference)
+         * instance as the caller's, mutations to conn.heartbeatRunning
+         * are visible to both threads (class instances are heap
+         * objects). Identical to Amqp10Connection::amqp10HeartbeatLoop.
+         */
+        async fnc amqp091HeartbeatLoop(conn: AmqpConnection091, intervalMs: Int64) -> Int64
+        {
+            while conn.heartbeatRunning {
+                sleep_ms(intervalMs);
+                if (conn.heartbeatRunning) {
+                    conn.sendHeartbeat();
+                }
+            }
+            return 1;
+        }
+    }
+}

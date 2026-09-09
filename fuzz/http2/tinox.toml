@@ -6,4 +6,4 @@ description = "Local-only manifest so Http2Driver.tnx can pull in the real tinox
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http2_server"
-version = "1.0.1"
+version = "1.0.2"

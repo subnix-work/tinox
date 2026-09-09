@@ -61,7 +61,7 @@ class Main
                 DescribedVal(d) => {
                     match d.value {
                         ListVal(tf) => {
-                            if tf.len() > 5 {
+                            if (tf.len() > 5) {
                                 match tf[5] { BoolVal(b) => { more = b; } _ => {} }
                             }
                         }
@@ -157,7 +157,7 @@ class Main
         // up the real handle from the attach, otherwise
         // Amqp10Link::nextMessage()'s new handle check fails.
         var subLinkHandle: Int64 = 0;
-        if pAttach2.fields.len() > 1 {
+        if (pAttach2.fields.len() > 1) {
             match pAttach2.fields[1] { UIntVal(n) => { subLinkHandle = n; } _ => {} }
         }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach2.fields));
@@ -192,17 +192,17 @@ class Main
 
         httpConnClose(sconn);
 
-        if rEmpty.frameCount == 1 {
+        if (rEmpty.frameCount == 1) {
             println("ok-broker-empty-1frame");
         }
-        if rExact.frameCount == 1 {
+        if (rExact.frameCount == 1) {
             println("ok-broker-exact-1frame");
         }
-        if rPlus1.frameCount == 2 {
+        if (rPlus1.frameCount == 2) {
             println("ok-broker-plus1-2frames");
         }
         var allOk: Int64 = 0;
-        if okAttach1 { if okAck1 { if okAck2 { if okAck3 {
+        if (okAttach1) { if (okAck1) { if (okAck2) { if (okAck3) {
             allOk = 1;
         } } } }
         return allOk;
@@ -218,21 +218,21 @@ class Main
         for i in 0..255 { str8Bytes.push(65); }
         let str8Reader = Amqp10Reader::new(str8Bytes);
         match str8Reader.readValue() {
-            StrVal(s) => { if s.len() == 255 { println("ok-str8-255"); } }
+            StrVal(s) => { if (s.len() == 255) { println("ok-str8-255"); } }
             _ => {}
         }
 
         // str8 with length 0 -- edge case at the LOWER end of the 1-byte length.
         let str8EmptyReader = Amqp10Reader::new([0xa1, 0]);
         match str8EmptyReader.readValue() {
-            StrVal(s) => { if s.len() == 0 { println("ok-str8-empty"); } }
+            StrVal(s) => { if (s.len() == 0) { println("ok-str8-empty"); } }
             _ => {}
         }
 
         // vbin8 (0xa0) with length 0.
         let vbin8EmptyReader = Amqp10Reader::new([0xa0, 0]);
         match vbin8EmptyReader.readValue() {
-            BinaryVal(b) => { if b.len() == 0 { println("ok-vbin8-empty"); } }
+            BinaryVal(b) => { if (b.len() == 0) { println("ok-vbin8-empty"); } }
             _ => {}
         }
 
@@ -241,7 +241,7 @@ class Main
         for i in 0..255 { sym8Bytes.push(66); }
         let sym8Reader = Amqp10Reader::new(sym8Bytes);
         match sym8Reader.readValue() {
-            SymbolVal(s) => { if s.len() == 255 { println("ok-sym8-255"); } }
+            SymbolVal(s) => { if (s.len() == 255) { println("ok-sym8-255"); } }
             _ => {}
         }
 
@@ -253,7 +253,7 @@ class Main
         let wStr = Amqp10Writer::new();
         wStr.writeString(longStr);
         match Amqp10Reader::new(wStr.bytes).readValue() {
-            StrVal(s) => { if s.len() == 300 { println("ok-longstring"); } }
+            StrVal(s) => { if (s.len() == 300) { println("ok-longstring"); } }
             _ => {}
         }
 
@@ -262,7 +262,7 @@ class Main
         let wSym = Amqp10Writer::new();
         wSym.writeSymbol(longSym);
         match Amqp10Reader::new(wSym.bytes).readValue() {
-            SymbolVal(s) => { if s.len() == 300 { println("ok-longsymbol"); } }
+            SymbolVal(s) => { if (s.len() == 300) { println("ok-longsymbol"); } }
             _ => {}
         }
 
@@ -271,21 +271,21 @@ class Main
         let wBin = Amqp10Writer::new();
         wBin.writeBinary(longBin);
         match Amqp10Reader::new(wBin.bytes).readValue() {
-            BinaryVal(b) => { if b.len() == 300 { println("ok-longbinary"); } }
+            BinaryVal(b) => { if (b.len() == 300) { println("ok-longbinary"); } }
             _ => {}
         }
 
         // --- Part B: simulated broker, empty body + multi-frame boundary ---
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
-        if conn.conn <= 0 {
+        if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
@@ -307,15 +307,15 @@ class Main
         for i in 0..plus1Len { plus1Body.push(67); }
 
         link.publish([], "t");
-        if link.errorMessage.len() == 0 {
+        if (link.errorMessage.len() == 0) {
             println("ok-publish-empty");
         }
         link.publish(exactBody, "t");
-        if link.errorMessage.len() == 0 {
+        if (link.errorMessage.len() == 0) {
             println("ok-publish-exact");
         }
         link.publish(plus1Body, "t");
-        if link.errorMessage.len() == 0 {
+        if (link.errorMessage.len() == 0) {
             println("ok-publish-plus1");
         }
 
@@ -325,24 +325,24 @@ class Main
         subLink.grantCredit(5);
 
         let mEmpty = subLink.nextMessage();
-        if mEmpty.ok {
-            if mEmpty.body.len() == 0 {
+        if (mEmpty.ok) {
+            if (mEmpty.body.len() == 0) {
                 println("ok-consume-empty");
             }
             subLink.ack(mEmpty.deliveryId);
         }
 
         let mExact = subLink.nextMessage();
-        if mExact.ok {
-            if mExact.body.len() == exactLen {
+        if (mExact.ok) {
+            if (mExact.body.len() == exactLen) {
                 println("ok-consume-exact");
             }
             subLink.ack(mExact.deliveryId);
         }
 
         let mPlus1 = subLink.nextMessage();
-        if mPlus1.ok {
-            if mPlus1.body.len() == plus1Len {
+        if (mPlus1.ok) {
+            if (mPlus1.body.len() == plus1Len) {
                 println("ok-consume-plus1");
             }
             subLink.ack(mPlus1.deliveryId);
@@ -353,7 +353,7 @@ class Main
         conn.close();
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

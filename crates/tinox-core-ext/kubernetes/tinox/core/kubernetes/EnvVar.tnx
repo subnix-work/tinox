@@ -1,0 +1,16 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    // valueFrom (configMapKeyRef/secretKeyRef/fieldRef) is not modeled --
+    // a plain literal value covers the common case; anything else goes
+    // through GenericResourceClient.
+    @JsonSerializable
+    class EnvVar
+    {
+        var name: String;
+        var value: String;
+    }
+}

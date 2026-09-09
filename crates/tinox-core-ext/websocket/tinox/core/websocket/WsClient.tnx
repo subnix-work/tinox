@@ -1,0 +1,132 @@
+module tinox.core.websocket;
+
+import tinox.core.socket;
+import tinox.core.base64;
+
+namespace tinox.core.websocket
+{
+    /*
+     * WebSocket CLIENT entry point (issue #121): connects outward to a
+     * WS server, instead of accepting incoming connections like
+     * WsServer does.
+     *
+     * Role reversal compared to Ws/WsServer (which cover the server
+     * case, RFC 6455 §5.1): outgoing frames MUST be masked, incoming
+     * frames from the server MUST be unmasked — both handled via
+     * Ws::readFrameGeneric/writeFrameGeneric/readMessageGeneric/
+     * sendCloseGeneric with swapped role flags, no copy of the
+     * frame-codec logic. Ws::text/textToBytes (role-independent) are
+     * reused unchanged.
+     *
+     * Usage (echo client):
+     *   let conn = WsClient::connect("example.org", 8080, "/chat");
+     *   if conn < 0 { ... connection/handshake failed ... }
+     *   WsClient::sendText(conn, "hello");
+     *   let f = WsClient::readMessage(conn);
+     *   println(WsClient::text(f));
+     *   WsClient::close(conn);
+     */
+    class WsClient
+    {
+        /*
+         * Opens a TCP connection to host:port and runs the client-side
+         * handshake (RFC 6455 §4.1): sends the upgrade request for path
+         * with a freshly generated Sec-WebSocket-Key and checks the 101
+         * response's Sec-WebSocket-Accept against the expected value
+         * computed locally (wsAcceptKey — the same runtime function the
+         * server uses to generate Accept from Key). Returns: conn handle
+         * (>0) or -1 (connection setup/handshake failed — the connection
+         * is already closed in that case).
+         */
+        fn connect(host: String, port: Int64, path: String) -> Int64
+        {
+            let fd = socketCreateTcp();
+            if (!socketConnect(fd, host, port)) {
+                return -1;
+            }
+            let conn = httpConnFromFd(fd);
+
+            var keyBytes: List<Int64> = [];
+            for i in 0..16 {
+                keyBytes.push(randomInt(0, 256));
+            }
+            let key = Base64::encodeBytes(keyBytes);
+            let expectedAccept = wsAcceptKey(key);
+
+            httpConnSendRaw(conn, "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n");
+
+            let resp = httpConnReadRequest(conn);
+            if (resp.len() == 0 || !resp.contains("101")) {
+                httpConnClose(conn);
+                return -1;
+            }
+            var actualAccept: String = "";
+            let lines = resp.split("\r\n");
+            for i in 0..lines.len() {
+                let line = lines[i];
+                if (line.toLowerCase().startsWith("sec-websocket-accept:")) {
+                    actualAccept = line.substring(21, line.len()).trim();
+                }
+            }
+            if (actualAccept != expectedAccept) {
+                httpConnClose(conn);
+                return -1;
+            }
+            return conn;
+        }
+
+        /*
+         * Reads the next DATA message from the server (including
+         * automatic ping->pong, close acknowledgment, and fragment
+         * reassembly) — like Ws::readMessage, just with the masking
+         * direction swapped (incoming expected unmasked, outgoing
+         * control responses masked). See Ws::readMessageGeneric for the
+         * full behavior.
+         */
+        fn readMessage(conn: Int64) -> WsFrame
+        {
+            return Ws::readMessageGeneric(conn, false, true);
+        }
+
+        /*
+         * Reads exactly ONE raw frame from the server (no automatic
+         * ping/pong/close handling — use readMessage for that) — like
+         * Ws::readFrame, just with the masking direction swapped
+         * (server->client MUST be unmasked).
+         */
+        fn readFrame(conn: Int64) -> WsFrame
+        {
+            return Ws::readFrameGeneric(conn, false);
+        }
+
+        fn text(f: WsFrame) -> String
+        {
+            return Ws::text(f);
+        }
+
+        fn sendText(conn: Int64, s: String) -> Nothing
+        {
+            Ws::writeFrameGeneric(conn, 1, Ws::textToBytes(s), true);
+        }
+
+        fn sendBinary(conn: Int64, bytes: List<Int64>) -> Nothing
+        {
+            Ws::writeFrameGeneric(conn, 2, bytes, true);
+        }
+
+        fn sendPing(conn: Int64) -> Nothing
+        {
+            Ws::writeFrameGeneric(conn, 9, [], true);
+        }
+
+        fn sendClose(conn: Int64, code: Int64) -> Nothing
+        {
+            Ws::sendCloseGeneric(conn, code, true);
+        }
+
+        fn close(conn: Int64) -> Nothing
+        {
+            httpConnClose(conn);
+        }
+    }
+}

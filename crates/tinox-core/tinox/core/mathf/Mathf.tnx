@@ -1,0 +1,159 @@
+module tinox.core.mathf;
+
+namespace tinox.core.mathf
+{
+    class Mathf
+    {
+        fn pi() -> Float64
+        {
+            return 3.14159265358979;
+        }
+
+        fn e() -> Float64
+        {
+            return 2.71828182845904;
+        }
+
+        fn sqrt(x: Float64) -> Float64
+        {
+            if (x < 0.0)
+            {
+                throw "Cannot compute square root of negative number";
+            }
+            var guess: Float64 = x / 2.0;
+            var i: Int64 = 0;
+            while i < 100
+            {
+                let nextGuess: Float64 = (guess + x / guess) / 2.0;
+                if (Mathf::abs(nextGuess - guess) < 0.0000001)
+                {
+                    return nextGuess;
+                }
+                guess = nextGuess;
+                i = i + 1;
+            }
+            return guess;
+        }
+
+        fn pow(base: Float64, exp: Float64) -> Float64
+        {
+            var result: Float64 = 1.0;
+            var i: Int64 = 0;
+            while i < (Int64)exp
+            {
+                result = result * base;
+                i = i + 1;
+            }
+            return result;
+        }
+
+        fn abs(x: Float64) -> Float64
+        {
+            if (x < 0.0)
+            {
+                return -x;
+            }
+            return x;
+        }
+
+        fn floor(x: Float64) -> Int64
+        {
+            return (Int64)x;
+        }
+
+        fn ceil(x: Float64) -> Int64
+        {
+            if ((Float64)(Int64)x == x)
+            {
+                return (Int64)x;
+            }
+            if (x > 0.0)
+            {
+                return (Int64)x + 1;
+            }
+            return (Int64)x;
+        }
+
+        fn round(x: Float64) -> Int64
+        {
+            let floorVal: Int64 = Mathf::floor(x);
+            let frac: Float64 = x - (Float64)floorVal;
+            if (frac >= 0.5)
+            {
+                return floorVal + 1;
+            }
+            return floorVal;
+        }
+
+        fn min(a: Float64, b: Float64) -> Float64
+        {
+            if (a < b)
+            {
+                return a;
+            }
+            return b;
+        }
+
+        fn max(a: Float64, b: Float64) -> Float64
+        {
+            if (a > b)
+            {
+                return a;
+            }
+            return b;
+        }
+
+        fn clamp(value: Float64, min: Float64, max: Float64) -> Float64
+        {
+            if (value < min)
+            {
+                return min;
+            }
+            if (value > max)
+            {
+                return max;
+            }
+            return value;
+        }
+
+        fn lerp(a: Float64, b: Float64, t: Float64) -> Float64
+        {
+            return a + (b - a) * t;
+        }
+
+        fn sin(x: Float64) -> Float64
+        {
+            return sin(x);
+        }
+
+        fn cos(x: Float64) -> Float64
+        {
+            return cos(x);
+        }
+
+        fn tan(x: Float64) -> Float64
+        {
+            return tan(x);
+        }
+
+        fn log(x: Float64) -> Float64
+        {
+            return log(x);
+        }
+
+        fn log10(x: Float64) -> Float64
+        {
+            return log10(x);
+        }
+
+        fn exp(x: Float64) -> Float64
+        {
+            return exp(x);
+        }
+
+        fn atan2(y: Float64, x: Float64) -> Float64
+        {
+            return atan2(y, x);
+        }
+    }
+}

@@ -40,7 +40,7 @@ class Main
         // 1. exchangeCode() happy path -- POST /token, then GET /jwks.json.
         let c1 = httpServerAcceptConnHandle(srv);
         let r1 = httpConnReadRequest(c1);
-        if !(r1.contains("POST /token") && r1.contains("grant_type=authorization_code") && r1.contains("client_id=my-client-id")) {
+        if (!(r1.contains("POST /token") && r1.contains("grant_type=authorization_code") && r1.contains("client_id=my-client-id"))) {
             allOk = 0;
         }
         let b1 = "{\"access_token\":\"access-abc123\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"id_token\":\"" + idToken + "\"}";
@@ -50,7 +50,7 @@ class Main
 
         let c2 = httpServerAcceptConnHandle(srv);
         let r2 = httpConnReadRequest(c2);
-        if !r2.contains("GET /jwks.json") {
+        if (!r2.contains("GET /jwks.json")) {
             allOk = 0;
         }
         let resp2 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + jwksBody.len().toString() + "\r\nConnection: close\r\n\r\n" + jwksBody;
@@ -60,7 +60,7 @@ class Main
         // 2. refresh() without a reissued id_token -- POST /token only, no JWKS fetch.
         let c3 = httpServerAcceptConnHandle(srv);
         let r3 = httpConnReadRequest(c3);
-        if !(r3.contains("POST /token") && r3.contains("grant_type=refresh_token")) {
+        if (!(r3.contains("POST /token") && r3.contains("grant_type=refresh_token"))) {
             allOk = 0;
         }
         let b3 = "{\"access_token\":\"access-refreshed\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
@@ -73,7 +73,7 @@ class Main
         //    aud mismatch is only detectable after verifying the signature).
         let c4 = httpServerAcceptConnHandle(srv);
         let r4 = httpConnReadRequest(c4);
-        if !(r4.contains("POST /token") && r4.contains("client_id=someone-elses-client-id")) {
+        if (!(r4.contains("POST /token") && r4.contains("client_id=someone-elses-client-id"))) {
             allOk = 0;
         }
         let b4 = "{\"access_token\":\"access-abc123\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"id_token\":\"" + idToken + "\"}";
@@ -83,7 +83,7 @@ class Main
 
         let c5 = httpServerAcceptConnHandle(srv);
         let r5 = httpConnReadRequest(c5);
-        if !r5.contains("GET /jwks.json") {
+        if (!r5.contains("GET /jwks.json")) {
             allOk = 0;
         }
         let resp5 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + jwksBody.len().toString() + "\r\nConnection: close\r\n\r\n" + jwksBody;
@@ -106,7 +106,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -128,17 +128,17 @@ class Main
         } catch e: String {
             noOpenidThrew = true;
         }
-        if noOpenidThrew {
+        if (noOpenidThrew) {
             println("ok-no-openid-throws");
         }
 
         let authReq = client.buildAuthorizeUrl("openid email");
 
         let tr1 = client.exchangeCode("abc123", authReq.codeVerifier);
-        if tr1.ok {
-            if tr1.accessToken == "access-abc123" {
-                if tr1.claims["sub"].getString() == "user42" {
-                    if tr1.claims["iss"].getString() == "https://issuer.example.com" {
+        if (tr1.ok) {
+            if (tr1.accessToken == "access-abc123") {
+                if (tr1.claims["sub"].getString() == "user42") {
+                    if (tr1.claims["iss"].getString() == "https://issuer.example.com") {
                         println("ok-happy-path");
                     }
                 }
@@ -146,9 +146,9 @@ class Main
         }
 
         let tr2 = client.refresh("refresh-xyz789");
-        if tr2.ok {
-            if tr2.accessToken == "access-refreshed" {
-                if tr2.idToken == "" {
+        if (tr2.ok) {
+            if (tr2.accessToken == "access-refreshed") {
+                if (tr2.idToken == "") {
                     println("ok-refresh-without-id-token");
                 }
             }
@@ -165,21 +165,21 @@ class Main
         );
         let authReq2 = wrongClient.buildAuthorizeUrl("openid");
         let tr3 = wrongClient.exchangeCode("abc123", authReq2.codeVerifier);
-        if !tr3.ok {
-            if tr3.errorMessage.contains("aud") {
+        if (!tr3.ok) {
+            if (tr3.errorMessage.contains("aud")) {
                 println("ok-wrong-aud-rejected");
             }
         }
 
         let tr4 = client.exchangeCode("abc123", authReq.codeVerifier);
-        if !tr4.ok {
-            if tr4.errorMessage.contains("alg") {
+        if (!tr4.ok) {
+            if (tr4.errorMessage.contains("alg")) {
                 println("ok-malformed-alg-rejected");
             }
         }
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-correct-requests");
         }
 

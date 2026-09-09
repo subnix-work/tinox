@@ -1,0 +1,4 @@
+[package]
+name = "tinox-core"
+version = "1.0.0"
+description = "tinox.core's always-available core tier — bundled with the compiler, resolved via stdlib_dir(), not published/installed like the extended tier. This manifest exists solely as the anchor `find_project_root_from` needs for issue #185's namespace-path-mirroring check; it is not used for dependency resolution."

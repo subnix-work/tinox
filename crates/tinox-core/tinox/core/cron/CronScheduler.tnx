@@ -1,0 +1,51 @@
+module tinox.core.cron;
+
+namespace tinox.core.cron
+{
+    class CronScheduler
+    {
+        var jobs: List<CronJob>;
+        var running: Bool;
+
+        fn new() -> CronScheduler
+        {
+            return CronScheduler { jobs: [], running: false };
+        }
+
+        fn addJob(scheduler: CronScheduler, expr: String, callback: fnc() -> Nothing) -> Nothing
+        {
+            let cronExpr: CronExpr = Cron::parse(expr);
+            scheduler.jobs.push(CronJob { expr: cronExpr, callback: callback, lastRun: 0 });
+        }
+
+        fn start(scheduler: CronScheduler) -> Nothing
+        {
+            scheduler.running = true;
+        }
+
+        fn stop(scheduler: CronScheduler) -> Nothing
+        {
+            scheduler.running = false;
+        }
+
+        fn tick(scheduler: CronScheduler) -> Nothing
+        {
+            if (scheduler.running == false)
+            {
+                return;
+            }
+            let now: Int64 = Time::now();
+            var i: Int64 = 0;
+            while i < scheduler.jobs.len()
+            {
+                let job: CronJob = scheduler.jobs[i];
+                if (Cron::matches(job.expr, now))
+                {
+                    job.callback();
+                    job.lastRun = now;
+                }
+                i = i + 1;
+            }
+        }
+    }
+}

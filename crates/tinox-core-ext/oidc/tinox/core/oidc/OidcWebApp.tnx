@@ -1,0 +1,247 @@
+module tinox.core.oidc;
+
+import tinox.core.http_server;
+import tinox.core.oauth2;
+import tinox.core.json;
+import tinox.core.crypto;
+import tinox.core.time;
+
+namespace tinox.core.oidc
+{
+    /*
+     * Turnkey browser "login with X" for the plain
+     * tinox.core.http_server.HttpServer class -- deliberately NOT built
+     * on the compiler's annotation-driven auto-server (the one
+     * @OIDCRolesAllowed/tinox.core.rest.server uses), which has a known
+     * crash under allocation-heavy routes (issue #140); this flow (JSON,
+     * a JWKS fetch, AES) is exactly that kind of heavy, and HttpServer
+     * doesn't share the bug.
+     *
+     * install(server) registers /login (redirect to the IdP) and
+     * /callback (exchange the code, start a session) on your server;
+     * requireLogin()/currentUser() let any other route gate on and read
+     * that session. There is no server-side session store: both the
+     * short-lived "pending login" state (PKCE verifier + CSRF state,
+     * between /login and /callback) and the session itself (the verified
+     * claims) live entirely in httpOnly cookies, AES-256-GCM sealed
+     * (authenticated encryption -- Crypto::aesEncrypt/aesDecrypt) with a
+     * secret you provide. A tampered cookie or the wrong secret makes
+     * aesDecrypt throw, so a forged/modified cookie is rejected outright
+     * rather than silently accepted. This also means sessions survive a
+     * server restart and work across multiple server processes with no
+     * shared state -- unlike an in-memory session map.
+     *
+     * Known limitation: HttpResponse's headers are a plain
+     * Map<String, String> (one value per name), so a single response can
+     * only ever carry one Set-Cookie header. /callback therefore does
+     * not explicitly clear the pending-login cookie after consuming it
+     * (only the session cookie gets set) -- it relies entirely on the
+     * pending cookie's own short Max-Age (5 min) to expire it. Harmless:
+     * the pending cookie is single-use in every way that matters (a
+     * replayed one fails the state check on any later /callback hit, or
+     * simply expires).
+     */
+    class OidcWebApp
+    {
+        var client: OidcClient;
+        var cookieSecret: String;
+        var loginPath: String;
+        var callbackPath: String;
+        var sessionCookieName: String;
+        var pendingCookieName: String;
+
+        /*
+         * `cookieSecret` seals both cookies (AES-256-GCM, arbitrary
+         * length -- SHA-256-derived to a real key internally, same as
+         * Crypto::aesEncrypt's own contract) and must not be empty: an
+         * empty secret is a well-known, guessable key, not "no
+         * encryption", so this throws rather than silently sealing
+         * sessions with it.
+         */
+        fn new(client: OidcClient, cookieSecret: String) -> OidcWebApp
+        {
+            if (cookieSecret == "")
+            {
+                throw "OidcWebApp::new: cookieSecret must not be empty";
+            }
+            return OidcWebApp {
+                client: client,
+                cookieSecret: cookieSecret,
+                loginPath: "/login",
+                callbackPath: "/callback",
+                sessionCookieName: "tinox_session",
+                pendingCookieName: "tinox_oidc_pending",
+            };
+        }
+
+        // Registers /login and /callback on `server`. Call once at startup,
+        // before server.listen().
+        fn install(server: HttpServer) -> Nothing
+        {
+            // Captured by value into the closures below rather than
+            // referencing `this` from inside them -- keeps this file
+            // clear of ever needing `this` inside a lambda.
+            let client: OidcClient = this.client;
+            let cookieSecret: String = this.cookieSecret;
+            let sessionCookieName: String = this.sessionCookieName;
+            let pendingCookieName: String = this.pendingCookieName;
+
+            server.get(this.loginPath, ctx => {
+                let authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
+                let now: Int64 = Time::now() / 1000;
+                let pendingJson: String = "{\"state\":\"" + authReq.state + "\",\"codeVerifier\":\"" + authReq.codeVerifier + "\",\"exp\":" + (now + 300).toString() + "}";
+                let sealedPending: String = Crypto::aesEncrypt(pendingJson, cookieSecret);
+                ctx.response.header("Set-Cookie", pendingCookieName + "=" + sealedPending + "; HttpOnly; Path=/; Max-Age=300; SameSite=Lax");
+                ctx.response.redirect(authReq.url);
+            });
+
+            server.get(this.callbackPath, ctx => {
+                let code: String = QueryString::get(ctx.request.queryString, "code");
+                let stateParam: String = QueryString::get(ctx.request.queryString, "state");
+
+                let pendingSealed: String = OidcWebApp::readCookie(ctx, pendingCookieName);
+                if (pendingSealed == "")
+                {
+                    ctx.response.status(400).text("no pending login (missing or expired state cookie)");
+                    return;
+                }
+
+                var pending: Map<String, JsonValue> = Map::new();
+                var unsealError: String = "";
+                try
+                {
+                    pending = OidcWebApp::unsealJson(pendingSealed, cookieSecret);
+                }
+                catch e: String
+                {
+                    unsealError = e;
+                }
+                if (unsealError != "")
+                {
+                    ctx.response.status(400).text("invalid login attempt: " + unsealError);
+                    return;
+                }
+
+                let now: Int64 = Time::now() / 1000;
+                if (!pending.contains("exp") || now > pending["exp"].asInt())
+                {
+                    ctx.response.status(400).text("login attempt expired, please try again");
+                    return;
+                }
+                if (!pending.contains("state") || pending["state"].getString() != stateParam)
+                {
+                    ctx.response.status(400).text("state mismatch (possible CSRF)");
+                    return;
+                }
+                let codeVerifier: String = pending["codeVerifier"].getString();
+
+                let tokens: OidcTokenResponse = client.exchangeCode(code, codeVerifier);
+                if (!tokens.ok)
+                {
+                    ctx.response.status(401).text("login failed: " + tokens.errorMessage);
+                    return;
+                }
+
+                let sealedSession: String = OidcWebApp::sealJson(tokens.claims, cookieSecret);
+                ctx.response.header("Set-Cookie", sessionCookieName + "=" + sealedSession + "; HttpOnly; Path=/; SameSite=Lax");
+                ctx.response.redirect("/");
+            });
+        }
+
+        /*
+         * Gate a route on a valid session. On success returns true and
+         * leaves ctx.response untouched. On failure (no session cookie,
+         * tampered/wrong-secret cookie, or an expired session -- reusing
+         * the id_token's own "exp" claim as the session lifetime) this
+         * redirects to loginPath and returns false -- callers must
+         * `return;` immediately, same contract as
+         * tinox.core.rest.server's OidcGuard::checkRoles.
+         */
+        fn requireLogin(ctx: HttpContext) -> Bool
+        {
+            let sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName);
+            if (sealed == "")
+            {
+                ctx.response.redirect(this.loginPath);
+                return false;
+            }
+
+            var claims: Map<String, JsonValue> = Map::new();
+            var err: String = "";
+            try
+            {
+                claims = OidcWebApp::unsealJson(sealed, this.cookieSecret);
+            }
+            catch e: String
+            {
+                err = e;
+            }
+            if (err != "")
+            {
+                ctx.response.redirect(this.loginPath);
+                return false;
+            }
+
+            let now: Int64 = Time::now() / 1000;
+            if (claims.contains("exp") && now > claims["exp"].asInt())
+            {
+                ctx.response.redirect(this.loginPath);
+                return false;
+            }
+
+            return true;
+        }
+
+        // The verified claims from the current session. Only meaningful
+        // right after requireLogin() returned true for the same request.
+        fn currentUser(ctx: HttpContext) -> Map<String, JsonValue>
+        {
+            let sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName);
+            return OidcWebApp::unsealJson(sealed, this.cookieSecret);
+        }
+
+        fn logout(ctx: HttpContext) -> Nothing
+        {
+            ctx.response.header("Set-Cookie", this.sessionCookieName + "=; HttpOnly; Path=/; Max-Age=0");
+            ctx.response.redirect(this.loginPath);
+        }
+
+        fnc sealJson(data: Map<String, JsonValue>, secret: String) -> String
+        {
+            let json: String = Json::stringify(Json::fromMap(data));
+            return Crypto::aesEncrypt(json, secret);
+        }
+
+        // Throws (String) on a tampered cookie, the wrong secret, or a
+        // cookie from a since-rotated secret -- Crypto::aesDecrypt's own
+        // contract (GCM authentication failure), not something this
+        // silently papers over.
+        fnc unsealJson(sealed: String, secret: String) -> Map<String, JsonValue>
+        {
+            let json: String = Crypto::aesDecrypt(sealed, secret);
+            return Json::parse(json).asTable();
+        }
+
+        fnc readCookie(ctx: HttpContext, name: String) -> String
+        {
+            let cookieHeader: String = ctx.request.getHeader("Cookie");
+            if (cookieHeader == "")
+            {
+                return "";
+            }
+            let parts: List<String> = cookieHeader.split(";");
+            var i: Int64 = 0;
+            while i < parts.len()
+            {
+                let part: String = parts[i].trim();
+                let eq: Int64 = part.indexOf("=");
+                if (eq > 0 && part.substring(0, eq) == name)
+                {
+                    return part.substring(eq + 1, part.len());
+                }
+                i = i + 1;
+            }
+            return "";
+        }
+    }
+}

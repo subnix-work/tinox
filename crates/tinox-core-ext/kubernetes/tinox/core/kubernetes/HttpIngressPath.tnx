@@ -1,0 +1,22 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class HttpIngressPath
+    {
+        var path: String;
+        var pathType: String;
+        var backend: IngressBackend;
+
+        fnc prefix(path: String, serviceName: String, port: Int64) -> HttpIngressPath
+        {
+            return HttpIngressPath {
+                path: path, pathType: "Prefix",
+                backend: IngressBackend { service: IngressServiceBackend { name: serviceName, port: IngressServiceBackendPort { number: port } } }
+            };
+        }
+    }
+}

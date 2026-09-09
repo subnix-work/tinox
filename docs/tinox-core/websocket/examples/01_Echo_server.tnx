@@ -10,7 +10,7 @@ class Main
         while true
         {
             let f: WsFrame = Ws::readMessage(conn);
-            if f.opcode != 1
+            if (f.opcode != 1)
             {
                 break;
             }

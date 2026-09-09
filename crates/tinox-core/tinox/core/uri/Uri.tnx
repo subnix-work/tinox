@@ -1,0 +1,211 @@
+module tinox.core.uri;
+
+namespace tinox.core.uri
+{
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
+    class Uri
+    {
+        fn isUnreserved(code: Int64) -> Bool
+        {
+            if (code >= 65 && code <= 90) { return true; }  // A-Z
+            if (code >= 97 && code <= 122) { return true; } // a-z
+            if (code >= 48 && code <= 57) { return true; }  // 0-9
+            if (code == 45 || code == 95 || code == 46 || code == 126) { return true; } // - _ . ~
+            return false;
+        }
+
+        // Reserved/sub-delim characters left untouched by encode() (but not
+        // encodeComponent()): ; , / ? : @ & = + $ #
+        fn isReserved(code: Int64) -> Bool
+        {
+            if (code == 59 || code == 44 || code == 47 || code == 63 || code == 58
+                || code == 64 || code == 38 || code == 61 || code == 43 || code == 36
+                || code == 35)
+            {
+                return true;
+            }
+            return false;
+        }
+
+        fn hexDigit(n: Int64) -> String
+        {
+            if (n < 10)
+            {
+                return fromCharCode(n + 48);
+            }
+            return fromCharCode(n + 55);
+        }
+
+        fn percentEncodeByte(code: Int64) -> String
+        {
+            let hi: Int64 = (code >> 4) & 15;
+            let lo: Int64 = code & 15;
+            return "%" + Uri::hexDigit(hi) + Uri::hexDigit(lo);
+        }
+
+        fn hexValue(c: String) -> Int64
+        {
+            let code: Int64 = c.charCodeAt(0);
+            if (code >= 48 && code <= 57) { return code - 48; }
+            if (code >= 65 && code <= 70) { return code - 55; }
+            if (code >= 97 && code <= 102) { return code - 87; }
+            return 0;
+        }
+
+        fn encodeComponent(s: String) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            let len: Int64 = s.len();
+            while i < len
+            {
+                let code: Int64 = s.charCodeAt(i);
+                if (Uri::isUnreserved(code))
+                {
+                    result = result + s.substring(i, i + 1);
+                }
+                else
+                {
+                    result = result + Uri::percentEncodeByte(code);
+                }
+                i = i + 1;
+            }
+            return result;
+        }
+
+        fn encode(s: String) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            let len: Int64 = s.len();
+            while i < len
+            {
+                let code: Int64 = s.charCodeAt(i);
+                if (Uri::isUnreserved(code) || Uri::isReserved(code))
+                {
+                    result = result + s.substring(i, i + 1);
+                }
+                else
+                {
+                    result = result + Uri::percentEncodeByte(code);
+                }
+                i = i + 1;
+            }
+            return result;
+        }
+
+        fn decodeComponent(s: String) -> String
+        {
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `result = result + ...` in
+            // the loop, which is O(n^2) over the decoded length (issue #167).
+            var bytes: List<Int64> = [];
+            var i: Int64 = 0;
+            let len: Int64 = s.len();
+            while i < len
+            {
+                let c: String = s.substring(i, i + 1);
+                if (c == "%" && i + 2 < len)
+                {
+                    let hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2));
+                    let lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3));
+                    bytes.push((hi << 4) | lo);
+                    i = i + 3;
+                }
+                else
+                {
+                    bytes.push(c.charCodeAt(0));
+                    i = i + 1;
+                }
+            }
+            return tinoxBytesToString(bytes);
+        }
+
+        fn decode(s: String) -> String
+        {
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `result = result + ...` in
+            // the loop, which is O(n^2) over the decoded length (issue #167).
+            var bytes: List<Int64> = [];
+            var i: Int64 = 0;
+            let len: Int64 = s.len();
+            while i < len
+            {
+                let c: String = s.substring(i, i + 1);
+                if (c == "%" && i + 2 < len)
+                {
+                    let hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2));
+                    let lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3));
+                    bytes.push((hi << 4) | lo);
+                    i = i + 3;
+                }
+                else
+                {
+                    bytes.push(c.charCodeAt(0));
+                    i = i + 1;
+                }
+            }
+            return tinoxBytesToString(bytes);
+        }
+
+        fn parse(url: String) -> UriParts
+        {
+            let schemeEnd: Int64 = url.indexOf("://");
+            if (schemeEnd == -1)
+            {
+                return UriParts { scheme: "", host: "", path: "", query: "", fragment: "" };
+            }
+            let scheme: String = url.substring(0, schemeEnd);
+            var remaining: String = url.substring(schemeEnd + 3, url.len());
+            let pathStart: Int64 = remaining.indexOf("/");
+            let queryStart: Int64 = remaining.indexOf("?");
+            let fragmentStart: Int64 = remaining.indexOf("#");
+            var host: String = "";
+            var path: String = "";
+            var query: String = "";
+            var fragment: String = "";
+            if (pathStart == -1 && queryStart == -1 && fragmentStart == -1)
+            {
+                host = remaining;
+            }
+            else
+            {
+                if (pathStart != -1 && (queryStart == -1 || pathStart < queryStart) && (fragmentStart == -1 || pathStart < fragmentStart))
+                {
+                    host = remaining.substring(0, pathStart);
+                    let remainingPath: String = remaining.substring(pathStart, remaining.len());
+                    if (fragmentStart != -1 && queryStart != -1 && fragmentStart < queryStart)
+                    {
+                        path = remainingPath.substring(0, fragmentStart - pathStart);
+                        fragment = remainingPath.substring(fragmentStart - pathStart + 1, remainingPath.len());
+                    }
+                    else if (queryStart != -1)
+                    {
+                        path = remainingPath.substring(0, queryStart - pathStart);
+                        query = remainingPath.substring(queryStart - pathStart + 1, remainingPath.len());
+                    }
+                    else
+                    {
+                        path = remainingPath;
+                    }
+                }
+                else if (queryStart != -1 && (fragmentStart == -1 || queryStart < fragmentStart))
+                {
+                    host = remaining.substring(0, queryStart);
+                    query = remaining.substring(queryStart + 1, fragmentStart);
+                    if (fragmentStart != -1)
+                    {
+                        fragment = remaining.substring(fragmentStart + 1, remaining.len());
+                    }
+                }
+                else if (fragmentStart != -1)
+                {
+                    host = remaining.substring(0, fragmentStart);
+                    fragment = remaining.substring(fragmentStart + 1, remaining.len());
+                }
+            }
+            return UriParts { scheme: scheme, host: host, path: path, query: query, fragment: fragment };
+        }
+    }
+}

@@ -281,7 +281,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
             StmtKind::If { cond, then_branch, else_branch } => {
                 let cond_str = self.fmt_expr(&cond.node);
                 let then_str = self.fmt_block_stmt(then_branch);
-                let mut s = format!("if {}\n{}", cond_str, then_str);
+                let mut s = format!("if ({})\n{}", cond_str, then_str);
                 if let Some(else_b) = else_branch {
                     match &else_b.node {
                         StmtKind::If { .. } => {
@@ -444,8 +444,8 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
                 let c = self.fmt_expr(&cond.node);
                 let t = self.fmt_expr(&then_branch.node);
                 match else_branch {
-                    Some(e) => format!("if {} {{ {} }} else {{ {} }}", c, t, self.fmt_expr(&e.node)),
-                    None => format!("if {} {{ {} }}", c, t),
+                    Some(e) => format!("if ({}) {{ {} }} else {{ {} }}", c, t, self.fmt_expr(&e.node)),
+                    None => format!("if ({}) {{ {} }}", c, t),
                 }
             }
             ExprKind::While { cond, body } => {
@@ -749,8 +749,8 @@ mod tests {
 
     #[test]
     fn test_fmt_if_else() {
-        let out = fmt("fn f(x: Int32) -> Nothing { if x > 0 { return; } else { return; } }");
-        assert!(out.contains("if x > 0"));
+        let out = fmt("fn f(x: Int32) -> Nothing { if (x > 0) { return; } else { return; } }");
+        assert!(out.contains("if (x > 0)"));
         assert!(out.contains("else"));
     }
 

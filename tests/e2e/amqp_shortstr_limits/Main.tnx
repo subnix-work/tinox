@@ -80,7 +80,7 @@ class Main
         // (no real socket) -- the ONLY thing that matters is that the length
         // check itself does NOT trigger (the "too long" error message must not
         // appear; any other error is expected and irrelevant here).
-        if !chBoundary.errorMessage.contains("too long") {
+        if (!chBoundary.errorMessage.contains("too long")) {
             println("ok-declare-boundary-valid");
         }
 
@@ -88,24 +88,24 @@ class Main
         // on the client side.
         let ch1 = dummyChannel091();
         let r1 = ch1.declareQueue(name256, true, false, false);
-        if r1 == "" {
-            if ch1.errorMessage.len() > 0 {
+        if (r1 == "") {
+            if (ch1.errorMessage.len() > 0) {
                 println("ok-declare-rejected");
             }
         }
 
         let ch2 = dummyChannel091();
         let r2 = ch2.bindQueue(name256, "x", "y");
-        if r2 == false {
-            if ch2.errorMessage.len() > 0 {
+        if (r2 == false) {
+            if (ch2.errorMessage.len() > 0) {
                 println("ok-bind-rejected");
             }
         }
 
         let ch3 = dummyChannel091();
         let r3 = ch3.consume(name256);
-        if r3 == "" {
-            if ch3.errorMessage.len() > 0 {
+        if (r3 == "") {
+            if (ch3.errorMessage.len() > 0) {
                 println("ok-consume-rejected");
             }
         }
@@ -113,7 +113,7 @@ class Main
         let ch4 = dummyChannel091();
         var body: List<Int64> = [];
         ch4.publish(name256, "y", body, "");
-        if ch4.errorMessage.len() > 0 {
+        if (ch4.errorMessage.len() > 0) {
             println("ok-publish-rejected");
         }
 

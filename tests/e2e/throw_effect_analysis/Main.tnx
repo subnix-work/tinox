@@ -14,7 +14,7 @@ class Main
 {
     fnc pure(n: Int64) -> Int64 {
         // never throws → caller gets no throw check
-        if n <= 0 { return 0; }
+        if (n <= 0) { return 0; }
         return n + pure(n - 1);
     }
 

@@ -1,0 +1,31 @@
+// Tinox-UI Phase 4 example: the same click-counter shape as
+// tinox_ui_hello, but using @TinoxUIApp/@View annotation sugar instead of
+// hand-writing @OnOpen/@OnMessage/@OnClose + a manual HttpServer in
+// Main.tnx -- the compiler generates the HTTP shell/client-JS server and
+// the WebSocket accept loop itself, driving this class's single @View
+// method to build/rebuild the tree (full-resend rendering, automatic
+// re-render after every event -- see emit_tinoxui_code's own doc comment
+// in codegen.rs for exactly what gets generated).
+import tinox.core.ui;
+import tinox.core.websocket;
+import tinox.core.http_server;
+
+@TinoxUIApp(8286, 8287)
+class AnnotatedHelloApp
+{
+    var clicks: Int64;
+
+    @View
+    fn render() -> Component
+    {
+        // Same `this` capture caveat as tinox_ui_hello's build() --
+        // aliased to `app` first since a nested lambda can't reference
+        // `this` directly (issue #217).
+        let app: AnnotatedHelloApp = this;
+        return Component::vbox([
+            Component::label("Tinox-UI Annotated Hello"),
+            Component::label("Clicks: " + this.clicks.toString()),
+            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1; })
+        ]);
+    }
+}

@@ -1,0 +1,30 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class Ingress
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var spec: IngressSpec;
+
+        // ingressClassName is REQUIRED, not optional -- an empty string is
+        // invalid per the API server's own validation ("must be a
+        // lowercase RFC 1123 subdomain"), it does not mean "use the
+        // cluster default" the way an absent/null field would. Pass
+        // whatever `kubectl get ingressclass` lists for the target
+        // cluster (e.g. "nginx", "traefik").
+        fnc create(name: String, namespace: String, ingressClassName: String, rules: List<IngressRule>) -> Ingress
+        {
+            return Ingress {
+                apiVersion: "networking.k8s.io/v1", kind: "Ingress",
+                metadata: ObjectMeta::withNameAndNamespace(name, namespace),
+                spec: IngressSpec { ingressClassName: ingressClassName, rules: rules, tls: [] }
+            };
+        }
+    }
+}

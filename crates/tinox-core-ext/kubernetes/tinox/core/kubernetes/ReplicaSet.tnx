@@ -1,0 +1,32 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class ReplicaSet
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var spec: ReplicaSetSpec;
+        var status: ReplicaSetStatus;
+
+        fnc create(name: String, namespace: String, replicas: Int64, labels: Map<String, String>, containers: List<Container>) -> ReplicaSet
+        {
+            var meta: ObjectMeta = ObjectMeta::withNameAndNamespace(name, namespace);
+            meta.labels = labels;
+            return ReplicaSet {
+                apiVersion: "apps/v1", kind: "ReplicaSet",
+                metadata: meta,
+                spec: ReplicaSetSpec {
+                    replicas: replicas,
+                    selector: LabelSelector { matchLabels: labels },
+                    template: PodTemplateSpec::create(labels, containers)
+                },
+                status: ReplicaSetStatus { replicas: 0, readyReplicas: 0, availableReplicas: 0 }
+            };
+        }
+    }
+}

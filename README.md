@@ -54,6 +54,8 @@ tinox repl                                   # Start the interactive REPL
 tinox install                                # Download and install all dependencies (tinox.toml)
 tinox add <group> <artifact> <version> <url> # Add + install a dependency
 tinox package                                # Pack src/ into <name>-<version>.tar.gz
+tinox publish [--repository <id>]            # Pack and upload to a registry
+tinox search <query> [--repository <id>]     # Search a registry's package catalog
 ```
 
 Run `tinox help` for the same list from the CLI itself.
@@ -89,17 +91,53 @@ tinox test --watch      # re-run on file changes
 name = "my-project"
 version = "0.1.0"
 
+# Coordinate-only: resolved against the default registry
+# (https://central.tinox-lang.de) — no url needed.
 [[dependencies]]
 group = "someorg"
 artifactId = "somelib"
 version = "1.0.0"
-url = "https://example.com/somelib.tnx"
+
+# Explicit-url form still works for anything not published to a registry.
+[[dependencies]]
+group = "otherorg"
+artifactId = "otherlib"
+version = "0.3.0"
+url = "https://example.com/otherlib.tnx"
 ```
 
-Each dependency is a plain URL download into `.tinox/deps/<group>/<artifactId>/<version>/`
-(no central registry/index — you point at wherever the source lives).
-`tinox add <group> <artifact> <version> <url>` appends a `[[dependencies]]`
-table to `tinox.toml` and installs it in one step.
+A coordinate-only dependency (no `url`) resolves against a registry:
+`https://central.tinox-lang.de` by default, or a project-configured
+`[[repositories]]` entry referenced by `repository = "id"` (e.g. a private/
+self-hosted index):
+
+```toml
+[[repositories]]
+id = "internal"
+url = "https://pkg.example.com"
+
+[[dependencies]]
+group = "internal.tools"
+artifactId = "widgets"
+version = "2.0.0"
+repository = "internal"
+```
+
+`tinox add <group> <artifact> <version> <url>` appends an explicit-url
+`[[dependencies]]` table and installs it in one step.
+
+`tinox publish` packs the current project (same archive `tinox package`
+builds) and uploads it to a registry — `POST /api/v1/{group}/{artifactId}/
+{version}` — resolved the same way as a coordinate-only dependency
+(`--repository <id>`, else the default registry). Requires `[package]
+group` in `tinox.toml` (alongside the existing `name`/`version`) and a
+`TINOX_CENTRAL_ADMIN_KEY` bearer token for the target registry — the
+public registry's publish endpoint is admin-key-gated, not yet a general
+per-user auth model.
+
+`tinox search <query>` lists every `group:artifactId` (and its latest
+version) on a registry whose group or artifactId contains `query`
+(case-insensitive).
 
 ## Hello World
 
@@ -795,7 +833,7 @@ class MyConsumer
 | Test runner (`@Test`, `tinox test`) | ✅ Done   |
 | Dev mode / hot-reload (`tinox dev`) | ✅ Done   |
 | HTML docs (`tinox doc`)        | ✅ Done        |
-| Package manager (`tinox install`/`add`/`package`) | ✅ Done |
+| Package manager (`tinox install`/`add`/`package`/`publish`/`search`, central registry) | ✅ Done |
 
 ## Project Structure
 

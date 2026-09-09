@@ -1,0 +1,24 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class Service
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var spec: ServiceSpec;
+
+        fnc create(name: String, namespace: String, selector: Map<String, String>, ports: List<ServicePort>) -> Service
+        {
+            return Service {
+                apiVersion: "v1", kind: "Service",
+                metadata: ObjectMeta::withNameAndNamespace(name, namespace),
+                spec: ServiceSpec { selector: selector, ports: ports, type: "ClusterIP", clusterIP: "" }
+            };
+        }
+    }
+}

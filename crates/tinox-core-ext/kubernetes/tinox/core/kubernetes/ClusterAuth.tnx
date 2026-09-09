@@ -1,0 +1,23 @@
+module tinox.core.kubernetes;
+
+namespace tinox.core.kubernetes
+{
+    // Fully resolved connection + auth info for one cluster, produced by
+    // KubeConfigLoader (from ~/.kube/config or in-cluster service account
+    // files) and consumed by KubernetesClient. Cert/key fields are always
+    // FILE PATHS -- a kubeconfig's own "-data" (base64 PEM) form is
+    // decoded to a private temp file by the loader, since the underlying
+    // TLS client (tinox.core.http's httpSetTlsCaCertFile/
+    // httpSetTlsClientCertFile) takes file paths, matching OpenSSL's own
+    // SSL_CTX_load_verify_locations/SSL_CTX_use_certificate_file API.
+    class ClusterAuth
+    {
+        var serverUrl: String;
+        var caCertPath: String;
+        var clientCertPath: String;
+        var clientKeyPath: String;
+        var bearerToken: String;
+        var namespace: String;
+        var insecureSkipTlsVerify: Bool;
+    }
+}

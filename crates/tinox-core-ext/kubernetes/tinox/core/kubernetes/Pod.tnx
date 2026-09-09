@@ -1,0 +1,29 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class Pod
+    {
+        var apiVersion: String;
+        var kind: String;
+        var metadata: ObjectMeta;
+        var spec: PodSpec;
+        var status: PodStatus;
+
+        fnc create(name: String, namespace: String, containers: List<Container>) -> Pod
+        {
+            return Pod {
+                apiVersion: "v1", kind: "Pod",
+                metadata: ObjectMeta::withNameAndNamespace(name, namespace),
+                spec: PodSpec::withContainers(containers),
+                // startTime is a time.Time field server-side too -- same
+                // "empty string isn't a valid placeholder" reason
+                // ObjectMeta.creationTimestamp's own factories document.
+                status: PodStatus { phase: "", podIP: "", hostIP: "", startTime: "1970-01-01T00:00:00Z", containerStatuses: [] }
+            };
+        }
+    }
+}

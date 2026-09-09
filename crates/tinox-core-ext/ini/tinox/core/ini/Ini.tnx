@@ -1,0 +1,73 @@
+module tinox.core.ini;
+
+import tinox.core.string;
+
+namespace tinox.core.ini
+{
+    class Ini
+    {
+        fn parse(content: String) -> IniConfig
+        {
+            let config: IniConfig = IniConfig::new();
+            var currentSection: String = "";
+            let lines: List<String> = content.split("\n");
+            var i: Int64 = 0;
+            while i < lines.len()
+            {
+                let line: String = Strings::trim(lines[i]);
+                if (line.len() == 0 || line.startsWith(";") || line.startsWith("#"))
+                {
+                    i = i + 1;
+                    continue;
+                }
+                if (line.startsWith("["))
+                {
+                    let endSection: Int64 = line.indexOf("]");
+                    if (endSection != -1)
+                    {
+                        currentSection = line.substring(1, endSection);
+                        config.sections[currentSection] = Map::new();
+                    }
+                }
+                else
+                {
+                    let eqPos: Int64 = line.indexOf("=");
+                    if (eqPos != -1)
+                    {
+                        let key: String = Strings::trim(line.substring(0, eqPos));
+                        let value: String = Strings::trim(line.substring(eqPos + 1, line.len()));
+                        let sectionMap: Map<String, String> = config.sections[currentSection];
+                        if (sectionMap == null)
+                        {
+                            config.sections[currentSection] = Map::new();
+                        }
+                        config.sections[currentSection][key] = value;
+                    }
+                }
+                i = i + 1;
+            }
+            return config;
+        }
+
+        fn stringify(config: IniConfig) -> String
+        {
+            var result: String = "";
+            let sectionNames: List<String> = config.sections.keys();
+            var i: Int64 = 0;
+            while i < sectionNames.len()
+            {
+                result = result + "[" + sectionNames[i] + "]\n";
+                let keys: List<String> = config.sections[sectionNames[i]].keys();
+                var j: Int64 = 0;
+                while j < keys.len()
+                {
+                    result = result + keys[j] + "=" + config.sections[sectionNames[i]][keys[j]] + "\n";
+                    j = j + 1;
+                }
+                result = result + "\n";
+                i = i + 1;
+            }
+            return result;
+        }
+    }
+}

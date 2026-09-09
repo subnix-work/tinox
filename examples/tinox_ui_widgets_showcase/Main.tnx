@@ -1,0 +1,11 @@
+// Start: tinox run examples/tinox_ui_widgets_showcase/Main.tnx
+// Open:  http://localhost:8290/
+import ShowcaseApp;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        return 0;
+    }
+}

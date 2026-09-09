@@ -1,0 +1,254 @@
+module tinox.core.amqp10;
+
+import tinox.core.socket;
+import tinox.core.base64;
+
+namespace tinox.core.amqp10
+{
+    /*
+     * A negotiated AMQP-1.0 connection (after a complete SASL
+     * header/negotiation + AMQP header/`open`/`open-ok` handshake).
+     * `conn` is -1 on any failure (caller MUST check, no silent
+     * garbage) — `errorMessage` then describes the cause.
+     */
+    class Amqp10Connection
+    {
+        var conn: Int64;
+        var maxFrameSize: Int64;
+        var channelMax: Int64;
+        var errorMessage: String;
+        // Issue 82: stored connection parameters (for reconnect()) +
+        // heartbeat state. idleTimeoutMs is the idle-time-out offered by
+        // the BROKER in open-ok (0 = none offered) — the spec's
+        // recommendation is to send noticeably more often than this
+        // interval (timing imprecision), see startHeartbeat().
+        var host: String;
+        var port: Int64;
+        var user: String;
+        var pass: String;
+        var idleTimeoutMs: Int64;
+        var heartbeatRunning: Bool;
+        var heartbeatHandle: Int64;
+        // Issue 76: the next session channel number to assign. Starts
+        // at 1 (channel 0 is reserved for the connection itself,
+        // open/close run there — see writeFrame(conn, 0, 0, ...)
+        // throughout this class). Every Amqp10Session::begin(connection)
+        // call both reads AND increments this (connection instances are
+        // heap objects, the mutation is visible to the caller) —
+        // multiple sessions on the same connection are thereby
+        // guaranteed distinct channels instead of all sharing the same
+        // fixed channel 1 (the earlier v1 behavior).
+        var nextChannelId: Int64;
+
+        /*
+         * Builds a complete AMQP-1.0 connection: dial + SASL header +
+         * SASL negotiation + AMQP header + `open`/`open-ok`. v1 adopts
+         * the server's proposals from `open-ok` (`max-frame-size`/
+         * `channel-max`) like 0-9-1's `connection.tune`, no negotiation
+         * of its own. Sends a fixed idle-time-out of 30s in its own
+         * `open` (issue 82) — the client thereby promises the broker to
+         * send a sign of life at least every 30s (see
+         * startHeartbeat()); purely informational unless something calls
+         * startHeartbeat(), the broker may abort on inactivity on its
+         * own (v1 tradeoff: no automatic heartbeat without an explicit
+         * call, analogous to the explicit grantCredit() pattern).
+         */
+        fn connect(host: String, port: Int64, user: String, pass: String) -> Amqp10Connection
+        {
+            let conn = Amqp10::dial(host, port);
+            if (conn <= 0) {
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "dial failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
+            }
+            return Amqp10Connection::negotiateOnConn(conn, host, port, user, pass);
+        }
+
+        /*
+         * amqps:// variant of connect() (Bug 88). connect() hardcoded
+         * Amqp10::dial() (plaintext TCP), so SASL PLAIN/SCRAM credentials
+         * and all subsequent traffic went out in cleartext even though
+         * Amqp10::dialTls() already existed as a primitive — this is the
+         * high-level API equivalent using it. `verify` has the same meaning
+         * as Amqp10::dialTls's verify parameter (true: check cert chain +
+         * hostname against the system CA store; false: opt-out for
+         * self-signed test certs).
+         */
+        fn connectTls(host: String, port: Int64, user: String, pass: String, verify: Bool) -> Amqp10Connection
+        {
+            let conn = Amqp10::dialTls(host, port, verify);
+            if (conn <= 0) {
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "TLS dial failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
+            }
+            return Amqp10Connection::negotiateOnConn(conn, host, port, user, pass);
+        }
+
+        /*
+         * Shared SASL negotiation + AMQP header/open/open-ok handshake
+         * for connect()/connectTls() (Bug 88) — extracted so the TLS
+         * variant doesn't fully duplicate the handshake logic (dial()
+         * vs. dialTls() is the only difference between the two).
+         */
+        fn negotiateOnConn(conn: Int64, host: String, port: Int64, user: String, pass: String) -> Amqp10Connection
+        {
+            // --- SASL header + negotiation ---
+            Amqp10::sendSaslProtocolHeader(conn);
+            if (!Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 3, 1, 0, 0])) {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "SASL protocol-header handshake failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
+            }
+            let sasl = Amqp10::negotiateSasl(conn, user, pass);
+            if (!sasl.ok) {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: sasl.errorMessage, host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
+            }
+
+            // --- AMQP header ---
+            Amqp10::sendAmqpProtocolHeader(conn);
+            if (!Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 0, 1, 0, 0])) {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "AMQP protocol-header handshake failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
+            }
+
+            // --- send open: container-id, hostname(null), max-frame-size/
+            // channel-max (spec defaults, unchanged), idle-time-out(30s) ---
+            var openFields: List<Amqp10Value> = [
+                Amqp10Value::StrVal("tinox-client"),
+                Amqp10Value::NullVal,
+                Amqp10Value::UIntVal(4294967295),
+                Amqp10Value::UShortVal(65535),
+                Amqp10Value::UIntVal(30000)
+            ];
+            let openBody = Amqp10::encodePerformative(0x10, openFields);
+            Amqp10::writeFrame(conn, 0, 0, openBody);
+
+            // --- receive open ---
+            let f = Amqp10::readFrame(conn);
+            if (f.frameType != 0) {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
+            }
+            let p = Amqp10::decodePerformative(f.body);
+            if (p.descriptor != 0x10) {
+                httpConnClose(conn);
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "expected open (0x10), got descriptor=" + p.descriptor.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
+            }
+            // Field positions: container-id(0), hostname(1),
+            // max-frame-size(2), channel-max(3), idle-time-out(4) —
+            // trailing fields may be missing (lists can be shorter than
+            // the full schema), the default then still applies.
+            var maxFrameSize: Int64 = 4294967295;
+            var channelMax: Int64 = 65535;
+            var idleTimeoutMs: Int64 = 0;
+            if (p.fields.len() > 2) {
+                match p.fields[2] { UIntVal(n) => { maxFrameSize = n; } _ => {} }
+            }
+            if (p.fields.len() > 3) {
+                match p.fields[3] { UShortVal(n) => { channelMax = n; } _ => {} }
+            }
+            if (p.fields.len() > 4) {
+                match p.fields[4] { UIntVal(n) => { idleTimeoutMs = n; } _ => {} }
+            }
+            return Amqp10Connection { conn: conn, maxFrameSize: maxFrameSize, channelMax: channelMax, errorMessage: "", host: host, port: port, user: user, pass: pass, idleTimeoutMs: idleTimeoutMs, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 };
+        }
+
+        /*
+         * Sends ONE heartbeat (§2.4.5 "empty frame" — a frame with no
+         * body at all, exactly 8 bytes). Can also be called manually,
+         * but for the usual case see startHeartbeat().
+         */
+        fn sendHeartbeat() -> Nothing
+        {
+            Amqp10::writeFrame(this.conn, 0, 0, []);
+        }
+
+        /*
+         * Starts a background task (a real thread, see spawn) that sends
+         * a heartbeat every `intervalMs` until stopHeartbeat() (or
+         * close()) is called. Needed because the caller's thread can be
+         * blocked for a long time in Amqp10Link::nextMessage() while
+         * something still needs to go out on the wire regularly, so the
+         * broker doesn't close the connection due to inactivity.
+         *
+         * Thread safety: since issue 82, httpConnWriteBytes() is mutexed
+         * per connection handle (runtime.c, conn_send_all) — without
+         * that, two threads (the app thread + this heartbeat task) could
+         * interleave their bytes mid-frame on the wire. `intervalMs`
+         * should be noticeably below the idleTimeoutMs offered by the
+         * broker in open-ok (spec recommendation: send more often than
+         * the negotiated interval, due to timing imprecision — v1
+         * deliberately leaves the concrete choice to the caller instead
+         * of deriving it automatically from idleTimeoutMs, analogous to
+         * the explicit grantCredit() pattern).
+         */
+        fn startHeartbeat(intervalMs: Int64) -> Nothing
+        {
+            this.heartbeatRunning = true;
+            this.heartbeatHandle = spawn amqp10HeartbeatLoop(this, intervalMs);
+        }
+
+        /*
+         * Stops the heartbeat task and waits until it has really ended
+         * (await joins the task) — IMPORTANT before close()/
+         * httpConnClose(), otherwise the heartbeat task might still try
+         * to write over an already-closed handle.
+         */
+        fn stopHeartbeat() -> Nothing
+        {
+            if (this.heartbeatRunning) {
+                this.heartbeatRunning = false;
+                await this.heartbeatHandle;
+            }
+        }
+
+        /*
+         * Closes the connection: cleanly stop the heartbeat task first
+         * (see stopHeartbeat()), then send `close` and wait for `close`
+         * from the broker (unchecked in v1, analogous to 0-9-1's
+         * `AmqpConnection091::close`).
+         */
+        fn close() -> Nothing
+        {
+            this.stopHeartbeat();
+            let closeBody = Amqp10::encodePerformative(0x18, []);
+            Amqp10::writeFrame(this.conn, 0, 0, closeBody);
+            Amqp10::readFrame(this.conn);
+            httpConnClose(this.conn);
+        }
+
+        /*
+         * Rebuilds the connection with the same credentials (issue 82)
+         * — e.g. after a detected connection drop. v1 limitation: this
+         * REBUILDS ONLY the connection itself, no automatic, transparent
+         * recovery of already-existing session/link objects (they hold
+         * their own conn/chanId values, which become stale after a
+         * reconnect) — the caller MUST explicitly rebuild session/link
+         * after a reconnect() (Amqp10Session::begin(newConn),
+         * Amqp10Link::attachWithRecovery(...) instead of attach(), to
+         * report the delivery tags that were open before the drop —
+         * see issue 80, Amqp10Link.recoveredUnsettledTags).
+         */
+        fn reconnect() -> Amqp10Connection
+        {
+            return Amqp10Connection::connect(this.host, this.port, this.user, this.pass);
+        }
+
+        /*
+         * Background loop for startHeartbeat() — a STATIC method instead
+         * of an instance method, because spawn doesn't support a
+         * spawnable this-bound method call (only a standalone function
+         * or — since issue #149 stage 3 — a static method); `conn` is
+         * the same (reference) instance as the caller's, mutations to
+         * conn.heartbeatRunning are visible to both threads (class
+         * instances are heap objects).
+         */
+        async fnc amqp10HeartbeatLoop(conn: Amqp10Connection, intervalMs: Int64) -> Int64
+        {
+            while conn.heartbeatRunning {
+                sleep_ms(intervalMs);
+                if (conn.heartbeatRunning) {
+                    conn.sendHeartbeat();
+                }
+            }
+            return 1;
+        }
+    }
+}

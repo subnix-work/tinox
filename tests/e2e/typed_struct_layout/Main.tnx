@@ -26,7 +26,7 @@ class Main
         println(o.name);                      // hallo — string field (ptr slot)
         println(o.inner.value.toString());    // 42 — object field -> int field
         println(o.inner.neg.toString());      // -3 — negative int
-        if o.flag { println("flag-true"); } else { println("flag-false"); }  // bool i1->i64 slot
+        if (o.flag) { println("flag-true"); } else { println("flag-false"); }  // bool i1->i64 slot
 
         // Phase 3: typed field assignments (obj.f = v) via double/ptr/i64 slots
         o.fx = 1.5;
@@ -35,7 +35,7 @@ class Main
         o.inner.value = 100;                  // assignment on object field -> int
         println((o.fx + o.fy).toString());    // 5.5
         println(o.name);                       // welt
-        if o.flag { println("flag-true"); } else { println("flag-false"); }  // flag-false
+        if (o.flag) { println("flag-true"); } else { println("flag-false"); }  // flag-false
         println(o.inner.value.toString());     // 100
         return 0;
     }

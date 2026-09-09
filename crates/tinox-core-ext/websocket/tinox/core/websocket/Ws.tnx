@@ -1,0 +1,459 @@
+module tinox.core.websocket;
+
+namespace tinox.core.websocket
+{
+    // permessage-deflate (RFC 7692, issue #122) native helpers.
+    // wsSetCompressed/wsIsCompressed store the per-connection negotiation
+    // result directly on the runtime's conn handle (no side-table, no fd-
+    // reuse hazard — see runtime.c's TinoxConn.wsCompressed comment).
+    // tinoxDeflateRaw/tinoxInflateRaw are deliberately stateless per call:
+    // this module always negotiates client_no_context_takeover +
+    // server_no_context_takeover (see handshake() below), so every
+    // message gets a fresh DEFLATE context — there is no persistent
+    // z_stream to leak or wire into the connection lifecycle. This is a
+    // deliberate scope reduction from full permessage-deflate (which
+    // defaults to context takeover, requiring genuinely persistent
+    // per-connection compression state — see issue #122's investigation
+    // history for why that shape was ruled out for v1) rather than an
+    // oversight: RFC 7692 §7.1.1 explicitly allows a server to include
+    // both no-context-takeover parameters in its handshake response
+    // regardless of what the client's offer contained, so this is a
+    // fully spec-compliant, interoperable-with-real-browsers negotiation
+    // outcome, just one with a slightly lower compression ratio for a
+    // stream of many small messages than context takeover would give.
+    extern fn wsSetCompressed(conn: Int64, enabled: Bool) -> Nothing;
+    extern fn wsIsCompressed(conn: Int64) -> Bool;
+    extern fn tinoxDeflateRaw(bytes: List<Int64>) -> List<Int64>;
+    extern fn tinoxInflateRaw(bytes: List<Int64>) -> List<Int64>;
+    extern fn wsLastInflateOk() -> Bool;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
+    class Ws
+    {
+        /*
+         * Handshake on a freshly accepted connection (RFC 6455 §4.2.2):
+         * reads the HTTP request, checks Upgrade+Key+Version 13, and
+         * responds with 101. Hard failure paths: 400 + false (caller
+         * closes).
+         *
+         * permessage-deflate (issue #122): if the request offers
+         * `Sec-WebSocket-Extensions: permessage-deflate`, it's ALWAYS
+         * accepted with `client_no_context_takeover;
+         * server_no_context_takeover` (RFC 7692 §7.1.1 allows the server
+         * to set these parameters unilaterally in its response,
+         * regardless of whether the client had them in its offer) — see
+         * the module comment above for the rationale behind this
+         * deliberate v1 simplification.
+         */
+        fn handshake(conn: Int64) -> Bool
+        {
+            let req = httpConnReadRequest(conn);
+            if (req.len() == 0) {
+                return false;
+            }
+            var key: String = "";
+            var version: String = "";
+            var hasUpgrade: Bool = false;
+            var offeredDeflate: Bool = false;
+            let lines = req.split("\r\n");
+            for i in 0..lines.len() {
+                let line = lines[i];
+                let lower = line.toLowerCase();
+                if (lower.startsWith("sec-websocket-key:")) {
+                    key = line.substring(18, line.len()).trim();
+                }
+                if (lower.startsWith("sec-websocket-version:")) {
+                    version = line.substring(22, line.len()).trim();
+                }
+                if (lower.startsWith("upgrade:")) {
+                    if (lower.contains("websocket")) {
+                        hasUpgrade = true;
+                    }
+                }
+                if (lower.startsWith("sec-websocket-extensions:")) {
+                    if (lower.contains("permessage-deflate")) {
+                        offeredDeflate = true;
+                    }
+                }
+            }
+            if (!hasUpgrade || key.len() == 0 || version != "13") {
+                httpConnSendRaw(conn, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+                return false;
+            }
+            let accept = wsAcceptKey(key);
+            var response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n";
+            if (offeredDeflate) {
+                wsSetCompressed(conn, true);
+                response = response + "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover\r\n";
+            }
+            response = response + "\r\n";
+            httpConnSendRaw(conn, response);
+            return true;
+        }
+
+        /*
+         * Reads exactly ONE frame (blocking). requireMasked controls the
+         * role expectation (RFC 6455 §5.1: client->server MUST be
+         * masked, server->client MUST be unmasked) — readFrame() (server
+         * role, unchanged) calls this with true, WsClient with false.
+         * EOF/short read -> opcode -1; protocol error (wrong masking
+         * direction, RSV bits, a fragmented/oversized control frame) ->
+         * opcode -2 (does NOT send close here — the respective
+         * readMessage caller does that).
+         *
+         * RSV1 (issue #122): only allowed on a non-control frame when
+         * this connection negotiated permessage-deflate (wsIsCompressed)
+         * — otherwise a protocol error like any other unexpected RSV
+         * bit. The actual de-/compression does NOT happen here (a frame
+         * only carries part of the compressed byte stream for fragmented
+         * messages), only in readMessageGeneric after full reassembly —
+         * this frame just passes the RSV1 bit through via WsFrame.rsv1.
+         */
+        fn readFrameGeneric(conn: Int64, requireMasked: Bool) -> WsFrame
+        {
+            let bad = WsFrame { fin: true, opcode: -1, payload: [], rsv1: false };
+            let hdr = httpConnReadN(conn, 2);
+            if (hdr.len() < 2) {
+                return bad;
+            }
+            let b0 = hdr[0];
+            let b1 = hdr[1];
+            let fin = (b0 & 0x80) != 0;
+            let rsv1 = (b0 & 0x40) != 0;
+            let rsvOther = (b0 & 0x30) != 0;
+            let opcode = b0 & 0x0F;
+            let masked = (b1 & 0x80) != 0;
+            var plen: Int64 = b1 & 0x7F;
+            // Bug 92 (RFC 6455 §5.5): control frames (8=close, 9=ping,
+            // 10=pong) MUST have FIN set and payload length <= 125 — they
+            // can never use the 126/127 extended-length encoding and must
+            // never be fragmented. Computed before the RSV check below
+            // since RSV1 must never appear on a control frame either way.
+            let isControlFrame = opcode >= 8 && opcode <= 10;
+            // RSV2/RSV3 (no extension ever uses them here), RSV1 without
+            // negotiated compression or on a control frame, and masking
+            // in the wrong direction for this role: a protocol error.
+            if (rsvOther || (rsv1 && (isControlFrame || !wsIsCompressed(conn))) || masked != requireMasked) {
+                return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
+            }
+            if (isControlFrame && (!fin || plen > 125)) {
+                return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
+            }
+            if (plen == 126) {
+                let ext = httpConnReadN(conn, 2);
+                if (ext.len() < 2) {
+                    return bad;
+                }
+                plen = (ext[0] << 8) | ext[1];
+            } else if (plen == 127) {
+                let ext = httpConnReadN(conn, 8);
+                if (ext.len() < 8) {
+                    return bad;
+                }
+                // 64-bit big-endian; values above 2^53 are unrealistic
+                // in practice, and we reject >16 MB anyway (memory
+                // protection).
+                plen = 0;
+                for i in 0..8 {
+                    plen = (plen << 8) | ext[i];
+                }
+            }
+            if (plen < 0 || plen > 16777216) {
+                return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
+            }
+            // The mask field only exists on the wire when the mask bit
+            // is set (masked == requireMasked, see above) — for
+            // unmasked frames (server->client), read the payload
+            // directly.
+            var mask: List<Int64> = [0, 0, 0, 0];
+            if (masked) {
+                let readMask = httpConnReadN(conn, 4);
+                if (readMask.len() < 4) {
+                    return bad;
+                }
+                mask = readMask;
+            }
+            var payload: List<Int64> = [];
+            if (plen > 0) {
+                let raw = httpConnReadN(conn, plen);
+                if (raw.len() < plen) {
+                    return bad;
+                }
+                if (masked) {
+                    for i in 0..plen {
+                        payload.push(raw[i] ^ mask[i % 4]);
+                    }
+                } else {
+                    payload = raw;
+                }
+            }
+            return WsFrame { fin: fin, opcode: opcode, payload: payload, rsv1: rsv1 };
+        }
+
+        /*
+         * Reads exactly ONE frame as a server (client frames MUST be
+         * masked, RFC 6455 §5.1) — unchanged behavior/signature from
+         * before WsClient (issue #121), see readFrameGeneric.
+         */
+        fn readFrame(conn: Int64) -> WsFrame
+        {
+            return Ws::readFrameGeneric(conn, true);
+        }
+
+        /*
+         * Writes a frame (FIN=1). masked controls the role expectation
+         * (RFC 6455 §5.1: client->server MUST be masked with a random
+         * 32-bit mask, server->client MUST be unmasked) — writeFrame()
+         * (server role, unchanged) calls this with false, WsClient with
+         * true.
+         *
+         * permessage-deflate (issue #122): text/binary payloads are
+         * compressed and RSV1 is set when this connection negotiated the
+         * extension (wsIsCompressed) — control frames (ping/pong/close,
+         * opcode 8-10) are NEVER compressed per RFC 7692. v1 never
+         * fragments outgoing messages (unchanged), so for a compressed
+         * message exactly this one frame always carries the entire
+         * compressed byte stream.
+         */
+        fn writeFrameGeneric(conn: Int64, opcode: Int64, payload: List<Int64>, masked: Bool) -> Nothing
+        {
+            var actualPayload: List<Int64> = payload;
+            var rsv1Bit: Int64 = 0;
+            let isDataFrame = opcode == 1 || opcode == 2;
+            if (isDataFrame && wsIsCompressed(conn)) {
+                actualPayload = tinoxDeflateRaw(payload);
+                rsv1Bit = 0x40;
+            }
+            var out: List<Int64> = [];
+            out.push(0x80 | rsv1Bit | (opcode & 0x0F));
+            let n = actualPayload.len();
+            let maskBit: Int64 = masked ? 0x80 : 0;
+            if (n < 126) {
+                out.push(maskBit | n);
+            } else if (n < 65536) {
+                out.push(maskBit | 126);
+                out.push((n >> 8) & 0xFF);
+                out.push(n & 0xFF);
+            } else {
+                out.push(maskBit | 127);
+                var shift: Int64 = 56;
+                while shift >= 0 {
+                    out.push((n >> shift) & 0xFF);
+                    shift = shift - 8;
+                }
+            }
+            if (masked) {
+                var maskBytes: List<Int64> = [];
+                for i in 0..4 {
+                    maskBytes.push(randomInt(0, 256));
+                }
+                for i in 0..4 {
+                    out.push(maskBytes[i]);
+                }
+                for i in 0..n {
+                    out.push((actualPayload[i] & 0xFF) ^ maskBytes[i % 4]);
+                }
+            } else {
+                for i in 0..n {
+                    out.push(actualPayload[i] & 0xFF);
+                }
+            }
+            httpConnWriteBytes(conn, out);
+        }
+
+        /*
+         * Writes a server->client frame (unmasked, FIN=1). Unchanged
+         * behavior/signature from before WsClient (issue #121), see
+         * writeFrameGeneric.
+         */
+        fn writeFrame(conn: Int64, opcode: Int64, payload: List<Int64>) -> Nothing
+        {
+            Ws::writeFrameGeneric(conn, opcode, payload, false);
+        }
+
+        /*
+         * Reads the next DATA message: automatically answers ping with
+         * pong (payload mirrored), acknowledges close with close, and
+         * returns the close frame (caller ends the loop and closes).
+         *
+         * Fragmented messages (RFC 6455 §5.4): a start frame
+         * (text/binary, FIN=0) followed by zero or more continuation
+         * frames (opcode 0), the last one with FIN=1, are reassembled
+         * here into ONE WsFrame with the start frame's opcode and the
+         * concatenated payloads — indistinguishable from an
+         * unfragmented message to the caller. Control frames
+         * (ping/pong/close) may appear between fragments (§5.5, already
+         * enforced in readFrameGeneric: FIN=1, payload<=125) and are
+         * handled immediately as usual here, without disturbing the
+         * ongoing assembly. Protocol errors (a continuation with no
+         * start frame, a new text/binary frame in the middle of an
+         * ongoing fragmentation, an assembled message over the memory
+         * cap) -> close + opcode -2, same as the existing protocol
+         * errors.
+         *
+         * requireMasked/maskOutgoing control the role expectation like
+         * readFrameGeneric/writeFrameGeneric — readMessage() (server
+         * role, unchanged) calls this with (true, false), WsClient with
+         * (false, true).
+         *
+         * permessage-deflate (issue #122): RSV1 is only set on the FIRST
+         * frame of a message (never on continuation frames) and applies
+         * to the ENTIRE compressed byte stream across all fragments —
+         * that's why decompression happens here only AFTER full
+         * reassembly, not per frame in readFrameGeneric. A decompression
+         * error (a corrupted/too-large byte stream, wsLastInflateOk()
+         * ==false) is treated like any other protocol error: close 1002
+         * + opcode -2.
+         */
+        fn readMessageGeneric(conn: Int64, requireMasked: Bool, maskOutgoing: Bool) -> WsFrame
+        {
+            var assembling: Bool = false;
+            var msgOpcode: Int64 = -1;
+            var msgCompressed: Bool = false;
+            var payload: List<Int64> = [];
+            while true {
+                let f = Ws::readFrameGeneric(conn, requireMasked);
+                if (f.opcode == 9) {
+                    Ws::writeFrameGeneric(conn, 10, f.payload, maskOutgoing);
+                    continue;
+                }
+                if (f.opcode == 10) {
+                    continue;
+                }
+                if (f.opcode == 8) {
+                    Ws::writeFrameGeneric(conn, 8, f.payload, maskOutgoing);
+                    return f;
+                }
+                if (f.opcode == -1) {
+                    return f;
+                }
+                if (f.opcode == -2) {
+                    Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
+                    return f;
+                }
+                if (!assembling) {
+                    if (f.opcode == 0) {
+                        // A continuation frame with no preceding start frame
+                        Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
+                        return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
+                    }
+                    if (f.fin) {
+                        return Ws::finishMessage(conn, maskOutgoing, f.opcode, f.payload, f.rsv1);
+                    }
+                    assembling = true;
+                    msgOpcode = f.opcode;
+                    msgCompressed = f.rsv1;
+                    payload = f.payload;
+                } else {
+                    if (f.opcode != 0) {
+                        // A new text/binary frame in the middle of an ongoing fragmentation
+                        Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
+                        return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
+                    }
+                    for i in 0..f.payload.len() {
+                        payload.push(f.payload[i]);
+                    }
+                    if (f.fin) {
+                        return Ws::finishMessage(conn, maskOutgoing, msgOpcode, payload, msgCompressed);
+                    }
+                }
+                // Memory cap for the assembled message — the same 16 MB
+                // limit as for a single frame in readFrameGeneric.
+                if (payload.len() > 16777216) {
+                    Ws::sendCloseGeneric(conn, 1009, maskOutgoing);
+                    return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
+                }
+            }
+            return WsFrame { fin: true, opcode: -1, payload: [], rsv1: false };
+        }
+
+        /*
+         * Last step of readMessageGeneric: decompresses the fully
+         * assembled message if compressed=true (RSV1 set on the first
+         * frame) — otherwise a plain passthrough. A decompression error
+         * is treated like any other protocol error (close 1002 + opcode
+         * -2), see readMessageGeneric.
+         */
+        fn finishMessage(conn: Int64, maskOutgoing: Bool, opcode: Int64, payload: List<Int64>, compressed: Bool) -> WsFrame
+        {
+            if (!compressed) {
+                return WsFrame { fin: true, opcode: opcode, payload: payload, rsv1: false };
+            }
+            let decompressed = tinoxInflateRaw(payload);
+            if (!wsLastInflateOk()) {
+                Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
+                return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
+            }
+            return WsFrame { fin: true, opcode: opcode, payload: decompressed, rsv1: false };
+        }
+
+        /*
+         * Reads the next DATA message as a server: automatically
+         * answers ping with pong (payload mirrored), acknowledges close
+         * with close, and returns the close frame (caller ends the loop
+         * and closes). Unchanged behavior/signature from before
+         * WsClient (issue #121), see readMessageGeneric for details on
+         * fragment reassembly (§5.4) and protocol errors.
+         */
+        fn readMessage(conn: Int64) -> WsFrame
+        {
+            return Ws::readMessageGeneric(conn, true, false);
+        }
+
+        /*
+         * A frame's text payload as a string. Byte-by-byte
+         * (fromCharCode) — correct for ASCII; multi-byte UTF-8 arrives
+         * as individual bytes (a documented v1 simplification).
+         *
+         * Collects bytes into a List<Int64> and converts in one pass
+         * (tinoxBytesToString) instead of `s = s + fromCharCode(...)` in
+         * the loop, which is O(n^2) over the payload length (issue #167).
+         */
+        fn text(f: WsFrame) -> String
+        {
+            return tinoxBytesToString(f.payload);
+        }
+
+        fn textToBytes(s: String) -> List<Int64>
+        {
+            var bytes: List<Int64> = [];
+            for i in 0..s.len() {
+                bytes.push(s.charCodeAt(i) & 0xFF);
+            }
+            return bytes;
+        }
+
+        fn sendText(conn: Int64, s: String) -> Nothing
+        {
+            Ws::writeFrame(conn, 1, Ws::textToBytes(s));
+        }
+
+        fn sendBinary(conn: Int64, bytes: List<Int64>) -> Nothing
+        {
+            Ws::writeFrame(conn, 2, bytes);
+        }
+
+        fn sendPing(conn: Int64) -> Nothing
+        {
+            Ws::writeFrame(conn, 9, []);
+        }
+
+        fn sendCloseGeneric(conn: Int64, code: Int64, masked: Bool) -> Nothing
+        {
+            var payload: List<Int64> = [];
+            payload.push((code >> 8) & 0xFF);
+            payload.push(code & 0xFF);
+            Ws::writeFrameGeneric(conn, 8, payload, masked);
+        }
+
+        fn sendClose(conn: Int64, code: Int64) -> Nothing
+        {
+            Ws::sendCloseGeneric(conn, code, false);
+        }
+
+        fn close(conn: Int64) -> Nothing
+        {
+            httpConnClose(conn);
+        }
+    }
+}

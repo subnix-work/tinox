@@ -1,0 +1,25 @@
+import tinox.core.semaphore;
+
+class Counter
+{
+    var value: Int64;
+    var mutex: Mutex;
+
+    fn new() -> Counter
+    {
+        return Counter { value: 0, mutex: Mutex::new() };
+    }
+
+    fn incrementMany(counter: Counter, times: Int64) -> Int64
+    {
+        var i: Int64 = 0;
+        while i < times
+        {
+            Mutex::lock(counter.mutex);
+            counter.value = counter.value + 1;
+            Mutex::unlock(counter.mutex);
+            i = i + 1;
+        }
+        return 0;
+    }
+}

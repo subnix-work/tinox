@@ -1,17 +1,17 @@
 [package]
 name = "oauth2"
-version = "1.0.1"
+version = "1.0.2"
 description = "tinox.core.oauth2, split out of the bundled stdlib as a standalone tinox-central package."
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "crypto"
-version = "1.0.1"
+version = "1.0.2"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http"
-version = "1.0.1"
+version = "1.0.3"
 
 [[dependencies]]
 group = "tinox.core"

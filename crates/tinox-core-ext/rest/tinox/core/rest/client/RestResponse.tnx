@@ -1,0 +1,126 @@
+module tinox.core.rest.client;
+
+import tinox.core.http;
+import tinox.core.json;
+
+namespace tinox.core.rest.client
+{
+    /**
+     * REST response wrapper providing convenient access to
+     * status codes, headers, and parsed JSON bodies
+     */
+    class RestResponse
+    {
+        /** The HTTP status code */
+        var statusCode: Int64;
+
+        /** The response body as a string */
+        var body: String;
+
+        /** Whether the request was successful (status 2xx) */
+        var ok: Bool;
+
+        /**
+         * Creates a new RestResponse
+         *
+         * @param statusCode the HTTP status code
+         * @param body the response body
+         * @return a new RestResponse instance
+         */
+        fn new(statusCode: Int64, body: String) -> RestResponse
+        {
+            let isOk: Bool = statusCode >= 200 && statusCode < 300;
+            return RestResponse { statusCode: statusCode, body: body, ok: isOk };
+        }
+
+        /**
+         * Creates a RestResponse from an HttpClientResponse
+         *
+         * @param response the raw HTTP response
+         * @return a RestResponse instance
+         */
+        fn fromHttp(response: HttpClientResponse) -> RestResponse
+        {
+            let code: Int64 = response.statusCode();
+            let bodyText: String = response.body();
+            let isOk: Bool = code >= 200 && code < 300;
+            return RestResponse { statusCode: code, body: bodyText, ok: isOk };
+        }
+
+        /**
+         * Returns the response body as a string
+         *
+         * @return the response body
+         */
+        fn text() -> String
+        {
+            return this.body;
+        }
+
+        /**
+         * Parses the response body as JSON
+         *
+         * @return a JsonValue representing the parsed JSON
+         */
+        fn json() -> JsonValue
+        {
+            return Json::parse(this.body);
+        }
+
+        /**
+         * Checks if the response status is a success (2xx)
+         *
+         * @return true if status code is between 200 and 299
+         */
+        fn isOk() -> Bool
+        {
+            return this.ok;
+        }
+
+        /**
+         * Checks if the response status is a client error (4xx)
+         *
+         * @return true if status code is between 400 and 499
+         */
+        fn isClientError() -> Bool
+        {
+            return this.statusCode >= 400 && this.statusCode < 500;
+        }
+
+        /**
+         * Checks if the response status is a server error (5xx)
+         *
+         * @return true if status code is between 500 and 599
+         */
+        fn isServerError() -> Bool
+        {
+            return this.statusCode >= 500;
+        }
+
+        /**
+         * Returns the HTTP status code
+         *
+         * @return the status code (e.g., 200, 404, 500)
+         */
+        fn status() -> Int64
+        {
+            return this.statusCode;
+        }
+
+        /**
+         * Throws an error if the response was not successful
+         *
+         * @return this response for chaining
+         * @throws an error message with status code and body if not 2xx
+         */
+        fn ensureSuccess() -> RestResponse
+        {
+            if (this.ok == false)
+            {
+                let msg: String = "HTTP " + this.statusCode.toString() + ": " + this.body;
+                throw msg;
+            }
+            return this;
+        }
+    }
+}

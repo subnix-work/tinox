@@ -87,7 +87,7 @@ class Main
                     match d.value {
                         ListVal(tf) => {
                             more1 = false;
-                            if tf.len() > 5 {
+                            if (tf.len() > 5) {
                                 match tf[5] { BoolVal(b) => { more1 = b; } _ => {} }
                             }
                         }
@@ -123,9 +123,9 @@ class Main
                 DescribedVal(d2) => {
                     match d2.value {
                         ListVal(tf2) => {
-                            if tf2.len() < 1 { okSecondFlow = false; }
+                            if (tf2.len() < 1) { okSecondFlow = false; }
                             more2 = false;
-                            if tf2.len() > 5 {
+                            if (tf2.len() > 5) {
                                 match tf2[5] { BoolVal(b2) => { more2 = b2; } _ => {} }
                             }
                         }
@@ -151,7 +151,7 @@ class Main
         // mismatch against Amqp10Link::nextMessage()'s new handle check.
         // Take the real handle from the attach instead of guessing it.
         var subLinkHandle: Int64 = 0;
-        if pAttach2.fields.len() > 1 {
+        if (pAttach2.fields.len() > 1) {
             match pAttach2.fields[1] { UIntVal(n) => { subLinkHandle = n; } _ => {} }
         }
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach2.fields));
@@ -188,17 +188,17 @@ class Main
 
         httpConnClose(sconn);
 
-        if okReassembled {
+        if (okReassembled) {
             println("ok-broker-reassembled");
         }
-        if okSecondFlow {
+        if (okSecondFlow) {
             println("ok-broker-saw-second-flow");
         }
-        if okAck {
+        if (okAck) {
             println("ok-broker-saw-ack");
         }
         var allOk: Int64 = 0;
-        if okAttach1 { if okAttach2 { if okAck {
+        if (okAttach1) { if (okAttach2) { if (okAck) {
             allOk = 1;
         } } }
         return allOk;
@@ -208,14 +208,14 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
         let handle = spawn fakeBroker(srv);
 
         let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
-        if conn.conn <= 0 {
+        if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
@@ -228,14 +228,14 @@ class Main
         var bigBody: List<Int64> = [];
         for i in 0..60 { bigBody.push(65); }
         link.publish(bigBody, "text/plain");
-        if link.errorMessage.len() == 0 {
+        if (link.errorMessage.len() == 0) {
             println("ok-publish1");
         }
 
         // Message 2: credit is now exhausted (only 1 was granted) -> publish()
         // MUST internally wait for a new flow before it goes out.
         link.publish([1, 2, 3], "text/plain");
-        if link.errorMessage.len() == 0 {
+        if (link.errorMessage.len() == 0) {
             println("ok-publish2");
         }
 
@@ -244,13 +244,13 @@ class Main
         let subLink = Amqp10Link::attach(session, "sub-link", true, "test-source");
         subLink.grantCredit(5);
         let m = subLink.nextMessage();
-        if m.ok {
+        if (m.ok) {
             var text: String = "";
             for i in 0..m.body.len() { text = text + fromCharCode(m.body[i]); }
-            if text == "ABC" {
+            if (text == "ABC") {
                 println("ok-consume");
             }
-            if m.contentType == "text/plain" {
+            if (m.contentType == "text/plain") {
                 println("ok-contenttype");
             }
             subLink.ack(m.deliveryId);
@@ -261,7 +261,7 @@ class Main
         conn.close();
 
         let brokerOk = await handle;
-        if brokerOk == 1 {
+        if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }
 

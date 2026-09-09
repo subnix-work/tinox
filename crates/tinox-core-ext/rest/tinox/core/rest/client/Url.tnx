@@ -1,0 +1,166 @@
+module tinox.core.rest.client;
+
+namespace tinox.core.rest.client
+{
+    /**
+     * URL builder utility for constructing URLs with
+     * path segments, query parameters, and fragments
+     */
+    class Url
+    {
+        /**
+         * Builds a full URL from a base URL and a path
+         *
+         * @param baseUrl the base URL (e.g., "https://api.example.com")
+         * @param path the path to append (e.g., "/users")
+         * @return the combined URL
+         */
+        fn build(baseUrl: String, path: String) -> String
+        {
+            let base: String = baseUrl.trim();
+            if (base.endsWith("/") && path.startsWith("/"))
+            {
+                return base.substring(0, base.len() - 1) + path;
+            }
+            if (base.endsWith("/") || path.startsWith("/"))
+            {
+                return base + path;
+            }
+            return base + "/" + path;
+        }
+
+        /**
+         * Builds a URL with query parameters
+         *
+         * @param baseUrl the base URL
+         * @param path the endpoint path
+         * @param params map of query parameter key-value pairs
+         * @return the full URL with encoded query string
+         */
+        fn buildWithParams(baseUrl: String, path: String, params: Map<String, String>) -> String
+        {
+            let url: String = Url::build(baseUrl, path);
+            if (params.len() == 0)
+            {
+                return url;
+            }
+            var result: String = url + "?";
+            var first: Bool = true;
+            let keys: List<String> = params.keys();
+            var i: Int64 = 0;
+            while i < keys.len()
+            {
+                if (first == false)
+                {
+                    result = result + "&";
+                }
+                result = result + Url::encode(keys[i]) + "=" + Url::encode(params.get(keys[i]));
+                first = false;
+                i = i + 1;
+            }
+            return result;
+        }
+
+        /**
+         * Encodes a string for use in a URL (percent-encoding)
+         *
+         * Replaces reserved characters with their percent-encoded equivalents.
+         * Characters A-Z, a-z, 0-9, -, _, ., ~ are left unencoded.
+         *
+         * @param s the string to encode
+         * @return the percent-encoded string
+         */
+        fn encode(s: String) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            while i < s.len()
+            {
+                let ch: String = s.substring(i, i + 1);
+                let code: Int64 = ch.charCodeAt(0);
+                if (Url::isUnreserved(ch))
+                {
+                    result = result + ch;
+                }
+                else
+                {
+                    result = result + "%" + Url::toHex(code);
+                }
+                i = i + 1;
+            }
+            return result;
+        }
+
+        /**
+         * Checks if a character is unreserved in URL encoding
+         *
+         * Unreserved characters are A-Z, a-z, 0-9, -, _, ., ~
+         *
+         * @param ch a single character string
+         * @return true if the character is unreserved
+         */
+        fn isUnreserved(ch: String) -> Bool
+        {
+            let code: Int64 = ch.charCodeAt(0);
+            if (code >= 65 && code <= 90)
+            {
+                return true;
+            }
+            if (code >= 97 && code <= 122)
+            {
+                return true;
+            }
+            if (code >= 48 && code <= 57)
+            {
+                return true;
+            }
+            if (ch == "-" || ch == "_" || ch == "." || ch == "~")
+            {
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * Converts an integer to a two-digit uppercase hex string
+         *
+         * @param n the value to convert (0-255)
+         * @return the hex string (e.g., "0F" for 15)
+         */
+        fn toHex(n: Int64) -> String
+        {
+            let hex: String = "0123456789ABCDEF";
+            let high: Int64 = (n / 16) % 16;
+            let low: Int64 = n % 16;
+            return hex.substring(high, high + 1) + hex.substring(low, low + 1);
+        }
+
+        /**
+         * Joins multiple path segments into a single path
+         *
+         * Removes duplicate slashes between segments
+         *
+         * @param segments list of path segments
+         * @return a clean joined path
+         */
+        fn joinPath(segments: List<String>) -> String
+        {
+            var result: String = "";
+            var i: Int64 = 0;
+            while i < segments.len()
+            {
+                let seg: String = segments[i].trim();
+                if (seg.len() > 0)
+                {
+                    if (result.len() > 0 && result.endsWith("/") == false && seg.startsWith("/") == false)
+                    {
+                        result = result + "/";
+                    }
+                    result = result + seg;
+                }
+                i = i + 1;
+            }
+            return result;
+        }
+    }
+}

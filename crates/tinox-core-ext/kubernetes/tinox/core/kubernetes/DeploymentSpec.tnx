@@ -1,0 +1,14 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class DeploymentSpec
+    {
+        var replicas: Int64;
+        var selector: LabelSelector;
+        var template: PodTemplateSpec;
+    }
+}

@@ -8,6 +8,7 @@ use tinox_codegen::CodeGen;
 use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Formatter, Parser};
 
+mod callgraph;
 mod pm;
 
 fn main() {
@@ -43,6 +44,7 @@ fn run() {
         "dev"   => dev_mode(&args[2..]),
         "test"  => run_tests(&args[2..]),
         "doc"   => gen_docs(&args[2..]),
+        "graph" => gen_call_graph(&args[2..]),
         "check"   => check(&args[2..]),
         "fmt"     => fmt(&args[2..]),
         "repl"    => repl(),
@@ -53,6 +55,8 @@ fn run() {
         }
         "add"     => pm::cmd_add(&args[2..]),
         "package" => pm::cmd_package(),
+        "publish" => pm::cmd_publish(&args[2..]),
+        "search"  => pm::cmd_search(&args[2..]),
         "help" | "--help" | "-h" => print_help(),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
@@ -74,6 +78,7 @@ fn print_help() {
     println!("  tinox test  [file]         Run all @Test-annotated methods");
     println!("  tinox test --watch         Re-run tests on file changes (TDD mode)");
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
+    println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox fmt   <file>         Format a Tinox file (print to stdout)");
     println!("  tinox fmt --write <file>   Format a Tinox file in place");
@@ -82,6 +87,8 @@ fn print_help() {
     println!("  tinox install --update     Re-pin tinox.lock instead of verifying against it");
     println!("  tinox add <g> <a> <v> <u>  Add a dependency and install it");
     println!("  tinox package              Pack src/ into <name>-<version>.tar.gz");
+    println!("  tinox publish              Pack and upload to a registry (needs [package] group + TINOX_CENTRAL_ADMIN_KEY)");
+    println!("  tinox search <query>       Search a registry's package catalog");
     println!("  tinox help                 Show this help message");
 }
 
@@ -400,7 +407,6 @@ fn read_startup_banner_config() -> bool {
 struct DbConfig {
     driver: String,
     url: String,
-    #[allow(dead_code)]
     pool: usize,
 }
 
@@ -414,7 +420,13 @@ fn read_database_config() -> Option<DbConfig> {
             let mut in_db = false;
             let mut driver = String::new();
             let mut url = String::new();
-            let mut pool: usize = 1;
+            // Default pool size when [database] pool is omitted entirely --
+            // sized for a small server under real concurrent load, not just
+            // "works for a single request at a time" (that's what the old
+            // default of 1 amounted to, back when this field was still dead
+            // code and every driver shared one single global connection
+            // regardless of what it said).
+            let mut pool: Option<usize> = None;
             let mut found = false;
             for line in content.lines() {
                 let line = line.trim();
@@ -431,12 +443,18 @@ fn read_database_config() -> Option<DbConfig> {
                     let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
                     url = rest.trim_matches('"').to_string();
                 } else if let Some(rest) = line.strip_prefix("pool") {
-                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("1");
-                    pool = rest.parse().unwrap_or(1);
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    match rest.parse::<usize>() {
+                        Ok(n) if n >= 1 => pool = Some(n),
+                        _ => {
+                            eprintln!("error: [database] pool must be a positive integer, found '{rest}'");
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
             if found && !driver.is_empty() {
-                return Some(DbConfig { driver, url, pool });
+                return Some(DbConfig { driver, url, pool: pool.unwrap_or(5) });
             }
             return None;
         }
@@ -1530,6 +1548,10 @@ fn check(args: &[String]) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
+    if let Err(e) = check_namespace_path_matches(&ast.decls, Path::new(&input_file)) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
 
     // Resolve imports
     let base_dir = Path::new(&input_file)
@@ -1542,6 +1564,10 @@ fn check(args: &[String]) {
     }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
     if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = check_explicit_imports(Path::new(&input_file), &dep_dirs, &missing_deps) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
@@ -1882,6 +1908,127 @@ fn gen_docs(args: &[String]) {
     }
 }
 
+/// Issue #186: `tinox graph` -- statically analyzes the project (same
+/// project-root/`--out` discovery shape as `gen_docs` above) and writes a
+/// Mermaid call-graph diagram seeded from every auto-run entry point
+/// (`@GET`/etc, `@WebsocketEndpoint`, `@Amqp10Consumer`/`@Amqp091Consumer`,
+/// `@Command`). Runs the same parse -> resolve_imports -> typecheck ->
+/// process_annotations pipeline `compile_file` uses (needs a real,
+/// type-checked AST: `TypeChecker::interface_info()` backs the
+/// interface-dispatch fan-out in `callgraph::build_call_graph`) -- the
+/// actual graph construction and Mermaid rendering live in
+/// `callgraph.rs`, this function only assembles the AST and writes the
+/// output file.
+fn gen_call_graph(args: &[String]) {
+    let out_override: Option<&String> =
+        args.iter().position(|a| a == "--out").and_then(|i| args.get(i + 1));
+
+    let input_file = match resolve_entry_file(args) {
+        Some(f) => f,
+        None => std::process::exit(1),
+    };
+
+    let source = match fs::read_to_string(&input_file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {}", input_file, e);
+            std::process::exit(1);
+        }
+    };
+    let mut lexer = Lexer::new(&source);
+    let tokens = match lexer.tokenize() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: lex error: {:?}", e);
+            std::process::exit(1);
+        }
+    };
+    let mut parser = Parser::new(tokens);
+    let mut ast = match parser.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: parse error: {:?}", e);
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = check_one_type_per_file(&ast.decls, Path::new(&input_file)) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = check_no_top_level_fn(&ast.decls, Path::new(&input_file)) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = check_namespace_path_matches(&ast.decls, Path::new(&input_file)) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+    stamp_file_identity(&mut ast.decls, Path::new(&input_file));
+
+    let base_dir = Path::new(&input_file).parent().unwrap_or(Path::new(".")).to_path_buf();
+    let mut visited = HashSet::new();
+    if let Ok(c) = Path::new(&input_file).canonicalize() {
+        visited.insert(c);
+    }
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
+    if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps) {
+        eprintln!("error: import error: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = check_explicit_imports(Path::new(&input_file), &dep_dirs, &missing_deps) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+
+    tinox_parser::assign_node_ids(&mut ast);
+    let mut typechecker = tinox_typecheck::TypeChecker::new();
+    if let Err(e) = typechecker.check(&ast) {
+        eprintln!("error: type error:\n{}", e);
+        std::process::exit(1);
+    }
+    let (iface_methods, class_implements) = typechecker.interface_info();
+
+    let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
+    let project_root = pm::find_project_root_from(&base_dir).unwrap_or(base_dir);
+    let graph = callgraph::build_call_graph(&ast.decls, &ann_result, &iface_methods, &class_implements, &project_root);
+
+    if graph.entry_points.is_empty() {
+        eprintln!(
+            "warning: no auto-run entry points found (no @GET/@POST/etc, \
+             @WebsocketEndpoint, @Amqp10Consumer/@Amqp091Consumer, or @Command) \
+             -- writing an empty graph"
+        );
+    }
+
+    let mermaid = callgraph::render_mermaid(&graph);
+
+    let out_path = match out_override {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from("docs").join("callgraph.mmd"),
+    };
+    if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("error: cannot create {}: {}", parent.display(), e);
+            std::process::exit(1);
+        }
+    }
+    if let Err(e) = fs::write(&out_path, &mermaid) {
+        eprintln!("error: cannot write {}: {}", out_path.display(), e);
+        std::process::exit(1);
+    }
+
+    println!(
+        "Call graph written to {} ({} entry point{}, {} edge{}, {} unresolved call{})",
+        out_path.display(),
+        graph.entry_points.len(),
+        if graph.entry_points.len() == 1 { "" } else { "s" },
+        graph.edges.len(),
+        if graph.edges.len() == 1 { "" } else { "s" },
+        graph.unresolved.len(),
+        if graph.unresolved.len() == 1 { "" } else { "s" },
+    );
+}
+
 // ── Doc data model ────────────────────────────────────────────────────────────
 
 struct DocParam  { name: String, ty: String }
@@ -1891,6 +2038,10 @@ struct DocField  { name: String, ty: String, doc: Option<String>, annotations: V
 enum DocItem {
     Class {
         name: String,
+        /// Generic type parameters (`["T"]` for `class Foo<T>`), rendered
+        /// as an HTML-escaped `<T>` suffix next to the class name --
+        /// `name` itself stays the plain, anchor/id-safe class name.
+        type_params: Vec<String>,
         doc: Option<String>,
         annotations: Vec<String>,
         fields: Vec<DocField>,
@@ -1915,7 +2066,23 @@ enum DocItem {
 fn collect_doc_items(decl: &tinox_parser::DeclKind, out: &mut Vec<DocItem>) {
     use tinox_parser::DeclKind;
     match decl {
-        DeclKind::Class(c) if c.type_params.is_empty() => {
+        DeclKind::Class(c) => {
+            // Generic classes (type_params non-empty, e.g. `class
+            // GridColumn<T>`) used to be silently excluded from generated
+            // docs entirely -- the original guard here was `if
+            // c.type_params.is_empty()`, with no arm at all for the
+            // generic case, so a module's own generic classes just never
+            // appeared on its docs page, no error or warning either.
+            // Found while publishing tinox.core:ui 1.0.1 (issue #215
+            // follow-up): GridColumn<T>/DataGrid<T> compiled and worked
+            // fine, but were completely invisible in the generated
+            // docs.html. Fixed by documenting generic classes too --
+            // `name` stays the plain, anchor/id-safe class name (used
+            // verbatim in `id="class-{name}"`), `type_params` is rendered
+            // separately, HTML-escaped, as a `<T>` suffix next to it (see
+            // render_docs_html) so a raw `<T>` never ends up unescaped in
+            // the page, which would otherwise be parsed as a real HTML
+            // tag rather than displayed as text.
             let annotations = c.annotations.iter().map(|a| a.name.clone()).collect();
             let fields = c.fields.iter().map(|f| DocField {
                 name: f.name.clone(),
@@ -1926,6 +2093,7 @@ fn collect_doc_items(decl: &tinox_parser::DeclKind, out: &mut Vec<DocItem>) {
             let methods = c.methods.iter().map(method_to_doc).collect();
             out.push(DocItem::Class {
                 name: c.name.clone(),
+                type_params: c.type_params.clone(),
                 doc: c.doc.clone(),
                 annotations,
                 fields,
@@ -2088,15 +2256,20 @@ fn render_docs_html(
 
     for item in items {
         match item {
-            DocItem::Class { name, doc, annotations, fields, methods, implements, extends } => {
+            DocItem::Class { name, type_params, doc, annotations, fields, methods, implements, extends } => {
                 let anns = render_annotations(annotations);
+                let type_params_suffix = if type_params.is_empty() {
+                    String::new()
+                } else {
+                    format!("&lt;{}&gt;", html_escape(&type_params.join(", ")))
+                };
                 let mut subtitle = String::new();
                 if let Some(p) = extends { subtitle.push_str(&format!(" extends <code>{p}</code>")); }
                 if !implements.is_empty() {
                     subtitle.push_str(&format!(" implements {}", implements.iter().map(|i| format!("<code>{i}</code>")).collect::<Vec<_>>().join(", ")));
                 }
                 body.push_str(&format!(
-                    "<section id=\"class-{name}\" class=\"item\"><h2 class=\"item-name\">{anns}<span class=\"kw\">class</span> {name}{subtitle}</h2>"
+                    "<section id=\"class-{name}\" class=\"item\"><h2 class=\"item-name\">{anns}<span class=\"kw\">class</span> {name}{type_params_suffix}{subtitle}</h2>"
                 ));
                 if let Some(d) = doc { body.push_str(&format!("<p class=\"doc\">{}</p>", html_escape(d))); }
 
@@ -2358,12 +2531,14 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     let mut ast = parser.parse().map_err(|e| format!("parse error: {e:?}"))?;
     check_one_type_per_file(&ast.decls, Path::new(path))?;
     check_no_top_level_fn(&ast.decls, Path::new(path))?;
+    check_namespace_path_matches(&ast.decls, Path::new(path))?;
     let base = Path::new(path).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(path).canonicalize() { visited.insert(c); }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base);
     resolve_imports(&mut ast, &base, &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("import error: {e}"))?;
+    check_explicit_imports(Path::new(path), &dep_dirs, &missing_deps)?;
     let result = tinox_typecheck::annotations::process_annotations(&ast);
     Ok(result.test_entries)
 }
@@ -2380,12 +2555,14 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let mut ast = parser.parse().map_err(|e| format!("parse: {e:?}"))?;
     check_one_type_per_file(&ast.decls, Path::new(source))?;
     check_no_top_level_fn(&ast.decls, Path::new(source))?;
+    check_namespace_path_matches(&ast.decls, Path::new(source))?;
 
     let base = Path::new(source).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(source).canonicalize() { visited.insert(c); }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base);
     resolve_imports(&mut ast, &base, &mut visited, &dep_dirs, &missing_deps)?;
+    check_explicit_imports(Path::new(source), &dep_dirs, &missing_deps)?;
     tinox_parser::assign_node_ids(&mut ast);
 
     let mut tc = tinox_typecheck::TypeChecker::new();
@@ -2464,6 +2641,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
         do_not_serialize_fields,
         json_serializable_classes: ann.json_serializable_classes,
         metric_entries: vec![],
+        transactional_methods: ann.transactional_methods,
     });
     let entity_entries_test: Vec<tinox_codegen::EntityEntry> = ann.entity_entries
         .iter()
@@ -2632,6 +2810,178 @@ fn check_one_type_per_file(decls: &[tinox_parser::Decl], path: &Path) -> Result<
             many.join(", ")
         )),
     }
+}
+
+/// Collects `(namespace segments, type name)` for every class/interface/enum
+/// declared inside a `namespace a.b.c { ... }` block, at any nesting depth
+/// (segments accumulate across nested `namespace` blocks). A type declared
+/// OUTSIDE any `namespace` block is intentionally excluded — issue #185's
+/// path-mirroring rule is strictly opt-in, matching current adoption
+/// exactly (0% of project-local files declare a namespace today; only
+/// stdlib-style code does).
+fn collect_namespaced_type_decls(decls: &[tinox_parser::Decl]) -> Vec<(Vec<String>, &str)> {
+    fn walk<'a>(
+        decls: &'a [tinox_parser::Decl],
+        prefix: &[String],
+        out: &mut Vec<(Vec<String>, &'a str)>,
+    ) {
+        for d in decls {
+            match &d.node {
+                DeclKind::Namespace(ns) => {
+                    let mut segs = prefix.to_vec();
+                    segs.extend(ns.name.iter().cloned());
+                    walk(&ns.decls, &segs, out);
+                }
+                DeclKind::Class(c) if !prefix.is_empty() => {
+                    out.push((prefix.to_vec(), c.name.as_str()))
+                }
+                DeclKind::Interface(i) if !prefix.is_empty() => {
+                    out.push((prefix.to_vec(), i.name.as_str()))
+                }
+                DeclKind::Enum(e) if !prefix.is_empty() => {
+                    out.push((prefix.to_vec(), e.name.as_str()))
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(decls, &[], &mut out);
+    out
+}
+
+/// Issue #185: enforces "a type declared inside `namespace a.b.c { ... }`
+/// must live at a file path that mirrors the namespace" — finishes what the
+/// one-type-per-file convention started (previously only the LAST namespace
+/// segment became a directory, e.g. `crates/tinox-core-ext/amqp10/`, not the
+/// full `tinox/core/amqp10/`). Strictly opt-in via
+/// `collect_namespaced_type_decls`: a type with no enclosing `namespace`
+/// block is exempt, so this only ever fires for stdlib-style code that
+/// already declares one.
+///
+/// Root resolution: walks up from `path`'s parent for the nearest
+/// `tinox.toml` (`pm::find_project_root_from`). If found, the mirrored path
+/// is checked against whichever of these the file actually resolves under,
+/// most specific first: `<manifest_dir>/src` (the ordinary project
+/// convention), `<manifest_dir>/tests` (the `tests/<namespace-path>/
+/// <TypeName>Test.tnx` convention — a test file's own namespace/type-name
+/// pair mirrors the same way a source file's does, just rooted at `tests/`
+/// instead of `src/`), else `<manifest_dir>` itself directly (the
+/// stdlib-ext convention: `.tnx` files sit directly beside `tinox.toml`, no
+/// `src/` layer). If no `tinox.toml` ancestor exists at all, or `path`
+/// doesn't resolve under ANY of these, the check is skipped — there's no
+/// root to meaningfully validate against.
+///
+/// Never applied to a file inside an INSTALLED dependency
+/// (`.tinox/deps/...` or the global `~/.tinox/repository/...` cache —
+/// `pm::dep_install_dir`/`global_dep_install_dir`), detected by a literal
+/// `.tinox` path component anywhere in `path`. Hit live during `make
+/// check`: a pre-existing core-tier module (`socket`) published before
+/// this migration has no `tinox.toml` of its own inside its installed
+/// package directory, so `find_project_root_from` walked straight past it
+/// and found the CONSUMING project's own manifest instead — producing a
+/// nonsensical "must be located at <consumer project root>/tinox/core/
+/// socket/Socket.tnx" error for a file the current project doesn't even
+/// own. Installed dependencies are pre-vetted, address-scoped, immutable
+/// content this check has no business re-validating in the first place
+/// (there's nothing a local compile error would let anyone fix); only
+/// this project's OWN source is in scope.
+/// Every distinct namespace path (as segments) any top-level declaration in
+/// `decls` was declared under — issue #194 Phase 2's own notion of "this
+/// file's namespace(s)" (at most one in practice, given the one-type-per-
+/// file convention, but handled generally). Empty for the common case (no
+/// `namespace {}` block at all), which is what keeps Phase 2 a zero-cost
+/// no-op for the vast majority of project-local code (see issue #194's own
+/// "0% adoption in project-local code" blast-radius finding).
+fn own_namespace_paths(decls: &[tinox_parser::Decl]) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for (segs, _name) in collect_namespaced_type_decls(decls) {
+        if !out.contains(&segs) {
+            out.push(segs);
+        }
+    }
+    out
+}
+
+/// Issue #194 Phase 2 ("same namespace as the current file → implicit
+/// visibility, no import statement needed"): every `.tnx` file directly in
+/// `dir` (no subdirectory recursion — a subdirectory corresponds to a
+/// DEEPER namespace segment, a different namespace, per issue #185's
+/// namespace-mirroring convention) whose OWN namespace path exactly equals
+/// `ns_path`. Checked by actually parsing each candidate, not just trusting
+/// directory placement — issue #185's own path-match check is skipped for
+/// installed dependencies / when no tinox.toml ancestor exists, so
+/// directory placement alone isn't proof. Includes the file this was
+/// computed FROM (trivially matches its own namespace) — both call sites
+/// rely on their own `visited`/self-equality check to skip it rather than
+/// excluding it here, since they already need that check anyway (a
+/// same-namespace sibling can itself already be visited via an explicit
+/// import, or via ANOTHER sibling's own auto-merge).
+fn find_namespace_siblings(dir: &Path, ns_path: &[String]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.extension().map(|e| e == "tnx").unwrap_or(false) {
+            continue;
+        }
+        let Ok(source) = fs::read_to_string(&p) else { continue };
+        let Ok(tokens) = Lexer::new(&source).tokenize() else { continue };
+        let Ok(parsed) = Parser::new(tokens).parse() else { continue };
+        if own_namespace_paths(&parsed.decls).iter().any(|s| s.as_slice() == ns_path) {
+            out.push(p);
+        }
+    }
+    out.sort();
+    out
+}
+
+fn check_namespace_path_matches(decls: &[tinox_parser::Decl], path: &Path) -> Result<(), String> {
+    let namespaced = collect_namespaced_type_decls(decls);
+    if namespaced.is_empty() {
+        return Ok(());
+    }
+    let Ok(abs_path) = path.canonicalize() else {
+        return Ok(());
+    };
+    if abs_path.components().any(|c| c.as_os_str() == ".tinox") {
+        return Ok(());
+    }
+    let Some(manifest_dir) = pm::find_project_root_from(path.parent().unwrap_or(Path::new(".")))
+    else {
+        return Ok(());
+    };
+    let candidates = [
+        manifest_dir.join("src"),
+        manifest_dir.join("tests"),
+        manifest_dir.clone(),
+    ];
+    let Some((root, rel)) = candidates.iter().find_map(|candidate| {
+        let abs_root = candidate.canonicalize().ok()?;
+        let rel = abs_path.strip_prefix(&abs_root).ok()?;
+        Some((candidate.clone(), rel.to_path_buf()))
+    }) else {
+        return Ok(());
+    };
+    for (segs, type_name) in &namespaced {
+        let mut expected = PathBuf::new();
+        for seg in segs {
+            expected.push(seg);
+        }
+        expected.push(format!("{}.tnx", type_name));
+        if rel != expected {
+            return Err(format!(
+                "'{}' declares '{}' in namespace '{}', but the file must be located at '{}' to match its namespace",
+                path.display(),
+                type_name,
+                segs.join("."),
+                root.join(&expected).display(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Collects the names of every top-level free `fn` WITH A BODY in a single
@@ -2837,6 +3187,129 @@ fn resolve_in_dep_dirs(
     }
 }
 
+/// Whether an import resolved to project-local file(s) (relative to the
+/// importing file's own directory) or to trusted, external content
+/// (an installed dependency, or stdlib_dir()/CORE_MODULES) -- used by
+/// `check_explicit_imports` (issue #194) to decide whether to recurse and
+/// re-validate, or trust the target as an opaque prelude. `resolve_imports`
+/// itself ignores this distinction; it merges either way.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImportOrigin {
+    Local,
+    External,
+}
+
+/// Resolves one `import` statement to the real file(s) it refers to, in the
+/// same order `resolve_imports` has always used:
+/// 1. Relative to the source file's own directory (`ImportOrigin::Local`).
+/// 2. Installed package dependencies (.tinox/deps/... or the global
+///    ~/.tinox/repository/... cache — see resolve_in_dep_dirs).
+/// 3. tinox.core.X  →  <stdlib_dir>/tinox/core/X.tnx or
+///    <stdlib_dir>/tinox/core/X/*.tnx (issue #185: the full dotted
+///    import path, including the "tinox"/"core" prefix itself, is
+///    resolved as a literal nested path under stdlib_dir() — the
+///    SAME `rel_file`/`rel_dir` built below from the whole
+///    import path, no special-cased tail-stripping. This mirrors how
+///    branch 2 (resolve_in_dep_dirs) already resolves the full path
+///    under each dep dir, and matches what published/downloaded
+///    tinox-core-ext packages already look like on disk — see
+///    CLAUDE.md's namespace-mirroring migration notes) — but ONLY
+///    for CORE_MODULES. `tinox.core.<mod>` for anything else is
+///    extended-tier: it must have already resolved via branch 2 (a
+///    declared+installed dependency); if we're here, it didn't, so
+///    fail with a specific, actionable error instead of silently
+///    falling through to stdlib_dir() (see CLAUDE.md's core/extended
+///    stdlib split notes and the "no silent garbage" philosophy this
+///    project follows throughout).
+///
+/// Branches 2 and 3 are both `ImportOrigin::External`.
+fn resolve_import_target(
+    import: &tinox_parser::ast::Import,
+    base_dir: &Path,
+    dep_dirs: &[PathBuf],
+    missing_deps: &[pm::MissingDep],
+) -> Result<(Vec<PathBuf>, ImportOrigin), String> {
+    // ["foo", "bar"] → "foo/bar.tnx" (single-file module) or "foo/bar/"
+    // (directory module, one .tnx per top-level type) relative to base_dir.
+    let mut rel_file = PathBuf::new();
+    let mut rel_dir = PathBuf::new();
+    for (i, seg) in import.path.iter().enumerate() {
+        if i == import.path.len() - 1 {
+            rel_file.push(format!("{}.tnx", seg));
+            rel_dir.push(seg);
+        } else {
+            rel_file.push(seg);
+            rel_dir.push(seg);
+        }
+    }
+
+    if let Some(p) = resolve_module_paths(base_dir, &rel_file, &rel_dir)? {
+        return Ok((p, ImportOrigin::Local));
+    }
+    // Fallback: relative to the nearest project root's src/, tests/, or the
+    // manifest dir itself (the same three candidates issue #185's own
+    // namespace-mirroring check already treats as valid roots) instead of
+    // the importing file's own directory. Needed for a full dotted path to
+    // reach a DIFFERENT namespace-mirrored directory from anywhere in the
+    // project, not just from the entry file itself: a project-local import
+    // resolves relative to the importing file's own directory (branch
+    // above), which means a plain sibling import (`import PersonDao;` from
+    // within the same directory) works from anywhere, but a full dotted
+    // path (`import demo.model.Person;`) written OUTSIDE the entry file
+    // has no valid relative-to-self resolution at all once that file lives
+    // more than one level deep — confirmed live via the external `demo`
+    // project (issue #194's own motivating example) once Phase 1 made the
+    // import mandatory: `demo.dao.PersonDaoImpl` genuinely could not
+    // express any working import for `demo.model.Person`. Only tried after
+    // the direct relative-to-self lookup already failed, so this is purely
+    // additive — it can only resolve imports that previously errored, never
+    // change one that already worked.
+    if let Some(root) = pm::find_project_root_from(base_dir) {
+        for candidate_root in [root.join("src"), root.join("tests"), root.clone()] {
+            if candidate_root == base_dir {
+                continue;
+            }
+            if let Some(p) = resolve_module_paths(&candidate_root, &rel_file, &rel_dir)? {
+                return Ok((p, ImportOrigin::Local));
+            }
+        }
+    }
+    if let Some(p) = resolve_in_dep_dirs(dep_dirs, &rel_file, &rel_dir)? {
+        return Ok((p, ImportOrigin::External));
+    }
+    if import.path.first().map(|s| s == "tinox").unwrap_or(false) {
+        if import.path.len() >= 3 && import.path[1] == "core" {
+            let module = import.path[2].as_str();
+            if !CORE_MODULES.contains(&module) {
+                if let Some(m) = missing_deps
+                    .iter()
+                    .find(|m| m.group == "tinox.core" && m.artifact_id == module)
+                {
+                    return Err(format!(
+                        "tinox.toml declares tinox.core:{}:{} but it isn't installed — run `tinox install`.",
+                        m.artifact_id, m.version
+                    ));
+                }
+                return Err(format!(
+                    "Cannot resolve import 'tinox.core.{}...': '{}' is an extended-tier stdlib module, not part of the always-available core — declare it in tinox.toml:\n\n  [[dependencies]]\n  group = \"tinox.core\"\n  artifactId = \"{}\"\n  version = \"1.0.0\"\n\nthen run `tinox install`.",
+                    module, module, module
+                ));
+            }
+        }
+        let dir = stdlib_dir().ok_or_else(|| {
+            format!(
+                "Cannot resolve stdlib import '{}': TINOX_PATH not set and dev path not found",
+                rel_file.display()
+            )
+        })?;
+        let p = resolve_module_paths(&dir, &rel_file, &rel_dir)?.ok_or_else(|| {
+            format!("Cannot resolve stdlib import '{}': no such file or directory", rel_file.display())
+        })?;
+        return Ok((p, ImportOrigin::External));
+    }
+    Err(format!("Cannot resolve import '{}': file not found", rel_file.display()))
+}
+
 fn resolve_imports(
     ast: &mut tinox_parser::SourceFile,
     base_dir: &Path,
@@ -2872,116 +3345,25 @@ fn resolve_imports(
     let mut imported_decls: Vec<tinox_parser::Decl> = Vec::new();
 
     for import in imports {
-        // ["foo", "bar"] → "foo/bar.tnx" (single-file module) or "foo/bar/"
-        // (directory module, one .tnx per top-level type) relative to base_dir.
-        let mut rel_file = PathBuf::new();
-        let mut rel_dir = PathBuf::new();
-        for (i, seg) in import.path.iter().enumerate() {
-            if i == import.path.len() - 1 {
-                rel_file.push(format!("{}.tnx", seg));
-                rel_dir.push(seg);
-            } else {
-                rel_file.push(seg);
-                rel_dir.push(seg);
-            }
-        }
-
-        // Resolution order:
-        // 1. Relative to source file directory
-        // 2. Installed package dependencies (.tinox/deps/... or the global
-        //    ~/.tinox/repository/... cache — see resolve_in_dep_dirs)
-        // 3. tinox.core.X  →  <stdlib_dir>/X.tnx or <stdlib_dir>/X/*.tnx
-        //    tinox.core.X.Y  →  <stdlib_dir>/X/Y.tnx or <stdlib_dir>/X/Y/*.tnx
-        //    (everything after "tinox.core" nests as a subdirectory of the
-        //    stdlib dir, same rule as the relative-import case above; when
-        //    there's no "core" segment to anchor on, falls back to just the
-        //    last segment, unchanged from before this nesting support) —
-        //    but ONLY for CORE_MODULES. `tinox.core.<mod>` for anything
-        //    else is extended-tier: it must have already resolved via
-        //    branch 2 (a declared+installed dependency); if we're here, it
-        //    didn't, so fail with a specific, actionable error instead of
-        //    silently falling through to stdlib_dir() (see CLAUDE.md's
-        //    core/extended stdlib split notes and the "no silent garbage"
-        //    philosophy this project follows throughout).
-        let full_paths: Vec<PathBuf> = if let Some(p) = resolve_module_paths(base_dir, &rel_file, &rel_dir)? {
-            p
-        } else if let Some(p) = resolve_in_dep_dirs(dep_dirs, &rel_file, &rel_dir)? {
-            p
-        } else if import.path.first().map(|s| s == "tinox").unwrap_or(false) {
-            if import.path.len() >= 3 && import.path[1] == "core" {
-                let module = import.path[2].as_str();
-                if !CORE_MODULES.contains(&module) {
-                    if let Some(m) = missing_deps
-                        .iter()
-                        .find(|m| m.group == "tinox.core" && m.artifact_id == module)
-                    {
-                        return Err(format!(
-                            "tinox.toml declares tinox.core:{}:{} but it isn't installed — run `tinox install`.",
-                            m.artifact_id, m.version
-                        ));
-                    }
-                    return Err(format!(
-                        "Cannot resolve import 'tinox.core.{}...': '{}' is an extended-tier stdlib module, not part of the always-available core — declare it in tinox.toml:\n\n  [[dependencies]]\n  group = \"tinox.core\"\n  artifactId = \"{}\"\n  version = \"1.0.0\"\n\nthen run `tinox install`.",
-                        module, module, module
-                    ));
-                }
-            }
-            let tail: Vec<&String> = if import.path.len() >= 3 && import.path[1] == "core" {
-                import.path[2..].iter().collect()
-            } else {
-                import.path.last().into_iter().collect()
-            };
-            let mut stdlib_rel_file = PathBuf::new();
-            let mut stdlib_rel_dir = PathBuf::new();
-            for (i, seg) in tail.iter().enumerate() {
-                if i == tail.len() - 1 {
-                    stdlib_rel_file.push(format!("{}.tnx", seg));
-                    stdlib_rel_dir.push(seg);
-                } else {
-                    stdlib_rel_file.push(seg);
-                    stdlib_rel_dir.push(seg);
-                }
-            }
-            let dir = stdlib_dir().ok_or_else(|| {
-                format!(
-                    "Cannot resolve stdlib import '{}': TINOX_PATH not set and dev path not found",
-                    rel_file.display()
-                )
-            })?;
-            resolve_module_paths(&dir, &stdlib_rel_file, &stdlib_rel_dir)?.ok_or_else(|| {
-                format!("Cannot resolve stdlib import '{}': no such file or directory", stdlib_rel_file.display())
-            })?
-        } else {
-            return Err(format!("Cannot resolve import '{}': file not found", rel_file.display()));
-        };
+        let (full_paths, _origin) = resolve_import_target(&import, base_dir, dep_dirs, missing_deps)?;
 
         for full_path in full_paths {
-            if visited.contains(&full_path) {
-                continue;
+            if let Some(decls) = resolve_and_merge_file(&full_path, visited, dep_dirs, missing_deps)? {
+                imported_decls.extend(decls);
             }
-            visited.insert(full_path.clone());
+        }
+    }
 
-            let source = fs::read_to_string(&full_path)
-                .map_err(|e| format!("Failed to read import '{}': {}", full_path.display(), e))?;
-
-            let mut lexer = Lexer::new(&source);
-            // Keep source alive for the lexer lifetime
-            let tokens = lexer
-                .tokenize()
-                .map_err(|e| format!("Lexer error in '{}': {:?}", full_path.display(), e))?;
-
-            let mut parser = Parser::new(tokens);
-            let mut imported = parser
-                .parse()
-                .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
-            check_one_type_per_file(&imported.decls, &full_path)?;
-            check_no_top_level_fn(&imported.decls, &full_path)?;
-            stamp_file_identity(&mut imported.decls, &full_path);
-
-            let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-            resolve_imports(&mut imported, &imported_dir, visited, dep_dirs, missing_deps)?;
-
-            imported_decls.extend(imported.decls);
+    // Issue #194 Phase 2: same-namespace siblings are implicitly visible,
+    // with zero `import` statement needed — same prepend-before-own-decls
+    // treatment as an explicit import, via the same shared
+    // resolve_and_merge_file (including this file's own `visited` entry
+    // transparently excluding itself from its own sibling scan).
+    for ns_path in own_namespace_paths(&ast.decls) {
+        for sib_path in find_namespace_siblings(base_dir, &ns_path) {
+            if let Some(decls) = resolve_and_merge_file(&sib_path, visited, dep_dirs, missing_deps)? {
+                imported_decls.extend(decls);
+            }
         }
     }
 
@@ -2993,6 +3375,275 @@ fn resolve_imports(
     ast.decls = imported_decls;
 
     Ok(())
+}
+
+/// Reads, parses, validates, and recursively resolves one file's own
+/// imports (plus, transitively, its own same-namespace siblings) — the
+/// common tail shared by explicit `import` resolution and issue #194 Phase
+/// 2's same-namespace sibling auto-merge in `resolve_imports` above.
+/// Returns `None` if `full_path` was already visited (nothing new to
+/// merge — the standard `visited`-based cycle/dedup guard this whole
+/// pipeline already relies on), `Some(decls)` otherwise.
+fn resolve_and_merge_file(
+    full_path: &Path,
+    visited: &mut HashSet<PathBuf>,
+    dep_dirs: &[PathBuf],
+    missing_deps: &[pm::MissingDep],
+) -> Result<Option<Vec<tinox_parser::Decl>>, String> {
+    if visited.contains(full_path) {
+        return Ok(None);
+    }
+    visited.insert(full_path.to_path_buf());
+
+    let source = fs::read_to_string(full_path)
+        .map_err(|e| format!("Failed to read '{}': {}", full_path.display(), e))?;
+    let tokens = Lexer::new(&source)
+        .tokenize()
+        .map_err(|e| format!("Lexer error in '{}': {:?}", full_path.display(), e))?;
+    let mut parser = Parser::new(tokens);
+    let mut imported = parser
+        .parse()
+        .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
+    check_one_type_per_file(&imported.decls, full_path)?;
+    check_no_top_level_fn(&imported.decls, full_path)?;
+    check_namespace_path_matches(&imported.decls, full_path)?;
+    stamp_file_identity(&mut imported.decls, full_path);
+
+    let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    resolve_imports(&mut imported, &imported_dir, visited, dep_dirs, missing_deps)?;
+
+    Ok(Some(imported.decls))
+}
+
+fn parse_into_cache(
+    path: &Path,
+    cache: &mut std::collections::HashMap<PathBuf, tinox_parser::SourceFile>,
+) -> Result<(), String> {
+    if cache.contains_key(path) {
+        return Ok(());
+    }
+    let source = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read '{}': {}", path.display(), e))?;
+    let tokens = Lexer::new(&source)
+        .tokenize()
+        .map_err(|e| format!("Lexer error in '{}': {:?}", path.display(), e))?;
+    let mut ast = Parser::new(tokens)
+        .parse()
+        .map_err(|e| format!("Parse error in '{}': {:?}", path.display(), e))?;
+    // Without node ids, infer_type's memoization (Bug 50) never activates,
+    // making deep method chains exponential again -- caught live via the
+    // e2e regression test for that exact bug (method_chain_linear) timing
+    // out under check_explicit_imports (issue #194).
+    tinox_parser::assign_node_ids(&mut ast);
+    cache.insert(path.to_path_buf(), ast);
+    Ok(())
+}
+
+/// Parses `path` (cached) and resolves its own `import` statements one hop,
+/// returning each target alongside where it came from. Shared by
+/// `check_explicit_imports`'s outer per-file loop and
+/// `transitive_import_closure`'s inner expansion below — both need exactly
+/// "what does this one file import."
+fn file_direct_imports(
+    path: &Path,
+    cache: &mut std::collections::HashMap<PathBuf, tinox_parser::SourceFile>,
+    dep_dirs: &[PathBuf],
+    missing_deps: &[pm::MissingDep],
+) -> Result<Vec<(PathBuf, ImportOrigin)>, String> {
+    parse_into_cache(path, cache)?;
+    let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let imports: Vec<tinox_parser::ast::Import> = cache[path]
+        .decls
+        .iter()
+        .filter_map(|d| if let DeclKind::Import(i) = &d.node { Some(i.clone()) } else { None })
+        .collect();
+
+    let mut out = Vec::new();
+    for import in &imports {
+        let (targets, origin) = resolve_import_target(import, &base_dir, dep_dirs, missing_deps)?;
+        for t in targets {
+            parse_into_cache(&t, cache)?;
+            out.push((t, origin));
+        }
+    }
+
+    // Issue #194 Phase 2: same-namespace siblings are implicitly visible —
+    // this check must accept exactly what resolve_imports (main compile
+    // path) now actually merges in, or it would report spurious "missing
+    // import" violations for names Phase 2 already made legitimately
+    // visible. ImportOrigin::Local since these are project-local files
+    // check_explicit_imports's outer loop must also independently validate
+    // in their own right, same as an explicitly imported one.
+    for ns_path in own_namespace_paths(&cache[path].decls) {
+        for sib in find_namespace_siblings(&base_dir, &ns_path) {
+            if sib == path {
+                continue;
+            }
+            parse_into_cache(&sib, cache)?;
+            out.push((sib, ImportOrigin::Local));
+        }
+    }
+    Ok(out)
+}
+
+/// Expands `seeds` (a file's own direct imports) into the full transitive
+/// closure of everything THOSE files import, recursively -- both
+/// `ImportOrigin::Local` and `External` (unlike `check_explicit_imports`'s
+/// outer per-file loop, which only recurses into `Local` files to decide
+/// what to independently VALIDATE, this closure is only ever used to build
+/// a PRELUDE set, i.e. "what's visible," so it must include the same
+/// external stdlib/dependency content the importing file's own imports
+/// already trust).
+///
+/// Needed so a file that implements/extends a type from one of its own
+/// direct imports doesn't ALSO have to import that type's own supertypes
+/// by hand -- e.g. `Circle.tnx` (`examples/interface_extends/`) imports
+/// `IDrawable` and implements it; `IDrawable extends IShape` in a separate
+/// file `IDrawable.tnx` itself imports. Circle never spells "IShape"
+/// anywhere in its own source, so requiring Circle to ALSO explicitly
+/// import IShape would go beyond "explicit import for every name you
+/// reference" into "explicit import for every transitive supertype of
+/// every type you reference" -- stricter than normal language convention
+/// (Java/C# don't require this either) and not what issue #194 asked for.
+fn transitive_import_closure(
+    seeds: Vec<PathBuf>,
+    cache: &mut std::collections::HashMap<PathBuf, tinox_parser::SourceFile>,
+    dep_dirs: &[PathBuf],
+    missing_deps: &[pm::MissingDep],
+) -> Result<Vec<PathBuf>, String> {
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut stack = seeds;
+    let mut ordered = Vec::new();
+    while let Some(p) = stack.pop() {
+        if !seen.insert(p.clone()) {
+            continue;
+        }
+        ordered.push(p.clone());
+        for (target, _origin) in file_direct_imports(&p, cache, dep_dirs, missing_deps)? {
+            stack.push(target);
+        }
+    }
+    Ok(ordered)
+}
+
+/// Phase 1 of issue #194: a file may only reference names it declares
+/// itself or explicitly imports directly — "some other file in the program
+/// imports it transitively" (the ONLY way project-local cross-file
+/// visibility has worked until now, since `resolve_imports` merges every
+/// reachable file into one flat, whole-program decl list before
+/// typechecking) is no longer sufficient. This is what let a file like
+/// `PersonService.tnx` reference `Person`/`PersonDao`/`PersonDaoImpl`
+/// without importing any of them, and it's exactly what makes tinox-lsp —
+/// which only ever typechecks one open file plus its own declared
+/// preludes, with no whole-program import graph to walk — unable to
+/// resolve them, even though `tinox build` was fine with it.
+///
+/// Reuses `tinox_typecheck::typecheck_with_prelude` (already proven via
+/// tinox-lsp's identical single-file-plus-preludes use) as the enforcement
+/// mechanism: checking a file with the transitive closure of its own direct
+/// imports (see `transitive_import_closure`) registered as prelude
+/// declarations means any name the typechecker still can't resolve is, by
+/// construction, a name that needed an explicit import and didn't have one.
+///
+/// The OUTER per-file loop below only recurses into (and independently
+/// validates) files resolved as `ImportOrigin::Local` (relative to the
+/// importing file's own directory). `ImportOrigin::External` targets
+/// (installed dependencies, stdlib) are still included in prelude sets, but
+/// never independently re-validated as their own primary target — mirroring
+/// the precedent already established for the namespace-mirroring check
+/// (issue #185): installed/stdlib content is pre-vetted, address-scoped,
+/// immutable-per-version content this check has no business re-validating.
+/// Without this split, virtually every directory-style stdlib module would
+/// fail: e.g. `tinox.core.db`'s `DB.tnx` references `EntityQuery` with no
+/// import of its own, relying entirely on the *consumer's* one
+/// directory-level import merging both files as one unit — that's the
+/// entire point of the one-type-per-file → directory-of-files convention,
+/// not a bug to flag.
+///
+/// Runs as its own, independent traversal — deliberately not threaded
+/// through `resolve_imports`'s own merge/`visited` state, so it re-parses
+/// files `resolve_imports` also parses. A narrow, acceptable trade-off:
+/// `.tnx` files are small and this is compile-time-only, and it keeps
+/// `resolve_imports`'s existing, proven merge path (used by codegen)
+/// completely untouched.
+fn check_explicit_imports(
+    entry_path: &Path,
+    dep_dirs: &[PathBuf],
+    missing_deps: &[pm::MissingDep],
+) -> Result<(), String> {
+    let mut cache: std::collections::HashMap<PathBuf, tinox_parser::SourceFile> =
+        std::collections::HashMap::new();
+    let entry_canon = entry_path
+        .canonicalize()
+        .map_err(|e| format!("Cannot read '{}': {}", entry_path.display(), e))?;
+    let mut queue: Vec<PathBuf> = vec![entry_canon];
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut violations: Vec<String> = Vec::new();
+
+    while let Some(path) = queue.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let direct = file_direct_imports(&path, &mut cache, dep_dirs, missing_deps)?;
+        for (target, origin) in &direct {
+            if *origin == ImportOrigin::Local {
+                queue.push(target.clone());
+            }
+        }
+
+        let seeds: Vec<PathBuf> = direct.iter().map(|(p, _)| p.clone()).collect();
+        let prelude_paths = transitive_import_closure(seeds, &mut cache, dep_dirs, missing_deps)?;
+        // Exclude `path` itself: an import cycle running back through `path`
+        // (e.g. two mutually-`import`ing files, see tests/e2e/
+        // inherited_static_dispatch's Base.tnx/Derived.tnx) would otherwise
+        // put `path` in its own prelude set, causing `typecheck_with_prelude`
+        // to call `register_declarations` on it twice — the second call's
+        // plain `class_fields.insert` (not a merge) wipes out any inherited
+        // fields the first `expand_class_inheritance` pass had just added,
+        // producing a spurious "has no field" error. `path`'s own decls are
+        // already `source` in the `typecheck_with_prelude` call below; they
+        // have no business also being a prelude of themselves.
+        let preludes: Vec<&tinox_parser::SourceFile> = prelude_paths
+            .iter()
+            .filter(|p| *p != &path)
+            .filter_map(|p| cache.get(p))
+            .collect();
+
+        if let Err(bag) = tinox_typecheck::typecheck_with_prelude(&cache[&path], &preludes) {
+            for err in bag.errors {
+                // "missing return statement" is a real, independent
+                // typechecker gap (return-completeness analysis doesn't
+                // look inside try/catch bodies, confirmed unrelated to
+                // imports/namespaces — found live via the external `demo`
+                // project) with nothing to do with import visibility.
+                // Reporting it here, wrapped in this function's own
+                // "add the missing `import`" trailer, would be actively
+                // misleading — skip it and let the REAL compile pipeline's
+                // own typecheck pass (which runs right after this function
+                // returns Ok, on the fully merged whole-program AST) catch
+                // it properly, with its own accurate error instead.
+                if err.message == "missing return statement" {
+                    continue;
+                }
+                violations.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    err.span.start.line,
+                    err.message
+                ));
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{}\n\nEvery cross-namespace name must be explicitly imported in the file that uses it — \
+         being imported transitively by some other file in the program is no longer sufficient \
+         (see issue #194). Add the missing `import` statement(s) above.",
+        violations.join("\n")
+    ))
 }
 
 fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<(), String> {
@@ -3010,6 +3661,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         .map_err(|e| format!("Parse error: {:?}", e))?;
     check_one_type_per_file(&ast.decls, Path::new(input_path))?;
     check_no_top_level_fn(&ast.decls, Path::new(input_path))?;
+    check_namespace_path_matches(&ast.decls, Path::new(input_path))?;
     stamp_file_identity(&mut ast.decls, Path::new(input_path));
 
     let base_dir = Path::new(input_path)
@@ -3032,6 +3684,8 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         );
     }
     resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps)
+        .map_err(|e| format!("Import error: {}", e))?;
+    check_explicit_imports(Path::new(input_path), &dep_dirs, &missing_deps)
         .map_err(|e| format!("Import error: {}", e))?;
     // NodeIds for the type table (typecheck → codegen)
     tinox_parser::assign_node_ids(&mut ast);
@@ -3062,6 +3716,28 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             "'{}' has no `class Main {{ fnc main() -> Int32 }}` -- every Tinox program requires this as its entry point now (create src/Main.tnx, see `tinox new` for the scaffold shape); @GET/@Http3RestController/@WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer classes run alongside it instead of providing their own implicit main",
             input_path
         ));
+    }
+
+    // @Transactional is postgres-only in v1 (issue #191): the connection
+    // pool + BEGIN/COMMIT/ROLLBACK primitives it compiles down to only
+    // exist for that driver (runtime.c's sqlite/mysql tinox_db_tx_* stubs
+    // hard-abort if ever actually called, as a second line of defense, but
+    // that's meant to catch a bug in THIS check, not substitute for it).
+    // A hard compile error here, not a silent no-op or a runtime surprise
+    // the first time a transactional method actually runs. Checked here,
+    // before ann_result.transactional_methods is moved into the
+    // set_annotation_info() call further down.
+    if !ann_result.transactional_methods.is_empty() {
+        let driver_cfg = read_database_config();
+        let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
+        if driver != "postgres" {
+            let (class_name, method_name) = ann_result.transactional_methods.iter().next().unwrap();
+            return Err(format!(
+                "'{class_name}.{method_name}' is @Transactional, but [database] driver is {} -- \
+                 @Transactional is only supported for driver = \"postgres\" in this version",
+                if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
+            ));
+        }
     }
 
     let route_entries: Vec<tinox_codegen::RouteEntry> = ann_result
@@ -3166,6 +3842,44 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
             ann_result.http3_rest_controllers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
         ));
     }
+    // @TinoxUIApp (issue #215, Phase 4): at most one class per program
+    // (same v1 restriction as @Http3RestController -- multiple apps in one
+    // program is architecturally ambiguous for now), and exactly one
+    // @View method on that class (zero = nothing to render; more than one
+    // = ambiguous which builds the tree).
+    if ann_result.tinoxui_apps.len() > 1 {
+        return Err(format!(
+            "found {} @TinoxUIApp classes ({}); v1 supports exactly one Tinox-UI app per program",
+            ann_result.tinoxui_apps.len(),
+            ann_result.tinoxui_apps.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let tinoxui_app: Option<tinox_codegen::TinoxUIAppEntry> = match ann_result.tinoxui_apps.first() {
+        Some(app) => {
+            if app.view_methods.is_empty() {
+                return Err(format!(
+                    "@TinoxUIApp class '{}' has no @View method -- exactly one method returning Component is required to build its UI",
+                    app.class_name
+                ));
+            }
+            if app.view_methods.len() > 1 {
+                return Err(format!(
+                    "@TinoxUIApp class '{}' has {} @View methods ({}); exactly one is required",
+                    app.class_name,
+                    app.view_methods.len(),
+                    app.view_methods.join(", ")
+                ));
+            }
+            Some(tinox_codegen::TinoxUIAppEntry {
+                class_name: app.class_name.clone(),
+                http_port: app.http_port,
+                ws_port: app.ws_port,
+                view_method: app.view_methods[0].clone(),
+                route_entries: app.route_entries.clone(),
+            })
+        }
+        None => None,
+    };
     // Cross-kind combos (@Http3RestController + @WebsocketEndpoint/@Amqp10Consumer/
     // @Amqp091Consumer, or any of those + plain @GET/@Path routes) used to be
     // rejected here because each auto-run kind generated its own competing
@@ -3284,6 +3998,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         do_not_serialize_fields,
         json_serializable_classes: ann_result.json_serializable_classes,
         metric_entries,
+        transactional_methods: ann_result.transactional_methods,
     });
     codegen.set_metrics_config(read_metrics_config());
     let entity_entries: Vec<tinox_codegen::EntityEntry> = ann_result.entity_entries
@@ -3306,7 +4021,10 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     codegen.set_amqp10_consumers(amqp10_consumers);
     codegen.set_amqp091_consumers(amqp091_consumers);
     codegen.set_http3_rest_controller(http3_rest_controller);
-    codegen.set_db_url(read_database_config().map(|c| c.url));
+    codegen.set_tinoxui_apps(tinoxui_app.into_iter().collect());
+    let db_config_for_codegen = read_database_config();
+    codegen.set_db_url(db_config_for_codegen.as_ref().map(|c| c.url.clone()));
+    codegen.set_db_pool_size(db_config_for_codegen.as_ref().map(|c| c.pool as i64).unwrap_or(5));
     if dev_config.enabled {
         codegen.set_dev_info(
             read_project_name().unwrap_or_else(|| "app".to_string()),
@@ -3461,9 +4179,35 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+    // Where does this system keep libpq-fe.h? Not the same place everywhere:
+    // on this dev machine (Arch) `libpq` flattens its headers straight into
+    // /usr/include, so a bare `#include <libpq-fe.h>` "just worked" there --
+    // but CI (Ubuntu, PGDG's own postgresql-client apt repo) nests them
+    // under /usr/include/postgresql/ instead, which clang/gcc's default
+    // search path does NOT include. Found the hard way: local testing only
+    // ever ran on this machine, so the CI failure (`libpq-fe.h: No such
+    // file or directory`, package reported as "already the newest version")
+    // was invisible until the real GitHub Actions run. `pg_config
+    // --includedir` is the portable, canonical way to ask libpq itself
+    // where its headers live, on any distro -- not a hardcoded guess at a
+    // specific nested path.
+    let pg_include_dir = if db_driver == "postgres" {
+        Command::new("pg_config")
+            .arg("--includedir")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    } else {
+        None
+    };
     let mut cc_args = vec!["-c", &runtime_src, "-o", &runtime_obj, "-O3"];
+    let pg_include_flag = pg_include_dir.as_ref().map(|d| format!("-I{d}"));
     if db_driver == "postgres" {
         cc_args.push("-DTINOX_DB_POSTGRES");
+        if let Some(flag) = &pg_include_flag {
+            cc_args.push(flag);
+        }
     } else if db_driver == "mysql" {
         cc_args.push("-DTINOX_DB_MYSQL");
     } else if db_driver == "sqlite" {
@@ -3578,6 +4322,166 @@ mod one_type_per_file_tests {
         let decls = parse_decls("interface Shape { fn area() -> Int64; } enum Color { Red, Blue }");
         let err = check_one_type_per_file(&decls, Path::new("x.tnx")).unwrap_err();
         assert!(err.contains("Shape") && err.contains("Color"), "error should list both: {err}");
+    }
+}
+
+#[cfg(test)]
+mod namespace_path_matches_tests {
+    use super::*;
+    use std::fs;
+
+    fn parse_decls(src: &str) -> Vec<tinox_parser::Decl> {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("tokenize");
+        let mut parser = Parser::new(tokens);
+        parser.parse().expect("parse").decls
+    }
+
+    /// Builds a throwaway manifest dir (a `tinox.toml`, optionally a `src/`
+    /// subdir) under the OS temp dir, uniquely named per test + pid so
+    /// parallel `cargo test` runs never collide.
+    fn make_manifest_dir(name: &str, with_src: bool) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "tinox_ns_path_test_{}_{}",
+            name,
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("tinox.toml"), "[package]\nname = \"t\"\n").unwrap();
+        if with_src {
+            fs::create_dir_all(dir.join("src")).unwrap();
+        }
+        dir
+    }
+
+    fn write_file(root: &Path, rel: &str, content: &str) -> PathBuf {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn no_namespace_is_exempt() {
+        let dir = make_manifest_dir("no_ns", true);
+        let path = write_file(&dir, "src/Anywhere.tnx", "class Foo { var x: Int64; }");
+        let decls = parse_decls(&fs::read_to_string(&path).unwrap());
+        assert!(check_namespace_path_matches(&decls, &path).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn matching_path_under_src_ok() {
+        let dir = make_manifest_dir("match_src", true);
+        let path = write_file(
+            &dir,
+            "src/tinox/core/amqp10/Amqp10Connection.tnx",
+            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64; } }",
+        );
+        let decls = parse_decls(&fs::read_to_string(&path).unwrap());
+        assert!(check_namespace_path_matches(&decls, &path).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn matching_path_flat_no_src_ok() {
+        // stdlib-ext convention: .tnx files sit directly beside tinox.toml,
+        // no `src/` layer.
+        let dir = make_manifest_dir("match_flat", false);
+        let path = write_file(
+            &dir,
+            "tinox/core/amqp10/Amqp10Connection.tnx",
+            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64; } }",
+        );
+        let decls = parse_decls(&fs::read_to_string(&path).unwrap());
+        assert!(check_namespace_path_matches(&decls, &path).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn matching_path_under_tests_ok() {
+        // The tests/<namespace-path>/<TypeName>Test.tnx convention -- a
+        // real gap hit live while writing the first example test: this
+        // must be its own recognized root, not just checked against
+        // src/ or the bare manifest dir.
+        let dir = make_manifest_dir("match_tests", true);
+        let path = write_file(
+            &dir,
+            "tests/tinox/core/amqp10/Amqp10ConnectionTest.tnx",
+            "namespace tinox.core.amqp10 { class Amqp10ConnectionTest { var x: Int64; } }",
+        );
+        let decls = parse_decls(&fs::read_to_string(&path).unwrap());
+        assert!(check_namespace_path_matches(&decls, &path).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mismatched_path_err() {
+        let dir = make_manifest_dir("mismatch", true);
+        let path = write_file(
+            &dir,
+            "src/wrong/place/Amqp10Connection.tnx",
+            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64; } }",
+        );
+        let decls = parse_decls(&fs::read_to_string(&path).unwrap());
+        let err = check_namespace_path_matches(&decls, &path).unwrap_err();
+        assert!(
+            err.contains("tinox.core.amqp10"),
+            "error should name the namespace: {err}"
+        );
+        assert!(
+            err.contains(&format!(
+                "{}",
+                dir.join("src/tinox/core/amqp10/Amqp10Connection.tnx").display()
+            )),
+            "error should name the expected path: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_manifest_ancestor_is_exempt() {
+        // A namespaced file with no `tinox.toml` anywhere above it in the
+        // filesystem -- nothing to validate against, so this must not
+        // hard-fail.
+        let dir = std::env::temp_dir().join(format!(
+            "tinox_ns_path_test_no_manifest_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = write_file(
+            &dir,
+            "Whatever.tnx",
+            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64; } }",
+        );
+        let decls = parse_decls(&fs::read_to_string(&path).unwrap());
+        assert!(check_namespace_path_matches(&decls, &path).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn installed_dependency_without_its_own_manifest_is_exempt() {
+        // Reproduces a real `make check` failure: a project depends on a
+        // pre-existing core-tier package published before this migration
+        // (no `tinox.toml` of its own inside the installed dir). Without
+        // the `.tinox` path-component guard, `find_project_root_from`
+        // walks straight past it into the CONSUMING project's own
+        // manifest and wrongly validates the dependency's file against
+        // ITS layout instead of skipping.
+        let dir = make_manifest_dir("dep_no_manifest", true);
+        let dep_dir = dir.join(".tinox/deps/tinox.core/socket/1.0.0");
+        let path = write_file(
+            &dep_dir,
+            "tinox/core/socket/Socket.tnx",
+            "namespace tinox.core.socket { class Socket { var x: Int64; } }",
+        );
+        // No tinox.toml written anywhere under dep_dir -- matches the real
+        // pre-existing package this reproduces.
+        let decls = parse_decls(&fs::read_to_string(&path).unwrap());
+        assert!(check_namespace_path_matches(&decls, &path).is_ok());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 

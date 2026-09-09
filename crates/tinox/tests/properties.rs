@@ -155,8 +155,8 @@ fn prop_contains_index_of(rng: &mut Rng, i: usize) -> Instance {
     let hit_idx = xs.iter().position(|&v| v == hit).unwrap();
     let stmts = format!(
         "    let xs{i}: List<Int64> = [{lit}];\n\
-         \x20   if xs{i}.contains({hit}) {{ println(\"y\"); }} else {{ println(\"n\"); }}\n\
-         \x20   if xs{i}.contains({miss}) {{ println(\"y\"); }} else {{ println(\"n\"); }}\n\
+         \x20   if (xs{i}.contains({hit})) {{ println(\"y\"); }} else {{ println(\"n\"); }}\n\
+         \x20   if (xs{i}.contains({miss})) {{ println(\"y\"); }} else {{ println(\"n\"); }}\n\
          \x20   println(xs{i}.indexOf({hit}));\n\
          \x20   println(xs{i}.indexOf({miss}));\n"
     );

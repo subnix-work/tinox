@@ -16,7 +16,7 @@ class Main
 
     fnc nested(n: Int64) -> String {
         // nested if chain
-        if n == 1 { if n == 1 { if n == 1 { if n == 1 { if n == 1 {
+        if (n == 1) { if (n == 1) { if (n == 1) { if (n == 1) { if (n == 1) {
             return "nested if ok";
         } } } } }
         return "?";

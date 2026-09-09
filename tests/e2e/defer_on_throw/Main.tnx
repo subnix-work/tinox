@@ -29,7 +29,7 @@ class Main
         defer { println("close resource"); }   // function scope
         var i: Int64 = 0;
         while i < 5 {
-            if i == 2 { throw "loop"; }         // throw from loop scope
+            if (i == 2) { throw "loop"; }         // throw from loop scope
             println("i=" + i.toString());
             i = i + 1;
         }

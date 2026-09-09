@@ -97,7 +97,7 @@ class Ctrl
     @Path("/greet/:name")
     fn greet(@PathParam name: String, @QueryParam loud: Bool) -> Greeting
     {
-        if loud
+        if (loud)
         {
             return Greeting { message: "HELLO, " + name + "!", loud: true };
         }
@@ -127,7 +127,7 @@ class Ctrl
     @Path("/check/:id")
     fn check(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
-        if id == 42
+        if (id == 42)
         {
             ctx.response.status(200).json("{\"found\":true}");
             return ctx;

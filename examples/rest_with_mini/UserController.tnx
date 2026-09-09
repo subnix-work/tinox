@@ -17,7 +17,7 @@ class UserController
         var i: Int64 = 0;
         while i < users.len()
         {
-            if users[i].id == id
+            if (users[i].id == id)
             {
                 return i;
             }
@@ -42,7 +42,7 @@ class UserController
     {
         let users: List<User> = [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
         let idx: Int64 = findUserIndex(users, id);
-        if idx < 0
+        if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"user not found\"}");
             return ctx;

@@ -6,4 +6,4 @@ description = "Local-only manifest so HpackDriver.tnx can pull in the real tinox
 [[dependencies]]
 group = "tinox.core"
 artifactId = "hpack"
-version = "1.0.0"
+version = "1.0.1"

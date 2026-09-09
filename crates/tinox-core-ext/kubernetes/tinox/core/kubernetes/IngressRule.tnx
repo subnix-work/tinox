@@ -1,0 +1,18 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class IngressRule
+    {
+        var host: String;
+        var http: HttpIngressRuleValue;
+
+        fnc create(host: String, paths: List<HttpIngressPath>) -> IngressRule
+        {
+            return IngressRule { host: host, http: HttpIngressRuleValue { paths: paths } };
+        }
+    }
+}

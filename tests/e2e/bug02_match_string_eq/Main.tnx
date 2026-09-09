@@ -20,8 +20,8 @@ class Main
 
     fnc main() -> Int32 {
         let x = "he" + "llo";
-        if same(bug02_match_string_eq::Str("hello"), bug02_match_string_eq::Str(x)) { println("eq"); } else { println("-"); }
-        if same(bug02_match_string_eq::Str("hello"), bug02_match_string_eq::Str("world")) { println("-"); } else { println("neq"); }
+        if (same(bug02_match_string_eq::Str("hello"), bug02_match_string_eq::Str(x))) { println("eq"); } else { println("-"); }
+        if (same(bug02_match_string_eq::Str("hello"), bug02_match_string_eq::Str("world"))) { println("-"); } else { println("neq"); }
         return 0;
     }
 }

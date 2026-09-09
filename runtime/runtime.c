@@ -23,6 +23,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -38,6 +39,8 @@
 #include <zlib.h>
 #ifdef __GLIBC__
 #include <execinfo.h>
+#include <pty.h>
+#include <termios.h>
 #endif
 
 #ifdef TINOX_NO_GC
@@ -759,6 +762,29 @@ int64_t tinox_task_await(void* handle) {
     return (int64_t)(uintptr_t)retval;
 }
 
+// Fire-and-forget variant of tinox_task_spawn -- no TinoxTask handle, no
+// tinox_task_await ever expected. Reuses the SAME tinox_spawn_trampoline
+// (still gets the GC thread-root registration a spawned thread needs --
+// Bug 140), just pthread_detach()s instead of leaving the thread joinable.
+// For @WebsocketEndpoint's per-connection worker threads (codegen.rs,
+// emit_ws_code): a real, long-running server accepts and drops many
+// connections over its lifetime, and tinox_task_spawn's own joinable
+// threads would leak one pthread's kernel resources per connection
+// forever unless something calls tinox_task_await on every single one --
+// nothing sensibly can, since the accept loop's whole point is to keep
+// accepting without waiting on any one connection. Mirrors the exact
+// pthread_create+pthread_detach pattern tinox_HttpServer_listen's own
+// epoll worker pool already uses for the same "never joined, must not
+// leak" reason.
+void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
+    TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
+    t->fn = fn;
+    t->args = args;
+    pthread_t tid;
+    pthread_create(&tid, NULL, tinox_spawn_trampoline, t);
+    pthread_detach(tid);
+}
+
 void* tinox_channel_create(void) {
     TinoxChannel* ch = calloc(1, sizeof(TinoxChannel));
     pthread_mutex_init(&ch->mutex, NULL);
@@ -1389,6 +1415,39 @@ void httpClearHeaders(void) {
     _tinox_http_req_headers = NULL;
 }
 
+// Per-thread TLS client config for https:// requests -- custom CA (self-
+// signed cluster CAs, e.g. Kubernetes' own), client cert/key (mTLS), and
+// insecure-skip-verify. Mirrors the header state above (thread-local,
+// plain malloc/strdup -- never GC memory, so no GC-root registration
+// needed, same reasoning as _tinox_http_req_headers). Consulted by
+// http_request()'s TLS branch further below; unset (all NULL/0) preserves
+// the exact previous behavior (shared lazily-initialized g_tls_client_ctx,
+// default system trust store, hostname verification).
+static __thread char* _tinox_tls_ca_cert_path = NULL;
+static __thread char* _tinox_tls_client_cert_path = NULL;
+static __thread char* _tinox_tls_client_key_path = NULL;
+static __thread int64_t _tinox_tls_insecure_skip_verify = 0;
+
+void httpSetTlsCaCertFile(const char* path) {
+    _tinox_tls_ca_cert_path = path ? strdup(path) : NULL;
+}
+
+void httpSetTlsClientCertFile(const char* certPath, const char* keyPath) {
+    _tinox_tls_client_cert_path = certPath ? strdup(certPath) : NULL;
+    _tinox_tls_client_key_path = keyPath ? strdup(keyPath) : NULL;
+}
+
+void httpSetTlsInsecureSkipVerify(int64_t enabled) {
+    _tinox_tls_insecure_skip_verify = enabled ? 1 : 0;
+}
+
+void httpClearTlsConfig(void) {
+    _tinox_tls_ca_cert_path = NULL;
+    _tinox_tls_client_cert_path = NULL;
+    _tinox_tls_client_key_path = NULL;
+    _tinox_tls_insecure_skip_verify = 0;
+}
+
 // http_parse_url/http_request/httpGet/httpPost/httpPut/httpDelete/httpPatch
 // moved below (after the TLS connection-handle section, ~"---- Binary-safe
 // conn primitives ----") so http_request can use g_tls_client_ctx for
@@ -1761,6 +1820,485 @@ char* envCurrentDir(void) {
 
 void envSetCurrentDir(const char* path) {
     chdir(path);
+}
+
+// ---- Argv-based subprocess execution (tinox.core.process) -----------------
+//
+// fork+execvp, never a shell: every argv element is passed as its own execvp
+// argument, so a value flowing straight from untrusted input (e.g. a
+// Kubernetes namespace/pod name taken from an HTTP path param) can never be
+// interpreted as shell syntax. This is deliberately a separate mechanism from
+// tinox_run_command_json below (popen-based, one shell-escaped command
+// string) -- that one is fine for its single fixed, compile-time-constant
+// call site (the dev-UI test runner), but is the wrong tool for a command
+// built from caller-supplied arguments.
+//
+// Handles are returned as an Int64 (ptrtoint of a GC_malloc'd struct), the
+// same "opaque native resource as an Int64 handle" idiom used throughout
+// this runtime (HTTP connection fds, DB connections, etc.) rather than a
+// pointer type — Tinox's type system has no generic opaque-pointer type.
+// The struct and its two string fields are GC_malloc'd/GC_strdup'd, so
+// there's no explicit free: once the Tinox-side handle is no longer
+// reachable, the GC reclaims it like everything else in this runtime.
+
+typedef struct {
+    char* out;
+    char* err;
+    int64_t exit_code;
+    int64_t timed_out;
+} TinoxProcessResult;
+
+typedef struct {
+    char* buf;
+    size_t len;
+    size_t cap;
+} TinoxGrowBuf;
+
+static void tinox_growbuf_append(TinoxGrowBuf* b, const char* data, size_t n) {
+    if (n == 0) return;
+    if (b->len + n + 1 > b->cap) {
+        size_t new_cap = b->cap ? b->cap * 2 : 4096;
+        while (new_cap < b->len + n + 1) new_cap *= 2;
+        char* nb = realloc(b->buf, new_cap);
+        if (!nb) {
+            fprintf(stderr, "runtime error: process_run: out of memory capturing output\n");
+            exit(1);
+        }
+        b->buf = nb;
+        b->cap = new_cap;
+    }
+    memcpy(b->buf + b->len, data, n);
+    b->len += n;
+    b->buf[b->len] = '\0';
+}
+
+// Runs argv[0] with argv[1..] as arguments, feeding `stdin_data` to the
+// child's stdin (empty string = closed/empty stdin, e.g. for a plain
+// `kubectl get`) and capturing stdout/stderr separately, enforcing a
+// wall-clock timeout (timeout_ms <= 0 means no timeout). On timeout the
+// child is SIGKILLed and reaped; `timed_out` is set on the result and
+// exit_code is -1 (no real exit status exists in that case). A
+// signal-terminated child reports exit_code as -signal, matching the
+// negative-on-signal convention already used elsewhere in this runtime.
+//
+// stdin is written concurrently with draining stdout/stderr (poll() on all
+// three fds at once, POLLOUT on the stdin pipe alongside POLLIN on the
+// other two) rather than "write all of stdin, then read output" -- the
+// naive sequential approach deadlocks as soon as the child's own stdout/
+// stderr fills its OS pipe buffer before it has fully read stdin (a real
+// case here: `kubectl apply -f -` with a large manifest can easily write
+// enough progress/warning output to hit this before finishing reading).
+//
+// No GC_/Tinox runtime calls happen in the child between fork() and
+// execvp()/_exit() -- the one hazard specific to forking inside a GC'd,
+// multi-threaded process (another thread could hold a GC or malloc lock at
+// the moment of fork, and only the calling thread survives into the child).
+int64_t processRun(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_data) {
+    TinoxArray* argv_arr = (TinoxArray*)argv_handle;
+    if (!argv_arr || argv_arr->len < 1) {
+        fprintf(stderr, "runtime error: process_run: argv must have at least one element (the program)\n");
+        exit(1);
+    }
+    int64_t argc = argv_arr->len;
+    char** argv = malloc((size_t)(argc + 1) * sizeof(char*));
+    if (!argv) {
+        fprintf(stderr, "runtime error: process_run: out of memory building argv\n");
+        exit(1);
+    }
+    for (int64_t i = 0; i < argc; i++) {
+        argv[i] = (char*)argv_arr->data[i];
+    }
+    argv[argc] = NULL;
+
+    int in_pipe[2];
+    int out_pipe[2];
+    int err_pipe[2];
+    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+        fprintf(stderr, "runtime error: process_run: pipe() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "runtime error: process_run: fork() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (pid == 0) {
+        // Child. Deliberately no fprintf/GC/malloc-locking-sensitive calls
+        // here beyond what's unavoidable (dup2/close/execvp are all
+        // async-signal-safe) -- see the fork-safety note above. execvp only
+        // returns on failure; _exit(127) matches the shell's own
+        // "command not found" convention so the caller can distinguish it
+        // from a real exit code without needing a message string here.
+        dup2(in_pipe[0], STDIN_FILENO);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        dup2(err_pipe[1], STDERR_FILENO);
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    // Parent
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+    free(argv);
+
+    int in_fd = in_pipe[1];
+    int out_fd = out_pipe[0];
+    int err_fd = err_pipe[0];
+    size_t stdin_len = strlen(stdin_data);
+    size_t stdin_written = 0;
+    int in_open = stdin_len > 0;
+    if (!in_open) close(in_fd); // nothing to write -- EOF immediately, same as e.g. `kubectl get`
+    int out_open = 1, err_open = 1;
+
+    TinoxGrowBuf out_buf = {0};
+    TinoxGrowBuf err_buf = {0};
+
+    int has_deadline = timeout_ms > 0;
+    struct timespec deadline;
+    if (has_deadline) {
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_sec += timeout_ms / 1000;
+        deadline.tv_nsec += (timeout_ms % 1000) * 1000000L;
+        if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }
+    }
+
+    int64_t timed_out = 0;
+    char readbuf[4096];
+
+    while (in_open || out_open || err_open) {
+        struct pollfd fds[3];
+        int nfds = 0;
+        int in_idx = -1, out_idx = -1, err_idx = -1;
+        if (in_open) { in_idx = nfds; fds[nfds].fd = in_fd; fds[nfds].events = POLLOUT; nfds++; }
+        if (out_open) { out_idx = nfds; fds[nfds].fd = out_fd; fds[nfds].events = POLLIN; nfds++; }
+        if (err_open) { err_idx = nfds; fds[nfds].fd = err_fd; fds[nfds].events = POLLIN; nfds++; }
+
+        int poll_timeout_ms = -1;
+        if (has_deadline) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long remain_ms = (deadline.tv_sec - now.tv_sec) * 1000L + (deadline.tv_nsec - now.tv_nsec) / 1000000L;
+            if (remain_ms <= 0) { timed_out = 1; break; }
+            poll_timeout_ms = (int)(remain_ms > INT32_MAX ? INT32_MAX : remain_ms);
+        }
+
+        int pr = poll(fds, nfds, poll_timeout_ms);
+        if (pr < 0) {
+            if (errno == EINTR) continue; // GC's SIGPWR (or any other signal): retry
+            break;
+        }
+        if (pr == 0) { timed_out = 1; break; }
+
+        if (in_open && (fds[in_idx].revents & (POLLOUT | POLLERR | POLLHUP))) {
+            if (fds[in_idx].revents & POLLOUT) {
+                ssize_t n = write(in_fd, stdin_data + stdin_written, stdin_len - stdin_written);
+                if (n > 0) {
+                    stdin_written += (size_t)n;
+                    if (stdin_written == stdin_len) { close(in_fd); in_open = 0; }
+                } else if (n < 0 && errno != EINTR && errno != EAGAIN) {
+                    // Child closed its stdin early (e.g. doesn't read it at
+                    // all) -- not our error to report, just stop writing.
+                    close(in_fd); in_open = 0;
+                }
+            } else {
+                close(in_fd); in_open = 0;
+            }
+        }
+        if (out_open && (fds[out_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = read(out_fd, readbuf, sizeof(readbuf));
+            if (n > 0) tinox_growbuf_append(&out_buf, readbuf, (size_t)n);
+            else if (n == 0) { close(out_fd); out_open = 0; }
+            else if (errno != EINTR && errno != EAGAIN) { close(out_fd); out_open = 0; }
+        }
+        if (err_open && (fds[err_idx].revents & (POLLIN | POLLHUP | POLLERR))) {
+            ssize_t n = read(err_fd, readbuf, sizeof(readbuf));
+            if (n > 0) tinox_growbuf_append(&err_buf, readbuf, (size_t)n);
+            else if (n == 0) { close(err_fd); err_open = 0; }
+            else if (errno != EINTR && errno != EAGAIN) { close(err_fd); err_open = 0; }
+        }
+    }
+    if (in_open) close(in_fd); // e.g. timed out while still writing stdin
+
+    int64_t exit_code;
+    if (timed_out) {
+        kill(pid, SIGKILL);
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        if (out_open) close(out_fd);
+        if (err_open) close(err_fd);
+        exit_code = -1;
+    } else {
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        if (WIFEXITED(status)) exit_code = WEXITSTATUS(status);
+        else if (WIFSIGNALED(status)) exit_code = -WTERMSIG(status);
+        else exit_code = -1;
+    }
+
+    TinoxProcessResult* result = (TinoxProcessResult*)GC_malloc(sizeof(TinoxProcessResult));
+    result->out = out_buf.buf ? GC_strdup(out_buf.buf) : GC_strdup("");
+    result->err = err_buf.buf ? GC_strdup(err_buf.buf) : GC_strdup("");
+    result->exit_code = exit_code;
+    result->timed_out = timed_out;
+    free(out_buf.buf);
+    free(err_buf.buf);
+    return (int64_t)(intptr_t)result;
+}
+
+char* processResultStdout(int64_t handle) {
+    return ((TinoxProcessResult*)(intptr_t)handle)->out;
+}
+
+char* processResultStderr(int64_t handle) {
+    return ((TinoxProcessResult*)(intptr_t)handle)->err;
+}
+
+int64_t processResultExitCode(int64_t handle) {
+    return ((TinoxProcessResult*)(intptr_t)handle)->exit_code;
+}
+
+int64_t processResultTimedOut(int64_t handle) {
+    return ((TinoxProcessResult*)(intptr_t)handle)->timed_out;
+}
+
+// ---- Real synchronization primitives (tinox.core.semaphore) ---------------
+//
+// Fixes a real, previously-undiscovered bug found while designing
+// tinox-k8s-ui's exec/terminal feature: Mutex/Semaphore/RWLock's Tinox-level
+// implementations were a plain "if not locked { locked = true }" -- a
+// classic check-then-act race with no atomic compare-and-swap or OS
+// primitive underneath, so NOT actually thread-safe under real concurrent
+// access despite the name/purpose (verified as broken by inspection, not
+// hypothetically -- there is no way for pure Tinox code, which has no
+// atomic-CAS builtin, to implement real mutual exclusion). These wrap real
+// POSIX primitives instead; handles are Int64 (GC_malloc'd, same "opaque
+// native resource as an Int64 handle" idiom as ProcessResult/DB connections
+// elsewhere in this runtime).
+//
+// Mutex::lock() now genuinely BLOCKS until available (pthread_mutex_lock),
+// not "throw if already locked" like the old implementation -- that was an
+// accident of the broken check-then-act code, not a deliberate API choice
+// (nothing named/documented as "Mutex.lock()" is expected to throw on
+// contention in any mainstream language). tryLock()'s existing
+// non-blocking-with-a-bool-result contract is unchanged, now backed by a
+// real pthread_mutex_trylock.
+
+int64_t mutexNew(void) {
+    pthread_mutex_t* m = (pthread_mutex_t*)GC_malloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(m, NULL);
+    return (int64_t)(intptr_t)m;
+}
+
+void mutexLock(int64_t handle) {
+    pthread_mutex_lock((pthread_mutex_t*)(intptr_t)handle);
+}
+
+void mutexUnlock(int64_t handle) {
+    pthread_mutex_unlock((pthread_mutex_t*)(intptr_t)handle);
+}
+
+int64_t mutexTryLock(int64_t handle) {
+    return pthread_mutex_trylock((pthread_mutex_t*)(intptr_t)handle) == 0 ? 1 : 0;
+}
+
+int64_t semaphoreNew(int64_t initialCount) {
+    sem_t* s = (sem_t*)GC_malloc(sizeof(sem_t));
+    sem_init(s, 0, (unsigned int)initialCount);
+    return (int64_t)(intptr_t)s;
+}
+
+void semaphoreAcquire(int64_t handle) {
+    sem_t* s = (sem_t*)(intptr_t)handle;
+    while (sem_wait(s) != 0) {
+        if (errno != EINTR) break; // GC's SIGPWR (or any other signal): retry
+    }
+}
+
+void semaphoreRelease(int64_t handle) {
+    sem_post((sem_t*)(intptr_t)handle);
+}
+
+int64_t semaphoreTryAcquire(int64_t handle) {
+    return sem_trywait((sem_t*)(intptr_t)handle) == 0 ? 1 : 0;
+}
+
+int64_t rwlockNew(void) {
+    pthread_rwlock_t* l = (pthread_rwlock_t*)GC_malloc(sizeof(pthread_rwlock_t));
+    pthread_rwlock_init(l, NULL);
+    return (int64_t)(intptr_t)l;
+}
+
+void rwlockReadLock(int64_t handle) {
+    pthread_rwlock_rdlock((pthread_rwlock_t*)(intptr_t)handle);
+}
+
+void rwlockReadUnlock(int64_t handle) {
+    pthread_rwlock_unlock((pthread_rwlock_t*)(intptr_t)handle);
+}
+
+void rwlockWriteLock(int64_t handle) {
+    pthread_rwlock_wrlock((pthread_rwlock_t*)(intptr_t)handle);
+}
+
+void rwlockWriteUnlock(int64_t handle) {
+    pthread_rwlock_unlock((pthread_rwlock_t*)(intptr_t)handle);
+}
+
+// ---- Long-lived interactive subprocess (tinox.core.process, exec/PTY-less
+// terminal bridging) ---------------------------------------------------
+//
+// Unlike processRun (blocks until the child exits, returns the full
+// captured output), this spawns and returns IMMEDIATELY -- the caller
+// drives it incrementally via processWriteStdin/processReadOutput for the
+// lifetime of an interactive session (e.g. `kubectl exec -i`), not a single
+// request/response. stdout+stderr are merged into one pipe (a real
+// terminal has no separate channels either, and a UI showing this doesn't
+// need them told apart). Handle is Int64 (GC_malloc'd), same idiom as
+// TinoxProcessResult above.
+
+// A real PTY, not a pair of plain pipes: a program reading from a plain
+// pipe never gets terminal line-discipline handling, so a lone '\r'
+// (what xterm.js and every real terminal emit for Enter -- terminal
+// convention, not '\n') is never recognized as a line terminator and a
+// shell just buffers it forever waiting for a real '\n'. This was found
+// live wiring up ExecWebSocket.tnx: bulk writes ending in an actual
+// '\n' worked, but character-by-character keystroke forwarding (ending
+// in '\r') silently never produced output. A remote PTY (via `kubectl
+// exec -it`) only gets allocated by kubectl when kubectl's OWN local
+// stdin is a real PTY too -- verified live, `-it` with a plain-pipe
+// local stdin just prints "Unable to use a TTY" and silently behaves
+// exactly like `-i` alone. openpty() gives the child a real slave PTY
+// as its controlling terminal, so the kernel's tty driver applies real
+// line-discipline handling (ICANON: buffers by line, translates the
+// child's own echo, delivers signals for Ctrl-C, etc.) exactly like a
+// real terminal application expects -- and kubectl in turn sees a real
+// local TTY and requests a real remote one.
+typedef struct {
+    pid_t pid;
+    int fd;  // PTY master -- single fd, read AND write (a real terminal has no separate stdin/stdout either)
+    int64_t exited;
+    int64_t exit_code;
+} TinoxInteractiveProcess;
+
+int64_t processSpawnInteractive(int64_t* argv_handle) {
+    TinoxArray* argv_arr = (TinoxArray*)argv_handle;
+    if (!argv_arr || argv_arr->len < 1) {
+        fprintf(stderr, "runtime error: process_spawn_interactive: argv must have at least one element (the program)\n");
+        exit(1);
+    }
+    int64_t argc = argv_arr->len;
+    char** argv = malloc((size_t)(argc + 1) * sizeof(char*));
+    if (!argv) {
+        fprintf(stderr, "runtime error: process_spawn_interactive: out of memory building argv\n");
+        exit(1);
+    }
+    for (int64_t i = 0; i < argc; i++) {
+        argv[i] = (char*)argv_arr->data[i];
+    }
+    argv[argc] = NULL;
+
+    int master_fd;
+    pid_t pid = forkpty(&master_fd, NULL, NULL, NULL);
+    if (pid < 0) {
+        fprintf(stderr, "runtime error: process_spawn_interactive: forkpty() failed: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (pid == 0) {
+        // Child -- same fork-safety note as processRun above: no GC/Tinox
+        // calls between forkpty() and execvp()/_exit(). forkpty() already
+        // set up the slave as our stdin/stdout/stderr and controlling tty.
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    // Parent
+    free(argv);
+
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)GC_malloc(sizeof(TinoxInteractiveProcess));
+    p->pid = pid;
+    p->fd = master_fd;
+    p->exited = 0;
+    p->exit_code = 0;
+    return (int64_t)(intptr_t)p;
+}
+
+// Best-effort: on a write error (e.g. the child already exited and closed
+// its stdin) this simply stops writing rather than raising anything --
+// the caller finds out the process is gone via processIsAlive, same as a
+// real terminal just stops accepting input once the shell underneath it
+// has exited.
+void processWriteStdin(int64_t handle, const char* data) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    size_t len = strlen(data);
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(p->fd, data + written, len - written);
+        if (n > 0) { written += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR) continue;
+        break;
+    }
+}
+
+// Blocks up to timeoutMs waiting for output; returns whatever's available
+// (possibly a partial line), or "" on timeout/EOF/error. Never blocks
+// indefinitely -- the caller (a spawned reader loop) needs to periodically
+// re-check whether it should keep running.
+char* processReadOutput(int64_t handle, int64_t timeoutMs) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    struct pollfd fd;
+    fd.fd = p->fd;
+    fd.events = POLLIN;
+    int pr = poll(&fd, 1, (int)timeoutMs);
+    if (pr <= 0) {
+        return GC_strdup("");
+    }
+    if (!(fd.revents & (POLLIN | POLLHUP | POLLERR))) {
+        return GC_strdup("");
+    }
+    char buf[8192];
+    // A PTY master's read() returns -1/EIO (not 0) once the slave side is
+    // gone (child exited) -- the n<=0 check below already treats that the
+    // same as a plain pipe's EOF, which is exactly the behavior wanted here.
+    ssize_t n = read(p->fd, buf, sizeof(buf));
+    if (n <= 0) {
+        return GC_strdup("");
+    }
+    char* result = (char*)GC_malloc((size_t)n + 1);
+    memcpy(result, buf, (size_t)n);
+    result[n] = '\0';
+    return result;
+}
+
+int64_t processIsAlive(int64_t handle) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    if (p->exited) {
+        return 0;
+    }
+    int status;
+    pid_t r = waitpid(p->pid, &status, WNOHANG);
+    if (r == 0) {
+        return 1;
+    }
+    p->exited = 1;
+    if (WIFEXITED(status)) p->exit_code = WEXITSTATUS(status);
+    else if (WIFSIGNALED(status)) p->exit_code = -WTERMSIG(status);
+    return 0;
+}
+
+void processKillInteractive(int64_t handle) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    if (!p->exited) {
+        kill(p->pid, SIGKILL);
+        int status;
+        while (waitpid(p->pid, &status, 0) < 0 && errno == EINTR) {}
+        p->exited = 1;
+    }
+    close(p->fd);
 }
 
 // ---- Directory builtins ----
@@ -2627,6 +3165,7 @@ static size_t fast_i64_write(int64_t val, char* buf);
 // below sets it to false explicitly (malloc doesn't zero); it becomes
 // true only if handshake() actually negotiates the extension.
 typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; } TinoxConn;   // ssl==NULL => plaintext
+static void conn_send_all(TinoxConn* c, const char* data, size_t len);
 
 #ifdef TINOX_TLS
 #include <openssl/ssl.h>
@@ -2791,17 +3330,36 @@ static char* conn_read_request(TinoxConn* c) {
         if (cl) {
             long body_len = atol(cl + 15);
             long header_len = (long)(hdr_end - buf) + 4;
-            // Bug 96: Content-Length is attacker-controlled and used to be
-            // trusted with no maximum and no bound on how far the loop below
-            // would grow `cap` trying to fit it (TINOX_MAX_BODY was defined
-            // but never enforced) -- an unauthenticated client could send
-            // headers with a huge Content-Length and little/no body to force
-            // an unbounded allocation attempt. Clamp instead: a negative or
-            // over-cap value truncates the body to what we're willing to
-            // buffer rather than growing without bound (still safe even
-            // though a legitimately larger body would be truncated, which is
-            // an acceptable degradation for an abusive value).
-            if (body_len < 0 || body_len > TINOX_MAX_BODY) body_len = TINOX_MAX_BODY;
+            // Bug 96 clamped an over-cap Content-Length down to
+            // TINOX_MAX_BODY and kept reading -- which stopped the
+            // unbounded-allocation attack, but silently handed the
+            // application a TRUNCATED body with no signal anything was
+            // cut (bug #174): a 150 MB upload became an unmarked ~4 MB
+            // prefix, and the handler had no way to tell "this really is
+            // a complete small request" from "this was silently
+            // mangled". Bug #174 fix: reject up front instead of
+            // clamping-and-continuing -- a Content-Length that's
+            // negative (malformed) or already over the cap gets a hard,
+            // visible 413 and the connection is closed without ever
+            // reading/handing off a truncated body. This still bounds
+            // allocation exactly like the clamp did (we never grow `cap`
+            // past what a request under the cap needs), just via
+            // rejection instead of quiet corruption.
+            if (body_len < 0 || body_len > TINOX_MAX_BODY) {
+                static const char* body413 = "Payload Too Large\n";
+                char resp413[256];
+                int rn = snprintf(resp413, sizeof(resp413),
+                    "HTTP/1.1 413 Payload Too Large\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Content-Length: %zu\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                    "%s",
+                    strlen(body413), body413);
+                conn_send_all(c, resp413, (size_t)rn);
+                buf[0] = '\0';
+                return buf;
+            }
             long total = header_len + body_len;
             while ((long)used < total) {
                 while (cap < (size_t)total + 1) {
@@ -2995,19 +3553,67 @@ bool wsIsCompressed(int64_t conn) {
 int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
 #ifdef TINOX_TLS
     if (fd < 0) return -1;
-    if (!g_tls_client_ctx) {
+    // Same custom-CA/client-cert(mTLS)/insecure-skip-verify thread-local
+    // config http_request's https:// branch honors (httpSetTlsCaCertFile/
+    // httpSetTlsClientCertFile/httpSetTlsInsecureSkipVerify) -- needed so
+    // a conn-based client (e.g. tinox.core.kubernetes' Watch, which can't
+    // use the ordinary httpGet/httpPost path for a long-lived streaming
+    // response) can authenticate against a cluster with a self-signed CA
+    // and/or client-cert auth the same way a plain request already can.
+    // Falls back to the existing shared g_tls_client_ctx behavior
+    // (system trust store only) when none of this is set, so every
+    // existing caller (AMQP/WS/SMTP STARTTLS) is unaffected.
+    int use_custom_ctx = (_tinox_tls_ca_cert_path != NULL) ||
+                          (_tinox_tls_client_cert_path != NULL) ||
+                          _tinox_tls_insecure_skip_verify;
+    SSL_CTX* ctx = NULL;
+    if (use_custom_ctx) {
         SSL_library_init();
         SSL_load_error_strings();
         OpenSSL_add_ssl_algorithms();
-        g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
-        if (!g_tls_client_ctx) { close((int)fd); return -1; }
-        SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
-        SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+        ctx = SSL_CTX_new(TLS_client_method());
+        if (ctx) {
+            SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+            if (_tinox_tls_ca_cert_path) {
+                if (SSL_CTX_load_verify_locations(ctx, _tinox_tls_ca_cert_path, NULL) != 1) {
+                    fprintf(stderr, "httpConnFromFdTls: failed to load CA cert file %s\n", _tinox_tls_ca_cert_path);
+                    SSL_CTX_free(ctx);
+                    ctx = NULL;
+                }
+            } else {
+                SSL_CTX_set_default_verify_paths(ctx);
+            }
+            if (ctx && _tinox_tls_client_cert_path && _tinox_tls_client_key_path) {
+                if (SSL_CTX_use_certificate_file(ctx, _tinox_tls_client_cert_path, SSL_FILETYPE_PEM) != 1 ||
+                    SSL_CTX_use_PrivateKey_file(ctx, _tinox_tls_client_key_path, SSL_FILETYPE_PEM) != 1 ||
+                    SSL_CTX_check_private_key(ctx) != 1) {
+                    fprintf(stderr, "httpConnFromFdTls: failed to load client cert/key (%s / %s)\n",
+                            _tinox_tls_client_cert_path, _tinox_tls_client_key_path);
+                    SSL_CTX_free(ctx);
+                    ctx = NULL;
+                }
+            }
+        }
+    } else {
+        if (!g_tls_client_ctx) {
+            SSL_library_init();
+            SSL_load_error_strings();
+            OpenSSL_add_ssl_algorithms();
+            g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
+            if (g_tls_client_ctx) {
+                SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
+                SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+            }
+        }
+        ctx = g_tls_client_ctx;
     }
-    SSL* ssl = SSL_new(g_tls_client_ctx);
-    if (!ssl) { close((int)fd); return -1; }
+    if (!ctx) { close((int)fd); return -1; }
+    SSL* ssl = SSL_new(ctx);
+    if (!ssl) { if (use_custom_ctx) SSL_CTX_free(ctx); close((int)fd); return -1; }
     SSL_set_tlsext_host_name(ssl, host); // SNI
-    if (verify) {
+    if (_tinox_tls_insecure_skip_verify) {
+        SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
+    } else if (verify) {
         SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
         SSL_set1_host(ssl, host); // hostname must match the peer certificate
     } else {
@@ -3017,6 +3623,7 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     if (SSL_connect(ssl) <= 0) {
         ERR_print_errors_fp(stderr);
         SSL_free(ssl);
+        if (use_custom_ctx) SSL_CTX_free(ctx);
         close((int)fd);
         return -1;
     }
@@ -3113,6 +3720,66 @@ static char* http_recv_all_tls(SSL* ssl) {
 }
 #endif
 
+// Case-insensitive search for "chunked" within a "Transfer-Encoding"
+// header line in the (headers-only, no trailing blank line) block --
+// HTTP header names/values are case-insensitive per RFC 7230, and real
+// servers vary casing (the Kubernetes API server itself sends
+// "Transfer-Encoding: chunked" this exact way for any List response with
+// no fixed Content-Length, which is what surfaced this gap: httpGet's
+// caller got the raw wire bytes -- literal hex chunk-size lines like
+// "800\r\n"/"0\r\n\r\n" -- spliced into the middle of what should have
+// been a plain JSON body, silently corrupting it instead of erroring).
+static int http_headers_has_chunked_encoding(const char* hdrs, size_t hdr_len) {
+    if (!hdrs) return 0;
+    size_t te_len = strlen("transfer-encoding");
+    for (size_t i = 0; i + te_len <= hdr_len; i++) {
+        if (strncasecmp(hdrs + i, "transfer-encoding", te_len) == 0) {
+            size_t j = i;
+            while (j < hdr_len && hdrs[j] != '\r' && hdrs[j] != '\n') j++;
+            for (size_t k = i; k + 7 <= j; k++) {
+                if (strncasecmp(hdrs + k, "chunked", 7) == 0) return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// Decodes an HTTP/1.1 chunked-transfer-encoded body (RFC 7230 §4.1):
+// a sequence of "<hex-size>\r\n<data>\r\n" chunks terminated by a
+// zero-size chunk. `body` starts right after the header block's own
+// trailing "\r\n\r\n". Chunk extensions (";...") and trailers after the
+// terminating chunk are skipped, not surfaced -- no server this runtime
+// talks to relies on either. Malformed input (a non-hex chunk-size line)
+// stops decoding and returns whatever was successfully decoded so far,
+// same "best effort, don't crash" spirit as this file's other lenient
+// parsers.
+static char* http_dechunk(const char* body) {
+    size_t cap = 8192, len = 0;
+    char* out = (char*)malloc(cap);
+    const char* p = body;
+    while (1) {
+        char* endptr = NULL;
+        long chunk_size = strtol(p, &endptr, 16);
+        if (endptr == p || chunk_size < 0) break;
+        const char* line_end = strstr(endptr, "\r\n");
+        if (!line_end) break;
+        p = line_end + 2;
+        if (chunk_size == 0) break; // terminating chunk
+        if (len + (size_t)chunk_size >= cap) {
+            while (len + (size_t)chunk_size >= cap) cap *= 2;
+            char* grown = (char*)malloc(cap);
+            memcpy(grown, out, len);
+            out = grown;
+        }
+        memcpy(out + len, p, (size_t)chunk_size);
+        len += (size_t)chunk_size;
+        p += chunk_size;
+        if (p[0] == '\r' && p[1] == '\n') p += 2;
+    }
+    out[len] = '\0';
+    return out;
+}
+
 static TinoxHttpResponse* http_request(const char* method, const char* url, const char* body) {
     TinoxHttpResponse* resp = (TinoxHttpResponse*)malloc(sizeof(TinoxHttpResponse));
     resp->status = 0;
@@ -3157,26 +3824,75 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
     char* raw;
 #ifdef TINOX_TLS
     if (is_https) {
-        if (!g_tls_client_ctx) {
+        // A custom CA/client-cert/insecure-skip-verify config (set via
+        // httpSetTlsCaCertFile/httpSetTlsClientCertFile/
+        // httpSetTlsInsecureSkipVerify -- tinox.core.kubernetes' auth
+        // layer is the first real caller) needs its own SSL_CTX per
+        // request rather than the shared g_tls_client_ctx: that ctx is
+        // lazily built once with the system trust store and no client
+        // identity, and is (deliberately) shared across every plain
+        // https:// caller in the process, so mutating it per-call would
+        // leak one call's cluster CA/client cert into every other
+        // caller's requests on the same thread/process.
+        int use_custom_ctx = (_tinox_tls_ca_cert_path != NULL) ||
+                              (_tinox_tls_client_cert_path != NULL) ||
+                              _tinox_tls_insecure_skip_verify;
+        SSL_CTX* ctx = NULL;
+        if (use_custom_ctx) {
             SSL_library_init();
             SSL_load_error_strings();
             OpenSSL_add_ssl_algorithms();
-            g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
-            if (g_tls_client_ctx) {
-                SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
-                SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+            ctx = SSL_CTX_new(TLS_client_method());
+            if (ctx) {
+                SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+                if (_tinox_tls_ca_cert_path) {
+                    if (SSL_CTX_load_verify_locations(ctx, _tinox_tls_ca_cert_path, NULL) != 1) {
+                        fprintf(stderr, "http_request: failed to load CA cert file %s\n", _tinox_tls_ca_cert_path);
+                        SSL_CTX_free(ctx);
+                        ctx = NULL;
+                    }
+                } else {
+                    SSL_CTX_set_default_verify_paths(ctx);
+                }
+                if (ctx && _tinox_tls_client_cert_path && _tinox_tls_client_key_path) {
+                    if (SSL_CTX_use_certificate_file(ctx, _tinox_tls_client_cert_path, SSL_FILETYPE_PEM) != 1 ||
+                        SSL_CTX_use_PrivateKey_file(ctx, _tinox_tls_client_key_path, SSL_FILETYPE_PEM) != 1 ||
+                        SSL_CTX_check_private_key(ctx) != 1) {
+                        fprintf(stderr, "http_request: failed to load client cert/key (%s / %s)\n",
+                                _tinox_tls_client_cert_path, _tinox_tls_client_key_path);
+                        SSL_CTX_free(ctx);
+                        ctx = NULL;
+                    }
+                }
             }
+        } else {
+            if (!g_tls_client_ctx) {
+                SSL_library_init();
+                SSL_load_error_strings();
+                OpenSSL_add_ssl_algorithms();
+                g_tls_client_ctx = SSL_CTX_new(TLS_client_method());
+                if (g_tls_client_ctx) {
+                    SSL_CTX_set_min_proto_version(g_tls_client_ctx, TLS1_2_VERSION);
+                    SSL_CTX_set_default_verify_paths(g_tls_client_ctx);
+                }
+            }
+            ctx = g_tls_client_ctx;
         }
-        if (!g_tls_client_ctx) { close(fd); free(req); return resp; }
-        SSL* ssl = SSL_new(g_tls_client_ctx);
-        if (!ssl) { close(fd); free(req); return resp; }
+        if (!ctx) { close(fd); free(req); return resp; }
+        SSL* ssl = SSL_new(ctx);
+        if (!ssl) { if (use_custom_ctx) SSL_CTX_free(ctx); close(fd); free(req); return resp; }
         SSL_set_tlsext_host_name(ssl, host); // SNI
-        SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
-        SSL_set1_host(ssl, host); // hostname must match the peer certificate
+        if (_tinox_tls_insecure_skip_verify) {
+            SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
+        } else {
+            SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
+            SSL_set1_host(ssl, host); // hostname must match the peer certificate
+        }
         SSL_set_fd(ssl, fd);
         if (SSL_connect(ssl) <= 0) {
             ERR_print_errors_fp(stderr);
             SSL_free(ssl);
+            if (use_custom_ctx) SSL_CTX_free(ctx);
             close(fd);
             free(req);
             return resp;
@@ -3190,6 +3906,7 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
         raw = http_recv_all_tls(ssl);
         SSL_shutdown(ssl);
         SSL_free(ssl);
+        if (use_custom_ctx) SSL_CTX_free(ctx);
         close(fd);
     } else
 #endif
@@ -3217,7 +3934,14 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
         memcpy(hdrs, raw, hdr_len);
         hdrs[hdr_len] = '\0';
         resp->headers = hdrs;
-        resp->body = GC_strdup(sep + 4);
+        const char* raw_body = sep + 4;
+        if (http_headers_has_chunked_encoding(hdrs, hdr_len)) {
+            char* dechunked = http_dechunk(raw_body);
+            resp->body = GC_strdup(dechunked);
+            free(dechunked);
+        } else {
+            resp->body = GC_strdup(raw_body);
+        }
     } else {
         resp->body = GC_strdup(raw);
     }
@@ -3292,6 +4016,35 @@ int64_t httpConnWriteBytes(int64_t conn, int64_t* arr) {
 void httpConnClose(int64_t conn) {
     if (conn <= 0) return;
     conn_close((TinoxConn*)(intptr_t)conn);
+}
+
+// Removes the 5s "zombie guard" SO_RCVTIMEO that httpServerAcceptConn/
+// httpServerAcceptTls set on every accepted fd (meant to stop a slow-loris
+// HTTP client from blocking the single-threaded accept loop forever by
+// never finishing a request) -- that guard's own doc comment already notes
+// it "persists on `fd` for the life of the connection, so it also protects
+// later blocking reads after a successful handshake", which is exactly
+// backwards for a WEBSOCKET connection: a legitimately idle WS client (the
+// normal, expected state between user interactions, not a slow/broken one)
+// hits this same 5s recv() timeout on every blocking Ws::readMessage call,
+// gets treated as a dead connection, and is force-closed -- found live via
+// a real Tinox-UI app (issue #215's tinox.core:ui) whose WS connection was
+// silently reconnecting every ~5-6 seconds of user inactivity, discarding
+// all server-side state each time (no session persistence across a
+// reconnect, a separate documented v1 limitation) -- from the browser this
+// looked like "my clicks keep getting reverted to the initial state for no
+// reason". WsServer::accept/acceptTls (tinox.core:websocket) call this
+// right after a successful WS handshake -- the zombie guard already did
+// its job protecting the HANDSHAKE itself (which reuses the same blocking
+// httpServerAcceptConnHandle path), it just has no business staying active
+// for the rest of a legitimate long-lived connection's whole lifetime.
+// {0,0} is standard POSIX for "no timeout, block indefinitely" (the
+// default when SO_RCVTIMEO was never set at all).
+void httpConnClearRecvTimeout(int64_t conn) {
+    if (conn <= 0) return;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
+    setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
 // Reads a single '\n'-terminated line from a conn (issue #134, SMTP
@@ -4971,11 +5724,22 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     memcpy(out, body, body_len); out += body_len;
     size_t resp_total = (size_t)(out - http_resp);
 
-    // Send with pre-computed length (no strlen)
+    // Send with pre-computed length (no strlen). Bug 175: this loop used to
+    // give up on ANY n <= 0, including errno == EINTR -- a blocking send()
+    // can be interrupted by the GC's SIGPWR stop-the-world signal like any
+    // other blocking syscall (see the Runtime Quirks note on conn_recv/
+    // conn_send, the template this loop failed to follow), silently
+    // truncating the HTTP response mid-write under GC pressure instead of
+    // finishing it. Retry on EINTR instead of aborting, matching conn_send's
+    // own discipline.
     size_t sent_bytes = 0;
     while (sent_bytes < resp_total) {
         ssize_t n = send((int)client_fd, http_resp + sent_bytes, resp_total - sent_bytes, MSG_NOSIGNAL);
-        if (n <= 0) break;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) break;
         sent_bytes += (size_t)n;
     }
     *keep_alive_out = !req_close;
@@ -4983,11 +5747,18 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
 
 // Per-connection state for epoll-based multi-connection handler
 #define EPOLL_MAX_CONNS 4096
-#define EPOLL_KEEP_ALIVE_MS 500  // close idle connections after 500ms
+#define EPOLL_KEEP_ALIVE_MS 500      // close genuinely idle keep-alive connections after 500ms
+#define EPOLL_FIRST_REQUEST_GRACE_MS 5000 // see `served` below; matches the SO_RCVTIMEO
+                                          // "zombie guard" in the accept path, so a
+                                          // connection that truly never sends anything
+                                          // is still bounded by the same 5s either way
 
 typedef struct {
     int      fd;          // -1 = unused slot
     uint64_t last_ms;     // last activity timestamp (milliseconds)
+    int      served;      // 0 until this connection's first request has completed --
+                           // see the stale-scan below for why this needs to be tracked
+                           // separately from a genuinely-idle keep-alive connection
 } EpollConnSlot;
 
 static __thread EpollConnSlot g_epoll_slots[EPOLL_MAX_CONNS];
@@ -4999,11 +5770,29 @@ static uint64_t epoll_now_ms(void) {
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)(ts.tv_nsec / 1000000);
 }
 
-static void epoll_slot_add(int fd) {
+// Bug 175 (root cause): this used to call epoll_now_ms() itself instead of
+// taking the caller's already-captured `now_ms`. tinox_handle_connections'
+// main loop captures `now_ms` ONCE per iteration (right after epoll_wait
+// returns) and reuses that single value for both the accept-handling section
+// (which used to call this function) and the stale-connection scan later in
+// the SAME iteration. CLOCK_MONOTONIC_COARSE never goes backward, but it can
+// tick forward between two separate reads -- so a connection accepted mid-
+// iteration could get a `last_ms` a few coarse-clock ticks LATER than the
+// iteration's own `now_ms`. The stale-scan's `now_ms - last_ms` is unsigned;
+// with last_ms > now_ms that subtraction underflows to roughly UINT64_MAX,
+// which is >= any timeout threshold -- so a connection accepted this exact
+// iteration could be force-closed by the SAME iteration's stale-scan pass,
+// before it was ever read even once. Confirmed live: temporary instrumen-
+// tation caught this exact underflow (age_ms values like 18446744073709551599,
+// i.e. (uint64_t)-16) on every observed spurious close during a 300-way
+// concurrent burst. Passing the loop's own `now_ms` through removes the
+// possibility of two inconsistent clock reads within one iteration entirely.
+static void epoll_slot_add(int fd, uint64_t now_ms) {
     int idx = fd % EPOLL_MAX_CONNS;
     if (g_epoll_slots[idx].fd < 0) g_epoll_nconns++;
     g_epoll_slots[idx].fd = fd;
-    g_epoll_slots[idx].last_ms = epoll_now_ms();
+    g_epoll_slots[idx].last_ms = now_ms;
+    g_epoll_slots[idx].served = 0;
 }
 
 static void epoll_slot_remove(int fd) {
@@ -5058,14 +5847,16 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
                     cev.events  = EPOLLIN;
                     cev.data.fd = cfd;
                     epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &cev);
-                    epoll_slot_add(cfd);
+                    epoll_slot_add(cfd, now_ms);
                 }
             } else {
                 // Handle one request on this client connection
                 int keep_alive = 0;
                 tinox_handle_one(srv, (int64_t)fd, &keep_alive);
                 if (keep_alive) {
-                    g_epoll_slots[fd % EPOLL_MAX_CONNS].last_ms = now_ms;
+                    int idx = fd % EPOLL_MAX_CONNS;
+                    g_epoll_slots[idx].last_ms = now_ms;
+                    g_epoll_slots[idx].served = 1;
                 } else {
                     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
                     epoll_slot_remove(fd);
@@ -5074,11 +5865,35 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
             }
         }
 
-        // Scan for stale connections (only when we have active clients)
+        // Scan for stale connections (only when we have active clients).
+        //
+        // Bug 175: a freshly-accepted connection's `last_ms` is set once, at
+        // accept() time (epoll_slot_add), and only touched again once its
+        // FIRST request has actually completed (the `served = 1` above). If
+        // this worker thread is backlogged handling other connections'
+        // events -- entirely possible under a concurrent burst, since one
+        // thread's epoll instance can have many connections ready at once --
+        // a connection that already has its request sitting in the kernel
+        // receive buffer, just not yet read by tinox_handle_one, was
+        // indistinguishable here from a genuinely idle keep-alive connection
+        // waiting for its NEXT request. Both used the same tight
+        // EPOLL_KEEP_ALIVE_MS (500ms) threshold, so a busy-but-healthy
+        // connection could get force-closed by this scan before it was ever
+        // serviced -- the client sees an abrupt close/reset (CURLE_RECV_ERROR)
+        // for a request the server never even attempted to read. Give a
+        // connection that hasn't been served yet the same longer grace period
+        // as the SO_RCVTIMEO "zombie guard" already set on accept (5s) --
+        // that guard already bounds a connection that truly never sends
+        // anything, so this scan doesn't need a tighter deadline for the
+        // not-yet-served case; only a genuinely idle, already-served
+        // keep-alive connection uses the tight 500ms.
         if (g_epoll_nconns > 0) {
             for (int i = 0; i < EPOLL_MAX_CONNS; i++) {
                 if (g_epoll_slots[i].fd < 0) continue;
-                if (now_ms - g_epoll_slots[i].last_ms >= EPOLL_KEEP_ALIVE_MS) {
+                uint64_t timeout_ms = g_epoll_slots[i].served
+                    ? EPOLL_KEEP_ALIVE_MS
+                    : EPOLL_FIRST_REQUEST_GRACE_MS;
+                if (now_ms - g_epoll_slots[i].last_ms >= timeout_ms) {
                     int fd = g_epoll_slots[i].fd;
                     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
                     epoll_slot_remove(fd);
@@ -5131,7 +5946,21 @@ void tinox_HttpServer_listen(int64_t* server) {
 
     // Main thread creates its own SO_REUSEPORT socket
     int64_t server_fd = httpServerCreateOn(port, srv->bind_addr);
-    if (server_fd < 0) { fprintf(stderr, "HttpServer: failed to bind\n"); return; }
+    if (server_fd < 0) {
+        // A failed bind used to just log and return here, leaving the
+        // process running with its worker threads spawned above (which
+        // fail the same bind and quietly return too) but no listener ever
+        // actually up -- silent garbage: the program looks alive while
+        // serving nothing, and any already-listening process on the same
+        // port silently absorbs every request instead (see issue #226,
+        // where this masked as a false HTTP-server/GC regression report).
+        // Hard-fail instead, matching this runtime's convention for a
+        // fatal setup error (see e.g. processSpawnInteractive above).
+        int saved_errno = errno;
+        fprintf(stderr, "runtime error: HttpServer::listen(): failed to bind port %lld (%s)\n",
+                (long long)port, strerror(saved_errno));
+        exit(1);
+    }
     tinox_handle_connections(srv, server_fd);
     httpServerClose(server_fd);
 }
@@ -5965,6 +6794,117 @@ int64_t* jsonGetIntListField(int64_t* obj, const char* key) {
     return jsonIntArrayFromJson(jsonGetField(obj, key));
 }
 
+// ---- @JsonSerializable field kinds beyond scalars/int-lists ----
+// emit_json_serialize_code/emit_json_deserialize_code (codegen.rs) used to
+// route EVERY i64*-typed field through jsonBuilderAddIntList/
+// jsonIntArrayFromJson regardless of what it actually was -- correct only
+// for List<Int>. A Map<String,String> field (every resource's
+// labels/annotations, ConfigMap/Secret's own data) or a List<String>/
+// List<@JsonSerializable-class> field silently produced garbage (raw
+// pointer values reinterpreted as ints) or crashed. These four helpers,
+// paired with the container-marker dispatch codegen.rs now does in both
+// directions, are the fix. Mirrors the existing tinox_json_list_serialize
+// (List<class>, above) and jsonGetObject (JSON_OBJECT -> TinoxMap*, further
+// up) patterns exactly rather than inventing new machinery.
+
+// List<String> -> JSON array of strings. Same "[" + parts + "]" shape as
+// tinox_json_list_serialize, just string-encoding each element directly
+// instead of calling a per-class toJson.
+char* tinox_json_string_list_serialize(int64_t* h) {
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t n = a ? a->len : 0;
+    char** parts = (char**)malloc(sizeof(char*) * (n > 0 ? (size_t)n : 1));
+    size_t total = 2; // "[" + "]"
+    for (int64_t i = 0; i < n; i++) {
+        const char* s = (const char*)(intptr_t)a->data[i];
+        parts[i] = tinox_json_encode_string(s ? s : "");
+        total += strlen(parts[i]) + 1; // + ","
+    }
+    char* out = (char*)malloc(total + 1);
+    size_t pos = 0;
+    out[pos++] = '[';
+    for (int64_t i = 0; i < n; i++) {
+        if (i > 0) out[pos++] = ',';
+        size_t l = strlen(parts[i]);
+        memcpy(out + pos, parts[i], l);
+        pos += l;
+    }
+    out[pos++] = ']';
+    out[pos] = '\0';
+    return out;
+}
+
+// Map<String, String> -> JSON object. `map` may be NULL (a never-assigned
+// field) -- serializes as "{}", the same "nothing to iterate" convention
+// empty/absent collections get elsewhere in this runtime.
+char* tinox_json_string_map_serialize(void* map) {
+    char* b = jsonBuilderCreate();
+    if (map) {
+        int64_t* keysHandle = tinox_map_keys(map);
+        TinoxArray* ka = (TinoxArray*)keysHandle;
+        int64_t n = ka ? ka->len : 0;
+        for (int64_t i = 0; i < n; i++) {
+            const char* k = (const char*)(intptr_t)ka->data[i];
+            const char* v = (const char*)(intptr_t)tinox_map_get(map, k);
+            jsonBuilderAddString(b, k, v ? v : "");
+        }
+    }
+    return jsonBuilderFinish(b);
+}
+
+// JSON object field -> Map<String, String>. Missing/wrong-typed field ->
+// an empty map (jsonGetObject already gives that for free), not a crash --
+// same defensive-read convention jsonGetStringField/jsonGetIntListField
+// already use for a missing/wrong-typed field.
+void* jsonGetStringMapField(int64_t* obj, const char* key) {
+    void* srcMap = jsonGetObject(jsonGetField(obj, key));
+    void* outMap = tinox_map_create();
+    int64_t* keysHandle = tinox_map_keys(srcMap);
+    TinoxArray* ka = (TinoxArray*)keysHandle;
+    int64_t n = ka ? ka->len : 0;
+    for (int64_t i = 0; i < n; i++) {
+        const char* k = (const char*)(intptr_t)ka->data[i];
+        char* v = jsonGetString((int64_t*)(intptr_t)tinox_map_get(srcMap, k));
+        tinox_map_set(outMap, k, (int64_t)(intptr_t)v);
+    }
+    return outMap;
+}
+
+// JSON array field -> List<String>.
+int64_t* jsonGetStringListField(int64_t* obj, const char* key) {
+    TinoxJsonValue* v = (TinoxJsonValue*)jsonGetField(obj, key);
+    int64_t n = (v && v->type == JSON_ARRAY && v->arr_val) ? v->arr_val[-1] : 0;
+    TinoxArray* out = (TinoxArray*)GC_malloc(sizeof(TinoxArray));
+    out->len = n;
+    out->cap = n;
+    out->data = n > 0 ? (int64_t*)GC_malloc((size_t)n * sizeof(int64_t)) : NULL;
+    for (int64_t i = 0; i < n; i++) {
+        TinoxJsonValue* elem = (TinoxJsonValue*)(uintptr_t)v->arr_val[i];
+        out->data[i] = (int64_t)(intptr_t)jsonGetString((int64_t*)elem);
+    }
+    return (int64_t*)out;
+}
+
+// JSON array value (NOT a field lookup -- the array TinoxJsonValue* itself,
+// same convention as tinox_json_list_serialize taking the List handle
+// directly) -> List<T> for a @JsonSerializable T, via T's own generated
+// `T_fromJson`. The per-element function pointer mirrors
+// tinox_json_list_serialize's `to_json` parameter for the same reason: T
+// varies per call site (per field), so this can't be hardcoded to one class.
+int64_t* tinox_json_list_deserialize(int64_t* arr_val, int64_t* (*from_json)(int64_t*)) {
+    TinoxJsonValue* v = (TinoxJsonValue*)arr_val;
+    int64_t n = (v && v->type == JSON_ARRAY && v->arr_val) ? v->arr_val[-1] : 0;
+    TinoxArray* out = (TinoxArray*)GC_malloc(sizeof(TinoxArray));
+    out->len = n;
+    out->cap = n;
+    out->data = n > 0 ? (int64_t*)GC_malloc((size_t)n * sizeof(int64_t)) : NULL;
+    for (int64_t i = 0; i < n; i++) {
+        int64_t* elem = (int64_t*)(uintptr_t)v->arr_val[i];
+        out->data[i] = (int64_t)(intptr_t)from_json(elem);
+    }
+    return (int64_t*)out;
+}
+
 // ---- Config (@Config annotation) ----
 // Reads key=value pairs from application.properties in the current directory.
 
@@ -6271,29 +7211,137 @@ char* tinox_metrics_prometheus(void) {
 #ifdef TINOX_DB_POSTGRES
 #include <libpq-fe.h>
 
-static PGconn* _tinox_db_conn = NULL;
-static pthread_mutex_t _tinox_db_mu = PTHREAD_MUTEX_INITIALIZER;
+// Connection pool (issue #191): a fixed-size array of PGconn*, all
+// connected eagerly at startup, checked out exclusively per statement (or
+// for the duration of an @Transactional method) and returned when done.
+// Fixed-size and eagerly connected rather than grow-on-demand -- keeps
+// acquire/release wait-free once warm, and gives a hard, visible failure
+// at startup if the configured pool can't actually be established instead
+// of a lazy first query silently discovering a broken DB much later.
+#define TINOX_DB_POOL_MAX 64
 
-void tinox_db_connect(const char* url) {
-    _tinox_db_conn = PQconnectdb(url);
-    if (PQstatus(_tinox_db_conn) != CONNECTION_OK) {
-        fprintf(stderr, "DB connection failed: %s\n", PQerrorMessage(_tinox_db_conn));
-        PQfinish(_tinox_db_conn);
+static PGconn* _tinox_pg_pool[TINOX_DB_POOL_MAX];
+static int64_t _tinox_pg_pool_size = 0;
+static int     _tinox_pg_pool_free[TINOX_DB_POOL_MAX];
+static int     _tinox_pg_pool_free_count = 0;
+static pthread_mutex_t _tinox_pg_pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  _tinox_pg_pool_cond = PTHREAD_COND_INITIALIZER;
+
+// The connection currently owned by this thread's active @Transactional
+// method, if any -- NULL outside a transaction. Deliberately a plain
+// __thread PGconn* (a foreign, non-GC-heap pointer allocated by libpq's
+// own malloc), not something needing tinox_gc_register_thread_roots: the
+// GC-root-scanning gap documented near the top of this file only matters
+// for GC-managed pointers reachable ONLY via __thread storage, and a
+// PGconn* is never GC memory.
+static __thread PGconn* _tinox_db_tx_conn = NULL;
+
+void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    if (pool_size <= 0) pool_size = 1;
+    if (pool_size > TINOX_DB_POOL_MAX) {
+        fprintf(stderr, "DB pool size %lld exceeds maximum of %d\n",
+            (long long)pool_size, TINOX_DB_POOL_MAX);
         exit(1);
     }
+    for (int64_t i = 0; i < pool_size; i++) {
+        PGconn* c = PQconnectdb(url);
+        if (PQstatus(c) != CONNECTION_OK) {
+            fprintf(stderr, "DB connection failed: %s\n", PQerrorMessage(c));
+            PQfinish(c);
+            exit(1);
+        }
+        _tinox_pg_pool[i] = c;
+        _tinox_pg_pool_free[i] = (int)i;
+    }
+    _tinox_pg_pool_size = pool_size;
+    _tinox_pg_pool_free_count = (int)pool_size;
 }
 
-void* tinox_db_get_conn(void) {
-    return _tinox_db_conn;
+static PGconn* _tinox_pg_pool_acquire(void) {
+    pthread_mutex_lock(&_tinox_pg_pool_mu);
+    while (_tinox_pg_pool_free_count == 0) {
+        pthread_cond_wait(&_tinox_pg_pool_cond, &_tinox_pg_pool_mu);
+    }
+    PGconn* c = _tinox_pg_pool[_tinox_pg_pool_free[--_tinox_pg_pool_free_count]];
+    pthread_mutex_unlock(&_tinox_pg_pool_mu);
+    return c;
+}
+
+static void _tinox_pg_pool_release(PGconn* conn) {
+    pthread_mutex_lock(&_tinox_pg_pool_mu);
+    for (int64_t i = 0; i < _tinox_pg_pool_size; i++) {
+        if (_tinox_pg_pool[i] == conn) {
+            _tinox_pg_pool_free[_tinox_pg_pool_free_count++] = (int)i;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&_tinox_pg_pool_mu);
+    pthread_cond_signal(&_tinox_pg_pool_cond);
+}
+
+// Connection to use for a single ORM statement: the active transaction's
+// connection if this thread is inside one, otherwise a freshly checked-out
+// pool connection (which the caller must pair with
+// tinox_db_release_stmt_conn once the statement is done).
+void* tinox_db_acquire_stmt_conn(void) {
+    if (_tinox_db_tx_conn != NULL) return _tinox_db_tx_conn;
+    return _tinox_pg_pool_acquire();
+}
+
+// No-op if conn is the thread's active transaction connection (still owned
+// by the transaction, released by tinox_db_tx_commit/_rollback instead);
+// otherwise returns it to the pool.
+void tinox_db_release_stmt_conn(void* conn) {
+    if (conn == (void*)_tinox_db_tx_conn) return;
+    _tinox_pg_pool_release((PGconn*)conn);
+}
+
+void* tinox_db_tx_begin(void) {
+    PGconn* c = _tinox_pg_pool_acquire();
+    PGresult* res = PQexec(c, "BEGIN");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "BEGIN failed: %s\n", PQerrorMessage(c));
+    }
+    PQclear(res);
+    _tinox_db_tx_conn = c;
+    return c;
+}
+
+void tinox_db_tx_commit(void) {
+    if (_tinox_db_tx_conn == NULL) return;
+    PGresult* res = PQexec(_tinox_db_tx_conn, "COMMIT");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "COMMIT failed: %s\n", PQerrorMessage(_tinox_db_tx_conn));
+    }
+    PQclear(res);
+    _tinox_pg_pool_release(_tinox_db_tx_conn);
+    _tinox_db_tx_conn = NULL;
+}
+
+void tinox_db_tx_rollback(void) {
+    if (_tinox_db_tx_conn == NULL) return;
+    PGresult* res = PQexec(_tinox_db_tx_conn, "ROLLBACK");
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "ROLLBACK failed: %s\n", PQerrorMessage(_tinox_db_tx_conn));
+    }
+    PQclear(res);
+    _tinox_pg_pool_release(_tinox_db_tx_conn);
+    _tinox_db_tx_conn = NULL;
+}
+
+bool tinox_db_tx_active(void) {
+    return _tinox_db_tx_conn != NULL;
 }
 
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
-    // Bug 103: _tinox_db_mu was declared but never locked. The HTTP server
-    // runs request handlers concurrently (one worker pthread per CPU), and
-    // libpq's PGconn is not safe for concurrent use by multiple threads --
-    // two requests calling tinox_db_exec at the same time on the same
-    // connection could corrupt libpq's connection/result state.
-    pthread_mutex_lock(&_tinox_db_mu);
+    // Bug 103 (fixed by locking a mutex around this call) no longer
+    // applies: that bug existed because every thread shared the SAME
+    // single PGconn. Since issue #191's connection pool, each conn handed
+    // out by tinox_db_acquire_stmt_conn/tinox_db_tx_begin is exclusively
+    // owned by exactly one thread until it's released/committed/rolled
+    // back -- no mutex is needed here anymore, and keeping one would have
+    // served no purpose beyond re-serializing the pool it was meant to
+    // parallelize.
     PGresult* res = PQexecParams(
         (PGconn*)conn, sql,
         (int)n_params, NULL,
@@ -6303,7 +7351,6 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
     if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
         fprintf(stderr, "Query error: %s\nSQL: %s\n", PQresultErrorMessage(res), sql);
     }
-    pthread_mutex_unlock(&_tinox_db_mu);
     return (void*)res;
 }
 
@@ -6342,7 +7389,12 @@ typedef struct {
     char** data;  // row-major: data[row * n_cols + col]
 } TinoxSqliteResult;
 
-void tinox_db_connect(const char* url) {
+void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    // SQLite keeps its pre-#191 single-connection model -- pool_size is
+    // accepted (uniform driver-layer signature, see the Postgres block
+    // above) but ignored; no pooling/transactions for this driver yet,
+    // see the tinox_db_tx_* stubs below.
+    (void)pool_size;
     // url may be a path or sqlite:///path
     const char* path = url;
     if (strncmp(path, "sqlite:///", 10) == 0) path += 9;
@@ -6353,7 +7405,26 @@ void tinox_db_connect(const char* url) {
     }
 }
 
-void* tinox_db_get_conn(void) { return _tinox_sqlite_db; }
+void* tinox_db_acquire_stmt_conn(void) { return _tinox_sqlite_db; }
+void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
+
+// @Transactional is a hard compile error for this driver (see the driver
+// check in tinox/src/main.rs) -- these exist only so a fully-linked binary
+// never has an undefined symbol. A real call here would mean that check
+// was bypassed, so fail loudly rather than silently no-op.
+void* tinox_db_tx_begin(void) {
+    fprintf(stderr, "@Transactional is not supported for the sqlite driver\n");
+    exit(1);
+}
+void tinox_db_tx_commit(void) {
+    fprintf(stderr, "@Transactional is not supported for the sqlite driver\n");
+    exit(1);
+}
+void tinox_db_tx_rollback(void) {
+    fprintf(stderr, "@Transactional is not supported for the sqlite driver\n");
+    exit(1);
+}
+bool tinox_db_tx_active(void) { return false; }
 
 // ---- Statement cache (Optimization 1) ----
 #define STMT_CACHE_SIZE 64
@@ -6539,7 +7610,12 @@ static void _parse_mysql_url(const char* url,
     }
 }
 
-void tinox_db_connect(const char* url) {
+void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    // MySQL keeps its pre-#191 single-connection model -- pool_size is
+    // accepted (uniform driver-layer signature, see the Postgres block
+    // above) but ignored; no pooling/transactions for this driver yet,
+    // see the tinox_db_tx_* stubs below.
+    (void)pool_size;
     _tinox_mysql_conn = mysql_init(NULL);
     if (!_tinox_mysql_conn) {
         fprintf(stderr, "MySQL init failed\n");
@@ -6561,7 +7637,26 @@ typedef struct {
     char** data;   // row-major: data[row * n_cols + col]
 } TinoxMysqlResult;
 
-void* tinox_db_get_conn(void) { return _tinox_mysql_conn; }
+void* tinox_db_acquire_stmt_conn(void) { return _tinox_mysql_conn; }
+void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
+
+// @Transactional is a hard compile error for this driver (see the driver
+// check in tinox/src/main.rs) -- these exist only so a fully-linked binary
+// never has an undefined symbol. A real call here would mean that check
+// was bypassed, so fail loudly rather than silently no-op.
+void* tinox_db_tx_begin(void) {
+    fprintf(stderr, "@Transactional is not supported for the mysql driver\n");
+    exit(1);
+}
+void tinox_db_tx_commit(void) {
+    fprintf(stderr, "@Transactional is not supported for the mysql driver\n");
+    exit(1);
+}
+void tinox_db_tx_rollback(void) {
+    fprintf(stderr, "@Transactional is not supported for the mysql driver\n");
+    exit(1);
+}
+bool tinox_db_tx_active(void) { return false; }
 
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
     MYSQL_STMT* stmt = mysql_stmt_init((MYSQL*)conn);
@@ -6661,8 +7756,13 @@ char*   tinox_db_error(void* c) { return GC_strdup(mysql_error((MYSQL*)c)); }
 
 #else
 // Stub implementations when no DB driver is selected — prevent link errors.
-void  tinox_db_connect(const char* url)                                       { (void)url; }
-void* tinox_db_get_conn(void)                                                  { return NULL; }
+void  tinox_db_pool_init(const char* url, int64_t pool_size)                  { (void)url;(void)pool_size; }
+void* tinox_db_acquire_stmt_conn(void)                                        { return NULL; }
+void  tinox_db_release_stmt_conn(void* conn)                                  { (void)conn; }
+void* tinox_db_tx_begin(void)                                                 { return NULL; }
+void  tinox_db_tx_commit(void)                                                { }
+void  tinox_db_tx_rollback(void)                                              { }
+bool  tinox_db_tx_active(void)                                                { return false; }
 void* tinox_db_exec(void* c, const char* s, const char** p, int64_t n)        { (void)c;(void)s;(void)p;(void)n; return NULL; }
 int64_t tinox_db_nrows(void* r)                                                { (void)r; return 0; }
 int64_t tinox_db_ncols(void* r)                                                { (void)r; return 0; }

@@ -1,0 +1,67 @@
+module tinox.core.queue;
+
+namespace tinox.core.queue
+{
+    class PriorityQueue<T>
+    {
+        var items: List<PriorityItem<T>>;
+
+        fn new() -> PriorityQueue<T>
+        {
+            return PriorityQueue<T> { items: [] };
+        }
+
+        fn enqueue(q: PriorityQueue<T>, item: T, priority: Int64) -> Nothing
+        {
+            q.items.push(PriorityItem { item: item, priority: priority });
+            PriorityQueue::sort(q);
+        }
+
+        fn dequeue(q: PriorityQueue<T>) -> T
+        {
+            if (q.items.len() == 0)
+            {
+                throw "Priority queue is empty";
+            }
+            let item: T = q.items[0].item;
+            q.items.removeAt(0);
+            return item;
+        }
+
+        fn peek(q: PriorityQueue<T>) -> T
+        {
+            if (q.items.len() == 0)
+            {
+                throw "Priority queue is empty";
+            }
+            return q.items[0].item;
+        }
+
+        fn sort(q: PriorityQueue<T>) -> Nothing
+        {
+            var i: Int64 = 1;
+            while i < q.items.len()
+            {
+                let key: PriorityItem = q.items[i];
+                var j: Int64 = i - 1;
+                while j >= 0 && q.items[j].priority > key.priority
+                {
+                    q.items[j + 1] = q.items[j];
+                    j = j - 1;
+                }
+                q.items[j + 1] = key;
+                i = i + 1;
+            }
+        }
+
+        fn isEmpty(q: PriorityQueue<T>) -> Bool
+        {
+            return q.items.len() == 0;
+        }
+
+        fn size(q: PriorityQueue<T>) -> Int64
+        {
+            return q.items.len();
+        }
+    }
+}

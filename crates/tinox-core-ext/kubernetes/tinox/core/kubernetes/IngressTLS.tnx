@@ -1,0 +1,13 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    @JsonSerializable
+    class IngressTLS
+    {
+        var hosts: List<String>;
+        var secretName: String;
+    }
+}

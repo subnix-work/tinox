@@ -1,0 +1,67 @@
+module tinox.core.msgpack;
+
+namespace tinox.core.msgpack
+{
+    /**
+     * Cursor over a byte array for decoding (issue #136). Every read
+     * checks bounds before advancing; once `failed` is set (EOF mid-value,
+     * or a declared length exceeding what's actually left in the buffer),
+     * every subsequent read is a safe no-op returning 0 instead of
+     * indexing past the end -- kein Silent-Garbage in the crash sense:
+     * a truncated/malformed input never reads out of bounds or loops
+     * proportionally to an attacker-declared length that vastly exceeds
+     * the real buffer (the same declared-length-vs-actual-size amplification
+     * shape runtime.c's httpConnReadN/httpServerReadRawBytes fixes were
+     * for, issue #111, just here in the decoder's own bounds checks
+     * instead of an allocation). It does NOT try to distinguish "genuinely
+     * decoded a nil value" from "decode failed" in the returned
+     * MsgpackValue -- same as this stdlib's other self-contained-buffer
+     * parsers (Toml::parse, Yaml::parse, Xml::parse, Csv::parse), which
+     * don't expose a separate ok flag either; Msgpack::decode's contract
+     * is "never crashes, never hangs," not "always reports success/failure."
+     */
+    class MsgpackReader
+    {
+        bytes: List<Int64>;
+        pos: Int64;
+        failed: Bool;
+
+        fn new(bytes: List<Int64>) -> MsgpackReader
+        {
+            return MsgpackReader { bytes: bytes, pos: 0, failed: false };
+        }
+
+        fn remaining() -> Int64
+        {
+            return this.bytes.len() - this.pos;
+        }
+
+        fn readByte() -> Int64
+        {
+            if (this.failed || this.pos >= this.bytes.len())
+            {
+                this.failed = true;
+                return 0;
+            }
+            let b: Int64 = this.bytes[this.pos];
+            this.pos = this.pos + 1;
+            return b;
+        }
+
+        // Reads n bytes (n <= 8) big-endian into the low n*8 bits of an
+        // Int64, via left-shift-and-accumulate -- for n == 8, the result
+        // is already the correct 64-bit two's-complement value (positive
+        // or negative) with no separate sign-extension step needed.
+        fn readBE(n: Int64) -> Int64
+        {
+            var result: Int64 = 0;
+            var i: Int64 = 0;
+            while i < n
+            {
+                result = (result << 8) | this.readByte();
+                i = i + 1;
+            }
+            return result;
+        }
+    }
+}

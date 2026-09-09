@@ -50,16 +50,16 @@ class Main
         let fDecl = Amqp091::readFrame(sconn);
         let mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
         var argsOk: Bool = false;
-        if mDecl.classId == 40 {
-            if mDecl.methodId == 10 {
+        if (mDecl.classId == 40) {
+            if (mDecl.methodId == 10) {
                 let r = AmqpReader091::new(mDecl.args);
                 r.short(); // reserved-1
                 let name = r.shortstr();
                 let exType = r.shortstr();
                 let flags = r.octet();
-                if name == "my-exchange" {
-                    if exType == "topic" {
-                        if (flags & 2) != 0 { // durable bit set
+                if (name == "my-exchange") {
+                    if (exType == "topic") {
+                        if ((flags & 2) != 0) { // durable bit set
                             argsOk = true;
                         }
                     }
@@ -80,7 +80,7 @@ class Main
 
         httpConnClose(sconn);
 
-        if argsOk {
+        if (argsOk) {
             return 1;
         }
         return 0;
@@ -90,7 +90,7 @@ class Main
     fnc main() -> Int32 {
         let srv = httpServerCreate(0);
         let port = httpServerBoundPort(srv);
-        if srv < 0 {
+        if (srv < 0) {
             println("bind failed");
             return 1;
         }
@@ -100,19 +100,19 @@ class Main
         let ch = AmqpChannel091::open(c);
 
         let declared = ch.declareExchange("my-exchange", "topic", true, false);
-        if declared {
+        if (declared) {
             println("ok-declare");
         }
 
         let rejected = ch.declareExchange("my-exchange", "direct", false, false);
-        if !rejected {
-            if ch.errorMessage.contains("PRECONDITION_FAILED") {
+        if (!rejected) {
+            if (ch.errorMessage.contains("PRECONDITION_FAILED")) {
                 println("ok-reject");
             }
         }
 
         let brokerSawArgs = await handle;
-        if brokerSawArgs == 1 {
+        if (brokerSawArgs == 1) {
             println("ok-args-seen");
         }
 

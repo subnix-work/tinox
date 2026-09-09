@@ -1,0 +1,72 @@
+module tinox.core.time;
+
+namespace tinox.core.time
+{
+    /**
+     * A timer for measuring elapsed time between start and stop
+     *
+     * Call start() to begin timing, stop() to end timing,
+     * and elapsed() to get the measured duration.
+     */
+    class Timer
+    {
+        /** The start time in milliseconds */
+        var startTime: Int64;
+
+        /** The stop time in milliseconds (0 if not stopped) */
+        var endTime: Int64;
+
+        /**
+         * Creates a new Timer (not started)
+         *
+         * @return a new Timer instance
+         */
+        fn new() -> Timer
+        {
+            return Timer { startTime: 0, endTime: 0 };
+        }
+
+        /**
+         * Starts the timer, recording the current time
+         */
+        fn start() -> Nothing
+        {
+            this.startTime = now();
+        }
+
+        /**
+         * Stops the timer, recording the end time
+         */
+        fn stop() -> Nothing
+        {
+            this.endTime = now();
+        }
+
+        /**
+         * Returns the elapsed time in milliseconds
+         *
+         * If the timer is still running (stop not called),
+         * returns the time from start to now.
+         *
+         * @return elapsed time in milliseconds
+         */
+        fn elapsed() -> Int64
+        {
+            if (this.endTime == 0)
+            {
+                return now() - this.startTime;
+            }
+            return this.endTime - this.startTime;
+        }
+
+        /**
+         * Returns the elapsed time in whole seconds
+         *
+         * @return elapsed time in seconds (truncated)
+         */
+        fn elapsedSeconds() -> Int64
+        {
+            return this.elapsed() / 1000;
+        }
+    }
+}

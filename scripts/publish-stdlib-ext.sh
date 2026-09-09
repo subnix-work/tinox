@@ -49,21 +49,23 @@ for dir in crates/tinox-core-ext/*/; do
     # Build the archive by hand instead of `tinox package`: that command
     # expects a normal project's src/ layout and archives entries relative
     # to src/ (see its own doc comment in pm.rs) -- crates/tinox-core-ext/
-    # <module>/ has no src/ (matching the flat layout every OTHER stdlib
-    # module directory already uses) and, more importantly, the already-
-    # live packages on central preserve the FULL `tinox/core/<module>/...`
-    # path inside the archive (verified by extracting a live artifact by
-    # hand), which `tinox package`'s src/-relative stripping wouldn't
-    # produce even if src/ existed. So: stage `tinox/core/<module>/` (the
-    # module's own files, recursively -- rest/server, rest/client etc. stay
-    # nested) plus tinox.toml at the ARCHIVE ROOT (a sibling of tinox/, not
-    # inside tinox/core/<module>/), matching that exact live layout.
+    # <module>/ has no src/, and the live packages on central preserve the
+    # FULL `tinox/core/<module>/...` path inside the archive (verified by
+    # extracting a live artifact by hand), which `tinox package`'s
+    # src/-relative stripping wouldn't produce even if src/ existed.
+    #
+    # Since issue #185's namespace-mirroring migration, the local source
+    # tree at `$dir` ALREADY has this exact `tinox/core/<module>/...` shape
+    # (it's what makes the new namespace-path compiler check pass for these
+    # files in the first place) -- so staging is now a direct copy of that
+    # existing subtree, not a synthesis of it the way it used to be before
+    # the migration (this used to `find ... | cp --parents` the module's
+    # flat files into a freshly-fabricated `tinox/core/<module>/` prefix
+    # that didn't exist on disk anywhere else).
     archive="$module-$version.tar.gz"
     archive_path="$PWD/$dir$archive"
     staging=$(mktemp -d)
-    mkdir -p "$staging/tinox/core/$module"
-    ( cd "$dir" && find . -name '*.tnx' -print0 ) \
-        | (cd "$dir" && xargs -0 -I{} cp --parents {} "$staging/tinox/core/$module/")
+    cp -r "$dir/tinox" "$staging/tinox"
     cp "$toml" "$staging/tinox.toml"
     rm -f "$archive_path"
     ( cd "$staging" && tar -czf "$archive_path" tinox tinox.toml )

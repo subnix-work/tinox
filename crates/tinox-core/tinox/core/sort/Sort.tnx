@@ -1,0 +1,125 @@
+module tinox.core.sort;
+
+namespace tinox.core.sort
+{
+    class Sort
+    {
+        fn quickSort(arr: List<Int64>) -> List<Int64>
+        {
+            if (arr.len() <= 1)
+            {
+                return arr;
+            }
+            return Sort::quickSortHelper(arr, 0, arr.len() - 1);
+        }
+
+        fn quickSortHelper(arr: List<Int64>, low: Int64, high: Int64) -> List<Int64>
+        {
+            var result: List<Int64> = arr;
+            if (low < high)
+            {
+                let pivotIndex: Int64 = Sort::partition(result, low, high);
+                result = Sort::quickSortHelper(result, low, pivotIndex - 1);
+                result = Sort::quickSortHelper(result, pivotIndex + 1, high);
+            }
+            return result;
+        }
+
+        fn partition(arr: List<Int64>, low: Int64, high: Int64) -> Int64
+        {
+            let pivot: Int64 = arr[high];
+            var i: Int64 = low - 1;
+            var j: Int64 = low;
+            while j < high
+            {
+                if (arr[j] <= pivot)
+                {
+                    i = i + 1;
+                    let temp: Int64 = arr[i];
+                    arr[i] = arr[j];
+                    arr[j] = temp;
+                }
+                j = j + 1;
+            }
+            let temp: Int64 = arr[i + 1];
+            arr[i + 1] = arr[high];
+            arr[high] = temp;
+            return i + 1;
+        }
+
+        fn mergeSort(arr: List<Int64>) -> List<Int64>
+        {
+            if (arr.len() <= 1)
+            {
+                return arr;
+            }
+            return Sort::mergeSortHelper(arr);
+        }
+
+        fn mergeSortHelper(arr: List<Int64>) -> List<Int64>
+        {
+            let len: Int64 = arr.len();
+            if (len <= 1)
+            {
+                return arr;
+            }
+            let mid: Int64 = len / 2;
+            let left: List<Int64> = Sort::mergeSortHelper(arr.slice(0, mid));
+            let right: List<Int64> = Sort::mergeSortHelper(arr.slice(mid, len));
+            return Sort::mergeInto(arr, left, right);
+        }
+
+        fn mergeInto(result: List<Int64>, left: List<Int64>, right: List<Int64>) -> List<Int64>
+        {
+            var l: Int64 = 0;
+            var r: Int64 = 0;
+            var k: Int64 = 0;
+            while l < left.len() && r < right.len()
+            {
+                if (left[l] <= right[r])
+                {
+                    result[k] = left[l];
+                    l = l + 1;
+                }
+                else
+                {
+                    result[k] = right[r];
+                    r = r + 1;
+                }
+                k = k + 1;
+            }
+            while l < left.len()
+            {
+                result[k] = left[l];
+                l = l + 1;
+                k = k + 1;
+            }
+            while r < right.len()
+            {
+                result[k] = right[r];
+                r = r + 1;
+                k = k + 1;
+            }
+            return result;
+        }
+
+        fn insertionSort(arr: List<Int64>) -> List<Int64>
+        {
+            var result: List<Int64> = arr;
+            var i: Int64 = 1;
+            while i < result.len()
+            {
+                let key: Int64 = result[i];
+                var j: Int64 = i - 1;
+                while j >= 0 && result[j] > key
+                {
+                    result[j + 1] = result[j];
+                    j = j - 1;
+                }
+                result[j + 1] = key;
+                i = i + 1;
+            }
+            return result;
+        }
+    }
+}

@@ -482,6 +482,23 @@ pub struct TypeChecker {
     /// (which is what silently mis-specialized `U` to `Int64` downstream in
     /// codegen — see `infer_own_type_params`'s doc comment in codegen.rs).
     generic_instance_fn_arg_hints: HashMap<String, Vec<(usize, Vec<ValueType>)>>,
+    /// Every decl seen via register_declarations (both `typecheck_with_prelude`'s
+    /// prelude files AND the main source's own decls, registered first thing
+    /// inside check_source_file) -- `validate_annotations` needs this because it
+    /// documents its own assumption ("imports are already merged into
+    /// source.decls") that only holds for the real compiler's `compile_file`
+    /// pipeline (resolve_imports merges everything into one decl list BEFORE
+    /// typecheck ever runs). tinox-lsp's `typecheck_with_prelude` deliberately
+    /// keeps the main file and its stdlib preludes as SEPARATE SourceFiles
+    /// instead -- without this, a custom annotation declared in a prelude (e.g.
+    /// `@JsonSerializable`, declared via `@annotation class JsonSerializable {}`
+    /// inside tinox.core.json's own JsonSerializable.tnx) reads as "unknown
+    /// annotation" for any file that merely IMPORTS it, since
+    /// validate_annotations's own first-pass registration scan never saw it.
+    /// Real bug, found live: an Eclipse-imported real project's own
+    /// `@JsonSerializable class Person` flagged this way despite being
+    /// perfectly valid and compiling fine with the real `tinox` compiler.
+    prelude_decls: Vec<Decl>,
 }
 
 impl TypeChecker {
@@ -817,6 +834,7 @@ impl TypeChecker {
         symbols.functions.insert("httpConnReadN".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("n".to_string(), ValueType::Int)], return_type: ValueType::Array(Box::new(ValueType::Int)) });
         symbols.functions.insert("httpConnWriteBytes".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("bytes".to_string(), ValueType::Array(Box::new(ValueType::Int)))], return_type: ValueType::Int });
         symbols.functions.insert("httpConnClose".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        symbols.functions.insert("httpConnClearRecvTimeout".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         // File I/O builtins
         symbols.functions.insert("open".to_string(), FunctionSignature {
             params: vec![("path".to_string(), ValueType::String), ("mode".to_string(), ValueType::String)],
@@ -941,6 +959,75 @@ impl TypeChecker {
                 params: vec![], return_type: ret,
             });
         }
+        // Argv-based subprocess execution (tinox_process_run et al., runtime.c)
+        // -- handles are Int64 (ptrtoint of a GC_malloc'd struct), same idiom as
+        // every other opaque native resource in this runtime.
+        symbols.functions.insert("processRun".to_string(), FunctionSignature {
+            params: vec![
+                ("argv".to_string(), ValueType::Array(Box::new(ValueType::String))),
+                ("timeoutMs".to_string(), ValueType::Int),
+                ("stdin".to_string(), ValueType::String),
+            ],
+            return_type: ValueType::Int,
+        });
+        for name in &["processResultStdout", "processResultStderr", "processResultExitCode", "processResultTimedOut"] {
+            let ret = if *name == "processResultStdout" || *name == "processResultStderr" { ValueType::String }
+                      else { ValueType::Int };
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ret,
+            });
+        }
+        // Real synchronization primitives (tinox.core.semaphore) -- see the
+        // runtime.c comment above mutexNew for why the previous, pure-Tinox
+        // check-then-act implementation was a real bug, not just a
+        // hypothetical one.
+        symbols.functions.insert("mutexNew".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        for name in &["mutexLock", "mutexUnlock"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+            });
+        }
+        symbols.functions.insert("mutexTryLock".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("semaphoreNew".to_string(), FunctionSignature {
+            params: vec![("initialCount".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        for name in &["semaphoreAcquire", "semaphoreRelease"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+            });
+        }
+        symbols.functions.insert("semaphoreTryAcquire".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("rwlockNew".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        for name in &["rwlockReadLock", "rwlockReadUnlock", "rwlockWriteLock", "rwlockWriteUnlock"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+            });
+        }
+        // Long-lived interactive subprocess (tinox.core.process) -- unlike
+        // processRun, spawns and returns immediately; the caller drives it
+        // incrementally for the session's lifetime (e.g. `kubectl exec`).
+        symbols.functions.insert("processSpawnInteractive".to_string(), FunctionSignature {
+            params: vec![("argv".to_string(), ValueType::Array(Box::new(ValueType::String)))],
+            return_type: ValueType::Int,
+        });
+        symbols.functions.insert("processWriteStdin".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)],
+            return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("processReadOutput".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int), ("timeoutMs".to_string(), ValueType::Int)],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("processIsAlive".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("processKillInteractive".to_string(), FunctionSignature {
+            params: vec![("handle".to_string(), ValueType::Int)], return_type: ValueType::Nothing,
+        });
         // Metrics (manual API, MetricsRegistry/Stopwatch — @Timed/@Counted
         // auto-instrumentation injects the same calls directly in codegen)
         symbols.functions.insert("tinox_counter_inc".to_string(), FunctionSignature {
@@ -1177,6 +1264,7 @@ impl TypeChecker {
             generic_method_param_types: HashMap::new(),
             class_fields: HashMap::new(),
             generic_instance_fn_arg_hints: HashMap::new(),
+            prelude_decls: Vec::new(),
         }
     }
 
@@ -1362,6 +1450,8 @@ impl TypeChecker {
     }
 
     fn register_declarations(&mut self, source: &SourceFile) {
+        self.prelude_decls
+            .extend(Self::flatten_decls(source).into_iter().cloned());
         for decl in Self::flatten_decls(source) {
             match &decl.node {
                 DeclKind::Function(f) => {
@@ -1691,125 +1781,179 @@ impl TypeChecker {
             );
         }
 
-        // Third pass: expand class inheritance (fields and methods from parent classes).
-        {
-            use std::collections::HashSet;
-            let class_map: HashMap<String, tinox_parser::Class> = Self::flatten_decls(source)
-                .into_iter()
-                .filter_map(|d| match &d.node {
-                    DeclKind::Class(c) => Some(c.clone()),
-                    _ => None,
-                })
-                .map(|c| (c.name.clone(), c))
-                .collect();
+    }
 
-            let class_names: Vec<String> = class_map.keys().cloned().collect();
-            let mut processed: HashSet<String> = HashSet::new();
+    /// Expands class inheritance (fields and methods from parent classes) for
+    /// every class declared directly in `source`. A parent class may instead
+    /// live only in a `register_declarations`-registered prelude
+    /// (`typecheck_with_prelude`'s split file-plus-preludes model, used by
+    /// both tinox-lsp and `check_explicit_imports`, issue #194) rather than
+    /// in `source` itself -- `self.prelude_decls` is consulted as a
+    /// parent-lookup fallback, but a prelude class is never itself treated as
+    /// one this pass must expand (see `expand_prelude_class_inheritance`,
+    /// below, for that half — calling both, in the right order, is what
+    /// makes a cross-prelude inheritance chain like `Derived extends Base`,
+    /// where BOTH are preludes of some third file, resolve correctly
+    /// regardless of which of the two got registered first).
+    fn expand_class_inheritance(&mut self, source: &SourceFile) {
+        let own_classes: HashMap<String, tinox_parser::Class> = Self::flatten_decls(source)
+            .into_iter()
+            .filter_map(|d| match &d.node {
+                DeclKind::Class(c) => Some(c.clone()),
+                _ => None,
+            })
+            .map(|c| (c.name.clone(), c))
+            .collect();
+        let extra_decls = self.prelude_decls.clone();
+        self.expand_class_inheritance_impl(own_classes, &extra_decls);
+    }
 
-            loop {
-                let before = processed.len();
-                for name in &class_names {
-                    if processed.contains(name) {
+    /// The prelude-side counterpart of `expand_class_inheritance`: expands
+    /// inheritance for EVERY class across ALL registered preludes together,
+    /// as one combined pass over `self.prelude_decls` — unlike running the
+    /// same expansion once per individual `register_declarations` call (the
+    /// original design), which broke as soon as a prelude class's parent was
+    /// itself a *different*, not-yet-registered prelude (registration order
+    /// depends on `check_explicit_imports`'s DFS over the import graph, not
+    /// inheritance order — found live via `tests/e2e/inherited_static_dispatch`,
+    /// where `Base`/`Derived` mutually import each other and DFS happened to
+    /// register `Derived` first, silently dropping its inherited methods).
+    /// Must run once, after every prelude has been registered, and before
+    /// `check(source)` — see `typecheck_with_prelude`.
+    fn expand_prelude_class_inheritance(&mut self) {
+        let own_classes: HashMap<String, tinox_parser::Class> = self
+            .prelude_decls
+            .iter()
+            .filter_map(|d| match &d.node {
+                DeclKind::Class(c) => Some(c.clone()),
+                _ => None,
+            })
+            .map(|c| (c.name.clone(), c))
+            .collect();
+        self.expand_class_inheritance_impl(own_classes, &[]);
+    }
+
+    fn expand_class_inheritance_impl(
+        &mut self,
+        own_classes: HashMap<String, tinox_parser::Class>,
+        extra_decls: &[Decl],
+    ) {
+        use std::collections::HashSet;
+        let mut class_map = own_classes;
+        let class_names: Vec<String> = class_map.keys().cloned().collect();
+        let own_class_names: HashSet<String> = class_names.iter().cloned().collect();
+        for d in extra_decls {
+            if let DeclKind::Class(c) = &d.node {
+                class_map.entry(c.name.clone()).or_insert_with(|| c.clone());
+            }
+        }
+
+        let mut processed: HashSet<String> = HashSet::new();
+
+        loop {
+            let before = processed.len();
+            for name in &class_names {
+                if processed.contains(name) {
+                    continue;
+                }
+                let c = &class_map[name];
+                let parent_ready = c
+                    .extends
+                    .as_ref()
+                    .map(|p| processed.contains(p) || !own_class_names.contains(p))
+                    .unwrap_or(true);
+                if !parent_ready {
+                    continue;
+                }
+
+                if let Some(parent_name) = &c.extends {
+                    if !class_map.contains_key(parent_name) {
+                        self.errors.push(Error::new(
+                            c.span,
+                            format!("undefined parent class: {}", parent_name),
+                        ));
+                        processed.insert(name.clone());
                         continue;
                     }
-                    let c = &class_map[name];
-                    let parent_ready = c
-                        .extends
-                        .as_ref()
-                        .map(|p| processed.contains(p) || !class_map.contains_key(p))
-                        .unwrap_or(true);
-                    if !parent_ready {
-                        continue;
-                    }
 
-                    if let Some(parent_name) = &c.extends {
-                        if !class_map.contains_key(parent_name) {
-                            self.errors.push(Error::new(
-                                c.span,
-                                format!("undefined parent class: {}", parent_name),
-                            ));
-                            processed.insert(name.clone());
-                            continue;
+                    let child_own_fields: HashSet<String> =
+                        c.fields.iter().map(|f| f.name.clone()).collect();
+                    let child_own_methods: HashSet<String> =
+                        c.methods.iter().map(|m| m.name.clone()).collect();
+
+                    // Walk the ancestor chain and collect inherited fields/methods.
+                    let mut ancestor = parent_name.clone();
+                    while let Some(pc) = class_map.get(&ancestor) {
+                        for field in &pc.fields {
+                            if child_own_fields.contains(&field.name) {
+                                continue;
+                            }
+                            let child_key = format!("{}.{}", name, field.name);
+                            if self.symbols.variables.contains_key(&child_key) {
+                                continue;
+                            }
+                            let ty = Self::type_to_value(&field.field_type);
+                            self.symbols.variables.insert(child_key.clone(), (ty, true));
+                            self.field_visibility
+                                .entry(child_key)
+                                .or_insert_with(|| field.visibility.clone());
+                            let child_fields = self.class_fields.entry(name.clone()).or_default();
+                            if !child_fields.contains(&field.name) {
+                                child_fields.push(field.name.clone());
+                            }
                         }
 
-                        let child_own_fields: HashSet<String> =
-                            c.fields.iter().map(|f| f.name.clone()).collect();
-                        let child_own_methods: HashSet<String> =
-                            c.methods.iter().map(|m| m.name.clone()).collect();
-
-                        // Walk the ancestor chain and collect inherited fields/methods.
-                        let mut ancestor = parent_name.clone();
-                        while let Some(pc) = class_map.get(&ancestor) {
-                            for field in &pc.fields {
-                                if child_own_fields.contains(&field.name) {
-                                    continue;
-                                }
-                                let child_key = format!("{}.{}", name, field.name);
-                                if self.symbols.variables.contains_key(&child_key) {
-                                    continue;
-                                }
-                                let ty = Self::type_to_value(&field.field_type);
-                                self.symbols.variables.insert(child_key.clone(), (ty, true));
-                                self.field_visibility
-                                    .entry(child_key)
-                                    .or_insert_with(|| field.visibility.clone());
-                                let child_fields = self.class_fields.entry(name.clone()).or_default();
-                                if !child_fields.contains(&field.name) {
-                                    child_fields.push(field.name.clone());
-                                }
+                        for method in &pc.methods {
+                            if child_own_methods.contains(&method.name) {
+                                continue;
                             }
-
-                            for method in &pc.methods {
-                                if child_own_methods.contains(&method.name) {
-                                    continue;
-                                }
-                                let child_key = format!("{}_{}", name, method.name);
-                                if self.symbols.functions.contains_key(&child_key) {
-                                    continue;
-                                }
-                                let mut params = vec![(
-                                    "self".to_string(),
-                                    ValueType::Named(name.clone(), vec![]),
-                                )];
-                                params.extend(method.params.iter().map(|p| {
-                                    (p.name.clone(), Self::type_to_value(&p.param_type))
-                                }));
-                                let sig = FunctionSignature {
-                                    params,
-                                    return_type: Self::type_to_value(&method.ret_type),
-                                };
-                                if Self::stmt_uses_this(&method.body) {
-                                    self.method_uses_this.insert(child_key.clone());
-                                }
-                                self.symbols.functions.insert(child_key.clone(), sig);
-                                self.method_visibility
-                                    .entry(child_key)
-                                    .or_insert_with(|| method.visibility.clone());
+                            let child_key = format!("{}_{}", name, method.name);
+                            if self.symbols.functions.contains_key(&child_key) {
+                                continue;
                             }
-
-                            ancestor = match &pc.extends {
-                                Some(next) => next.clone(),
-                                None => break,
+                            let mut params = vec![(
+                                "self".to_string(),
+                                ValueType::Named(name.clone(), vec![]),
+                            )];
+                            params.extend(method.params.iter().map(|p| {
+                                (p.name.clone(), Self::type_to_value(&p.param_type))
+                            }));
+                            let sig = FunctionSignature {
+                                params,
+                                return_type: Self::type_to_value(&method.ret_type),
                             };
+                            if Self::stmt_uses_this(&method.body) {
+                                self.method_uses_this.insert(child_key.clone());
+                            }
+                            self.symbols.functions.insert(child_key.clone(), sig);
+                            self.method_visibility
+                                .entry(child_key)
+                                .or_insert_with(|| method.visibility.clone());
                         }
-                    }
 
-                    self.known_class_names.insert(name.clone());
-                    if !c.type_params.is_empty() {
-                        self.generic_class_names.insert(name.clone());
-                        self.class_type_params.insert(name.clone(), c.type_params.clone());
+                        ancestor = match &pc.extends {
+                            Some(next) => next.clone(),
+                            None => break,
+                        };
                     }
-                    processed.insert(name.clone());
                 }
-                if processed.len() == before {
-                    break;
+
+                self.known_class_names.insert(name.clone());
+                if !c.type_params.is_empty() {
+                    self.generic_class_names.insert(name.clone());
+                    self.class_type_params.insert(name.clone(), c.type_params.clone());
                 }
+                processed.insert(name.clone());
+            }
+            if processed.len() == before {
+                break;
             }
         }
     }
 
     fn check_source_file(&mut self, source: &SourceFile) {
         self.register_declarations(source);
+        self.expand_class_inheritance(source);
 
         for decl in Self::flatten_decls(source) {
             match &decl.node {
@@ -1824,7 +1968,7 @@ impl TypeChecker {
         }
 
         // Annotation validation pass
-        let ann_errors = annotations::validate_annotations(source);
+        let ann_errors = annotations::validate_annotations(source, &self.prelude_decls);
         self.errors.extend(ann_errors);
     }
 
@@ -2342,6 +2486,29 @@ impl TypeChecker {
                 if obj_ty == ValueType::Any {
                     for arg in args { self.infer_type(arg); }
                     return ValueType::Any;
+                }
+                // `List<C>.toJson()` (C a @JsonSerializable class): mirrors
+                // codegen's own dedicated check (codegen.rs, right before its
+                // generic method dispatch) for exactly the same reason it has
+                // to run before the generic `{class}_{method}` lookup below
+                // -- ValueType::Array's Display is deliberately erased to a
+                // bare "Array" (dispatch keys for genuinely element-agnostic
+                // methods like push/len), so falling through to that generic
+                // path here would look up a nonexistent "Array_toJson" and
+                // fail with "undefined function: Array_toJson" even though
+                // codegen handles this exact call correctly via
+                // tinox_json_list_serialize. Found live: this `check_explicit_
+                // imports` (issue #194) pass runs its own independent
+                // typecheck ahead of the real compile pipeline and hard-blocks
+                // the build on this false positive before codegen ever runs.
+                if method == "toJson" && args.is_empty() {
+                    if let ValueType::Array(elem) = &obj_ty {
+                        if let ValueType::Named(cls, _) = elem.as_ref() {
+                            if self.symbols.functions.contains_key(&format!("{}_toJson", cls)) {
+                                return ValueType::String;
+                            }
+                        }
+                    }
                 }
                 let class_name = obj_ty.to_string();
 
@@ -3802,12 +3969,21 @@ impl TypeChecker {
             (_, ValueType::Null) => false,
             // A non-null value is compatible with its nullable counterpart
             (ValueType::Nullable(inner), _) => self.types_compatible(inner, b),
-            // Allow passing a class where an interface it implements is expected
-            (ValueType::Named(iface, _), ValueType::Named(class, _)) => {
+            // Allow passing a class where an interface it implements is
+            // expected, OR where a base class it extends (directly or
+            // transitively) is expected (#173: this arm used to only check
+            // interface_implementations, so a subclass instance was
+            // rejected as an argument/variable typed as its own base
+            // class — even though the free-function-call path already
+            // accepted the same relationship, via a separate code path
+            // that skips this check entirely rather than handling it
+            // correctly).
+            (ValueType::Named(base_or_iface, _), ValueType::Named(class, _)) => {
                 self.interface_implementations
                     .get(class)
-                    .map(|ifaces| ifaces.iter().any(|i| i == iface))
+                    .map(|ifaces| ifaces.iter().any(|i| i == base_or_iface))
                     .unwrap_or(false)
+                    || self.is_subclass_or_equal(class, base_or_iface)
             }
             // `channel` (a bare Int — see ExprKind::Channel/Recv above,
             // there's no element type to infer at creation) is compatible
@@ -3857,6 +4033,8 @@ pub fn typecheck_with_prelude(source: &SourceFile, preludes: &[&SourceFile]) -> 
         checker.register_declarations(prelude);
         checker.errors.clear();
     }
+    checker.expand_prelude_class_inheritance();
+    checker.errors.clear();
     checker.check(source)
 }
 
@@ -4227,7 +4405,7 @@ interface IDrawable extends IDoesNotExist {
 
     #[test]
     fn test_recursive_function_ok() {
-        ok("fn fact(n: Int32) -> Int32 { if n > 0 { return fact(n); } return 1; }");
+        ok("fn fact(n: Int32) -> Int32 { if (n > 0) { return fact(n); } return 1; }");
     }
 
     #[test]
@@ -4310,7 +4488,7 @@ interface IDrawable extends IDoesNotExist {
 
     #[test]
     fn test_if_bool_cond_ok() {
-        ok("fn f() { if true { } }");
+        ok("fn f() { if (true) { } }");
     }
 
     #[test]
@@ -4574,19 +4752,19 @@ fn f() { new Builder().step().build(); }
 
     #[test]
     fn test_multiple_return_paths_ok() {
-        ok("fn f(x: Int32) -> Int32 { if x > 0 { return x; } return 0; }");
+        ok("fn f(x: Int32) -> Int32 { if (x > 0) { return x; } return 0; }");
     }
 
     // --- Undefined variable in different scopes ---
 
     #[test]
     fn test_undefined_variable_in_if_branch_err() {
-        err_contains("fn f() { if true { return z; } }", "undefined variable");
+        err_contains("fn f() { if (true) { return z; } }", "undefined variable");
     }
 
     #[test]
     fn test_var_defined_in_outer_scope_accessible_in_inner() {
-        ok("fn f() { let x = 5; if true { let y = x; } }");
+        ok("fn f() { let x = 5; if (true) { let y = x; } }");
     }
 
     // --- Float operations ---
@@ -5088,12 +5266,12 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_nested_if_ok() {
-        ok("fn f(x: Int64, y: Int64) -> Nothing { if x > 0 { if y > 0 { return; } } }");
+        ok("fn f(x: Int64, y: Int64) -> Nothing { if (x > 0) { if (y > 0) { return; } } }");
     }
 
     #[test]
     fn test_else_if_ok() {
-        ok("fn f(x: Int64) -> Nothing { if x > 0 { return; } else if x < 0 { return; } else { return; } }");
+        ok("fn f(x: Int64) -> Nothing { if (x > 0) { return; } else if (x < 0) { return; } else { return; } }");
     }
 
     // ================================================================
@@ -5363,7 +5541,7 @@ class Jogger implements Runner {
     #[test]
     fn test_var_in_if_block_not_visible_outside_err() {
         err_contains(
-            "fn f() -> Int64 { if true { var x = 1; } return x; }",
+            "fn f() -> Int64 { if (true) { var x = 1; } return x; }",
             "undefined",
         );
     }
@@ -5418,12 +5596,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_multiple_return_paths_v2_ok() {
-        ok("fn abs(x: Int64) -> Int64 { if x < 0 { return -x; } return x; }");
+        ok("fn abs(x: Int64) -> Int64 { if (x < 0) { return -x; } return x; }");
     }
 
     #[test]
     fn test_early_return_type_mismatch() {
-        err_contains("fn f() -> Int64 { if true { return \"oops\"; } return 1; }", "expected Int64");
+        err_contains("fn f() -> Int64 { if (true) { return \"oops\"; } return 1; }", "expected Int64");
     }
 
     // ================================================================
@@ -5508,7 +5686,7 @@ class Jogger implements Runner {
     #[test]
     fn test_ternary_ok() {
         // if-else as expression with explicit returns in branches
-        ok("fn f(x: Int64) -> Int64 { if x > 0 { return x; } return -x; }");
+        ok("fn f(x: Int64) -> Int64 { if (x > 0) { return x; } return -x; }");
     }
 
     // ================================================================
@@ -5679,7 +5857,7 @@ class Jogger implements Runner {
 
     #[test]
     fn test_recursive_fn_ok() {
-        ok("fn fib(n: Int64) -> Int64 { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); }");
+        ok("fn fib(n: Int64) -> Int64 { if (n <= 1) { return n; } return fib(n - 1) + fib(n - 2); }");
     }
 
     #[test]
@@ -5920,7 +6098,7 @@ class Jogger implements Runner {
 
     #[test]
     fn test_nested_ternary_style_ok() {
-        ok("fn clamp(x: Int64, lo: Int64, hi: Int64) -> Int64 { if x < lo { return lo; } if x > hi { return hi; } return x; }");
+        ok("fn clamp(x: Int64, lo: Int64, hi: Int64) -> Int64 { if (x < lo) { return lo; } if (x > hi) { return hi; } return x; }");
     }
 
     #[test]

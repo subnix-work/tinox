@@ -1,0 +1,80 @@
+module tinox.core.time;
+
+namespace tinox.core.time
+{
+    /**
+     * A stopwatch for measuring elapsed time while running
+     *
+     * Unlike Timer, Stopwatch only reports elapsed time
+     * while it is actively running (between start and stop).
+     */
+    class Stopwatch
+    {
+        /** The time when start() was called */
+        var startTime: Int64;
+
+        /** The time when stop() was called (0 if never stopped) */
+        var stopTime: Int64;
+
+        /** Whether the stopwatch is currently running */
+        var running: Bool;
+
+        /**
+         * Creates a new Stopwatch (not running)
+         *
+         * @return a new Stopwatch instance
+         */
+        fn new() -> Stopwatch
+        {
+            return Stopwatch { startTime: 0, stopTime: 0, running: false };
+        }
+
+        /**
+         * Starts the stopwatch, recording the current time
+         */
+        fn start() -> Nothing
+        {
+            this.startTime = now();
+            this.running = true;
+        }
+
+        /**
+         * Stops the stopwatch, freezing the current time so elapsed()
+         * keeps reporting the start-to-stop duration afterward
+         */
+        fn stop() -> Nothing
+        {
+            this.stopTime = now();
+            this.running = false;
+        }
+
+        /**
+         * Checks if the stopwatch is currently running
+         *
+         * @return true if start() was called without a subsequent stop()
+         */
+        fn isRunning() -> Bool
+        {
+            return this.running;
+        }
+
+        /**
+         * Returns the elapsed time
+         *
+         * While running, returns the time from start() to now. Once
+         * stopped, keeps returning the frozen start-to-stop duration
+         * (rather than resetting to 0) so callers can read the result
+         * after stop(). Returns 0 if start() was never called.
+         *
+         * @return elapsed time in milliseconds
+         */
+        fn elapsed() -> Int64
+        {
+            if (this.running)
+            {
+                return now() - this.startTime;
+            }
+            return this.stopTime - this.startTime;
+        }
+    }
+}

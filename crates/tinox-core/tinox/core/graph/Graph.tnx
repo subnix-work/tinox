@@ -1,0 +1,154 @@
+module tinox.core.graph;
+
+namespace tinox.core.graph
+{
+    class Graph<V>
+    {
+        var nodes: Map<String, V>;
+        var edges: Map<String, List<GraphEdge>>;
+
+        fn new() -> Graph<V>
+        {
+            return Graph<V> { nodes: Map::new(), edges: Map::new() };
+        }
+
+        fn addNode(graph: Graph<V>, id: String, value: V) -> Nothing
+        {
+            graph.nodes[id] = value;
+            if (graph.edges.contains(id) == false)
+            {
+                graph.edges[id] = [];
+            }
+        }
+
+        fn addEdge(graph: Graph<V>, from: String, to: String, weight: Float64) -> Nothing
+        {
+            if (graph.edges.contains(from) == false)
+            {
+                graph.edges[from] = [];
+            }
+            graph.edges[from].push(GraphEdge { to: to, weight: weight });
+        }
+
+        fn neighbors(graph: Graph<V>, id: String) -> List<GraphEdge>
+        {
+            if (graph.edges.contains(id) == false)
+            {
+                return [];
+            }
+            return graph.edges[id];
+        }
+
+        fn bfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Nothing) -> Nothing
+        {
+            let visited: Map<String, Bool> = Map::new();
+            let queue: List<String> = [start];
+            while queue.len() > 0
+            {
+                let current: String = queue[0];
+                queue.removeAt(0);
+                if (visited.contains(current))
+                {
+                    continue;
+                }
+                visited[current] = true;
+                visitor(current);
+                let neighbors: List<GraphEdge> = Graph::neighbors(graph, current);
+                var i: Int64 = 0;
+                while i < neighbors.len()
+                {
+                    if (visited.contains(neighbors[i].to) == false)
+                    {
+                        queue.push(neighbors[i].to);
+                    }
+                    i = i + 1;
+                }
+            }
+        }
+
+        fn dfs(graph: Graph<V>, start: String, visitor: fnc(String) -> Nothing) -> Nothing
+        {
+            let visited: Map<String, Bool> = Map::new();
+            Graph::dfsHelper(graph, start, visited, visitor);
+        }
+
+        fn dfsHelper(graph: Graph<V>, current: String, visited: Map<String, Bool>, visitor: fnc(String) -> Nothing) -> Nothing
+        {
+            visited[current] = true;
+            visitor(current);
+            let neighbors: List<GraphEdge> = Graph::neighbors(graph, current);
+            var i: Int64 = 0;
+            while i < neighbors.len()
+            {
+                if (visited.contains(neighbors[i].to) == false)
+                {
+                    Graph::dfsHelper(graph, neighbors[i].to, visited, visitor);
+                }
+                i = i + 1;
+            }
+        }
+
+        fn dijkstra(graph: Graph<V>, start: String, end: String) -> Float64
+        {
+            let distances: Map<String, Float64> = Map::new();
+            let keys: List<String> = graph.nodes.keys();
+            var i: Int64 = 0;
+            while i < keys.len()
+            {
+                distances[keys[i]] = -1.0;
+                i = i + 1;
+            }
+            distances[start] = 0.0;
+            let unvisited: List<String> = [start];
+            while unvisited.len() > 0
+            {
+                var minNode: String = unvisited[0];
+                var minDist: Float64 = distances[unvisited[0]];
+                var j: Int64 = 1;
+                while j < unvisited.len()
+                {
+                    let d: Float64 = distances[unvisited[j]];
+                    if (d >= 0.0 && (minDist < 0.0 || d < minDist))
+                    {
+                        minNode = unvisited[j];
+                        minDist = d;
+                    }
+                    j = j + 1;
+                }
+                if (minNode == end)
+                {
+                    return minDist;
+                }
+                var removeIdx: Int64 = -1;
+                var k: Int64 = 0;
+                while k < unvisited.len()
+                {
+                    if (unvisited[k] == minNode)
+                    {
+                        removeIdx = k;
+                        break;
+                    }
+                    k = k + 1;
+                }
+                if (removeIdx != -1)
+                {
+                    unvisited.removeAt(removeIdx);
+                }
+                let neighbors: List<GraphEdge> = Graph::neighbors(graph, minNode);
+                j = 0;
+                while j < neighbors.len()
+                {
+                    let edge: GraphEdge = neighbors[j];
+                    let newDist: Float64 = minDist + edge.weight;
+                    if (distances[edge.to] < 0.0 || newDist < distances[edge.to])
+                    {
+                        distances[edge.to] = newDist;
+                        unvisited.push(edge.to);
+                    }
+                    j = j + 1;
+                }
+            }
+            return -1.0;
+        }
+    }
+}

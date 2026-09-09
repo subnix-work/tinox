@@ -1,0 +1,49 @@
+module tinox.core.kubernetes;
+
+import tinox.core.json;
+
+namespace tinox.core.kubernetes
+{
+    // kubernetes.io ObjectMeta -- present on every resource kind. Only the
+    // fields real day-to-day client code actually reads/writes are
+    // modeled (not the full upstream schema, e.g. ownerReferences/
+    // finalizers/managedFields are omitted) -- anything not modeled here
+    // is still reachable through GenericResourceClient's raw JsonValue.
+    @JsonSerializable
+    class ObjectMeta
+    {
+        var name: String;
+        var namespace: String;
+        var uid: String;
+        var resourceVersion: String;
+        var creationTimestamp: String;
+        var labels: Map<String, String>;
+        var annotations: Map<String, String>;
+
+        // creationTimestamp defaults to the RFC3339 zero-time placeholder,
+        // not "" -- this compiler's @JsonSerializable always emits every
+        // declared field (no conditional/null omission, see
+        // ResourceRequirements' own note on the same limitation), and the
+        // API server's generic decode step rejects an empty string as an
+        // invalid time.Time ("cannot parse \"\" as \"2006\""), before it
+        // ever gets to the point of just overwriting this server-managed
+        // field with the real creation time. Any syntactically valid
+        // RFC3339 string round-trips the same way here, so the specific
+        // placeholder value is otherwise inert.
+        fnc withName(name: String) -> ObjectMeta
+        {
+            return ObjectMeta {
+                name: name, namespace: "", uid: "", resourceVersion: "", creationTimestamp: "1970-01-01T00:00:00Z",
+                labels: Map::new(), annotations: Map::new()
+            };
+        }
+
+        fnc withNameAndNamespace(name: String, namespace: String) -> ObjectMeta
+        {
+            return ObjectMeta {
+                name: name, namespace: namespace, uid: "", resourceVersion: "", creationTimestamp: "1970-01-01T00:00:00Z",
+                labels: Map::new(), annotations: Map::new()
+            };
+        }
+    }
+}

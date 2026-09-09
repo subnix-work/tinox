@@ -1,0 +1,84 @@
+module tinox.core.websocket;
+
+namespace tinox.core.websocket
+{
+    /*
+     * Minimal server entry point: listen + accept-with-handshake.
+     * Deliberately an explicit loop-based API (no lambda handler in v1).
+     */
+    class WsServer
+    {
+        fn listen(port: Int64) -> Int64
+        {
+            return httpServerCreate(port);
+        }
+
+        /*
+         * Accepts the next connection and runs the handshake. Returns:
+         * conn handle (>0) or -1 (handshake failed, the connection is
+         * already closed in that case).
+         *
+         * httpServerAcceptConnHandle sets a 5s SO_RCVTIMEO "zombie guard"
+         * on the fd (meant to stop a slow-loris HTTP client from blocking
+         * the accept loop forever) that, per its own doc comment,
+         * "persists on `fd` for the life of the connection" -- exactly
+         * backwards for a WebSocket connection, which is EXPECTED to sit
+         * idle between messages for much longer than 5s. Without clearing
+         * it here, a legitimately idle client's next blocking
+         * Ws::readMessage call hits that same 5s timeout and gets treated
+         * as a dead connection -- found live via a real app whose WS
+         * connection was silently reconnecting every ~5-6s of user
+         * inactivity, discarding all server-side state each time (no
+         * session persistence across a reconnect is a separate, deliberate
+         * v1 limitation -- this constant reconnecting was not). Cleared
+         * only AFTER a successful handshake -- the zombie guard still does
+         * its intended job protecting the handshake itself.
+         */
+        fn accept(srv: Int64) -> Int64
+        {
+            let conn = httpServerAcceptConnHandle(srv);
+            if (conn <= 0) {
+                return -1;
+            }
+            if (!Ws::handshake(conn)) {
+                httpConnClose(conn);
+                return -1;
+            }
+            httpConnClearRecvTimeout(conn);
+            return conn;
+        }
+
+        /*
+         * wss:// — TLS variant of listen(). OpenSSL is linked by default
+         * (see HttpServer::listenTls); built with TINOX_TLS=0,
+         * httpServerCreateTls returns -1. Cert/key are PEM files,
+         * certPath may contain the full chain (leaf first).
+         */
+        fn listenTls(port: Int64, certPath: String, keyPath: String) -> Int64
+        {
+            return httpServerCreateTls(port, certPath, keyPath);
+        }
+
+        /*
+         * TLS variant of accept(): accepts, does the TLS handshake
+         * (httpServerAcceptTls) and then the normal WS handshake over
+         * the same conn handle — httpConnReadRequest/SendRaw and the
+         * binary-safe frame primitives are transparent to both TLS and
+         * plaintext handles (the runtime routes via conn_recv/conn_send).
+         */
+        fn acceptTls(srv: Int64) -> Int64
+        {
+            let conn = httpServerAcceptTls(srv);
+            if (conn <= 0) {
+                return -1;
+            }
+            if (!Ws::handshake(conn)) {
+                httpConnClose(conn);
+                return -1;
+            }
+            // See accept()'s own doc comment on why this matters.
+            httpConnClearRecvTimeout(conn);
+            return conn;
+        }
+    }
+}

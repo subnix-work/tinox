@@ -1,0 +1,165 @@
+module tinox.core.rest.server;
+
+import tinox.core.http_server;
+import tinox.core.jwt;
+import tinox.core.json;
+import tinox.core.env;
+import tinox.core.process;
+
+namespace tinox.core.rest.server
+{
+    /*
+     * Backs the @OIDCRolesAllowed(["role1", "role2"]) annotation: the
+     * compiler emits a call to checkRoles() (by its well-known compiled
+     * symbol name, OidcGuard_checkRoles) from the route's generated
+     * dispatch shim, exactly like any other compiler-synthesized route
+     * guard. Not meant to be called directly from application code.
+     */
+    class OidcGuard
+    {
+        /*
+         * Verifies the request's Authorization: Bearer <token> header
+         * against the IdP configured via OIDC_ISSUER/OIDC_JWKS_URI/
+         * OIDC_AUDIENCE (env vars, read fresh on every call so a restart
+         * picks up config changes) and checks that the token carries at
+         * least one of `rolesCsv`'s pipe-separated roles in its Keycloak-
+         * style `realm_access.roles` claim.
+         *
+         * On any failure this sets ctx.response itself (401 for a
+         * missing/unverifiable token, 403 for a valid token missing all
+         * of the required roles) and returns false; the generated route
+         * shim returns immediately without calling the handler when this
+         * happens, same contract as the @Auth guard.
+         *
+         * Missing OIDC_ISSUER/OIDC_JWKS_URI/OIDC_AUDIENCE is a deployment
+         * configuration error, not a per-request auth failure -- rather
+         * than 401-ing forever with no clue why, this crashes loudly with
+         * a clear message (Kein Silent-Garbage) instead of masquerading
+         * as "every request is unauthorized".
+         */
+        fnc checkRoles(ctx: HttpContext, rolesCsv: String) -> Bool
+        {
+            let issuer: String = Env::getVar("OIDC_ISSUER");
+            let jwksUri: String = Env::getVar("OIDC_JWKS_URI");
+            let audience: String = Env::getVar("OIDC_AUDIENCE");
+            if (issuer == "" || jwksUri == "" || audience == "")
+            {
+                println("@OIDCRolesAllowed: missing required environment variable(s) -- OIDC_ISSUER, OIDC_JWKS_URI and OIDC_AUDIENCE must all be set");
+                Process::exit(1);
+            }
+
+            let auth: String = ctx.request.getHeader("Authorization");
+            if (!auth.startsWith("Bearer "))
+            {
+                ctx.response.status(401).json("{\"error\":\"missing bearer token\"}");
+                return false;
+            }
+            let token: String = auth.substring(7, auth.len());
+
+            var claims: Map<String, JsonValue> = Map::new();
+            var verifyError: String = "";
+            try
+            {
+                claims = OidcGuard::verifyToken(token, issuer, jwksUri, audience);
+            }
+            catch e: String
+            {
+                verifyError = e;
+            }
+
+            if (verifyError != "")
+            {
+                ctx.response.status(401).json("{\"error\":\"invalid token: " + verifyError + "\"}");
+                return false;
+            }
+
+            let allowedRoles: List<String> = rolesCsv.split("|");
+            var hasRole: Bool = false;
+            if (claims.contains("realm_access"))
+            {
+                let realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable();
+                if (realmAccess.contains("roles"))
+                {
+                    let tokenRoles: List<JsonValue> = realmAccess["roles"].asList();
+                    var i: Int64 = 0;
+                    while i < tokenRoles.len()
+                    {
+                        var j: Int64 = 0;
+                        while j < allowedRoles.len()
+                        {
+                            if (tokenRoles[i].getString() == allowedRoles[j])
+                            {
+                                hasRole = true;
+                            }
+                            j = j + 1;
+                        }
+                        i = i + 1;
+                    }
+                }
+            }
+            if (!hasRole)
+            {
+                ctx.response.status(403).json("{\"error\":\"missing required role (one of: " + rolesCsv + ")\"}");
+                return false;
+            }
+
+            return true;
+        }
+
+        /*
+         * Signature (RS256 via the issuer's JWKS, matched by the token's
+         * own "kid" header) + iss/aud verification -- exp/nbf are already
+         * enforced by Jwt::decodeRs256's checkTemporalClaims. Throws
+         * (String) on any failure.
+         */
+        fnc verifyToken(token: String, issuer: String, jwksUri: String, audience: String) -> Map<String, JsonValue>
+        {
+            let header: Map<String, JsonValue> = Jwt::extractHeader(token);
+            if (!header.contains("alg") || header["alg"].getString() != "RS256")
+            {
+                throw "unsupported token alg (expected RS256)";
+            }
+            var kid: String = "";
+            if (header.contains("kid"))
+            {
+                kid = header["kid"].getString();
+            }
+
+            let key: Map<String, String> = Jwks::fetchRsaKey(jwksUri, kid);
+            let claims: Map<String, JsonValue> = Jwt::decodeRs256(token, key["n"], key["e"]);
+
+            if (!claims.contains("iss") || claims["iss"].getString() != issuer)
+            {
+                throw "token issuer mismatch";
+            }
+
+            var audMatches: Bool = false;
+            if (claims.contains("aud"))
+            {
+                if (claims["aud"].isString())
+                {
+                    audMatches = claims["aud"].getString() == audience;
+                }
+                else if (claims["aud"].isArray())
+                {
+                    let auds: List<JsonValue> = claims["aud"].asList();
+                    var i: Int64 = 0;
+                    while i < auds.len()
+                    {
+                        if (auds[i].getString() == audience)
+                        {
+                            audMatches = true;
+                        }
+                        i = i + 1;
+                    }
+                }
+            }
+            if (!audMatches)
+            {
+                throw "token audience mismatch";
+            }
+
+            return claims;
+        }
+    }
+}

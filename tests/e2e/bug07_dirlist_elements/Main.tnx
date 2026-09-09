@@ -12,8 +12,8 @@ class Main
         var found = 0;
         var i = 0;
         while i < entries.len() {
-            if entries[i] == "a.txt" { found += 1; }
-            if entries[i] == "b.txt" { found += 1; }
+            if (entries[i] == "a.txt") { found += 1; }
+            if (entries[i] == "b.txt") { found += 1; }
             i += 1;
         }
         println(found);

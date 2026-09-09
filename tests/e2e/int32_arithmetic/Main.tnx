@@ -12,7 +12,7 @@ class Main
 
 
     fnc factorial(n: Int32) -> Int32 {
-        if n <= 1 { return 1; }
+        if (n <= 1) { return 1; }
         return n * factorial(n - 1);
     }
 

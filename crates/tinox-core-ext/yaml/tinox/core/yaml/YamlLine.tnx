@@ -1,0 +1,16 @@
+module tinox.core.yaml;
+
+namespace tinox.core.yaml
+{
+    // One logical (non-blank, non-comment) source line, pre-split into its
+    // leading-whitespace indent width and de-indented content. YamlParser
+    // mutates entries of a List<YamlLine> in place when it "de-dashes" a
+    // block-sequence item ("- key: value" -> "key: value" at indent+2) so
+    // the mapping/sequence parsers can treat it exactly like a real line at
+    // that indent, instead of needing to splice a separate line list.
+    class YamlLine
+    {
+        indent: Int64;
+        content: String;
+    }
+}

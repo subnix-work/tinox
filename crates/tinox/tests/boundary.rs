@@ -106,7 +106,7 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     var m: Map<String, Int64> = Map::new();
     println(m.len());
     println(m.keys().len());
-    if m.contains("x") { println("y"); } else { println("n"); }
+    if (m.contains("x")) { println("y"); } else { println("n"); }
     return 0;
     }
 }

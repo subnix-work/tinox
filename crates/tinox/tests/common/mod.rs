@@ -120,6 +120,60 @@ fn extended_module_version(module: &str) -> String {
         .unwrap_or_else(|| "1.0.0".to_string())
 }
 
+/// The `artifactId`s an extended-tier module's OWN published manifest
+/// declares as ITS dependencies (`[[dependencies]] artifactId = "..."`
+/// entries, `group = "tinox.core"` — the only group this repo's extended
+/// tier uses, so not filtered on separately). Same "plain line scan is
+/// enough" reasoning as `extended_module_version` above, and same
+/// source-of-truth file. Used to avoid synthesizing a REDUNDANT, and
+/// potentially conflicting, direct `[[dependencies]]` entry in a case's
+/// tinox.toml for a module some OTHER required module already pulls in
+/// transitively (see `run_case`'s dedup below) — issue found while
+/// investigating `oidc_roles_allowed_guard`'s "Ambiguous import...
+/// resolves in more than one installed dependency" failure: this harness
+/// independently pinned BOTH `http_server` (via `extended_module_version`,
+/// which tracks that package's own CURRENT version, 1.0.2 at the time)
+/// AND `rest` (whose own manifest, still at 1.0.1, transitively pins
+/// `http_server` to the OLDER 1.0.1) for the same case, so the resolver
+/// correctly refused to silently pick one -- a synthesis bug in THIS
+/// harness (declaring the same transitive package twice, independently
+/// versioned), not a real resolver defect, and not stale/corrupt shared
+/// cache state either (confirmed live: `rest@1.0.1`'s cached manifest is
+/// exactly what's published, immutable by design -- editing this repo's
+/// own `crates/tinox-core-ext/rest/tinox.toml` locally does nothing for
+/// an already-published version). The actual, permanent fix (bumping
+/// http2_server/oidc/rest/http3_server to a new version with a corrected
+/// http_server pin) needs a real `tinox publish`, out of scope for a test
+/// harness change -- see the follow-up issue this investigation filed.
+fn extended_module_manifest_deps(module: &str) -> Vec<String> {
+    let manifest = repo_root()
+        .join("crates/tinox-core-ext")
+        .join(module)
+        .join("tinox.toml");
+    let Ok(text) = fs::read_to_string(&manifest) else { return Vec::new() };
+    let mut deps = Vec::new();
+    let mut in_deps_block = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l == "[[dependencies]]" {
+            in_deps_block = true;
+            continue;
+        }
+        if l.starts_with('[') {
+            in_deps_block = false;
+            continue;
+        }
+        if in_deps_block {
+            if let Some(rest) = l.strip_prefix("artifactId") {
+                if let Some(v) = rest.trim_start().strip_prefix('=') {
+                    deps.push(v.trim().trim_matches('"').to_string());
+                }
+            }
+        }
+    }
+    deps
+}
+
 fn extended_deps_in_source(src: &str) -> Vec<String> {
     let mut found = Vec::new();
     for line in src.lines() {
@@ -284,7 +338,30 @@ pub fn run_case(case: &Case) -> Result<(), String> {
             toml.push_str("[package]\nname = \"");
             toml.push_str(&case.name);
             toml.push_str("\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+            // Skip a module that's already a transitive dependency of
+            // some OTHER module this case also needs (per that other
+            // module's own manifest) -- emitting an independent direct
+            // pin for it too risks requesting a DIFFERENT version than
+            // the one its dependent already pulls in, which the resolver
+            // then (correctly) refuses to silently pick between. See
+            // `extended_module_manifest_deps`'s own doc comment for the
+            // real case this fixes (`oidc_roles_allowed_guard`: `rest`
+            // transitively needs `http_server` 1.0.1, this file's own
+            // direct `import tinox.core.http_server;` would otherwise
+            // pin the independently-tracked CURRENT version, 1.0.2).
+            // Letting the dependent module's own transitive install
+            // supply it keeps exactly one version in play, matching what
+            // a real consuming project gets from `tinox install` alone
+            // (no redundant top-level entry needed for a package nothing
+            // here imports standalone-without-also-importing its parent).
+            let transitively_covered: std::collections::HashSet<String> = extended_deps
+                .iter()
+                .flat_map(|m| extended_module_manifest_deps(m))
+                .collect();
             for m in &extended_deps {
+                if transitively_covered.contains(m) {
+                    continue;
+                }
                 let v = extended_module_version(m);
                 toml.push_str(&format!(
                     "\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{v}\"\n"

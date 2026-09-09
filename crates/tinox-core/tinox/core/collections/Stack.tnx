@@ -1,0 +1,54 @@
+module tinox.core.collections;
+
+namespace tinox.core.collections
+{
+    /**
+     * A Last-In-First-Out (LIFO) stack of elements of type T.
+     */
+    class Stack<T>
+    {
+        var data: List<T>;
+
+        fn new() -> Stack<T>
+        {
+            return Stack<T> { data: [] };
+        }
+
+        fn push(value: T) -> Nothing
+        {
+            this.data.push(value);
+        }
+
+        fn pop() -> T
+        {
+            let len: Int64 = this.data.len();
+            if (len == 0)
+            {
+                throw "Stack is empty";
+            }
+            let value: T = this.data[len - 1];
+            this.data.pop();
+            return value;
+        }
+
+        fn peek() -> T
+        {
+            let len: Int64 = this.data.len();
+            if (len == 0)
+            {
+                throw "Stack is empty";
+            }
+            return this.data[len - 1];
+        }
+
+        fn isEmpty() -> Bool
+        {
+            return this.data.len() == 0;
+        }
+
+        fn size() -> Int64
+        {
+            return this.data.len();
+        }
+    }
+}

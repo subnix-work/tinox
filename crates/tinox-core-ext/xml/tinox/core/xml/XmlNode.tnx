@@ -1,0 +1,51 @@
+module tinox.core.xml;
+
+namespace tinox.core.xml
+{
+    class XmlNode
+    {
+        var tagName: String;
+        var text: String;
+        var attrs: Map<String, String>;
+        var children: List<XmlNode>;
+
+        fn tagName() -> String
+        {
+            return this.tagName;
+        }
+
+        fn textContent() -> String
+        {
+            return this.text;
+        }
+
+        fn attr(name: String) -> String
+        {
+            if (this.attrs.contains(name))
+            {
+                return this.attrs[name];
+            }
+            return "";
+        }
+
+        fn children() -> List<XmlNode>
+        {
+            return this.children;
+        }
+
+        fn firstChild(tag: String) -> XmlNode
+        {
+            let children: List<XmlNode> = XmlNode::children(this);
+            var i: Int64 = 0;
+            while i < children.len()
+            {
+                if (children[i].tagName() == tag)
+                {
+                    return children[i];
+                }
+                i = i + 1;
+            }
+            throw "Child not found";
+        }
+    }
+}

@@ -1,0 +1,178 @@
+module tinox.core.amqp091;
+
+import tinox.core.socket;
+
+namespace tinox.core.amqp091
+{
+    /*
+     * Byte builder for the AMQP-0-9-1 low-level encoding (big-endian, as
+     * the protocol requires). Collects into `bytes`; used for method
+     * arguments AND for nested field tables/arrays (the latter encode
+     * into their own writer first, to know the leading byte length, see
+     * fieldTable/fieldArray).
+     */
+    class AmqpWriter091
+    {
+        var bytes: List<Int64>;
+        var tooLong: Bool;
+
+        fn new() -> AmqpWriter091
+        {
+            return AmqpWriter091 { bytes: [], tooLong: false };
+        }
+
+        /* true if a `shortstr()` call received a string > 255 bytes (see
+         * shortstr() below) — callers MUST check this before sending,
+         * otherwise a wrong length prefix (octet() masks with `& 0xFF`)
+         * would silently corrupt the frame instead of failing hard. */
+        fn hasError() -> Bool
+        {
+            return this.tooLong;
+        }
+
+        fn octet(v: Int64) -> Nothing
+        {
+            this.bytes.push(v & 0xFF);
+        }
+
+        fn short(v: Int64) -> Nothing
+        {
+            this.bytes.push((v >> 8) & 0xFF);
+            this.bytes.push(v & 0xFF);
+        }
+
+        fn long(v: Int64) -> Nothing
+        {
+            this.bytes.push((v >> 24) & 0xFF);
+            this.bytes.push((v >> 16) & 0xFF);
+            this.bytes.push((v >> 8) & 0xFF);
+            this.bytes.push(v & 0xFF);
+        }
+
+        fn longlong(v: Int64) -> Nothing
+        {
+            var shift: Int64 = 56;
+            while shift >= 0 {
+                this.bytes.push((v >> shift) & 0xFF);
+                shift = shift - 8;
+            }
+        }
+
+        fn rawStr(s: String) -> Nothing
+        {
+            for i in 0..s.len() {
+                this.bytes.push(s.charCodeAt(i) & 0xFF);
+            }
+        }
+
+        fn rawBytes(data: List<Int64>) -> Nothing
+        {
+            for i in 0..data.len() {
+                this.bytes.push(data[i] & 0xFF);
+            }
+        }
+
+        /* Short string: 1-byte length (max. 255) + bytes — only for
+         * field names/method arguments the spec declares as shortstr. */
+        fn shortstr(s: String) -> Nothing
+        {
+            if (s.len() > 255) {
+                this.tooLong = true;
+                return;
+            }
+            this.octet(s.len());
+            this.rawStr(s);
+        }
+
+        /* Long string: 4-byte length (big-endian) + bytes. */
+        fn longstr(s: String) -> Nothing
+        {
+            this.long(s.len());
+            this.rawStr(s);
+        }
+
+        /* Long string from raw bytes instead of a String — for content
+         * with embedded NUL bytes (e.g. SASL PLAIN response), where a
+         * Tinox string concatenation would be risky. */
+        fn longstrBytes(data: List<Int64>) -> Nothing
+        {
+            this.long(data.len());
+            this.rawBytes(data);
+        }
+
+        fn fieldValue(v: AmqpFieldValue091) -> Nothing
+        {
+            match v
+            {
+                BoolVal(b) => {
+                    this.octet(116); // 't'
+                    if (b) {
+                        this.octet(1);
+                    } else {
+                        this.octet(0);
+                    }
+                }
+                Int32Val(n) => {
+                    this.octet(73); // 'I'
+                    this.long(n);
+                }
+                Int64Val(n) => {
+                    this.octet(76); // 'L'
+                    this.longlong(n);
+                }
+                StrVal(s) => {
+                    this.octet(83); // 'S'
+                    this.longstr(s);
+                }
+                TimestampVal(t) => {
+                    this.octet(84); // 'T'
+                    this.longlong(t);
+                }
+                TableVal(t) => {
+                    this.octet(70); // 'F'
+                    this.fieldTable(t);
+                }
+                ArrayVal(a) => {
+                    this.octet(65); // 'A'
+                    this.fieldArray(a);
+                }
+                VoidVal => {
+                    this.octet(86); // 'V'
+                }
+                ErrorVal(_msg) => {
+                    // An ErrorVal is never sent (decode result only) —
+                    // no silent garbage: a hard marker instead of
+                    // staying quiet if it's ever accidentally re-encoded.
+                    this.octet(0);
+                }
+            }
+        }
+
+        /* Field table: 4-byte length (of the following bytes) + repeated
+         * { shortstr key, tagged field value }. */
+        fn fieldTable(t: Map<String, AmqpFieldValue091>) -> Nothing
+        {
+            let inner = AmqpWriter091::new();
+            let keys = t.keys();
+            for i in 0..keys.len() {
+                let k = keys[i];
+                inner.shortstr(k);
+                inner.fieldValue(t.get(k));
+            }
+            this.long(inner.bytes.len());
+            this.rawBytes(inner.bytes);
+        }
+
+        /* Field array: 4-byte length (of the following bytes) + repeated
+         * tagged field value (no key). */
+        fn fieldArray(a: List<AmqpFieldValue091>) -> Nothing
+        {
+            let inner = AmqpWriter091::new();
+            for i in 0..a.len() {
+                inner.fieldValue(a[i]);
+            }
+            this.long(inner.bytes.len());
+            this.rawBytes(inner.bytes);
+        }
+    }
+}

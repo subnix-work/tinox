@@ -1,0 +1,110 @@
+module tinox.core.http;
+
+namespace tinox.core.http
+{
+    // Blocking HTTP/1.1 client (http:// only, no TLS). Responses are
+    // opaque C structs (TinoxHttpResponse*), which HttpClientResponse
+    // passes through. Request headers are collected thread-locally via
+    // httpSetHeader.
+    //
+    // Renamed from HttpResponse to HttpClientResponse (issue #139): this
+    // class shared its bare name with tinox.core.http_server's own
+    // HttpResponse (a real value class with statusCode/headers/body
+    // fields) -- the compiler's codegen-level class-layout table is not
+    // namespace-qualified, so importing both tinox.core.http and
+    // tinox.core.http_server in the same program silently corrupted
+    // whichever HttpResponse layout was processed last. The rename
+    // removes the collision at its root instead of requiring every
+    // caller to work around it.
+    extern fn httpGet(url: String) -> HttpClientResponse;
+    extern fn httpPost(url: String, body: String) -> HttpClientResponse;
+    extern fn httpPut(url: String, body: String) -> HttpClientResponse;
+    extern fn httpDelete(url: String) -> HttpClientResponse;
+    extern fn httpPatch(url: String, body: String) -> HttpClientResponse;
+    extern fn httpSetHeader(name: String, value: String) -> Nothing;
+    extern fn httpClearHeaders() -> Nothing;
+    // Per-thread TLS client config for https:// requests -- custom CA
+    // (e.g. a Kubernetes cluster's own self-signed CA, not in the system
+    // trust store), client cert/key (mTLS), and insecure-skip-verify.
+    // Takes effect on the next httpGet/httpPost/etc. call on this thread
+    // and stays set until httpClearTlsConfig() -- same "configure via
+    // thread-local state, then call" shape as httpSetHeader/
+    // httpClearHeaders above.
+    extern fn httpSetTlsCaCertFile(path: String) -> Nothing;
+    extern fn httpSetTlsClientCertFile(certPath: String, keyPath: String) -> Nothing;
+    extern fn httpSetTlsInsecureSkipVerify(enabled: Int64) -> Nothing;
+    extern fn httpClearTlsConfig() -> Nothing;
+    extern fn httpStatusCode(resp: HttpClientResponse) -> Int64;
+    extern fn httpBody(resp: HttpClientResponse) -> String;
+    extern fn httpHeader(resp: HttpClientResponse, name: String) -> String;
+
+    class Http
+    {
+        fn get(url: String) -> HttpClientResponse
+        {
+            return httpGet(url);
+        }
+
+        fn post(url: String, body: String) -> HttpClientResponse
+        {
+            return httpPost(url, body);
+        }
+
+        fn put(url: String, body: String) -> HttpClientResponse
+        {
+            return httpPut(url, body);
+        }
+
+        fn delete(url: String) -> HttpClientResponse
+        {
+            return httpDelete(url);
+        }
+
+        fn patch(url: String, body: String) -> HttpClientResponse
+        {
+            return httpPatch(url, body);
+        }
+
+        fn setHeader(name: String, value: String) -> Nothing
+        {
+            // Bug 106: name/value are frequently built from concatenated
+            // caller-controlled strings (RestClient/RequestBuilder split a
+            // "Name: value" string on ':' and pass the pieces straight
+            // through). Without this check, an embedded \r or \n let a
+            // caller inject additional header lines -- or terminate the
+            // header block early and inject a body -- into the outbound
+            // HTTP request. This is the single choke point all higher-level
+            // header-setting APIs go through, so validating here covers them.
+            if (name.contains("\r") || name.contains("\n") || value.contains("\r") || value.contains("\n"))
+            {
+                throw "invalid HTTP header: name/value must not contain CR or LF";
+            }
+            httpSetHeader(name, value);
+        }
+
+        fn clearHeaders() -> Nothing
+        {
+            httpClearHeaders();
+        }
+
+        fn setTlsCaCertFile(path: String) -> Nothing
+        {
+            httpSetTlsCaCertFile(path);
+        }
+
+        fn setTlsClientCertFile(certPath: String, keyPath: String) -> Nothing
+        {
+            httpSetTlsClientCertFile(certPath, keyPath);
+        }
+
+        fn setTlsInsecureSkipVerify(enabled: Bool) -> Nothing
+        {
+            httpSetTlsInsecureSkipVerify(enabled ? 1 : 0);
+        }
+
+        fn clearTlsConfig() -> Nothing
+        {
+            httpClearTlsConfig();
+        }
+    }
+}

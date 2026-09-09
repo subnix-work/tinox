@@ -1,0 +1,118 @@
+module tinox.core.crypto;
+
+import tinox.core.random;
+
+namespace tinox.core.crypto
+{
+    extern fn secureRandomBytesRaw(n: Int64) -> List<Int64>;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+
+    class Crypto
+    {
+        /*
+         * Cryptographically secure random bytes via OpenSSL RAND_bytes —
+         * issue #131 (OAuth2 `state`/PKCE `code_verifier`). Deliberately
+         * separate from `Random`/`Crypto::generateKey` (both ultimately
+         * `randomInt` -> `srandom(time^getpid)`, predictable): a
+         * predictable `state` value breaks the CSRF protection of the
+         * OAuth2 handshake, a predictable PKCE `code_verifier` breaks
+         * PKCE entirely. Throws hard instead of silently returning a
+         * too-short/empty result (runtime built without TLS/OpenSSL, or
+         * RAND_bytes itself failed) — no silent garbage for a
+         * security-critical randomness source.
+         */
+        fn secureRandomBytes(n: Int64) -> List<Int64>
+        {
+            let result = secureRandomBytesRaw(n);
+            if (result.len() != n)
+            {
+                throw "Crypto::secureRandomBytes failed (runtime built without TLS/OpenSSL, or RAND_bytes failed)";
+            }
+            return result;
+        }
+
+        fn md5(data: String) -> String
+        {
+            return md5Hash(data);
+        }
+
+        fn sha256(data: String) -> String
+        {
+            return sha256Hash(data);
+        }
+
+        // Only for protocol compatibility (e.g. WebSocket handshake),
+        // not for new cryptographic purposes — SHA-1 is considered broken.
+        fn sha1(data: String) -> String
+        {
+            return sha1Hash(data);
+        }
+
+        fn hmacSha256(data: String, key: String) -> String
+        {
+            return hmacSha256Hash(data, key);
+        }
+
+        // AES-256-GCM (authenticated encryption). key is an
+        // arbitrary-length string, internally derived into a real
+        // 256-bit key via SHA-256. The return value is hex-encoded
+        // (nonce + ciphertext + auth tag) — can be passed directly to
+        // aesDecrypt. Throws on any error (runtime built without
+        // OpenSSL) instead of a silent empty/wrong result.
+        fn aesEncrypt(data: String, key: String) -> String
+        {
+            let result: String = aesEncryptRaw(data, key);
+            if (result.len() == 0)
+            {
+                throw "Crypto::aesEncrypt failed (runtime built without TLS/OpenSSL?)";
+            }
+            return result;
+        }
+
+        // Throws on the wrong key or tampered/corrupted data (GCM
+        // authentication fails) instead of silently returning wrong
+        // plaintext.
+        //
+        // aesDecryptRaw prepends a "1" to a real result (even for empty
+        // plaintext, e.g. aesDecrypt(aesEncrypt("", key), key)) —
+        // otherwise a legitimately EMPTY plaintext would be
+        // indistinguishable from "" as an error sentinel.
+        fn aesDecrypt(data: String, key: String) -> String
+        {
+            let result: String = aesDecryptRaw(data, key);
+            if (result.len() == 0)
+            {
+                throw "Crypto::aesDecrypt failed (wrong key, tampered data, or runtime built without TLS/OpenSSL)";
+            }
+            return result.substring(1, result.len());
+        }
+
+        fn generateKey(length: Int64) -> String
+        {
+            // Collects bytes into a List<Int64> and converts in one pass
+            // (tinoxBytesToString) instead of `result = result +
+            // fromCharCode(...)` in the loop, which is O(n^2) over `length`
+            // (issue #167).
+            var bytes: List<Int64> = [];
+            var i: Int64 = 0;
+            while i < length
+            {
+                bytes.push(Random::nextInt(256));
+                i = i + 1;
+            }
+            return tinoxBytesToString(bytes);
+        }
+
+        fn pbkdf2(password: String, salt: String, iterations: Int64, keyLength: Int64) -> String
+        {
+            var result: String = password + salt;
+            var i: Int64 = 0;
+            while i < iterations
+            {
+                result = Crypto::sha256(result);
+                i = i + 1;
+            }
+            return result.substring(0, keyLength);
+        }
+    }
+}
