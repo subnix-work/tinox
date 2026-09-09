@@ -1571,6 +1571,10 @@ fn check(args: &[String]) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
+    if let Err(e) = synthesize_accessors(&mut ast, &input_file) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
 
     // Assign node ids before type-checking so infer_type's memoization is active
     // (Bug 50) — without ids every sub-expression is re-inferred, making deep
@@ -1976,6 +1980,10 @@ fn gen_call_graph(args: &[String]) {
         std::process::exit(1);
     }
     if let Err(e) = check_explicit_imports(Path::new(&input_file), &dep_dirs, &missing_deps) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+    if let Err(e) = synthesize_accessors(&mut ast, &input_file) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
@@ -2539,6 +2547,7 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     resolve_imports(&mut ast, &base, &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("import error: {e}"))?;
     check_explicit_imports(Path::new(path), &dep_dirs, &missing_deps)?;
+    synthesize_accessors(&mut ast, path)?;
     let result = tinox_typecheck::annotations::process_annotations(&ast);
     Ok(result.test_entries)
 }
@@ -2563,6 +2572,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let (dep_dirs, missing_deps) = load_dep_dirs(&base);
     resolve_imports(&mut ast, &base, &mut visited, &dep_dirs, &missing_deps)?;
     check_explicit_imports(Path::new(source), &dep_dirs, &missing_deps)?;
+    synthesize_accessors(&mut ast, source)?;
     tinox_parser::assign_node_ids(&mut ast);
 
     let mut tc = tinox_typecheck::TypeChecker::new();
@@ -2982,6 +2992,134 @@ fn check_namespace_path_matches(decls: &[tinox_parser::Decl], path: &Path) -> Re
         }
     }
     Ok(())
+}
+
+/// @Getter/@Setter (Lombok-style accessor generation): scans every class in
+/// the fully-merged AST (recursing into `namespace { ... }` blocks, since a
+/// namespace-wrapped class isn't a direct top-level `Decl`) for a
+/// class-level `@Getter`/`@Setter` (applies to every field) or a field-level
+/// one (applies to just that field), and splices in a real `get<Field>()`/
+/// `set<Field>(value)` `Method` for each field that doesn't already have a
+/// hand-written method of that exact name -- Lombok's own "don't override
+/// an existing method" behavior.
+///
+/// Deliberately generates real AST `Method` nodes (via a throwaway mini
+/// parse of hand-formatted Tinox source, see `parse_synthetic_method`)
+/// instead of following `@JsonSerializable`'s pattern of a hand-registered
+/// `FunctionSignature` in the typechecker plus a hardcoded method-name
+/// special case in call resolution plus bespoke codegen: that pattern only
+/// works because `toJson`/`fromJson` are two fixed, well-known names, not
+/// one arbitrary name per field. Once a synthesized accessor is a genuinely
+/// ordinary `Method` on the class, the ENTIRE existing method pipeline
+/// (typecheck registration, visibility checks, codegen) already handles it
+/// with zero extra code -- this pass is the only thing that needs to exist.
+/// Must run after `resolve_imports` (so imported classes' own
+/// `@Getter`/`@Setter` are covered too) and before `assign_node_ids` (so
+/// synthesized methods get real node ids for the typecheck memoization
+/// table, same as every hand-written one).
+fn synthesize_accessors(ast: &mut tinox_parser::SourceFile, fallback_file: &str) -> Result<(), String> {
+    synthesize_accessors_in_decls(&mut ast.decls, fallback_file)
+}
+
+fn synthesize_accessors_in_decls(decls: &mut [tinox_parser::Decl], fallback_file: &str) -> Result<(), String> {
+    for decl in decls.iter_mut() {
+        match &mut decl.node {
+            DeclKind::Class(class) => synthesize_accessors_for_class(class, fallback_file)?,
+            DeclKind::Namespace(ns) => synthesize_accessors_in_decls(&mut ns.decls, fallback_file)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn synthesize_accessors_for_class(class: &mut tinox_parser::Class, fallback_file: &str) -> Result<(), String> {
+    let class_wants_getter = class.annotations.iter().any(|a| a.name == "Getter");
+    let class_wants_setter = class.annotations.iter().any(|a| a.name == "Setter");
+    let any_field_annotated = class
+        .fields
+        .iter()
+        .any(|f| f.annotations.iter().any(|a| a.name == "Getter" || a.name == "Setter"));
+    if !class_wants_getter && !class_wants_setter && !any_field_annotated {
+        return Ok(());
+    }
+
+    // Reuse an existing method's file identity for DWARF/error-message
+    // attribution when there is one (the common case for anything actually
+    // using @Getter/@Setter) -- falls back to the compile unit's own entry
+    // file for a pure-data class with no methods at all.
+    let file: std::sync::Arc<str> = class
+        .methods
+        .first()
+        .map(|m| m.file.clone())
+        .unwrap_or_else(|| std::sync::Arc::from(fallback_file));
+    let existing_names: HashSet<String> = class.methods.iter().map(|m| m.name.clone()).collect();
+    let formatter = Formatter::new();
+
+    let mut new_methods = Vec::new();
+    for field in &class.fields {
+        let wants_getter = class_wants_getter || field.annotations.iter().any(|a| a.name == "Getter");
+        let wants_setter = class_wants_setter || field.annotations.iter().any(|a| a.name == "Setter");
+        if !wants_getter && !wants_setter {
+            continue;
+        }
+        let pascal = pascal_case(&field.name);
+        let type_str = formatter.fmt_type(&field.field_type);
+
+        if wants_getter {
+            let getter_name = format!("get{pascal}");
+            if !existing_names.contains(&getter_name) {
+                let src = format!(
+                    "class __TinoxAccessorShim {{ fn {getter_name}() -> {type_str} {{ return this.{}; }} }}",
+                    field.name
+                );
+                new_methods.push(parse_synthetic_method(&src, &file)?);
+            }
+        }
+        if wants_setter {
+            let setter_name = format!("set{pascal}");
+            if !existing_names.contains(&setter_name) {
+                let src = format!(
+                    "class __TinoxAccessorShim {{ fn {setter_name}(value: {type_str}) -> Nothing {{ this.{} = value; }} }}",
+                    field.name
+                );
+                new_methods.push(parse_synthetic_method(&src, &file)?);
+            }
+        }
+    }
+    class.methods.extend(new_methods);
+    Ok(())
+}
+
+fn pascal_case(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Lexes+parses `src` (a throwaway `class __TinoxAccessorShim { fn ... }`
+/// wrapper -- a bare `fn` can't appear at top level, issue #149) and
+/// extracts its one synthesized `Method`, stamping `file` onto it the same
+/// way `stamp_file_identity` does for a real, hand-written one.
+fn parse_synthetic_method(src: &str, file: &std::sync::Arc<str>) -> Result<tinox_parser::Method, String> {
+    let tokens = Lexer::new(src)
+        .tokenize()
+        .map_err(|e| format!("internal error synthesizing @Getter/@Setter accessor: lexer error: {e:?} (generated source: {src})"))?;
+    let mut parsed = Parser::new(tokens)
+        .parse()
+        .map_err(|e| format!("internal error synthesizing @Getter/@Setter accessor: parse error: {e:?} (generated source: {src})"))?;
+    let Some(decl) = parsed.decls.pop() else {
+        return Err(format!("internal error synthesizing @Getter/@Setter accessor: no declaration produced (generated source: {src})"));
+    };
+    let DeclKind::Class(mut shim) = decl.node else {
+        return Err(format!("internal error synthesizing @Getter/@Setter accessor: expected a class declaration (generated source: {src})"));
+    };
+    let Some(mut method) = shim.methods.pop() else {
+        return Err(format!("internal error synthesizing @Getter/@Setter accessor: expected a method (generated source: {src})"));
+    };
+    method.file = file.clone();
+    Ok(method)
 }
 
 /// Collects the names of every top-level free `fn` WITH A BODY in a single
@@ -3430,6 +3568,13 @@ fn parse_into_cache(
     let mut ast = Parser::new(tokens)
         .parse()
         .map_err(|e| format!("Parse error in '{}': {:?}", path.display(), e))?;
+    // check_explicit_imports (issue #194) validates each file independently
+    // via typecheck_with_prelude, never going through resolve_imports/
+    // compile_file's own synthesize_accessors call -- so a class using
+    // @Getter/@Setter needs its accessors synthesized here too, or this
+    // path alone would reject `p.getName()` as an undefined function even
+    // though the real compile (which DOES see them) accepts it fine.
+    synthesize_accessors(&mut ast, &path.to_string_lossy())?;
     // Without node ids, infer_type's memoization (Bug 50) never activates,
     // making deep method chains exponential again -- caught live via the
     // e2e regression test for that exact bug (method_chain_linear) timing
@@ -3687,6 +3832,7 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         .map_err(|e| format!("Import error: {}", e))?;
     check_explicit_imports(Path::new(input_path), &dep_dirs, &missing_deps)
         .map_err(|e| format!("Import error: {}", e))?;
+    synthesize_accessors(&mut ast, input_path)?;
     // NodeIds for the type table (typecheck → codegen)
     tinox_parser::assign_node_ids(&mut ast);
 

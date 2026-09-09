@@ -851,6 +851,37 @@ impl AnnotationProcessor {
             },
         );
 
+        // @Getter/@Setter (Lombok-style accessor generation): on a class,
+        // generates get<Field>()/set<Field>(value) for every field that
+        // doesn't already have a hand-written method of that exact name;
+        // on a single field, generates just that one accessor even
+        // without the class-level annotation. Actual generation happens
+        // as an AST-synthesis pass in tinox/src/main.rs
+        // (synthesize_accessors, called right after resolve_imports) --
+        // by the time typecheck/codegen run, a synthesized accessor is
+        // a completely ordinary method, so neither of those needs any
+        // special-casing for it.
+        registry.insert(
+            "Getter".to_string(),
+            AnnotationInfo {
+                name: "Getter".to_string(),
+                valid_targets: vec![AnnotationTarget::Class, AnnotationTarget::Field],
+                min_args: 0,
+                max_args: 0,
+                description: "Generates get<Field>() for every field (on a class) or just the annotated field (on a field) that has no hand-written method of that name".to_string(),
+            },
+        );
+        registry.insert(
+            "Setter".to_string(),
+            AnnotationInfo {
+                name: "Setter".to_string(),
+                valid_targets: vec![AnnotationTarget::Class, AnnotationTarget::Field],
+                min_args: 0,
+                max_args: 0,
+                description: "Generates set<Field>(value) for every field (on a class) or just the annotated field (on a field) that has no hand-written method of that name".to_string(),
+            },
+        );
+
         // Compiler annotations
         registry.insert(
             "inline".to_string(),

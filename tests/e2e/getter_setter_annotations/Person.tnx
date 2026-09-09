@@ -1,0 +1,14 @@
+@Getter
+@Setter
+class Person
+{
+    private var name: String;
+    private var age: Int64;
+
+    // A hand-written accessor must NOT be overridden by the synthesized
+    // one (Lombok's own "don't clobber an existing method" behavior).
+    fn getAge() -> Int64
+    {
+        return this.age + 1000;
+    }
+}
