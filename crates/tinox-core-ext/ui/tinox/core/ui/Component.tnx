@@ -215,15 +215,41 @@ namespace tinox.core.ui
             return Component { id: "", type: "RadioGroup", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
 
-        // v1 reports only the selected FILE NAME, not its binary content --
-        // uploading real file content would need a new wire-protocol path
-        // (base64 chunking or a separate HTTP upload endpoint), out of
-        // scope for this widget addition. Enough for e.g. showing what was
-        // picked, or driving a filename-based workflow; real content
-        // upload is a documented, real follow-up, not silently unsupported.
-        fnc fileUpload(onChange: fnc(String) -> Nothing) -> Component
+        // v2: real file-content transfer plus an optional inline
+        // "N% -- ~Ts remaining" readout, using the browser's native
+        // xhr.upload.onprogress event (the only fetch()/XHR API that
+        // actually reports partial-upload progress -- plain fetch() does
+        // not). onChange still fires immediately with the picked file's
+        // name on selection, same v1 timing; upload completion isn't
+        // wired to any server-side callback of its own (this widget is a
+        // progress *indicator*, not an upload-completion contract).
+        //
+        // uploadUrl: an HTTP endpoint the browser POSTs the file to, as
+        // base64 text -- tinox.core.http_server's HttpRequest.body is a
+        // Tinox String (a C string internally), so raw binary containing
+        // a NUL byte would silently truncate; base64 has neither NUL nor
+        // high bytes and sidesteps that entirely (same reasoning
+        // tinox.core.base64's own decodeBytes() doc comment gives for why
+        // IT avoids materializing a Tinox string from arbitrary bytes --
+        // Base64::decodeBytes() is the matching decode side for a route
+        // handler to use). A ":port/path" value is resolved against the
+        // browser's OWN actual hostname at request time, the same
+        // cross-port convention Component::jsComponent's moduleUrl
+        // already uses -- needed since @TinoxUIApp's generated HTTP shell
+        // can't take extra routes itself, so uploadUrl has to point at a
+        // companion HttpServer the app runs alongside it (exactly the
+        // pattern Main.tnx's own asset server already establishes for
+        // tinoxuidemo.ui.CodeBlock). Pass "" to opt out of any network
+        // transfer at all -- v1's exact old behavior.
+        //
+        // showProgress: renders the percent+ETA readout under the file
+        // picker while uploadUrl is non-empty; has no effect when it's "".
+        fnc fileUpload(uploadUrl: String, showProgress: Bool, onChange: fnc(String) -> Nothing) -> Component
         {
-            return Component { id: "", type: "FileUpload", text: "", props: Map::new(), children: [], visible: true, onEvent: onChange };
+            let props: Map<String, String> = Map::new();
+            props.insert("uploadUrl", uploadUrl);
+            props.insert("showProgress", showProgress.toString());
+            return Component { id: "", type: "FileUpload", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
 
         // Renders a clickable header strip (one entry per label) plus

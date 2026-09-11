@@ -1,6 +1,6 @@
 [package]
 name = "ui"
-version = "1.0.10"
+version = "1.0.11"
 group = "tinox.core"
 description = "Tinox-UI -- a server-driven web UI framework (Vaadin/Phoenix LiveView-style): write your whole UI as a Tinox component tree running on the server, a thin generic JS client renders it and ships events back over a persistent WebSocket."
 
@@ -12,7 +12,7 @@ version = "1.0.0"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.0.3"
+version = "1.0.4"
 
 [[dependencies]]
 group = "tinox.core"

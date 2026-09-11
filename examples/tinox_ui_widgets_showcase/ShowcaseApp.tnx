@@ -68,7 +68,7 @@ class ShowcaseApp
         return Component::vbox([
             Component::datePicker(this.selectedDate, fn(v: String) { app.selectedDate = v; }),
             Component::radioGroup(colors, this.selectedColor, fn(v: String) { app.selectedColor = v; }),
-            Component::fileUpload(fn(v: String) { app.uploadedFileName = v; }),
+            Component::fileUpload("", false, fn(v: String) { app.uploadedFileName = v; }),
             Component::label("File: " + this.uploadedFileName),
             Component::accordion([
                 Component::accordionSection("Details", Component::label("Some details here."), false)
