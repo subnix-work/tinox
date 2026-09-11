@@ -9223,7 +9223,27 @@ impl CodeGen {
                     }
                 }
 
-                // Look up actual return type from pre-collected signatures
+                // Look up actual return type from pre-collected signatures.
+                //
+                // Issue #219: a closure call's true ABI-level return type is
+                // NOT always i64 -- only a Nothing-returning closure's real
+                // return value happens to already be i64 (gen_lambda emits
+                // the REAL declared/inferred return type for the underlying
+                // `__lambda_N` function, e.g. `double` for `-> Float64`, not
+                // a forced i64). The typechecker already resolved this whole
+                // Call expression's real value type; consult it via
+                // `expr_value_types` before ever falling back to i64, for
+                // both a bare-local-closure call (`onChange(v)`) and an
+                // indirect one through an arbitrary fn-valued expression
+                // (`c.accessor(42)`, `handlers[i](ctx)`) -- the SAME
+                // underlying `casted_fn` signature fix below (using this
+                // `ret_ty`, not a hardcoded "i64", for the function-pointer
+                // cast) applies to both call shapes identically.
+                let closure_ret_ty = self
+                    .expr_value_types
+                    .get(&expr.id)
+                    .map(Self::valuetype_to_llvm)
+                    .unwrap_or_else(|| "i64".to_string());
                 let ret_ty = if let ExprKind::Ident(callee) = &func.node {
                     if ctx.locals.contains_key(callee) {
                         // `callee` is a local variable holding a closure
@@ -9231,36 +9251,22 @@ impl CodeGen {
                         // in `fn(v: String) { onChange(v.toFloat()); }`),
                         // not a real named function -- `fn_sigs` never has
                         // an entry for it, so this must NOT fall through to
-                        // the arg_types.first() fallback below. Every
-                        // closure call always returns i64 at the ABI level
-                        // (see the `is_local_fn` branch just below, which
-                        // unconditionally casts the callee to `i64 (i64,
-                        // i64*)*`) regardless of the Tinox-level declared
-                        // return type -- exactly like gen_lambda always
-                        // emits `ret i64 0` for a Nothing-returning lambda,
-                        // never `ret void`. Before this check, a closure
-                        // whose first PARAMETER happened to be Float64
-                        // (e.g. `fnc(Float64) -> Nothing`) got its call's
-                        // LLVM return type mistaken for that parameter's
-                        // type (double) via the fallback below, which then
-                        // propagated out through StmtKind::Return as an
-                        // ill-typed `ret double` inside a function actually
-                        // declared to return i64 -- caught as "internal
-                        // compiler error: generated invalid LLVM IR" the
-                        // first time a real program (Tinox-UI's
-                        // Component::numberField, issue #215 Phase 5)
-                        // called a captured Float64-taking closure as a
-                        // lambda body's tail statement.
-                        "i64".to_string()
+                        // the arg_types.first() fallback below (that
+                        // fallback previously misfired here too: a closure
+                        // whose first PARAMETER happened to be Float64, e.g.
+                        // `fnc(Float64) -> Nothing`, got its call's LLVM
+                        // return type mistaken for that parameter's type).
+                        closure_ret_ty.clone()
                     } else {
                         self.fn_sigs.get(callee)
                             .map(|(r, _)| r.clone())
                             .unwrap_or_else(|| arg_types.first().cloned().unwrap_or_else(|| "i64".to_string()))
                     }
                 } else {
-                    // Indirect call through a fn value (e.g. handlers[i](ctx)):
-                    // lambdas return their value as i64 at the ABI level.
-                    "i64".to_string()
+                    // Indirect call through a fn value (e.g. handlers[i](ctx),
+                    // or a closure stored in an object field like
+                    // c.accessor(42)).
+                    closure_ret_ty
                 };
                 let result = self.temp();
                 let is_local_fn = if let ExprKind::Ident(name) = &func.node {
@@ -9281,7 +9287,7 @@ impl CodeGen {
                         let env_val = self.temp();
                         writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_val, env_ptr).unwrap();
                         let casted_fn = self.temp();
-                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64, i64*)*", casted_fn, fp_val).unwrap();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to {} (i64, i64*)*", casted_fn, fp_val, ret_ty).unwrap();
                         let call_args = Self::closure_call_args(&args_str, &env_val);
                         if ret_ty == "void" {
                             writeln!(&mut self.ir, "call void {}({})", casted_fn, call_args).unwrap();
@@ -9305,7 +9311,7 @@ impl CodeGen {
                         let env_val = self.temp();
                         writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_val, env_ptr).unwrap();
                         let casted_fn = self.temp();
-                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64, i64*)*", casted_fn, fp_val).unwrap();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to {} (i64, i64*)*", casted_fn, fp_val, ret_ty).unwrap();
                         let call_args = Self::closure_call_args(&args_str, &env_val);
                         if ret_ty == "void" {
                             writeln!(&mut self.ir, "call void {}({})", casted_fn, call_args).unwrap();
@@ -9331,8 +9337,8 @@ impl CodeGen {
                         let casted_fn = self.temp();
                         writeln!(
                             &mut self.ir,
-                            "{} = inttoptr i64 {} to i64 (i64, i64*)*",
-                            casted_fn, fp_val
+                            "{} = inttoptr i64 {} to {} (i64, i64*)*",
+                            casted_fn, fp_val, ret_ty
                         )
                         .unwrap();
                         let call_args = Self::closure_call_args(&args_str, &env_val);
@@ -9355,8 +9361,8 @@ impl CodeGen {
                         let casted_fn = self.temp();
                         writeln!(
                             &mut self.ir,
-                            "{} = inttoptr i64 {} to i64 (i64, i64*)*",
-                            casted_fn, fp_val
+                            "{} = inttoptr i64 {} to {} (i64, i64*)*",
+                            casted_fn, fp_val, ret_ty
                         )
                         .unwrap();
                         let call_args = Self::closure_call_args(&args_str, &env_val);
@@ -10183,13 +10189,40 @@ impl CodeGen {
                         .unwrap();
                         Ok((result, ret_ty))
                     }
-                } else if let Some(_fn_sig) = declared_type.as_deref()
+                } else if let Some(fn_sig) = declared_type.as_deref()
                     .and_then(|dt| self.fn_field_sigs.get(dt))
                     .and_then(|m| m.get(method.as_str()))
                     .cloned()
                 {
                     // Fn-type field call: stored value is a closure struct address {fn_ptr: i64, env_ptr: i64*}.
                     // Load fn_ptr and env_ptr, convert args to i64 (ptrtoint), then call fn_ptr(args..., env_ptr).
+                    //
+                    // Issue #219: the underlying `__lambda_N` function
+                    // gen_lambda compiles is defined with the REAL declared
+                    // return type (e.g. `i8*` for `-> String`), not a
+                    // forced i64 -- only a Nothing-returning closure's real
+                    // return value happens to already be i64. Calling
+                    // through a function-pointer cast hardcoded to
+                    // `i64 (...)*)` regardless of that (as this branch
+                    // previously did, unconditionally returning
+                    // `"i64".to_string()` and discarding `fn_sig`'s own
+                    // return type) reads the call result through the wrong
+                    // LLVM type -- silently "recoverable" for a
+                    // pointer-shaped result (String/class, same x86-64
+                    // SysV return register as i64) but genuinely wrong for
+                    // a true `double` (Float64) return, and always wrong
+                    // for whatever DISPATCHES on the raw type without an
+                    // intervening declared-type coercion (println, the
+                    // bug's own repro). `fn_sig.0` is exactly the field's
+                    // declared return type already resolved to its real
+                    // LLVM type by `collect_fn_field_sigs` -- EXCEPT for
+                    // `-> Nothing`, which `type_to_llvm` resolves to literal
+                    // "void", but gen_lambda's own convention is to still
+                    // compile that closure's real function as returning
+                    // `i64` (`ret i64 0`), never actual `void` -- normalize
+                    // back to "i64" here so the cast below matches what the
+                    // callee function was really defined as.
+                    let closure_ret_ty = if fn_sig.0 == "void" { "i64".to_string() } else { fn_sig.0.clone() };
                     let struct_name = declared_type.as_deref().unwrap();
                     let field_offset = self.struct_layouts.get(struct_name)
                         .and_then(|fields| fields.iter().position(|f| f == method))
@@ -10216,9 +10249,8 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 1", env_gep, closure_ptr).unwrap();
                     let env_ptr = self.temp();
                     writeln!(&mut self.ir, "{} = load i64*, i64* {}", env_ptr, env_gep).unwrap();
-                    // Tinox lambdas always have LLVM signature i64 (i64, i64*) regardless of declared type
                     let fp = self.temp();
-                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64 (i64, i64*)*", fp, fn_ptr_i64).unwrap();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to {} (i64, i64*)*", fp, fn_ptr_i64, closure_ret_ty).unwrap();
                     // Generate call args: convert pointer args to i64 via ptrtoint
                     let mut call_args: Vec<String> = Vec::new();
                     for arg in args.iter() {
@@ -10234,9 +10266,8 @@ impl CodeGen {
                     call_args.push(format!("i64* {}", env_ptr));
                     let result = self.temp();
                     let args_str = call_args.join(", ");
-                    // Discard return value (lambdas return i64 but field type may say void)
-                    writeln!(&mut self.ir, "{} = call i64 {}({})", result, fp, args_str).unwrap();
-                    Ok((result, "i64".to_string()))
+                    writeln!(&mut self.ir, "{} = call {} {}({})", result, closure_ret_ty, fp, args_str).unwrap();
+                    Ok((result, closure_ret_ty))
                 } else if let Some(gm_key) = declared_type
                     .as_deref()
                     .map(|c| format!("{}_{}", c, method))
