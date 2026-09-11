@@ -1,0 +1,107 @@
+// Regression test for issue #224: httpConnClose() used to free a TLS
+// connection's OpenSSL SSL*/BIO state unconditionally, racing a DIFFERENT
+// thread concurrently blocked inside a read on the SAME connection
+// (conn_recv -> SSL_read) -- a real heap-use-after-free under ASAN, and a
+// glibc "corrupted double-linked list" abort on a plain build, per the
+// issue's own tinox.core.kubernetes Watch::openRaw reproduction (a
+// background reader thread racing an unrelated @OnClose-triggered close).
+// Fix (runtime.c): TinoxConn gained an atomic `inflight` counter and a
+// `closing` flag; conn_close() now sets closing, calls shutdown(fd,
+// SHUT_RDWR) (POSIX-guaranteed to unblock a DIFFERENT thread's concurrent
+// blocking recv/SSL_read on the same fd), spin-waits for inflight to drop
+// to 0, and only then does the actual SSL_free/close/pthread_mutex_destroy.
+// Reproduces the race directly: one thread parked inside httpConnReadLine
+// (blocking on SSL_read, since the server never writes anything back on
+// this connection) while the main thread calls httpConnClose on the same
+// conn handle. Before the fix this crashed the process outright (or, under
+// `make asan`, reported a heap-use-after-free) instead of the reader
+// simply unblocking with a short read.
+// expect-contains: ok-status
+// expect-contains: ok-reader-unblocked
+// expect-contains: ok-reader-empty
+// expect-contains: ok-no-crash
+// tls-fixture
+
+import tinox.core.http_server;
+import tinox.core.socket;
+
+// httpConnReadLine isn't a compiler builtin (unlike httpConnFromFdTls et
+// al.) -- it's only exposed via a local `extern fn` in the few modules
+// that need it (redis/kubernetes/smtp). Same pattern here.
+extern fn httpConnReadLine(conn: Int64) -> String;
+
+class Main
+{
+    async fnc runServer() -> Int64 {
+        let server: HttpServer = HttpServer::new(47710);
+        server.get("/hello", ctx => {
+            ctx.response.text("Hello over TLS!");
+        });
+        server.listenTls("tls_cert.pem", "tls_key.pem");
+        return 1;
+    }
+
+    // listenTls() binds AND enters the accept loop in one blocking call, so the
+    // spawned server thread's bind may not have happened yet when we get here —
+    // retry the initial TCP connect instead of coordinating on a signal.
+    fnc dialRetry(port: Int64) -> Int64 {
+        var attempt: Int64 = 0;
+        while attempt < 50 {
+            let fd: Int64 = socketCreateTcp();
+            if (socketConnect(fd, "127.0.0.1", port)) {
+                return fd;
+            }
+            sleep_ms(20);
+            attempt = attempt + 1;
+        }
+        return -1;
+    }
+
+    // The reader half of the race: never sends a request, so the server
+    // never writes anything back -- this genuinely parks inside
+    // conn_recv/SSL_read until either data arrives or the connection is
+    // torn down, exactly the "reader thread mid-read" state the issue's
+    // race depends on. Returns the read line's length (Int64, not String
+    // -- matches every other spawn/await pair in this test suite, e.g.
+    // bug68_eintr_short_read's fakeBroker) rather than the string itself.
+    async fnc blockedReader(conn: Int64) -> Int64 {
+        let line: String = httpConnReadLine(conn);
+        return line.len();
+    }
+
+    fnc main() -> Int32 {
+        spawn runServer();
+
+        let fd: Int64 = dialRetry(47710);
+        if (fd < 0) {
+            println("connect failed");
+            return 1;
+        }
+        let conn: Int64 = httpConnFromFdTls(fd, "localhost", false);
+        if (conn < 0) {
+            println("tls handshake failed");
+            return 1;
+        }
+        println("ok-status");
+
+        let readerHandle = spawn blockedReader(conn);
+
+        // Give the reader time to actually enter SSL_read before racing it --
+        // the bug needs a genuinely in-flight read, not one that never started.
+        sleep_ms(200);
+
+        // Close from THIS (main) thread while the spawned thread above is
+        // still blocked inside conn_recv on the SAME conn handle -- the exact
+        // cross-thread close-vs-read race from the issue.
+        httpConnClose(conn);
+
+        let readLen: Int64 = await readerHandle;
+        println("ok-reader-unblocked");
+        if (readLen == 0) {
+            println("ok-reader-empty");
+        }
+
+        println("ok-no-crash");
+        return 0;
+    }
+}

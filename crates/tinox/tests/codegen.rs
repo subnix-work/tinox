@@ -763,6 +763,30 @@ fn main() -> Int64 {
 }
 
 #[test]
+fn test_indirect_closure_call_return_type_issue_219() {
+    // issue #219: calling a closure stored in an object FIELD (obj.field(args),
+    // codegen's ExprKind::MethodCall "Fn-type field call" branch) always
+    // reported the call's LLVM return type as i64, regardless of the field's
+    // real declared return type -- silently "recoverable" when the caller
+    // immediately coerces through a declared-type context (a `let`/`return`/
+    // arg position casts the mistyped i64 back), but wrong for anything that
+    // DISPATCHES on the raw computed type without such a coercion --
+    // println is the clearest example, printing a huge garbage integer
+    // instead of the real string. Minimal repro straight from the issue.
+    assert_eq!(run(r#"
+class Col2 {
+    var header: String;
+    var accessor: fnc(Int64) -> String;
+}
+fn main() -> Int64 {
+    let c: Col2 = Col2 { header: "Age", accessor: fn(x: Int64) { return x.toString(); } };
+    println(c.accessor(42));
+    return 0;
+}
+"#), "42");
+}
+
+#[test]
 fn test_gc_objects_survive_collection() {
     // Objects that are still reachable must NOT be collected
     assert_eq!(run(r#"

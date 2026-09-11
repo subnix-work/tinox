@@ -181,6 +181,19 @@ fn tinox_ui_routed_demo_widgets_and_routing_end_to_end() {
     let resp = read_handshake_response(&mut stream);
     assert!(resp.contains("101"), "expected 101 response, got: {resp}");
 
+    // Issue #227: every @TinoxUIApp-generated WS worker reads and discards
+    // (or, for a @Route app like this one, actually consumes) exactly one
+    // initial frame before its first render -- Assets.tnx's own
+    // `connect()` sends `window.location.pathname` unconditionally on
+    // `ws.onopen`. This raw-socket test client predates that and never
+    // sent it, so the server sat blocked reading it forever and never got
+    // to send its own init frame -- not a runtime/codegen hang, this test
+    // was simply out of sync with the real client protocol every actual
+    // browser follows. "/" matches a plain top-level navigation (no
+    // specific route), landing on the same default Home view this test
+    // already expects below.
+    send_masked_text_frame(&mut stream, b"/");
+
     let init = read_text_frame(&mut stream);
     assert!(init.contains("\"kind\":\"init\""), "expected init message, got: {init}");
     assert!(init.contains("\"type\":\"Heading\""), "expected a Heading widget, got: {init}");
