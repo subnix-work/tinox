@@ -173,6 +173,57 @@ namespace tinox.core.ui
   progress::-webkit-progress-bar { background: rgba(148, 163, 184, 0.14); }
   progress::-webkit-progress-value { background: var(--tinox-primary); }
   progress::-moz-progress-bar { background: var(--tinox-primary); }
+  .tinox-datagrid-wrap { display: block; width: 100%; }
+  .tinox-datagrid-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    position: relative;
+    margin-bottom: 0.35rem;
+    min-height: 1.6rem;
+  }
+  .tinox-datagrid-menu-btn {
+    padding: 0.1rem 0.55rem;
+    font-size: 1rem;
+    line-height: 1.4;
+    min-width: unset;
+  }
+  .tinox-datagrid-menu-panel {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 20;
+    margin-top: 0.3rem;
+    background: #0c1220;
+    border: 1px solid var(--tinox-glass-border);
+    border-radius: var(--tinox-radius-m);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    padding: 0.5rem 0.7rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    min-width: 11rem;
+    max-height: 16rem;
+    overflow-y: auto;
+    box-shadow: 0 10px 30px -8px rgba(0, 0, 0, 0.55);
+  }
+  /* The `hidden` IDL attribute's UA-stylesheet `display:none` loses to
+     this rule's own `display: flex` above (author CSS always beats a
+     user-agent default, regardless of selector specificity) unless
+     re-asserted here explicitly -- found live: without this, the panel
+     rendered permanently open, overlapping the table underneath and
+     intercepting its clicks. */
+  .tinox-datagrid-menu-panel[hidden] { display: none; }
+  .tinox-datagrid-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.82rem;
+    color: var(--tinox-text);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tinox-datagrid-menu-item input { margin: 0; accent-color: var(--tinox-primary); }
   table.tinox-datagrid {
     width: 100%;
     border-collapse: collapse;
@@ -182,6 +233,13 @@ namespace tinox.core.ui
     border-radius: var(--tinox-radius-l);
     overflow: hidden;
   }
+  table.tinox-datagrid th, table.tinox-datagrid td {
+    border-right: 1px solid rgba(148, 163, 184, 0.12);
+  }
+  table.tinox-datagrid th:last-child, table.tinox-datagrid td:last-child { border-right: none; }
+  table.tinox-datagrid th:nth-child(even), table.tinox-datagrid td:nth-child(even) {
+    background: rgba(148, 163, 184, 0.045);
+  }
   table.tinox-datagrid th {
     background: rgba(34, 211, 238, 0.05);
     color: var(--tinox-primary-text);
@@ -190,13 +248,30 @@ namespace tinox.core.ui
     font-weight: 600;
     letter-spacing: 0.09em;
     text-align: left;
-    padding: 0.6rem 0.8rem;
+    padding: 0.6rem 1.5rem 0.6rem 0.8rem;
     border-bottom: 1px solid rgba(103, 232, 249, 0.2);
+    position: relative;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
   }
+  table.tinox-datagrid th:hover { color: #fff; }
+  table.tinox-datagrid th::after {
+    content: "";
+    position: absolute;
+    right: 0.6rem;
+    top: 50%;
+    margin-top: -3px;
+    border: 4px solid transparent;
+    opacity: 0.3;
+  }
+  table.tinox-datagrid th.tinox-sort-asc::after { border-bottom-color: var(--tinox-primary-text); opacity: 1; margin-top: -6px; }
+  table.tinox-datagrid th.tinox-sort-desc::after { border-top-color: var(--tinox-primary-text); opacity: 1; }
   table.tinox-datagrid td {
     padding: 0.55rem 0.8rem;
     border-bottom: 1px solid rgba(148, 163, 184, 0.07);
   }
+  table.tinox-datagrid th.tinox-col-hidden, table.tinox-datagrid td.tinox-col-hidden { display: none; }
   table.tinox-datagrid tr:hover td { background: rgba(34, 211, 238, 0.055); }
   .tinox-radio-group { display: flex; flex-direction: column; gap: 0.4rem; }
   .tinox-radio-group label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
@@ -245,6 +320,27 @@ namespace tinox.core.ui
   }
   .tinox-accordion-header { padding: 0.6rem 0.9rem; cursor: pointer; font-weight: 600; color: var(--tinox-primary-text); }
   .tinox-accordion-body { padding: 0 0.9rem 0.75rem; }
+  .tinox-checkbox-group { display: flex; flex-direction: column; gap: 0.4rem; }
+  .tinox-checkbox-group label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
+  .tinox-combobox { display: flex; }
+  .tinox-combobox input { width: 100%; }
+  input[type="range"] { accent-color: var(--tinox-primary); padding: 0; background: none; border: none; }
+  .tinox-split { display: flex; align-items: stretch; gap: 0; min-height: 8rem; }
+  .tinox-split-pane { flex-shrink: 0; overflow: auto; padding: 0.5rem; }
+  .tinox-split-divider { width: 6px; flex-shrink: 0; cursor: col-resize; background: var(--tinox-glass-border); border-radius: 999px; }
+  .tinox-split-divider:hover { background: var(--tinox-primary); }
+  .tinox-menubar { display: flex; gap: 0.25rem; }
+  .tinox-menubar-item { position: relative; }
+  .tinox-menubar-top { padding: 0.4rem 0.9rem; border-radius: 999px; cursor: pointer; font-size: 0.85rem; color: var(--tinox-text2); }
+  .tinox-menubar-top:hover { color: var(--tinox-text); background: rgba(34, 211, 238, 0.08); }
+  .tinox-menubar-dropdown {
+    position: absolute; top: 100%; left: 0; z-index: 50;
+    background: var(--tinox-glass); border: 1px solid var(--tinox-glass-border);
+    border-radius: var(--tinox-radius-m); padding: 0.35rem; min-width: 9rem;
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+  .tinox-menubar-sub { padding: 0.4rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
+  .tinox-menubar-sub:hover { background: rgba(34, 211, 238, 0.12); color: var(--tinox-primary-text); }
 </style>
 </head>
 <body>
@@ -404,8 +500,16 @@ namespace tinox.core.ui
         if (el.tagName === "A" && props.href !== undefined) el.setAttribute("href", props.href);
         break;
       case "INPUT":
-        if ((el.type === "text" || el.type === "number" || el.type === "date") && props.value !== undefined) el.value = props.value;
+        if ((el.type === "text" || el.type === "number" || el.type === "date" ||
+             el.type === "password" || el.type === "email" || el.type === "time" ||
+             el.type === "datetime-local" || el.type === "range") && props.value !== undefined) {
+          el.value = props.value;
+        }
         if (el.type === "checkbox" && props.checked !== undefined) el.checked = props.checked === "true";
+        if (el.type === "range") {
+          if (props.min !== undefined) el.min = props.min;
+          if (props.max !== undefined) el.max = props.max;
+        }
         break;
       case "TH": case "TD":
         el.textContent = op.text;
@@ -438,6 +542,15 @@ namespace tinox.core.ui
           el.textContent = op.text;
         } else if (el.className === "tinox-html") {
           el.innerHTML = op.text;
+        } else if (el.className === "tinox-combobox") {
+          var cbInputEl = el.querySelector("input");
+          if (cbInputEl && props.value !== undefined) cbInputEl.value = props.value;
+        } else if (el.className === "tinox-checkbox-group") {
+          var cgSelectedNew = (props.selected || "").split("|").filter(function (s) { return s.length > 0; });
+          var cgBoxes = el.querySelectorAll("input[type=checkbox]");
+          for (var cgj = 0; cgj < cgBoxes.length; cgj++) {
+            cgBoxes[cgj].checked = cgSelectedNew.indexOf(cgBoxes[cgj].value) !== -1;
+          }
         }
         break;
       case "TEXTAREA":
@@ -458,6 +571,9 @@ namespace tinox.core.ui
         break;
     }
     el.setAttribute("style", props.style || "");
+    if (props.tooltip !== undefined) {
+      el.title = props.tooltip;
+    }
   }
 
   function sendEvent(id, value) {
@@ -513,6 +629,10 @@ namespace tinox.core.ui
     // section's collapsible body), so a case can redirect the generic
     // children-append loop below by setting this.
     var childrenTarget = null;
+    // Set by a widget that places every child itself (currently only
+    // SplitLayout, which needs two SEPARATE targets, not one) -- stops the
+    // shared children-append loop below from placing them a second time.
+    var skipChildren = false;
     var props = node.props || {};
     switch (node.type) {
       case "Label":
@@ -707,6 +827,184 @@ namespace tinox.core.ui
           })(ropts[roi]);
         }
         break;
+      // --- Phase 6 (Vaadin-comparison gap-fill) additions ---
+      case "PasswordField":
+        el = document.createElement("input");
+        el.type = "password";
+        el.value = props.value || "";
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
+      case "EmailField":
+        el = document.createElement("input");
+        el.type = "email";
+        el.value = props.value || "";
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
+      case "TimePicker":
+        el = document.createElement("input");
+        el.type = "time";
+        el.value = props.value || "";
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
+      case "DateTimePicker":
+        el = document.createElement("input");
+        el.type = "datetime-local";
+        el.value = props.value || "";
+        el.addEventListener("change", function () { sendEvent(node.id, el.value); });
+        break;
+      case "Slider":
+        el = document.createElement("input");
+        el.type = "range";
+        el.min = props.min || "0";
+        el.max = props.max || "100";
+        el.step = "any";
+        el.value = props.value || "0";
+        // "input" (not "change"), same live-feedback-while-dragging
+        // convention every real slider UI uses -- see Component::slider's
+        // own doc comment.
+        el.addEventListener("input", function () { sendEvent(node.id, el.value); });
+        break;
+      case "ComboBox":
+        // Native <input list="..."> + <datalist> -- the browser itself
+        // filters the suggestion list as the user types, no custom
+        // filtering JS needed. A free-text value not in `options` is still
+        // reported as-is, same as a plain TextField.
+        el = document.createElement("div");
+        el.className = "tinox-combobox";
+        var cbInput = document.createElement("input");
+        cbInput.type = "text";
+        cbInput.value = props.value || "";
+        var cbListId = "tinox-dl-" + node.id;
+        cbInput.setAttribute("list", cbListId);
+        var cbList = document.createElement("datalist");
+        cbList.id = cbListId;
+        var cbOpts = (props.options || "").split("|").filter(function (s) { return s.length > 0; });
+        for (var cbi = 0; cbi < cbOpts.length; cbi++) {
+          var cbOptEl = document.createElement("option");
+          cbOptEl.value = cbOpts[cbi];
+          cbList.appendChild(cbOptEl);
+        }
+        cbInput.addEventListener("change", function () { sendEvent(node.id, cbInput.value); });
+        el.appendChild(cbInput);
+        el.appendChild(cbList);
+        break;
+      case "CheckboxGroup":
+        el = document.createElement("div");
+        el.className = "tinox-checkbox-group";
+        var cgOpts = (props.options || "").split("|").filter(function (s) { return s.length > 0; });
+        var cgSelected = (props.selected || "").split("|").filter(function (s) { return s.length > 0; });
+        for (var cgi = 0; cgi < cgOpts.length; cgi++) {
+          (function (optVal) {
+            var cgLabel = document.createElement("label");
+            var cgBox = document.createElement("input");
+            cgBox.type = "checkbox";
+            cgBox.value = optVal;
+            cgBox.checked = cgSelected.indexOf(optVal) !== -1;
+            cgBox.addEventListener("change", function () {
+              var boxes = el.querySelectorAll("input[type=checkbox]");
+              var newSelected = [];
+              for (var bi = 0; bi < boxes.length; bi++) {
+                if (boxes[bi].checked) newSelected.push(boxes[bi].value);
+              }
+              sendEvent(node.id, newSelected.join("|"));
+            });
+            cgLabel.appendChild(cgBox);
+            cgLabel.appendChild(document.createTextNode(optVal));
+            el.appendChild(cgLabel);
+          })(cgOpts[cgi]);
+        }
+        break;
+      case "SplitLayout":
+        // Two children rendered into two separate panes -- the generic
+        // single-childrenTarget mechanism every other multi-child widget
+        // uses doesn't fit (there's no ONE target to redirect into), so
+        // this case builds both children itself and sets `skipChildren`
+        // to stop the shared loop below from placing them a second time.
+        // Dragging is entirely client-side (see Component::splitLayout's
+        // own doc comment on why the split position is never reported
+        // back to the server).
+        el = document.createElement("div");
+        el.className = "tinox-split";
+        var splitPct = parseFloat(props.split) || 50;
+        var paneA = document.createElement("div");
+        paneA.className = "tinox-split-pane";
+        paneA.style.flexBasis = splitPct + "%";
+        var splitDivider = document.createElement("div");
+        splitDivider.className = "tinox-split-divider";
+        var paneB = document.createElement("div");
+        paneB.className = "tinox-split-pane";
+        paneB.style.flexBasis = (100 - splitPct) + "%";
+        var splitChildren = node.children || [];
+        if (splitChildren[0]) paneA.appendChild(build(splitChildren[0]));
+        if (splitChildren[1]) paneB.appendChild(build(splitChildren[1]));
+        el.appendChild(paneA);
+        el.appendChild(splitDivider);
+        el.appendChild(paneB);
+        (function () {
+          var dragging = false;
+          splitDivider.addEventListener("mousedown", function (ev) { dragging = true; ev.preventDefault(); });
+          window.addEventListener("mousemove", function (ev) {
+            if (!dragging) return;
+            var rect = el.getBoundingClientRect();
+            var pct = Math.max(10, Math.min(90, ((ev.clientX - rect.left) / rect.width) * 100));
+            paneA.style.flexBasis = pct + "%";
+            paneB.style.flexBasis = (100 - pct) + "%";
+          });
+          window.addEventListener("mouseup", function () { dragging = false; });
+        })();
+        skipChildren = true;
+        break;
+      case "MenuBar":
+        // Each `menus` entry is "Label:Sub1,Sub2,Sub3" -- see
+        // Component::menuBar's own doc comment. A document-level click
+        // listener closes any open dropdown when clicking outside this
+        // menu bar instance.
+        el = document.createElement("div");
+        el.className = "tinox-menubar";
+        var menuEntries = (props.menus || "").split("|").filter(function (s) { return s.length > 0; });
+        for (var mi = 0; mi < menuEntries.length; mi++) {
+          (function (entry) {
+            var entryParts = entry.split(":");
+            var topLabel = entryParts[0];
+            var subLabels = (entryParts[1] || "").split(",").filter(function (s) { return s.length > 0; });
+            var menuItemEl = document.createElement("div");
+            menuItemEl.className = "tinox-menubar-item";
+            var menuTop = document.createElement("div");
+            menuTop.className = "tinox-menubar-top";
+            menuTop.textContent = topLabel;
+            var menuDropdown = document.createElement("div");
+            menuDropdown.className = "tinox-menubar-dropdown";
+            menuDropdown.style.display = "none";
+            for (var si = 0; si < subLabels.length; si++) {
+              (function (subLabel) {
+                var subEl = document.createElement("div");
+                subEl.className = "tinox-menubar-sub";
+                subEl.textContent = subLabel;
+                subEl.addEventListener("click", function () {
+                  menuDropdown.style.display = "none";
+                  sendEvent(node.id, topLabel + ":" + subLabel);
+                });
+                menuDropdown.appendChild(subEl);
+              })(subLabels[si]);
+            }
+            menuTop.addEventListener("click", function () {
+              var isOpen = menuDropdown.style.display !== "none";
+              var allDropdowns = el.querySelectorAll(".tinox-menubar-dropdown");
+              for (var di = 0; di < allDropdowns.length; di++) allDropdowns[di].style.display = "none";
+              menuDropdown.style.display = isOpen ? "none" : "";
+            });
+            menuItemEl.appendChild(menuTop);
+            menuItemEl.appendChild(menuDropdown);
+            el.appendChild(menuItemEl);
+          })(menuEntries[mi]);
+        }
+        document.addEventListener("click", function (ev) {
+          if (!el.contains(ev.target)) {
+            var openDropdowns = el.querySelectorAll(".tinox-menubar-dropdown");
+            for (var odi = 0; odi < openDropdowns.length; odi++) openDropdowns[odi].style.display = "none";
+          }
+        });
+        break;
       case "FileUpload":
         // v1 reports only the picked file's NAME, not its content -- see
         // Component::fileUpload's own doc comment.
@@ -782,8 +1080,42 @@ namespace tinox.core.ui
         childrenTarget = accBody;
         break;
       case "DataGrid":
-        el = document.createElement("table");
-        el.className = "tinox-datagrid";
+        // Wrapper (not the <table> itself) is the returned `el` so a
+        // toolbar (the column-visibility "⋮" menu) can sit above the
+        // table without living inside any <th>/<td> -- those get their
+        // textContent wholesale-reassigned by applyUpdate's TH/TD case on
+        // every server-side text patch, which would silently wipe any DOM
+        // we injected directly into a header cell. `childrenTarget` (the
+        // generic per-child append loop further down already supports
+        // redirecting it, same mechanism Dialog/AccordionSection use)
+        // routes GridRow children into the real <table>, not the wrapper.
+        el = document.createElement("div");
+        el.className = "tinox-datagrid-wrap";
+        var gridToolbar = document.createElement("div");
+        gridToolbar.className = "tinox-datagrid-toolbar";
+        var gridMenuBtn = document.createElement("button");
+        gridMenuBtn.type = "button";
+        gridMenuBtn.className = "tinox-datagrid-menu-btn";
+        gridMenuBtn.textContent = "⋮";
+        gridMenuBtn.setAttribute("aria-label", "Choose visible columns");
+        var gridMenuPanel = document.createElement("div");
+        gridMenuPanel.className = "tinox-datagrid-menu-panel";
+        gridMenuPanel.hidden = true;
+        gridMenuBtn.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          gridMenuPanel.hidden = !gridMenuPanel.hidden;
+        });
+        gridMenuPanel.addEventListener("click", function (ev) { ev.stopPropagation(); });
+        document.addEventListener("click", function () { gridMenuPanel.hidden = true; });
+        gridToolbar.appendChild(gridMenuBtn);
+        gridToolbar.appendChild(gridMenuPanel);
+        var gridTable = document.createElement("table");
+        gridTable.className = "tinox-datagrid";
+        el.appendChild(gridToolbar);
+        el.appendChild(gridTable);
+        el.tinoxGridTable = gridTable;
+        el.tinoxGridMenuPanel = gridMenuPanel;
+        childrenTarget = gridTable;
         break;
       case "GridRow":
         el = document.createElement("tr");
@@ -799,12 +1131,102 @@ namespace tinox.core.ui
     if (props.style) {
       el.setAttribute("style", (el.getAttribute("style") || "") + ";" + props.style);
     }
-    var appendTarget = childrenTarget || el;
-    var children = node.children || [];
-    for (var i = 0; i < children.length; i++) {
-      appendTarget.appendChild(build(children[i]));
+    if (props.tooltip) {
+      el.title = props.tooltip;
+    }
+    if (!skipChildren) {
+      var appendTarget = childrenTarget || el;
+      var children = node.children || [];
+      for (var i = 0; i < children.length; i++) {
+        appendTarget.appendChild(build(children[i]));
+      }
+    }
+    if (node.type === "DataGrid" && el.tinoxGridTable) {
+      setupDataGrid(el.tinoxGridTable, el.tinoxGridMenuPanel);
     }
     return el;
+  }
+
+  // Client-only DataGrid behavior (sorting, column show/hide) layered on
+  // top of the already-rendered table -- DataGrid::of's own Component
+  // tree (DataGrid.tnx/GridColumn.tnx) has no notion of "sorted" or
+  // "hidden" state, this is pure display behavior, same spirit as
+  // Tabs/Accordion's own client-side-only expand/collapse. Column
+  // identity is purely positional (a header/body cell's index within its
+  // row), matching DataGrid's own "no stable per-item key" v1 scope note.
+  //
+  // Runs once per <table> (guarded by data-tinox-grid-ready) the first
+  // time it's built -- since issue #225, unchanged rows/cells are reused
+  // across server-side re-renders (an "update" patch op only ever touches
+  // textContent/style on the SAME element, never className or DOM
+  // position), so sort order and hidden-column state normally survive
+  // ordinary interactions elsewhere on the page. The one gap: a row or
+  // column that's genuinely NEW (the underlying items list grew, or the
+  // caller changed its GridColumn list) arrives via a fresh build() call
+  // and won't inherit the current sort/hidden state until the user
+  // re-applies it -- acceptable v1 scope, not silently wrong data (every
+  // cell's actual value is always correct, only the sort/visibility
+  // convenience can lag).
+  function setupDataGrid(table, menuPanel) {
+    if (table.dataset.tinoxGridReady === "1") return;
+    table.dataset.tinoxGridReady = "1";
+    var headerRow = table.rows[0];
+    if (!headerRow) return;
+    var headerCells = Array.prototype.slice.call(headerRow.cells);
+    var sortCol = -1;
+    var sortDir = 1;
+
+    function bodyRows() {
+      return Array.prototype.slice.call(table.rows).slice(1);
+    }
+
+    headerCells.forEach(function (th, colIdx) {
+      th.addEventListener("click", function () {
+        sortDir = sortCol === colIdx ? -sortDir : 1;
+        sortCol = colIdx;
+        headerCells.forEach(function (h) { h.classList.remove("tinox-sort-asc", "tinox-sort-desc"); });
+        th.classList.add(sortDir === 1 ? "tinox-sort-asc" : "tinox-sort-desc");
+        var rows = bodyRows();
+        rows.sort(function (a, b) {
+          var av = a.cells[colIdx] ? a.cells[colIdx].textContent.trim() : "";
+          var bv = b.cells[colIdx] ? b.cells[colIdx].textContent.trim() : "";
+          var an = parseFloat(av);
+          var bn = parseFloat(bv);
+          var cmp = (av !== "" && bv !== "" && !isNaN(an) && !isNaN(bn))
+            ? (an - bn)
+            : av.localeCompare(bv, undefined, { numeric: true, sensitivity: "base" });
+          return cmp * sortDir;
+        });
+        // appendChild on an already-attached row MOVES it -- the header
+        // (never re-appended here) stays first, and re-appending every
+        // body row in sorted order re-establishes the full sequence
+        // after it. Doesn't touch any element's data-tinox-id/className,
+        // so later id-addressed patches (findEl) still resolve correctly
+        // regardless of this reordering.
+        rows.forEach(function (r) { table.appendChild(r); });
+      });
+
+      if (!menuPanel) return;
+      var item = document.createElement("label");
+      item.className = "tinox-datagrid-menu-item";
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = true;
+      cb.addEventListener("change", function () {
+        // A CSS class (not inline style) survives applyUpdate's TH/TD
+        // case -- that only ever reassigns textContent -- AND its own
+        // trailing `el.setAttribute("style", props.style || "")`, which
+        // would otherwise clobber an inline `display:none` the next time
+        // that specific cell's text/props happen to get patched.
+        bodyRows().concat([headerRow]).forEach(function (r) {
+          var cell = r.cells[colIdx];
+          if (cell) cell.classList.toggle("tinox-col-hidden", !cb.checked);
+        });
+      });
+      item.appendChild(cb);
+      item.appendChild(document.createTextNode(th.textContent || ("Column " + (colIdx + 1))));
+      menuPanel.appendChild(item);
+    });
   }
 
   connect();

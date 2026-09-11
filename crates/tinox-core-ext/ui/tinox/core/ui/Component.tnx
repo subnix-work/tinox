@@ -422,5 +422,227 @@ namespace tinox.core.ui
             this.props.insert("style", style);
             return this;
         }
+
+        // Sets a native title-attribute tooltip, shown by the browser on
+        // hover -- v1's only tooltip mechanism (no custom-styled popover
+        // yet), the same "ship the simple native-HTML version first"
+        // tradeoff numberField/datePicker/etc. already make for their own
+        // widget. Works on ANY component, not just a dedicated Tooltip
+        // widget -- e.g. Component::button("Save", onClick).withTooltip("Saves the form").
+        fn withTooltip(text: String) -> Component
+        {
+            this.props.insert("tooltip", text);
+            return this;
+        }
+
+        // --- Phase 6 (Vaadin-comparison gap-fill) -------------------------
+        // Same-shaped TextField variants for the native HTML input types
+        // Vaadin ships as dedicated fields. All three follow textField's
+        // exact wire shape (a "value" prop, onChange reports the new
+        // string) -- only the client-side <input type="..."> differs.
+
+        fnc passwordField(value: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value);
+            return Component { id: "", type: "PasswordField", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        fnc emailField(value: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value);
+            return Component { id: "", type: "EmailField", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        // value: "HH:MM" (native <input type="time"> format).
+        fnc timePicker(value: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value);
+            return Component { id: "", type: "TimePicker", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        // value: "YYYY-MM-DDTHH:MM" (native <input type="datetime-local"> format).
+        fnc dateTimePicker(value: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value);
+            return Component { id: "", type: "DateTimePicker", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        // A range input. Reports on every drag movement (not just on
+        // release/blur like every other field here) -- the expected UX for
+        // a slider, matching Vaadin's own Slider addon. Float64<->String
+        // conversion mirrors numberField's own wrapping.
+        fnc slider(value: Float64, min: Float64, max: Float64, onChange: fnc(Float64) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("value", value.toString());
+            props.insert("min", min.toString());
+            props.insert("max", max.toString());
+            let wrapped: fnc(String) -> Nothing = fn(v: String) { onChange(v.toFloat()); };
+            return Component { id: "", type: "Slider", text: "", props: props, children: [], visible: true, onEvent: wrapped };
+        }
+
+        // A filterable/searchable dropdown (Vaadin ComboBox equivalent),
+        // built on the browser's native <input list="..."> + <datalist> --
+        // no custom filtering JS needed, the browser does it. A real
+        // free-text value not among `options` is still reported as-is
+        // (same as a plain textField); validating against the option list
+        // is left to the app, same as every other widget here.
+        fnc comboBox(options: List<String>, value: String, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("options", options.join("|"));
+            props.insert("value", value);
+            return Component { id: "", type: "ComboBox", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        // A group of checkboxes (Vaadin CheckboxGroup equivalent) --
+        // multi-select counterpart to radioGroup. onChange reports the
+        // FULL new selection as a "|"-joined string on every toggle (the
+        // app splits it back into a List<String> itself), same convention
+        // dropdown/radioGroup already use for their own options encoding.
+        fnc checkboxGroup(options: List<String>, selected: List<String>, onChange: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("options", options.join("|"));
+            props.insert("selected", selected.join("|"));
+            return Component { id: "", type: "CheckboxGroup", text: "", props: props, children: [], visible: true, onEvent: onChange };
+        }
+
+        // A resizable two-pane layout (Vaadin SplitLayout equivalent).
+        // Dragging the divider is handled entirely client-side, same
+        // "no server round-trip for a purely visual, client-owned
+        // interaction" tradeoff accordionSection's own expand/collapse
+        // already makes -- the app never learns the user's chosen split
+        // position, same documented v1 limitation.
+        fnc splitLayout(first: Component, second: Component, initialSplitPercent: Float64) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("split", initialSplitPercent.toString());
+            return Component { id: "", type: "SplitLayout", text: "", props: props, children: [first, second], visible: true, onEvent: fn(v: String) { } };
+        }
+
+        // A horizontal menu bar with one dropdown per top-level item
+        // (Vaadin MenuBar equivalent). Each entry in `menus` is
+        // "Label:Sub1,Sub2,Sub3" (e.g. "File:New,Open,Save") -- kept as a
+        // single List<String> rather than a nested List<List<String>>, the
+        // same flat-string-encoding convention dropdown/radioGroup/
+        // checkboxGroup already use for their own option lists. onSelect
+        // reports "TopLabel:SubLabel" for whichever sub-item was clicked.
+        fnc menuBar(menus: List<String>, onSelect: fnc(String) -> Nothing) -> Component
+        {
+            let props: Map<String, String> = Map::new();
+            props.insert("menus", menus.join("|"));
+            return Component { id: "", type: "MenuBar", text: "", props: props, children: [], visible: true, onEvent: onSelect };
+        }
+
+        // --- The following are pure server-side compositions of the
+        // widgets above -- no new client-side rendering needed, same as
+        // this project's general preference for composing existing,
+        // already-battle-tested pieces over inventing new ones when the
+        // existing wire protocol already covers the visual/behavioral need.
+
+        // A circular avatar (Vaadin Avatar equivalent): an image if
+        // `imageUrl` is set, otherwise up to two initials derived from
+        // `name`.
+        fnc avatar(name: String, imageUrl: String) -> Component
+        {
+            let style: String = "width:2.5rem;height:2.5rem;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--tinox-primary-10);color:var(--tinox-primary-text);font-weight:600;overflow:hidden;";
+            if (imageUrl != "")
+            {
+                return Component::image(imageUrl, name).withStyle(style + "object-fit:cover;");
+            }
+            let initials: String = Component.initialsOf(name);
+            return Component::label(initials).withStyle(style);
+        }
+
+        fnc initialsOf(name: String) -> String
+        {
+            let parts: List<String> = name.split(" ");
+            var result: String = "";
+            var i: Int64 = 0;
+            while i < parts.len() && i < 2
+            {
+                let part: String = parts[i];
+                if (part.len() > 0)
+                {
+                    result = result + part.charAt(0);
+                }
+                i = i + 1;
+            }
+            return result.toUpper();
+        }
+
+        // A small colored pill (Vaadin Badge equivalent) -- a persistent,
+        // inline status marker, as opposed to notification()'s toast-like
+        // one-off message. kind: "info" | "success" | "error" | "warning".
+        fnc badge(text: String, kind: String) -> Component
+        {
+            var color: String = "#93a4bd";
+            if (kind == "success") { color = "#34d399"; }
+            if (kind == "error") { color = "#fb7185"; }
+            if (kind == "warning") { color = "#fbbf24"; }
+            let style: String = "display:inline-block;padding:2px 10px;border-radius:999px;font-size:0.75rem;font-weight:600;border:1px solid " + color + ";color:" + color + ";background:" + color + "1a;";
+            return Component::label(text).withStyle(style);
+        }
+
+        // A titled, bordered content box (Vaadin Card equivalent).
+        fnc card(title: String, content: Component) -> Component
+        {
+            let style: String = "border:1px solid var(--tinox-glass-border);border-radius:var(--tinox-radius-l);padding:1rem;background:var(--tinox-glass);";
+            return Component::vbox([
+                Component::heading(title, 4),
+                content
+            ]).withStyle(style);
+        }
+
+        // A single collapsible panel (Vaadin Details equivalent) -- an
+        // accordion with exactly one section.
+        fnc details(summary: String, content: Component, expanded: Bool) -> Component
+        {
+            return Component::accordion([Component::accordionSection(summary, content, expanded)]);
+        }
+
+        // A "Confirm"/"Cancel" convenience wrapper over dialog() (Vaadin
+        // ConfirmDialog equivalent). onCancel also fires for the
+        // backdrop/close-button click, same as a plain dialog's onClose.
+        fnc confirmDialog(title: String, message: String, open: Bool, onConfirm: fnc(String) -> Nothing, onCancel: fnc(String) -> Nothing) -> Component
+        {
+            let body: Component = Component::vbox([
+                Component::label(message),
+                Component::hbox([
+                    Component::button("Confirm", onConfirm),
+                    Component::button("Cancel", onCancel)
+                ])
+            ]);
+            return Component::dialog(title, body, open, onCancel);
+        }
+
+        // A breadcrumb trail (Vaadin Breadcrumb equivalent): every item
+        // except the last is a Link (path from the matching `paths`
+        // entry); the last is plain text (the current page).
+        fnc breadcrumb(items: List<String>, paths: List<String>, onNavigate: fnc(String) -> Nothing) -> Component
+        {
+            var parts: List<Component> = [];
+            var i: Int64 = 0;
+            while i < items.len()
+            {
+                let isLast: Bool = (i == items.len() - 1);
+                if (isLast)
+                {
+                    parts.push(Component::label(items[i]));
+                }
+                else
+                {
+                    parts.push(Component::link(items[i], paths[i], onNavigate));
+                    parts.push(Component::label("/").withStyle("color:var(--tinox-text2);"));
+                }
+                i = i + 1;
+            }
+            return Component::hbox(parts);
+        }
     }
 }
