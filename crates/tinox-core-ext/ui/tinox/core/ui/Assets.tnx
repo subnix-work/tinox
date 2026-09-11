@@ -324,6 +324,9 @@ namespace tinox.core.ui
   .tinox-checkbox-group label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; }
   .tinox-combobox { display: flex; }
   .tinox-combobox input { width: 100%; }
+  .tinox-fileupload { display: flex; flex-direction: column; gap: 0.4rem; }
+  .tinox-fileupload-progress { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; color: var(--tinox-text2); }
+  .tinox-fileupload-progress progress { flex: 1; accent-color: var(--tinox-primary); height: 6px; }
   input[type="range"] { accent-color: var(--tinox-primary); padding: 0; background: none; border: none; }
   .tinox-split { display: flex; align-items: stretch; gap: 0; min-height: 8rem; }
   .tinox-split-pane { flex-shrink: 0; overflow: auto; padding: 0.5rem; }
@@ -548,8 +551,24 @@ namespace tinox.core.ui
         } else if (el.className === "tinox-checkbox-group") {
           var cgSelectedNew = (props.selected || "").split("|").filter(function (s) { return s.length > 0; });
           var cgBoxes = el.querySelectorAll("input[type=checkbox]");
-          for (var cgj = 0; cgj < cgBoxes.length; cgj++) {
+          for (var cgj = 0; cgj < cgBoxes.length; cgj = cgj + 1) {
             cgBoxes[cgj].checked = cgSelectedNew.indexOf(cgBoxes[cgj].value) !== -1;
+          }
+        } else if (el.className === "tinox-fileupload") {
+          // uploadUrl/showProgress live on `el` (see build()'s "FileUpload"
+          // case doc comment for why) -- this is the one place that keeps
+          // them in sync with a later props-only "update" patch, e.g. a
+          // checkbox elsewhere on the page toggling showProgress. Lazily
+          // creates the progress row via ensureFileUploadProgressRow if
+          // showProgress just turned true and none exists yet; an
+          // already-existing row just gets hidden again if it turned
+          // false (never destroyed -- a mid-upload toggle-off-then-on
+          // shouldn't lose whatever percent it was showing).
+          if (props.uploadUrl !== undefined) el.tinoxUploadUrl = props.uploadUrl;
+          if (props.showProgress !== undefined) {
+            el.tinoxShowProgress = props.showProgress === "true";
+            ensureFileUploadProgressRow(el);
+            if (!el.tinoxShowProgress && el.tinoxProgressRow) el.tinoxProgressRow.hidden = true;
           }
         }
         break;
@@ -580,6 +599,176 @@ namespace tinox.core.ui
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ kind: "event", id: id, value: value }));
     }
+  }
+
+  // A url starting with ":" is a cross-port reference (a companion
+  // HttpServer on a different port than this page's own -- see
+  // Component::jsComponent's own doc comment for why @TinoxUIApp's
+  // generated HTTP shell can't just take extra routes itself) -- expanded
+  // against the browser's OWN actual hostname here, never a compile-time
+  // "localhost", same rule connect()'s wsUrl already follows. A plain path
+  // resolves as a normal same-origin URL untouched. Shared by JsComponent's
+  // moduleUrl and FileUpload's uploadUrl -- same convention, same fix.
+  function resolveCrossPortUrl(url) {
+    return url.charAt(0) === ":"
+      ? (window.location.protocol === "https:" ? "https://" : "http://") + window.location.hostname + url
+      : url;
+  }
+
+  // "3m 12s remaining" / "48s remaining" -- used by FileUpload's optional
+  // progress readout. Whole seconds only (an ETA down to the millisecond
+  // would be false precision given it's extrapolated from a handful of
+  // upload.onprogress samples).
+  function formatRemaining(seconds) {
+    var s = Math.max(0, Math.round(seconds));
+    var m = Math.floor(s / 60);
+    var rem = s % 60;
+    return m > 0 ? (m + "m " + rem + "s remaining") : (rem + "s remaining");
+  }
+
+  // Lazily creates FileUpload's progress row (bar + text) the first time
+  // it's actually needed, so a widget built with showProgress=false that
+  // later gets toggled true by an "update" patch (see applyUpdate's own
+  // "tinox-fileupload" branch, the only other caller) still gets one --
+  // build()'s FileUpload case only runs once per element, at initial
+  // creation. A no-op if el.tinoxProgressRow already exists.
+  function ensureFileUploadProgressRow(el) {
+    if (el.tinoxProgressRow || !el.tinoxShowProgress) return;
+    var row = document.createElement("div");
+    row.className = "tinox-fileupload-progress";
+    row.hidden = true;
+    var bar = document.createElement("progress");
+    bar.max = 100;
+    bar.value = 0;
+    var text = document.createElement("span");
+    row.appendChild(bar);
+    row.appendChild(text);
+    row.tinoxBar = bar;
+    row.tinoxText = text;
+    el.appendChild(row);
+    el.tinoxProgressRow = row;
+  }
+
+  // Uploads `file` to `uploadUrl` (already resolved through
+  // resolveCrossPortUrl by the caller... actually resolved per-chunk
+  // below, since it's cheap and keeps this function's inputs simple) in
+  // fixed-size chunks, sequentially, instead of one single request --
+  // two hard reasons, not just an optimization:
+  //
+  //  1. tinox.core.http_server's request reader rejects any body over
+  //     4 MB with a 413 (TINOX_MAX_BODY in runtime.c) -- a whole
+  //     multi-hundred-MB/GB file base64-encoded in one request would
+  //     always hit that, every time, regardless of network speed.
+  //  2. FileReader.readAsDataURL(file) on the WHOLE file loads it
+  //     entirely into memory as one JS string before anything is even
+  //     sent -- for a multi-GB file that's minutes of unresponsive,
+  //     unreported "reading" time before the first byte goes anywhere,
+  //     which is what made a 3.7 GB pick look permanently stuck at 0%.
+  //  3. Measured directly (curl, body sizes from 4 KB to 1 MB, while a
+  //     Tinox-UI page's WebSocket connection stays open so the process
+  //     has real background allocation activity to collect around):
+  //     conn_read_request's buffer, which starts at 4 KB and doubles to
+  //     fit the request, hands each doubling to a Boehm GC-instrumented
+  //     realloc -- and each of THOSE can trigger a full stop-the-world
+  //     collection across every thread in the process (30+ for this
+  //     demo's SO_REUSEPORT HTTP worker pool alone). Cost isn't linear
+  //     in body size, it's a cliff: 256 KB took 0.49s, 512 KB 1.6s, and
+  //     1 MB 12s. A single request anywhere near the old 2 MB chunk size
+  //     could cost the better part of a minute for exactly this reason
+  //     -- not a network/CORS/server-logic problem, a GC one, and not
+  //     something this change can fix from client-side JS. Staying at
+  //     32 KB keeps every chunk in the flat, sub-10ms part of that curve
+  //     regardless of how large the whole file is or how busy the
+  //     WS-rendering side of the same process gets.
+  //
+  // file.slice() is a lazy Blob view (no copy), so memory use stays
+  // bounded to one chunk regardless of the total file size.
+  //
+  // Progress is real, aggregate file-byte progress (bytes of completed
+  // chunks + the in-flight chunk's own upload.onprogress, scaled back
+  // down from the base64-inflated wire size to the original chunk's raw
+  // byte count) -- not "chunks done / chunks total", which would report
+  // the same percentage for a 1 KB last chunk as for a full-size one.
+  function uploadFileInChunks(file, uploadUrl, bar, text) {
+    var CHUNK_SIZE = 32 * 1024;
+    var totalBytes = file.size;
+    var totalChunks = Math.max(1, Math.ceil(totalBytes / CHUNK_SIZE));
+    var chunkIndex = 0;
+    var bytesDoneBeforeChunk = 0;
+    var startedAt = Date.now();
+
+    function updateProgress(loadedInCurrentChunk) {
+      if (!bar) return;
+      var loadedTotal = bytesDoneBeforeChunk + loadedInCurrentChunk;
+      var pct = totalBytes > 0 ? Math.min(100, Math.round((loadedTotal / totalBytes) * 100)) : 100;
+      bar.value = pct;
+      var elapsedMs = Date.now() - startedAt;
+      var etaText = "";
+      if (loadedTotal > 0 && pct < 100 && elapsedMs > 200) {
+        var bytesPerMs = loadedTotal / elapsedMs;
+        var remainingMs = (totalBytes - loadedTotal) / bytesPerMs;
+        etaText = " -- " + formatRemaining(remainingMs / 1000);
+      }
+      text.textContent = pct + "%" + etaText;
+    }
+
+    function sendChunk() {
+      if (chunkIndex >= totalChunks) {
+        if (text) text.textContent = "100% -- done";
+        if (bar) bar.value = 100;
+        return;
+      }
+      var start = chunkIndex * CHUNK_SIZE;
+      var end = Math.min(start + CHUNK_SIZE, totalBytes);
+      var chunkBytes = end - start;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var dataUrl = String(reader.result);
+        var commaIdx = dataUrl.indexOf(",");
+        var b64 = commaIdx >= 0 ? dataUrl.substring(commaIdx + 1) : "";
+        var xhr = new XMLHttpRequest();
+        // Filename/chunk position ride the query string, not custom
+        // headers: a custom request header makes this a CORS-"non-simple"
+        // request, which needs a matching OPTIONS-preflight route the
+        // app's companion HttpServer doesn't register (see
+        // Component::fileUpload's own doc comment on why uploadUrl is
+        // cross-port at all). Content-Type: text/plain is itself one of
+        // the CORS-safelisted values, so this stays preflight-free, same
+        // as the plain GET codeblock.js already is.
+        var url = resolveCrossPortUrl(uploadUrl) +
+          "?filename=" + encodeURIComponent(file.name) +
+          "&chunkIndex=" + chunkIndex +
+          "&totalChunks=" + totalChunks;
+        xhr.open("POST", url, true);
+        xhr.setRequestHeader("Content-Type", "text/plain;charset=utf-8");
+        xhr.upload.addEventListener("progress", function (ev) {
+          if (!ev.lengthComputable) return;
+          // ev.loaded/ev.total are over THIS chunk's base64-inflated wire
+          // body, not the original file bytes -- scale back down so the
+          // aggregate percentage tracks real file bytes, matching what
+          // `total` (file.size) below is measured in.
+          var approxRawLoaded = Math.min(chunkBytes, (ev.loaded / ev.total) * chunkBytes);
+          updateProgress(approxRawLoaded);
+        });
+        xhr.addEventListener("loadend", function () {
+          if (xhr.status < 200 || xhr.status >= 300) {
+            if (text) {
+              text.textContent = "Upload failed at chunk " + (chunkIndex + 1) + "/" + totalChunks +
+                " (" + (xhr.status || "network error") + ")";
+            }
+            return;
+          }
+          bytesDoneBeforeChunk += chunkBytes;
+          chunkIndex += 1;
+          updateProgress(0);
+          sendChunk();
+        });
+        xhr.send(b64);
+      };
+      reader.readAsDataURL(file.slice(start, end));
+    }
+
+    sendChunk();
   }
 
   // Exposed globally so a Component::html()-embedded <script> (see the
@@ -789,14 +978,7 @@ namespace tinox.core.ui
         // standard Custom Elements behavior, not an error state.
         var jsModuleUrl = props.__tinoxModule;
         if (jsModuleUrl) {
-          // A moduleUrl starting with ":" is a cross-port reference (see
-          // Component::jsComponent's own doc comment) -- expanded against
-          // the browser's OWN actual hostname here, never a compile-time
-          // "localhost", same rule connect()'s wsUrl already follows. A
-          // plain path resolves as a normal same-origin URL untouched.
-          var resolvedModuleUrl = jsModuleUrl.charAt(0) === ":"
-            ? (window.location.protocol === "https:" ? "https://" : "http://") + window.location.hostname + jsModuleUrl
-            : jsModuleUrl;
+          var resolvedModuleUrl = resolveCrossPortUrl(jsModuleUrl);
           import(resolvedModuleUrl).catch(function (e) {
             console.error("tinox-ui: failed to load JsComponent module", resolvedModuleUrl, e);
           });
@@ -1006,12 +1188,48 @@ namespace tinox.core.ui
         });
         break;
       case "FileUpload":
-        // v1 reports only the picked file's NAME, not its content -- see
-        // Component::fileUpload's own doc comment.
-        el = document.createElement("input");
-        el.type = "file";
-        el.addEventListener("change", function () {
-          sendEvent(node.id, el.files && el.files[0] ? el.files[0].name : "");
+        // v2: real content transfer (base64 POSTed to props.uploadUrl,
+        // resolved via resolveCrossPortUrl -- see Component::fileUpload's
+        // own doc comment for why base64-over-text rather than raw bytes)
+        // plus an optional inline percent+ETA readout driven by the
+        // browser's real xhr.upload.onprogress events. uploadUrl === ""
+        // keeps v1's exact old behavior: report the picked name, no
+        // network transfer at all.
+        //
+        // uploadUrl/showProgress live on `el` itself (tinoxUploadUrl/
+        // tinoxShowProgress), not captured in the "change" listener's
+        // closure: a props-only change (the common case for a checkbox
+        // toggling showProgress, say) is an "update" patch, which reuses
+        // this SAME element and never re-runs this build() case (see
+        // applyUpdate's own "tinox-fileupload" branch, which is the one
+        // thing that keeps these fields in sync afterwards) -- a closure
+        // captured here would go stale the moment that happens.
+        el = document.createElement("div");
+        el.className = "tinox-fileupload";
+        el.tinoxUploadUrl = props.uploadUrl || "";
+        el.tinoxShowProgress = props.showProgress === "true";
+        var fuInput = document.createElement("input");
+        fuInput.type = "file";
+        el.appendChild(fuInput);
+        ensureFileUploadProgressRow(el);
+        fuInput.addEventListener("change", function () {
+          var file = fuInput.files && fuInput.files[0];
+          sendEvent(node.id, file ? file.name : "");
+          if (!file || !el.tinoxUploadUrl) return;
+          // Guarded by tinoxShowProgress, not just the row's existence: a
+          // row created while showProgress was once true is kept (not
+          // destroyed) across a later toggle-off (see applyUpdate's own
+          // "tinox-fileupload" branch), so its mere presence doesn't mean
+          // the user wants it shown for THIS upload.
+          var fuActive = el.tinoxShowProgress && el.tinoxProgressRow;
+          var fuBar = fuActive ? el.tinoxProgressRow.tinoxBar : null;
+          var fuText = fuActive ? el.tinoxProgressRow.tinoxText : null;
+          if (fuActive) {
+            el.tinoxProgressRow.hidden = false;
+            fuBar.value = 0;
+            fuText.textContent = "0%";
+          }
+          uploadFileInChunks(file, el.tinoxUploadUrl, fuBar, fuText);
         });
         break;
       case "Tabs":
