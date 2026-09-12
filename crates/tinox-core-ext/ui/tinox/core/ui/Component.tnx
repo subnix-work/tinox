@@ -461,6 +461,38 @@ namespace tinox.core.ui
             return this;
         }
 
+        // Issue #225: renders as a real, literal DOM `id=` attribute,
+        // identical on every render -- a stable anchor independently
+        // running client-side JS can re-locate with a plain
+        // document.getElementById(), e.g. a <pre> tailed by its own
+        // long-lived WebSocket, or an xterm.js terminal bridged to a PTY.
+        // Before this, the ONLY way to get such an anchor was to drop out
+        // of the typed component model entirely for that one element and
+        // hand-write `id='...'` inside a Component::html(...) raw-markup
+        // string.
+        //
+        // Deliberately NOT called `withKey`, and deliberately separate
+        // from the internal `cN` id carried in `data-tinox-id`: this does
+        // NOT make reconciliation keyed. TinoxUIRuntime::diff stays
+        // strictly positional (see its own doc comment on why a real
+        // keyed/LIS reconciler is separate, unclaimed work) -- naming it
+        // `key` would imply React-style identity matching that isn't
+        // there. What it does give you is exactly what an external-JS
+        // anchor needs: a name the app chose, unchanged across renders,
+        // never reassigned by the id counter.
+        //
+        // Uniqueness is the caller's responsibility, same as any
+        // hand-written DOM id -- two components sharing one domId render
+        // two elements with the same `id=` attribute (invalid HTML, and
+        // getElementById then finds only the first). The framework's own
+        // event dispatch is unaffected either way, since that addresses
+        // components by `data-tinox-id`, never by this.
+        fn withDomId(domId: String) -> Component
+        {
+            this.props.insert("domId", domId);
+            return this;
+        }
+
         // --- Phase 6 (Vaadin-comparison gap-fill) -------------------------
         // Same-shaped TextField variants for the native HTML input types
         // Vaadin ships as dedicated fields. All three follow textField's

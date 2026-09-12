@@ -255,6 +255,14 @@ fn tinox_ui_widgets_showcase_end_to_end() {
     assert!(patch3.contains("\"type\":\"Accordion\"") && patch3.contains("\"type\":\"AccordionSection\""), "expected Accordion, got: {patch3}");
     assert!(patch3.contains("red|green|blue"), "expected RadioGroup options, got: {patch3}");
 
+    // Issue #225: Component::withDomId's app-chosen anchor rides along as
+    // a literal prop on the node it was set on (here the "File: ..."
+    // label, one of the freshly inserted Form-tab nodes).
+    assert!(
+        patch3.contains("\"domId\":\"showcase-file-status\""),
+        "expected the withDomId anchor on the Form tab, got: {patch3}"
+    );
+
     // Simulate a file selection -- FileUpload is one of the freshly
     // inserted nodes above, so its id only exists from here on (it
     // wasn't part of `init`, unlike open_btn_id/dialog_id/tabs_id).
@@ -263,6 +271,17 @@ fn tinox_ui_widgets_showcase_end_to_end() {
     send_masked_text_frame(&mut stream, ev4.as_bytes());
     let upd4 = read_text_frame(&mut stream);
     assert!(upd4.contains("File: report.pdf"), "expected uploaded filename reported, got: {upd4}");
+
+    // Issue #225's actual promise: the anchor is stable ACROSS renders,
+    // not just present once. This op is an in-place `update` on that same
+    // label (its text just changed underneath) -- the domId has to come
+    // back unchanged in the same patch, otherwise a client that already
+    // looked the element up by that id would be left holding a stale
+    // reference the next time anything re-rendered.
+    assert!(
+        upd4.contains("\"domId\":\"showcase-file-status\""),
+        "expected the withDomId anchor to survive an in-place update, got: {upd4}"
+    );
 
     let _ = std::fs::remove_dir_all(&workdir);
 }
