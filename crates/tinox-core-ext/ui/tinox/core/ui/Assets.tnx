@@ -489,9 +489,27 @@ namespace tinox.core.ui
     // alive across this update instead of being torn down.
     if (el.tagName.indexOf("-") !== -1) {
       for (var jk in props) {
-        if (props.hasOwnProperty(jk) && jk !== "__tinoxModule") {
+        // Same reserved-key exclusions build()'s own JsComponent case
+        // applies -- these are framework bookkeeping, not widget
+        // attributes (see that case's doc comment). `domId` still gets
+        // applied below, just as a real `id`, not a literal attribute.
+        if (props.hasOwnProperty(jk) && jk !== "__tinoxModule" && jk !== "style"
+            && jk !== "tooltip" && jk !== "domId") {
           el.setAttribute(jk, props[jk]);
         }
+      }
+      // Applied explicitly because this branch RETURNS -- the shared
+      // trailing block at the end of this function never runs for a
+      // custom element. `style` in particular used to reach the widget
+      // only by riding along in the loop above as a literal attribute;
+      // excluding it there without re-applying it here would have
+      // silently stopped inline styles updating on JsComponents.
+      el.setAttribute("style", props.style || "");
+      if (props.tooltip !== undefined) {
+        el.title = props.tooltip;
+      }
+      if (props.domId !== undefined) {
+        el.id = props.domId;
       }
       return;
     }
@@ -592,6 +610,14 @@ namespace tinox.core.ui
     el.setAttribute("style", props.style || "");
     if (props.tooltip !== undefined) {
       el.title = props.tooltip;
+    }
+    // Issue #225: re-assert the app-chosen anchor id on an in-place
+    // update too. Normally a no-op (the value came from the same
+    // withDomId call that build() already applied), but a props-only
+    // patch is exactly where a CHANGED domId would otherwise be silently
+    // dropped, leaving external JS pointing at a stale anchor.
+    if (props.domId !== undefined) {
+      el.id = props.domId;
     }
   }
 
@@ -950,15 +976,21 @@ namespace tinox.core.ui
         // Vaadin-@Tag/@JsModule equivalent -- see Component::jsComponent's
         // own doc comment (Component.tnx) for the server-side contract.
         // `node.text` is the tag name; every prop except the reserved
-        // "__tinoxModule"/"style" keys becomes a real HTML attribute, so
-        // the module's own standard observedAttributes/
-        // attributeChangedCallback is how it reacts -- nothing
-        // Tinox-specific for it to implement beyond that. "style" is left
-        // to the shared trailing block below (same as every other widget
-        // case), not applied here.
+        // "__tinoxModule"/"style"/"tooltip"/"domId" keys becomes a real
+        // HTML attribute, so the module's own standard
+        // observedAttributes/attributeChangedCallback is how it reacts --
+        // nothing Tinox-specific for it to implement beyond that. The
+        // reserved four are left to the shared trailing block below (same
+        // as every other widget case), not applied here -- without the
+        // exclusion they'd ALSO land as literal `tooltip="..."`/
+        // `domid="..."` attributes the widget never asked for, and a
+        // custom element listing them in observedAttributes would get
+        // spurious attributeChangedCallback calls for framework-internal
+        // bookkeeping it has no business seeing.
         el = document.createElement(node.text);
         for (var jck in props) {
-          if (props.hasOwnProperty(jck) && jck !== "__tinoxModule" && jck !== "style") {
+          if (props.hasOwnProperty(jck) && jck !== "__tinoxModule" && jck !== "style"
+              && jck !== "tooltip" && jck !== "domId") {
             el.setAttribute(jck, props[jck]);
           }
         }
@@ -1346,6 +1378,14 @@ namespace tinox.core.ui
         el = document.createElement("div");
     }
     el.setAttribute("data-tinox-id", node.id);
+    // Issue #225: Component::withDomId's app-chosen anchor, rendered as a
+    // real `id=` attribute so independently-running client JS can find it
+    // with document.getElementById across renders. Kept strictly separate
+    // from `data-tinox-id` above (the framework's own, counter-assigned
+    // addressing) -- findEl/applyPatch never look at this one.
+    if (props.domId) {
+      el.id = props.domId;
+    }
     if (props.style) {
       el.setAttribute("style", (el.getAttribute("style") || "") + ";" + props.style);
     }

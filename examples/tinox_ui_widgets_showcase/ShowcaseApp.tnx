@@ -69,7 +69,12 @@ class ShowcaseApp
             Component::datePicker(this.selectedDate, fn(v: String) { app.selectedDate = v; }),
             Component::radioGroup(colors, this.selectedColor, fn(v: String) { app.selectedColor = v; }),
             Component::fileUpload("", false, fn(v: String) { app.uploadedFileName = v; }),
-            Component::label("File: " + this.uploadedFileName),
+            // Issue #225: an app-chosen, stable DOM anchor -- renders as
+            // a literal `id="showcase-file-status"` and keeps it across
+            // every re-render, so independently-running client JS can
+            // re-locate this element with document.getElementById even
+            // though its text changes underneath.
+            Component::label("File: " + this.uploadedFileName).withDomId("showcase-file-status"),
             Component::accordion([
                 Component::accordionSection("Details", Component::label("Some details here."), false)
             ])

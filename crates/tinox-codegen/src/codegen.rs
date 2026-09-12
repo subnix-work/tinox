@@ -11550,6 +11550,26 @@ impl CodeGen {
             ExprKind::This => {
                 if ctx.params.contains("self") {
                     Ok(("%self".to_string(), "i64*".to_string()))
+                } else if let Some((ty, _)) = ctx.locals.get("self") {
+                    // Issue #217: inside a lambda, `self` isn't a real
+                    // parameter -- it arrives through the closure
+                    // environment and gets an alloca in gen_lambda's
+                    // prologue, same as every other captured local. Mirror
+                    // ExprKind::Ident's own params-vs-locals split rather
+                    // than reading `%self` directly (which would be the
+                    // alloca's ADDRESS, one indirection too many).
+                    //
+                    // Captures a reference, not a snapshot: the stored
+                    // value is the same heap object pointer the enclosing
+                    // method's `this` already held, so field mutations
+                    // through it stay visible everywhere -- identical
+                    // semantics to the `let self_: Foo = this;` workaround
+                    // this replaces, just without the manual alias.
+                    let ty = ty.clone();
+                    let slot = ctx.local_slots.get("self").cloned().unwrap_or_else(|| "self".to_string());
+                    let val = self.temp();
+                    writeln!(&mut self.ir, "{} = load {}, {}* %{}", val, ty, ty, slot).unwrap();
+                    Ok((val, ty))
                 } else {
                     let mut bag = ErrorBag::new();
                     bag.push(Error::new(expr.span, "'this' used outside of a method"));
@@ -15621,7 +15641,43 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
                 collect_free_vars_inner(arg, param_names, vars);
             }
         }
-        ExprKind::This | ExprKind::SuperCall { .. } | ExprKind::Is { .. } => {}
+        // An assignment written as an EXPRESSION statement, which is what
+        // anything not starting with a bare identifier token parses as --
+        // notably every `this.field = ...` (see gen_index_store's own doc
+        // comment on the same parser split). `name.field = ...` instead
+        // starts with an Ident and becomes a StmtKind::Assignment, which
+        // the Block arm above already walks -- which is exactly why this
+        // gap stayed invisible: the workaround form from issue #217
+        // (`let self_ = this; ... self_.x = ...`) takes the handled path,
+        // the direct form (`this.x = ...`) takes this one. Same silent
+        // miscompile class the EnumValue/New arm above documents: without
+        // this, a variable used ONLY on either side of such an assignment
+        // never enters the closure environment at all.
+        ExprKind::Assign { target, value } => {
+            collect_free_vars_inner(target, param_names, vars);
+            collect_free_vars_inner(value, param_names, vars);
+        }
+        ExprKind::CompoundAssign { target, value, .. } => {
+            collect_free_vars_inner(target, param_names, vars);
+            collect_free_vars_inner(value, param_names, vars);
+        }
+        // Issue #217: `this` inside a lambda body is a capture of the
+        // enclosing instance method's own `self` pointer, exactly like an
+        // explicitly named local would be -- `gen_class_method` already
+        // registers "self" in `ctx.locals`/`ctx.params`/`ctx.local_types`
+        // for every instance method, so reporting the name here is all the
+        // existing capture machinery needs to pick it up (see gen_lambda's
+        // `captured` filter, and ExprKind::This's own codegen arm for the
+        // matching read side inside the lambda). `param_names` is still
+        // honoured for symmetry with Ident even though `self` is a
+        // reserved keyword today and can't actually be shadowed by a
+        // lambda parameter.
+        ExprKind::This => {
+            if !param_names.contains("self") {
+                vars.insert("self".to_string());
+            }
+        }
+        ExprKind::SuperCall { .. } | ExprKind::Is { .. } => {}
         ExprKind::Literal(_) => {}
         _ => {}
     }

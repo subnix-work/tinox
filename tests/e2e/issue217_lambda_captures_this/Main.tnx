@@ -1,0 +1,42 @@
+// expect: after handler: 8
+// expect: after doubler: 28
+// expect: label: hello-tagged
+// expect: after nested: 128
+// expect: shared instance: 128
+
+// Issue #217: lambdas can capture `this` from an enclosing instance
+// method directly. Every assertion below also confirms the capture is a
+// REFERENCE, not a value snapshot -- repeated calls to the same closure
+// instance keep mutating the one underlying object (the same semantics
+// the documented `let self_: Foo = this;` workaround already had).
+import Counter;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let c: Counter = Counter { x: 0, label: "" };
+
+        let h: fnc(Int64) -> Nothing = c.makeHandler();
+        h(5);
+        h(3);
+        println("after handler: " + c.x.toString());
+
+        let d: fnc(Int64) -> Nothing = c.makeDoubler();
+        d(10);
+        println("after doubler: " + c.x.toString());
+
+        let t: fnc(String) -> Nothing = c.makeTagger("-tagged");
+        t("hello");
+        println("label: " + c.label);
+
+        let n: fnc(Int64) -> Nothing = c.makeNested();
+        n(100);
+        println("after nested: " + c.x.toString());
+
+        // The mutations above went through the closures' captured self,
+        // the reads through the original `c` binding -- same object.
+        println("shared instance: " + c.x.toString());
+        return 0;
+    }
+}

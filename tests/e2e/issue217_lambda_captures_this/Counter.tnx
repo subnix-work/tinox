@@ -1,0 +1,46 @@
+class Counter
+{
+    var x: Int64;
+    var label: String;
+
+    // Issue #217's own reproducer shape: a lambda inside an instance
+    // method referencing `this` directly, with no `let self_ = this;`
+    // alias. Used to fail codegen with "'this' used outside of a method".
+    fn makeHandler() -> fnc(Int64) -> Nothing
+    {
+        return fn(n: Int64) { this.x = this.x + n; };
+    }
+
+    // `this` reaching a same-class method call, not just a field --
+    // needs the lambda ctx's inherited current_struct to resolve the
+    // mangled callee, on top of the captured self pointer itself.
+    fn makeDoubler() -> fnc(Int64) -> Nothing
+    {
+        return fn(n: Int64) { this.addTwice(n); };
+    }
+
+    fn addTwice(n: Int64) -> Nothing
+    {
+        this.x = this.x + n + n;
+    }
+
+    // `this` alongside an ordinary captured local in one lambda, to
+    // confirm the implicit self capture doesn't displace the explicit
+    // ones sharing the same closure environment.
+    fn makeTagger(suffix: String) -> fnc(String) -> Nothing
+    {
+        return fn(s: String) { this.label = s + suffix; };
+    }
+
+    // Captured through TWO closure levels: the inner lambda's `this`
+    // resolves against the OUTER lambda's captured copy (a local there,
+    // not a real parameter), which is the case that breaks if the read
+    // side only ever checks ctx.params.
+    fn makeNested() -> fnc(Int64) -> Nothing
+    {
+        return fn(n: Int64) {
+            let inner: fnc(Int64) -> Nothing = fn(m: Int64) { this.x = this.x + m; };
+            inner(n);
+        };
+    }
+}
