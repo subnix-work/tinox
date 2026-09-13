@@ -181,7 +181,27 @@ fn tinox_ui_annotated_hello_click_counter_end_to_end() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let mut stream = stream.expect("connect to AnnotatedHelloApp's WS endpoint");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // 30s, not the 5s every tinox_ui_*.rs client used to share. This test
+    // has been the one recurring CI flake (2026-09-09 and 2026-09-12,
+    // both times `read_exact: WouldBlock` here, i.e. a read that simply
+    // timed out with nothing arriving) -- while the very same commit
+    // passes on a rerun, and #227's missing-initial-frame fix (already in
+    // both failing runs) didn't stop it.
+    //
+    // Deliberately recorded as a MITIGATION, not a diagnosis: the
+    // mechanism is unproven. It could not be reproduced locally in 18
+    // attempts -- 12 idle runs, plus 6 with every core 3x oversubscribed,
+    // which stretched the test from ~6s to ~31s wall-clock without ever
+    // tripping a single read. What argues for load sensitivity anyway is
+    // that it only ever fails inside a full parallel `cargo test` on a
+    // 2-core runner (never standalone), and fails with an empty timeout
+    // rather than a protocol desync (a wrong-opcode assert further down
+    // would fire instead if frames were actually arriving malformed).
+    //
+    // If this recurs at 30s, that is strong evidence of a REAL
+    // server-side hang rather than scheduling latency, and deserves its
+    // own investigation -- do not simply raise the number again.
+    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
 
     let req = "GET /__tinoxui HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
     stream.write_all(req.as_bytes()).expect("send handshake");
@@ -237,7 +257,7 @@ fn tinox_ui_annotated_hello_click_counter_end_to_end() {
 /// "no new deps" convention (they hand-roll the WS handshake the same way).
 fn reqwest_like_get(port: u16, path: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect for GET");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).expect("send GET");
     let mut resp = Vec::new();
