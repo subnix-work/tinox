@@ -594,6 +594,44 @@ fn fmt_annotation_arg(arg: &AnnotationArg) -> String {
     }
 }
 
+// Issue #246: `Literal::String`/`Literal::Char` already hold the DECODED
+// value (the lexer's `read_escape`, tinox-lexer/src/lib.rs, resolves
+// `\"`/`\\`/`\n`/etc. before the literal ever reaches the parser/AST) --
+// printing that decoded value back between quotes with no re-escaping at
+// all corrupts the literal the instant it contains a character that's
+// only legal inside a string/char literal when escaped. A raw `"` inside
+// a re-printed string literal ends it early (`\"ERROR\"` became `"ERROR"`,
+// splitting one string into three tokens and breaking the surrounding
+// expression); a raw newline/tab would do the same for `\n`/`\t`. This is
+// the exact inverse of `read_escape`'s decode table.
+fn escape_tinox_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn escape_tinox_char(c: char) -> String {
+    match c {
+        '\\' => "\\\\".to_string(),
+        '\'' => "\\'".to_string(),
+        '\n' => "\\n".to_string(),
+        '\t' => "\\t".to_string(),
+        '\r' => "\\r".to_string(),
+        '\0' => "\\0".to_string(),
+        _ => c.to_string(),
+    }
+}
+
 fn fmt_literal(lit: &Literal) -> String {
     match lit {
         Literal::Integer(n) => n.to_string(),
@@ -601,8 +639,8 @@ fn fmt_literal(lit: &Literal) -> String {
             let s = format!("{}", f);
             if s.contains('.') { s } else { format!("{}.0", s) }
         }
-        Literal::String(s) => format!("\"{}\"", s),
-        Literal::Char(c) => format!("'{}'", c),
+        Literal::String(s) => format!("\"{}\"", escape_tinox_string(s)),
+        Literal::Char(c) => format!("'{}'", escape_tinox_char(*c)),
         Literal::Byte(b) => format!("{}b", b),
         Literal::Bool(b) => b.to_string(),
         Literal::Null => "null".to_string(),
@@ -1072,5 +1110,69 @@ mod tests {
         let ast2 = Parser::new(tokens).parse().unwrap();
         let second = Formatter::new().format(&ast2);
         assert_eq!(first, second);
+    }
+
+    // --- issue #246: re-escaping string/char literals ---
+    //
+    // `Literal::String`/`Literal::Char` hold the DECODED value (escapes
+    // already resolved by the lexer) -- printing that value back between
+    // quotes with no re-escaping corrupts the literal the moment it
+    // contains a character that's only legal there when escaped (a raw
+    // `"` inside a re-printed string ends it early). These tests re-lex
+    // and re-parse the FORMATTED output and check the literal's actual
+    // decoded VALUE survives unchanged -- not just that formatting
+    // "succeeds", which the bug's own corrupted output also did.
+
+    fn parsed_string_literal_value(src: &str) -> String {
+        let tokens = tinox_lexer::Lexer::new(src).tokenize().unwrap();
+        let ast = Parser::new(tokens).parse().unwrap();
+        match &ast.decls[0].node {
+            DeclKind::Function(f) => match &f.body.node {
+                StmtKind::Block(stmts) => match &stmts[0].node {
+                    StmtKind::Expr(e) => match &e.node {
+                        ExprKind::Literal(Literal::String(s)) => s.clone(),
+                        other => panic!("expected a string literal statement, got {other:?}"),
+                    },
+                    other => panic!("expected an expr statement, got {other:?}"),
+                },
+                other => panic!("expected a block body, got {other:?}"),
+            },
+            other => panic!("expected a function decl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_fmt_string_literal_with_escaped_quote_round_trips() {
+        let src = r#"fn main() -> Nothing { "select == \"ERROR\""; }"#;
+        let original_value = parsed_string_literal_value(src);
+        let formatted = fmt(src);
+        let reparsed_value = parsed_string_literal_value(&formatted);
+        assert_eq!(
+            original_value, reparsed_value,
+            "formatting must not change a string literal's decoded value -- formatted output was: {formatted}"
+        );
+        // Also confirm this isn't vacuously true because the value happens
+        // to contain no `"` at all.
+        assert!(original_value.contains('"'));
+    }
+
+    #[test]
+    fn test_fmt_string_literal_with_backslash_and_newline_round_trips() {
+        let src = r#"fn main() -> Nothing { "a\\b\nc\td"; }"#;
+        let original_value = parsed_string_literal_value(src);
+        let formatted = fmt(src);
+        let reparsed_value = parsed_string_literal_value(&formatted);
+        assert_eq!(original_value, reparsed_value);
+    }
+
+    #[test]
+    fn test_fmt_char_literal_with_quote_and_backslash() {
+        let out = fmt(r"fn main() -> Nothing { '\''; '\\'; }");
+        // A literal, un-escaped `'`/`\` here would either end the char
+        // literal early or otherwise fail to re-parse -- re-tokenizing
+        // the formatted output is itself the assertion.
+        tinox_lexer::Lexer::new(&out).tokenize().unwrap();
+        assert!(out.contains(r"'\''"));
+        assert!(out.contains(r"'\\'"));
     }
 }

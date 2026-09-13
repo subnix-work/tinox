@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>http_server — Tinox Docs</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --bg:        #070b14;
+  --bg2:       rgba(17, 25, 43, 0.6);
+  --bg3:       rgba(34, 211, 238, 0.07);
+  --sidebar:   rgba(7, 11, 20, 0.72);
+  --border:    rgba(103, 232, 249, 0.16);
+  --accent:    #22d3ee;
+  --accent2:   #a78bfa;
+  --link:      #67e8f9;
+  --green:     #34d399;
+  --text:      #e2e8f0;
+  --text2:     #93a4bd;
+  --text3:     #64748b;
+  --code-bg:   rgba(5, 7, 13, 0.65);
+  --tag-bg:    rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+  background-attachment: fixed;
+  color: var(--text);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, black, transparent 75%);
+}
+nav { position: sticky; top: 0; z-index: 1; width: 270px; min-width: 270px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--border); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 32px 0; overflow-y: auto; flex-shrink: 0; }
+nav h1 { padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-family: 'Space Grotesk', 'JetBrains Mono', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+nav ul { list-style: none; }
+nav li.nav-section { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }
+nav li a { display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }
+nav li a:hover { color: var(--text); background: var(--bg3); border-left-color: var(--accent); }
+main { position: relative; z-index: 1; flex: 1; min-width: 0; padding: 56px clamp(2rem, 4vw, 4rem); }
+main h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }
+main > p.generated-by { color: var(--text3); margin-bottom: 28px; font-size: 0.78rem; }
+.tool-tag { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text3); }
+.item { border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.item-name { font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.kw { color: #c792ea; }
+.doc { color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }
+h3 { font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }
+table.members { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.members tr { border-bottom: 1px solid var(--border); }
+table.members td { padding: 8px 10px; vertical-align: top; }
+.member-name { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); width: 35%; }
+.member-type { color: #ffcb6b; width: 20%; }
+.method-sig { background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }
+.method-doc { color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }
+.ann { color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }
+code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--link); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>📦 http_server</h1>
+  <ul><li class="nav-section">Overview</li><li><a href="#overview">Description</a></li><li class="nav-section">Dependencies</li><li><a href="#dependencies">Dependencies</a></li><li class="nav-section">Examples</li><li><a href="#ex-hello-server">Hello server</a></li><li class="nav-section">Classes</li><li><a href="#class-HttpContext">HttpContext</a></li><li><a href="#class-HttpRequest">HttpRequest</a></li><li><a href="#class-HttpResponse">HttpResponse</a></li><li><a href="#class-HttpServer">HttpServer</a></li><li><a href="#class-QueryString">QueryString</a></li><li><a href="#class-Route">Route</a></li><li><a href="#class-RouteMatcher">RouteMatcher</a></li></ul>
+</nav>
+<main>
+  <h1>http_server</h1>
+  <p class="generated-by">Generated by <span class="tool-tag">tinox doc</span></p>
+  <section id="overview" class="item"><p class="doc" style="margin-bottom:0">tinox.core.http_server, split out of the bundled stdlib as a standalone tinox-central package.</p></section><section id="dependencies" class="item"><table class="members"><tr><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Module</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Version</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Group</th></tr><tr><td class="member-name"><a href="../../json/1-0-0/docs.html"><code>json</code></a></td><td class="member-type"><code>1.0.0</code></td><td>tinox.core</td></tr></table></section><section id="ex-hello-server" class="item"><h3 style="margin-top:0">Hello server</h3><pre><code><span class="kw">import</span> tinox.core.http_server;
+
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="kw">let</span> server: <span class="type">HttpServer</span> = <span class="type">HttpServer</span>::<span class="kw">new</span>(<span class="num">8080</span>);
+        server.get(<span class="str">&quot;/hello&quot;</span>, ctx =&gt; {
+            ctx.response.text(<span class="str">&quot;Hello, World!&quot;</span>);
+        });
+        server.get(<span class="str">&quot;/users/:id&quot;</span>, ctx =&gt; {
+            <span class="kw">let</span> id: <span class="type">String</span> = ctx.request.getParam(<span class="str">&quot;id&quot;</span>);
+            ctx.response.json(<span class="str">&quot;{\&quot;id\&quot;: \&quot;&quot;</span> + id + <span class="str">&quot;\&quot;}&quot;</span>);
+        });
+        server.listen();
+        <span class="kw">return</span> <span class="num">0</span>;
+    }
+}
+</code></pre></section><section id="class-HttpContext" class="item"><h2 class="item-name"><span class="kw">class</span> HttpContext</h2><p class="doc">
+     * Request context passed to route handlers and middleware
+     *
+     * Contains both the incoming request and the outgoing response,
+     * enabling handlers to read request data and modify the response.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>request</code></td><td class="member-type"><code>HttpRequest</code></td><td> The incoming HTTP request </td></tr><tr><td class="member-name"><code>response</code></td><td class="member-type"><code>HttpResponse</code></td><td> The outgoing HTTP response </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(request: <span style="color:#ffcb6b">HttpRequest</span>, response: <span style="color:#ffcb6b">HttpResponse</span>) → <span style="color:#ffcb6b">HttpContext</span></div><div class="method-doc">
+         * Creates a new HttpContext
+         *
+         * @param request the incoming request
+         * @param response the outgoing response (defaults to new 200 response)
+         * @return a new HttpContext instance
+         </div><div class="method-sig"><span class="kw">fn</span> fromRequest(request: <span style="color:#ffcb6b">HttpRequest</span>) → <span style="color:#ffcb6b">HttpContext</span></div><div class="method-doc">
+         * Creates a context with a new default response
+         *
+         * @param request the incoming request
+         * @return a new HttpContext with a fresh 200 response
+         </div></section><section id="class-HttpRequest" class="item"><h2 class="item-name"><span class="kw">class</span> HttpRequest</h2><p class="doc">
+     * Represents an incoming HTTP request
+     *
+     * Provides access to the method, path, headers, query parameters,
+     * body, and path parameters.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>method</code></td><td class="member-type"><code>String</code></td><td> The HTTP method (GET, POST, PUT, PATCH, DELETE) </td></tr><tr><td class="member-name"><code>path</code></td><td class="member-type"><code>String</code></td><td> The request path (e.g., &quot;/users/42&quot;) </td></tr><tr><td class="member-name"><code>body</code></td><td class="member-type"><code>String</code></td><td> The raw request body </td></tr><tr><td class="member-name"><code>headers</code></td><td class="member-type"><code>Map&lt;String, String&gt;</code></td><td> Request headers as key-value pairs </td></tr><tr><td class="member-name"><code>queryString</code></td><td class="member-type"><code>String</code></td><td> The raw query string (e.g., &quot;page=1&amp;limit=10&quot;) </td></tr><tr><td class="member-name"><code>params</code></td><td class="member-type"><code>Map&lt;String, String&gt;</code></td><td> Path parameters extracted from route patterns </td></tr><tr><td class="member-name"><code>wasEarlyData</code></td><td class="member-type"><code>Bool</code></td><td>
+         * True if this request arrived as TLS 1.3 0-RTT early data
+         * (tinox.core.http3_server's Http3Server, when enableEarlyData()
+         * is opted into) -- always false for HttpServer/Http2Server,
+         * since neither supports 0-RTT. Early data is replayable by a
+         * network attacker (no round trip to prove the client isn't
+         * replaying a captured ClientHello+request), so handlers that
+         * check this should avoid non-idempotent side effects when true.
+         </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(method: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>, queryString: <span style="color:#ffcb6b">String</span>, headers: <span style="color:#ffcb6b">Map&lt;String, String&gt;</span>, body: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpRequest</span></div><div class="method-doc">
+         * Creates a new HttpRequest
+         *
+         * @param method the HTTP method
+         * @param path the request path
+         * @param queryString the query string
+         * @param headers the request headers
+         * @param body the request body
+         * @return a new HttpRequest instance
+         </div><div class="method-sig"><span class="kw">fn</span> getHeader(name: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Returns the value of a request header
+         *
+         * @param name the header name (case-insensitive lookup)
+         * @return the header value, or empty string if not found
+         </div><div class="method-sig"><span class="kw">fn</span> getParam(name: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Returns the value of a path parameter
+         *
+         * @param name the parameter name
+         * @return the parameter value, or empty string if not found
+         </div><div class="method-sig"><span class="kw">fn</span> getQuery(name: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Returns the value of a query parameter
+         *
+         * @param name the query parameter name
+         * @return the parameter value, or empty string if not found
+         </div><div class="method-sig"><span class="kw">fn</span> json() → <span style="color:#ffcb6b">JsonValue</span></div><div class="method-doc">
+         * Parses the request body as JSON
+         *
+         * @return a JsonValue representing the parsed body
+         </div><div class="method-sig"><span class="kw">fn</span> bodyAs() → <span style="color:#ffcb6b">T</span></div><div class="method-doc">
+         * Deserializes the request body into an object of type T.
+         * T must be annotated with @JsonSerializable.
+         *
+         * Usage:
+         *   let user: CreateUserRequest = ctx.request.bodyAs&lt;CreateUserRequest&gt;();
+         *
+         * @return the deserialized object
+         </div><div class="method-sig"><span class="kw">fn</span> text() → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Returns the raw request body as a string
+         *
+         * @return the request body
+         </div><div class="method-sig"><span class="kw">fn</span> setParams(params: <span style="color:#ffcb6b">Map&lt;String, String&gt;</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Sets path parameters (internal use by route matching)
+         *
+         * @param params the extracted path parameters
+         </div><div class="method-sig"><span class="kw">fn</span> isContentType(contentType: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Checks the Content-Type header
+         *
+         * @param contentType the content type to check for
+         * @return true if the request Content-Type matches
+         </div></section><section id="class-HttpResponse" class="item"><h2 class="item-name"><span class="kw">class</span> HttpResponse</h2><p class="doc">
+     * Represents an outgoing HTTP response
+     *
+     * Provides a fluent API for building responses with
+     * status codes, headers, and body content.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>statusCode</code></td><td class="member-type"><code>Int64</code></td><td> The HTTP status code </td></tr><tr><td class="member-name"><code>headers</code></td><td class="member-type"><code>Map&lt;String, String&gt;</code></td><td> Response headers </td></tr><tr><td class="member-name"><code>body</code></td><td class="member-type"><code>String</code></td><td> The response body </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new() → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Creates a new HttpResponse with default status 200
+         *
+         * @return a new HttpResponse instance
+         </div><div class="method-sig"><span class="kw">fn</span> status(code: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the HTTP status code
+         *
+         * @param code the status code (e.g., 200, 404)
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> header(name: <span style="color:#ffcb6b">String</span>, value: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets a response header
+         *
+         * @param name the header name
+         * @param value the header value
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> text(text: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response body as plain text with Content-Type: text/plain
+         *
+         * @param text the response text
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> json(json: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response body as JSON with Content-Type: application/json
+         *
+         * @param json the JSON string
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> jsonObject(obj: <span style="color:#ffcb6b">T</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Serializes a @JsonSerializable object and sets it as the JSON response body.
+         *
+         * Usage:
+         *   ctx.response.json(user);
+         *   ctx.response.json(userList);
+         *
+         * @param obj any object annotated with @JsonSerializable
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> html(html: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response body as HTML with Content-Type: text/html
+         *
+         * @param html the HTML string
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> content(content: <span style="color:#ffcb6b">String</span>, contentType: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response body with a custom Content-Type
+         *
+         * @param content the response body
+         * @param contentType the MIME type
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> notFound(message: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response to a 404 Not Found with a message
+         *
+         * @param message the error message
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> badRequest(message: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response to a 400 Bad Request with a message
+         *
+         * @param message the error message
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> internalError(message: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response to a 500 Internal Server Error with a message
+         *
+         * @param message the error message
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> created(json: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response to a 201 Created with a JSON body
+         *
+         * @param json the JSON response body
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> noContent() → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response to a 204 No Content (empty body)
+         *
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> redirect(url: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets the response to a redirect (302 Found)
+         *
+         * @param url the URL to redirect to
+         * @return this response for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> cors(origin: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpResponse</span></div><div class="method-doc">
+         * Sets CORS headers to allow cross-origin requests
+         *
+         * @param origin the allowed origin (defaults to &quot;*&quot;)
+         * @return this response for chaining
+         </div></section><section id="class-HttpServer" class="item"><h2 class="item-name"><span class="kw">class</span> HttpServer</h2><p class="doc">
+     * HTTP server for handling incoming HTTP requests
+     *
+     * Supports route registration for GET, POST, PUT, PATCH, DELETE,
+     * middleware chains, and automatic request parsing.
+     *
+     * Example usage:
+     *   let server: HttpServer = HttpServer::new(8080);
+     *   server.get(&quot;/hello&quot;, ctx =&gt; {
+     *       ctx.response.text(&quot;Hello, World!&quot;);
+     *   });
+     *   server.post(&quot;/users&quot;, ctx =&gt; {
+     *       let data: JsonValue = ctx.request.json();
+     *       ctx.response.status(201).json(&quot;{\&quot;id\&quot;: 1}&quot;);
+     *   });
+     *   server.listen();
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>port</code></td><td class="member-type"><code>Int64</code></td><td> The port to listen on </td></tr><tr><td class="member-name"><code>routes</code></td><td class="member-type"><code>List&lt;Route&gt;</code></td><td> Registered routes </td></tr><tr><td class="member-name"><code>middleware</code></td><td class="member-type"><code>List&lt;fn(HttpContext) -&gt; Bool&gt;</code></td><td> Registered middleware functions </td></tr><tr><td class="member-name"><code>socketHandle</code></td><td class="member-type"><code>Int64</code></td><td> The underlying socket handle </td></tr><tr><td class="member-name"><code>running</code></td><td class="member-type"><code>Bool</code></td><td> Whether the server is running </td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(port: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">HttpServer</span></div><div class="method-doc">
+         * Creates a new HttpServer listening on the given port
+         *
+         * @param port the port number to bind to
+         * @return a new HttpServer instance
+         </div><div class="method-sig"><span class="kw">fn</span> get(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">HttpServer</span></div><div class="method-doc">
+         * Registers a GET route handler
+         *
+         * @param path the URL path pattern (e.g., &quot;/users/:id&quot;)
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> post(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">HttpServer</span></div><div class="method-doc">
+         * Registers a POST route handler
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> put(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">HttpServer</span></div><div class="method-doc">
+         * Registers a PUT route handler
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> patch(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">HttpServer</span></div><div class="method-doc">
+         * Registers a PATCH route handler
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> delete(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">HttpServer</span></div><div class="method-doc">
+         * Registers a DELETE route handler
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> options(path: <span style="color:#ffcb6b">String</span>, handler: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Nothing</span>) → <span style="color:#ffcb6b">HttpServer</span></div><div class="method-doc">
+         * Registers an OPTIONS route handler.
+         *
+         * Needed to answer a browser's CORS preflight for any cross-origin
+         * request the Fetch/XHR spec disqualifies from &quot;simple&quot; status --
+         * notably a request with an XMLHttpRequestUpload listener attached
+         * (e.g. upload.onprogress), which forces a preflight regardless of
+         * headers/body size/method. Without a matching OPTIONS route, that
+         * preflight 404s and the browser blocks the real request even
+         * though the real handler's own response would have carried valid
+         * CORS headers (HttpResponse::cors()) -- register one that does
+         * the same .cors(...) call and nothing else.
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> use(mware: <span style="color:#ffcb6b">fn(HttpContext) -&gt; Bool</span>) → <span style="color:#ffcb6b">HttpServer</span></div><div class="method-doc">
+         * Registers a middleware function
+         *
+         * Middleware is executed in the order it is registered.
+         * If a middleware returns false, the request chain is interrupted.
+         *
+         * @param mware the middleware function
+         * @return this server for chaining
+         </div><div class="method-sig"><span class="kw">fn</span> listen() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Starts the server and begins listening for connections
+         *
+         * This is a blocking call that enters the server event loop.
+         * Use stop() to shut down the server.
+         </div><div class="method-sig"><span class="kw">fn</span> listenTls(certPath: <span style="color:#ffcb6b">String</span>, keyPath: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Starts the server with TLS/HTTPS enabled.
+         *
+         * OpenSSL is linked by default (opt-out via TINOX_TLS=0 at build
+         * time). Without it, httpServerCreateTls returns -1 and this call
+         * throws.
+         *
+         * Certificate and key must both be PEM files. certPath may contain the
+         * full certificate chain (leaf first).
+         *
+         * Example:
+         *   server.listenTls(&quot;cert.pem&quot;, &quot;key.pem&quot;);
+         *
+         * @param certPath path to the PEM certificate (chain) file
+         * @param keyPath path to the PEM private key file
+         </div><div class="method-sig"><span class="kw">fn</span> parseRawRequest(raw: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">HttpContext</span></div><div class="method-doc">
+         * Parses a raw HTTP/1.1 request string into an HttpContext
+         </div><div class="method-sig"><span class="kw">fn</span> formatResponse(response: <span style="color:#ffcb6b">HttpResponse</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Formats an HttpResponse into a raw HTTP/1.1 response string
+         </div><div class="method-sig"><span class="kw">fn</span> statusText(code: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Returns the HTTP status text for a given status code
+         </div><div class="method-sig"><span class="kw">fn</span> stop() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Stops the running server
+         </div><div class="method-sig"><span class="kw">fn</span> handleRequest(ctx: <span style="color:#ffcb6b">HttpContext</span>, conn: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Processes an incoming request through middleware and route matching,
+         * then sends the response and closes the connection.
+         *
+         * @param ctx the request context
+         * @param conn the client connection handle (plaintext or TLS)
+         </div><div class="method-sig"><span class="kw">fn</span> runMiddleware(ctx: <span style="color:#ffcb6b">HttpContext</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Runs all registered middleware functions
+         *
+         * @param ctx the request context
+         * @return true if all middleware passed, false if any rejected
+         </div><div class="method-sig"><span class="kw">fn</span> matchRoute(ctx: <span style="color:#ffcb6b">HttpContext</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Matches an incoming request against registered routes
+         *
+         * Supports path parameters via :param syntax.
+         * For example, &quot;/users/:id&quot; matches &quot;/users/42&quot; with params { id: &quot;42&quot; }
+         *
+         * @param ctx the request context (modified in place with params)
+         * @return true if a matching route was found and executed
+         </div></section><section id="class-QueryString" class="item"><h2 class="item-name"><span class="kw">class</span> QueryString</h2><p class="doc">
+     * Utility for parsing and working with query strings
+     </p><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> parse(qs: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Map&lt;String, String&gt;</span></div><div class="method-doc">
+         * Parses a query string into a map of key-value pairs
+         *
+         * @param qs the raw query string (e.g., &quot;page=1&amp;limit=10&quot;)
+         * @return a map of parameter names to values
+         </div><div class="method-sig"><span class="kw">fn</span> get(qs: <span style="color:#ffcb6b">String</span>, name: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Gets a single value from a query string by parameter name
+         *
+         * @param qs the raw query string
+         * @param name the parameter name
+         * @return the parameter value, or empty string if not found
+         </div></section><section id="class-Route" class="item"><h2 class="item-name"><span class="kw">class</span> Route</h2><p class="doc">
+     * A route definition mapping an HTTP method and path pattern to a handler
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>method</code></td><td class="member-type"><code>String</code></td><td> The HTTP method (GET, POST, etc.) </td></tr><tr><td class="member-name"><code>path</code></td><td class="member-type"><code>String</code></td><td> The path pattern (e.g., &quot;/users/:id&quot;) </td></tr><tr><td class="member-name"><code>handler</code></td><td class="member-type"><code>fn(HttpContext) -&gt; Nothing</code></td><td> The handler function to execute </td></tr></table></section><section id="class-RouteMatcher" class="item"><h2 class="item-name"><span class="kw">class</span> RouteMatcher</h2><p class="doc">
+     * Utility for matching URL paths against route patterns
+     * with support for path parameters (:param syntax)
+     </p><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> matches(pattern: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc">
+         * Checks if a request path matches a route pattern
+         *
+         * Pattern syntax:
+         *   &quot;/users&quot;      - exact match
+         *   &quot;/users/:id&quot;  - match with path parameter
+         *   &quot;/static/*&quot;   - wildcard match for remaining path
+         *
+         * @param pattern the route pattern
+         * @param path the actual request path
+         * @return true if the path matches the pattern
+         </div><div class="method-sig"><span class="kw">fn</span> extractParams(pattern: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Map&lt;String, String&gt;</span></div><div class="method-doc">
+         * Extracts path parameters from a request path based on a route pattern
+         *
+         * @param pattern the route pattern with :param placeholders
+         * @param path the actual request path
+         * @return a map of parameter names to their values
+         </div><div class="method-sig"><span class="kw">fn</span> param(pattern: <span style="color:#ffcb6b">String</span>, path: <span style="color:#ffcb6b">String</span>, name: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-doc">
+         * Convenience wrapper around extractParams() for callers that only
+         * need a single named parameter's value (e.g. tinox.core.ui's
+         * @Route dispatch, which injects one class field per :param at a
+         * time) rather than the whole Map -- avoids every such caller
+         * re-deriving the same Map just to immediately throw the rest away.
+         *
+         * @param pattern the route pattern with :param placeholders
+         * @param path the actual request path
+         * @param name the parameter name to look up (without the leading ':')
+         * @return the matched segment's value, or &quot;&quot; if pattern/path don't
+         *         actually share a :name segment by that name
+         </div><div class="method-sig"><span class="kw">fn</span> splitPath(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">List&lt;String&gt;</span></div><div class="method-doc">
+         * Splits a path into segments, filtering empty segments
+         *
+         * @param path the path to split
+         * @return a list of non-empty path segments
+         </div></section>
+</main>
+</body>
+</html>

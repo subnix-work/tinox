@@ -25,15 +25,22 @@ import tinox.core.socket;
 class Main
 {
     fnc main() -> Int32 {
-        let srv = WsServer::listen(47640);
+        // Issue #229: was a hardcoded literal port (47640), the one e2e
+        // fixture apparently missed by the "Dynamic Ports for e2e Test
+        // Fixtures" migration every other fixture already went through --
+        // WsServer::listen delegates straight to httpServerCreate, so
+        // listen(0) + httpServerBoundPort works exactly the same way
+        // those other fixtures already rely on.
+        let srv = WsServer::listen(0);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
+        let port = httpServerBoundPort(srv);
 
         // --- Connection 1: offers permessage-deflate ---
         let cfd = socketCreateTcp();
-        socketConnect(cfd, "127.0.0.1", 47640);
+        socketConnect(cfd, "127.0.0.1", port);
         let cconn = httpConnFromFd(cfd);
         httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n");
         let conn = WsServer::accept(srv);
@@ -146,7 +153,7 @@ class Main
 
         // --- Connection 2: does NOT offer permessage-deflate ---
         let cfd2 = socketCreateTcp();
-        socketConnect(cfd2, "127.0.0.1", 47640);
+        socketConnect(cfd2, "127.0.0.1", port);
         let cconn2 = httpConnFromFd(cfd2);
         httpConnSendRaw(cconn2, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
         let conn2 = WsServer::accept(srv);

@@ -37,6 +37,7 @@
 #include <time.h>
 #include <errno.h>
 #include <zlib.h>
+#include <stdatomic.h>
 #ifdef __GLIBC__
 #include <execinfo.h>
 #include <pty.h>
@@ -3164,7 +3165,23 @@ static size_t fast_i64_write(int64_t val, char* buf);
 // that happens to reuse the same fd number. Every construction site
 // below sets it to false explicitly (malloc doesn't zero); it becomes
 // true only if handshake() actually negotiates the extension.
-typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; } TinoxConn;   // ssl==NULL => plaintext
+// inflight/closing (issue #224): conn_close() used to free the TLS SSL*
+// (and close the fd) unconditionally, racing a DIFFERENT thread
+// concurrently blocked inside conn_recv/conn_send on the SAME connection
+// -- a real heap-use-after-free under ASAN, reproduced via
+// tinox.core.kubernetes's Watch::openRaw read loop on a background
+// thread racing an unrelated thread's close() of the same connection.
+// `inflight` is incremented for the duration of every conn_recv/
+// conn_send call (both TLS and plaintext -- a plain close()+fd-number-
+// reuse race while another thread is still blocked in recv() on that
+// same fd number is a real, if rarer, hazard too) and `closing` is set
+// by conn_close() BEFORE it calls shutdown(fd, SHUT_RDWR) -- a
+// standard POSIX pattern where shutdown() on one thread reliably
+// unblocks a DIFFERENT thread's concurrent blocking recv()/SSL_read()
+// on the same fd. conn_close() then waits for `inflight` to drop to 0
+// (every in-flight recv/send has actually returned and is no longer
+// touching `ssl`/`fd`) before it's safe to SSL_free()/close().
+typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; atomic_int inflight; atomic_bool closing; } TinoxConn;   // ssl==NULL => plaintext
 static void conn_send_all(TinoxConn* c, const char* data, size_t len);
 
 #ifdef TINOX_TLS
@@ -3188,28 +3205,65 @@ static SSL_CTX* g_tls_client_ctx = NULL; // client side (dialTls, e.g. amqps://)
 // Deterministically reproducible under sufficient allocation pressure
 // alongside a `spawn` task; see the GitHub issue history.
 static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
+    // Issue #224: see TinoxConn's own field comment. Checked BEFORE
+    // incrementing inflight -- a connection already mid-close() should
+    // never start a fresh SSL_read/recv at all, not just avoid racing
+    // its teardown.
+    if (atomic_load(&c->closing)) return 0;
+    atomic_fetch_add(&c->inflight, 1);
+    ssize_t result;
     if (c->ssl) {
         int r;
         do { r = SSL_read((SSL*)c->ssl, buf, (int)n); }
         while (r <= 0 && SSL_get_error((SSL*)c->ssl, r) == SSL_ERROR_SYSCALL && errno == EINTR);
-        return (ssize_t)r;
+        result = (ssize_t)r;
+    } else {
+        ssize_t r;
+        do { r = recv(c->fd, buf, n, 0); } while (r < 0 && errno == EINTR);
+        result = r;
     }
-    ssize_t r;
-    do { r = recv(c->fd, buf, n, 0); } while (r < 0 && errno == EINTR);
-    return r;
+    atomic_fetch_sub(&c->inflight, 1);
+    return result;
 }
 static ssize_t conn_send(TinoxConn* c, const char* buf, size_t n) {
+    if (atomic_load(&c->closing)) return -1;
+    atomic_fetch_add(&c->inflight, 1);
+    ssize_t result;
     if (c->ssl) {
         int r;
         do { r = SSL_write((SSL*)c->ssl, buf, (int)n); }
         while (r <= 0 && SSL_get_error((SSL*)c->ssl, r) == SSL_ERROR_SYSCALL && errno == EINTR);
-        return (ssize_t)r;
+        result = (ssize_t)r;
+    } else {
+        ssize_t r;
+        do { r = send(c->fd, buf, n, MSG_NOSIGNAL); } while (r < 0 && errno == EINTR);
+        result = r;
     }
-    ssize_t r;
-    do { r = send(c->fd, buf, n, MSG_NOSIGNAL); } while (r < 0 && errno == EINTR);
-    return r;
+    atomic_fetch_sub(&c->inflight, 1);
+    return result;
 }
 static void conn_close(TinoxConn* c) {
+    // Issue #224: mark closing FIRST (so a recv/send racing to START
+    // right now bails via the `closing` check above instead of
+    // incrementing inflight after we've already begun waiting for it to
+    // reach 0), then shutdown() the raw fd -- a standard POSIX pattern
+    // where shutdown() on this thread reliably unblocks a DIFFERENT
+    // thread's concurrent blocking recv()/SSL_read() on the same fd
+    // (returning an error/EOF to it) without this thread needing that
+    // other thread's cooperation. Only once every in-flight conn_recv/
+    // conn_send has actually observed that and returned (inflight back
+    // to 0) is it safe to SSL_free()/close() -- freeing while another
+    // thread's SSL_read() is still internally touching the same SSL*
+    // is the original use-after-free this whole mechanism exists to
+    // prevent; shutdown() alone unblocks the underlying socket read but
+    // doesn't guarantee SSL_read() has finished its own post-syscall
+    // bookkeeping on `ssl` yet.
+    atomic_store(&c->closing, true);
+    if (c->fd >= 0) shutdown(c->fd, SHUT_RDWR);
+    while (atomic_load(&c->inflight) > 0) {
+        struct timespec ts = { 0, 1000000 }; // 1ms
+        nanosleep(&ts, NULL);
+    }
     if (c->ssl) { SSL_shutdown((SSL*)c->ssl); SSL_free((SSL*)c->ssl); c->ssl = NULL; }
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
     pthread_mutex_destroy(&c->writeLock);
@@ -3218,16 +3272,30 @@ static void conn_close(TinoxConn* c) {
 // Plaintext-only fallback — identical semantics without OpenSSL. For the
 // EINTR retry, see the comment on the TLS variant above (bug 68).
 static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
+    // Issue #224: see the TLS variant above and TinoxConn's field comment
+    // for the full rationale -- identical inflight/closing protocol here.
+    if (atomic_load(&c->closing)) return 0;
+    atomic_fetch_add(&c->inflight, 1);
     ssize_t r;
     do { r = recv(c->fd, buf, n, 0); } while (r < 0 && errno == EINTR);
+    atomic_fetch_sub(&c->inflight, 1);
     return r;
 }
 static ssize_t conn_send(TinoxConn* c, const char* buf, size_t n) {
+    if (atomic_load(&c->closing)) return -1;
+    atomic_fetch_add(&c->inflight, 1);
     ssize_t r;
     do { r = send(c->fd, buf, n, MSG_NOSIGNAL); } while (r < 0 && errno == EINTR);
+    atomic_fetch_sub(&c->inflight, 1);
     return r;
 }
 static void conn_close(TinoxConn* c) {
+    atomic_store(&c->closing, true);
+    if (c->fd >= 0) shutdown(c->fd, SHUT_RDWR);
+    while (atomic_load(&c->inflight) > 0) {
+        struct timespec ts = { 0, 1000000 }; // 1ms
+        nanosleep(&ts, NULL);
+    }
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
     pthread_mutex_destroy(&c->writeLock);
 }
@@ -3484,6 +3552,8 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
     c->fd = fd;
     c->ssl = ssl;
     c->wsCompressed = false;
+    c->inflight = 0;
+    c->closing = false;
     return (int64_t)(intptr_t)c;
 #else
     (void)server_fd;
@@ -3501,6 +3571,8 @@ int64_t httpServerAcceptConnHandle(int64_t server_fd) {
     c->fd = (int)fd;
     c->ssl = NULL;
     c->wsCompressed = false;
+    c->inflight = 0;
+    c->closing = false;
     return (int64_t)(intptr_t)c;
 }
 
@@ -3526,6 +3598,8 @@ int64_t httpConnFromFd(int64_t fd) {
     c->fd = (int)fd;
     c->ssl = NULL;
     c->wsCompressed = false;
+    c->inflight = 0;
+    c->closing = false;
     return (int64_t)(intptr_t)c;
 }
 
@@ -3632,6 +3706,8 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     c->fd = (int)fd;
     c->ssl = ssl;
     c->wsCompressed = false;
+    c->inflight = 0;
+    c->closing = false;
     return (int64_t)(intptr_t)c;
 #else
     // Bug 90: the TLS-enabled branch above closes `fd` on every error path;
@@ -7845,6 +7921,21 @@ static void tinox_gc_register_thread_roots(void) {
 int main(int argc, char** argv) {
     GC_INIT();
     tinox_gc_register_thread_roots();
+    // Issue #224: conn_close() now calls shutdown(fd, SHUT_RDWR) on every
+    // connection teardown (not just tinox_HttpServer_listen's epoll loop,
+    // which already set this individually) to unblock a concurrent
+    // reader/writer on the same fd. That makes an EPIPE-on-write race
+    // reachable from EVERY connection type (plain HttpServer::listenTls,
+    // WsServer, AMQP, SMTP, ...), not just the one listener that happened
+    // to guard against it before -- e.g. a client shutting down its end
+    // right as the server's own thread is mid-write (a TLS close_notify,
+    // a final response chunk) now reliably surfaces as a write() getting
+    // EPIPE. The correct, standard fix for a server process is to ignore
+    // SIGPIPE globally and let write()/send()/SSL_write() report EPIPE
+    // via their normal return value instead of killing the process --
+    // every write path here already treats a negative return as "give up
+    // on this connection", so no caller needed to change.
+    signal(SIGPIPE, SIG_IGN);
     // stdout is fully buffered (~4KB) by default when not attached to a
     // TTY (e.g. piped to `docker logs`, `journalctl`, `tee`, a log
     // aggregator). For long-running processes that print periodically

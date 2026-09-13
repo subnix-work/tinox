@@ -118,6 +118,29 @@ namespace tinox.core.http_server
         }
 
         /**
+         * Registers an OPTIONS route handler.
+         *
+         * Needed to answer a browser's CORS preflight for any cross-origin
+         * request the Fetch/XHR spec disqualifies from "simple" status --
+         * notably a request with an XMLHttpRequestUpload listener attached
+         * (e.g. upload.onprogress), which forces a preflight regardless of
+         * headers/body size/method. Without a matching OPTIONS route, that
+         * preflight 404s and the browser blocks the real request even
+         * though the real handler's own response would have carried valid
+         * CORS headers (HttpResponse::cors()) -- register one that does
+         * the same .cors(...) call and nothing else.
+         *
+         * @param path the URL path pattern
+         * @param handler the function to handle matching requests
+         * @return this server for chaining
+         */
+        fn options(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
+        {
+            this.routes.push(Route { method: "OPTIONS", path: path, handler: handler });
+            return this;
+        }
+
+        /**
          * Registers a middleware function
          *
          * Middleware is executed in the order it is registered.

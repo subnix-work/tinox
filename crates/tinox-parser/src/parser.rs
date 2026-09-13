@@ -963,9 +963,13 @@ impl Parser {
                                 args.push(self.parse_expr()?);
                                 while self.consume(TokenKind::Comma) { args.push(self.parse_expr()?); }
                             }
+                            // Issue #232: an empty arg list has no node
+                            // owning the `()` at all -- merge in the
+                            // closing paren's own span.
+                            let rparen_span = self.peek().span;
                             self.expect(TokenKind::RParen)?;
                             self.expect(TokenKind::Semicolon)?;
-                            StmtKind::Expr(Spanned::new(ExprKind::Call { func: Box::new(target), args }, ident_span))
+                            StmtKind::Expr(Spanned::new(ExprKind::Call { func: Box::new(target), args }, ident_span.merge(rparen_span)))
                         } else {
                             let mut expr = target;
                             while self.consume(TokenKind::Dot) {
@@ -977,8 +981,11 @@ impl Parser {
                                         args.push(self.parse_expr()?);
                                         while self.consume(TokenKind::Comma) { args.push(self.parse_expr()?); }
                                     }
+                                    // Issue #232 (same class, MethodCall):
+                                    // merge in the closing paren's span.
+                                    let rparen_span = self.peek().span;
                                     self.expect(TokenKind::RParen)?;
-                                    expr = Spanned::new(ExprKind::MethodCall { obj: Box::new(expr), method: field, args }, ident_span);
+                                    expr = Spanned::new(ExprKind::MethodCall { obj: Box::new(expr), method: field, args }, ident_span.merge(rparen_span));
                                 } else if self.check(TokenKind::Equals) {
                                     self.bump();
                                     let value = self.parse_expr()?;
@@ -1001,6 +1008,9 @@ impl Parser {
                                 args.push(self.parse_expr()?);
                             }
                         }
+                        // Issue #232: merge in the closing paren's span --
+                        // an empty arg list has no node owning the `()`.
+                        let rparen_span = self.peek().span;
                         self.expect(TokenKind::RParen)?;
                         self.expect(TokenKind::Semicolon)?;
                         StmtKind::Expr(Spanned::new(
@@ -1008,7 +1018,7 @@ impl Parser {
                                 func: Box::new(Spanned::new(ExprKind::Ident(name), ident_span)),
                                 args,
                             },
-                            ident_span,
+                            ident_span.merge(rparen_span),
                         ))
                     } else if self.check(TokenKind::Dot) {
                         // Method call / field-access chain: m.set(...); obj.field.method();
@@ -1484,7 +1494,10 @@ impl Parser {
         while self.check(TokenKind::BarBar) {
             self.bump();
             let rhs = self.parse_and_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op: BinaryOp::Or,
@@ -1504,7 +1517,10 @@ impl Parser {
         while self.check(TokenKind::AmpAmp) {
             self.bump();
             let rhs = self.parse_bitwise_or_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op: BinaryOp::And,
@@ -1524,7 +1540,10 @@ impl Parser {
         while self.check(TokenKind::Bar) && !self.check(TokenKind::BarBar) {
             self.bump();
             let rhs = self.parse_bitwise_xor_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op: BinaryOp::BitOr,
@@ -1544,7 +1563,10 @@ impl Parser {
         while self.check(TokenKind::Caret) {
             self.bump();
             let rhs = self.parse_bitwise_and_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op: BinaryOp::Xor,
@@ -1564,7 +1586,10 @@ impl Parser {
         while self.check(TokenKind::Ampersand) && !self.check(TokenKind::AmpAmp) {
             self.bump();
             let rhs = self.parse_equality_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op: BinaryOp::BitAnd,
@@ -1589,7 +1614,10 @@ impl Parser {
             };
             self.bump();
             let rhs = self.parse_relational_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op,
@@ -1620,7 +1648,10 @@ impl Parser {
             };
             self.bump();
             let rhs = self.parse_shift_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op,
@@ -1649,7 +1680,10 @@ impl Parser {
             };
             self.bump();
             let rhs = self.parse_additive_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op,
@@ -1674,7 +1708,10 @@ impl Parser {
             };
             self.bump();
             let rhs = self.parse_multiplicative_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op,
@@ -1714,7 +1751,10 @@ impl Parser {
             };
             self.bump();
             let rhs = self.parse_as_expr()?;
-            let span = lhs.span;
+            // Issue #232: the span must cover the WHOLE binary expression
+            // (`x > 0`), not just `lhs` (`x`) -- merge in `rhs`'s span,
+            // same fix `Span::merge` already exists for elsewhere.
+            let span = lhs.span.merge(rhs.span);
             lhs = Spanned::new(
                 ExprKind::Binary {
                     op,
@@ -1735,38 +1775,50 @@ impl Parser {
         }
 
         if self.check(TokenKind::Minus) {
+            // Issue #232: `self.mk_span()` (called AFTER the operand is
+            // already parsed) is a zero-width point at whatever token
+            // comes next, covering neither the leading `-` nor the
+            // operand -- no node anywhere in the tree ever owned the `-`
+            // itself, so the only fix is capturing its span before
+            // `bump()` consumes it and merging in the operand's span.
+            let op_span = self.peek().span;
             self.bump();
             let operand = self.parse_unary_expr()?;
+            let span = op_span.merge(operand.span);
             return Ok(Spanned::new(
                 ExprKind::Unary {
                     op: UnaryOp::Neg,
                     operand: Box::new(operand),
                 },
-                self.mk_span(),
+                span,
             ));
         }
 
         if self.check(TokenKind::Bang) {
+            let op_span = self.peek().span;
             self.bump();
             let operand = self.parse_unary_expr()?;
+            let span = op_span.merge(operand.span);
             return Ok(Spanned::new(
                 ExprKind::Unary {
                     op: UnaryOp::Not,
                     operand: Box::new(operand),
                 },
-                self.mk_span(),
+                span,
             ));
         }
 
         if self.check(TokenKind::Tilde) {
+            let op_span = self.peek().span;
             self.bump();
             let operand = self.parse_unary_expr()?;
+            let span = op_span.merge(operand.span);
             return Ok(Spanned::new(
                 ExprKind::Unary {
                     op: UnaryOp::BitNot,
                     operand: Box::new(operand),
                 },
-                self.mk_span(),
+                span,
             ));
         }
 
@@ -2055,8 +2107,16 @@ impl Parser {
                         args.push(self.parse_expr()?);
                     }
                 }
+                // Issue #232: capture the closing `)`'s span before
+                // `expect` consumes it -- with a non-empty `args`, the
+                // last arg's own span happens to make this recoverable
+                // by widening, but an EMPTY arg list (`foo()`) has no
+                // node anywhere that owns the `()` characters at all, so
+                // `expr.span` alone (just `foo`) was the node's entire
+                // span, silently excluding the call parens.
+                let rparen_span = self.peek().span;
                 self.expect(TokenKind::RParen)?;
-                let span = expr.span;
+                let span = expr.span.merge(rparen_span);
                 expr = Spanned::new(
                     ExprKind::Call {
                         func: Box::new(expr),
