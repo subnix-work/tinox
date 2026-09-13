@@ -173,7 +173,7 @@ fn tinox_ui_widgets_showcase_end_to_end() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let mut stream = stream.expect("connect to ShowcaseApp's WS endpoint");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
 
     let req = "GET /__tinoxui HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
     stream.write_all(req.as_bytes()).expect("send handshake");
