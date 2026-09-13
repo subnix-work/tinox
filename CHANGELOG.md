@@ -2,6 +2,61 @@
 
 All notable changes to Tinox are documented in this file.
 
+## [2.3.0] - 2026-09-13
+
+### Added
+
+- **Lambdas capture `this` implicitly** (#217): `fn() { this.x = ...; }`
+  inside an instance method now compiles instead of failing with `'this'
+  used outside of a method`. Captures a reference, not a snapshot —
+  mutations through the captured pointer stay visible on the original
+  object, identical semantics to the `let self_ = this;` alias
+  workaround this replaces.
+- **`Component::withDomId(id)`** (`tinox.core:ui`, bumped to 1.0.11,
+  #225): renders as a literal, stable DOM `id=` attribute, unchanged on
+  every render, so independently running client JS can re-locate the
+  element with `document.getElementById` (a `<pre>` tailed by its own
+  WebSocket, an xterm.js terminal, ...). Previously the only way to get
+  one was dropping out of the typed component model into a hand-written
+  `Component::html` string. Deliberately not named `withKey` —
+  `TinoxUIRuntime::diff` stays strictly positional, no React-style
+  identity matching implied.
+
+### Fixed
+
+- **#219**: indirect closure calls (a `fn`-typed local/array value, or an
+  object field of `fn` type, e.g. `c.accessor(42)`) always hardcoded
+  `i64` as the call's return type in codegen, breaking any caller that
+  type-dispatches on the result (`println` et al.) for a
+  non-`Int64`-returning closure. Fixed in both codegen paths to use the
+  real inferred return type.
+- **#246**: `tinox fmt --write` silently dropped backslash escapes
+  inside string/char literals (`\"ERROR\"` → `"ERROR"`), corrupting
+  source and breaking compilation.
+- **#232**: several codegen span-construction sites (binary/unary
+  operators, empty-arg-list call/method-call) computed a span covering
+  only the LHS operand or a zero-width point instead of the full
+  expression, breaking tooling relying on accurate spans (diagnostics,
+  LSP hover/goto).
+- **#229**: the one e2e fixture the dynamic-ports migration missed
+  still hardcoded a literal port, flaky against port collisions.
+- **#227** (closes duplicate #245): three raw-socket WebSocket e2e test
+  clients predated `@TinoxUIApp`'s generated WS worker now
+  unconditionally reading one initial client frame before its first
+  render, so the server blocked forever waiting for it.
+- **#224**: `httpConnClose()` freed a connection's TLS/SSL state
+  unconditionally, racing a different thread concurrently blocked
+  inside `conn_recv` on the same connection — a genuine heap
+  use-after-free (confirmed via ASAN). Fixed with an atomic refcount +
+  `shutdown()` pattern for both the TLS and plaintext connection
+  variants. Also fixed a related SIGPIPE-on-write race surfaced during
+  verification by moving SIGPIPE-ignoring into the global runtime init.
+- Fixed a CI/CD flake in the Postgres transactional test suite: the
+  readiness probe polled `pg_isready` from inside the container, which
+  reports ready during the entrypoint's temporary-server init window
+  before the real TCP listener is up. Now polls the same way the test
+  itself connects (a real query, from the host, over the mapped port).
+
 ## [2.2.0] - 2026-09-11
 
 ### Breaking
