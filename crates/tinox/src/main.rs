@@ -255,8 +255,38 @@ fn read_project_entry(content: &str) -> Option<String> {
     None
 }
 
+/// The entry files to try, in order, for a project whose `tinox.toml` is
+/// `content`. An explicitly declared `[package] entry` is the ONLY
+/// candidate -- if it's wrong, `resolve_entry_file` says so rather than
+/// quietly building some other file.
+///
+/// Split out of `resolve_entry_file` purely so it can be tested: that
+/// function reads `current_dir()` and touches the filesystem, this is the
+/// part with the actual decision in it.
+fn entry_candidates(content: &str) -> Vec<String> {
+    match read_project_entry(content) {
+        Some(entry) => vec![entry],
+        None => vec!["src/Main.tnx".to_string(), "src/main.tnx".to_string()],
+    }
+}
+
 /// If `args` has a file, use that. Otherwise read tinox.toml → its
-/// `[package] entry` field (defaulting to `src/main.tnx` if unset).
+/// `[package] entry` field, falling back to `src/Main.tnx` (then the
+/// lowercase `src/main.tnx`) when it isn't declared.
+///
+/// `Main.tnx` comes first because the compiler itself hard-enforces it:
+/// `class Main` must live in a file named `Main.tnx` (one-type-per-file +
+/// filename-matches-type-name), and the entry file must define `class Main`
+/// (since 2026-08-09). The default used to be `src/main.tnx` alone, naming a
+/// file a conformant project is not allowed to have -- so `tinox build` with
+/// no argument failed in every project that followed the rules, while
+/// `tinox build src/Main.tnx` worked fine (issue #257: 0 projects in this
+/// repo had the lowercase file, 4 had `src/Main.tnx` and no `entry`).
+///
+/// The lowercase name is still accepted as a second candidate rather than
+/// simply replaced: a file with no type declaration at all is exempt from
+/// the naming rule, so a project really can have a lowercase entry script,
+/// and silently ignoring it would trade one broken default for another.
 fn resolve_entry_file(args: &[String]) -> Option<String> {
     if let Some(f) = args.iter().find(|a| !a.starts_with('-')) {
         return Some(f.clone());
@@ -267,12 +297,21 @@ fn resolve_entry_file(args: &[String]) -> Option<String> {
         let toml = dir.join("tinox.toml");
         if toml.exists() {
             let content = fs::read_to_string(&toml).ok()?;
-            let entry = read_project_entry(&content).unwrap_or_else(|| "src/main.tnx".to_string());
-            let candidate = dir.join(&entry);
-            if candidate.exists() {
-                return Some(candidate.to_string_lossy().into_owned());
+            let candidates = entry_candidates(&content);
+            for entry in &candidates {
+                let candidate = dir.join(entry);
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
             }
-            eprintln!("error: tinox.toml found but {entry} is missing");
+            if candidates.len() == 1 {
+                eprintln!("error: tinox.toml found but {} is missing", candidates[0]);
+            } else {
+                eprintln!(
+                    "error: tinox.toml found but none of {} exist -- create one, or point `entry` in [package] at your entry file",
+                    candidates.join(" or ")
+                );
+            }
             return None;
         }
         if !dir.pop() { break; }
@@ -4781,6 +4820,27 @@ mod read_project_entry_tests {
     fn entry_field_whitespace_tolerant() {
         let toml = "[package]\nentry=\"src/Main.tnx\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
+    }
+
+    // The undeclared-entry default has to stay consistent with the naming
+    // rule the compiler enforces (`class Main` => `Main.tnx`). It didn't
+    // once -- the default was `src/main.tnx` alone, which no conformant
+    // project can have, so a no-argument `tinox build` failed in every one
+    // of them (issue #257).
+    #[test]
+    fn undeclared_entry_prefers_capital_main_then_lowercase() {
+        let toml = "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n";
+        assert_eq!(
+            entry_candidates(toml),
+            vec!["src/Main.tnx".to_string(), "src/main.tnx".to_string()]
+        );
+    }
+
+    #[test]
+    fn declared_entry_is_the_only_candidate() {
+        // No silent fallback to a default when an explicit entry is wrong.
+        let toml = "[package]\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
+        assert_eq!(entry_candidates(toml), vec!["src/Cli.tnx".to_string()]);
     }
 }
 
