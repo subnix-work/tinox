@@ -122,8 +122,8 @@ class Main
     // ============================================================
     fnc example_classes() -> Int32
     {
-        let p1: Point = Point.new(0.0, 0.0);
-        let p2: Point = Point.new(3.0, 4.0);
+        let p1: Point = Point::new(0.0, 0.0);
+        let p2: Point = Point::new(3.0, 4.0);
 
         p1.describe();
         p2.describe();
@@ -143,11 +143,11 @@ class Main
     {
         match d
         {
-            North    => return Point.new(0.0, steps as Float64);
-            South    => return Point.new(0.0, -(steps as Float64));
-            East     => return Point.new(steps as Float64, 0.0);
-            West     => return Point.new(-(steps as Float64), 0.0);
-            Diagonal(dx, dy) => return Point.new((dx * steps) as Float64, (dy * steps) as Float64);
+            North    => return Point::new(0.0, steps as Float64);
+            South    => return Point::new(0.0, -(steps as Float64));
+            East     => return Point::new(steps as Float64, 0.0);
+            West     => return Point::new(-(steps as Float64), 0.0);
+            Diagonal(dx, dy) => return Point::new((dx * steps) as Float64, (dy * steps) as Float64);
         }
     }
 
@@ -189,8 +189,8 @@ class Main
     fnc example_interfaces() -> Int32
     {
         let shapes: List<Drawable> = [
-            Circle.new(5.0),
-            Rectangle.new(4.0, 3.0)
+            Circle::new(5.0),
+            Rectangle::new(4.0, 3.0)
         ];
 
         for shape in shapes

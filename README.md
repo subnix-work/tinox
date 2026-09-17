@@ -165,7 +165,11 @@ let msg = "Hi ${name}!";    // string interpolation
 
 ### Namespaces & Static Methods
 
-All functions live inside classes. Static methods (no object needed) use `fnc`:
+All functions live inside classes. Static methods (no object needed) use `fnc`,
+and are always called with `::` — `Utils::add(3, 4)`. Writing `Utils.add(3, 4)`
+is a compile error naming the correct form; `.` stays reserved for calls through
+a value (`point.distanceTo(other)`). One spelling per kind of call, so a
+codebase can't drift between them:
 
 ```tinox
 namespace math {
@@ -186,8 +190,8 @@ class Main
 {
     fnc main() -> Int32
     {
-        println(Utils.add(3, 4));    // 7
-        println(Utils.square(5));    // 25
+        println(Utils::add(3, 4));    // 7
+        println(Utils::square(5));    // 25
         return 0;
     }
 }
@@ -241,7 +245,7 @@ class Point
     {
         let dx = this.x - other.x;
         let dy = this.y - other.y;
-        return Math.sqrt((dx * dx + dy * dy).toFloat64());
+        return Math::sqrt((dx * dx + dy * dy).toFloat64());
     }
 }
 

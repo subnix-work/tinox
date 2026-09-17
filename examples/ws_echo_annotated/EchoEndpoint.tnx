@@ -4,7 +4,7 @@
 //         s.onmessage = e => console.log(e.data); s.onopen = () => s.send("hello");
 //
 // @WebsocketEndpoint generates the complete accept/handshake/message loop,
-// spawned alongside Main.main() (see sibling Main.tnx) instead of providing
+// spawned alongside Main::main() (see sibling Main.tnx) instead of providing
 // its own implicit main -- no lambda handler needed, the @OnOpen/@OnMessage/
 // @OnClose methods are called by name directly. Only text frames (opcode 1)
 // reach @OnMessage; anything else (binary, close, EOF, protocol error) ends

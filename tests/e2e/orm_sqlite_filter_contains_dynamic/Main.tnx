@@ -20,13 +20,13 @@ class Main
     fnc main() -> Int32
     {
         let prefix: String = "C";
-        let cs: List<orm_sqlite_filter_contains_dynamic> = DB.of(orm_sqlite_filter_contains_dynamic)
+        let cs: List<orm_sqlite_filter_contains_dynamic> = DB::of(orm_sqlite_filter_contains_dynamic)
             .filter(u => u.name.startsWith(prefix))
             .list();
         println(cs.len());
 
         let needle: String = "rol";
-        let containing: List<orm_sqlite_filter_contains_dynamic> = DB.of(orm_sqlite_filter_contains_dynamic)
+        let containing: List<orm_sqlite_filter_contains_dynamic> = DB::of(orm_sqlite_filter_contains_dynamic)
             .filter(u => u.name.contains(needle))
             .list();
         println(containing.len());

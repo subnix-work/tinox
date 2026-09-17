@@ -11,12 +11,12 @@ class BankService
     @Transactional
     fn transfer(fromId: Int64, toId: Int64, amount: Int64) -> Nothing
     {
-        let from: Account = DB.of(Account).filter(a => a.id == fromId).first();
-        let to: Account = DB.of(Account).filter(a => a.id == toId).first();
+        let from: Account = DB::of(Account).filter(a => a.id == fromId).first();
+        let to: Account = DB::of(Account).filter(a => a.id == toId).first();
         from.balance = from.balance - amount;
         to.balance = to.balance + amount;
-        DB.of(Account).save(from);
-        DB.of(Account).save(to);
+        DB::of(Account).save(from);
+        DB::of(Account).save(to);
         if (from.balance < 0) {
             throw "insufficient funds";
         }
@@ -35,9 +35,9 @@ class BankService
     @Transactional
     fn getBalanceAndTouch(accountId: Int64) -> Int64
     {
-        let acct: Account = DB.of(Account).filter(a => a.id == accountId).first();
+        let acct: Account = DB::of(Account).filter(a => a.id == accountId).first();
         acct.balance = acct.balance + 1;
-        DB.of(Account).save(acct);
+        DB::of(Account).save(acct);
         return acct.balance;
     }
 }

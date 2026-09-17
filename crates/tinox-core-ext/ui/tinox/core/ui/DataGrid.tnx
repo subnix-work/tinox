@@ -5,7 +5,7 @@ namespace tinox.core.ui
     // A generic, DTO-driven data table: DataGrid::of(items, columns) turns
     // a List<T> straight into a rendered <table>, no manual row-building
     // required. `T` can be any class -- e.g. an @Entity loaded straight
-    // from DB.of(Person).all(), no separate "view model" needed.
+    // from DB::of(Person).all(), no separate "view model" needed.
     //
     // Row identity/diffing: rows carry NO stable per-item key in v1 (same
     // positional-only limitation Phase 3's tree diff already documents

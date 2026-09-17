@@ -244,7 +244,13 @@ type (driver/entry-point scripts) keep whatever name they had.
 ### Static Methods (`fnc`)
 
 Static methods belong to a class but do not require an object instance.
-They are declared with `fnc` and called via `ClassName.method(args)`.
+They are declared with `fnc` and called via `ClassName::method(args)`.
+
+`::` is mandatory here, not a stylistic choice: `ClassName.method(args)`
+is a compile error that names the correct form. `.` is reserved for calls
+through a value (an instance method, or a builtin on a String/List/Map).
+Both spellings used to compile identically and silently, which let the two
+drift apart inside a single file — `Json::serialize` next to `DB.of`.
 
 ```tinox
 class Utils
@@ -260,8 +266,8 @@ class Utils
     }
 }
 
-Utils.add(3, 4);     // 7
-Utils.square(5);     // 25
+Utils::add(3, 4);     // 7
+Utils::square(5);     // 25
 ```
 
 ### Instance Methods (`fn`)

@@ -2,7 +2,7 @@
 // @WebsocketEndpoint/@OnOpen/@OnMessage/@OnClose annotations
 // (examples/ws_echo_annotated/EchoEndpoint.tnx). The compiler generates a
 // complete connect/begin/attach/grantCredit/nextMessage/ack loop, spawned
-// alongside Main.main() (see sibling Main.tnx) instead of providing its own
+// alongside Main::main() (see sibling Main.tnx) instead of providing its own
 // implicit main -- exactly one @Amqp10Consumer class per program.
 //
 // The handler receives the whole Amqp10Message (body/contentType/
