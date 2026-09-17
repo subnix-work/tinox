@@ -10,16 +10,16 @@
 // this implies (a fresh page load always starts at the home view, since
 // the server doesn't currently learn the browser's real starting path).
 //
-// `initialized`/lazy-init in @View: @TinoxUIApp's generated worker
+// Field defaults instead of lazy init: @TinoxUIApp's generated worker
 // allocates a fresh, zeroed instance and calls @View directly -- there's
 // no @OnOpen-equivalent hook exposed to app code to run once before the
-// first render (unlike the hand-wired Phase 1-3 examples). A zeroed Bool
-// field defaults safely to `false`; a zeroed String field defaults to a
-// null pointer, which is safe to *compare* (tinox_string_equals is
-// null-safe) but not safe to *serialize* as a Map<String,String> value
-// without ever assigning it first -- so `color` is set explicitly on the
-// very first render, guarded by `initialized`, rather than ever being
-// sent to the client in its zeroed state.
+// first render (unlike the hand-wired Phase 1-3 examples). This app used
+// to work around that with an `initialized: Bool` field plus an
+// assign-everything-once block at the top of @View, because a zeroed Bool
+// is safely `false` but a zeroed String is a null pointer -- safe to
+// *compare* (tinox_string_equals is null-safe), not safe to *serialize*
+// as a Map<String,String> value. `var color: String = "red";` now says
+// the same thing in one line, applied by codegen at allocation time.
 import tinox.core.ui;
 import tinox.core.websocket;
 import tinox.core.http_server;
@@ -27,19 +27,17 @@ import tinox.core.http_server;
 @TinoxUIApp(8288, 8289)
 class RoutedDemoApp
 {
-    var initialized: Bool;
     var isAbout: Bool;
     var quantity: Float64;
-    var color: String;
+    // Field `= <literal>` default: applied by codegen when @TinoxUIApp
+    // allocates this app's fresh per-connection instance, which is what
+    // replaced the `initialized: Bool` + lazy-init-block this app used to
+    // need (see the file's own header comment for what that looked like).
+    var color: String = "red";
 
     @View
     fn render() -> Component
     {
-        if (!this.initialized)
-        {
-            this.color = "red";
-            this.initialized = true;
-        }
         if (this.isAbout)
         {
             return this.shell(this.aboutView());

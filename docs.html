@@ -1967,8 +1967,8 @@ epoll_fd = epoll_create1(0);
     <div class="mod-section" id="mod-ui">
 
   <h2>ui</h2>
-  <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/ui/1-0-11/docs.html" target="_blank" rel="noopener">docs/tinox-core/ui/1-0-11/docs.html</a></p>
-  <iframe class="mod-iframe" src="docs/tinox-core/ui/1-0-11/docs.html" loading="lazy" title="tinox.core:ui Dokumentation"></iframe>
+  <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/ui/1-0-12/docs.html" target="_blank" rel="noopener">docs/tinox-core/ui/1-0-12/docs.html</a></p>
+  <iframe class="mod-iframe" src="docs/tinox-core/ui/1-0-12/docs.html" loading="lazy" title="tinox.core:ui Dokumentation"></iframe>
   </div>
 
     <div class="mod-section" id="mod-jwt">
@@ -2422,19 +2422,19 @@ url    = "sqlite:///path/to/database.db"</code></pre></div>
 
   <h3>Lambda-Query-DSL</h3>
   <div class="card"><pre><code>// Alle Nutzer über 18, alphabetisch, max. 10 Ergebnisse
-let adults: List&lt;User&gt; = DB.of(User)
+let adults: List&lt;User&gt; = DB::of(User)
     .filter(u -&gt; u.age &gt; 18)
     .orderBy(u -&gt; u.name)
     .limit(10)
     .list();
 
 // Einzelnen Nutzer lesen
-let alice: User = DB.of(User)
+let alice: User = DB::of(User)
     .filter(u -&gt; u.name == "Alice")
     .first();
 
 // Anzahl aktiver Nutzer
-let n: Int64 = DB.of(User)
+let n: Int64 = DB::of(User)
     .filter(u -&gt; u.active == true)
     .count();</code></pre></div>
 
@@ -2459,16 +2459,16 @@ let n: Int64 = DB.of(User)
 let user: User = User {};
 user.name = "Alice";
 user.age  = 30;
-let saved: User = DB.of(User).save(user);
+let saved: User = DB::of(User).save(user);
 
 // DELETE
-DB.of(User).delete(saved);
+DB::of(User).delete(saved);
 
 // Mehrere auf einmal speichern
 let list: List&lt;User&gt; = List::new();
 list.add(user1);
 list.add(user2);
-DB.of(User).saveAll(list);</code></pre></div>
+DB::of(User).saveAll(list);</code></pre></div>
 
   <h3>Fehlerbehandlung</h3>
   <p>Datenbankfehler werden aktuell auf stderr protokolliert. Eine try/catch-Integration ist für eine spätere Version geplant. Verbindungsfehler beim Start beenden das Programm mit einer aussagekräftigen Fehlermeldung.</p>

@@ -1,7 +1,7 @@
 namespace tinox.core.process
 {
     /**
-     * Result of Process.run(): captured stdout/stderr, the exit code, and
+     * Result of Process::run(): captured stdout/stderr, the exit code, and
      * whether the process was killed for exceeding its timeout.
      *
      * exitCode is -1 when timedOut is true (no real exit status exists in

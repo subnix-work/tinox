@@ -12,7 +12,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let ranked: List<orm_sqlite_order_desc_offset> = DB.of(orm_sqlite_order_desc_offset)
+        let ranked: List<orm_sqlite_order_desc_offset> = DB::of(orm_sqlite_order_desc_offset)
             .orderByDesc(s => s.points)
             .offset(1)
             .limit(2)
