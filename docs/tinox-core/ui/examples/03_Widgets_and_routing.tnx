@@ -8,7 +8,7 @@ import tinox.core.http_server;
 // interactive widget uses -- an app switches views by keeping its own
 // current-view state (a plain instance field) and branching inside its
 // own @View method, no separate routing annotation needed.
-@TinoxUIApp(8080, 8081)
+@TinoxUIApp
 class ShowcaseApp
 {
     var isAbout: Bool;

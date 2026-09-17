@@ -15,7 +15,7 @@ import tinox.core.http_server;
 // never changes across renders, the element is never torn down by an
 // unrelated re-render, so its own internal state (an open WebSocket, a
 // terminal's scrollback, ...) survives just fine.
-@TinoxUIApp(8080, 8081)
+@TinoxUIApp
 class CounterDemoApp
 {
     var serverClicks: Int64;
