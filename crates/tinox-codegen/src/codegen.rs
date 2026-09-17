@@ -309,6 +309,10 @@ pub struct CodeGen {
     /// level (name/file/line), not per-argument/return type modeling.
     di_subroutine_type_id: Option<u32>,
     struct_layouts: HashMap<String, Vec<String>>,
+    /// Per class: the `var x: T = <literal>;` defaults declared on its
+    /// fields, in declaration order. Only populated for classes that
+    /// actually declare one.
+    field_defaults: HashMap<String, Vec<(String, tinox_parser::Expr)>>,
     #[allow(dead_code)]
     closure_envs: HashMap<String, String>,
     method_ret_types: HashMap<String, String>,
@@ -591,6 +595,7 @@ impl CodeGen {
             di_compile_unit_id: None,
             di_subroutine_type_id: None,
             struct_layouts: HashMap::new(),
+            field_defaults: HashMap::new(),
             closure_envs: HashMap::new(),
             method_ret_types: HashMap::new(),
             method_ret_class: HashMap::new(),
@@ -1886,6 +1891,17 @@ impl CodeGen {
                     return Err(bag);
                 }
                 self.struct_layouts.insert(c.name.clone(), fields);
+                // Field `= <literal>` defaults, kept alongside the layout so
+                // emit_field_defaults can reach them from the generated
+                // bootstrap code (which runs outside any class AST scope).
+                let defaults: Vec<(String, tinox_parser::Expr)> = c
+                    .fields
+                    .iter()
+                    .filter_map(|f| f.default.clone().map(|d| (f.name.clone(), d)))
+                    .collect();
+                if !defaults.is_empty() {
+                    self.field_defaults.insert(c.name.clone(), defaults);
+                }
                 let mut fct = Self::collect_field_class_types(&c.name, &class_ast_map);
                 if c.annotations.iter().any(|a| a.name == "Log") {
                     fct.insert("log".to_string(), "Logger".to_string());
@@ -3013,14 +3029,95 @@ impl CodeGen {
     /// instance goes through a `ClassName { field: value, ... }` struct
     /// literal, which the typechecker already requires to give every field
     /// an explicit value, so this gap can't occur there.
-    fn emit_string_field_defaults(&mut self, class_name: &str, inst_reg: &str) {
+    /// Also applies each field's own declared `= <literal>` default (kept in
+    /// `field_defaults`), which is what lets an app write
+    /// `var page: String = "home";` instead of the `initialized: Bool` +
+    /// lazy-init-block ritual every @TinoxUIApp app used to need. A declared
+    /// default WINS over the empty-string fallback below for String fields;
+    /// scalar fields are only touched when they declare one, since
+    /// `tinox_alloc`'s zeroing is already a correct 0/false for them.
+    /// Renders one field default into `(value, store_type)`, emitting any
+    /// setup it needs into `lambda_ir` (the buffer every caller of
+    /// `emit_field_defaults` is already writing into). `None` means "leave
+    /// the zeroed slot alone", which is always safe.
+    ///
+    /// Mirrors gen_expr's own literal rendering rather than calling into it:
+    /// gen_expr writes to `self.ir` and needs a GenCtx, and invoking it while
+    /// mid-way through writing `lambda_ir` is exactly the shape that
+    /// previously landed a generated function definition inside another
+    /// function's body (see `ensure_generic_method_specialization`'s note).
+    /// The set of accepted forms is small and fixed by the typechecker, so
+    /// there is nothing here that gen_expr would handle better.
+    fn emit_field_default_value(
+        &mut self,
+        default: &tinox_parser::Expr,
+        llvm_ty: &str,
+    ) -> Option<(String, String)> {
+        match &default.node {
+            ExprKind::Literal(Literal::String(s)) => {
+                let ptr = self.emit_lambda_string_literal(s);
+                Some((ptr, "i8*".to_string()))
+            }
+            ExprKind::Literal(Literal::Integer(n)) => Some((n.to_string(), llvm_ty.to_string())),
+            ExprKind::Literal(Literal::Bool(b)) => {
+                Some(((if *b { "true" } else { "false" }).to_string(), llvm_ty.to_string()))
+            }
+            ExprKind::Literal(Literal::Float(f)) => {
+                let s = format!("{}", f);
+                let val = if s.contains('.') || s.contains('e') || s.contains('E') {
+                    s
+                } else {
+                    format!("{}.0", s)
+                };
+                Some((val, llvm_ty.to_string()))
+            }
+            // `[]` -- note the runtime signature is
+            // `tinox_array_new(len, cap)`, LENGTH first (runtime.c:267),
+            // so both args are 0 here; it raises cap to its own minimum
+            // internally. Getting this backwards produced a default whose
+            // `.len()` was 1, caught by the field-defaults e2e case.
+            ExprKind::ArrayLiteral(items) if items.is_empty() => {
+                let reg = self.temp();
+                writeln!(&mut self.lambda_ir, "  {reg} = call i64* @tinox_array_new(i64 0, i64 0)").unwrap();
+                Some((reg, llvm_ty.to_string()))
+            }
+            // `@{}`
+            ExprKind::MapLiteral(entries) if entries.is_empty() => {
+                let reg = self.temp();
+                writeln!(&mut self.lambda_ir, "  {reg} = call i8* @tinox_map_create()").unwrap();
+                Some((reg, llvm_ty.to_string()))
+            }
+            _ => None,
+        }
+    }
+
+    fn emit_field_defaults(&mut self, class_name: &str, inst_reg: &str) {
         let fields = match self.struct_layouts.get(class_name) {
             Some(f) => f.clone(),
             None => return,
         };
         let field_types = self.struct_field_llvm_types.get(class_name).cloned().unwrap_or_default();
+        let declared = self.field_defaults.get(class_name).cloned().unwrap_or_default();
+
+        for (field_name, default) in &declared {
+            let Some(idx) = fields.iter().position(|f| f == field_name) else { continue };
+            let llvm_ty = field_types.get(field_name.as_str()).cloned().unwrap_or_else(|| "i64".to_string());
+            let Some((value, store_ty)) = self.emit_field_default_value(default, &llvm_ty) else {
+                continue;
+            };
+            let field_ptr = self.temp();
+            writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
+            writeln!(&mut self.lambda_ir, "  store {store_ty} {value}, {store_ty}* {field_ptr}").unwrap();
+        }
+
+        // Remaining String fields with no declared default still get a real
+        // empty string rather than a null pointer (the original purpose of
+        // this function -- see the doc comment above).
+        let declared_names: std::collections::HashSet<&str> =
+            declared.iter().map(|(n, _)| n.as_str()).collect();
         let string_fields: Vec<usize> = fields.iter().enumerate()
             .filter(|(_, name)| field_types.get(name.as_str()).map(|t| t == "i8*").unwrap_or(false))
+            .filter(|(_, name)| !declared_names.contains(name.as_str()))
             .map(|(i, _)| i)
             .collect();
         if string_fields.is_empty() {
@@ -3117,7 +3214,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-            self.emit_string_field_defaults(&ep.class_name, "%inst");
+            self.emit_field_defaults(&ep.class_name, "%inst");
             if let Some(ref on_open) = ep.on_open {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_open).unwrap();
             }
@@ -3436,7 +3533,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-            self.emit_string_field_defaults(&app.class_name, "%inst");
+            self.emit_field_defaults(&app.class_name, "%inst");
             // The client's very first WS frame is always its
             // `window.location.pathname` at connect time (Assets.tnx's
             // `connect()`: `ws.send(...)` on `ws.onopen`, before anything
@@ -3666,7 +3763,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-            self.emit_string_field_defaults(&c.class_name, "%inst");
+            self.emit_field_defaults(&c.class_name, "%inst");
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
@@ -3781,7 +3878,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-            self.emit_string_field_defaults(&c.class_name, "%inst");
+            self.emit_field_defaults(&c.class_name, "%inst");
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
@@ -4673,6 +4770,15 @@ impl CodeGen {
                     writeln!(&mut self.lambda_ir, "create:").unwrap();
                     writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {size})").unwrap();
                     writeln!(&mut self.lambda_ir, "  %new_inst = bitcast i8* %raw to i64*").unwrap();
+                    // Same fresh-zeroed-instance situation as the four
+                    // auto-run entry points: no struct literal ever names
+                    // these fields, so both declared defaults AND the
+                    // empty-string fallback have to be applied here too.
+                    // Before this, a DI singleton's `var s: String;` stayed
+                    // a null pointer (segfault on first read) and a declared
+                    // default was silently ignored -- @Inject fields were
+                    // the only ones ever initialised.
+                    self.emit_field_defaults(name, "%new_inst");
 
                     for (fi, field) in comp.inject_fields.iter().enumerate() {
                         let field_offset = self.struct_layouts.get(name.as_str())
@@ -4706,6 +4812,8 @@ impl CodeGen {
                     writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
                     writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {size})").unwrap();
                     writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+                    // See the Application/Startup arm above -- same reason.
+                    self.emit_field_defaults(name, "%inst");
 
                     for (fi, field) in comp.inject_fields.iter().enumerate() {
                         let field_offset = self.struct_layouts.get(name.as_str())
@@ -15196,6 +15304,10 @@ impl CodeGen {
                 span: f.span,
                 doc: f.doc.clone(),
                 annotations: vec![],
+                // Carried through generic monomorphization unchanged: a
+                // field default is a literal, so it can't mention the
+                // type parameter being substituted here.
+                default: f.default.clone(),
             }).collect(),
             methods: c.methods.iter().map(|m| tinox_parser::Method {
                 name: m.name.clone(),

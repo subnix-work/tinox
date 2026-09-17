@@ -3767,6 +3767,17 @@ fn check_explicit_imports(
                 // own typecheck pass (which runs right after this function
                 // returns Ok, on the fully merged whole-program AST) catch
                 // it properly, with its own accurate error instead.
+                // NOTE: field-default diagnostics deliberately do NOT get an
+                // exemption here, even though this function's trailer is just
+                // as irrelevant to them as it is to the case above. Tried it:
+                // skipping them loses this path's accurate per-file
+                // attribution (it reports the file the error is actually in),
+                // and the later whole-program pass names the ENTRY file
+                // instead -- sending the reader to the wrong file is worse
+                // than an extra unrelated hint. The trailer is misleading for
+                // every non-import error found here, not just these; that's a
+                // pre-existing wart worth fixing at the rendering level, not
+                // by growing this carve-out one message at a time.
                 if err.message == "missing return statement" {
                     continue;
                 }

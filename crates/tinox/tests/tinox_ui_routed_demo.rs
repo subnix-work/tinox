@@ -201,6 +201,12 @@ fn tinox_ui_routed_demo_widgets_and_routing_end_to_end() {
     assert!(init.contains("\"type\":\"Select\""), "expected a Select (dropdown) widget, got: {init}");
     assert!(init.contains("\"type\":\"ProgressBar\""), "expected a ProgressBar widget, got: {init}");
     assert!(init.contains("\"options\":\"red|green|blue\""), "expected dropdown options, got: {init}");
+    // The dropdown's SELECTED value comes from `var color: String = "red";`
+    // -- a field default applied by codegen when @TinoxUIApp allocated this
+    // connection's instance. It appearing already in the FIRST render is the
+    // whole point: this app previously needed an `initialized: Bool` guard
+    // plus an assign-once block in @View to get it there.
+    assert!(init.contains("\"selected\":\"red\""), "expected the color field default in the first render, got: {init}");
 
     // issue #225: @TinoxUIApp now renders via TinoxUIRuntime::diff/
     // sendPatch (stable ids across renders) instead of Phase 1's
