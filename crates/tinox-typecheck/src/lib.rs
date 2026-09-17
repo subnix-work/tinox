@@ -1997,9 +1997,62 @@ impl TypeChecker {
         self.symbols.exit_scope(saved_vars);
     }
 
+    /// Validates `var x: T = <default>;` field initialisers: the default
+    /// must be a literal (or an empty array/map literal), and its type must
+    /// match the declared field type.
+    ///
+    /// The literal restriction is deliberate, not a parser limitation.
+    /// Defaults are emitted into COMPILER-GENERATED bootstrap code (the
+    /// fresh per-connection instance @TinoxUIApp/@WebsocketEndpoint/the two
+    /// AMQP consumers allocate), where an arbitrary expression would raise
+    /// evaluation-order and side-effect questions nothing in the source
+    /// makes visible -- and where emitting user expressions into the wrong
+    /// IR buffer has produced real miscompiles before (see codegen's note
+    /// on `ensure_generic_method_specialization`). Rejecting it here, by
+    /// name, beats discovering it as broken IR later.
+    fn check_field_defaults(&mut self, c: &Class) {
+        for f in &c.fields {
+            let Some(default) = &f.default else { continue };
+            let literal_kind = match &default.node {
+                ExprKind::Literal(lit) => Some(self.literal_type(lit)),
+                // `[]` / `@{}` -- an empty container is a genuinely useful
+                // default (a list-typed field otherwise still needs a
+                // hand-written init assignment, which is exactly the
+                // boilerplate this feature exists to remove) and carries no
+                // sub-expressions that could have side effects.
+                ExprKind::ArrayLiteral(items) if items.is_empty() => {
+                    Some(Self::type_to_value(&f.field_type))
+                }
+                ExprKind::MapLiteral(entries) if entries.is_empty() => {
+                    Some(Self::type_to_value(&f.field_type))
+                }
+                _ => None,
+            };
+            let Some(actual) = literal_kind else {
+                self.errors.push(Error::new(
+                    default.span,
+                    "a field default must be a literal (or an empty `[]`/`@{}`) -- \
+                     assign anything computed inside a method instead",
+                ));
+                continue;
+            };
+            let expected = Self::type_to_value(&f.field_type);
+            if !self.types_compatible(&expected, &actual) {
+                self.errors.push(Error::new(
+                    default.span,
+                    format!(
+                        "field `{}` is declared {:?} but its default is {:?}",
+                        f.name, expected, actual
+                    ),
+                ));
+            }
+        }
+    }
+
     fn check_class(&mut self, c: &Class) {
         let saved_class = self.current_class.clone();
         self.current_class = Some(c.name.clone());
+        self.check_field_defaults(c);
         for method in &c.methods {
             let saved_vars = self.symbols.enter_scope();
             let saved_type_params = std::mem::take(&mut self.type_param_scope);

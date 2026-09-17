@@ -414,6 +414,15 @@ impl Parser {
         let name = self.parse_ident()?;
         self.expect(TokenKind::Colon)?;
         let field_type = self.parse_type()?;
+        // Optional `= <literal>` default. Parsed as a full expression so the
+        // typechecker can produce a precise "only literals are allowed here"
+        // message pointing at what was actually written, rather than the
+        // parser bailing with a generic syntax error.
+        let default = if self.consume(TokenKind::Equals) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
         self.expect(TokenKind::Semicolon)?;
 
         Ok(FieldDef {
@@ -424,6 +433,7 @@ impl Parser {
             span,
             doc: None,
             annotations: vec![],
+            default,
         })
     }
 
