@@ -12,7 +12,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let top2: List<orm_sqlite_order_limit> = DB.of(orm_sqlite_order_limit)
+        let top2: List<orm_sqlite_order_limit> = DB::of(orm_sqlite_order_limit)
             .orderBy(u => u.name)
             .limit(2)
             .list();

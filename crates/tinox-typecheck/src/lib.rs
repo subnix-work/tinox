@@ -2500,6 +2500,27 @@ impl TypeChecker {
                     let method_key = format!("{}_{}", class_name, method);
                     // Check if it's a known function (static or instance) AND obj is not a variable
                     let obj_is_variable = self.symbols.variables.contains_key(class_name.as_str());
+                    // One spelling for a static call, and it's `::`.
+                    //
+                    // Both forms used to compile, identically and silently
+                    // (verified: `Util.twice(3)` and `Util::twice(4)` both
+                    // ran), which left the choice to whoever wrote the line
+                    // and made a codebase drift apart for no benefit --
+                    // `Json::serialize`/`Component::label`/`WsServer::listen`
+                    // already used `::` while `DB.of` used `.`, in the same
+                    // file. Receiver-is-a-class is statically decidable
+                    // (that is exactly what `obj_is_variable` settles here),
+                    // so this is reported precisely, never guessed: an
+                    // instance call through a variable is untouched.
+                    if !obj_is_variable && self.symbols.functions.contains_key(&method_key) {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!(
+                                "static calls use `::`, not `.` -- write `{}::{}(...)`",
+                                class_name, method
+                            ),
+                        ));
+                    }
                     if !obj_is_variable && self.symbols.functions.contains_key(&method_key) {
                         let sig = self.symbols.functions.get(&method_key).cloned().unwrap();
                         // Skip 'self' param — ClassName.method(...) never passes self explicitly

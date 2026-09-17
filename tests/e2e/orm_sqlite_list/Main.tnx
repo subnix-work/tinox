@@ -11,7 +11,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let users: List<orm_sqlite_list> = DB.of(orm_sqlite_list).list();
+        let users: List<orm_sqlite_list> = DB::of(orm_sqlite_list).list();
         println(users.len());
         println(users[0].name);
         return 0;

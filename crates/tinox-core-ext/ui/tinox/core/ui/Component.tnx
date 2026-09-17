@@ -613,7 +613,7 @@ namespace tinox.core.ui
             {
                 return Component::image(imageUrl, name).withStyle(style + "object-fit:cover;");
             }
-            let initials: String = Component.initialsOf(name);
+            let initials: String = Component::initialsOf(name);
             return Component::label(initials).withStyle(style);
         }
 

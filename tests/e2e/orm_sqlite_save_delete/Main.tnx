@@ -18,24 +18,24 @@ class Main
         let bob = new orm_sqlite_save_delete();
         bob.name = "Bob";
         bob.age = 21;
-        DB.of(orm_sqlite_save_delete).save(bob);
+        DB::of(orm_sqlite_save_delete).save(bob);
 
-        let all: List<orm_sqlite_save_delete> = DB.of(orm_sqlite_save_delete).orderBy(u => u.id).list();
+        let all: List<orm_sqlite_save_delete> = DB::of(orm_sqlite_save_delete).orderBy(u => u.id).list();
         println(all.len());
         println(all[1].name);
         println(all[1].age);
 
-        let toUpdate: orm_sqlite_save_delete = DB.of(orm_sqlite_save_delete).filter(u => u.name == "Bob").first();
+        let toUpdate: orm_sqlite_save_delete = DB::of(orm_sqlite_save_delete).filter(u => u.name == "Bob").first();
         toUpdate.name = "Bobby";
         toUpdate.age = 22;
-        DB.of(orm_sqlite_save_delete).save(toUpdate);
+        DB::of(orm_sqlite_save_delete).save(toUpdate);
 
-        let updated: orm_sqlite_save_delete = DB.of(orm_sqlite_save_delete).filter(u => u.id == toUpdate.id).first();
+        let updated: orm_sqlite_save_delete = DB::of(orm_sqlite_save_delete).filter(u => u.id == toUpdate.id).first();
         println(updated.name);
         println(updated.age);
 
-        DB.of(orm_sqlite_save_delete).delete(updated);
-        let remaining: List<orm_sqlite_save_delete> = DB.of(orm_sqlite_save_delete).list();
+        DB::of(orm_sqlite_save_delete).delete(updated);
+        let remaining: List<orm_sqlite_save_delete> = DB::of(orm_sqlite_save_delete).list();
         println(remaining.len());
 
         return 0;

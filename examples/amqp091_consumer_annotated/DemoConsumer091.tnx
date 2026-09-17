@@ -1,7 +1,7 @@
 // Annotation-driven AMQP-0-9-1 consumer, analogous to the AMQP-1.0
 // @Amqp10Consumer annotation (examples/amqp10_consumer_annotated/
 // DemoConsumer.tnx). The compiler generates a complete connect/open/qos/
-// consume/nextMessage/ack loop, spawned alongside Main.main() (see sibling
+// consume/nextMessage/ack loop, spawned alongside Main::main() (see sibling
 // Main.tnx) instead of providing its own implicit main -- exactly one
 // @Amqp091Consumer class per program.
 //

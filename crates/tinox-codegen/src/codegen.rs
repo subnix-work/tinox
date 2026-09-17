@@ -9508,21 +9508,37 @@ impl CodeGen {
                     }
                 }
 
-                // ORM save/delete: DB.of(T).save(entity) / DB.of(T).delete(entity)
+                // ORM save/delete: DB::of(T).save(entity) / DB::of(T).delete(entity).
+                // The receiver is matched in both spellings for the same
+                // reason unwind_orm_chain's EnumValue arm exists -- `::`
+                // parses to a different node kind, and missing it here sent
+                // every save/delete down the generic static-call path.
                 if matches!(method.as_str(), "save" | "delete") && args.len() == 1 {
-                    if let ExprKind::MethodCall { obj: of_obj, method: of_method, args: of_args } = &obj.node {
-                        if of_method == "of" {
-                            if let ExprKind::Ident(db_name) = &of_obj.node {
-                                if db_name == "DB" {
-                                    if let Some(ExprKind::Ident(class_name)) = of_args.first().map(|a| &a.node) {
-                                        if self.entity_entries.iter().any(|e| &e.class_name == class_name) {
-                                            let entity_class = class_name.clone();
-                                            let entity_arg = args[0].clone();
-                                            return self.gen_orm_save_delete(&entity_class, method.as_str(), &entity_arg, ctx);
-                                        }
-                                    }
-                                }
+                    let of_entity: Option<&String> = match &obj.node {
+                        ExprKind::MethodCall { obj: of_obj, method: of_method, args: of_args }
+                            if of_method == "of"
+                                && matches!(&of_obj.node, ExprKind::Ident(n) if n == "DB") =>
+                        {
+                            match of_args.first().map(|a| &a.node) {
+                                Some(ExprKind::Ident(class_name)) => Some(class_name),
+                                _ => None,
                             }
+                        }
+                        ExprKind::EnumValue { enum_name, variant, args: of_args, .. }
+                            if enum_name == "DB" && variant == "of" =>
+                        {
+                            match of_args.first().map(|a| &a.node) {
+                                Some(ExprKind::Ident(class_name)) => Some(class_name),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(class_name) = of_entity {
+                        if self.entity_entries.iter().any(|e| &e.class_name == class_name) {
+                            let entity_class = class_name.clone();
+                            let entity_arg = args[0].clone();
+                            return self.gen_orm_save_delete(&entity_class, method.as_str(), &entity_arg, ctx);
                         }
                     }
                 }
@@ -15941,7 +15957,10 @@ fn unwind_orm_chain(expr: &Expr, chain: &mut OrmChain) -> Option<()> {
                     unwind_orm_chain(obj, chain)
                 }
                 "of" => {
-                    // DB.of(ClassName) — bottom of the chain
+                    // `DB.of(ClassName)` — the dot spelling. Kept only so
+                    // this function still understands an AST built before
+                    // the `::`-only rule; new code lands in the EnumValue
+                    // arm below.
                     if let ExprKind::Ident(db_name) = &obj.node {
                         if db_name == "DB" {
                             if let Some(ExprKind::Ident(class_name)) = args.first().map(|a| &a.node) {
@@ -15954,6 +15973,26 @@ fn unwind_orm_chain(expr: &Expr, chain: &mut OrmChain) -> Option<()> {
                 }
                 _ => None,
             }
+        }
+        // `DB::of(ClassName)` — the same chain root written with `::`, which
+        // the parser produces as an EnumValue node, not a MethodCall.
+        //
+        // This arm is why enforcing `::` for static calls was not a pure
+        // rename: `DB.of` was the ONLY spelling the ORM interception ever
+        // recognised, so rewriting call sites to `DB::of` made every query
+        // fall through to the generic static-call path, which emitted
+        // `call @DB_of(i64 %<EntityClass>)` against an entity class name
+        // used as if it were a value -- undefined-SSA, caught by the IR
+        // verifier rather than miscompiled, but broken all the same (all
+        // nine orm_sqlite_* e2e cases at once).
+        ExprKind::EnumValue { enum_name, variant, args, .. }
+            if enum_name == "DB" && variant == "of" =>
+        {
+            if let Some(ExprKind::Ident(class_name)) = args.first().map(|a| &a.node) {
+                chain.entity_class = class_name.clone();
+                return Some(());
+            }
+            None
         }
         _ => None,
     }

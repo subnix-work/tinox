@@ -11,7 +11,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let cs: List<orm_sqlite_filter_startswith> = DB.of(orm_sqlite_filter_startswith)
+        let cs: List<orm_sqlite_filter_startswith> = DB::of(orm_sqlite_filter_startswith)
             .filter(u => u.name.startsWith("C"))
             .list();
         println(cs.len());

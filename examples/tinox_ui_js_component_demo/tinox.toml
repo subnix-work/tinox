@@ -6,12 +6,12 @@ description = "Tinox-UI JsComponent demo: wraps a real browser custom element (a
 [[dependencies]]
 group = "tinox.core"
 artifactId = "ui"
-version = "1.0.7"
+version = "1.0.12"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.0.3"
+version = "1.0.4"
 
 [[dependencies]]
 group = "tinox.core"

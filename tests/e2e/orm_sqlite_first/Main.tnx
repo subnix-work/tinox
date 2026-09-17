@@ -11,7 +11,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let u: orm_sqlite_first = DB.of(orm_sqlite_first)
+        let u: orm_sqlite_first = DB::of(orm_sqlite_first)
             .filter(u => u.name == "Carol")
             .first();
         println(u.name);

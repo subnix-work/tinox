@@ -11,9 +11,9 @@ class Main
 {
     fnc main() -> Int32
     {
-        let total: Int64 = DB.of(orm_sqlite_count).count();
+        let total: Int64 = DB::of(orm_sqlite_count).count();
         println(total);
-        let cheap: Int64 = DB.of(orm_sqlite_count)
+        let cheap: Int64 = DB::of(orm_sqlite_count)
             .filter(p => p.price < 100)
             .count();
         println(cheap);

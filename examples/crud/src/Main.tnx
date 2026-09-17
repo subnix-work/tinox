@@ -16,19 +16,19 @@ class Main
     fnc registerCustomerRoutes(server: HttpServer) -> Nothing
     {
         server.get("/customers", ctx => {
-            let customers: List<Customer> = DB.of(Customer).list();
+            let customers: List<Customer> = DB::of(Customer).list();
             ctx.response.json(Json::serialize(customers));
         });
 
         server.get("/customers/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
-            let customer: Customer = DB.of(Customer).filter(c => c.id == id).first();
+            let customer: Customer = DB::of(Customer).filter(c => c.id == id).first();
             ctx.response.json(Json::serialize(customer));
         });
 
         server.post("/customers", ctx => {
             let customer: Customer = Json::deserialize<Customer>(ctx.request.body);
-            DB.of(Customer).save(customer);
+            DB::of(Customer).save(customer);
             ctx.response.status(201).json(Json::serialize(customer));
         });
 
@@ -36,14 +36,14 @@ class Main
             let id: Int64 = ctx.request.getParam("id").toInt();
             let customer: Customer = Json::deserialize<Customer>(ctx.request.body);
             customer.id = id;
-            DB.of(Customer).save(customer);
+            DB::of(Customer).save(customer);
             ctx.response.json(Json::serialize(customer));
         });
 
         server.delete("/customers/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
-            let customer: Customer = DB.of(Customer).filter(c => c.id == id).first();
-            DB.of(Customer).delete(customer);
+            let customer: Customer = DB::of(Customer).filter(c => c.id == id).first();
+            DB::of(Customer).delete(customer);
             ctx.response.status(204).text("");
         });
     }
@@ -55,19 +55,19 @@ class Main
     fnc registerProductRoutes(server: HttpServer) -> Nothing
     {
         server.get("/products", ctx => {
-            let products: List<Product> = DB.of(Product).orderBy(p => p.name).list();
+            let products: List<Product> = DB::of(Product).orderBy(p => p.name).list();
             ctx.response.json(Json::serialize(products));
         });
 
         server.get("/products/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
-            let product: Product = DB.of(Product).filter(p => p.id == id).first();
+            let product: Product = DB::of(Product).filter(p => p.id == id).first();
             ctx.response.json(Json::serialize(product));
         });
 
         server.post("/products", ctx => {
             let product: Product = Json::deserialize<Product>(ctx.request.body);
-            DB.of(Product).save(product);
+            DB::of(Product).save(product);
             ctx.response.status(201).json(Json::serialize(product));
         });
 
@@ -75,14 +75,14 @@ class Main
             let id: Int64 = ctx.request.getParam("id").toInt();
             let product: Product = Json::deserialize<Product>(ctx.request.body);
             product.id = id;
-            DB.of(Product).save(product);
+            DB::of(Product).save(product);
             ctx.response.json(Json::serialize(product));
         });
 
         server.delete("/products/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
-            let product: Product = DB.of(Product).filter(p => p.id == id).first();
-            DB.of(Product).delete(product);
+            let product: Product = DB::of(Product).filter(p => p.id == id).first();
+            DB::of(Product).delete(product);
             ctx.response.status(204).text("");
         });
     }
@@ -94,26 +94,26 @@ class Main
     fnc registerOrderRoutes(server: HttpServer) -> Nothing
     {
         server.get("/orders", ctx => {
-            let orders: List<Order> = DB.of(Order).orderByDesc(o => o.id).list();
+            let orders: List<Order> = DB::of(Order).orderByDesc(o => o.id).list();
             ctx.response.json(Json::serialize(orders));
         });
 
         server.get("/orders/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
-            let order: Order = DB.of(Order).filter(o => o.id == id).first();
+            let order: Order = DB::of(Order).filter(o => o.id == id).first();
             ctx.response.json(Json::serialize(order));
         });
 
         server.get("/customers/:id/orders", ctx => {
             let customerId: Int64 = ctx.request.getParam("id").toInt();
-            let orders: List<Order> = DB.of(Order).filter(o => o.customerId == customerId).list();
+            let orders: List<Order> = DB::of(Order).filter(o => o.customerId == customerId).list();
             ctx.response.json(Json::serialize(orders));
         });
 
         server.post("/orders", ctx => {
             let order: Order = Json::deserialize<Order>(ctx.request.body);
             order.status = "pending";
-            DB.of(Order).save(order);
+            DB::of(Order).save(order);
             ctx.response.status(201).json(Json::serialize(order));
         });
 
@@ -121,14 +121,14 @@ class Main
             let id: Int64 = ctx.request.getParam("id").toInt();
             let order: Order = Json::deserialize<Order>(ctx.request.body);
             order.id = id;
-            DB.of(Order).save(order);
+            DB::of(Order).save(order);
             ctx.response.json(Json::serialize(order));
         });
 
         server.delete("/orders/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
-            let order: Order = DB.of(Order).filter(o => o.id == id).first();
-            DB.of(Order).delete(order);
+            let order: Order = DB::of(Order).filter(o => o.id == id).first();
+            DB::of(Order).delete(order);
             ctx.response.status(204).text("");
         });
     }
@@ -141,7 +141,7 @@ class Main
     {
         server.get("/orders/:id/items", ctx => {
             let orderId: Int64 = ctx.request.getParam("id").toInt();
-            let items: List<OrderItem> = DB.of(OrderItem).filter(i => i.orderId == orderId).list();
+            let items: List<OrderItem> = DB::of(OrderItem).filter(i => i.orderId == orderId).list();
             ctx.response.json(Json::serialize(items));
         });
 
@@ -149,7 +149,7 @@ class Main
             let orderId: Int64 = ctx.request.getParam("id").toInt();
             let item: OrderItem = Json::deserialize<OrderItem>(ctx.request.body);
             item.orderId = orderId;
-            DB.of(OrderItem).save(item);
+            DB::of(OrderItem).save(item);
             ctx.response.status(201).json(Json::serialize(item));
         });
 
@@ -157,14 +157,14 @@ class Main
             let itemId: Int64 = ctx.request.getParam("itemId").toInt();
             let item: OrderItem = Json::deserialize<OrderItem>(ctx.request.body);
             item.id = itemId;
-            DB.of(OrderItem).save(item);
+            DB::of(OrderItem).save(item);
             ctx.response.json(Json::serialize(item));
         });
 
         server.delete("/orders/:orderId/items/:itemId", ctx => {
             let itemId: Int64 = ctx.request.getParam("itemId").toInt();
-            let item: OrderItem = DB.of(OrderItem).filter(i => i.id == itemId).first();
-            DB.of(OrderItem).delete(item);
+            let item: OrderItem = DB::of(OrderItem).filter(i => i.id == itemId).first();
+            DB::of(OrderItem).delete(item);
             ctx.response.status(204).text("");
         });
     }
@@ -177,7 +177,7 @@ class Main
     {
         server.get("/products/:id/reviews", ctx => {
             let productId: Int64 = ctx.request.getParam("id").toInt();
-            let reviews: List<Review> = DB.of(Review)
+            let reviews: List<Review> = DB::of(Review)
                 .filter(r => r.productId == productId)
                 .orderByDesc(r => r.id)
                 .list();
@@ -188,7 +188,7 @@ class Main
             let productId: Int64 = ctx.request.getParam("id").toInt();
             let review: Review = Json::deserialize<Review>(ctx.request.body);
             review.productId = productId;
-            DB.of(Review).save(review);
+            DB::of(Review).save(review);
             ctx.response.status(201).json(Json::serialize(review));
         });
 
@@ -196,14 +196,14 @@ class Main
             let id: Int64 = ctx.request.getParam("id").toInt();
             let review: Review = Json::deserialize<Review>(ctx.request.body);
             review.id = id;
-            DB.of(Review).save(review);
+            DB::of(Review).save(review);
             ctx.response.json(Json::serialize(review));
         });
 
         server.delete("/reviews/:id", ctx => {
             let id: Int64 = ctx.request.getParam("id").toInt();
-            let review: Review = DB.of(Review).filter(r => r.id == id).first();
-            DB.of(Review).delete(review);
+            let review: Review = DB::of(Review).filter(r => r.id == id).first();
+            DB::of(Review).delete(review);
             ctx.response.status(204).text("");
         });
     }

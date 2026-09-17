@@ -11,7 +11,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let adults: List<orm_sqlite_filter_gt> = DB.of(orm_sqlite_filter_gt)
+        let adults: List<orm_sqlite_filter_gt> = DB::of(orm_sqlite_filter_gt)
             .filter(u => u.age > 25)
             .list();
         println(adults.len());

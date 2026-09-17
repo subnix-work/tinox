@@ -210,7 +210,7 @@ namespace math {
     }
 }
 fn main() -> Int64 {
-    println(Ops.add(3, 4));
+    println(Ops::add(3, 4));
     return 0;
 }
 "#), "7");
@@ -225,12 +225,12 @@ namespace math {
             if (n <= 1) {
                 return n;
             }
-            return Seq.fib(n - 1) + Seq.fib(n - 2);
+            return Seq::fib(n - 1) + Seq::fib(n - 2);
         }
     }
 }
 fn main() -> Int64 {
-    println(Seq.fib(10));
+    println(Seq::fib(10));
     return 0;
 }
 "#), "55");
@@ -485,7 +485,7 @@ namespace shapes {
 }
 fn main() -> Int64 {
     let sq = new Square(5);
-    ShapeUtils.print_area(sq);
+    ShapeUtils::print_area(sq);
     return 0;
 }
 "#), "25");
@@ -510,8 +510,8 @@ namespace dir {
     }
 }
 fn main() -> Int64 {
-    println(DirUtils.label(Dir::North));
-    println(DirUtils.label(Dir::West));
+    println(DirUtils::label(Dir::North));
+    println(DirUtils::label(Dir::West));
     return 0;
 }
 "#), "N\nW");
@@ -619,8 +619,8 @@ namespace math {
     }
 }
 fn main() -> Int64 {
-    println(MathUtils.square(4));
-    println(MathUtils.cube(3));
+    println(MathUtils::square(4));
+    println(MathUtils::cube(3));
     return 0;
 }
 "#), "16\n27");
