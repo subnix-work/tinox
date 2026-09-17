@@ -3723,7 +3723,11 @@ fn check_explicit_imports(
         .map_err(|e| format!("Cannot read '{}': {}", entry_path.display(), e))?;
     let mut queue: Vec<PathBuf> = vec![entry_canon];
     let mut seen: HashSet<PathBuf> = HashSet::new();
+    // Unresolved-name errors (what this check is actually for) and
+    // everything else this pass surfaces, kept apart so only the former
+    // gets the "add the missing `import`" trailer.
     let mut violations: Vec<String> = Vec::new();
+    let mut other_violations: Vec<String> = Vec::new();
 
     while let Some(path) = queue.pop() {
         if !seen.insert(path.clone()) {
@@ -3756,50 +3760,85 @@ fn check_explicit_imports(
 
         if let Err(bag) = tinox_typecheck::typecheck_with_prelude(&cache[&path], &preludes) {
             for err in bag.errors {
-                // "missing return statement" is a real, independent
-                // typechecker gap (return-completeness analysis doesn't
-                // look inside try/catch bodies, confirmed unrelated to
-                // imports/namespaces — found live via the external `demo`
-                // project) with nothing to do with import visibility.
-                // Reporting it here, wrapped in this function's own
-                // "add the missing `import`" trailer, would be actively
-                // misleading — skip it and let the REAL compile pipeline's
-                // own typecheck pass (which runs right after this function
-                // returns Ok, on the fully merged whole-program AST) catch
-                // it properly, with its own accurate error instead.
-                // NOTE: field-default diagnostics deliberately do NOT get an
-                // exemption here, even though this function's trailer is just
-                // as irrelevant to them as it is to the case above. Tried it:
-                // skipping them loses this path's accurate per-file
-                // attribution (it reports the file the error is actually in),
-                // and the later whole-program pass names the ENTRY file
-                // instead -- sending the reader to the wrong file is worse
-                // than an extra unrelated hint. The trailer is misleading for
-                // every non-import error found here, not just these; that's a
-                // pre-existing wart worth fixing at the rendering level, not
-                // by growing this carve-out one message at a time.
-                if err.message == "missing return statement" {
-                    continue;
-                }
-                violations.push(format!(
+                // Everything this pass finds is reported, including errors
+                // that have nothing to do with imports ("missing return
+                // statement", a bad field default, a bad annotation
+                // argument). They are worth reporting from HERE rather than
+                // leaving to the whole-program pass that runs right after:
+                // this loop knows which file each error is actually in,
+                // while the later pass names the ENTRY file instead.
+                //
+                // "missing return statement" used to be skipped by name,
+                // purely so it wouldn't be printed under the import
+                // trailer. That trade (a wrong file, to avoid an irrelevant
+                // hint) is no longer necessary: the trailer now only
+                // follows the errors it applies to, so non-import errors
+                // keep their accurate attribution AND lose the bad advice.
+                let rendered = format!(
                     "{}:{}: {}",
                     path.display(),
                     err.span.start.line,
                     err.message
-                ));
+                );
+                if is_unresolved_name_error(&err.message) {
+                    violations.push(rendered);
+                } else {
+                    other_violations.push(rendered);
+                }
             }
         }
     }
 
-    if violations.is_empty() {
+    if violations.is_empty() && other_violations.is_empty() {
         return Ok(());
     }
-    Err(format!(
-        "{}\n\nEvery cross-namespace name must be explicitly imported in the file that uses it — \
-         being imported transitively by some other file in the program is no longer sufficient \
-         (see issue #194). Add the missing `import` statement(s) above.",
-        violations.join("\n")
-    ))
+    // Only the unresolved-name errors are actually about imports, and the
+    // trailer below only makes sense for those. Everything else this pass
+    // happens to surface -- an annotation argument that isn't a valid
+    // literal, a field default that isn't one, a missing return -- used to
+    // be printed under the same "Import error:" heading with a paragraph
+    // telling the reader to add an `import` statement, which is advice that
+    // cannot possibly fix it. The carve-out that used to live here skipped
+    // ONE such message by exact text; this replaces it, because the wart
+    // was never specific to that message (its own NOTE said as much) and
+    // grew a third case the moment @TinoxUIApp gained an argument check.
+    //
+    let mut parts: Vec<String> = Vec::new();
+    if !violations.is_empty() {
+        parts.push(format!(
+            "Import error:\n{}\n\nEvery cross-namespace name must be explicitly imported in the file that uses it — \
+             being imported transitively by some other file in the program is no longer sufficient \
+             (see issue #194). Add the missing `import` statement(s) above.",
+            violations.join("\n")
+        ));
+    }
+    if !other_violations.is_empty() {
+        parts.push(other_violations.join("\n"));
+    }
+    Err(parts.join("\n\n"))
+}
+
+/// Does this typechecker message describe a name that couldn't be resolved?
+///
+/// Classification leans on `check_explicit_imports`'s own central claim:
+/// every prelude declaration is registered before checking, so a name the
+/// typechecker still can't resolve is, by construction, a name that needed
+/// an explicit import — and only those errors should get that function's
+/// "add the missing `import`" trailer.
+///
+/// Matched against `Error::message` directly rather than against the
+/// rendered `path:line: message` line: a message can contain `": "` itself
+/// (`undefined function: foo`), so splitting the rendered form back apart
+/// silently misclassifies nearly everything. The first version of this did
+/// exactly that, and was caught by checking both error paths by hand
+/// rather than by the code looking wrong.
+///
+/// Deliberately NOT included: `unknown annotation: @X`. Custom annotations
+/// declared in a prelude are registered before this check runs (that is
+/// what `extra_decls` is for), so reaching that message means a typo, not
+/// a missing import.
+fn is_unresolved_name_error(message: &str) -> bool {
+    message.starts_with("undefined ") || message.starts_with("unresolved ")
 }
 
 fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<(), String> {
@@ -3841,8 +3880,9 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
     }
     resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("Import error: {}", e))?;
-    check_explicit_imports(Path::new(input_path), &dep_dirs, &missing_deps)
-        .map_err(|e| format!("Import error: {}", e))?;
+    // No "Import error:" prefix here: this pass reports more than import
+    // problems, and labels the import ones itself (see its own tail).
+    check_explicit_imports(Path::new(input_path), &dep_dirs, &missing_deps)?;
     synthesize_accessors(&mut ast, input_path)?;
     // NodeIds for the type table (typecheck → codegen)
     tinox_parser::assign_node_ids(&mut ast);
@@ -3916,31 +3956,70 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         })
         .collect();
 
-    // Multiple @WebsocketEndpoint classes are fine now (Phase 4: each is
-    // spawned on its own thread by emit_tinox_main_bootstrap, no longer
-    // competing for a single auto-run `main`) -- but unlike AMQP consumers
-    // (where several consumers sharing one broker/port on different queues
-    // is normal), two endpoints binding the *same* port is a real, easily
-    // checkable mistake: the second one's WsServer_listen would silently
-    // fail to bind at runtime with no compile-time signal otherwise. Port
-    // resolution mirrors emit_ws_code's exactly (explicit port, else
-    // TINOX_PORT, else 8080) so this can't disagree with what actually gets
-    // bound.
+    // Every port this program will bind, checked against every other one.
+    //
+    // This used to be a @WebsocketEndpoint-only check. It covers every kind
+    // now because @TinoxUIApp's ports became optional: an annotation that
+    // binds two ports by default is only safe if picking those defaults
+    // twice, or picking one that another component already took, is a
+    // compile error rather than something you find out about at runtime.
+    // And "at runtime" here does not mean a clean "address already in use"
+    // -- httpServerCreateOn sets SO_REUSEPORT unconditionally, so a second
+    // binder joins the first one's load-balancing group and roughly half
+    // the requests silently land on the wrong component. That exact failure
+    // has cost this project real debugging time more than once (see
+    // CLAUDE.md's dynamic-ports section), which is why this is worth a
+    // check rather than a documented caveat.
+    //
+    // Ports that are NOT bound are deliberately absent: the two AMQP
+    // consumer kinds connect *out* to a broker, so several of them sharing
+    // a host/port is the normal shape, not a mistake.
     {
-        let mut by_port: std::collections::HashMap<i64, Vec<&str>> = std::collections::HashMap::new();
+        let env_port = || {
+            std::env::var("TINOX_PORT")
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+        };
+        // (port, what owns it) -- the owner string is what the error
+        // message names, so it has to read like something the user wrote.
+        let mut binders: Vec<(i64, String)> = Vec::new();
         for e in &ann_result.ws_endpoints {
-            let port = e.port
-                .or_else(|| std::env::var("TINOX_PORT").ok().and_then(|s| s.parse::<i64>().ok()))
-                .unwrap_or(8080);
-            by_port.entry(port).or_default().push(e.class_name.as_str());
+            // Mirrors emit_ws_code's own resolution exactly (explicit port,
+            // else TINOX_PORT, else 8080) so this can't disagree with what
+            // actually gets bound.
+            let port = e.port.or_else(env_port).unwrap_or(8080);
+            binders.push((port, format!("@WebsocketEndpoint class {}", e.class_name)));
         }
-        for (port, classes) in &by_port {
-            if classes.len() > 1 {
-                return Err(format!(
-                    "@WebsocketEndpoint classes {} all resolve to port {port} -- each needs a distinct port (pass it explicitly: @WebsocketEndpoint(\"/path\", port))",
-                    classes.join(", ")
-                ));
-            }
+        for a in &ann_result.tinoxui_apps {
+            binders.push((a.http_port, format!("@TinoxUIApp class {}'s HTTP port", a.class_name)));
+            binders.push((a.ws_port, format!("@TinoxUIApp class {}'s WebSocket port", a.class_name)));
+        }
+        for c in &ann_result.http3_rest_controllers {
+            binders.push((c.port, format!("@Http3RestController class {}", c.class_name)));
+        }
+        // The REST auto-server binds one port for every @GET/@POST/... in
+        // the program (emit_route_code's `__tinox_run_http`), unless an
+        // @Http3RestController takes those routes over instead.
+        if !ann_result.route_entries.is_empty() && ann_result.http3_rest_controllers.is_empty() {
+            binders.push((env_port().unwrap_or(8080), "the REST auto-server (@GET/@POST/...)".to_string()));
+        }
+        let mut by_port: std::collections::HashMap<i64, Vec<&str>> = std::collections::HashMap::new();
+        for (port, owner) in &binders {
+            by_port.entry(*port).or_default().push(owner.as_str());
+        }
+        let mut collisions: Vec<(i64, Vec<&str>)> = by_port
+            .into_iter()
+            .filter(|(_, owners)| owners.len() > 1)
+            .collect();
+        // HashMap iteration order is unspecified; sort so the same program
+        // always fails with the same message.
+        collisions.sort_by_key(|(port, _)| *port);
+        if let Some((port, owners)) = collisions.first() {
+            return Err(format!(
+                "port {port} is bound by more than one component: {} -- give each one a distinct port. \
+                 Two binders on one port do NOT fail loudly at runtime (SO_REUSEPORT is set), they silently split the traffic between them.",
+                owners.join(" and ")
+            ));
         }
     }
     let ws_endpoints: Vec<tinox_codegen::WsEndpointEntry> = ann_result
