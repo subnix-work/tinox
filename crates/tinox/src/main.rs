@@ -3487,6 +3487,48 @@ fn resolve_import_target(
     Err(format!("Cannot resolve import '{}': file not found", rel_file.display()))
 }
 
+/// Issue #268: for a handful of built-in annotations, the module(s) they
+/// need are never optional and never carry any information the reader
+/// would otherwise learn from the `import` line -- there is no version of
+/// a `@TinoxUIApp` class that wants a different module set. Scoped
+/// deliberately narrow (see the issue's own "Design questions to settle
+/// first"): only `tinox.core.websocket`/`tinox.core.http_server` for
+/// `@TinoxUIApp` qualify, NOT `tinox.core.ui` itself, because `Component`
+/// (from `tinox.core.ui`) is a name the user's own `@View` method always
+/// writes -- implying that one away would hide exactly the kind of
+/// "where does this name come from" information issue #194's explicit-
+/// import rule exists to keep visible. `tinox.core.websocket`/
+/// `tinox.core.http_server`, by contrast, back ONLY the compiler-
+/// generated bootstrap (the WS accept loop / HTTP shell server) --
+/// confirmed empirically against every real `@TinoxUIApp` example in this
+/// repo, none of them ever reference a symbol from either module by name.
+/// The other annotations considered in the issue (`@Http3RestController`,
+/// `@Amqp10Consumer`/`@Amqp091Consumer`, `@JsonSerializable`) were
+/// deliberately left out of v1: their modules' own types (`HttpContext`,
+/// `Amqp10Message`/`AmqpMessage091`) ARE names real handler signatures
+/// have to write, so implying them away would create exactly the same
+/// tension, and `@JsonSerializable` is a resolvable stdlib `@annotation
+/// class` (not a compiler built-in like the other three), not obviously
+/// safe to bootstrap via the same mechanism.
+fn implied_import_paths_for(decls: &[tinox_parser::Decl]) -> Vec<Vec<String>> {
+    use tinox_parser::ast::DeclKind;
+    let has_tinoxui_app = decls.iter().any(|d| {
+        if let DeclKind::Class(c) = &d.node {
+            c.annotations.iter().any(|a| a.name == "TinoxUIApp")
+        } else {
+            false
+        }
+    });
+    if has_tinoxui_app {
+        vec![
+            vec!["tinox".to_string(), "core".to_string(), "websocket".to_string()],
+            vec!["tinox".to_string(), "core".to_string(), "http_server".to_string()],
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
 fn resolve_imports(
     ast: &mut tinox_parser::SourceFile,
     base_dir: &Path,
@@ -3524,6 +3566,30 @@ fn resolve_imports(
     for import in imports {
         let (full_paths, _origin) = resolve_import_target(&import, base_dir, dep_dirs, missing_deps)?;
 
+        for full_path in full_paths {
+            if let Some(decls) = resolve_and_merge_file(&full_path, visited, dep_dirs, missing_deps)? {
+                imported_decls.extend(decls);
+            }
+        }
+    }
+
+    // Issue #268: a handful of built-in annotations imply specific stdlib
+    // modules that carry no real choice (see implied_import_paths_for's own
+    // doc comment for exactly which, and why only those). Synthesized as
+    // plain `Import` nodes and routed through the SAME
+    // resolve_import_target/resolve_and_merge_file pair explicit imports
+    // use, so an already-written explicit import of the same module is a
+    // no-op here (resolve_and_merge_file's `visited` dedup already handles
+    // it) -- this only ADDS to the import set, it never replaces the
+    // mechanism, matching the issue's own "explicit imports must keep
+    // working unchanged" requirement.
+    for path in implied_import_paths_for(&ast.decls) {
+        let synthetic = tinox_parser::ast::Import {
+            path,
+            alias: None,
+            span: tinox_common::Span::dummy(),
+        };
+        let (full_paths, _origin) = resolve_import_target(&synthetic, base_dir, dep_dirs, missing_deps)?;
         for full_path in full_paths {
             if let Some(decls) = resolve_and_merge_file(&full_path, visited, dep_dirs, missing_deps)? {
                 imported_decls.extend(decls);
