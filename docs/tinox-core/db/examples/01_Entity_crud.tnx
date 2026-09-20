@@ -1,0 +1,13 @@
+import tinox.core.db;
+
+@Entity
+@Table("customers")
+class Customer
+{
+    @Id
+    @GeneratedValue
+    var id: Int64;
+
+    var name: String;
+    var email: String;
+}

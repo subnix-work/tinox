@@ -1,0 +1,21 @@
+import tinox.core.asm;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let asm: Assembler = Assembler::new();
+
+        // push 1, push 2, add, halt
+        Assembler::emit(asm, Ops::Push());
+        Assembler::emitInt(asm, 1);
+        Assembler::emit(asm, Ops::Push());
+        Assembler::emitInt(asm, 2);
+        Assembler::emit(asm, Ops::Add());
+        Assembler::emit(asm, Ops::Halt());
+
+        let bytecode: List<Int64> = Assembler::resolveLabels(asm);
+        println("bytecode length: " + bytecode.len().toString());
+        return 0;
+    }
+}
