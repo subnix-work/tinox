@@ -1304,6 +1304,51 @@ pub fn cmd_package() {
 /// declares — confirmed by hand: a package depending on this one
 /// installed fine but silently missing everything BUT this package's
 /// own direct files.
+/// #264: `tinox.core`-grouped packages are the extended-tier stdlib
+/// modules, and their published archives MUST nest every `.tnx` file
+/// under `tinox/core/<artifactId>/...` (the namespace-mirroring layout
+/// `resolve_in_dep_dirs` resolves `import tinox.core.<artifactId>;`
+/// against — see issue #185) rather than the flat, src/-relative layout
+/// `build_package_archive` normally produces for an ordinary project.
+/// `publish-stdlib-ext.sh` builds its own archive by hand for exactly
+/// this reason and never goes through this function at all — but nothing
+/// stopped a HUMAN from running plain `tinox publish` against a
+/// mis-staged `tinox.core`-grouped project directly, which is exactly
+/// how `tinox.core:ui` 1.0.9 ended up published as an unresolvable flat
+/// archive (a permanent, unfixable hole in that package's version
+/// sequence, since published versions are immutable). This guard fires
+/// BEFORE the archive is built/uploaded, so the mistake can no longer
+/// reach the registry at all, regardless of how the project got
+/// mis-staged.
+fn check_stdlib_ext_layout(src_dir: &Path, pkg: &Package, tnx_files: &[PathBuf]) -> Result<(), String> {
+    if pkg.group.as_deref() != Some("tinox.core") {
+        return Ok(());
+    }
+    let required_prefix = Path::new("tinox").join("core").join(&pkg.name);
+    let misplaced: Vec<String> = tnx_files
+        .iter()
+        .filter_map(|f| f.strip_prefix(src_dir).ok())
+        .filter(|rel| !rel.starts_with(&required_prefix))
+        .map(|rel| rel.display().to_string())
+        .collect();
+    if !misplaced.is_empty() {
+        return Err(format!(
+            "refusing to publish tinox.core:{}: every .tnx file must live under \
+             src/{} (the namespace-mirroring layout `import tinox.core.{};` resolves \
+             against), but found {} file(s) outside it, e.g. src/{}. This is almost \
+             always a mis-staged extended-tier module -- use scripts/publish-stdlib-ext.sh \
+             instead of `tinox publish` for tinox.core packages (see issue #264, and the \
+             namespace-mirroring convention in CLAUDE.md).",
+            pkg.name,
+            required_prefix.display(),
+            pkg.name,
+            misplaced.len(),
+            misplaced[0],
+        ));
+    }
+    Ok(())
+}
+
 fn build_package_archive(root: &Path, pkg: &Package) -> Result<PathBuf, String> {
     let src_dir = root.join("src");
     if !src_dir.exists() {
@@ -1315,6 +1360,8 @@ fn build_package_archive(root: &Path, pkg: &Package) -> Result<PathBuf, String> 
     if tnx_files.is_empty() {
         return Err("no .tnx source files found in src/".to_string());
     }
+
+    check_stdlib_ext_layout(&src_dir, pkg, &tnx_files)?;
 
     let archive_name = format!("{}-{}.tar.gz", pkg.name, pkg.version);
     let archive_path = root.join(&archive_name);
@@ -2364,5 +2411,101 @@ mod tests {
         let gzip_magic: &[u8] = &[0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00];
         assert!(parse_registry_envelope(gzip_magic).is_none());
         assert!(parse_registry_envelope(b"not json at all").is_none());
+    }
+
+    // ================================================================
+    // #264: `tinox.core`-grouped archives must nest under
+    // tinox/core/<artifactId>/, or the published package can never be
+    // imported (the tinox.core:ui 1.0.9 incident).
+    // ================================================================
+
+    fn pkg_named(name: &str, group: Option<&str>) -> Package {
+        Package {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            description: String::new(),
+            group: group.map(|g| g.to_string()),
+        }
+    }
+
+    #[test]
+    fn check_stdlib_ext_layout_ignores_non_tinox_core_packages() {
+        let src_dir = PathBuf::from("/does/not/matter/src");
+        let pkg = pkg_named("myapp", None);
+        let files = vec![src_dir.join("Main.tnx")];
+        assert!(check_stdlib_ext_layout(&src_dir, &pkg, &files).is_ok());
+    }
+
+    #[test]
+    fn check_stdlib_ext_layout_rejects_flat_tinox_core_archive() {
+        // The exact tinox.core:ui 1.0.9 shape: files sit directly under
+        // src/ instead of src/tinox/core/ui/.
+        let src_dir = PathBuf::from("/does/not/matter/src");
+        let pkg = pkg_named("ui", Some("tinox.core"));
+        let files = vec![
+            src_dir.join("TinoxUIRuntime.tnx"),
+            src_dir.join("Component.tnx"),
+        ];
+        let err = check_stdlib_ext_layout(&src_dir, &pkg, &files).unwrap_err();
+        assert!(err.contains("tinox/core/ui"), "unexpected error: {err}");
+        assert!(err.contains("publish-stdlib-ext.sh"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn check_stdlib_ext_layout_accepts_correctly_nested_tinox_core_archive() {
+        let src_dir = PathBuf::from("/does/not/matter/src");
+        let pkg = pkg_named("ui", Some("tinox.core"));
+        let files = vec![src_dir
+            .join("tinox")
+            .join("core")
+            .join("ui")
+            .join("TinoxUIRuntime.tnx")];
+        assert!(check_stdlib_ext_layout(&src_dir, &pkg, &files).is_ok());
+    }
+
+    #[test]
+    fn check_stdlib_ext_layout_rejects_partial_mismatch() {
+        // One file correctly nested, one stray file outside the prefix --
+        // must still be rejected, not pass just because SOME files match.
+        let src_dir = PathBuf::from("/does/not/matter/src");
+        let pkg = pkg_named("ui", Some("tinox.core"));
+        let files = vec![
+            src_dir.join("tinox").join("core").join("ui").join("TinoxUIRuntime.tnx"),
+            src_dir.join("Stray.tnx"),
+        ];
+        let err = check_stdlib_ext_layout(&src_dir, &pkg, &files).unwrap_err();
+        assert!(err.contains("Stray.tnx"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn build_package_archive_rejects_mis_staged_tinox_core_project() {
+        // End-to-end through build_package_archive itself, not just the
+        // narrower check_stdlib_ext_layout unit -- reproduces the actual
+        // tinox.core:ui 1.0.9 incident against a real directory tree.
+        let dir = std::env::temp_dir().join(format!(
+            "tinox-pm-test-{}-build_archive_rejects_flat_stdlib",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let src_dir = dir.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(
+            src_dir.join("TinoxUIRuntime.tnx"),
+            "class TinoxUIRuntime { fnc noop() -> Int64 { return 0; } }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("tinox.toml"),
+            "[package]\nname = \"ui\"\nversion = \"1.0.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n",
+        )
+        .unwrap();
+
+        let pkg = pkg_named("ui", Some("tinox.core"));
+        let result = build_package_archive(&dir, &pkg);
+        assert!(result.is_err(), "expected a mis-staged tinox.core archive to be refused");
+        assert!(!dir.join("ui-1.0.0.tar.gz").exists());
+        assert!(!dir.join("ui-1.0.9.tar.gz").exists());
+
+        fs::remove_dir_all(&dir).ok();
     }
 }
