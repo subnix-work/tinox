@@ -84,11 +84,11 @@
     },
     "keyword_declaration": {
       "name": "keyword.other.declaration.tinox",
-      "match": "\\b(fn|class|interface|trait|enum|module|import|export|let|var|val|const|spawn|channel|send|recv|async|await|new)\\b"
+      "match": "\\b(fn|fnc|class|interface|trait|enum|module|namespace|import|export|let|var|val|const|spawn|channel|send|recv|async|await|new|immutable)\\b"
     },
     "keyword_modifier": {
       "name": "storage.modifier.tinox",
-      "match": "\\b(pub|public|private|protected|static|final|abstract|override|readonly|mut|ref|extern|unsafe)\\b"
+      "match": "\\b(public|private|protected|package|static|final|abstract|override|readonly|mut|ref|extern|unsafe)\\b"
     },
     "keyword_other": {
       "name": "keyword.other.tinox",
@@ -96,7 +96,7 @@
     },
     "constant": {
       "name": "constant.language.tinox",
-      "match": "\\b(true|false|null|Unit|Never|Any)\\b"
+      "match": "\\b(true|false|null|Nothing|Never|Any)\\b"
     },
     "type_builtin": {
       "name": "support.type.tinox",
