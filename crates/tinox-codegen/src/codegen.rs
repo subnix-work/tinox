@@ -2223,8 +2223,12 @@ impl CodeGen {
             writeln!(&mut self.ir,
                 "@__metrics_path = private constant [{mpath_len} x i8] c\"{mpath_escaped}\\00\"").unwrap();
             // Shim: GET /metrics → call tinox_metrics_prometheus(), return as text/plain
-            writeln!(&mut self.lambda_ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
-            writeln!(&mut self.lambda_ir, "declare i64* @tinox_HttpServer_new(i64)").unwrap();
+            // tinox_metrics_prometheus() is already declared unconditionally in the
+            // module preamble (top of gen()), and tinox_HttpServer_new(i64) was already
+            // declared a few lines above in this same function (reachable here only when
+            // route_entries is non-empty) -- re-declaring either here caused `opt` to
+            // hard-error with "invalid redefinition" whenever [metrics] was enabled
+            // together with real @GET/etc routes (issue #261).
             writeln!(&mut self.lambda_ir, "define void @__metrics_shim(i64 %ctx_i64) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
