@@ -85,13 +85,15 @@ fn missing_return_statement_is_not_misreported_as_a_missing_import() {
         "[package]\nname = \"missingrettest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n",
     )
     .expect("write tinox.toml");
-    // Both try/catch branches return, but the (separate, pre-existing)
-    // return-completeness checker doesn't look inside try/catch bodies --
-    // this file has no cross-namespace reference at all, so a "missing
-    // import" trailer on its error would be pure noise.
+    // `f` has no return on any path -- a genuine, unconditional
+    // "missing return statement", with no cross-namespace reference
+    // anywhere in this file, so a "missing import" trailer on its error
+    // would be pure noise. (This used to lean on the try/catch
+    // return-completeness gap fixed in #262 as its trigger; that gap is
+    // gone now, so this uses an unrelated, still-genuine trigger instead.)
     std::fs::write(
         workdir.join("src/Main.tnx"),
-        "class Main {\n    fnc f() -> Bool {\n        try {\n            return true;\n        } catch (e: String) {\n            return false;\n        }\n    }\n    fnc main() -> Int32 {\n        println(f());\n        return 0;\n    }\n}\n",
+        "class Main {\n    fnc f() -> Bool {\n        println(\"never returns\");\n    }\n    fnc main() -> Int32 {\n        println(f());\n        return 0;\n    }\n}\n",
     )
     .expect("write Main.tnx");
 

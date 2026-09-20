@@ -2368,17 +2368,27 @@ impl TypeChecker {
                 catches,
                 finally,
             } => {
-                self.check_stmt(body);
+                let body_returns = self.check_stmt(body);
+                let mut catches_return = true;
                 for catch in catches {
                     self.symbols
                         .variables
                         .insert(catch.param.clone(), (Self::type_to_value(&catch.ty), false));
-                    self.check_stmt(&catch.body);
+                    catches_return = self.check_stmt(&catch.body) && catches_return;
                 }
-                if let Some(finally_body) = finally {
-                    self.check_stmt(finally_body);
-                }
-                false
+                let finally_returns = if let Some(finally_body) = finally {
+                    self.check_stmt(finally_body)
+                } else {
+                    false
+                };
+                // A `try` is a definite return/throw if either its `finally`
+                // block alone guarantees one (it always runs, so it
+                // overrides everything before it), or the `try` body itself
+                // guarantees one AND every `catch` clause also does (with no
+                // catches at all, that condition is vacuously true — a bare
+                // `try { return x; } finally { ... }` is exhaustive purely
+                // from the body, matching #262).
+                finally_returns || (body_returns && catches_return)
             }
             StmtKind::Expr(expr) => {
                 let ty = self.infer_type(expr);
@@ -6364,5 +6374,42 @@ class Jogger implements Runner {
     #[test]
     fn test_struct_literal_generic_class_stays_permissive() {
         ok("class Box<T> { var value: T; } fn f() { let b = Box { value: 42 }; }");
+    }
+
+    // ================================================================
+    // Return-completeness analysis must descend into `try` bodies (#262)
+    // ================================================================
+
+    #[test]
+    fn test_try_finally_no_catch_unconditional_return_is_exhaustive() {
+        ok("class Main { fnc f() -> Int64 { try { return 1; } finally { } } fnc main() -> Int64 { return f(); } }");
+    }
+
+    #[test]
+    fn test_try_catch_both_returning_is_exhaustive() {
+        ok("class Main { fnc f() -> Int64 { try { return 1; } catch (e: String) { return -1; } } fnc main() -> Int64 { return f(); } }");
+    }
+
+    #[test]
+    fn test_try_catch_with_non_returning_catch_still_errors() {
+        err_contains(
+            "class Main { fnc f() -> Int64 { try { return 1; } catch (e: String) { println(e); } } fnc main() -> Int64 { return f(); } }",
+            "missing return statement",
+        );
+    }
+
+    #[test]
+    fn test_try_with_non_returning_finally_but_returning_body_is_exhaustive() {
+        // `finally` doesn't itself need to return -- the `try` body alone
+        // (with no catches) is enough, matching #262's exact repro.
+        ok("class Main { fnc f() -> Int64 { try { return 1; } finally { println(\"cleanup\"); } } fnc main() -> Int64 { return f(); } }");
+    }
+
+    #[test]
+    fn test_try_body_not_returning_still_errors() {
+        err_contains(
+            "class Main { fnc f() -> Int64 { try { println(\"no return\"); } finally { } } fnc main() -> Int64 { return f(); } }",
+            "missing return statement",
+        );
     }
 }
