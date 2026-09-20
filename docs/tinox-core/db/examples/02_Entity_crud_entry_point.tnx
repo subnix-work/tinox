@@ -1,0 +1,23 @@
+import Customer;
+import tinox.core.db;
+
+// Every Tinox program still needs its own class Main as the mandatory
+// entry point (since 2026-08-09) -- this is the required sibling file
+// for the @Entity class above (one type per file, since 2026-07-26).
+class Main
+{
+    fnc main() -> Int32
+    {
+        let customers: List<Customer> = DB::of(Customer).list();
+
+        let customer: Customer = DB::of(Customer).filter(c => c.id == 1).first();
+        println(customer.name);
+
+        let active: List<Customer> = DB::of(Customer).orderBy(c => c.name).limit(10).list();
+
+        DB::of(Customer).save(customer);
+        DB::of(Customer).delete(customer);
+
+        return 0;
+    }
+}
