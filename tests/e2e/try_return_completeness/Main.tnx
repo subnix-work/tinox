@@ -1,0 +1,49 @@
+// Issue #262: the return-completeness analysis (tinox-typecheck's
+// check_stmt for StmtKind::Try) never looked at the try/catch/finally
+// bodies, so a method whose ONLY return lived inside a `try` was always
+// rejected as "missing return statement" -- forcing a dead trailing
+// `return` no reader could tell apart from a real fallback. Fixed by
+// computing exhaustiveness as: finally alone guarantees it, OR the try
+// body AND every catch clause do (vacuously true with no catches).
+// expect: finally ran
+// expect: 1
+// expect: 5
+// expect: -1
+
+class Main
+{
+    // Bare try/finally, no catch at all -- the exact repro from #262.
+    fnc tryFinally() -> Int64
+    {
+        try
+        {
+            return 1;
+        }
+        finally
+        {
+            println("finally ran");
+        }
+    }
+
+    // try/catch, both branches returning, no finally.
+    fnc tryCatch(x: Int64) -> Int64
+    {
+        try
+        {
+            if (x < 0) { throw "negative"; }
+            return x;
+        }
+        catch (e: String)
+        {
+            return -1;
+        }
+    }
+
+    fnc main() -> Int32
+    {
+        println(Main::tryFinally().toString());
+        println(Main::tryCatch(5).toString());
+        println(Main::tryCatch(-1).toString());
+        return 0;
+    }
+}
