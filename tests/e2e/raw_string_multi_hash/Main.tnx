@@ -1,0 +1,23 @@
+// Issue #263: the lexer's raw-string dispatch only recognized `r"..."`
+// (zero hashes) and `r#"..."#` (exactly one hash) -- `r##"..."##` and
+// longer hash runs fell through to "unexpected character: #". Fixed by
+// generalizing the dispatch to scan an arbitrary run of `#` after `r`,
+// matching what read_raw_string's own closing-delimiter scan already did
+// generically all along.
+// expect: has "quotes" inside
+// expect: needs "# inside
+// expect: needs "## inside
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let one = r#"has "quotes" inside"#;
+        let two = r##"needs "# inside"##;
+        let three = r###"needs "## inside"###;
+        println(one);
+        println(two);
+        println(three);
+        return 0;
+    }
+}
