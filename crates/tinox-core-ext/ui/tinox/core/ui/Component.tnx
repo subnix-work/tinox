@@ -38,6 +38,37 @@ namespace tinox.core.ui
         {
         }
 
+        // Issue #269: every widget below that needs a list-valued prop
+        // (dropdown/radioGroup/tabs/comboBox/checkboxGroup/menuBar)
+        // encodes it as a "|"-joined String, since `props` stays
+        // Map<String,String> for every widget (see the module's own doc
+        // comment on why). Previously each factory inlined its own
+        // `.join("|")` directly -- correct for the common case, but
+        // SILENT data corruption the moment any item itself contains
+        // "|" (it would misparse into extra items client-side, with no
+        // error anywhere). This is the one shared place that now does
+        // the encoding, so it's also the one place that can catch it:
+        // reject up front with a clear, loud error instead of producing
+        // a wire value nothing downstream can tell apart from a
+        // legitimate extra item -- "no silent garbage", the same
+        // standard every other stdlib module already holds itself to.
+        // The wire format itself is UNCHANGED (still "|"-joined) -- this
+        // is purely a validation added in front of the existing
+        // encoding, not a new encoding; the client JS needs no changes.
+        fnc encodePipeList(items: List<String>) -> String
+        {
+            var i: Int64 = 0;
+            while i < items.len()
+            {
+                if (items[i].contains("|"))
+                {
+                    throw "Component: list item " + i.toString() + " (\"" + items[i] + "\") contains \"|\", which cannot round-trip through this widget's \"|\"-joined wire encoding -- remove or replace the \"|\" character";
+                }
+                i = i + 1;
+            }
+            return items.join("|");
+        }
+
         // Inert placeholder used by TinoxUIPatchOp's `node` field when an
         // op kind (update/remove) doesn't actually carry a subtree --
         // never rendered, just a well-formed value to satisfy the field.
@@ -159,7 +190,7 @@ namespace tinox.core.ui
         fnc dropdown(options: List<String>, selected: String, onChange: fnc(String) -> Nothing) -> Component
         {
             let props: Map<String, String> = Map::new();
-            props.insert("options", options.join("|"));
+            props.insert("options", Component::encodePipeList(options));
             props.insert("selected", selected);
             return Component { id: "", type: "Select", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
@@ -210,7 +241,7 @@ namespace tinox.core.ui
         fnc radioGroup(options: List<String>, selected: String, onChange: fnc(String) -> Nothing) -> Component
         {
             let props: Map<String, String> = Map::new();
-            props.insert("options", options.join("|"));
+            props.insert("options", Component::encodePipeList(options));
             props.insert("selected", selected);
             return Component { id: "", type: "RadioGroup", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
@@ -265,7 +296,7 @@ namespace tinox.core.ui
         fnc tabs(labels: List<String>, activeIndex: Int64, content: Component, onTabChange: fnc(String) -> Nothing) -> Component
         {
             let props: Map<String, String> = Map::new();
-            props.insert("labels", labels.join("|"));
+            props.insert("labels", Component::encodePipeList(labels));
             props.insert("active", activeIndex.toString());
             return Component { id: "", type: "Tabs", text: "", props: props, children: [content], visible: true, onEvent: onTabChange };
         }
@@ -552,7 +583,7 @@ namespace tinox.core.ui
         fnc comboBox(options: List<String>, value: String, onChange: fnc(String) -> Nothing) -> Component
         {
             let props: Map<String, String> = Map::new();
-            props.insert("options", options.join("|"));
+            props.insert("options", Component::encodePipeList(options));
             props.insert("value", value);
             return Component { id: "", type: "ComboBox", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
@@ -565,8 +596,8 @@ namespace tinox.core.ui
         fnc checkboxGroup(options: List<String>, selected: List<String>, onChange: fnc(String) -> Nothing) -> Component
         {
             let props: Map<String, String> = Map::new();
-            props.insert("options", options.join("|"));
-            props.insert("selected", selected.join("|"));
+            props.insert("options", Component::encodePipeList(options));
+            props.insert("selected", Component::encodePipeList(selected));
             return Component { id: "", type: "CheckboxGroup", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
 
@@ -593,7 +624,7 @@ namespace tinox.core.ui
         fnc menuBar(menus: List<String>, onSelect: fnc(String) -> Nothing) -> Component
         {
             let props: Map<String, String> = Map::new();
-            props.insert("menus", menus.join("|"));
+            props.insert("menus", Component::encodePipeList(menus));
             return Component { id: "", type: "MenuBar", text: "", props: props, children: [], visible: true, onEvent: onSelect };
         }
 
