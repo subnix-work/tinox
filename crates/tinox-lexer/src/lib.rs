@@ -408,7 +408,7 @@ impl<'a> Lexer<'a> {
                 self.read_string()?
             }
             'r' => {
-                if self.peek_next() == '"' || (self.peek_next() == '#' && self.chars.get(self.pos + 2) == Some(&'"')) {
+                if self.is_raw_string_start() {
                     self.read_raw_string()?
                 } else {
                     self.read_ident_or_keyword()
@@ -505,6 +505,18 @@ impl<'a> Lexer<'a> {
     fn bump(&mut self) {
         self.pos += 1;
         self.column += 1;
+    }
+
+    /// True if `self.pos` sits on an `r` starting a raw string: `r` followed
+    /// by ANY number of `#` (zero or more, not just zero/one — #263) and
+    /// then a `"`. `self.pos` itself is the `r`, so scanning starts at
+    /// `self.pos + 1`.
+    fn is_raw_string_start(&self) -> bool {
+        let mut i = self.pos + 1;
+        while self.chars.get(i) == Some(&'#') {
+            i += 1;
+        }
+        self.chars.get(i) == Some(&'"')
     }
 
     fn mk_pos(&self) -> Pos {
@@ -2099,6 +2111,48 @@ mod tests {
     fn test_raw_string_with_hashes() {
         let toks = lex_kinds("r#\"hello\"#");
         assert!(matches!(&toks[0], TokenKind::RawString(s) if s == "hello"));
+    }
+
+    // ================================================================
+    // #263: raw strings must accept an arbitrary run of hashes, not just
+    // zero (`r"..."`) or exactly one (`r#"..."#`).
+    // ================================================================
+
+    #[test]
+    fn test_raw_string_zero_hashes() {
+        let toks = lex_kinds("r\"hello\"");
+        assert!(matches!(&toks[0], TokenKind::RawString(s) if s == "hello"));
+    }
+
+    #[test]
+    fn test_raw_string_one_hash_with_embedded_quotes() {
+        let toks = lex_kinds("r#\"has \"quotes\" inside\"#");
+        assert!(matches!(&toks[0], TokenKind::RawString(s) if s == "has \"quotes\" inside"));
+    }
+
+    #[test]
+    fn test_raw_string_two_hashes() {
+        // Content contains a lone `"#` sequence that would incorrectly
+        // terminate a naive single-hash implementation.
+        let toks = lex_kinds("r##\"needs \"# inside\"##");
+        assert!(matches!(&toks[0], TokenKind::RawString(s) if s == "needs \"# inside"));
+    }
+
+    #[test]
+    fn test_raw_string_three_hashes() {
+        // Content itself contains a `"##` sequence, which needs the third
+        // hash to disambiguate from the real closing delimiter.
+        let toks = lex_kinds("r###\"needs \"## inside\"###");
+        assert!(matches!(&toks[0], TokenKind::RawString(s) if s == "needs \"## inside"));
+    }
+
+    #[test]
+    fn test_raw_string_two_hashes_mismatched_closing_count_is_content() {
+        // A single `"#` inside a two-hash raw string must NOT be treated
+        // as a (short) closing delimiter -- only an exact count match ends
+        // the string.
+        let toks = lex_kinds("r##\"a\"#b\"##");
+        assert!(matches!(&toks[0], TokenKind::RawString(s) if s == "a\"#b"));
     }
 
     // ================================================================
