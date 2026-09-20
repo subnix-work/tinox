@@ -670,6 +670,7 @@
     <li><a href="#cli">CLI Tools</a></li>
 
     <li class="section-label">Database Access</li>
+    <li><a href="#mod-db">db</a></li>
     <li><a href="#orm">ORM &amp; Lambda Query DSL</a></li>
 
     <li class="section-label">Performance</li>
@@ -2365,6 +2366,14 @@ epoll_fd = epoll_create1(0);
   <h2>logger</h2>
   <p class="mod-ref-note">Full reference (description, dependencies, examples, classes &amp; methods) is loaded directly from the published tinox-central package documentation, so it does not have to be maintained in two places: <a href="docs/tinox-core/logger/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/logger/1-0-0/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/logger/1-0-0/docs.html" loading="lazy" title="tinox.core:logger documentation"></iframe>
+  </div>
+
+    <div class="mod-section" id="mod-db">
+
+  <h2>db</h2>
+  <p class="mod-ref-note">Full reference (description, dependencies, examples, classes &amp; methods) is loaded directly from the published tinox-central package documentation, so it does not have to be maintained in two places: <a href="docs/tinox-core/db/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/db/1-0-0/docs.html</a></p>
+  <iframe class="mod-iframe" src="docs/tinox-core/db/1-0-0/docs.html" loading="lazy" title="tinox.core:db documentation"></iframe>
+  <p class="mod-ref-note">Only the query-chain classes (<code>DB</code>, <code>EntityQuery</code>) themselves — <code>@Entity</code>/<code>@Table</code>/<code>@Column</code>/<code>@Id</code>/<code>@GeneratedValue</code>, the connection pool, and <code>@Transactional</code> (since issue #191) are compiler/codegen features, not stdlib classes; see the <a href="#orm">ORM &amp; Lambda Query DSL</a> guide further down for their full reference.</p>
   </div>
 
   <!-- ══════════════ ORM ══════════════ -->
