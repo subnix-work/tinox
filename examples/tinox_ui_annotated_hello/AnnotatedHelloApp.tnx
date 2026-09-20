@@ -6,9 +6,17 @@
 // method to build/rebuild the tree (full-resend rendering, automatic
 // re-render after every event -- see emit_tinoxui_code's own doc comment
 // in codegen.rs for exactly what gets generated).
+//
+// Issue #268: only `tinox.core.ui` needs to be imported by hand here --
+// `Component` is a name this file itself writes (the @View method's
+// return type, `Component::vbox`/`label`/`button`), so it stays explicit.
+// `tinox.core.websocket`/`tinox.core.http_server` back ONLY the
+// compiler-generated bootstrap above (this file never references a
+// symbol from either by name) and are now implied automatically by
+// `@TinoxUIApp` itself -- see `implied_import_paths_for` in
+// crates/tinox/src/main.rs for exactly which annotations/modules qualify
+// and why.
 import tinox.core.ui;
-import tinox.core.websocket;
-import tinox.core.http_server;
 
 @TinoxUIApp(8286, 8287)
 class AnnotatedHelloApp
