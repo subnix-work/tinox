@@ -1302,6 +1302,98 @@ void fileClose(void* handle) {
     if (handle) fclose((FILE*)handle);
 }
 
+// ---- Byte-exact file/stdin I/O ----
+// fileReadAllText/fileWriteAllText above are strlen/fputs-based char* --
+// silently truncate at an embedded 0x00 byte (same reason tinox.core.zip
+// documents itself as "text content only"). These three operate on
+// List<Int64> (one element per byte, 0-255) end to end instead, using the
+// same TinoxArray ABI tinoxDeflateRaw/tinoxGzip already use below, so no
+// NUL-related truncation is possible anywhere in the read/write path.
+// Not registered as compiler builtins -- consumed via `extern fn` in
+// Tinox source, same pattern tinox.core.compress/zip already use for
+// their own runtime primitives.
+
+int64_t* tinoxFileReadAllBytes(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "runtime error: cannot open file for reading: %s\n", path);
+        exit(1);
+    }
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long size = ftell(f);
+        if (size >= 0) {
+            fseek(f, 0, SEEK_SET);
+            unsigned char* raw = (unsigned char*)malloc(size > 0 ? (size_t)size : 1);
+            size_t got = fread(raw, 1, (size_t)size, f);
+            fclose(f);
+            int64_t* h = tinox_array_new((int64_t)got, (int64_t)got);
+            TinoxArray* a = (TinoxArray*)h;
+            for (size_t i = 0; i < got; i++) a->data[i] = (int64_t)raw[i];
+            free(raw);
+            return h;
+        }
+        fseek(f, 0, SEEK_SET);
+    }
+    // Fallback for pipes/character devices, where SEEK_END doesn't work.
+    size_t cap = 65536, used = 0;
+    unsigned char* raw = (unsigned char*)malloc(cap);
+    size_t n;
+    while ((n = fread(raw + used, 1, cap - used, f)) > 0) {
+        used += n;
+        if (used == cap) {
+            cap *= 2;
+            unsigned char* nb = (unsigned char*)malloc(cap);
+            memcpy(nb, raw, used);
+            free(raw);
+            raw = nb;
+        }
+    }
+    fclose(f);
+    int64_t* h = tinox_array_new((int64_t)used, (int64_t)used);
+    TinoxArray* a = (TinoxArray*)h;
+    for (size_t i = 0; i < used; i++) a->data[i] = (int64_t)raw[i];
+    free(raw);
+    return h;
+}
+
+void tinoxFileWriteAllBytes(const char* path, int64_t* bytes) {
+    TinoxArray* a = (TinoxArray*)bytes;
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "runtime error: cannot open file for writing: %s\n", path);
+        exit(1);
+    }
+    int64_t len = a->len;
+    if (len > 0) {
+        unsigned char* raw = (unsigned char*)malloc((size_t)len);
+        for (int64_t i = 0; i < len; i++) raw[i] = (unsigned char)(a->data[i] & 0xFF);
+        fwrite(raw, 1, (size_t)len, f);
+        free(raw);
+    }
+    fclose(f);
+}
+
+int64_t* tinoxStdinReadAllBytes(void) {
+    size_t cap = 65536, used = 0;
+    unsigned char* raw = (unsigned char*)malloc(cap);
+    size_t n;
+    while ((n = fread(raw + used, 1, cap - used, stdin)) > 0) {
+        used += n;
+        if (used == cap) {
+            cap *= 2;
+            unsigned char* nb = (unsigned char*)malloc(cap);
+            memcpy(nb, raw, used);
+            free(raw);
+            raw = nb;
+        }
+    }
+    int64_t* h = tinox_array_new((int64_t)used, (int64_t)used);
+    TinoxArray* a = (TinoxArray*)h;
+    for (size_t i = 0; i < used; i++) a->data[i] = (int64_t)raw[i];
+    free(raw);
+    return h;
+}
+
 // ---- Socket builtins (tinox.core.socket) ----
 // Handles are raw fds as i64; -1 = error. Blocking BSD sockets —
 // deliberately kept simple (no epoll here; the HTTP server further down
