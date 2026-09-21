@@ -8813,6 +8813,14 @@ impl CodeGen {
                                 let casted = self.temp();
                                 writeln!(&mut self.ir, "{} = ptrtoint {}* {} to i64", casted, val_ty.trim_end_matches('*'), val).unwrap();
                                 casted
+                            } else if val_ty == "double" || val_ty == "float" {
+                                let casted = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", casted, val_ty, val).unwrap();
+                                casted
+                            } else if val_ty == "i1" {
+                                let casted = self.temp();
+                                writeln!(&mut self.ir, "{} = zext i1 {} to i64", casted, val).unwrap();
+                                casted
                             } else {
                                 val
                             };
@@ -9659,6 +9667,16 @@ impl CodeGen {
                             } else if val_ty == "double" || val_ty == "float" {
                                 let c = self.temp();
                                 writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
+                                c
+                            } else if val_ty == "i1" {
+                                // List<Bool>.push(<inline comparison/bool expr>) — the
+                                // pushed value type-checks as i1 but tinox_array_push
+                                // (like every array slot) is i64-typed; a raw i1 arg
+                                // produced invalid LLVM IR (found live while building
+                                // tinox-compress's Huffman encoder, which pushes a
+                                // freq-comparison result straight into a List<Bool>).
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
                                 c
                             } else { val };
                             let result = self.temp();
