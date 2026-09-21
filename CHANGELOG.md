@@ -2,6 +2,92 @@
 
 All notable changes to Tinox are documented in this file.
 
+## [2.4.0] - 2026-09-21
+
+### Breaking
+
+- **Static calls require `::`, not `.`** (#258): `Util.twice(3)` and
+  `Util::twice(3)` used to compile identically and silently, letting the
+  spelling drift file to file. Now only `::` is accepted for a call whose
+  receiver is statically known to be a class (`obj_is_variable` already
+  decided this precisely at the call site, so the check never guesses):
+  `error: static calls use `::`, not `.` -- write `Utils::add(...)``.
+  `tinox.core:ui` bumped to 1.0.12 (1.0.11's `Component.initialsOf` did
+  not compile under the new rule).
+
+### Added
+
+- **Literal field defaults** (`var x: T = <literal>;`, #256): removes the
+  `initialized: Bool` + assign-everything-once boilerplate every
+  `@TinoxUIApp`/`@WebsocketEndpoint`/AMQP-consumer handler grew to work
+  around zeroed-but-unsafe-to-serialize fields (a zeroed `String` is a
+  null pointer, safe to compare but not to serialize).
+- **`@TinoxUIApp`'s ports are now optional** (#259): `@TinoxUIApp` alone
+  defaults to 8080/8081 (matching what every existing example already
+  hardcoded by hand); `@TinoxUIApp(9100)` derives 9100/9101. Every bound
+  port across the whole program (REST/UI/WebSocket/HTTP3) is now checked
+  for collisions up front, not just within one component kind — two
+  auto-run servers silently sharing a port via `SO_REUSEPORT` previously
+  failed only at runtime, with roughly half of all requests landing on
+  the wrong process.
+- **Implied imports for `@TinoxUIApp`** (#268): the `websocket`/
+  `http_server` stdlib imports it needs are now implicit — their types
+  were never user-written in any real annotated example. `ui` itself
+  stays an explicit import (`Component` and every `@View` method
+  reference it directly).
+- **`Component::encodePipeList(items)`** (`tinox.core:ui`, #269): the one
+  shared, validating encoder behind all 7 widget factories
+  (dropdown/radioGroup/tabs/comboBox/checkboxGroup/menuBar) that used to
+  inline an unvalidated `options.join("|")` — an option/label containing
+  a literal `|` silently misparsed into extra items client-side.
+- **`TINOX_WS_DEBUG=1`** (#270): opt-in, zero-cost-when-unset timing
+  instrumentation for the WebSocket accept/handshake path
+  (`httpServerAcceptConnHandle`/`httpConnReadRequest`/`httpConnSendRaw`),
+  added while investigating an as-yet-unreproduced WS handshake
+  read-timeout flake. Diagnostic only — the flake itself is not fixed by
+  this release.
+- **`tinox publish` refuses a mis-staged `tinox.core` archive** (#264): a
+  new `check_stdlib_ext_layout` guard requires every `.tnx` file to live
+  under `src/tinox/core/<artifactId>/` for any `group = "tinox.core"`
+  package, closing the gap that let `tinox.core:ui` 1.0.9 ship as a flat,
+  unresolvable, now-permanently-broken archive via plain `tinox publish`
+  instead of `scripts/publish-stdlib-ext.sh`.
+- **`make grammar-sync`** (wired into `make check`, #267): a plain `cmp`
+  between the Eclipse and VS Code TextMate grammar copies, failing loudly
+  the instant they diverge. Fixed both copies' `keyword_declaration` to
+  match the lexer's real keyword set exactly (added `namespace`, `fnc`,
+  `package`, `immutable`; removed the non-existent `Unit`/`pub`).
+
+### Fixed
+
+- **#257**: a no-argument `tinox build`/`tinox run` defaulted its entry
+  to `src/main.tnx`, a filename the compiler's own `class Main`-in-
+  `Main.tnx` rule forbids — broken for every project relying on the
+  default (0 projects used it; 4 relied on passing the path explicitly).
+  Default is now `src/Main.tnx`.
+- **#261**: `[metrics] enabled = true` combined with a real `@GET`/etc.
+  route failed to build (`opt: invalid redefinition of function
+  'tinox_metrics_prometheus'`) — the `/metrics` shim redundantly
+  re-declared two symbols already declared elsewhere in the same module.
+- **#262**: a method whose only `return` lived inside a `try` block was
+  rejected as "missing return statement", forcing a dead trailing
+  `return` — the completeness check now descends into try/catch/finally
+  bodies (`finally_returns || (body_returns && all_catches_return)`).
+- **#263**: raw strings only recognized zero or exactly one `#`
+  (`r"..."`/`r#"..."#`); `r##"..."##` and longer runs failed to lex.
+  `read_raw_string` already handled an arbitrary hash count — only the
+  dispatch condition was special-cased.
+- **#265**: `docs.html`/`docs_en.html` never got a `tinox.core.db`
+  module section, unlike every other published stdlib module.
+- **#266**: recovered the editable example sources
+  (`docs/tinox-core/{asm,db,json}/examples/`) for the 3 of 19 flagged
+  modules that actually had Examples content baked into their published
+  docs but no source anywhere in the repo.
+- Republished `tinox.core:rest` (1.0.3) and `tinox.core:ui` (1.0.13):
+  both had drifted from what's live on tinox-central since #258's
+  `::`-migration touched their source without a version bump (tinox-
+  central enforces immutable versions).
+
 ## [2.3.0] - 2026-09-13
 
 ### Added
