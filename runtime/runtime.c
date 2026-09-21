@@ -17,6 +17,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -153,6 +154,43 @@ int64_t tinox_now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Issue #270 investigation: the tinox_ui WS-handshake read-timeout flake
+// (WouldBlock on the client's handshake-response read) has never been
+// reproduced under controlled conditions, so its "slow scheduling" vs
+// "a race in the accept/upgrade path" question was never actually
+// answered -- only mitigated (#245 raised the client's own read timeout
+// from 5s to 30s). This is a permanent, always-compiled-in but
+// opt-in-only diagnostic: checked once (a plain data race on the cached
+// flag is harmless -- every thread converges on the same env var value,
+// worst case a handful of extra getenv() calls very early in a run) and
+// silent unless TINOX_WS_DEBUG=1 is set, so it costs nothing in the
+// default case. Timestamps every step of the accept/handshake path
+// (accept() returns, request-read starts/ends, response-send
+// starts/ends) with the calling thread id and elapsed-ms-since-accept,
+// so a future reproduction attempt can tell "the accept loop's own
+// thread was simply descheduled for N seconds" (a wide gap with no
+// activity in between) apart from "a race" (overlapping/out-of-order
+// timestamps across two connections, or a send that starts before its
+// own connection's read finished) on sight, without needing a debugger.
+static int g_tinox_ws_debug = -1; // -1 = not yet checked, 0 = off, 1 = on
+static bool tinox_ws_debug_enabled(void) {
+    if (g_tinox_ws_debug < 0) {
+        const char* v = getenv("TINOX_WS_DEBUG");
+        g_tinox_ws_debug = (v && v[0] == '1') ? 1 : 0;
+    }
+    return g_tinox_ws_debug == 1;
+}
+static void tinox_ws_debug_log(const char* fmt, ...) {
+    if (!tinox_ws_debug_enabled()) return;
+    fprintf(stderr, "[tinox-ws-debug t=%lldms tid=%lu] ", (long long)tinox_now_ms(), (unsigned long)pthread_self());
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 }
 
 // Panic/Error handling
@@ -3564,8 +3602,13 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
 // Accepts a plaintext connection and likewise returns a conn handle,
 // so the Tinox code can use a SINGLE loop (httpConn*) for both http and https.
 int64_t httpServerAcceptConnHandle(int64_t server_fd) {
+    tinox_ws_debug_log("accept: waiting on server_fd=%lld", (long long)server_fd);
     int64_t fd = httpServerAcceptConn(server_fd);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        tinox_ws_debug_log("accept: failed (fd=%lld)", (long long)fd);
+        return -1;
+    }
+    tinox_ws_debug_log("accept: got fd=%lld", (long long)fd);
     TinoxConn* c = (TinoxConn*)malloc(sizeof(TinoxConn));
     pthread_mutex_init(&c->writeLock, NULL);
     c->fd = (int)fd;
@@ -3579,13 +3622,18 @@ int64_t httpServerAcceptConnHandle(int64_t server_fd) {
 // Reads a request over a conn handle (TLS or plaintext).
 char* httpConnReadRequest(int64_t conn) {
     if (conn <= 0) return (char*)"";
-    return conn_read_request((TinoxConn*)(intptr_t)conn);
+    tinox_ws_debug_log("read_request: start conn=%lld fd=%d", (long long)conn, ((TinoxConn*)(intptr_t)conn)->fd);
+    char* req = conn_read_request((TinoxConn*)(intptr_t)conn);
+    tinox_ws_debug_log("read_request: done conn=%lld fd=%d len=%zu", (long long)conn, ((TinoxConn*)(intptr_t)conn)->fd, strlen(req));
+    return req;
 }
 
 // Sends a raw response over a conn handle.
 void httpConnSendRaw(int64_t conn, const char* data) {
     if (conn <= 0 || !data) return;
+    tinox_ws_debug_log("send_raw: start conn=%lld fd=%d len=%zu", (long long)conn, ((TinoxConn*)(intptr_t)conn)->fd, strlen(data));
     conn_send_all((TinoxConn*)(intptr_t)conn, data, strlen(data));
+    tinox_ws_debug_log("send_raw: done conn=%lld fd=%d", (long long)conn, ((TinoxConn*)(intptr_t)conn)->fd);
 }
 
 // Wraps a bare socket fd (e.g. client side via socketConnect) in

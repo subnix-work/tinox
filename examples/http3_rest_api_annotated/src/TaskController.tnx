@@ -6,7 +6,7 @@
 // annotation is what routes these through tinox.core.http3_server.Http3Server
 // (QUIC) instead of the TCP auto-server -- the compiler generates the
 // Http3Server::new/.get/.post/.../listen() wiring, spawned alongside
-// Main.main() (see sibling Main.tnx) instead of providing its own implicit
+// Main::main() (see sibling Main.tnx) instead of providing its own implicit
 // main.
 //
 // @ApplicationComponent makes the compiler reuse ONE TaskController

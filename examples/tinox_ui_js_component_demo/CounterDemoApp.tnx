@@ -27,7 +27,7 @@ import tinox.core.ui;
 import tinox.core.websocket;
 import tinox.core.http_server;
 
-@TinoxUIApp(8288, 8289)
+@TinoxUIApp(8292, 8293)
 class CounterDemoApp
 {
     var serverClicks: Int64;

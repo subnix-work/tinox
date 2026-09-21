@@ -6,12 +6,12 @@ description = "Tinox-UI widget-library showcase: DataGrid<T>, DatePicker, RadioG
 [[dependencies]]
 group = "tinox.core"
 artifactId = "ui"
-version = "1.0.7"
+version = "1.0.13"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.0.3"
+version = "1.0.4"
 
 [[dependencies]]
 group = "tinox.core"

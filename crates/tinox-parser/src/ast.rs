@@ -423,6 +423,23 @@ pub struct FieldDef {
     pub span: Span,
     pub doc: Option<String>,
     pub annotations: Vec<Annotation>,
+    /// Optional `= <literal>` default, applied when an instance is
+    /// allocated WITHOUT a struct literal naming every field -- i.e. the
+    /// fresh, zeroed per-connection/per-consumer instances @TinoxUIApp/
+    /// @WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer allocate
+    /// directly (see codegen's `emit_field_defaults`). A
+    /// `ClassName { field: value, ... }` literal still has to name every
+    /// field, so a default can never silently shadow one there.
+    ///
+    /// Deliberately restricted to literals (and the empty array/map
+    /// literal) rather than arbitrary expressions: these are emitted into
+    /// generated bootstrap code, where running user expressions would
+    /// raise evaluation-order and side-effect questions no caller can
+    /// see, and where writing into the wrong IR buffer has already caused
+    /// real miscompiles before (see codegen's own note on
+    /// `ensure_generic_method_specialization`). The typechecker rejects
+    /// anything else with a message naming the restriction.
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]

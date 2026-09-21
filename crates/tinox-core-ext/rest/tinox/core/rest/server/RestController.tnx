@@ -8,7 +8,7 @@ namespace tinox.core.rest.server
      * Abstract base class for REST controllers.
      *
      * Extend this class and use annotations on your methods.
-     * Register the controller with RestApi.register().
+     * Register the controller with RestApi::register().
      *
      * Example:
      *   @Path("/api/users")

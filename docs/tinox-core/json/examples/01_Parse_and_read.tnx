@@ -1,0 +1,17 @@
+import tinox.core.json;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let value: JsonValue = Json::parse("{\"name\": \"tinox\", \"stable\": true}");
+        println(value.getField("name").getString());
+        println(value.getField("stable").getBool().toString());
+
+        let map: Map<String, JsonValue> = value.asTable();
+        println(map.keys().len().toString());
+
+        println(Json::stringify(value));
+        return 0;
+    }
+}

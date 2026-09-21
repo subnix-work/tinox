@@ -670,6 +670,7 @@
     <li><a href="#cli">CLI-Werkzeuge</a></li>
 
     <li class="section-label">Datenbankzugriff</li>
+    <li><a href="#mod-db">db</a></li>
     <li><a href="#orm">ORM &amp; Lambda-Query-DSL</a></li>
 
     <li class="section-label">Performance</li>
@@ -1272,7 +1273,7 @@
         <tr><td><code>@OnClose</code></td><td>Methode</td><td>WebSocket: Aufruf beim Verbindungsende, Signatur <code>fn(conn: Int64) -&gt; Nothing</code></td></tr>
         <tr><td><code>@Amqp10Consumer(host, port, user, pass, address)</code></td><td>Klasse</td><td>AMQP-1.0: generiert einen Connect/Attach/Receive-Loop, gespawnt neben <code>class Main</code> (mehrere Consumer-Klassen erlaubt, auch gegen denselben Broker mit unterschiedlichen Queues)</td></tr>
         <tr><td><code>@Amqp091Consumer(host, port, vhost, user, pass, queue)</code></td><td>Klasse</td><td>AMQP-0-9-1: generiert einen Connect/Open/Qos/Consume/Receive-Loop, gespawnt neben <code>class Main</code> (mehrere Consumer-Klassen erlaubt); Prefetch ist v1 fest auf 1</td></tr>
-        <tr><td><code>@TinoxUIApp(httpPort, wsPort)</code></td><td>Klasse</td><td>Tinox-UI: generiert die HTTP-Shell/Client-JS auf <code>httpPort</code> und einen WebSocket-Accept-Loop auf <code>wsPort</code>, der die <code>@View</code>-Methode aufruft und den Component-Baum diff-basiert neu rendert (nur Patches werden gesendet, kein Voll-Resend); höchstens eine <code>@TinoxUIApp</code>-Klasse pro Programm, mit genau einer <code>@View</code>-Methode</td></tr>
+        <tr><td><code>@TinoxUIApp</code><br><code>@TinoxUIApp(httpPort)</code><br><code>@TinoxUIApp(httpPort, wsPort)</code></td><td>Klasse</td><td>Tinox-UI: generiert die HTTP-Shell/Client-JS auf <code>httpPort</code> und einen WebSocket-Accept-Loop auf <code>wsPort</code>, der die <code>@View</code>-Methode aufruft und den Component-Baum diff-basiert neu rendert (nur Patches werden gesendet, kein Voll-Resend); höchstens eine <code>@TinoxUIApp</code>-Klasse pro Programm, mit genau einer <code>@View</code>-Methode. <strong>Beide Ports sind optional:</strong> ohne Argument <code>8080</code>/<code>8081</code>, mit einem Argument <code>httpPort</code> und <code>httpPort + 1</code>. Alle gebundenen Ports eines Programms werden zur Compile-Zeit auf Kollisionen geprüft &mdash; zwei Binder auf einem Port scheitern zur Laufzeit <em>nicht</em> hörbar (<code>SO_REUSEPORT</code>), sondern teilen den Traffic still unter sich auf</td></tr>
         <tr><td><code>@View</code></td><td>Methode</td><td>Tinox-UI: markiert die Methode, die den Component-Baum der <code>@TinoxUIApp</code> baut/neu baut, Signatur <code>fn() -&gt; Component</code>; dient zugleich als Fallback/404-Ansicht, wenn <code>@Route</code> verwendet wird und die aktuelle Route auf kein Muster passt</td></tr>
         <tr><td><code>@Route("/path/:param")</code></td><td>Methode</td><td>Tinox-UI: registriert eine <code>fn() -&gt; Component</code>-Methode innerhalb einer <code>@TinoxUIApp</code>-Klasse als Builder für diesen Pfad (Vaadin-artiges Routing). Erfordert ein Feld <code>var currentRoute: String</code>; gematchte <code>:name</code>-Pfadsegmente werden automatisch in ein gleichnamiges Feld der Klasse geschrieben, falls vorhanden</td></tr>
       </tbody>
@@ -1946,8 +1947,8 @@ epoll_fd = epoll_create1(0);
   <a id="mod-rest-server"></a>
 
   <h2>rest.client &amp; rest.server</h2>
-  <p class="mod-ref-note">rest wird als ein einziges Paket veröffentlicht, das sowohl die Client- als auch die Server-API abdeckt. Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/rest/1-0-2/docs.html" target="_blank" rel="noopener">docs/tinox-core/rest/1-0-2/docs.html</a></p>
-  <iframe class="mod-iframe" src="docs/tinox-core/rest/1-0-2/docs.html" loading="lazy" title="tinox.core:rest Dokumentation"></iframe>
+  <p class="mod-ref-note">rest wird als ein einziges Paket veröffentlicht, das sowohl die Client- als auch die Server-API abdeckt. Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/rest/1-0-3/docs.html" target="_blank" rel="noopener">docs/tinox-core/rest/1-0-3/docs.html</a></p>
+  <iframe class="mod-iframe" src="docs/tinox-core/rest/1-0-3/docs.html" loading="lazy" title="tinox.core:rest Dokumentation"></iframe>
   </div>
 
     <div class="mod-section" id="mod-socket">
@@ -1967,8 +1968,8 @@ epoll_fd = epoll_create1(0);
     <div class="mod-section" id="mod-ui">
 
   <h2>ui</h2>
-  <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/ui/1-0-11/docs.html" target="_blank" rel="noopener">docs/tinox-core/ui/1-0-11/docs.html</a></p>
-  <iframe class="mod-iframe" src="docs/tinox-core/ui/1-0-11/docs.html" loading="lazy" title="tinox.core:ui Dokumentation"></iframe>
+  <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/ui/1-0-13/docs.html" target="_blank" rel="noopener">docs/tinox-core/ui/1-0-13/docs.html</a></p>
+  <iframe class="mod-iframe" src="docs/tinox-core/ui/1-0-13/docs.html" loading="lazy" title="tinox.core:ui Dokumentation"></iframe>
   </div>
 
     <div class="mod-section" id="mod-jwt">
@@ -2370,6 +2371,14 @@ epoll_fd = epoll_create1(0);
   <iframe class="mod-iframe" src="docs/tinox-core/logger/1-0-0/docs.html" loading="lazy" title="tinox.core:logger Dokumentation"></iframe>
   </div>
 
+    <div class="mod-section" id="mod-db">
+
+  <h2>db</h2>
+  <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/db/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/db/1-0-0/docs.html</a></p>
+  <iframe class="mod-iframe" src="docs/tinox-core/db/1-0-0/docs.html" loading="lazy" title="tinox.core:db Dokumentation"></iframe>
+  <p class="mod-ref-note">Nur die Query-Chain-Klassen (<code>DB</code>, <code>EntityQuery</code>) selbst — <code>@Entity</code>/<code>@Table</code>/<code>@Column</code>/<code>@Id</code>/<code>@GeneratedValue</code>, der Connection-Pool und <code>@Transactional</code> (seit Issue #191) sind Compiler-/Codegen-Features, keine Stdlib-Klassen; siehe den <a href="#orm">ORM &amp; Lambda-Query-DSL</a>-Leitfaden weiter unten für deren vollständige Referenz.</p>
+  </div>
+
 
   <!-- ══════════════ ORM ══════════════ -->
   <section id="orm">
@@ -2422,19 +2431,19 @@ url    = "sqlite:///path/to/database.db"</code></pre></div>
 
   <h3>Lambda-Query-DSL</h3>
   <div class="card"><pre><code>// Alle Nutzer über 18, alphabetisch, max. 10 Ergebnisse
-let adults: List&lt;User&gt; = DB.of(User)
+let adults: List&lt;User&gt; = DB::of(User)
     .filter(u -&gt; u.age &gt; 18)
     .orderBy(u -&gt; u.name)
     .limit(10)
     .list();
 
 // Einzelnen Nutzer lesen
-let alice: User = DB.of(User)
+let alice: User = DB::of(User)
     .filter(u -&gt; u.name == "Alice")
     .first();
 
 // Anzahl aktiver Nutzer
-let n: Int64 = DB.of(User)
+let n: Int64 = DB::of(User)
     .filter(u -&gt; u.active == true)
     .count();</code></pre></div>
 
@@ -2459,16 +2468,16 @@ let n: Int64 = DB.of(User)
 let user: User = User {};
 user.name = "Alice";
 user.age  = 30;
-let saved: User = DB.of(User).save(user);
+let saved: User = DB::of(User).save(user);
 
 // DELETE
-DB.of(User).delete(saved);
+DB::of(User).delete(saved);
 
 // Mehrere auf einmal speichern
 let list: List&lt;User&gt; = List::new();
 list.add(user1);
 list.add(user2);
-DB.of(User).saveAll(list);</code></pre></div>
+DB::of(User).saveAll(list);</code></pre></div>
 
   <h3>Fehlerbehandlung</h3>
   <p>Datenbankfehler werden aktuell auf stderr protokolliert. Eine try/catch-Integration ist für eine spätere Version geplant. Verbindungsfehler beim Start beenden das Programm mit einer aussagekräftigen Fehlermeldung.</p>

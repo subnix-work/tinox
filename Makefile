@@ -5,9 +5,9 @@
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
 
-.PHONY: check test e2e dogfood install-hooks asan checked clippy fuzz
+.PHONY: check test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync
 
-check: clippy test dogfood
+check: clippy test dogfood grammar-sync
 
 # Lint gate: 0 warnings across the whole workspace (bins + tests).
 # Deliberate exceptions are #[allow(...)] with a justification in the code.
@@ -158,6 +158,18 @@ fuzz:
 		fi; \
 		rm -rf fuzz/$$t/artifacts; \
 	done
+
+# Issue #267: editors/vscode/syntaxes/tinox.tmLanguage.json and
+# editors/eclipse/tinox-eclipse/grammars/tinox.tmLanguage.json are
+# deliberately maintained as byte-identical duplicates (CLAUDE.md) -- each
+# editor ecosystem wants the grammar in its own conventional location, and
+# there's no symlink/build step keeping the two in sync. This is what
+# makes that convention self-enforcing instead of relying on remembering
+# to update both by hand: docs.html/docs_en.html, the other pair
+# maintained under the identical convention, silently drifted for weeks
+# with nothing catching it.
+grammar-sync:
+	cmp editors/vscode/syntaxes/tinox.tmLanguage.json editors/eclipse/tinox-eclipse/grammars/tinox.tmLanguage.json
 
 # Activate git hooks (pre-push runs `make check`)
 install-hooks:

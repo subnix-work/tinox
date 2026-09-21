@@ -237,6 +237,29 @@ pub struct Http3RestControllerInfo {
     pub key_path: String,
 }
 
+/// The HTTP port a `@TinoxUIApp` with no explicit port binds; the WS port
+/// defaults to this + 1. Deliberately the same 8080 the REST auto-server
+/// defaults to and the same pair every `docs/tinox-core/ui/examples/*.tnx`
+/// already spells out by hand -- a UI app is normally the whole program,
+/// so the conventional "the app" port is the right default. A program that
+/// really does combine a UI app with REST routes or a @WebsocketEndpoint
+/// no longer collides silently: `check_bind_port_collisions` (main.rs)
+/// rejects it at compile time, which is what makes this default safe
+/// rather than a trap (two processes sharing a port via SO_REUSEPORT is
+/// the single most confusing failure mode in this codebase's history).
+pub const TINOXUI_DEFAULT_HTTP_PORT: i64 = 8080;
+
+/// Reads one `@TinoxUIApp` port argument, if it is present AND an integer
+/// literal. `None` means "use the default" for a missing argument; a
+/// present-but-not-an-integer argument also lands here, and is reported by
+/// `AnnotationProcessor::validate` rather than silently defaulted.
+fn tinoxui_port_arg(arg: Option<&tinox_parser::AnnotationArg>) -> Option<i64> {
+    match arg {
+        Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) => Some(*p),
+        _ => None,
+    }
+}
+
 /// @TinoxUIApp(httpPort, wsPort) on a class (issue #215, Phase 4) --
 /// annotation sugar over the hand-wired @WebsocketEndpoint + HttpServer
 /// shell-serving boilerplate every Tinox-UI app (tinox_ui_hello,
@@ -563,9 +586,9 @@ impl AnnotationProcessor {
             AnnotationInfo {
                 name: "TinoxUIApp".to_string(),
                 valid_targets: vec![AnnotationTarget::Class],
-                min_args: 2,
+                min_args: 0,
                 max_args: 2,
-                description: "@TinoxUIApp(httpPort, wsPort) — marks a class as a Tinox-UI application; the compiler generates the HTTP shell/client-JS server on httpPort and a WebSocket accept loop on wsPort that calls the class's own @View method to build/rebuild the component tree (diff-based rendering: only patches are sent, not a full resend, after every event). Requires `import tinox.core.ui;`, `import tinox.core.websocket;`, and `import tinox.core.http_server;`. At most one @TinoxUIApp class per program, with exactly one @View method.".to_string(),
+                description: "@TinoxUIApp — marks a class as a Tinox-UI application; the compiler generates the HTTP shell/client-JS server on httpPort and a WebSocket accept loop on wsPort that calls the class's own @View method to build/rebuild the component tree (diff-based rendering: only patches are sent, not a full resend, after every event). Both ports are optional: @TinoxUIApp defaults to (8080, 8081), @TinoxUIApp(httpPort) uses httpPort and httpPort + 1, @TinoxUIApp(httpPort, wsPort) sets both explicitly. Every bound port in the program is checked for collisions at compile time. Requires `import tinox.core.ui;`, `import tinox.core.websocket;`, and `import tinox.core.http_server;`. At most one @TinoxUIApp class per program, with exactly one @View method.".to_string(),
             },
         );
         registry.insert(
@@ -975,6 +998,24 @@ impl AnnotationProcessor {
                             ),
                         ));
                     }
+                    // @TinoxUIApp's arguments are optional, so a malformed
+                    // one can't be caught by the arity checks above -- and
+                    // silently falling back to the default port would be
+                    // exactly the "mostly works somehow" behaviour this
+                    // project refuses. Both positions are ports.
+                    if ann.name == "TinoxUIApp" {
+                        for (idx, arg) in ann.args.iter().enumerate() {
+                            if tinoxui_port_arg(Some(arg)).is_none() {
+                                errors.push(Error::new(
+                                    ann.span,
+                                    format!(
+                                        "@TinoxUIApp's {} argument must be an integer port literal (omit it to use the default)",
+                                        if idx == 0 { "first (httpPort)" } else { "second (wsPort)" }
+                                    ),
+                                ));
+                            }
+                        }
+                    }
                 }
                 None => {
                     errors.push(Error::new(
@@ -1072,11 +1113,19 @@ impl AnnotationProcessor {
                     }
                 }
                 "TinoxUIApp" => {
-                    let http_port = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.first() { Some(*p) } else { None };
-                    let ws_port = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.get(1) { Some(*p) } else { None };
-                    if let (Some(http_port), Some(ws_port)) = (http_port, ws_port) {
-                        tinoxui_app_args = Some((http_port, ws_port));
-                    }
+                    // Both ports are optional (see the registry entry's own
+                    // description for the three accepted shapes). The class
+                    // is registered as a UI app no matter which shape was
+                    // used -- an earlier version only pushed it when BOTH
+                    // args parsed as integer literals, so a malformed
+                    // argument silently produced a program with no UI at
+                    // all rather than an error. A non-integer argument is
+                    // now rejected by `validate` instead.
+                    let http_port = tinoxui_port_arg(ann.args.first())
+                        .unwrap_or(TINOXUI_DEFAULT_HTTP_PORT);
+                    let ws_port =
+                        tinoxui_port_arg(ann.args.get(1)).unwrap_or(http_port + 1);
+                    tinoxui_app_args = Some((http_port, ws_port));
                 }
                 "Auth" => {
                     if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {

@@ -21,4 +21,4 @@ version = "1.0.2"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "rest"
-version = "1.0.2"
+version = "1.0.3"
