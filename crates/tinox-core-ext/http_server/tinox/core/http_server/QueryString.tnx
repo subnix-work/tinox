@@ -15,7 +15,7 @@ namespace tinox.core.http_server
          */
         fn parse(qs: String) -> Map<String, String>
         {
-            let params: Map<String, String> = Map::new();
+            const params: Map<String, String> = Map::new();
             if (qs.len() == 0)
             {
                 return params;
@@ -28,7 +28,7 @@ namespace tinox.core.http_server
 
             while i < qs.len()
             {
-                let ch: String = qs.substring(i, i + 1);
+                const ch: String = qs.substring(i, i + 1);
                 if (ch == "&")
                 {
                     if (key.len() > 0)
@@ -70,7 +70,7 @@ namespace tinox.core.http_server
          */
         fn get(qs: String, name: String) -> String
         {
-            let params: Map<String, String> = QueryString::parse(qs);
+            const params: Map<String, String> = QueryString::parse(qs);
             if (params.contains(name))
             {
                 return params[name];

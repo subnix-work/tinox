@@ -157,7 +157,7 @@ namespace tinox.core.http3_server
             this.running = true;
             while this.running
             {
-                let requestId: Int64 = http3ServerPumpOnce(this.serverHandle);
+                const requestId: Int64 = http3ServerPumpOnce(this.serverHandle);
                 if (requestId >= 0)
                 {
                     this.dispatchRequest(requestId);
@@ -180,14 +180,14 @@ namespace tinox.core.http3_server
          */
         fn dispatchRequest(requestId: Int64) -> Nothing
         {
-            let headers: Map<String, String> = http3RequestHeaders(requestId);
-            let request: HttpRequest = HttpRequest::new(http3RequestMethod(requestId), http3RequestPath(requestId), "", headers, http3RequestBody(requestId));
+            const headers: Map<String, String> = http3RequestHeaders(requestId);
+            const request: HttpRequest = HttpRequest::new(http3RequestMethod(requestId), http3RequestPath(requestId), "", headers, http3RequestBody(requestId));
             request.wasEarlyData = http3RequestWasEarlyData(requestId);
 
-            let response: HttpResponse = HttpResponse::new();
-            let ctx: HttpContext = HttpContext::new(request, response);
+            const response: HttpResponse = HttpResponse::new();
+            const ctx: HttpContext = HttpContext::new(request, response);
 
-            let middlewareContinue: Bool = this.runMiddleware(ctx);
+            const middlewareContinue: Bool = this.runMiddleware(ctx);
             if (middlewareContinue == false)
             {
                 ctx.response.statusCode = 403;
@@ -195,7 +195,7 @@ namespace tinox.core.http3_server
             }
             else
             {
-                let matched: Bool = this.matchRoute(ctx);
+                const matched: Bool = this.matchRoute(ctx);
                 if (matched == false)
                 {
                     ctx.response.statusCode = 404;
@@ -212,7 +212,7 @@ namespace tinox.core.http3_server
             var i: Int64 = 0;
             while i < this.middleware.len()
             {
-                let result: Bool = this.middleware[i](ctx);
+                const result: Bool = this.middleware[i](ctx);
                 if (result == false)
                 {
                     return false;
@@ -227,10 +227,10 @@ namespace tinox.core.http3_server
             var i: Int64 = 0;
             while i < this.routes.len()
             {
-                let route: Route = this.routes[i];
+                const route: Route = this.routes[i];
                 if (route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path))
                 {
-                    let params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
+                    const params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
                     ctx.request.setParams(params);
                     route.handler(ctx);
                     return true;

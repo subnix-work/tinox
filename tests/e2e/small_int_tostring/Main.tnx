@@ -14,9 +14,9 @@ class Main
     fnc main() -> Int32 {
         println((5000000000 as Int32).toString());   // Int64->Int32 wrap
         println((3.5 as Int32).toString());           // Float->Int32 trunc
-        let a: Int32 = 42;
+        const a: Int32 = 42;
         println(a.toString());                         // Int32 variable
-        let c: small_int_tostring = small_int_tostring { n: 7 };
+        const c: small_int_tostring = small_int_tostring { n: 7 };
         println(c.n.toString());                       // Int32 field read
         return 0;
     }

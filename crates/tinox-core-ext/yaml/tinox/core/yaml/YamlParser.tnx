@@ -18,12 +18,12 @@ namespace tinox.core.yaml
     {
         fn parse(content: String) -> YamlValue
         {
-            let lines: List<YamlLine> = YamlParser::tokenize(content);
+            const lines: List<YamlLine> = YamlParser::tokenize(content);
             if (lines.len() == 0)
             {
                 return YamlValue::ofMap(Map::new());
             }
-            let idxRef: List<Int64> = [0];
+            const idxRef: List<Int64> = [0];
             return YamlParser::parseBlock(lines, idxRef, 0);
         }
 
@@ -32,7 +32,7 @@ namespace tinox.core.yaml
 
         fn tokenize(content: String) -> List<YamlLine>
         {
-            let rawLines: List<String> = content.split("\n");
+            const rawLines: List<String> = content.split("\n");
             var lines: List<YamlLine> = [];
             var i: Int64 = 0;
             while i < rawLines.len()
@@ -42,7 +42,7 @@ namespace tinox.core.yaml
                 {
                     raw = raw.substring(0, raw.len() - 1);
                 }
-                let indent: Int64 = YamlParser::countIndent(raw);
+                const indent: Int64 = YamlParser::countIndent(raw);
                 var rest: String = raw.substring(indent, raw.len());
                 rest = YamlParser::stripComment(rest).trim();
                 if (rest.len() > 0 && rest != "---" && rest != "...")
@@ -79,10 +79,10 @@ namespace tinox.core.yaml
             var inSingle: Bool = false;
             var inDouble: Bool = false;
             var i: Int64 = 0;
-            let n: Int64 = rest.len();
+            const n: Int64 = rest.len();
             while i < n
             {
-                let ch: String = rest.substring(i, i + 1);
+                const ch: String = rest.substring(i, i + 1);
                 if (!inDouble && ch == "'")
                 {
                     inSingle = !inSingle;
@@ -104,17 +104,17 @@ namespace tinox.core.yaml
 
         fn parseBlock(lines: List<YamlLine>, idxRef: List<Int64>, minIndent: Int64) -> YamlValue
         {
-            let idx: Int64 = idxRef[0];
+            const idx: Int64 = idxRef[0];
             if (idx >= lines.len())
             {
                 return YamlValue::ofNull();
             }
-            let indent: Int64 = lines[idx].indent;
+            const indent: Int64 = lines[idx].indent;
             if (indent < minIndent)
             {
                 return YamlValue::ofNull();
             }
-            let content: String = lines[idx].content;
+            const content: String = lines[idx].content;
             if (content == "-" || content.startsWith("- "))
             {
                 return YamlParser::parseSequence(lines, idxRef, indent);
@@ -132,14 +132,14 @@ namespace tinox.core.yaml
         // if neither applies.
         fn parseNestedValue(lines: List<YamlLine>, idxRef: List<Int64>, parentIndent: Int64) -> YamlValue
         {
-            let nextIdx: Int64 = idxRef[0];
+            const nextIdx: Int64 = idxRef[0];
             if (nextIdx >= lines.len())
             {
                 return YamlValue::ofNull();
             }
-            let nextIndent: Int64 = lines[nextIdx].indent;
-            let nextContent: String = lines[nextIdx].content;
-            let isDash: Bool = nextContent == "-" || nextContent.startsWith("- ");
+            const nextIndent: Int64 = lines[nextIdx].indent;
+            const nextContent: String = lines[nextIdx].content;
+            const isDash: Bool = nextContent == "-" || nextContent.startsWith("- ");
             if (isDash && nextIndent >= parentIndent)
             {
                 return YamlParser::parseSequence(lines, idxRef, nextIndent);
@@ -153,19 +153,19 @@ namespace tinox.core.yaml
 
         fn parseMapping(lines: List<YamlLine>, idxRef: List<Int64>, mapIndent: Int64) -> YamlValue
         {
-            let result: Map<String, YamlValue> = Map::new();
+            const result: Map<String, YamlValue> = Map::new();
             while idxRef[0] < lines.len() && lines[idxRef[0]].indent == mapIndent
             {
-                let idx: Int64 = idxRef[0];
-                let line: YamlLine = lines[idx];
-                let split: Int64 = YamlParser::findColon(line.content);
+                const idx: Int64 = idxRef[0];
+                const line: YamlLine = lines[idx];
+                const split: Int64 = YamlParser::findColon(line.content);
                 if (split == -1)
                 {
                     throw "Yaml::parse: expected 'key: value' at indent " + mapIndent.toString() + ": " + line.content;
                 }
                 var key: String = line.content.substring(0, split).trim();
                 key = YamlParser::stripQuotes(key);
-                let valueStr: String = line.content.substring(split + 1, line.content.len()).trim();
+                const valueStr: String = line.content.substring(split + 1, line.content.len()).trim();
                 var value: YamlValue = YamlValue::ofNull();
                 if (valueStr.len() == 0)
                 {
@@ -184,12 +184,12 @@ namespace tinox.core.yaml
 
         fn parseSequence(lines: List<YamlLine>, idxRef: List<Int64>, indent: Int64) -> YamlValue
         {
-            let items: List<YamlValue> = [];
+            const items: List<YamlValue> = [];
             while idxRef[0] < lines.len() && lines[idxRef[0]].indent == indent && (lines[idxRef[0]].content == "-" || lines[idxRef[0]].content.startsWith("- "))
             {
-                let idx: Int64 = idxRef[0];
-                let raw: String = lines[idx].content;
-                let rest: String = raw == "-" ? "" : raw.substring(2, raw.len());
+                const idx: Int64 = idxRef[0];
+                const raw: String = lines[idx].content;
+                const rest: String = raw == "-" ? "" : raw.substring(2, raw.len());
                 var value: YamlValue = YamlValue::ofNull();
                 if (rest.len() == 0)
                 {
@@ -232,10 +232,10 @@ namespace tinox.core.yaml
             var inSingle: Bool = false;
             var inDouble: Bool = false;
             var i: Int64 = 0;
-            let n: Int64 = content.len();
+            const n: Int64 = content.len();
             while i < n
             {
-                let ch: String = content.substring(i, i + 1);
+                const ch: String = content.substring(i, i + 1);
                 if (!inDouble && ch == "'")
                 {
                     inSingle = !inSingle;
@@ -273,7 +273,7 @@ namespace tinox.core.yaml
 
         fn parseScalarOrFlow(s: String) -> YamlValue
         {
-            let t: String = s.trim();
+            const t: String = s.trim();
             if (t.startsWith("{") || t.startsWith("["))
             {
                 return YamlParser::parseFlow(t);
@@ -293,22 +293,22 @@ namespace tinox.core.yaml
             }
             if (s.startsWith("{") && s.endsWith("}"))
             {
-                let inner: String = s.substring(1, s.len() - 1);
-                let parts: List<String> = YamlParser::splitTopLevel(inner, ",");
-                let m: Map<String, YamlValue> = Map::new();
+                const inner: String = s.substring(1, s.len() - 1);
+                const parts: List<String> = YamlParser::splitTopLevel(inner, ",");
+                const m: Map<String, YamlValue> = Map::new();
                 var i: Int64 = 0;
                 while i < parts.len()
                 {
-                    let p: String = parts[i].trim();
+                    const p: String = parts[i].trim();
                     if (p.len() > 0)
                     {
-                        let split: Int64 = YamlParser::findColon(p);
+                        const split: Int64 = YamlParser::findColon(p);
                         if (split == -1)
                         {
                             throw "Yaml::parse: expected 'key: value' inside flow mapping: " + p;
                         }
-                        let key: String = YamlParser::stripQuotes(p.substring(0, split).trim());
-                        let valueStr: String = p.substring(split + 1, p.len()).trim();
+                        const key: String = YamlParser::stripQuotes(p.substring(0, split).trim());
+                        const valueStr: String = p.substring(split + 1, p.len()).trim();
                         m.insert(key, YamlParser::parseScalarOrFlow(valueStr));
                     }
                     i = i + 1;
@@ -317,13 +317,13 @@ namespace tinox.core.yaml
             }
             if (s.startsWith("[") && s.endsWith("]"))
             {
-                let inner: String = s.substring(1, s.len() - 1);
-                let parts: List<String> = YamlParser::splitTopLevel(inner, ",");
+                const inner: String = s.substring(1, s.len() - 1);
+                const parts: List<String> = YamlParser::splitTopLevel(inner, ",");
                 var list: List<YamlValue> = [];
                 var i: Int64 = 0;
                 while i < parts.len()
                 {
-                    let p: String = parts[i].trim();
+                    const p: String = parts[i].trim();
                     if (p.len() > 0)
                     {
                         list.push(YamlParser::parseScalarOrFlow(p));
@@ -345,10 +345,10 @@ namespace tinox.core.yaml
             var inDouble: Bool = false;
             var cur: String = "";
             var i: Int64 = 0;
-            let n: Int64 = s.len();
+            const n: Int64 = s.len();
             while i < n
             {
-                let ch: String = s.substring(i, i + 1);
+                const ch: String = s.substring(i, i + 1);
                 if (!inDouble && ch == "'")
                 {
                     inSingle = !inSingle;
@@ -384,7 +384,7 @@ namespace tinox.core.yaml
 
         fn parseScalar(raw: String) -> YamlValue
         {
-            let s: String = raw.trim();
+            const s: String = raw.trim();
             if (s.len() == 0)
             {
                 return YamlValue::ofNull();
@@ -424,13 +424,13 @@ namespace tinox.core.yaml
         {
             var result: String = "";
             var i: Int64 = 0;
-            let n: Int64 = s.len();
+            const n: Int64 = s.len();
             while i < n
             {
-                let ch: String = s.substring(i, i + 1);
+                const ch: String = s.substring(i, i + 1);
                 if (ch == "\\" && i + 1 < n)
                 {
-                    let nxt: String = s.substring(i + 1, i + 2);
+                    const nxt: String = s.substring(i + 1, i + 2);
                     if (nxt == "n")
                     {
                         result = result + "\n";
@@ -471,7 +471,7 @@ namespace tinox.core.yaml
             }
             while i < s.len()
             {
-                let code: Int64 = s.charCodeAt(i);
+                const code: Int64 = s.charCodeAt(i);
                 if (code < 48 || code > 57)
                 {
                     return false;
@@ -497,8 +497,8 @@ namespace tinox.core.yaml
             var sawExp: Bool = false;
             while i < s.len()
             {
-                let ch: String = s.substring(i, i + 1);
-                let code: Int64 = s.charCodeAt(i);
+                const ch: String = s.substring(i, i + 1);
+                const code: Int64 = s.charCodeAt(i);
                 if (code >= 48 && code <= 57)
                 {
                     sawDigit = true;

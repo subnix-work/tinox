@@ -8,12 +8,12 @@ class Main
 {
     fnc main() -> Int32
     {
-        let customers: List<Customer> = DB::of(Customer).list();
+        const customers: List<Customer> = DB::of(Customer).list();
 
-        let customer: Customer = DB::of(Customer).filter(c => c.id == 1).first();
+        const customer: Customer = DB::of(Customer).filter(c => c.id == 1).first();
         println(customer.name);
 
-        let active: List<Customer> = DB::of(Customer).orderBy(c => c.name).limit(10).list();
+        const active: List<Customer> = DB::of(Customer).orderBy(c => c.name).limit(10).list();
 
         DB::of(Customer).save(customer);
         DB::of(Customer).delete(customer);

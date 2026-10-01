@@ -17,7 +17,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let g: IGreeter = Greeter{};
+        const g: IGreeter = Greeter{};
         println(g.greetNum());
         return 0;
     }

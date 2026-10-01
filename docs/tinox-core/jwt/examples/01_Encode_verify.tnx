@@ -5,18 +5,18 @@ class Main
 {
     fnc main() -> Int32
     {
-        let secret: String = "super-secret-key";
+        const secret: String = "super-secret-key";
 
-        let payload: Map<String, JsonValue> = Map::new();
+        const payload: Map<String, JsonValue> = Map::new();
         payload["sub"] = Json::parse("\"user-42\"");
 
-        let token: String = Jwt::encode(payload, secret);
+        const token: String = Jwt::encode(payload, secret);
         println(token);
 
-        let ok: Bool = Jwt::verify(token, secret);
+        const ok: Bool = Jwt::verify(token, secret);
         println("valid: " + ok.toString());
 
-        let decoded: Map<String, JsonValue> = Jwt::decode(token, secret);
+        const decoded: Map<String, JsonValue> = Jwt::decode(token, secret);
         println(decoded["sub"].getString());
         return 0;
     }

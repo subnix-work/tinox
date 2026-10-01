@@ -3,8 +3,8 @@ import Fib;
 class Main
 {
     fnc main() -> Int32 {
-        let f: Fib = Fib {};
-        let result: Int64 = f.compute(40);
+        const f: Fib = Fib {};
+        const result: Int64 = f.compute(40);
         println("fib(40) = ${result}");
         return 0;
     }

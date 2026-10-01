@@ -16,15 +16,15 @@ import tinox.core.crypto;
 class Main
 {
     fnc main() -> Int32 {
-        let plaintext: String = "Hello, AES-256-GCM! This plaintext is longer than one AES block (16 bytes) to exercise multi-block GCM.";
-        let key: String = "correct horse battery staple";
+        const plaintext: String = "Hello, AES-256-GCM! This plaintext is longer than one AES block (16 bytes) to exercise multi-block GCM.";
+        const key: String = "correct horse battery staple";
 
-        let ciphertext: String = Crypto::aesEncrypt(plaintext, key);
-        let decrypted: String = Crypto::aesDecrypt(ciphertext, key);
+        const ciphertext: String = Crypto::aesEncrypt(plaintext, key);
+        const decrypted: String = Crypto::aesDecrypt(ciphertext, key);
         println("match:" + (decrypted == plaintext).toString());
 
         // Two encryptions of the same plaintext must differ (random nonce per call).
-        let ciphertext2: String = Crypto::aesEncrypt(plaintext, key);
+        const ciphertext2: String = Crypto::aesEncrypt(plaintext, key);
         println("nonces-differ:" + (ciphertext != ciphertext2).toString());
 
         // Wrong key must fail loudly (GCM auth tag mismatch), never silently
@@ -42,12 +42,12 @@ class Main
         // "0" — that would coincidentally match ~1/16 of the time and defeat
         // the test) instead of overwriting with a constant.
         var tamperedThrew: Bool = false;
-        let firstNibble: String = ciphertext.substring(0, 1);
+        const firstNibble: String = ciphertext.substring(0, 1);
         var flipped: String = "0";
         if (firstNibble == "0") {
             flipped = "1";
         }
-        let tampered: String = flipped + ciphertext.substring(1, ciphertext.len());
+        const tampered: String = flipped + ciphertext.substring(1, ciphertext.len());
         try {
             Crypto::aesDecrypt(tampered, key);
         } catch e: String {
@@ -57,8 +57,8 @@ class Main
 
         // Empty-plaintext boundary case: the decrypted result is itself an empty
         // string, which must not be confused with the internal error sentinel.
-        let emptyCipher: String = Crypto::aesEncrypt("", key);
-        let emptyPlain: String = Crypto::aesDecrypt(emptyCipher, key);
+        const emptyCipher: String = Crypto::aesEncrypt("", key);
+        const emptyPlain: String = Crypto::aesDecrypt(emptyCipher, key);
         println("empty-roundtrip:" + (emptyPlain == "").toString());
         println("empty-cipher-len:" + emptyCipher.len().toString());
 

@@ -26,8 +26,8 @@ class Main
 {
 
     fnc attachOkAndGrantFlow(sconn: Int64, chanId: Int64) -> Int64 {
-        let fAttach = Amqp10::readFrame(sconn);
-        let pAttach = Amqp10::decodePerformative(fAttach.body);
+        const fAttach = Amqp10::readFrame(sconn);
+        const pAttach = Amqp10::decodePerformative(fAttach.body);
         Amqp10::writeFrame(sconn, 0, chanId, Amqp10::encodePerformative(0x12, pAttach.fields));
         var handle: Int64 = -1;
         if (pAttach.fields.len() > 1) {
@@ -45,15 +45,15 @@ class Main
 
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
 
         // --- SASL header + negotiation ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-        let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
         Amqp10::writeFrame(sconn, 1, 0, mechBody);
         Amqp10::readFrame(sconn);
-        let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
+        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
         // --- AMQP header ---
@@ -69,7 +69,7 @@ class Main
         Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
 
         // --- begin (session 1) / begin-ok ---
-        let fBegin1 = Amqp10::readFrame(sconn);
+        const fBegin1 = Amqp10::readFrame(sconn);
         var begin1Fields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin1.chanId), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
@@ -77,7 +77,7 @@ class Main
         Amqp10::writeFrame(sconn, 0, fBegin1.chanId, Amqp10::encodePerformative(0x11, begin1Fields));
 
         // --- begin (session 2) / begin-ok ---
-        let fBegin2 = Amqp10::readFrame(sconn);
+        const fBegin2 = Amqp10::readFrame(sconn);
         var begin2Fields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin2.chanId), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
@@ -85,23 +85,23 @@ class Main
         Amqp10::writeFrame(sconn, 0, fBegin2.chanId, Amqp10::encodePerformative(0x11, begin2Fields));
 
         // --- attach 1a (session 1) / flow ---
-        let handle1a = attachOkAndGrantFlow(sconn, fBegin1.chanId);
-        let f1a = Amqp10::readFrame(sconn);
-        let p1a = Amqp10::decodePerformative(f1a.body);
+        const handle1a = attachOkAndGrantFlow(sconn, fBegin1.chanId);
+        const f1a = Amqp10::readFrame(sconn);
+        const p1a = Amqp10::decodePerformative(f1a.body);
         var t1aHandle: Int64 = -1;
         if (p1a.fields.len() > 0) { match p1a.fields[0] { UIntVal(n) => { t1aHandle = n; } _ => {} } }
 
         // --- attach 1b (session 1, second link) / flow ---
-        let handle1b = attachOkAndGrantFlow(sconn, fBegin1.chanId);
-        let f1b = Amqp10::readFrame(sconn);
-        let p1b = Amqp10::decodePerformative(f1b.body);
+        const handle1b = attachOkAndGrantFlow(sconn, fBegin1.chanId);
+        const f1b = Amqp10::readFrame(sconn);
+        const p1b = Amqp10::decodePerformative(f1b.body);
         var t1bHandle: Int64 = -1;
         if (p1b.fields.len() > 0) { match p1b.fields[0] { UIntVal(n) => { t1bHandle = n; } _ => {} } }
 
         // --- attach 2a (session 2) / flow ---
-        let handle2a = attachOkAndGrantFlow(sconn, fBegin2.chanId);
-        let f2a = Amqp10::readFrame(sconn);
-        let p2a = Amqp10::decodePerformative(f2a.body);
+        const handle2a = attachOkAndGrantFlow(sconn, fBegin2.chanId);
+        const f2a = Amqp10::readFrame(sconn);
+        const p2a = Amqp10::decodePerformative(f2a.body);
         var t2aHandle: Int64 = -1;
         if (p2a.fields.len() > 0) { match p2a.fields[0] { UIntVal(n) => { t2aHandle = n; } _ => {} } }
 
@@ -136,34 +136,34 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv);
 
-        let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
         if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
         println("ok-connect");
 
-        let session1 = Amqp10Session::begin(conn);
-        let session2 = Amqp10Session::begin(conn);
+        const session1 = Amqp10Session::begin(conn);
+        const session2 = Amqp10Session::begin(conn);
 
-        let link1a = Amqp10Link::attach(session1, "s1-link-a", false, "target-a");
+        const link1a = Amqp10Link::attach(session1, "s1-link-a", false, "target-a");
         link1a.publish([65], "text/plain");
 
-        let link1b = Amqp10Link::attach(session1, "s1-link-b", false, "target-b");
+        const link1b = Amqp10Link::attach(session1, "s1-link-b", false, "target-b");
         link1b.publish([66], "text/plain");
 
-        let link2a = Amqp10Link::attach(session2, "s2-link-a", false, "target-c");
+        const link2a = Amqp10Link::attach(session2, "s2-link-a", false, "target-c");
         link2a.publish([67], "text/plain");
 
-        let brokerOk = await handle;
+        const brokerOk = await handle;
         if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }

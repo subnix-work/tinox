@@ -10,14 +10,14 @@ class Main
 {
     fnc main() -> Int32
     {
-        let dynEnc: HpackDynTable = HpackDynTable::new(4096);
-        let dynDec: HpackDynTable = HpackDynTable::new(4096);
-        let headers: List<HpackHeader> = [];
+        const dynEnc: HpackDynTable = HpackDynTable::new(4096);
+        const dynDec: HpackDynTable = HpackDynTable::new(4096);
+        const headers: List<HpackHeader> = [];
         headers.push(HpackHeader::new(":status", "200"));
         headers.push(HpackHeader::new("content-type", "application/json; charset=utf-8"));
         headers.push(HpackHeader::new("x-request-id", "abc-123"));
-        let encoded: List<Int64> = Hpack::encode(headers, dynEnc);
-        let decoded: List<HpackHeader> = Hpack::decode(encoded, dynDec);
+        const encoded: List<Int64> = Hpack::encode(headers, dynEnc);
+        const decoded: List<HpackHeader> = Hpack::decode(encoded, dynDec);
         println(decoded.len());
         println(decoded[0].name);
         println(decoded[0].value);

@@ -15,9 +15,9 @@ class Main
 {
     fnc main() -> Int32
     {
-        let widgetJs: String = Fs::readFile("assets/tinox-counter.js");
+        const widgetJs: String = Fs::readFile("assets/tinox-counter.js");
 
-        let server: HttpServer = HttpServer::new(8290);
+        const server: HttpServer = HttpServer::new(8290);
         server.get("/tinox-counter.js", ctx => {
             // Dynamic import() of a cross-origin module is a real CORS
             // fetch (even for two ports on the same machine) -- see

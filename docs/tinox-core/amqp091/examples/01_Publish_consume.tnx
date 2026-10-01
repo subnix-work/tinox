@@ -5,15 +5,15 @@ class Main
 {
     fnc main() -> Int32
     {
-        let connection: AmqpConnection091 = AmqpConnection091::connect("localhost", 5672, "/", "guest", "guest");
-        let amqpChannel: AmqpChannel091 = AmqpChannel091::open(connection);
+        const connection: AmqpConnection091 = AmqpConnection091::connect("localhost", 5672, "/", "guest", "guest");
+        const amqpChannel: AmqpChannel091 = AmqpChannel091::open(connection);
 
-        let queue: String = amqpChannel.declareQueue("jobs", true, false, false);
-        let body: List<Int64> = Encoding::toUtf8("hello");
+        const queue: String = amqpChannel.declareQueue("jobs", true, false, false);
+        const body: List<Int64> = Encoding::toUtf8("hello");
         amqpChannel.publish("", queue, body, "text/plain");
 
         amqpChannel.consume(queue);
-        let msg: AmqpMessage091 = amqpChannel.nextMessage();
+        const msg: AmqpMessage091 = amqpChannel.nextMessage();
         println(msg.body.len().toString() + " bytes received");
         amqpChannel.ack(msg.deliveryTag);
 

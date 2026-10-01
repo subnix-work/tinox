@@ -13,7 +13,7 @@ import Derived;
 class Main
 {
     fnc main() -> Int32 {
-        let d: Derived = Derived::makeD();
+        const d: Derived = Derived::makeD();
         println(Derived::getN(d).toString());      // inherited -> 7
         println(Derived::add(d, 8).toString());    // inherited with param -> 7+8=15
         println(Derived::label(d));                // override -> derived

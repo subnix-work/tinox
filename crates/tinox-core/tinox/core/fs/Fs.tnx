@@ -16,7 +16,7 @@ namespace tinox.core.fs
 
         fn appendFile(path: String, content: String) -> Nothing
         {
-            let existing: String = Fs::readFile(path);
+            const existing: String = Fs::readFile(path);
             Fs::writeFile(path, existing + content);
         }
 
@@ -27,7 +27,7 @@ namespace tinox.core.fs
 
         fn copyFile(src: String, dest: String) -> Nothing
         {
-            let content: String = Fs::readFile(src);
+            const content: String = Fs::readFile(src);
             Fs::writeFile(dest, content);
         }
 

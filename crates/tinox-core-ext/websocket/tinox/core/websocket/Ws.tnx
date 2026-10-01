@@ -47,7 +47,7 @@ namespace tinox.core.websocket
          */
         fn handshake(conn: Int64) -> Bool
         {
-            let req = httpConnReadRequest(conn);
+            const req = httpConnReadRequest(conn);
             if (req.len() == 0) {
                 return false;
             }
@@ -55,10 +55,10 @@ namespace tinox.core.websocket
             var version: String = "";
             var hasUpgrade: Bool = false;
             var offeredDeflate: Bool = false;
-            let lines = req.split("\r\n");
+            const lines = req.split("\r\n");
             for i in 0..lines.len() {
-                let line = lines[i];
-                let lower = line.toLowerCase();
+                const line = lines[i];
+                const lower = line.toLowerCase();
                 if (lower.startsWith("sec-websocket-key:")) {
                     key = line.substring(18, line.len()).trim();
                 }
@@ -80,7 +80,7 @@ namespace tinox.core.websocket
                 httpConnSendRaw(conn, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
                 return false;
             }
-            let accept = wsAcceptKey(key);
+            const accept = wsAcceptKey(key);
             var response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n";
             if (offeredDeflate) {
                 wsSetCompressed(conn, true);
@@ -111,25 +111,25 @@ namespace tinox.core.websocket
          */
         fn readFrameGeneric(conn: Int64, requireMasked: Bool) -> WsFrame
         {
-            let bad = WsFrame { fin: true, opcode: -1, payload: [], rsv1: false };
-            let hdr = httpConnReadN(conn, 2);
+            const bad = WsFrame { fin: true, opcode: -1, payload: [], rsv1: false };
+            const hdr = httpConnReadN(conn, 2);
             if (hdr.len() < 2) {
                 return bad;
             }
-            let b0 = hdr[0];
-            let b1 = hdr[1];
-            let fin = (b0 & 0x80) != 0;
-            let rsv1 = (b0 & 0x40) != 0;
-            let rsvOther = (b0 & 0x30) != 0;
-            let opcode = b0 & 0x0F;
-            let masked = (b1 & 0x80) != 0;
+            const b0 = hdr[0];
+            const b1 = hdr[1];
+            const fin = (b0 & 0x80) != 0;
+            const rsv1 = (b0 & 0x40) != 0;
+            const rsvOther = (b0 & 0x30) != 0;
+            const opcode = b0 & 0x0F;
+            const masked = (b1 & 0x80) != 0;
             var plen: Int64 = b1 & 0x7F;
             // Bug 92 (RFC 6455 §5.5): control frames (8=close, 9=ping,
             // 10=pong) MUST have FIN set and payload length <= 125 — they
             // can never use the 126/127 extended-length encoding and must
             // never be fragmented. Computed before the RSV check below
             // since RSV1 must never appear on a control frame either way.
-            let isControlFrame = opcode >= 8 && opcode <= 10;
+            const isControlFrame = opcode >= 8 && opcode <= 10;
             // RSV2/RSV3 (no extension ever uses them here), RSV1 without
             // negotiated compression or on a control frame, and masking
             // in the wrong direction for this role: a protocol error.
@@ -140,13 +140,13 @@ namespace tinox.core.websocket
                 return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };
             }
             if (plen == 126) {
-                let ext = httpConnReadN(conn, 2);
+                const ext = httpConnReadN(conn, 2);
                 if (ext.len() < 2) {
                     return bad;
                 }
                 plen = (ext[0] << 8) | ext[1];
             } else if (plen == 127) {
-                let ext = httpConnReadN(conn, 8);
+                const ext = httpConnReadN(conn, 8);
                 if (ext.len() < 8) {
                     return bad;
                 }
@@ -167,7 +167,7 @@ namespace tinox.core.websocket
             // directly.
             var mask: List<Int64> = [0, 0, 0, 0];
             if (masked) {
-                let readMask = httpConnReadN(conn, 4);
+                const readMask = httpConnReadN(conn, 4);
                 if (readMask.len() < 4) {
                     return bad;
                 }
@@ -175,7 +175,7 @@ namespace tinox.core.websocket
             }
             var payload: List<Int64> = [];
             if (plen > 0) {
-                let raw = httpConnReadN(conn, plen);
+                const raw = httpConnReadN(conn, plen);
                 if (raw.len() < plen) {
                     return bad;
                 }
@@ -219,15 +219,15 @@ namespace tinox.core.websocket
         {
             var actualPayload: List<Int64> = payload;
             var rsv1Bit: Int64 = 0;
-            let isDataFrame = opcode == 1 || opcode == 2;
+            const isDataFrame = opcode == 1 || opcode == 2;
             if (isDataFrame && wsIsCompressed(conn)) {
                 actualPayload = tinoxDeflateRaw(payload);
                 rsv1Bit = 0x40;
             }
             var out: List<Int64> = [];
             out.push(0x80 | rsv1Bit | (opcode & 0x0F));
-            let n = actualPayload.len();
-            let maskBit: Int64 = masked ? 0x80 : 0;
+            const n = actualPayload.len();
+            const maskBit: Int64 = masked ? 0x80 : 0;
             if (n < 126) {
                 out.push(maskBit | n);
             } else if (n < 65536) {
@@ -312,7 +312,7 @@ namespace tinox.core.websocket
             var msgCompressed: Bool = false;
             var payload: List<Int64> = [];
             while true {
-                let f = Ws::readFrameGeneric(conn, requireMasked);
+                const f = Ws::readFrameGeneric(conn, requireMasked);
                 if (f.opcode == 9) {
                     Ws::writeFrameGeneric(conn, 10, f.payload, maskOutgoing);
                     continue;
@@ -379,7 +379,7 @@ namespace tinox.core.websocket
             if (!compressed) {
                 return WsFrame { fin: true, opcode: opcode, payload: payload, rsv1: false };
             }
-            let decompressed = tinoxInflateRaw(payload);
+            const decompressed = tinoxInflateRaw(payload);
             if (!wsLastInflateOk()) {
                 Ws::sendCloseGeneric(conn, 1002, maskOutgoing);
                 return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false };

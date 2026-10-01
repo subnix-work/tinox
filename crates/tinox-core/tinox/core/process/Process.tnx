@@ -57,11 +57,11 @@ namespace tinox.core.process
          */
         fn run(argv: List<String>, timeoutMs: Int64, stdin: String) -> ProcessResult
         {
-            let handle: Int64 = processRun(argv, timeoutMs, stdin);
-            let out: String = processResultStdout(handle);
-            let err: String = processResultStderr(handle);
-            let code: Int64 = processResultExitCode(handle);
-            let to: Int64 = processResultTimedOut(handle);
+            const handle: Int64 = processRun(argv, timeoutMs, stdin);
+            const out: String = processResultStdout(handle);
+            const err: String = processResultStderr(handle);
+            const code: Int64 = processResultExitCode(handle);
+            const to: Int64 = processResultTimedOut(handle);
             return ProcessResult::new(out, err, code, to != 0);
         }
     }

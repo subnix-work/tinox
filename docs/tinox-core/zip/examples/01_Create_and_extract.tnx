@@ -4,10 +4,10 @@ class Main
 {
     fnc main() -> Int32
     {
-        let archive: ZipArchive = Zip::create("/tmp/example.zip");
+        const archive: ZipArchive = Zip::create("/tmp/example.zip");
         Zip::addFile(archive, "hello.txt", "Hello, ZIP!");
 
-        let reopened: ZipArchive = Zip::open("/tmp/example.zip");
+        const reopened: ZipArchive = Zip::open("/tmp/example.zip");
         println(reopened.entries.len().toString());
         println(Zip::extractFile(reopened, "hello.txt"));
 

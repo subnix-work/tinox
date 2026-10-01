@@ -25,8 +25,8 @@ class Main
 {
     fnc main() -> Int32
     {
-        let impl: CheckerImpl = CheckerImpl { touched: false };
-        let c: IChecker = impl;
+        const impl: CheckerImpl = CheckerImpl { touched: false };
+        const c: IChecker = impl;
 
         println(c.label());
         println(c.isOk());

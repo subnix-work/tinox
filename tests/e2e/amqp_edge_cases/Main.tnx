@@ -38,11 +38,11 @@ class Main
 {
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn, 8); // protocol header
 
         // --- Negotiation (like amqp_connection_negotiation.tnx) ---
-        let w1 = AmqpWriter091::new();
+        const w1 = AmqpWriter091::new();
         w1.octet(0);
         w1.octet(9);
         var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
@@ -52,7 +52,7 @@ class Main
         Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes));
         Amqp091::readFrame(sconn); // start-ok
 
-        let w2 = AmqpWriter091::new();
+        const w2 = AmqpWriter091::new();
         w2.short(2047);
         w2.long(100);
         w2.short(60);
@@ -60,68 +60,68 @@ class Main
         Amqp091::readFrame(sconn); // tune-ok
         Amqp091::readFrame(sconn); // open
 
-        let w3 = AmqpWriter091::new();
+        const w3 = AmqpWriter091::new();
         w3.shortstr("");
         Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes));
 
         Amqp091::readFrame(sconn); // channel.open
-        let w4 = AmqpWriter091::new();
+        const w4 = AmqpWriter091::new();
         w4.longstr("");
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
 
         // --- queue.declare -> declare-ok (mirrors the requested name) ---
-        let fDecl = Amqp091::readFrame(sconn);
-        let mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
-        let declArgs = AmqpReader091::new(mDecl.args);
+        const fDecl = Amqp091::readFrame(sconn);
+        const mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
+        const declArgs = AmqpReader091::new(mDecl.args);
         declArgs.short(); // reserved-1
-        let queueName = declArgs.shortstr();
+        const queueName = declArgs.shortstr();
         var ok1: Bool = mDecl.classId == 50 && mDecl.methodId == 10;
 
-        let wDeclOk = AmqpWriter091::new();
+        const wDeclOk = AmqpWriter091::new();
         wDeclOk.shortstr(queueName);
         wDeclOk.long(0); // message-count
         wDeclOk.long(0); // consumer-count
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 11, wDeclOk.bytes));
 
         // --- queue.bind -> bind-ok ---
-        let fBind = Amqp091::readFrame(sconn);
-        let mBind = Amqp091::decodeMethodPayload(fBind.payload);
+        const fBind = Amqp091::readFrame(sconn);
+        const mBind = Amqp091::decodeMethodPayload(fBind.payload);
         var ok2: Bool = mBind.classId == 50 && mBind.methodId == 20;
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 21, []));
 
         // --- basic.qos -> qos-ok ---
-        let fQos = Amqp091::readFrame(sconn);
-        let mQos = Amqp091::decodeMethodPayload(fQos.payload);
+        const fQos = Amqp091::readFrame(sconn);
+        const mQos = Amqp091::decodeMethodPayload(fQos.payload);
         var ok3: Bool = mQos.classId == 60 && mQos.methodId == 10;
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 11, []));
 
         // --- basic.publish #1: empty body (0 body frames expected) ---
-        let fPub0 = Amqp091::readFrame(sconn);
+        const fPub0 = Amqp091::readFrame(sconn);
         Amqp091::decodeMethodPayload(fPub0.payload);
-        let fHdr0 = Amqp091::readFrame(sconn);
-        let hr0 = AmqpReader091::new(fHdr0.payload);
+        const fHdr0 = Amqp091::readFrame(sconn);
+        const hr0 = AmqpReader091::new(fHdr0.payload);
         hr0.short();
         hr0.short();
-        let bodySize0 = hr0.longlong();
+        const bodySize0 = hr0.longlong();
         var ok0: Bool = bodySize0 == 0;
 
         // --- basic.publish #2 (method) + content header + body, spread
         // across multiple frames (frame-max=100) ---
-        let fPub = Amqp091::readFrame(sconn);
-        let mPub = Amqp091::decodeMethodPayload(fPub.payload);
+        const fPub = Amqp091::readFrame(sconn);
+        const mPub = Amqp091::decodeMethodPayload(fPub.payload);
         var ok4: Bool = mPub.classId == 60 && mPub.methodId == 40;
 
-        let fHdr = Amqp091::readFrame(sconn);
+        const fHdr = Amqp091::readFrame(sconn);
         var ok5: Bool = fHdr.frameType == 2;
-        let hr = AmqpReader091::new(fHdr.payload);
+        const hr = AmqpReader091::new(fHdr.payload);
         hr.short(); // class-id
         hr.short(); // weight
-        let bodySize = hr.longlong();
+        const bodySize = hr.longlong();
 
         var body: List<Int64> = [];
         var frameCount: Int64 = 0;
         while body.len() < bodySize {
-            let fBody = Amqp091::readFrame(sconn);
+            const fBody = Amqp091::readFrame(sconn);
             for i in 0..fBody.payload.len() {
                 body.push(fBody.payload[i]);
             }
@@ -130,22 +130,22 @@ class Main
         var ok4b: Bool = frameCount > 1;
 
         // --- basic.consume -> consume-ok ---
-        let fCons = Amqp091::readFrame(sconn);
-        let mCons = Amqp091::decodeMethodPayload(fCons.payload);
+        const fCons = Amqp091::readFrame(sconn);
+        const mCons = Amqp091::decodeMethodPayload(fCons.payload);
         var ok6: Bool = mCons.classId == 60 && mCons.methodId == 20;
-        let wConsOk = AmqpWriter091::new();
+        const wConsOk = AmqpWriter091::new();
         wConsOk.shortstr("fake-consumer-tag");
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 21, wConsOk.bytes));
 
         // --- basic.deliver #1: mirror back the empty body ---
-        let wDeliver0 = AmqpWriter091::new();
+        const wDeliver0 = AmqpWriter091::new();
         wDeliver0.shortstr("fake-consumer-tag");
         wDeliver0.longlong(1);
         wDeliver0.octet(0);
         wDeliver0.shortstr("");
         wDeliver0.shortstr(queueName);
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 60, wDeliver0.bytes));
-        let wDeliverHdr0 = AmqpWriter091::new();
+        const wDeliverHdr0 = AmqpWriter091::new();
         wDeliverHdr0.short(60);
         wDeliverHdr0.short(0);
         wDeliverHdr0.longlong(0);
@@ -156,7 +156,7 @@ class Main
         // --- basic.deliver #2 (method) + content header + body, mirrors the
         // previously received publish body back, again spread across multiple
         // frames ---
-        let wDeliver = AmqpWriter091::new();
+        const wDeliver = AmqpWriter091::new();
         wDeliver.shortstr("fake-consumer-tag");
         wDeliver.longlong(2); // delivery-tag
         wDeliver.octet(0);    // redelivered flag
@@ -164,7 +164,7 @@ class Main
         wDeliver.shortstr(queueName);
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 60, wDeliver.bytes));
 
-        let wDeliverHdr = AmqpWriter091::new();
+        const wDeliverHdr = AmqpWriter091::new();
         wDeliverHdr.short(60);
         wDeliverHdr.short(0);
         wDeliverHdr.longlong(body.len());
@@ -174,7 +174,7 @@ class Main
 
         var dOffset: Int64 = 0;
         var dChunkSize: Int64 = 92;
-        let dn = body.len();
+        const dn = body.len();
         while dOffset < dn {
             var dEnd: Int64 = dOffset + dChunkSize;
             if (dEnd > dn) {
@@ -189,11 +189,11 @@ class Main
         }
 
         // --- expect two basic.ack ---
-        let fAck0 = Amqp091::readFrame(sconn);
-        let mAck0 = Amqp091::decodeMethodPayload(fAck0.payload);
+        const fAck0 = Amqp091::readFrame(sconn);
+        const mAck0 = Amqp091::decodeMethodPayload(fAck0.payload);
         var ok7a: Bool = mAck0.classId == 60 && mAck0.methodId == 80;
-        let fAck = Amqp091::readFrame(sconn);
-        let mAck = Amqp091::decodeMethodPayload(fAck.payload);
+        const fAck = Amqp091::readFrame(sconn);
+        const mAck = Amqp091::decodeMethodPayload(fAck.payload);
         var ok7: Bool = mAck.classId == 60 && mAck.methodId == 80 && ok7a;
 
         httpConnClose(sconn);
@@ -223,20 +223,20 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv);
 
-        let c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
-        let ch = AmqpChannel091::open(c);
+        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
+        const ch = AmqpChannel091::open(c);
 
-        let queueName = ch.declareQueue("loopback-test-queue", true, false, false);
-        let bound = ch.bindQueue(queueName, "amq.direct", queueName);
-        let qosOk = ch.qos(5);
+        const queueName = ch.declareQueue("loopback-test-queue", true, false, false);
+        const bound = ch.bindQueue(queueName, "amq.direct", queueName);
+        const qosOk = ch.qos(5);
 
         var emptyBody: List<Int64> = [];
         ch.publish("amq.direct", queueName, emptyBody, "text/plain");
@@ -247,14 +247,14 @@ class Main
         }
         ch.publish("amq.direct", queueName, body, "text/plain");
 
-        let tag = ch.consume(queueName);
-        let m0 = ch.nextMessage();
+        const tag = ch.consume(queueName);
+        const m0 = ch.nextMessage();
         var emptyOk: Bool = m0.ok && m0.body.len() == 0;
         if (emptyOk) {
             ch.ack(m0.deliveryTag);
         }
 
-        let m = ch.nextMessage();
+        const m = ch.nextMessage();
         var contentOk: Bool = m.ok && m.body.len() == 250;
         if (contentOk) {
             for i in 0..250 {
@@ -267,7 +267,7 @@ class Main
             ch.ack(m.deliveryTag);
         }
 
-        let brokerOk = await handle;
+        const brokerOk = await handle;
 
         if (queueName == "loopback-test-queue") {
             println("ok-declare");

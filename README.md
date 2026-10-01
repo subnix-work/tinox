@@ -157,10 +157,10 @@ class Main
 ### Variables
 
 ```tinox
-let x: Int64 = 42;          // immutable
+const x: Int64 = 42;          // immutable
 var y: Float64 = 3.14;      // mutable
-let name = "Tino";          // type inference
-let msg = "Hi ${name}!";    // string interpolation
+const name = "Tino";          // type inference
+const msg = "Hi ${name}!";    // string interpolation
 ```
 
 ### Namespaces & Static Methods
@@ -243,13 +243,13 @@ class Point
 
     fn distanceTo(other: Point) -> Float64
     {
-        let dx = this.x - other.x;
-        let dy = this.y - other.y;
+        const dx = this.x - other.x;
+        const dy = this.y - other.y;
         return Math::sqrt((dx * dx + dy * dy).toFloat64());
     }
 }
 
-let p = Point::new(3, 4);
+const p = Point::new(3, 4);
 ```
 
 ### Interfaces
@@ -321,7 +321,7 @@ class Main
 
     fnc main() -> Int32
     {
-        let b = new Box<Int64>(42);
+        const b = new Box<Int64>(42);
         println(b.get());
         return 0;
     }
@@ -342,7 +342,7 @@ class Main
 
     fnc main() -> Int32
     {
-        let doubled = apply(21, n => n * 2);
+        const doubled = apply(21, n => n * 2);
         println(doubled);   // 42
         return 0;
     }
@@ -352,27 +352,27 @@ class Main
 ### Tuples
 
 ```tinox
-let point = (10, 20);
+const point = (10, 20);
 println(point.0 + point.1);
 
-let nested = ((1, 2), 3);
+const nested = ((1, 2), 3);
 println(nested.0.1);        // 2
 ```
 
 ### Arrays & Builtins
 
 ```tinox
-let arr = [1, 2, 3, 4, 5];
+const arr = [1, 2, 3, 4, 5];
 arr.push(6);
 println(arr.len());         // 6
 println(arr.first());       // 1
 println(arr.last());        // 6
 
-let s = "hello";
+const s = "hello";
 println(s.toUpper());       // HELLO
 println(s.contains("ell")); // true
 
-let parts = "a,b,c".split(",");
+const parts = "a,b,c".split(",");
 println(parts.len());       // 3
 println(parts.join(" - ")); // a - b - c
 ```
@@ -380,7 +380,7 @@ println(parts.join(" - ")); // a - b - c
 ### Maps
 
 ```tinox
-let m = @{"one" => 1, "two" => 2};
+const m = @{"one" => 1, "two" => 2};
 m.insert("three", 3);
 println(m.get("one"));      // 1
 println(m.contains("two")); // true
@@ -388,7 +388,7 @@ println(m.len());           // 3
 m.remove("one");
 
 // Type-annotated map
-let headers: Map<String, String> = Map::new();
+const headers: Map<String, String> = Map::new();
 headers["Content-Type"] = "application/json";
 ```
 
@@ -423,13 +423,13 @@ class Main
 
     fnc main() -> Int32
     {
-        let handle = spawn fetchData(21);
-        let result = await handle;      // 42
+        const handle = spawn fetchData(21);
+        const result = await handle;      // 42
         println(result);
 
-        let ch = channel;
+        const ch = channel;
         send ch -> 99;
-        let v = recv ch;
+        const v = recv ch;
         println(v);
         return 0;
     }
@@ -440,21 +440,21 @@ class Main
 
 ```tinox
 // Writing
-let f = open("output.txt", "w");
+const f = open("output.txt", "w");
 f.write("Hello Tinox!\n");
 f.close();
 
 // Reading (entire contents)
-let f = open("output.txt");
-let content = f.read();
+const f = open("output.txt");
+const content = f.read();
 f.close();
 println(content);
 
 // Reading line by line
-let f = open("log.txt");
+const f = open("log.txt");
 while !f.eof()
 {
-    let line = f.readLine();
+    const line = f.readLine();
     println(line);
 }
 f.close();
@@ -473,7 +473,7 @@ class Main
 {
     fnc readFile(path: String) -> String
     {
-        let f = open(path);
+        const f = open(path);
         defer { f.close(); }   // runs automatically at the end of the function
 
         return f.read();
@@ -650,7 +650,7 @@ class UserController
     @Path("/users/:id")
     fnc getUser(ctx: HttpContext)
     {
-        let id: String = ctx.request.params["id"];
+        const id: String = ctx.request.params["id"];
         ctx.response.body = "{\"id\":${id}}";
     }
 
@@ -672,14 +672,14 @@ The standard library includes an RFC 6455 WebSocket server (`websocket`), built 
 ```tinox
 import tinox.core.websocket;
 
-let srv: Int64 = WsServer::listen(8790);
+const srv: Int64 = WsServer::listen(8790);
 
 while true {
-    let conn: Int64 = WsServer::accept(srv);   // includes handshake
+    const conn: Int64 = WsServer::accept(srv);   // includes handshake
     if conn <= 0 { continue; }
 
     while true {
-        let f: WsFrame = Ws::readMessage(conn); // ping/pong + close handled automatically
+        const f: WsFrame = Ws::readMessage(conn); // ping/pong + close handled automatically
         if f.opcode == 1 {
             Ws::sendText(conn, "echo: " + Ws::text(f));
             continue;
@@ -695,8 +695,8 @@ Known v1 gaps: no fragmentation, no client, no permessage-deflate.
 `wss://` (TLS) is also supported via `WsServer::listenTls(port, certPath, keyPath)` + `WsServer::acceptTls(srv)` (otherwise identical API). OpenSSL is linked by default, no extra flag required (opt out with `TINOX_TLS=0` if OpenSSL isn't available):
 
 ```tinox
-let srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
-let conn = WsServer::acceptTls(srv);   // includes TLS + WS handshake
+const srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
+const conn = WsServer::acceptTls(srv);   // includes TLS + WS handshake
 ```
 
 Alternatively, annotation-driven (`@WebsocketEndpoint`/`@OnOpen`/`@OnMessage`/`@OnClose`): the compiler generates the entire loop as `main` — no handshake/readMessage code needed. Only applies when the file has no `main` of its own and contains exactly one `@WebsocketEndpoint` class (more than one is a compile error):
@@ -722,16 +722,16 @@ The standard library includes an AMQP-0-9-1 **client** (`amqp091`, no broker) fo
 ```tinox
 import tinox.core.amqp091;
 
-let conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
-let ch = AmqpChannel091::open(conn);
-let queueName = ch.declareQueue("my-queue", true, false, false);
+const conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
+const ch = AmqpChannel091::open(conn);
+const queueName = ch.declareQueue("my-queue", true, false, false);
 
 var body: List<Int64> = [];
 for i in 0..3 { body.push("abc".charCodeAt(i)); }
 ch.publish("", queueName, body, "text/plain");
 
 ch.consume(queueName);
-let m = ch.nextMessage();       // blocking pull
+const m = ch.nextMessage();       // blocking pull
 if m.ok {
     ch.ack(m.deliveryTag);
 }
@@ -741,7 +741,7 @@ conn.close();
 `amqps://` (TLS) uses `AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)` instead of `connect` (otherwise identical API). OpenSSL is linked by default, no extra flag required; `verify=true` checks the broker's certificate chain and hostname against the system CA stores, `verify=false` is a deliberate opt-out for self-signed test certificates:
 
 ```tinox
-let conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true);
+const conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true);
 ```
 
 Heartbeats (§4.2.7) can be sent on a background thread, same explicit-opt-in pattern as `amqp10` — `conn.heartbeat` is the broker's proposed interval in seconds (from `connection.tune`, informational only until you start sending):
@@ -761,8 +761,8 @@ The standard library additionally includes a standalone AMQP-1.0 **client** (`am
 ```tinox
 import tinox.core.amqp10;
 
-let conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
-let session = Amqp10Session::begin(conn);
+const conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
+const session = Amqp10Session::begin(conn);
 var sender = Amqp10Link::attach(session, "my-sender", false, "/queues/my-queue");
 
 var body: List<Int64> = [];
@@ -772,7 +772,7 @@ sender.detach();
 
 var receiver = Amqp10Link::attach(session, "my-receiver", true, "/queues/my-queue");
 receiver.grantCredit(10);
-let m = receiver.nextMessage();       // blocking pull, waits for a transfer
+const m = receiver.nextMessage();       // blocking pull, waits for a transfer
 if m.ok {
     receiver.ack(m.deliveryId);
 }
@@ -801,7 +801,7 @@ class MyConsumer
 
 | Feature                       | Status         |
 |--------------------------------|----------------|
-| Variables (let/var)            | ✅ Done        |
+| Variables (const/var)          | ✅ Done        |
 | Namespaces                     | ✅ Done        |
 | Classes + inheritance          | ✅ Done        |
 | Constructors (`fnc new()`)     | ✅ Done        |

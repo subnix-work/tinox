@@ -52,7 +52,7 @@ class RoutedDemoApp
 
     fn nav() -> Component
     {
-        let app: RoutedDemoApp = this;
+        const app: RoutedDemoApp = this;
         return Component::hbox([
             Component::link("Home", "/", fn(p: String) { app.isAbout = false; }),
             Component::link("About", "/about", fn(p: String) { app.isAbout = true; })
@@ -61,8 +61,8 @@ class RoutedDemoApp
 
     fn homeView() -> Component
     {
-        let app: RoutedDemoApp = this;
-        let colors: List<String> = ["red", "green", "blue"];
+        const app: RoutedDemoApp = this;
+        const colors: List<String> = ["red", "green", "blue"];
         return Component::vbox([
             Component::heading("Tinox-UI Widget Showcase", 1),
             Component::numberField(this.quantity, fn(v: Float64) { app.quantity = v; }),

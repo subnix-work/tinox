@@ -29,7 +29,7 @@ namespace tinox.core.rest.client
          */
         fn new(statusCode: Int64, body: String) -> RestResponse
         {
-            let isOk: Bool = statusCode >= 200 && statusCode < 300;
+            const isOk: Bool = statusCode >= 200 && statusCode < 300;
             return RestResponse { statusCode: statusCode, body: body, ok: isOk };
         }
 
@@ -41,9 +41,9 @@ namespace tinox.core.rest.client
          */
         fn fromHttp(response: HttpClientResponse) -> RestResponse
         {
-            let code: Int64 = response.statusCode();
-            let bodyText: String = response.body();
-            let isOk: Bool = code >= 200 && code < 300;
+            const code: Int64 = response.statusCode();
+            const bodyText: String = response.body();
+            const isOk: Bool = code >= 200 && code < 300;
             return RestResponse { statusCode: code, body: bodyText, ok: isOk };
         }
 
@@ -117,7 +117,7 @@ namespace tinox.core.rest.client
         {
             if (this.ok == false)
             {
-                let msg: String = "HTTP " + this.statusCode.toString() + ": " + this.body;
+                const msg: String = "HTTP " + this.statusCode.toString() + ": " + this.body;
                 throw msg;
             }
             return this;

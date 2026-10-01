@@ -22,7 +22,7 @@ class Main
     fnc main() -> Int32 {
         // Binary expression: a() throws, b() must not run anymore.
         try {
-            let r: Int64 = a() + b();
+            const r: Int64 = a() + b();
             println("unreached:" + r.toString());
         } catch e: String {
             println("caught binary: " + e);
@@ -31,7 +31,7 @@ class Main
         // Function arguments: a() as the first argument throws, b() (the second
         // argument) must not be evaluated anymore.
         try {
-            let r: Int64 = sum(a(), b());
+            const r: Int64 = sum(a(), b());
             println("unreached:" + r.toString());
         } catch e: String {
             println("caught call-args: " + e);
@@ -39,7 +39,7 @@ class Main
 
         // Array literal: same rule for elements after a throwing element.
         try {
-            let xs: List<Int64> = [a(), b()];
+            const xs: List<Int64> = [a(), b()];
             println("unreached:" + xs.len().toString());
         } catch e: String {
             println("caught array-lit: " + e);
@@ -47,8 +47,8 @@ class Main
 
         // Method-call arguments.
         try {
-            let acc: throw_substatement_unwinding = throw_substatement_unwinding { total: 0 };
-            let r: Int64 = acc.add(a(), b());
+            const acc: throw_substatement_unwinding = throw_substatement_unwinding { total: 0 };
+            const r: Int64 = acc.add(a(), b());
             println("unreached:" + r.toString());
         } catch e: String {
             println("caught method-args: " + e);
@@ -58,7 +58,7 @@ class Main
         // inner call (sum(a(), b())); the OUTER second argument
         // (b() again) must not be evaluated anymore either, just like the inner one.
         try {
-            let r: Int64 = sum(sum(a(), b()), b());
+            const r: Int64 = sum(sum(a(), b()), b());
             println("unreached:" + r.toString());
         } catch e: String {
             println("caught nested: " + e);

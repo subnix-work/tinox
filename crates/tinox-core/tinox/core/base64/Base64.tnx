@@ -8,22 +8,22 @@ namespace tinox.core.base64
     {
         fn encode(data: String) -> String
         {
-            let alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            const alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
             var result: String = "";
             var i: Int64 = 0;
-            let len: Int64 = data.len();
+            const len: Int64 = data.len();
             while i < len
             {
-                let b0: Int64 = data.charCodeAt(i);
-                let hasB1: Bool = i + 1 < len;
-                let b1: Int64 = hasB1 ? data.charCodeAt(i + 1) : 0;
-                let hasB2: Bool = i + 2 < len;
-                let b2: Int64 = hasB2 ? data.charCodeAt(i + 2) : 0;
+                const b0: Int64 = data.charCodeAt(i);
+                const hasB1: Bool = i + 1 < len;
+                const b1: Int64 = hasB1 ? data.charCodeAt(i + 1) : 0;
+                const hasB2: Bool = i + 2 < len;
+                const b2: Int64 = hasB2 ? data.charCodeAt(i + 2) : 0;
 
-                let c0: Int64 = (b0 >> 2) & 63;
-                let c1: Int64 = ((b0 << 4) | (b1 >> 4)) & 63;
-                let c2: Int64 = ((b1 << 2) | (b2 >> 6)) & 63;
-                let c3: Int64 = b2 & 63;
+                const c0: Int64 = (b0 >> 2) & 63;
+                const c1: Int64 = ((b0 << 4) | (b1 >> 4)) & 63;
+                const c2: Int64 = ((b1 << 2) | (b2 >> 6)) & 63;
+                const c3: Int64 = b2 & 63;
 
                 result = result + alphabet.substring(c0, c0 + 1) + alphabet.substring(c1, c1 + 1);
                 if (hasB1)
@@ -64,7 +64,7 @@ namespace tinox.core.base64
             {
                 return 0;
             }
-            let code: Int64 = c.charCodeAt(0);
+            const code: Int64 = c.charCodeAt(0);
             if (code >= 65 && code <= 90)
             {
                 return code - 65;
@@ -101,22 +101,22 @@ namespace tinox.core.base64
         // inspection.
         fn encodeBytes(data: List<Int64>) -> String
         {
-            let alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            const alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
             var result: String = "";
             var i: Int64 = 0;
-            let len: Int64 = data.len();
+            const len: Int64 = data.len();
             while i < len
             {
-                let b0: Int64 = data[i];
-                let hasB1: Bool = i + 1 < len;
-                let b1: Int64 = hasB1 ? data[i + 1] : 0;
-                let hasB2: Bool = i + 2 < len;
-                let b2: Int64 = hasB2 ? data[i + 2] : 0;
+                const b0: Int64 = data[i];
+                const hasB1: Bool = i + 1 < len;
+                const b1: Int64 = hasB1 ? data[i + 1] : 0;
+                const hasB2: Bool = i + 2 < len;
+                const b2: Int64 = hasB2 ? data[i + 2] : 0;
 
-                let c0: Int64 = (b0 >> 2) & 63;
-                let c1: Int64 = ((b0 << 4) | (b1 >> 4)) & 63;
-                let c2: Int64 = ((b1 << 2) | (b2 >> 6)) & 63;
-                let c3: Int64 = b2 & 63;
+                const c0: Int64 = (b0 >> 2) & 63;
+                const c1: Int64 = ((b0 << 4) | (b1 >> 4)) & 63;
+                const c2: Int64 = ((b1 << 2) | (b2 >> 6)) & 63;
+                const c3: Int64 = b2 & 63;
 
                 result = result + alphabet.substring(c0, c0 + 1) + alphabet.substring(c1, c1 + 1);
                 if (hasB1)
@@ -151,22 +151,22 @@ namespace tinox.core.base64
         // just optional.
         fn encodeUrlBytes(data: List<Int64>) -> String
         {
-            let alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            const alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
             var result: String = "";
             var i: Int64 = 0;
-            let len: Int64 = data.len();
+            const len: Int64 = data.len();
             while i < len
             {
-                let b0: Int64 = data[i];
-                let hasB1: Bool = i + 1 < len;
-                let b1: Int64 = hasB1 ? data[i + 1] : 0;
-                let hasB2: Bool = i + 2 < len;
-                let b2: Int64 = hasB2 ? data[i + 2] : 0;
+                const b0: Int64 = data[i];
+                const hasB1: Bool = i + 1 < len;
+                const b1: Int64 = hasB1 ? data[i + 1] : 0;
+                const hasB2: Bool = i + 2 < len;
+                const b2: Int64 = hasB2 ? data[i + 2] : 0;
 
-                let c0: Int64 = (b0 >> 2) & 63;
-                let c1: Int64 = ((b0 << 4) | (b1 >> 4)) & 63;
-                let c2: Int64 = ((b1 << 2) | (b2 >> 6)) & 63;
-                let c3: Int64 = b2 & 63;
+                const c0: Int64 = (b0 >> 2) & 63;
+                const c1: Int64 = ((b0 << 4) | (b1 >> 4)) & 63;
+                const c2: Int64 = ((b1 << 2) | (b2 >> 6)) & 63;
+                const c3: Int64 = b2 & 63;
 
                 result = result + alphabet.substring(c0, c0 + 1) + alphabet.substring(c1, c1 + 1);
                 if (hasB1)
@@ -193,30 +193,30 @@ namespace tinox.core.base64
         {
             var result: List<Int64> = [];
             var i: Int64 = 0;
-            let len: Int64 = encoded.len();
+            const len: Int64 = encoded.len();
             while i + 4 <= len
             {
-                let c0: String = encoded.substring(i, i + 1);
-                let c1: String = encoded.substring(i + 1, i + 2);
-                let c2: String = encoded.substring(i + 2, i + 3);
-                let c3: String = encoded.substring(i + 3, i + 4);
+                const c0: String = encoded.substring(i, i + 1);
+                const c1: String = encoded.substring(i + 1, i + 2);
+                const c2: String = encoded.substring(i + 2, i + 3);
+                const c3: String = encoded.substring(i + 3, i + 4);
 
-                let v0: Int64 = Base64::charToValue(c0);
-                let v1: Int64 = Base64::charToValue(c1);
-                let v2: Int64 = Base64::charToValue(c2);
-                let v3: Int64 = Base64::charToValue(c3);
+                const v0: Int64 = Base64::charToValue(c0);
+                const v1: Int64 = Base64::charToValue(c1);
+                const v2: Int64 = Base64::charToValue(c2);
+                const v3: Int64 = Base64::charToValue(c3);
 
-                let b0: Int64 = ((v0 << 2) | (v1 >> 4)) & 255;
+                const b0: Int64 = ((v0 << 2) | (v1 >> 4)) & 255;
                 result.push(b0);
 
                 if (c2 != "=")
                 {
-                    let b1: Int64 = ((v1 << 4) | (v2 >> 2)) & 255;
+                    const b1: Int64 = ((v1 << 4) | (v2 >> 2)) & 255;
                     result.push(b1);
                 }
                 if (c3 != "=")
                 {
-                    let b2: Int64 = ((v2 << 6) | v3) & 255;
+                    const b2: Int64 = ((v2 << 6) | v3) & 255;
                     result.push(b2);
                 }
 
@@ -227,7 +227,7 @@ namespace tinox.core.base64
 
         fn urlCharToValue(c: String) -> Int64
         {
-            let code: Int64 = c.charCodeAt(0);
+            const code: Int64 = c.charCodeAt(0);
             if (code >= 65 && code <= 90)
             {
                 return code - 65;
@@ -262,13 +262,13 @@ namespace tinox.core.base64
         {
             var result: List<Int64> = [];
             var i: Int64 = 0;
-            let len: Int64 = encoded.len();
+            const len: Int64 = encoded.len();
             while i + 4 <= len
             {
-                let v0: Int64 = Base64::urlCharToValue(encoded.substring(i, i + 1));
-                let v1: Int64 = Base64::urlCharToValue(encoded.substring(i + 1, i + 2));
-                let v2: Int64 = Base64::urlCharToValue(encoded.substring(i + 2, i + 3));
-                let v3: Int64 = Base64::urlCharToValue(encoded.substring(i + 3, i + 4));
+                const v0: Int64 = Base64::urlCharToValue(encoded.substring(i, i + 1));
+                const v1: Int64 = Base64::urlCharToValue(encoded.substring(i + 1, i + 2));
+                const v2: Int64 = Base64::urlCharToValue(encoded.substring(i + 2, i + 3));
+                const v3: Int64 = Base64::urlCharToValue(encoded.substring(i + 3, i + 4));
 
                 result.push(((v0 << 2) | (v1 >> 4)) & 255);
                 result.push(((v1 << 4) | (v2 >> 2)) & 255);
@@ -276,18 +276,18 @@ namespace tinox.core.base64
 
                 i = i + 4;
             }
-            let remaining: Int64 = len - i;
+            const remaining: Int64 = len - i;
             if (remaining == 2)
             {
-                let v0: Int64 = Base64::urlCharToValue(encoded.substring(i, i + 1));
-                let v1: Int64 = Base64::urlCharToValue(encoded.substring(i + 1, i + 2));
+                const v0: Int64 = Base64::urlCharToValue(encoded.substring(i, i + 1));
+                const v1: Int64 = Base64::urlCharToValue(encoded.substring(i + 1, i + 2));
                 result.push(((v0 << 2) | (v1 >> 4)) & 255);
             }
             else if (remaining == 3)
             {
-                let v0: Int64 = Base64::urlCharToValue(encoded.substring(i, i + 1));
-                let v1: Int64 = Base64::urlCharToValue(encoded.substring(i + 1, i + 2));
-                let v2: Int64 = Base64::urlCharToValue(encoded.substring(i + 2, i + 3));
+                const v0: Int64 = Base64::urlCharToValue(encoded.substring(i, i + 1));
+                const v1: Int64 = Base64::urlCharToValue(encoded.substring(i + 1, i + 2));
+                const v2: Int64 = Base64::urlCharToValue(encoded.substring(i + 2, i + 3));
                 result.push(((v0 << 2) | (v1 >> 4)) & 255);
                 result.push(((v1 << 4) | (v2 >> 2)) & 255);
             }

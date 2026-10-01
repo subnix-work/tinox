@@ -8,14 +8,14 @@ import bug04_float64;
 class Main
 {
     fnc main() -> Int32 {
-        let x: Float64 = 3.14;
+        const x: Float64 = 3.14;
         println(x.toString());
-        let y = 2.5 + 1.25;
+        const y = 2.5 + 1.25;
         println(y.toString());
         var xs: List<Float64> = [];
         xs.push(1.5);
         println(xs[0].toString());
-        let v = bug04_float64::F(2.5);
+        const v = bug04_float64::F(2.5);
         match v {
             F(f) => println(f.toString());
             _ => println("-");

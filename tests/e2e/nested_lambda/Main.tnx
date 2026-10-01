@@ -8,16 +8,16 @@ class Main
 {
     fnc main() -> Int32 {
         // doubly nested
-        let outer: fnc(Int64) -> Int64 = fnc(x: Int64) -> Int64 {
-            let inner: fnc(Int64) -> Int64 = fnc(y: Int64) -> Int64 { return y * 2; };
+        const outer: fnc(Int64) -> Int64 = fnc(x: Int64) -> Int64 {
+            const inner: fnc(Int64) -> Int64 = fnc(y: Int64) -> Int64 { return y * 2; };
             return inner(x) + 1;
         };
         println(outer(10).toString());   // inner(10)=20, +1 = 21
 
         // triply nested
-        let a: fnc() -> Int64 = fnc() -> Int64 {
-            let b: fnc() -> Int64 = fnc() -> Int64 {
-                let c: fnc() -> Int64 = fnc() -> Int64 { return 7; };
+        const a: fnc() -> Int64 = fnc() -> Int64 {
+            const b: fnc() -> Int64 = fnc() -> Int64 {
+                const c: fnc() -> Int64 = fnc() -> Int64 { return 7; };
                 return c() + 10;
             };
             return b() + 100;

@@ -12,9 +12,9 @@ class Main
 {
     fnc main() -> Int32
     {
-        let one = r#"has "quotes" inside"#;
-        let two = r##"needs "# inside"##;
-        let three = r###"needs "## inside"###;
+        const one = r#"has "quotes" inside"#;
+        const two = r##"needs "# inside"##;
+        const three = r###"needs "## inside"###;
         println(one);
         println(two);
         println(three);

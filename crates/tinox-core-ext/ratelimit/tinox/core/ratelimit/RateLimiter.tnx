@@ -18,8 +18,8 @@ namespace tinox.core.ratelimit
 
         fn allow(limiter: RateLimiter) -> Bool
         {
-            let now: Int64 = Time::now();
-            let windowStart: Int64 = now - limiter.windowMs;
+            const now: Int64 = Time::now();
+            const windowStart: Int64 = now - limiter.windowMs;
             var validRequests: List<Int64> = [];
             var i: Int64 = 0;
             while i < limiter.requests.len()
@@ -46,8 +46,8 @@ namespace tinox.core.ratelimit
 
         fn remaining(limiter: RateLimiter) -> Int64
         {
-            let now: Int64 = Time::now();
-            let windowStart: Int64 = now - limiter.windowMs;
+            const now: Int64 = Time::now();
+            const windowStart: Int64 = now - limiter.windowMs;
             var count: Int64 = 0;
             var i: Int64 = 0;
             while i < limiter.requests.len()

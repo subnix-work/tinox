@@ -40,8 +40,8 @@ class UserController
     @Path("/users/:id")
     fn getUser(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
-        let users: List<User> = [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
-        let idx: Int64 = findUserIndex(users, id);
+        const users: List<User> = [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
+        const idx: Int64 = findUserIndex(users, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"user not found\"}");

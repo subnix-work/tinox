@@ -332,7 +332,7 @@ fn hover_stmt(stmt: &Stmt, offset: u32) -> Option<String> {
                     return Some(s);
                 }
             }
-            Some(format!("let {}: {}", name, ty_str))
+            Some(format!("const {}: {}", name, ty_str))
         }
         StmtKind::Var { name, ty, value, .. } => {
             let ty_str = ty.as_ref().map(type_str).unwrap_or_else(|| "inferred".into());

@@ -4,12 +4,12 @@ class Main
 {
     fnc main() -> Int32
     {
-        let srv: Int64 = WsServer::listen(8080);
-        let conn: Int64 = WsServer::accept(srv);
+        const srv: Int64 = WsServer::listen(8080);
+        const conn: Int64 = WsServer::accept(srv);
 
         while true
         {
-            let f: WsFrame = Ws::readMessage(conn);
+            const f: WsFrame = Ws::readMessage(conn);
             if (f.opcode != 1)
             {
                 break;

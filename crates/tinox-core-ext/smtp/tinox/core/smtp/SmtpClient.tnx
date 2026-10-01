@@ -5,7 +5,7 @@
  * signup confirmation" need that previously required shelling out or
  * hand-rolling raw SMTP over tinox.core.socket.
  *
- *   let client: SmtpClient = SmtpClient::connect("smtp.example.org", 587);
+ *   const client: SmtpClient = SmtpClient::connect("smtp.example.org", 587);
  *   if client.conn <= 0 { throw client.errorMessage; }
  *   if !client.startTls() { throw "STARTTLS failed"; }
  *   if !client.authPlain("user", "pass") { throw "auth failed"; }
@@ -44,7 +44,7 @@ namespace tinox.core.smtp
          */
         fn connect(host: String, port: Int64) -> SmtpClient
         {
-            let fd = socketCreateTcp();
+            const fd = socketCreateTcp();
             if (!socketConnect(fd, host, port)) {
                 socketClose(fd);
                 return SmtpClient { conn: -1, host: host, errorMessage: "connect failed" };
@@ -62,12 +62,12 @@ namespace tinox.core.smtp
          */
         fn connectTls(host: String, port: Int64, verify: Bool) -> SmtpClient
         {
-            let fd = socketCreateTcp();
+            const fd = socketCreateTcp();
             if (!socketConnect(fd, host, port)) {
                 socketClose(fd);
                 return SmtpClient { conn: -1, host: host, errorMessage: "connect failed (TLS)" };
             }
-            let conn = httpConnFromFdTls(fd, host, verify);
+            const conn = httpConnFromFdTls(fd, host, verify);
             if (conn <= 0) {
                 return SmtpClient { conn: -1, host: host, errorMessage: "TLS handshake failed" };
             }
@@ -80,7 +80,7 @@ namespace tinox.core.smtp
             if (conn <= 0) {
                 return SmtpClient { conn: -1, host: host, errorMessage: "connect failed" };
             }
-            let greeting = SmtpClient::readReply(conn);
+            const greeting = SmtpClient::readReply(conn);
             if (!greeting.startsWith("2")) {
                 httpConnClose(conn);
                 return SmtpClient { conn: -1, host: host, errorMessage: "unexpected greeting: " + greeting };
@@ -115,11 +115,11 @@ namespace tinox.core.smtp
             if (SmtpClient::readReply(this.conn) != "220") {
                 return false;
             }
-            let fd = httpConnTakeFd(this.conn);
+            const fd = httpConnTakeFd(this.conn);
             if (fd < 0) {
                 return false;
             }
-            let tlsConn = httpConnFromFdTls(fd, this.host, true);
+            const tlsConn = httpConnFromFdTls(fd, this.host, true);
             if (tlsConn <= 0) {
                 return false;
             }
@@ -154,7 +154,7 @@ namespace tinox.core.smtp
                 bytes.push(pass.charCodeAt(j));
                 j = j + 1;
             }
-            let encoded = Base64::encodeBytes(bytes);
+            const encoded = Base64::encodeBytes(bytes);
             httpConnSendRaw(this.conn, "AUTH PLAIN " + encoded + "\r\n");
             return SmtpClient::readReply(this.conn) == "235";
         }
@@ -197,8 +197,8 @@ namespace tinox.core.smtp
                 k = k + 1;
             }
 
-            let message = "From: " + from + "\r\nTo: " + toHeader + "\r\nSubject: " + subject + "\r\n\r\n" + body;
-            let lines = message.split("\n");
+            const message = "From: " + from + "\r\nTo: " + toHeader + "\r\nSubject: " + subject + "\r\n\r\n" + body;
+            const lines = message.split("\n");
             var m: Int64 = 0;
             while m < lines.len() {
                 var line = lines[m];
@@ -235,7 +235,7 @@ namespace tinox.core.smtp
             var code: String = "";
             var done: Bool = false;
             while !done {
-                let line = httpConnReadLine(conn);
+                const line = httpConnReadLine(conn);
                 if (line.len() < 4) {
                     return "";
                 }

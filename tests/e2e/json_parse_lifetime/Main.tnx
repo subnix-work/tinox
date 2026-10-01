@@ -25,10 +25,10 @@ class Main
         // Case 1: simple string value, whose getString() is only read AFTER a
         // second, independent parse() call -- exactly the
         // "decoded[\"sub\"].getString()" pattern from the original finding.
-        let subVal = Json::parse("\"hello-world-value-1234567890\"");
-        let expVal = Json::parse("9999999999");
+        const subVal = Json::parse("\"hello-world-value-1234567890\"");
+        const expVal = Json::parse("9999999999");
         println("exp=" + expVal.getInt().toString());
-        let subStr = subVal.getString();
+        const subStr = subVal.getString();
         println("sub=" + subStr);
         if (subStr == "hello-world-value-1234567890") {
             println("ok-not-corrupted-string");
@@ -36,7 +36,7 @@ class Main
 
         // Case 2: an object (map node + keys), whose nested fields
         // are only read after SEVERAL further parse() calls.
-        let objVal = Json::parse("{\"inner\": 42, \"tag\": \"keep-me\"}");
+        const objVal = Json::parse("{\"inner\": 42, \"tag\": \"keep-me\"}");
         Json::parse("1");
         Json::parse("[1,2,3,4,5]");
         Json::parse("\"throwaway\"");
@@ -48,9 +48,9 @@ class Main
         // Case 3: an int array (JSON_INT_ARRAY fast path, also
         // arena-based), whose values are only read after a further
         // parse() call.
-        let arrVal = Json::parse("[1, 2, 3]");
+        const arrVal = Json::parse("[1, 2, 3]");
         Json::parse("{\"a\": 1, \"b\": 2, \"c\": 3}");
-        let arr = Json::intArrayFromJson(arrVal);
+        const arr = Json::intArrayFromJson(arrVal);
         var sum: Int64 = 0;
         for i in 0..arr.len() {
             sum = sum + arr[i];

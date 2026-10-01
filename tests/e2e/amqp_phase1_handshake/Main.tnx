@@ -21,13 +21,13 @@ class Main
 {
     fnc main() -> Int32 {
         // --- dial() against a port with no listener: fast, hard failure ---
-        let refused = Amqp091::dial("127.0.0.1", 39218);
+        const refused = Amqp091::dial("127.0.0.1", 39218);
         if (refused == -1) {
             println("ok-dial-refused");
         }
 
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
@@ -35,10 +35,10 @@ class Main
 
         // --- Success path: fake broker responds with byte 1 (start of a
         // METHOD frame, like a real connection.start) ---
-        let conn1 = Amqp091::dial("127.0.0.1", port);
+        const conn1 = Amqp091::dial("127.0.0.1", port);
         Amqp091::sendProtocolHeader(conn1);
-        let sconn1 = httpServerAcceptConnHandle(srv);
-        let hdr1 = httpConnReadN(sconn1, 8);
+        const sconn1 = httpServerAcceptConnHandle(srv);
+        const hdr1 = httpConnReadN(sconn1, 8);
         if (hdr1.len() == 8) {
             if (hdr1[0] == 65) {
                 if (hdr1[1] == 77) {
@@ -67,9 +67,9 @@ class Main
 
         // --- Mismatch path: fake broker echoes the protocol header back
         // (first byte 'A' = 65, no frame-type octet) ---
-        let conn2 = Amqp091::dial("127.0.0.1", port);
+        const conn2 = Amqp091::dial("127.0.0.1", port);
         Amqp091::sendProtocolHeader(conn2);
-        let sconn2 = httpServerAcceptConnHandle(srv);
+        const sconn2 = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn2, 8);
         httpConnWriteBytes(sconn2, [65, 77, 81, 80, 0, 0, 9, 1]);
         if (!Amqp091::checkHandshakeResponse(conn2)) {
@@ -79,9 +79,9 @@ class Main
         httpConnClose(sconn2);
 
         // --- EOF path: fake broker closes immediately without responding ---
-        let conn3 = Amqp091::dial("127.0.0.1", port);
+        const conn3 = Amqp091::dial("127.0.0.1", port);
         Amqp091::sendProtocolHeader(conn3);
-        let sconn3 = httpServerAcceptConnHandle(srv);
+        const sconn3 = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn3, 8);
         httpConnClose(sconn3);
         if (!Amqp091::checkHandshakeResponse(conn3)) {

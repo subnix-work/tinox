@@ -79,12 +79,12 @@ class Main
 
     fnc main() -> Int32
     {
-        let tasks: List<Task> = [
+        const tasks: List<Task> = [
             Task { id: 1, title: "Try tinox.core.http3_server", done: false },
             Task { id: 2, title: "curl --http3-only this API", done: false }
         ];
 
-        let server: Http3Server = Http3Server::new(8843, "cert.pem", "key.pem");
+        const server: Http3Server = Http3Server::new(8843, "cert.pem", "key.pem");
 
         server.use(ctx => {
             print(ctx.request.method + " " + ctx.request.path);
@@ -96,8 +96,8 @@ class Main
         });
 
         server.get("/tasks/:id", ctx => {
-            let id: Int64 = ctx.request.getParam("id").toInt();
-            let idx: Int64 = findTaskIndex(tasks, id);
+            const id: Int64 = ctx.request.getParam("id").toInt();
+            const idx: Int64 = findTaskIndex(tasks, id);
             if (idx < 0)
             {
                 notFound(ctx);
@@ -107,29 +107,29 @@ class Main
         });
 
         server.post("/tasks", ctx => {
-            let incoming: Task = Json::deserialize<Task>(ctx.request.body);
+            const incoming: Task = Json::deserialize<Task>(ctx.request.body);
             incoming.id = nextTaskId(tasks);
             tasks.push(incoming);
             ctx.response.status(201).json(Json::serialize(incoming));
         });
 
         server.put("/tasks/:id", ctx => {
-            let id: Int64 = ctx.request.getParam("id").toInt();
-            let idx: Int64 = findTaskIndex(tasks, id);
+            const id: Int64 = ctx.request.getParam("id").toInt();
+            const idx: Int64 = findTaskIndex(tasks, id);
             if (idx < 0)
             {
                 notFound(ctx);
                 return;
             }
-            let updated: Task = Json::deserialize<Task>(ctx.request.body);
+            const updated: Task = Json::deserialize<Task>(ctx.request.body);
             updated.id = id;
             tasks[idx] = updated;
             ctx.response.json(Json::serialize(updated));
         });
 
         server.patch("/tasks/:id/done", ctx => {
-            let id: Int64 = ctx.request.getParam("id").toInt();
-            let idx: Int64 = findTaskIndex(tasks, id);
+            const id: Int64 = ctx.request.getParam("id").toInt();
+            const idx: Int64 = findTaskIndex(tasks, id);
             if (idx < 0)
             {
                 notFound(ctx);
@@ -140,8 +140,8 @@ class Main
         });
 
         server.delete("/tasks/:id", ctx => {
-            let id: Int64 = ctx.request.getParam("id").toInt();
-            let idx: Int64 = findTaskIndex(tasks, id);
+            const id: Int64 = ctx.request.getParam("id").toInt();
+            const idx: Int64 = findTaskIndex(tasks, id);
             if (idx < 0)
             {
                 notFound(ctx);

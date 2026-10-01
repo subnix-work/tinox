@@ -6,7 +6,7 @@ import _bug06_mod;
 class Main
 {
     fnc main() -> Int32 {
-        let r = Wrapped::makeWrapped();
+        const r = Wrapped::makeWrapped();
         println(r.tag);
         match r.value {
             SVal(s) => println(s);

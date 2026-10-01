@@ -80,7 +80,7 @@ namespace tinox.core.amqp10
 
         fn attachCore(session: Amqp10Session, name: String, role: Bool, address: String, priorUnsettledTags: List<List<Int64>>) -> Amqp10Link
         {
-            let handle = session.nextLinkHandle;
+            const handle = session.nextLinkHandle;
             session.nextLinkHandle = session.nextLinkHandle + 1;
 
             var sourceVal: Amqp10Value = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x28, value: Amqp10Value::ListVal([]) });
@@ -125,14 +125,14 @@ namespace tinox.core.amqp10
                 Amqp10Value::BoolVal(false), // incomplete-unsettled: false (spec default, set explicitly)
                 Amqp10Value::UIntVal(0)    // initial-delivery-count (only relevant for role=sender, ignored otherwise)
             ];
-            let attachBody = Amqp10::encodePerformative(0x12, attachFields);
+            const attachBody = Amqp10::encodePerformative(0x12, attachFields);
             Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody);
 
-            let f = Amqp10::readFrame(session.conn);
+            const f = Amqp10::readFrame(session.conn);
             if (f.frameType != 0) {
                 return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
             }
-            let p = Amqp10::decodePerformative(f.body);
+            const p = Amqp10::decodePerformative(f.body);
             if (p.descriptor != 0x12) {
                 return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
             }
@@ -168,7 +168,7 @@ namespace tinox.core.amqp10
         fn detach() -> Nothing
         {
             var detachFields: List<Amqp10Value> = [Amqp10Value::UIntVal(this.handle)];
-            let detachBody = Amqp10::encodePerformative(0x16, detachFields);
+            const detachBody = Amqp10::encodePerformative(0x16, detachFields);
             Amqp10::writeFrame(this.conn, 0, this.chanId, detachBody);
             Amqp10::readFrame(this.conn);
         }
@@ -184,7 +184,7 @@ namespace tinox.core.amqp10
          */
         fn awaitFlow() -> Nothing
         {
-            let f = Amqp10::readFrame(this.conn);
+            const f = Amqp10::readFrame(this.conn);
             if (f.frameType != 0) {
                 this.errorMessage = "expected AMQP frame (type=0) while waiting for flow, got frameType=" + f.frameType.toString();
                 return;
@@ -197,7 +197,7 @@ namespace tinox.core.amqp10
                 this.errorMessage = "flow received on the wrong channel " + f.chanId.toString() + " (expected: " + this.chanId.toString() + ") — no frame dispatcher in v1, see issue 76";
                 return;
             }
-            let p = Amqp10::decodePerformative(f.body);
+            const p = Amqp10::decodePerformative(f.body);
             if (p.descriptor != 0x13) {
                 this.errorMessage = "expected flow (0x13), got descriptor=" + p.descriptor.toString();
                 return;
@@ -228,7 +228,7 @@ namespace tinox.core.amqp10
                 Amqp10Value::UIntVal(this.deliveryCount),
                 Amqp10Value::UIntVal(amount)
             ];
-            let flowBody = Amqp10::encodePerformative(0x13, flowFields);
+            const flowBody = Amqp10::encodePerformative(0x13, flowFields);
             Amqp10::writeFrame(this.conn, 0, this.chanId, flowBody);
             this.linkCredit = amount;
         }
@@ -264,7 +264,7 @@ namespace tinox.core.amqp10
          */
         fn publishTransactional(body: List<Int64>, contentType: String, txnId: List<Int64>) -> Nothing
         {
-            let txnState = Amqp10Described { descriptor: 0x34, value: Amqp10Value::ListVal([
+            const txnState = Amqp10Described { descriptor: 0x34, value: Amqp10Value::ListVal([
                 Amqp10Value::BinaryVal(txnId),
                 Amqp10Value::NullVal
             ]) };
@@ -284,8 +284,8 @@ namespace tinox.core.amqp10
                 }
             }
 
-            let msgBytes = Amqp10::encodeMessageBody(body, contentType);
-            let deliveryTag = Amqp10::deliveryTagBytes(this.deliveryCount);
+            const msgBytes = Amqp10::encodeMessageBody(body, contentType);
+            const deliveryTag = Amqp10::deliveryTagBytes(this.deliveryCount);
 
             // A rough but safe overhead buffer for the transfer
             // performative wrapper itself (handle/delivery-id/tag/flags)
@@ -327,7 +327,7 @@ namespace tinox.core.amqp10
                     Amqp10Value::UByteVal(0),     // rcv-settle-mode: first
                     txnState                      // state (issue 79: TransactionalState or NullVal)
                 ];
-                let transferBody = Amqp10::encodePerformative(0x14, transferFields);
+                const transferBody = Amqp10::encodePerformative(0x14, transferFields);
                 var fullFrame: List<Int64> = [];
                 for i in 0..transferBody.len() {
                     fullFrame.push(transferBody[i]);
@@ -357,7 +357,7 @@ namespace tinox.core.amqp10
          */
         fn nextMessage() -> Amqp10Message
         {
-            let f = Amqp10::readFrameSkipHeartbeats(this.conn);
+            const f = Amqp10::readFrameSkipHeartbeats(this.conn);
             if (f.frameType != 0) {
                 return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() };
             }
@@ -371,8 +371,8 @@ namespace tinox.core.amqp10
             if (f.chanId != this.chanId) {
                 return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "frame received on the wrong channel " + f.chanId.toString() + " (expected: " + this.chanId.toString() + ") — no frame dispatcher in v1, see issue 76" };
             }
-            let r = Amqp10Reader::new(f.body);
-            let v = r.readValue();
+            const r = Amqp10Reader::new(f.body);
+            const v = r.readValue();
             var descriptor: Int64 = -1;
             var fields: List<Amqp10Value> = [];
             match v
@@ -425,13 +425,13 @@ namespace tinox.core.amqp10
             // forms AND fails hard (ok=false) if no recognized body
             // section was found at all, instead of silently returning
             // an empty body.
-            let restBytes = r.readRawBytes(r.remaining());
+            const restBytes = r.readRawBytes(r.remaining());
             var body: List<Int64> = [];
             var contentType: String = "";
             var bodyFound: Bool = false;
-            let mr = Amqp10Reader::new(restBytes);
+            const mr = Amqp10Reader::new(restBytes);
             while mr.remaining() > 0 {
-                let sv = mr.readValue();
+                const sv = mr.readValue();
                 match sv
                 {
                     DescribedVal(sd) => {
@@ -489,7 +489,7 @@ namespace tinox.core.amqp10
                 Amqp10Value::BoolVal(true),   // settled
                 state
             ];
-            let dispBody = Amqp10::encodePerformative(0x15, dispFields);
+            const dispBody = Amqp10::encodePerformative(0x15, dispFields);
             Amqp10::writeFrame(this.conn, 0, this.chanId, dispBody);
         }
 
@@ -500,7 +500,7 @@ namespace tinox.core.amqp10
          */
         fn ack(deliveryId: Int64) -> Nothing
         {
-            let acceptedDesc = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) };
+            const acceptedDesc = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) };
             this.sendDisposition(deliveryId, Amqp10Value::DescribedVal(acceptedDesc));
         }
 
@@ -518,13 +518,13 @@ namespace tinox.core.amqp10
         {
             var rejectedFields: List<Amqp10Value> = [];
             if (condition.len() > 0) {
-                let errorDesc = Amqp10Described { descriptor: 0x1d, value: Amqp10Value::ListVal([
+                const errorDesc = Amqp10Described { descriptor: 0x1d, value: Amqp10Value::ListVal([
                     Amqp10Value::SymbolVal(condition),
                     Amqp10Value::StrVal(description)
                 ]) };
                 rejectedFields = [Amqp10Value::DescribedVal(errorDesc)];
             }
-            let rejectedDesc = Amqp10Described { descriptor: 0x25, value: Amqp10Value::ListVal(rejectedFields) };
+            const rejectedDesc = Amqp10Described { descriptor: 0x25, value: Amqp10Value::ListVal(rejectedFields) };
             this.sendDisposition(deliveryId, Amqp10Value::DescribedVal(rejectedDesc));
         }
 
@@ -536,7 +536,7 @@ namespace tinox.core.amqp10
          */
         fn release(deliveryId: Int64) -> Nothing
         {
-            let releasedDesc = Amqp10Described { descriptor: 0x26, value: Amqp10Value::ListVal([]) };
+            const releasedDesc = Amqp10Described { descriptor: 0x26, value: Amqp10Value::ListVal([]) };
             this.sendDisposition(deliveryId, Amqp10Value::DescribedVal(releasedDesc));
         }
 
@@ -553,7 +553,7 @@ namespace tinox.core.amqp10
          */
         fn modify(deliveryId: Int64, deliveryFailed: Bool, undeliverableHere: Bool) -> Nothing
         {
-            let modifiedDesc = Amqp10Described { descriptor: 0x27, value: Amqp10Value::ListVal([
+            const modifiedDesc = Amqp10Described { descriptor: 0x27, value: Amqp10Value::ListVal([
                 Amqp10Value::BoolVal(deliveryFailed),
                 Amqp10Value::BoolVal(undeliverableHere)
             ]) };
@@ -572,8 +572,8 @@ namespace tinox.core.amqp10
          */
         fn ackTransactional(deliveryId: Int64, txnId: List<Int64>) -> Nothing
         {
-            let acceptedDesc = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) };
-            let txnState = Amqp10Described { descriptor: 0x34, value: Amqp10Value::ListVal([
+            const acceptedDesc = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) };
+            const txnState = Amqp10Described { descriptor: 0x34, value: Amqp10Value::ListVal([
                 Amqp10Value::BinaryVal(txnId),
                 Amqp10Value::DescribedVal(acceptedDesc)
             ]) };
@@ -594,13 +594,13 @@ namespace tinox.core.amqp10
          */
         fn attachCoordinator(session: Amqp10Session, name: String) -> Amqp10Link
         {
-            let coordinatorDesc = Amqp10Described { descriptor: 0x30, value: Amqp10Value::ListVal([
+            const coordinatorDesc = Amqp10Described { descriptor: 0x30, value: Amqp10Value::ListVal([
                 Amqp10Value::ListVal([Amqp10Value::SymbolVal("amqp:local-transactions")])
             ]) };
-            let handle = session.nextLinkHandle;
+            const handle = session.nextLinkHandle;
             session.nextLinkHandle = session.nextLinkHandle + 1;
 
-            let sourceVal = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x28, value: Amqp10Value::ListVal([]) });
+            const sourceVal = Amqp10Value::DescribedVal(Amqp10Described { descriptor: 0x28, value: Amqp10Value::ListVal([]) });
             var attachFields: List<Amqp10Value> = [
                 Amqp10Value::StrVal(name),
                 Amqp10Value::UIntVal(handle),
@@ -613,14 +613,14 @@ namespace tinox.core.amqp10
                 Amqp10Value::BoolVal(false), // incomplete-unsettled
                 Amqp10Value::UIntVal(0)      // initial-delivery-count (role=sender)
             ];
-            let attachBody = Amqp10::encodePerformative(0x12, attachFields);
+            const attachBody = Amqp10::encodePerformative(0x12, attachFields);
             Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody);
 
-            let f = Amqp10::readFrame(session.conn);
+            const f = Amqp10::readFrame(session.conn);
             if (f.frameType != 0) {
                 return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] };
             }
-            let p = Amqp10::decodePerformative(f.body);
+            const p = Amqp10::decodePerformative(f.body);
             if (p.descriptor != 0x12) {
                 return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] };
             }
@@ -641,11 +641,11 @@ namespace tinox.core.amqp10
          */
         fn sendCoordinatorControl(controlValue: Amqp10Value) -> Amqp10Value
         {
-            let w = Amqp10Writer::new();
-            let sectionDesc = Amqp10Described { descriptor: 0x77, value: controlValue }; // amqp-value section
+            const w = Amqp10Writer::new();
+            const sectionDesc = Amqp10Described { descriptor: 0x77, value: controlValue }; // amqp-value section
             w.writeDescribed(sectionDesc);
 
-            let deliveryTag = Amqp10::deliveryTagBytes(this.deliveryCount);
+            const deliveryTag = Amqp10::deliveryTagBytes(this.deliveryCount);
             var transferFields: List<Amqp10Value> = [
                 Amqp10Value::UIntVal(this.handle),
                 Amqp10Value::UIntVal(this.deliveryCount),
@@ -653,18 +653,18 @@ namespace tinox.core.amqp10
                 Amqp10Value::UIntVal(0),       // message-format
                 Amqp10Value::BoolVal(false)    // settled: false -- the broker MUST respond with a disposition
             ];
-            let transferBody = Amqp10::encodePerformative(0x14, transferFields);
+            const transferBody = Amqp10::encodePerformative(0x14, transferFields);
             var fullFrame: List<Int64> = [];
             for i in 0..transferBody.len() { fullFrame.push(transferBody[i]); }
             for i in 0..w.bytes.len() { fullFrame.push(w.bytes[i]); }
             Amqp10::writeFrame(this.conn, 0, this.chanId, fullFrame);
             this.deliveryCount = this.deliveryCount + 1;
 
-            let f = Amqp10::readFrame(this.conn);
+            const f = Amqp10::readFrame(this.conn);
             if (f.frameType != 0) {
                 return Amqp10Value::ErrorVal("expected AMQP frame (type=0), got frameType=" + f.frameType.toString());
             }
-            let p = Amqp10::decodePerformative(f.body);
+            const p = Amqp10::decodePerformative(f.body);
             if (p.descriptor != 0x15) {
                 return Amqp10Value::ErrorVal("expected disposition (0x15), got descriptor=" + p.descriptor.toString());
             }
@@ -685,8 +685,8 @@ namespace tinox.core.amqp10
          */
         fn declare() -> Amqp10Transaction
         {
-            let declareDesc = Amqp10Described { descriptor: 0x31, value: Amqp10Value::ListVal([Amqp10Value::NullVal]) };
-            let state = this.sendCoordinatorControl(Amqp10Value::DescribedVal(declareDesc));
+            const declareDesc = Amqp10Described { descriptor: 0x31, value: Amqp10Value::ListVal([Amqp10Value::NullVal]) };
+            const state = this.sendCoordinatorControl(Amqp10Value::DescribedVal(declareDesc));
             match state {
                 DescribedVal(d) => {
                     if (d.descriptor == 0x33) {
@@ -721,11 +721,11 @@ namespace tinox.core.amqp10
          */
         fn discharge(txnId: List<Int64>, fail: Bool) -> Bool
         {
-            let dischargeDesc = Amqp10Described { descriptor: 0x32, value: Amqp10Value::ListVal([
+            const dischargeDesc = Amqp10Described { descriptor: 0x32, value: Amqp10Value::ListVal([
                 Amqp10Value::BinaryVal(txnId),
                 Amqp10Value::BoolVal(fail)
             ]) };
-            let state = this.sendCoordinatorControl(Amqp10Value::DescribedVal(dischargeDesc));
+            const state = this.sendCoordinatorControl(Amqp10Value::DescribedVal(dischargeDesc));
             match state {
                 DescribedVal(d) => { if (d.descriptor == 0x24) { return true; } } // accepted
                 _ => {}

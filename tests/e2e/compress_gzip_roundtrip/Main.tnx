@@ -32,8 +32,8 @@ class Main
 
         // gzip -> gunzip round trip must reproduce the original bytes and
         // report success via lastGunzipOk().
-        let packed: List<Int64> = Compress::gzip(bytes);
-        let restored: List<Int64> = Compress::gunzip(packed);
+        const packed: List<Int64> = Compress::gzip(bytes);
+        const restored: List<Int64> = Compress::gunzip(packed);
         println(Compress::lastGunzipOk());
         var restoredStr: String = "";
         var j: Int64 = 0;
@@ -45,8 +45,8 @@ class Main
         println(restoredStr == msg);
 
         // deflateRaw -> inflateRaw round trip (RFC 1951, no gzip framing).
-        let rawPacked: List<Int64> = Compress::deflateRaw(bytes);
-        let rawRestored: List<Int64> = Compress::inflateRaw(rawPacked);
+        const rawPacked: List<Int64> = Compress::deflateRaw(bytes);
+        const rawRestored: List<Int64> = Compress::inflateRaw(rawPacked);
         var rawStr: String = "";
         var k: Int64 = 0;
         while k < rawRestored.len()
@@ -60,8 +60,8 @@ class Main
         // one junk byte, no header/deflate-stream/trailer) must not be
         // silently accepted as a valid empty result -- lastGunzipOk() must
         // report false, matching this module's documented contract.
-        let corrupt: List<Int64> = [31, 139, 255];
-        let junk: List<Int64> = Compress::gunzip(corrupt);
+        const corrupt: List<Int64> = [31, 139, 255];
+        const junk: List<Int64> = Compress::gunzip(corrupt);
         println(Compress::lastGunzipOk());
         println(junk.len());
 

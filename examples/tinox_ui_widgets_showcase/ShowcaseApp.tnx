@@ -22,7 +22,7 @@ class ShowcaseApp
     @View
     fn render() -> Component
     {
-        let app: ShowcaseApp = this;
+        const app: ShowcaseApp = this;
         if (!this.initialized)
         {
             this.selectedDate = "2026-01-01";
@@ -32,8 +32,8 @@ class ShowcaseApp
             this.initialized = true;
         }
 
-        let tabContent: Component = this.tabContent();
-        let tabLabels: List<String> = ["Grid", "Form"];
+        const tabContent: Component = this.tabContent();
+        const tabLabels: List<String> = ["Grid", "Form"];
 
         return Component::vbox([
             Component::heading("Widget Showcase", 1),
@@ -55,16 +55,16 @@ class ShowcaseApp
 
     fn gridTab() -> Component
     {
-        let nameCol: GridColumn<Person> = GridColumn::of("Name", fn(p: Person) { return p.name; });
-        let ageCol: GridColumn<Person> = GridColumn::of("Age", fn(p: Person) { return p.age.toString(); });
-        let columns: List<GridColumn<Person>> = [nameCol, ageCol];
+        const nameCol: GridColumn<Person> = GridColumn::of("Name", fn(p: Person) { return p.name; });
+        const ageCol: GridColumn<Person> = GridColumn::of("Age", fn(p: Person) { return p.age.toString(); });
+        const columns: List<GridColumn<Person>> = [nameCol, ageCol];
         return DataGrid::of(this.people, columns);
     }
 
     fn formTab() -> Component
     {
-        let app: ShowcaseApp = this;
-        let colors: List<String> = ["red", "green", "blue"];
+        const app: ShowcaseApp = this;
+        const colors: List<String> = ["red", "green", "blue"];
         return Component::vbox([
             Component::datePicker(this.selectedDate, fn(v: String) { app.selectedDate = v; }),
             Component::radioGroup(colors, this.selectedColor, fn(v: String) { app.selectedColor = v; }),

@@ -61,9 +61,9 @@ class Main
         innerFields["nested_key"] = MsgpackValue { kind: "string", stringValue: "nested_value", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
         fields["obj"] = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: innerFields };
 
-        let root: MsgpackValue = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: fields };
-        let bytes: List<Int64> = Msgpack::encode(root);
-        let decoded: MsgpackValue = Msgpack::decode(bytes);
+        const root: MsgpackValue = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: fields };
+        const bytes: List<Int64> = Msgpack::encode(root);
+        const decoded: MsgpackValue = Msgpack::decode(bytes);
 
         println(decoded.getField("str").getString() == "hello");
         println(decoded.getField("int_neg").getInt() == -12345);
@@ -78,7 +78,7 @@ class Main
         // with nothing following must fail cleanly (isNull), not hang or
         // read out of bounds.
         var truncated: List<Int64> = [0xdb, 0xff, 0xff, 0xff, 0xff];
-        let badResult: MsgpackValue = Msgpack::decode(truncated);
+        const badResult: MsgpackValue = Msgpack::decode(truncated);
         if (!badResult.isNull()) {
             println(false);
         }
@@ -104,9 +104,9 @@ class Main
             bigBytes.push(65 + (n % 26));
             n = n + 1;
         }
-        let bigStrValue: MsgpackValue = MsgpackValue { kind: "string", stringValue: tinoxBytesToString(bigBytes), intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        let bigEncoded: List<Int64> = Msgpack::encode(bigStrValue);
-        let bigDecoded: MsgpackValue = Msgpack::decode(bigEncoded);
+        const bigStrValue: MsgpackValue = MsgpackValue { kind: "string", stringValue: tinoxBytesToString(bigBytes), intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
+        const bigEncoded: List<Int64> = Msgpack::encode(bigStrValue);
+        const bigDecoded: MsgpackValue = Msgpack::decode(bigEncoded);
         println(bigDecoded.getString().len() == 100000 && bigDecoded.getString().charCodeAt(0) == 65 && bigDecoded.getString().charCodeAt(99999) == 65 + (99999 % 26));
 
         return 0;

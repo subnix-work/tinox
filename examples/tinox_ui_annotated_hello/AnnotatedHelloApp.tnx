@@ -29,7 +29,7 @@ class AnnotatedHelloApp
         // Same `this` capture caveat as tinox_ui_hello's build() --
         // aliased to `app` first since a nested lambda can't reference
         // `this` directly (issue #217).
-        let app: AnnotatedHelloApp = this;
+        const app: AnnotatedHelloApp = this;
         return Component::vbox([
             Component::label("Tinox-UI Annotated Hello"),
             Component::label("Clicks: " + this.clicks.toString()),

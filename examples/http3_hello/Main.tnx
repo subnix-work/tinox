@@ -11,7 +11,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let server: Http3Server = Http3Server::new(8493, "tls_cert.pem", "tls_key.pem");
+        const server: Http3Server = Http3Server::new(8493, "tls_cert.pem", "tls_key.pem");
 
         server.get("/hello", ctx => {
             ctx.response.text("hi from h3");

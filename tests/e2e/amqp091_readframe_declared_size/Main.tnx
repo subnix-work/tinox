@@ -28,10 +28,10 @@ class Main
 {
 
     async fnc feederShort(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
         // Header declares a 1MB payload, but the connection is closed right
         // after sending just the 7-byte header — no payload bytes follow.
-        let w = AmqpWriter091::new();
+        const w = AmqpWriter091::new();
         w.octet(1);       // frameType
         w.short(0);       // chanId
         w.long(1000000);  // declared size: 1MB, never actually sent
@@ -43,8 +43,8 @@ class Main
 
 
     async fnc feederHuge(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
-        let w = AmqpWriter091::new();
+        const sconn = httpServerAcceptConnHandle(srv);
+        const w = AmqpWriter091::new();
         w.octet(1);
         w.short(0);
         w.long(16777217); // 1 byte over readFrame's own 16MB cap
@@ -55,18 +55,18 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv1 = httpServerCreate(0);
-        let port1 = httpServerBoundPort(srv1);
+        const srv1 = httpServerCreate(0);
+        const port1 = httpServerBoundPort(srv1);
         if (srv1 < 0) {
             println("bind failed");
             return 1;
         }
-        let handle1 = spawn feederShort(srv1);
+        const handle1 = spawn feederShort(srv1);
 
-        let cfd1 = socketCreateTcp();
+        const cfd1 = socketCreateTcp();
         socketConnect(cfd1, "127.0.0.1", port1);
-        let cconn1 = httpConnFromFd(cfd1);
-        let f1 = Amqp091::readFrame(cconn1);
+        const cconn1 = httpConnFromFd(cfd1);
+        const f1 = Amqp091::readFrame(cconn1);
         if (f1.frameType == -1) {
             println("ok-short-declared-frame");
         }
@@ -74,18 +74,18 @@ class Main
         await handle1;
         httpServerClose(srv1);
 
-        let srv2 = httpServerCreate(0);
-        let port2 = httpServerBoundPort(srv2);
+        const srv2 = httpServerCreate(0);
+        const port2 = httpServerBoundPort(srv2);
         if (srv2 < 0) {
             println("bind failed");
             return 1;
         }
-        let handle2 = spawn feederHuge(srv2);
+        const handle2 = spawn feederHuge(srv2);
 
-        let cfd2 = socketCreateTcp();
+        const cfd2 = socketCreateTcp();
         socketConnect(cfd2, "127.0.0.1", port2);
-        let cconn2 = httpConnFromFd(cfd2);
-        let f2 = Amqp091::readFrame(cconn2);
+        const cconn2 = httpConnFromFd(cfd2);
+        const f2 = Amqp091::readFrame(cconn2);
         if (f2.frameType == -2) {
             println("ok-huge-declared-size-rejected");
         }

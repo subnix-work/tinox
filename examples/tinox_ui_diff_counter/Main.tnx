@@ -8,7 +8,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let srv: HttpServer = HttpServer::new(8284);
+        const srv: HttpServer = HttpServer::new(8284);
         srv.get("/", ctx => {
             ctx.response.html(Assets::shellHtml(8285));
         });

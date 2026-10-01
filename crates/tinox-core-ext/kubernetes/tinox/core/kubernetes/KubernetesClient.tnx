@@ -114,7 +114,7 @@ namespace tinox.core.kubernetes
         // directly instead of this convenience wrapper.
         fn request(method: String, path: String, body: String) -> KubeResponse
         {
-            let contentType: String = method == "PATCH" ? "application/merge-patch+json" : "application/json";
+            const contentType: String = method == "PATCH" ? "application/merge-patch+json" : "application/json";
             return this.requestWithContentType(method, path, body, contentType);
         }
 
@@ -138,37 +138,37 @@ namespace tinox.core.kubernetes
             Http::setHeader("Accept", "application/json");
             Http::setHeader("Content-Type", contentType);
 
-            let url: String = this.auth.serverUrl + path;
+            const url: String = this.auth.serverUrl + path;
             var statusCode: Int64 = 0;
             var respBody: String = "";
 
             if (method == "GET")
             {
-                let resp: HttpClientResponse = Http::get(url);
+                const resp: HttpClientResponse = Http::get(url);
                 statusCode = resp.statusCode();
                 respBody = resp.body();
             }
             else if (method == "POST")
             {
-                let resp: HttpClientResponse = Http::post(url, body);
+                const resp: HttpClientResponse = Http::post(url, body);
                 statusCode = resp.statusCode();
                 respBody = resp.body();
             }
             else if (method == "PUT")
             {
-                let resp: HttpClientResponse = Http::put(url, body);
+                const resp: HttpClientResponse = Http::put(url, body);
                 statusCode = resp.statusCode();
                 respBody = resp.body();
             }
             else if (method == "PATCH")
             {
-                let resp: HttpClientResponse = Http::patch(url, body);
+                const resp: HttpClientResponse = Http::patch(url, body);
                 statusCode = resp.statusCode();
                 respBody = resp.body();
             }
             else if (method == "DELETE")
             {
-                let resp: HttpClientResponse = Http::delete(url);
+                const resp: HttpClientResponse = Http::delete(url);
                 statusCode = resp.statusCode();
                 respBody = resp.body();
             }

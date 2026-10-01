@@ -17,8 +17,8 @@ class ShowcaseApp
     @View
     fn render() -> Component
     {
-        let app: ShowcaseApp = this;
-        let nav: Component = Component::hbox([
+        const app: ShowcaseApp = this;
+        const nav: Component = Component::hbox([
             Component::link("Home", "/", fn(p: String) { app.isAbout = false; }),
             Component::link("About", "/about", fn(p: String) { app.isAbout = true; })
         ]);

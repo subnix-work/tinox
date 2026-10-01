@@ -91,7 +91,7 @@ namespace tinox.core.http2_server
             this.running = true;
             while this.running
             {
-                let clientFd: Int64 = httpServerAcceptConn(this.socketHandle);
+                const clientFd: Int64 = httpServerAcceptConn(this.socketHandle);
                 if (clientFd >= 0)
                 {
                     this.handleConnection(clientFd);
@@ -106,8 +106,8 @@ namespace tinox.core.http2_server
 
         fn readBytes(fd: Int64, count: Int64) -> List<Int64>
         {
-            let raw: String = httpServerReadRawBytes(fd, count);
-            let bytes: List<Int64> = [];
+            const raw: String = httpServerReadRawBytes(fd, count);
+            const bytes: List<Int64> = [];
             var i: Int64 = 0;
             while i < raw.len()
             {
@@ -152,18 +152,18 @@ namespace tinox.core.http2_server
 
         fn readFrame(conn: Http2Conn) -> Http2Frame
         {
-            let header: List<Int64> = this.readBytes(conn.handle, 9);
+            const header: List<Int64> = this.readBytes(conn.handle, 9);
             if (header.len() < 9)
             {
                 // Connection closed or error — signal with type -1
                 return Http2Frame { length: 0, type: -1, flags: 0, streamId: 0, payload: [] };
             }
-            let length: Int64 = (header[0] << 16) | (header[1] << 8) | header[2];
-            let frameType: Int64 = header[3];
-            let flags: Int64 = header[4];
+            const length: Int64 = (header[0] << 16) | (header[1] << 8) | header[2];
+            const frameType: Int64 = header[3];
+            const flags: Int64 = header[4];
             // R bit (MSB of stream ID) is reserved and must be ignored
-            let streamId: Int64 = ((header[5] & 127) << 24) | (header[6] << 16) | (header[7] << 8) | header[8];
-            let payload: List<Int64> = this.readBytes(conn.handle, length);
+            const streamId: Int64 = ((header[5] & 127) << 24) | (header[6] << 16) | (header[7] << 8) | header[8];
+            const payload: List<Int64> = this.readBytes(conn.handle, length);
             return Http2Frame {
                 length: length,
                 type: frameType,
@@ -175,8 +175,8 @@ namespace tinox.core.http2_server
 
         fn writeFrame(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
-            let out: List<Int64> = [];
-            let len: Int64 = frame.payload.len();
+            const out: List<Int64> = [];
+            const len: Int64 = frame.payload.len();
             out.push((len >> 16) & 255);
             out.push((len >> 8) & 255);
             out.push(len & 255);
@@ -196,7 +196,7 @@ namespace tinox.core.http2_server
 
         fn sendServerSettings(conn: Http2Conn) -> Nothing
         {
-            let payload: List<Int64> = [];
+            const payload: List<Int64> = [];
             // Disable server push (we don't use it)
             payload.push(0); payload.push(Http2Settings::ENABLE_PUSH());
             payload.push(0); payload.push(0); payload.push(0); payload.push(0);
@@ -221,7 +221,7 @@ namespace tinox.core.http2_server
 
         fn sendGoaway(conn: Http2Conn, errorCode: Int64) -> Nothing
         {
-            let payload: List<Int64> = [];
+            const payload: List<Int64> = [];
             payload.push((conn.lastStreamId >> 24) & 127);
             payload.push((conn.lastStreamId >> 16) & 255);
             payload.push((conn.lastStreamId >> 8) & 255);
@@ -235,7 +235,7 @@ namespace tinox.core.http2_server
 
         fn sendRstStream(conn: Http2Conn, streamId: Int64, errorCode: Int64) -> Nothing
         {
-            let payload: List<Int64> = [];
+            const payload: List<Int64> = [];
             payload.push((errorCode >> 24) & 255);
             payload.push((errorCode >> 16) & 255);
             payload.push((errorCode >> 8) & 255);
@@ -256,8 +256,8 @@ namespace tinox.core.http2_server
             var i: Int64 = 0;
             while i + 5 < frame.payload.len()
             {
-                let settingId: Int64 = (frame.payload[i] << 8) | frame.payload[i + 1];
-                let settingVal: Int64 = (frame.payload[i + 2] << 24) | (frame.payload[i + 3] << 16) | (frame.payload[i + 4] << 8) | frame.payload[i + 5];
+                const settingId: Int64 = (frame.payload[i] << 8) | frame.payload[i + 1];
+                const settingVal: Int64 = (frame.payload[i + 2] << 24) | (frame.payload[i + 3] << 16) | (frame.payload[i + 4] << 8) | frame.payload[i + 5];
                 if (settingId == Http2Settings::HEADER_TABLE_SIZE())
                 {
                     conn.recvDynTable.setMaxSize(settingVal);
@@ -281,7 +281,7 @@ namespace tinox.core.http2_server
 
         fn processHeaders(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
-            let sid: String = frame.streamId.toString();
+            const sid: String = frame.streamId.toString();
             var stream: Http2Stream;
             if (conn.streams.contains(sid))
             {
@@ -310,7 +310,7 @@ namespace tinox.core.http2_server
                 payloadOffset = payloadOffset + 5;
             }
 
-            let headerEnd: Int64 = frame.payload.len() - padLength;
+            const headerEnd: Int64 = frame.payload.len() - padLength;
             var i: Int64 = payloadOffset;
             while i < headerEnd
             {
@@ -332,8 +332,8 @@ namespace tinox.core.http2_server
                 return;
             }
 
-            let endHeaders: Bool = (frame.flags & Http2Flags::END_HEADERS()) != 0;
-            let endStream: Bool = (frame.flags & Http2Flags::END_STREAM()) != 0;
+            const endHeaders: Bool = (frame.flags & Http2Flags::END_HEADERS()) != 0;
+            const endStream: Bool = (frame.flags & Http2Flags::END_STREAM()) != 0;
             if (endStream)
             {
                 stream.endStream = true;
@@ -359,12 +359,12 @@ namespace tinox.core.http2_server
 
         fn processContinuation(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
-            let sid: String = frame.streamId.toString();
+            const sid: String = frame.streamId.toString();
             if (conn.streams.contains(sid) == false)
             {
                 return;
             }
-            let stream: Http2Stream = conn.streams[sid];
+            const stream: Http2Stream = conn.streams[sid];
             this.appendBytes(stream.headerBlock, frame.payload);
 
             // Bug 94: same cumulative cap as processHeaders() — this is the
@@ -394,13 +394,13 @@ namespace tinox.core.http2_server
 
         fn processData(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
-            let sid: String = frame.streamId.toString();
+            const sid: String = frame.streamId.toString();
             if (conn.streams.contains(sid) == false)
             {
                 this.sendRstStream(conn, frame.streamId, Http2Error::STREAM_CLOSED());
                 return;
             }
-            let stream: Http2Stream = conn.streams[sid];
+            const stream: Http2Stream = conn.streams[sid];
 
             var payloadOffset: Int64 = 0;
             var padLength: Int64 = 0;
@@ -409,7 +409,7 @@ namespace tinox.core.http2_server
                 padLength = frame.payload[0];
                 payloadOffset = 1;
             }
-            let dataEnd: Int64 = frame.payload.len() - padLength;
+            const dataEnd: Int64 = frame.payload.len() - padLength;
             var i: Int64 = payloadOffset;
             while i < dataEnd
             {
@@ -448,20 +448,20 @@ namespace tinox.core.http2_server
          */
         fn dispatchStream(conn: Http2Conn, stream: Http2Stream) -> Nothing
         {
-            let rawHeaders: List<HpackHeader> = Hpack::decode(stream.headerBlock, conn.recvDynTable);
+            const rawHeaders: List<HpackHeader> = Hpack::decode(stream.headerBlock, conn.recvDynTable);
 
-            let request: HttpRequest = HttpRequest::new("", "", "", Map::new(), "");
+            const request: HttpRequest = HttpRequest::new("", "", "", Map::new(), "");
             var i: Int64 = 0;
             while i < rawHeaders.len()
             {
-                let h: HpackHeader = rawHeaders[i];
+                const h: HpackHeader = rawHeaders[i];
                 if (h.name == ":method")
                 {
                     request.method = h.value;
                 }
                 else if (h.name == ":path")
                 {
-                    let qIdx: Int64 = h.value.indexOf("?");
+                    const qIdx: Int64 = h.value.indexOf("?");
                     if (qIdx >= 0)
                     {
                         request.path = h.value.substring(0, qIdx);
@@ -484,10 +484,10 @@ namespace tinox.core.http2_server
             // loop, which is O(n^2) over the body length (issue #167).
             request.body = tinoxBytesToString(stream.body);
 
-            let response: HttpResponse = HttpResponse::new();
-            let ctx: HttpContext = HttpContext::new(request, response);
+            const response: HttpResponse = HttpResponse::new();
+            const ctx: HttpContext = HttpContext::new(request, response);
 
-            let middlewareContinue: Bool = this.runMiddleware(ctx);
+            const middlewareContinue: Bool = this.runMiddleware(ctx);
             if (middlewareContinue == false)
             {
                 ctx.response.statusCode = 403;
@@ -495,7 +495,7 @@ namespace tinox.core.http2_server
             }
             else
             {
-                let matched: Bool = this.matchRoute(ctx);
+                const matched: Bool = this.matchRoute(ctx);
                 if (matched == false)
                 {
                     ctx.response.statusCode = 404;
@@ -514,10 +514,10 @@ namespace tinox.core.http2_server
          */
         fn sendResponse(conn: Http2Conn, streamId: Int64, response: HttpResponse) -> Nothing
         {
-            let responseHeaders: List<HpackHeader> = [];
+            const responseHeaders: List<HpackHeader> = [];
             responseHeaders.push(HpackHeader::new(":status", response.statusCode.toString()));
 
-            let headerKeys: List<String> = response.headers.keys();
+            const headerKeys: List<String> = response.headers.keys();
             var i: Int64 = 0;
             while i < headerKeys.len()
             {
@@ -529,7 +529,7 @@ namespace tinox.core.http2_server
                 responseHeaders.push(HpackHeader::new("content-length", response.body.len().toString()));
             }
 
-            let encodedHeaders: List<Int64> = Hpack::encode(responseHeaders, conn.sendDynTable);
+            const encodedHeaders: List<Int64> = Hpack::encode(responseHeaders, conn.sendDynTable);
 
             var headersFlags: Int64 = Http2Flags::END_HEADERS();
             if (response.body.len() == 0)
@@ -540,7 +540,7 @@ namespace tinox.core.http2_server
 
             if (response.body.len() > 0)
             {
-                let bodyBytes: List<Int64> = [];
+                const bodyBytes: List<Int64> = [];
                 var j: Int64 = 0;
                 while j < response.body.len()
                 {
@@ -575,7 +575,7 @@ namespace tinox.core.http2_server
         fn handleConnection(fd: Int64) -> Nothing
         {
             // RFC 7540 §3.5: client connection preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-            let prefaceBytes: List<Int64> = this.readBytes(fd, 24);
+            const prefaceBytes: List<Int64> = this.readBytes(fd, 24);
             if (prefaceBytes.len() < 24)
             {
                 httpServerCloseConn(fd);
@@ -585,20 +585,20 @@ namespace tinox.core.http2_server
             // pass instead of `prefaceStr = prefaceStr + fromCharCode(...)`
             // in a loop (issue #167; bounded to 24 bytes here, but kept
             // consistent with the rest of this module's byte->string sites).
-            let prefaceStr: String = tinoxBytesToString(prefaceBytes);
+            const prefaceStr: String = tinoxBytesToString(prefaceBytes);
             if (prefaceStr != "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
             {
                 httpServerCloseConn(fd);
                 return;
             }
 
-            let conn: Http2Conn = Http2Conn::new(fd);
+            const conn: Http2Conn = Http2Conn::new(fd);
             this.sendServerSettings(conn);
 
             var active: Bool = true;
             while active
             {
-                let frame: Http2Frame = this.readFrame(conn);
+                const frame: Http2Frame = this.readFrame(conn);
 
                 if (frame.type == -1)
                 {
@@ -626,7 +626,7 @@ namespace tinox.core.http2_server
                 }
                 else if (frame.type == Http2FrameType::RST_STREAM())
                 {
-                    let sid: String = frame.streamId.toString();
+                    const sid: String = frame.streamId.toString();
                     if (conn.streams.contains(sid))
                     {
                         conn.streams[sid].state = "closed";
@@ -652,7 +652,7 @@ namespace tinox.core.http2_server
             var i: Int64 = 0;
             while i < this.middleware.len()
             {
-                let result: Bool = this.middleware[i](ctx);
+                const result: Bool = this.middleware[i](ctx);
                 if (result == false)
                 {
                     return false;
@@ -667,10 +667,10 @@ namespace tinox.core.http2_server
             var i: Int64 = 0;
             while i < this.routes.len()
             {
-                let route: Route = this.routes[i];
+                const route: Route = this.routes[i];
                 if (route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path))
                 {
-                    let params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
+                    const params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
                     ctx.request.setParams(params);
                     route.handler(ctx);
                     return true;

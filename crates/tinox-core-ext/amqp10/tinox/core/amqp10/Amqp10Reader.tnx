@@ -46,15 +46,15 @@ namespace tinox.core.amqp10
                 this.truncated = true;
                 return 0;
             }
-            let v = this.bytes[this.pos];
+            const v = this.bytes[this.pos];
             this.pos = this.pos + 1;
             return v;
         }
 
         fn readU16() -> Int64
         {
-            let hi = this.readU8();
-            let lo = this.readU8();
+            const hi = this.readU8();
+            const lo = this.readU8();
             return (hi << 8) | lo;
         }
 
@@ -111,7 +111,7 @@ namespace tinox.core.amqp10
                 // exceed the actual remaining bytes — stop as soon as we
                 // run out instead of looping n times over dummy 0 bytes.
                 if (this.truncated) { break; }
-                let b = this.readU8();
+                const b = this.readU8();
                 bytes.push(b);
             }
             return tinoxBytesToString(bytes);
@@ -227,7 +227,7 @@ namespace tinox.core.amqp10
          * loop. */
         fn readArray(size: Int64, count: Int64) -> Amqp10Value
         {
-            let elementCode = this.readU8();
+            const elementCode = this.readU8();
             var items: List<Amqp10Value> = [];
             for i in 0..count {
                 if (this.truncated) { break; }
@@ -242,7 +242,7 @@ namespace tinox.core.amqp10
          * error instead of a silently ignored descriptor. */
         fn readDescribed() -> Amqp10Value
         {
-            let descVal = this.readValue();
+            const descVal = this.readValue();
             var descriptor: Int64 = -1;
             var descOk: Bool = false;
             match descVal
@@ -253,7 +253,7 @@ namespace tinox.core.amqp10
                 ULongVal(n) => { descriptor = n; descOk = true; }
                 _ => {}
             }
-            let inner = this.readValue();
+            const inner = this.readValue();
             if (!descOk) {
                 return Amqp10Value::ErrorVal("described type with a non-numeric descriptor (not supported in v1)");
             }

@@ -21,14 +21,14 @@ namespace tinox.core.ui
     // DataGrid::of for the dispatch on `isComponent`.
     //
     // IMPORTANT (issue #219): always route `accessor(item)`'s or
-    // `componentAccessor(item)`'s result through a `let`-typed local
+    // `componentAccessor(item)`'s result through a `const`-typed local
     // before using it anywhere that inspects its type (e.g. `println`,
     // or implicitly via Component::html's own text-vs-html handling) --
     // calling a closure stored in an object field directly in such a
     // context mistypes the result at the LLVM level (a real, open
     // compiler bug, verified live: an early draft of this exact
     // GridColumn<T> shape printed garbage instead of "Ada"/"<b>Ada</b>"
-    // until routed through `let s: String = col.accessor(item);` first).
+    // until routed through `const s: String = col.accessor(item);` first).
     // DataGrid::of already does this correctly for both shapes; don't
     // "simplify" it away.
     class GridColumn<T>

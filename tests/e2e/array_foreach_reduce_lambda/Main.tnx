@@ -12,23 +12,23 @@
 class Main
 {
     fnc main() -> Int32 {
-        let xs = [1, 2, 3];
+        const xs = [1, 2, 3];
 
         // forEach (capturing would also be allowed; plain print here)
         xs.forEach(x => println(x.toString()));
 
         // reduce Int64
-        let total = xs.reduce(0, (acc, x) => acc + x);
+        const total = xs.reduce(0, (acc, x) => acc + x);
         println(total.toString());
 
         // reduce Float64 (accumulator type = init type double)
-        let fs = [1.0, 2.5, 3.0];
-        let fsum = fs.reduce(0.0, (a, x) => a + x);
+        const fs = [1.0, 2.5, 3.0];
+        const fsum = fs.reduce(0.0, (a, x) => a + x);
         println(fsum.toString());
 
         // reduce String (accumulator i8*, capturing separator)
-        let sep = "|";
-        let joined = ["a", "bb", "ccc"].reduce("", (acc, w) => {
+        const sep = "|";
+        const joined = ["a", "bb", "ccc"].reduce("", (acc, w) => {
             if (acc.len() == 0) {
                 return w;
             }
@@ -37,8 +37,8 @@ class Main
         println(joined);
 
         // reduce with a capturing factor
-        let factor = 10;
-        let scaled = xs.reduce(0, (acc, x) => acc + x * factor);
+        const factor = 10;
+        const scaled = xs.reduce(0, (acc, x) => acc + x * factor);
         println(scaled.toString());
         return 0;
     }

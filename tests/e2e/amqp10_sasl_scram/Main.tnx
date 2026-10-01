@@ -27,7 +27,7 @@ class Main
     // already independently verified, here it's the protocol flow that
     // counts).
     async fnc scramBroker(srv: Int64, brokerPassword: String) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
 
         // --- SASL header ---
         httpConnReadN(sconn, 8);
@@ -35,66 +35,66 @@ class Main
 
         // --- sasl-mechanisms: offer PLAIN AND SCRAM-SHA-256 ---
         var mechs: List<Amqp10Value> = [Amqp10Value::SymbolVal("PLAIN"), Amqp10Value::SymbolVal("SCRAM-SHA-256")];
-        let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal(mechs)]);
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal(mechs)]);
         Amqp10::writeFrame(sconn, 1, 0, mechBody);
 
         // --- Receive sasl-init ---
-        let fInit = Amqp10::readFrame(sconn);
-        let pInit = Amqp10::decodePerformative(fInit.body);
+        const fInit = Amqp10::readFrame(sconn);
+        const pInit = Amqp10::decodePerformative(fInit.body);
         var mechanismOk: Bool = false;
         var clientFirstMessage: String = "";
         match pInit.fields[0] { SymbolVal(m) => { if (m == "SCRAM-SHA-256") { mechanismOk = true; } } _ => {} }
         match pInit.fields[1] { BinaryVal(b) => { clientFirstMessage = Amqp10::bytesToString(b); } _ => {} }
 
         // gs2 header "n,," is a fixed 3 characters long.
-        let bare = clientFirstMessage.substring(3, clientFirstMessage.len());
-        let bareParts = bare.split(",");
+        const bare = clientFirstMessage.substring(3, clientFirstMessage.len());
+        const bareParts = bare.split(",");
         var clientNonce: String = "";
         for i in 0..bareParts.len() {
-            let part = bareParts[i];
+            const part = bareParts[i];
             if (part.startsWith("r=")) {
                 clientNonce = part.substring(2, part.len());
             }
         }
 
-        let combinedNonce = clientNonce + "fixedserverpart789";
-        let salt: List<Int64> = [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9];
-        let iterations = 1000; // kept small for fast test runtime
-        let saltB64 = Base64::encodeBytes(salt);
-        let serverFirstMessage = "r=" + combinedNonce + ",s=" + saltB64 + ",i=" + iterations.toString();
+        const combinedNonce = clientNonce + "fixedserverpart789";
+        const salt: List<Int64> = [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9];
+        const iterations = 1000; // kept small for fast test runtime
+        const saltB64 = Base64::encodeBytes(salt);
+        const serverFirstMessage = "r=" + combinedNonce + ",s=" + saltB64 + ",i=" + iterations.toString();
 
         // --- Send sasl-challenge ---
         var challengeFields: List<Amqp10Value> = [Amqp10Value::BinaryVal(Amqp10::stringToBytes(serverFirstMessage))];
         Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x42, challengeFields));
 
         // --- Receive sasl-response ---
-        let fResp = Amqp10::readFrame(sconn);
-        let pResp = Amqp10::decodePerformative(fResp.body);
+        const fResp = Amqp10::readFrame(sconn);
+        const pResp = Amqp10::decodePerformative(fResp.body);
         var clientFinalMessage: String = "";
         match pResp.fields[0] { BinaryVal(b) => { clientFinalMessage = Amqp10::bytesToString(b); } _ => {} }
 
-        let finalParts = clientFinalMessage.split(",");
+        const finalParts = clientFinalMessage.split(",");
         var recvNonce: String = "";
         var recvProofB64: String = "";
         var cField: String = "";
         for i in 0..finalParts.len() {
-            let part = finalParts[i];
+            const part = finalParts[i];
             if (part.startsWith("c=")) { cField = part.substring(2, part.len()); }
             if (part.startsWith("r=")) { recvNonce = part.substring(2, part.len()); }
             if (part.startsWith("p=")) { recvProofB64 = part.substring(2, part.len()); }
         }
-        let clientFinalMessageWithoutProof = "c=" + cField + ",r=" + recvNonce;
-        let authMessage = bare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof;
+        const clientFinalMessageWithoutProof = "c=" + cField + ",r=" + recvNonce;
+        const authMessage = bare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof;
 
         // --- The broker computes the expected proof using ITS known password ---
-        let passwordBytes = Amqp10::stringToBytes(brokerPassword);
-        let saltedPassword = Amqp10::pbkdf2HmacSha256(passwordBytes, salt, iterations);
-        let clientKey = hmacSha256Bytes(Amqp10::stringToBytes("Client Key"), saltedPassword);
-        let storedKey = sha256Bytes(clientKey);
-        let clientSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), storedKey);
-        let expectedProof = Amqp10::xorBytes(clientKey, clientSignature);
-        let expectedProofB64 = Base64::encodeBytes(expectedProof);
-        let proofOk: Bool = expectedProofB64 == recvProofB64;
+        const passwordBytes = Amqp10::stringToBytes(brokerPassword);
+        const saltedPassword = Amqp10::pbkdf2HmacSha256(passwordBytes, salt, iterations);
+        const clientKey = hmacSha256Bytes(Amqp10::stringToBytes("Client Key"), saltedPassword);
+        const storedKey = sha256Bytes(clientKey);
+        const clientSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), storedKey);
+        const expectedProof = Amqp10::xorBytes(clientKey, clientSignature);
+        const expectedProofB64 = Base64::encodeBytes(expectedProof);
+        const proofOk: Bool = expectedProofB64 == recvProofB64;
 
         if (!proofOk) {
             var failFields: List<Amqp10Value> = [Amqp10Value::UByteVal(1)];
@@ -105,9 +105,9 @@ class Main
             return negResult;
         }
 
-        let serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword);
-        let serverSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey);
-        let serverFinalMessage = "v=" + Base64::encodeBytes(serverSignature);
+        const serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword);
+        const serverSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey);
+        const serverFinalMessage = "v=" + Base64::encodeBytes(serverSignature);
         var okFields: List<Amqp10Value> = [Amqp10Value::UByteVal(0), Amqp10Value::BinaryVal(Amqp10::stringToBytes(serverFinalMessage))];
         Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x44, okFields));
 
@@ -130,15 +130,15 @@ class Main
 
     fnc main() -> Int32 {
         // --- Success path: correct password ---
-        let srv1 = httpServerCreate(0);
-        let port1 = httpServerBoundPort(srv1);
+        const srv1 = httpServerCreate(0);
+        const port1 = httpServerBoundPort(srv1);
         if (srv1 < 0) {
             println("bind failed");
             return 1;
         }
-        let handle1 = spawn scramBroker(srv1, "correctpass");
-        let conn1 = Amqp10Connection::connect("127.0.0.1", port1, "testuser", "correctpass");
-        let broker1Ok = await handle1;
+        const handle1 = spawn scramBroker(srv1, "correctpass");
+        const conn1 = Amqp10Connection::connect("127.0.0.1", port1, "testuser", "correctpass");
+        const broker1Ok = await handle1;
         if (conn1.conn > 0) {
             println("ok-scram-connect");
         } else {
@@ -153,10 +153,10 @@ class Main
         httpServerClose(srv1);
 
         // --- Failure path: wrong password ---
-        let srv2 = httpServerCreate(0);
-        let port2 = httpServerBoundPort(srv2);
-        let handle2 = spawn scramBroker(srv2, "correctpass");
-        let conn2 = Amqp10Connection::connect("127.0.0.1", port2, "testuser", "wrongpass");
+        const srv2 = httpServerCreate(0);
+        const port2 = httpServerBoundPort(srv2);
+        const handle2 = spawn scramBroker(srv2, "correctpass");
+        const conn2 = Amqp10Connection::connect("127.0.0.1", port2, "testuser", "wrongpass");
         await handle2;
         if (conn2.conn <= 0) {
             println("ok-wrong-password-rejected");

@@ -2,7 +2,7 @@ class bug15_string_list_elem_typing {
     var rawLines: List<String>;
 
     fn firstLen() -> Int64 {
-        let raw = this.rawLines[0];
+        const raw = this.rawLines[0];
         return raw.len();
     }
 }

@@ -4,7 +4,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let server: Http2Server = Http2Server::new(8443);
+        const server: Http2Server = Http2Server::new(8443);
         server.get("/hello", ctx => {
             ctx.response.text("Hello over HTTP/2!");
         });

@@ -81,25 +81,25 @@ namespace tinox.core.oidc
             // Captured by value into the closures below rather than
             // referencing `this` from inside them -- keeps this file
             // clear of ever needing `this` inside a lambda.
-            let client: OidcClient = this.client;
-            let cookieSecret: String = this.cookieSecret;
-            let sessionCookieName: String = this.sessionCookieName;
-            let pendingCookieName: String = this.pendingCookieName;
+            const client: OidcClient = this.client;
+            const cookieSecret: String = this.cookieSecret;
+            const sessionCookieName: String = this.sessionCookieName;
+            const pendingCookieName: String = this.pendingCookieName;
 
             server.get(this.loginPath, ctx => {
-                let authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
-                let now: Int64 = Time::now() / 1000;
-                let pendingJson: String = "{\"state\":\"" + authReq.state + "\",\"codeVerifier\":\"" + authReq.codeVerifier + "\",\"exp\":" + (now + 300).toString() + "}";
-                let sealedPending: String = Crypto::aesEncrypt(pendingJson, cookieSecret);
+                const authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
+                const now: Int64 = Time::now() / 1000;
+                const pendingJson: String = "{\"state\":\"" + authReq.state + "\",\"codeVerifier\":\"" + authReq.codeVerifier + "\",\"exp\":" + (now + 300).toString() + "}";
+                const sealedPending: String = Crypto::aesEncrypt(pendingJson, cookieSecret);
                 ctx.response.header("Set-Cookie", pendingCookieName + "=" + sealedPending + "; HttpOnly; Path=/; Max-Age=300; SameSite=Lax");
                 ctx.response.redirect(authReq.url);
             });
 
             server.get(this.callbackPath, ctx => {
-                let code: String = QueryString::get(ctx.request.queryString, "code");
-                let stateParam: String = QueryString::get(ctx.request.queryString, "state");
+                const code: String = QueryString::get(ctx.request.queryString, "code");
+                const stateParam: String = QueryString::get(ctx.request.queryString, "state");
 
-                let pendingSealed: String = OidcWebApp::readCookie(ctx, pendingCookieName);
+                const pendingSealed: String = OidcWebApp::readCookie(ctx, pendingCookieName);
                 if (pendingSealed == "")
                 {
                     ctx.response.status(400).text("no pending login (missing or expired state cookie)");
@@ -122,7 +122,7 @@ namespace tinox.core.oidc
                     return;
                 }
 
-                let now: Int64 = Time::now() / 1000;
+                const now: Int64 = Time::now() / 1000;
                 if (!pending.contains("exp") || now > pending["exp"].asInt())
                 {
                     ctx.response.status(400).text("login attempt expired, please try again");
@@ -133,16 +133,16 @@ namespace tinox.core.oidc
                     ctx.response.status(400).text("state mismatch (possible CSRF)");
                     return;
                 }
-                let codeVerifier: String = pending["codeVerifier"].getString();
+                const codeVerifier: String = pending["codeVerifier"].getString();
 
-                let tokens: OidcTokenResponse = client.exchangeCode(code, codeVerifier);
+                const tokens: OidcTokenResponse = client.exchangeCode(code, codeVerifier);
                 if (!tokens.ok)
                 {
                     ctx.response.status(401).text("login failed: " + tokens.errorMessage);
                     return;
                 }
 
-                let sealedSession: String = OidcWebApp::sealJson(tokens.claims, cookieSecret);
+                const sealedSession: String = OidcWebApp::sealJson(tokens.claims, cookieSecret);
                 ctx.response.header("Set-Cookie", sessionCookieName + "=" + sealedSession + "; HttpOnly; Path=/; SameSite=Lax");
                 ctx.response.redirect("/");
             });
@@ -159,7 +159,7 @@ namespace tinox.core.oidc
          */
         fn requireLogin(ctx: HttpContext) -> Bool
         {
-            let sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName);
+            const sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName);
             if (sealed == "")
             {
                 ctx.response.redirect(this.loginPath);
@@ -182,7 +182,7 @@ namespace tinox.core.oidc
                 return false;
             }
 
-            let now: Int64 = Time::now() / 1000;
+            const now: Int64 = Time::now() / 1000;
             if (claims.contains("exp") && now > claims["exp"].asInt())
             {
                 ctx.response.redirect(this.loginPath);
@@ -196,7 +196,7 @@ namespace tinox.core.oidc
         // right after requireLogin() returned true for the same request.
         fn currentUser(ctx: HttpContext) -> Map<String, JsonValue>
         {
-            let sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName);
+            const sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName);
             return OidcWebApp::unsealJson(sealed, this.cookieSecret);
         }
 
@@ -208,7 +208,7 @@ namespace tinox.core.oidc
 
         fnc sealJson(data: Map<String, JsonValue>, secret: String) -> String
         {
-            let json: String = Json::stringify(Json::fromMap(data));
+            const json: String = Json::stringify(Json::fromMap(data));
             return Crypto::aesEncrypt(json, secret);
         }
 
@@ -218,23 +218,23 @@ namespace tinox.core.oidc
         // silently papers over.
         fnc unsealJson(sealed: String, secret: String) -> Map<String, JsonValue>
         {
-            let json: String = Crypto::aesDecrypt(sealed, secret);
+            const json: String = Crypto::aesDecrypt(sealed, secret);
             return Json::parse(json).asTable();
         }
 
         fnc readCookie(ctx: HttpContext, name: String) -> String
         {
-            let cookieHeader: String = ctx.request.getHeader("Cookie");
+            const cookieHeader: String = ctx.request.getHeader("Cookie");
             if (cookieHeader == "")
             {
                 return "";
             }
-            let parts: List<String> = cookieHeader.split(";");
+            const parts: List<String> = cookieHeader.split(";");
             var i: Int64 = 0;
             while i < parts.len()
             {
-                let part: String = parts[i].trim();
-                let eq: Int64 = part.indexOf("=");
+                const part: String = parts[i].trim();
+                const eq: Int64 = part.indexOf("=");
                 if (eq > 0 && part.substring(0, eq) == name)
                 {
                     return part.substring(eq + 1, part.len());

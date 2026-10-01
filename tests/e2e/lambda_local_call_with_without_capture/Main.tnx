@@ -5,9 +5,9 @@ class Main
 {
     fnc main() -> Int32
     {
-        let double = x => x * 2;
-        let offset = 10;
-        let addOff = x => x + offset;
+        const double = x => x * 2;
+        const offset = 10;
+        const addOff = x => x + offset;
         println(double(21));
         println(addOff(5));
         return 0;

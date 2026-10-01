@@ -11,15 +11,15 @@ class Main
     fnc main() -> Int32
     {
         var a: List<Int64> = [3, 1, 2];
-        let s1 = a.sort();
-        let s2 = a.reverse();
+        const s1 = a.sort();
+        const s2 = a.reverse();
         println(a[0]);
         println(s1[0]);
         println(s2[0]);
         s1.push(100);
         println(a.len());
         println(s1.len());
-        let sl = s1.slice(0, 2);
+        const sl = s1.slice(0, 2);
         sl.push(7);
         println(s1.len());
         println(sl.len());

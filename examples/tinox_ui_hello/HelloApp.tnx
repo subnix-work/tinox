@@ -65,7 +65,7 @@ class HelloApp
         // and never updates) -- see this module's own docs for why
         // per-connection app state belongs on instance fields, not loose
         // locals, for exactly this reason.
-        let app: HelloApp = this;
+        const app: HelloApp = this;
         return Component::vbox([
             Component::label("Tinox-UI Hello"),
             Component::label("Clicks: " + this.clicks.toString()),

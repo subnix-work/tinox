@@ -33,7 +33,7 @@ extern fn httpConnReadLine(conn: Int64) -> String;
 class Main
 {
     async fnc runServer() -> Int64 {
-        let server: HttpServer = HttpServer::new(47710);
+        const server: HttpServer = HttpServer::new(47710);
         server.get("/hello", ctx => {
             ctx.response.text("Hello over TLS!");
         });
@@ -47,7 +47,7 @@ class Main
     fnc dialRetry(port: Int64) -> Int64 {
         var attempt: Int64 = 0;
         while attempt < 50 {
-            let fd: Int64 = socketCreateTcp();
+            const fd: Int64 = socketCreateTcp();
             if (socketConnect(fd, "127.0.0.1", port)) {
                 return fd;
             }
@@ -65,26 +65,26 @@ class Main
     // -- matches every other spawn/await pair in this test suite, e.g.
     // bug68_eintr_short_read's fakeBroker) rather than the string itself.
     async fnc blockedReader(conn: Int64) -> Int64 {
-        let line: String = httpConnReadLine(conn);
+        const line: String = httpConnReadLine(conn);
         return line.len();
     }
 
     fnc main() -> Int32 {
         spawn runServer();
 
-        let fd: Int64 = dialRetry(47710);
+        const fd: Int64 = dialRetry(47710);
         if (fd < 0) {
             println("connect failed");
             return 1;
         }
-        let conn: Int64 = httpConnFromFdTls(fd, "localhost", false);
+        const conn: Int64 = httpConnFromFdTls(fd, "localhost", false);
         if (conn < 0) {
             println("tls handshake failed");
             return 1;
         }
         println("ok-status");
 
-        let readerHandle = spawn blockedReader(conn);
+        const readerHandle = spawn blockedReader(conn);
 
         // Give the reader time to actually enter SSL_read before racing it --
         // the bug needs a genuinely in-flight read, not one that never started.
@@ -95,7 +95,7 @@ class Main
         // cross-thread close-vs-read race from the issue.
         httpConnClose(conn);
 
-        let readLen: Int64 = await readerHandle;
+        const readLen: Int64 = await readerHandle;
         println("ok-reader-unblocked");
         if (readLen == 0) {
             println("ok-reader-empty");
