@@ -8,7 +8,7 @@
 // type for a chained call's intermediate result, which codegen's
 // rich-marker-preferring inference then trusted over its own (correct)
 // fallback, producing a mangled garbage class name and an ICE. An
-// intermediate `let` annotation sidestepped it entirely (see #153's own
+// intermediate `const` annotation sidestepped it entirely (see #153's own
 // coverage), which is why this specifically needs NO intermediate lets.
 // expect: 20
 // expect: val=10!
@@ -17,14 +17,14 @@ import tinox.core.option;
 class Main
 {
     fnc main() -> Int32 {
-        let o: Option<Int64> = Option<Int64>::some(1);
-        let r1: Int64 = o.map(fnc(x: Int64) -> Int64 { return x + 1; })
+        const o: Option<Int64> = Option<Int64>::some(1);
+        const r1: Int64 = o.map(fnc(x: Int64) -> Int64 { return x + 1; })
             .map(fnc(x: Int64) -> Int64 { return x * 10; })
             .unwrap();
         println(r1);
 
-        let o2: Option<Int64> = Option<Int64>::some(5);
-        let r2: String = o2.map(fnc(x: Int64) -> Int64 { return x * 2; })
+        const o2: Option<Int64> = Option<Int64>::some(5);
+        const r2: String = o2.map(fnc(x: Int64) -> Int64 { return x * 2; })
             .andThen(fnc(x: Int64) -> Option<String> {
                 return Option<String>::some("val=" + x.toString());
             })

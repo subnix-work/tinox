@@ -20,29 +20,29 @@ class Main
 {
     fnc main() -> Int32
     {
-        let u: Option<String> = Option<String>::some("Alice");
+        const u: Option<String> = Option<String>::some("Alice");
 
         // Arrow-sugar, block body with an explicit `return`.
-        let viaAndThen: Option<Int64> = u.andThen(n => {
+        const viaAndThen: Option<Int64> = u.andThen(n => {
             return Option::some(n.len());
         });
         println(viaAndThen.unwrapOr(0));
 
         // Explicit fully-typed lambda — the pre-#165 workaround, must keep
         // working unchanged.
-        let viaExplicit: Option<Int64> = u.andThen(fnc(n: String) -> Option<Int64> {
+        const viaExplicit: Option<Int64> = u.andThen(fnc(n: String) -> Option<Int64> {
             return Option::some(n.len());
         });
         println(viaExplicit.unwrapOr(0));
 
         // Arrow-sugar, bare expression body (no braces/return).
-        let viaMap: Option<Int64> = u.map(n => n.len());
+        const viaMap: Option<Int64> = u.map(n => n.len());
         println(viaMap.unwrapOr(0));
 
         // None receiver: confirms the fix isn't special-cased to the `some`
         // path only.
-        let none: Option<String> = Option<String>::none();
-        let viaNone: Option<Int64> = none.andThen(n => {
+        const none: Option<String> = Option<String>::none();
+        const viaNone: Option<Int64> = none.andThen(n => {
             return Option::some(n.len());
         });
         println(viaNone.unwrapOr(-1));

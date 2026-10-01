@@ -17,7 +17,7 @@ class Main
 {
 
     fnc simpleTransfer(deliveryId: Int64, body: List<Int64>) -> List<Int64> {
-        let msgBody = Amqp10::encodeMessageBody(body, "text/plain");
+        const msgBody = Amqp10::encodeMessageBody(body, "text/plain");
         var transferFields: List<Amqp10Value> = [
             Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(deliveryId),
@@ -26,7 +26,7 @@ class Main
             Amqp10Value::BoolVal(true),
             Amqp10Value::BoolVal(false)
         ];
-        let transferBody = Amqp10::encodePerformative(0x14, transferFields);
+        const transferBody = Amqp10::encodePerformative(0x14, transferFields);
         var fullFrame: List<Int64> = [];
         for i in 0..transferBody.len() { fullFrame.push(transferBody[i]); }
         for i in 0..msgBody.len() { fullFrame.push(msgBody[i]); }
@@ -36,15 +36,15 @@ class Main
 
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
 
         // --- SASL header + negotiation ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-        let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
         Amqp10::writeFrame(sconn, 1, 0, mechBody);
         Amqp10::readFrame(sconn);
-        let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
+        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
         // --- AMQP header ---
@@ -62,7 +62,7 @@ class Main
         Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
 
         // --- begin / begin-ok ---
-        let fBegin = Amqp10::readFrame(sconn);
+        const fBegin = Amqp10::readFrame(sconn);
         var beginFields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin.chanId), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
@@ -70,8 +70,8 @@ class Main
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
 
         // --- attach (receiver) / attach-ok ---
-        let fAttach = Amqp10::readFrame(sconn);
-        let pAttach = Amqp10::decodePerformative(fAttach.body);
+        const fAttach = Amqp10::readFrame(sconn);
+        const pAttach = Amqp10::decodePerformative(fAttach.body);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach.fields));
 
         // --- read flow from the client (credit grant) ---
@@ -83,8 +83,8 @@ class Main
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(3, [67]));
 
         // --- disposition 1: rejected with error ---
-        let fDisp1 = Amqp10::readFrame(sconn);
-        let pDisp1 = Amqp10::decodePerformative(fDisp1.body);
+        const fDisp1 = Amqp10::readFrame(sconn);
+        const pDisp1 = Amqp10::decodePerformative(fDisp1.body);
         var rejectOk: Bool = false;
         var rejectErrorOk: Bool = false;
         if (pDisp1.descriptor == 0x15) {
@@ -121,8 +121,8 @@ class Main
         }
 
         // --- disposition 2: released, no fields ---
-        let fDisp2 = Amqp10::readFrame(sconn);
-        let pDisp2 = Amqp10::decodePerformative(fDisp2.body);
+        const fDisp2 = Amqp10::readFrame(sconn);
+        const pDisp2 = Amqp10::decodePerformative(fDisp2.body);
         var releaseOk: Bool = false;
         var releaseEmptyOk: Bool = false;
         if (pDisp2.descriptor == 0x15) {
@@ -140,8 +140,8 @@ class Main
         }
 
         // --- disposition 3: modified with delivery-failed=true, undeliverable-here=false ---
-        let fDisp3 = Amqp10::readFrame(sconn);
-        let pDisp3 = Amqp10::decodePerformative(fDisp3.body);
+        const fDisp3 = Amqp10::readFrame(sconn);
+        const pDisp3 = Amqp10::decodePerformative(fDisp3.body);
         var modifyOk: Bool = false;
         var modifyFieldsOk: Bool = false;
         if (pDisp3.descriptor == 0x15) {
@@ -187,35 +187,35 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv);
 
-        let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
         if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
         println("ok-connect");
 
-        let session = Amqp10Session::begin(conn);
-        let link = Amqp10Link::attach(session, "dispositions-link", true, "test-source");
+        const session = Amqp10Session::begin(conn);
+        const link = Amqp10Link::attach(session, "dispositions-link", true, "test-source");
         link.grantCredit(10);
 
-        let m1 = link.nextMessage();
+        const m1 = link.nextMessage();
         link.reject(m1.deliveryId, "amqp:decode-error", "test-reject");
 
-        let m2 = link.nextMessage();
+        const m2 = link.nextMessage();
         link.release(m2.deliveryId);
 
-        let m3 = link.nextMessage();
+        const m3 = link.nextMessage();
         link.modify(m3.deliveryId, true, false);
 
-        let brokerOk = await handle;
+        const brokerOk = await handle;
         if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }

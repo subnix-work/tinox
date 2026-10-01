@@ -1,6 +1,6 @@
 // Regression coverage for #161: a static-factory receiver
 // (Class<T>::variant(args), where T is inferable from a value argument)
-// chained directly into a method call with no intermediate `let`
+// chained directly into a method call with no intermediate `const`
 // annotation used to resolve to the wrong/unresolved specialization and
 // ICE — for ANY method, not just own-type-param ones (isSome/unwrap here
 // are plain, non-generic-returning methods; #158 covers the

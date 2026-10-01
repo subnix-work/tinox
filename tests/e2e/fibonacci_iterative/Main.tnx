@@ -9,7 +9,7 @@ class Main
         var i: Int64 = 0;
         while i < n
         {
-            let t: Int64 = b;
+            const t: Int64 = b;
             b = a + b;
             a = t;
             i = i + 1;

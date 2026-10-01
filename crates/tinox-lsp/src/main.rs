@@ -604,7 +604,7 @@ fn parse_for_completion(text: &str, offset: u32) -> Option<SourceFile> {
 
 fn completions_generic() -> Vec<tower_lsp::lsp_types::CompletionItem> {
     use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind};
-    const KW: &[&str] = &["fn", "let", "var", "return", "if", "else", "while", "for", "class", "import"];
+    const KW: &[&str] = &["fn", "const", "var", "return", "if", "else", "while", "for", "class", "import"];
     KW.iter().map(|k| CompletionItem {
         label: k.to_string(),
         kind: Some(CompletionItemKind::KEYWORD),

@@ -24,7 +24,7 @@ namespace tinox.core.mathf
             var i: Int64 = 0;
             while i < 100
             {
-                let nextGuess: Float64 = (guess + x / guess) / 2.0;
+                const nextGuess: Float64 = (guess + x / guess) / 2.0;
                 if (Mathf::abs(nextGuess - guess) < 0.0000001)
                 {
                     return nextGuess;
@@ -76,8 +76,8 @@ namespace tinox.core.mathf
 
         fn round(x: Float64) -> Int64
         {
-            let floorVal: Int64 = Mathf::floor(x);
-            let frac: Float64 = x - (Float64)floorVal;
+            const floorVal: Int64 = Mathf::floor(x);
+            const frac: Float64 = x - (Float64)floorVal;
             if (frac >= 0.5)
             {
                 return floorVal + 1;

@@ -152,10 +152,10 @@ namespace tinox.core.amqp091
          * { shortstr key, tagged field value }. */
         fn fieldTable(t: Map<String, AmqpFieldValue091>) -> Nothing
         {
-            let inner = AmqpWriter091::new();
-            let keys = t.keys();
+            const inner = AmqpWriter091::new();
+            const keys = t.keys();
             for i in 0..keys.len() {
-                let k = keys[i];
+                const k = keys[i];
                 inner.shortstr(k);
                 inner.fieldValue(t.get(k));
             }
@@ -167,7 +167,7 @@ namespace tinox.core.amqp091
          * tagged field value (no key). */
         fn fieldArray(a: List<AmqpFieldValue091>) -> Nothing
         {
-            let inner = AmqpWriter091::new();
+            const inner = AmqpWriter091::new();
             for i in 0..a.len() {
                 inner.fieldValue(a[i]);
             }

@@ -11,7 +11,7 @@ namespace tinox.core.rest.server
      * supporting graceful migration once the compiler processes annotations natively.
      *
      * Example:
-     *   let app: RestApi = RestApi::new(8080);
+     *   const app: RestApi = RestApi::new(8080);
      *
      *   // Register an annotated controller
      *   app.register(userController);
@@ -98,7 +98,7 @@ namespace tinox.core.rest.server
             var i: Int64 = 0;
             while i < controller.routes.len()
             {
-                let entry: RouteEntry = controller.routes[i];
+                const entry: RouteEntry = controller.routes[i];
                 this.addRouteEntry(entry);
                 i = i + 1;
             }
@@ -253,8 +253,8 @@ namespace tinox.core.rest.server
             var i: Int64 = 0;
             while i < this.routeEntries.len()
             {
-                let entry: RouteEntry = this.routeEntries[i];
-                let handler: fnc(HttpContext) -> Nothing = this.wrapHandler(entry);
+                const entry: RouteEntry = this.routeEntries[i];
+                const handler: fnc(HttpContext) -> Nothing = this.wrapHandler(entry);
                 if (entry.method == "GET")
                 {
                     this.server.get(entry.path, handler);
@@ -291,18 +291,18 @@ namespace tinox.core.rest.server
          */
         fn wrapHandler(entry: RouteEntry) -> fnc(HttpContext) -> Nothing
         {
-            let statusCode: Int64 = entry.statusCode;
-            let produces: MediaType = entry.produces;
-            let consumes: MediaType = entry.consumes;
-            let authType: String = entry.authType;
-            let originalHandler: fnc(HttpContext) -> Nothing = entry.handler;
-            let authenticator: fnc(String, String) -> Bool = this.authValidator;
+            const statusCode: Int64 = entry.statusCode;
+            const produces: MediaType = entry.produces;
+            const consumes: MediaType = entry.consumes;
+            const authType: String = entry.authType;
+            const originalHandler: fnc(HttpContext) -> Nothing = entry.handler;
+            const authenticator: fnc(String, String) -> Bool = this.authValidator;
 
             return fnc(ctx: HttpContext) -> Nothing {
                 if (consumes != MediaType::None)
                 {
-                    let expected: String = MediaTypeHelper::toString(consumes);
-                    let ct: String = ctx.request.getHeader("Content-Type");
+                    const expected: String = MediaTypeHelper::toString(consumes);
+                    const ct: String = ctx.request.getHeader("Content-Type");
                     if (ct.startsWith(expected) == false)
                     {
                         ctx.response.status(415).text("Unsupported Media Type. Expected: " + expected);
@@ -312,7 +312,7 @@ namespace tinox.core.rest.server
 
                 if (authType.len() > 0)
                 {
-                    let authHeader: String = ctx.request.getHeader("Authorization");
+                    const authHeader: String = ctx.request.getHeader("Authorization");
                     if (authHeader.len() == 0)
                     {
                         ctx.response.status(401).header("WWW-Authenticate", authType).text("Unauthorized");

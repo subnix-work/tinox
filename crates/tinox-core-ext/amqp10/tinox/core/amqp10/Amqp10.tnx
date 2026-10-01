@@ -15,7 +15,7 @@ namespace tinox.core.amqp10
          */
         fn dial(host: String, port: Int64) -> Int64
         {
-            let fd = socketCreateTcp();
+            const fd = socketCreateTcp();
             if (!socketConnect(fd, host, port)) {
                 // Bug 90 (same leak found in the sibling amqp091 module):
                 // a reconnect loop against an unreachable/refusing broker
@@ -36,7 +36,7 @@ namespace tinox.core.amqp10
          */
         fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
         {
-            let fd = socketCreateTcp();
+            const fd = socketCreateTcp();
             if (!socketConnect(fd, host, port)) {
                 // Bug 90: same fd leak as dial() above.
                 socketClose(fd);
@@ -76,7 +76,7 @@ namespace tinox.core.amqp10
          */
         fn checkProtocolHeaderEcho(conn: Int64, sent: List<Int64>) -> Bool
         {
-            let resp = httpConnReadN(conn, 8);
+            const resp = httpConnReadN(conn, 8);
             if (resp.len() != 8) {
                 return false;
             }
@@ -101,36 +101,36 @@ namespace tinox.core.amqp10
          */
         fn readFrame(conn: Int64) -> Amqp10Frame
         {
-            let bad = Amqp10Frame { frameType: -1, chanId: 0, body: [] };
-            let hdr = httpConnReadN(conn, 8);
+            const bad = Amqp10Frame { frameType: -1, chanId: 0, body: [] };
+            const hdr = httpConnReadN(conn, 8);
             if (hdr.len() < 8) {
                 return bad;
             }
-            let size = (hdr[0] << 24) | (hdr[1] << 16) | (hdr[2] << 8) | hdr[3];
-            let doff = hdr[4];
-            let frameType = hdr[5];
-            let chanId = (hdr[6] << 8) | hdr[7];
+            const size = (hdr[0] << 24) | (hdr[1] << 16) | (hdr[2] << 8) | hdr[3];
+            const doff = hdr[4];
+            const frameType = hdr[5];
+            const chanId = (hdr[6] << 8) | hdr[7];
             if (size < 8 || doff < 2) {
                 return Amqp10Frame { frameType: -2, chanId: chanId, body: [] };
             }
-            let headerBytes = doff * 4;
+            const headerBytes = doff * 4;
             if (headerBytes > size) {
                 return Amqp10Frame { frameType: -2, chanId: chanId, body: [] };
             }
-            let extendedBytes = headerBytes - 8;
+            const extendedBytes = headerBytes - 8;
             if (extendedBytes > 0) {
-                let ext = httpConnReadN(conn, extendedBytes);
+                const ext = httpConnReadN(conn, extendedBytes);
                 if (ext.len() < extendedBytes) {
                     return bad;
                 }
             }
-            let bodyBytes = size - headerBytes;
+            const bodyBytes = size - headerBytes;
             if (bodyBytes > 16777216) {
                 return Amqp10Frame { frameType: -2, chanId: chanId, body: [] };
             }
             var body: List<Int64> = [];
             if (bodyBytes > 0) {
-                let raw = httpConnReadN(conn, bodyBytes);
+                const raw = httpConnReadN(conn, bodyBytes);
                 if (raw.len() < bodyBytes) {
                     return bad;
                 }
@@ -158,7 +158,7 @@ namespace tinox.core.amqp10
         fn readFrameSkipHeartbeats(conn: Int64) -> Amqp10Frame
         {
             while true {
-                let f = Amqp10::readFrame(conn);
+                const f = Amqp10::readFrame(conn);
                 if (f.frameType < 0) {
                     return f; // EOF/protocol error, passed through unchanged
                 }
@@ -177,7 +177,7 @@ namespace tinox.core.amqp10
          */
         fn writeFrame(conn: Int64, frameType: Int64, chanId: Int64, body: List<Int64>) -> Nothing
         {
-            let w = Amqp10Writer::new();
+            const w = Amqp10Writer::new();
             w.pushU32(8 + body.len());
             w.pushU8(2);
             w.pushU8(frameType);
@@ -196,8 +196,8 @@ namespace tinox.core.amqp10
          */
         fn encodePerformative(descriptorCode: Int64, fields: List<Amqp10Value>) -> List<Int64>
         {
-            let w = Amqp10Writer::new();
-            let d = Amqp10Described { descriptor: descriptorCode, value: Amqp10Value::ListVal(fields) };
+            const w = Amqp10Writer::new();
+            const d = Amqp10Described { descriptor: descriptorCode, value: Amqp10Value::ListVal(fields) };
             w.writeDescribed(d);
             return w.bytes;
         }
@@ -212,8 +212,8 @@ namespace tinox.core.amqp10
          */
         fn decodePerformative(body: List<Int64>) -> Amqp10Performative
         {
-            let r = Amqp10Reader::new(body);
-            let v = r.readValue();
+            const r = Amqp10Reader::new(body);
+            const v = r.readValue();
             var descriptor: Int64 = -1;
             var fields: List<Amqp10Value> = [];
             match v
@@ -245,7 +245,7 @@ namespace tinox.core.amqp10
          */
         fn encodeMessageBody(body: List<Int64>, contentType: String) -> List<Int64>
         {
-            let w = Amqp10Writer::new();
+            const w = Amqp10Writer::new();
             var propFields: List<Amqp10Value> = [
                 Amqp10Value::NullVal, // message-id
                 Amqp10Value::NullVal, // user-id
@@ -255,9 +255,9 @@ namespace tinox.core.amqp10
                 Amqp10Value::NullVal, // correlation-id
                 Amqp10Value::SymbolVal(contentType)
             ];
-            let propDesc = Amqp10Described { descriptor: 0x73, value: Amqp10Value::ListVal(propFields) };
+            const propDesc = Amqp10Described { descriptor: 0x73, value: Amqp10Value::ListVal(propFields) };
             w.writeDescribed(propDesc);
-            let dataDesc = Amqp10Described { descriptor: 0x75, value: Amqp10Value::BinaryVal(body) };
+            const dataDesc = Amqp10Described { descriptor: 0x75, value: Amqp10Value::BinaryVal(body) };
             w.writeDescribed(dataDesc);
             return w.bytes;
         }
@@ -307,11 +307,11 @@ namespace tinox.core.amqp10
         fn negotiateSasl(conn: Int64, user: String, pass: String) -> Amqp10SaslResult
         {
             // --- receive sasl-mechanisms ---
-            let f1 = Amqp10::readFrame(conn);
+            const f1 = Amqp10::readFrame(conn);
             if (f1.frameType != 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1), got frameType=" + f1.frameType.toString() };
             }
-            let p1 = Amqp10::decodePerformative(f1.body);
+            const p1 = Amqp10::decodePerformative(f1.body);
             if (p1.descriptor != 0x40) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-mechanisms (0x40), got descriptor=" + p1.descriptor.toString() };
             }
@@ -357,15 +357,15 @@ namespace tinox.core.amqp10
                 Amqp10Value::BinaryVal(Amqp10::saslPlainResponse(user, pass)),
                 Amqp10Value::NullVal
             ];
-            let initBody = Amqp10::encodePerformative(0x41, initFields);
+            const initBody = Amqp10::encodePerformative(0x41, initFields);
             Amqp10::writeFrame(conn, 1, 0, initBody);
 
             // --- receive sasl-outcome ---
-            let f2 = Amqp10::readFrame(conn);
+            const f2 = Amqp10::readFrame(conn);
             if (f2.frameType != 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1), got frameType=" + f2.frameType.toString() };
             }
-            let p2 = Amqp10::decodePerformative(f2.body);
+            const p2 = Amqp10::decodePerformative(f2.body);
             if (p2.descriptor != 0x44) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-outcome (0x44), got descriptor=" + p2.descriptor.toString() };
             }
@@ -488,25 +488,25 @@ namespace tinox.core.amqp10
          */
         fn negotiateSaslScram(conn: Int64, user: String, pass: String) -> Amqp10SaslResult
         {
-            let clientNonce = Amqp10::generateScramNonce();
-            let gs2Header = "n,,";
-            let clientFirstMessageBare = "n=" + user + ",r=" + clientNonce;
-            let clientFirstMessage = gs2Header + clientFirstMessageBare;
+            const clientNonce = Amqp10::generateScramNonce();
+            const gs2Header = "n,,";
+            const clientFirstMessageBare = "n=" + user + ",r=" + clientNonce;
+            const clientFirstMessage = gs2Header + clientFirstMessageBare;
 
             var initFields: List<Amqp10Value> = [
                 Amqp10Value::SymbolVal("SCRAM-SHA-256"),
                 Amqp10Value::BinaryVal(Amqp10::stringToBytes(clientFirstMessage)),
                 Amqp10Value::NullVal
             ];
-            let initBody = Amqp10::encodePerformative(0x41, initFields);
+            const initBody = Amqp10::encodePerformative(0x41, initFields);
             Amqp10::writeFrame(conn, 1, 0, initBody);
 
             // --- receive sasl-challenge (server-first-message) ---
-            let f2 = Amqp10::readFrame(conn);
+            const f2 = Amqp10::readFrame(conn);
             if (f2.frameType != 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1) for SCRAM challenge, got frameType=" + f2.frameType.toString() };
             }
-            let p2 = Amqp10::decodePerformative(f2.body);
+            const p2 = Amqp10::decodePerformative(f2.body);
             if (p2.descriptor != 0x42) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-challenge (0x42), got descriptor=" + p2.descriptor.toString() };
             }
@@ -523,12 +523,12 @@ namespace tinox.core.amqp10
             }
 
             // --- parse the server-first-message ---
-            let parts = serverFirstMessage.split(",");
+            const parts = serverFirstMessage.split(",");
             var combinedNonce: String = "";
             var saltB64: String = "";
             var iterations: Int64 = 0;
             for i in 0..parts.len() {
-                let part = parts[i];
+                const part = parts[i];
                 if (part.startsWith("r=")) {
                     combinedNonce = part.substring(2, part.len());
                 }
@@ -556,30 +556,30 @@ namespace tinox.core.amqp10
             }
 
             // --- SaltedPassword / ClientKey / StoredKey ---
-            let saltBytes = Base64::decodeBytes(saltB64);
-            let passwordBytes = Amqp10::stringToBytes(pass);
-            let saltedPassword = Amqp10::pbkdf2HmacSha256(passwordBytes, saltBytes, iterations);
-            let clientKey = hmacSha256Bytes(Amqp10::stringToBytes("Client Key"), saltedPassword);
-            let storedKey = sha256Bytes(clientKey);
+            const saltBytes = Base64::decodeBytes(saltB64);
+            const passwordBytes = Amqp10::stringToBytes(pass);
+            const saltedPassword = Amqp10::pbkdf2HmacSha256(passwordBytes, saltBytes, iterations);
+            const clientKey = hmacSha256Bytes(Amqp10::stringToBytes("Client Key"), saltedPassword);
+            const storedKey = sha256Bytes(clientKey);
 
             // --- client-final-message-without-proof + AuthMessage + ClientProof ---
-            let clientFinalMessageWithoutProof = "c=" + Base64::encode(gs2Header) + ",r=" + combinedNonce;
-            let authMessage = clientFirstMessageBare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof;
-            let clientSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), storedKey);
-            let clientProof = Amqp10::xorBytes(clientKey, clientSignature);
-            let clientFinalMessage = clientFinalMessageWithoutProof + ",p=" + Base64::encodeBytes(clientProof);
+            const clientFinalMessageWithoutProof = "c=" + Base64::encode(gs2Header) + ",r=" + combinedNonce;
+            const authMessage = clientFirstMessageBare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof;
+            const clientSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), storedKey);
+            const clientProof = Amqp10::xorBytes(clientKey, clientSignature);
+            const clientFinalMessage = clientFinalMessageWithoutProof + ",p=" + Base64::encodeBytes(clientProof);
 
             // --- send sasl-response ---
             var respFields: List<Amqp10Value> = [Amqp10Value::BinaryVal(Amqp10::stringToBytes(clientFinalMessage))];
-            let respBody = Amqp10::encodePerformative(0x43, respFields);
+            const respBody = Amqp10::encodePerformative(0x43, respFields);
             Amqp10::writeFrame(conn, 1, 0, respBody);
 
             // --- receive sasl-outcome (additional-data = server-final-message) ---
-            let f3 = Amqp10::readFrame(conn);
+            const f3 = Amqp10::readFrame(conn);
             if (f3.frameType != 1) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1) for SCRAM outcome, got frameType=" + f3.frameType.toString() };
             }
-            let p3 = Amqp10::decodePerformative(f3.body);
+            const p3 = Amqp10::decodePerformative(f3.body);
             if (p3.descriptor != 0x44) {
                 return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-outcome (0x44), got descriptor=" + p3.descriptor.toString() };
             }
@@ -607,10 +607,10 @@ namespace tinox.core.amqp10
             if (!serverFinalMessage.startsWith("v=")) {
                 return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-final-message with no 'v=' field" };
             }
-            let serverSignatureB64 = serverFinalMessage.substring(2, serverFinalMessage.len());
-            let receivedServerSignature = Base64::decodeBytes(serverSignatureB64);
-            let serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword);
-            let expectedServerSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey);
+            const serverSignatureB64 = serverFinalMessage.substring(2, serverFinalMessage.len());
+            const receivedServerSignature = Base64::decodeBytes(serverSignatureB64);
+            const serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword);
+            const expectedServerSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey);
             var sigMatch: Bool = receivedServerSignature.len() == expectedServerSignature.len();
             if (sigMatch) {
                 for i in 0..expectedServerSignature.len() {

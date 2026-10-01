@@ -1101,7 +1101,7 @@ listening socket), registered exactly like every sibling low-level HTTP builtin
 codegen.rs`'s matching `declare`) -- `httpServerCreate(0)` already made the OS
 pick a free ephemeral port, the missing piece was just a way to ask which one it
 picked. All 30 fixtures migrated: `httpServerCreate(LITERAL)` -> `httpServerCreate
-(0)` + `let port = httpServerBoundPort(srv);`, threading `port` through every
+(0)` + `const port = httpServerBoundPort(srv);`, threading `port` through every
 place that used to repeat the literal (connect calls, and a few OIDC/OAuth2
 fixtures that build a JWKS/token-endpoint URL as a string -- those splice via
 `"http://127.0.0.1:" + port.toString() + "/jwks.json"` instead).

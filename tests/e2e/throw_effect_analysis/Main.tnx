@@ -28,7 +28,7 @@ class Main
 
     fnc mixed() -> Nothing {
         // calls BOTH: a non-throwing (pure) and a throwing chain (a)
-        let s: Int64 = pure(4);            // 0+1+2+3+4 = 10, no check needed
+        const s: Int64 = pure(4);            // 0+1+2+3+4 = 10, no check needed
         println("pure in mixed: " + s.toString());
         a();                               // throws → must propagate
         println("after a in mixed (never)");

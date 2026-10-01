@@ -15,7 +15,7 @@ class CounterApp
     @View
     fn render() -> Component
     {
-        let app: CounterApp = this;
+        const app: CounterApp = this;
         return Component::vbox([
             Component::label("Clicks: " + this.clicks.toString()),
             Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1; })

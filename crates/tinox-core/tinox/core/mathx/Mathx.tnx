@@ -10,7 +10,7 @@ namespace tinox.core.mathx
             var y: Int64 = b;
             while y != 0
             {
-                let t: Int64 = y;
+                const t: Int64 = y;
                 y = x % y;
                 x = t;
             }
@@ -73,7 +73,7 @@ namespace tinox.core.mathx
             var i: Int64 = 2;
             while i <= n
             {
-                let temp: Int64 = b;
+                const temp: Int64 = b;
                 b = a + b;
                 a = temp;
                 i = i + 1;

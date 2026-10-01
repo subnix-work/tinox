@@ -32,7 +32,7 @@ namespace tinox.core.queue
             {
                 throw "Buffer is empty";
             }
-            let item: T = buf.data[0];
+            const item: T = buf.data[0];
             buf.data.removeAt(0);
             buf.count = buf.count - 1;
             return item;

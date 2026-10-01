@@ -6,37 +6,37 @@ namespace tinox.core.validation
     {
         fn isEmail(s: String) -> Bool
         {
-            let pattern: String = "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}";
+            const pattern: String = "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}";
             return regexIsMatch(pattern, s);
         }
 
         fn isUrl(s: String) -> Bool
         {
-            let pattern: String = "https?://[a-zA-Z0-9.-]+";
+            const pattern: String = "https?://[a-zA-Z0-9.-]+";
             return regexIsMatch(pattern, s);
         }
 
         fn isNumeric(s: String) -> Bool
         {
-            let pattern: String = "^[0-9]+$";
+            const pattern: String = "^[0-9]+$";
             return regexIsMatch(pattern, s);
         }
 
         fn isAlpha(s: String) -> Bool
         {
-            let pattern: String = "^[a-zA-Z]+$";
+            const pattern: String = "^[a-zA-Z]+$";
             return regexIsMatch(pattern, s);
         }
 
         fn isAlphanumeric(s: String) -> Bool
         {
-            let pattern: String = "^[a-zA-Z0-9]+$";
+            const pattern: String = "^[a-zA-Z0-9]+$";
             return regexIsMatch(pattern, s);
         }
 
         fn isPhone(s: String) -> Bool
         {
-            let pattern: String = "^[0-9+\\-\\s()]+$";
+            const pattern: String = "^[0-9+\\-\\s()]+$";
             return regexIsMatch(pattern, s);
         }
 

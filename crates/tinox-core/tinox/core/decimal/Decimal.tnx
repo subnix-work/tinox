@@ -26,25 +26,25 @@ namespace tinox.core.decimal
 
         fn add(a: Decimal, b: Decimal) -> Decimal
         {
-            let scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale;
-            let aScaled: String = Decimal::scaleValue(a.value, scale - a.scale);
-            let bScaled: String = Decimal::scaleValue(b.value, scale - b.scale);
-            let result: String = Decimal::addStrings(aScaled, bScaled);
+            const scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale;
+            const aScaled: String = Decimal::scaleValue(a.value, scale - a.scale);
+            const bScaled: String = Decimal::scaleValue(b.value, scale - b.scale);
+            const result: String = Decimal::addStrings(aScaled, bScaled);
             return Decimal { value: result, scale: scale };
         }
 
         fn subtract(a: Decimal, b: Decimal) -> Decimal
         {
-            let scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale;
-            let aScaled: String = Decimal::scaleValue(a.value, scale - a.scale);
-            let bScaled: String = Decimal::scaleValue(b.value, scale - b.scale);
-            let result: String = Decimal::subtractStrings(aScaled, bScaled);
+            const scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale;
+            const aScaled: String = Decimal::scaleValue(a.value, scale - a.scale);
+            const bScaled: String = Decimal::scaleValue(b.value, scale - b.scale);
+            const result: String = Decimal::subtractStrings(aScaled, bScaled);
             return Decimal { value: result, scale: scale };
         }
 
         fn multiply(a: Decimal, b: Decimal) -> Decimal
         {
-            let scale: Int64 = a.scale + b.scale;
+            const scale: Int64 = a.scale + b.scale;
             return Decimal { value: Decimal::multiplyStrings(a.value, b.value), scale: scale };
         }
 
@@ -71,22 +71,22 @@ namespace tinox.core.decimal
 
         fn addStrings(a: String, b: String) -> String
         {
-            let aInt: Int64 = (Int64)a;
-            let bInt: Int64 = (Int64)b;
+            const aInt: Int64 = (Int64)a;
+            const bInt: Int64 = (Int64)b;
             return (aInt + bInt).toString();
         }
 
         fn subtractStrings(a: String, b: String) -> String
         {
-            let aInt: Int64 = (Int64)a;
-            let bInt: Int64 = (Int64)b;
+            const aInt: Int64 = (Int64)a;
+            const bInt: Int64 = (Int64)b;
             return (aInt - bInt).toString();
         }
 
         fn multiplyStrings(a: String, b: String) -> String
         {
-            let aInt: Int64 = (Int64)a;
-            let bInt: Int64 = (Int64)b;
+            const aInt: Int64 = (Int64)a;
+            const bInt: Int64 = (Int64)b;
             return (aInt * bInt).toString();
         }
 
@@ -98,12 +98,12 @@ namespace tinox.core.decimal
             }
             if (d.value.len() <= d.scale)
             {
-                let zeros: String = "0";
-                let leading: String = Strings::repeat(zeros, d.scale - d.value.len() + 1);
+                const zeros: String = "0";
+                const leading: String = Strings::repeat(zeros, d.scale - d.value.len() + 1);
                 return "0." + leading + d.value;
             }
-            let intPart: String = d.value.substring(0, d.value.len() - d.scale);
-            let fracPart: String = d.value.substring(d.value.len() - d.scale, d.value.len());
+            const intPart: String = d.value.substring(0, d.value.len() - d.scale);
+            const fracPart: String = d.value.substring(d.value.len() - d.scale, d.value.len());
             return intPart + "." + fracPart;
         }
     }

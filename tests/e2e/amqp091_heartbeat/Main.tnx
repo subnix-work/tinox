@@ -19,17 +19,17 @@ class Main
 {
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn, 8); // protocol header
 
-        let w1 = AmqpWriter091::new();
+        const w1 = AmqpWriter091::new();
         w1.octet(0);
         w1.octet(9);
         var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
         w1.fieldTable(emptyProps);
         w1.longstr("PLAIN");
         w1.longstr("en_US");
-        let startPayload = Amqp091::encodeMethodPayload(10, 10, w1.bytes);
+        const startPayload = Amqp091::encodeMethodPayload(10, 10, w1.bytes);
         Amqp091::writeFrame(sconn, 1, 0, startPayload);
 
         Amqp091::readFrame(sconn); // start-ok, unchecked (covered by amqp_connection_negotiation.tnx)
@@ -38,18 +38,18 @@ class Main
         // for the client's `heartbeat` field; the interval startHeartbeat() is
         // actually called with below is independent and much shorter, so the
         // test doesn't need to wait real seconds.
-        let w2 = AmqpWriter091::new();
+        const w2 = AmqpWriter091::new();
         w2.short(2047);
         w2.long(131072);
         w2.short(2);
-        let tunePayload = Amqp091::encodeMethodPayload(10, 30, w2.bytes);
+        const tunePayload = Amqp091::encodeMethodPayload(10, 30, w2.bytes);
         Amqp091::writeFrame(sconn, 1, 0, tunePayload);
 
-        let f2 = Amqp091::readFrame(sconn);
-        let tuneOkArgs = AmqpReader091::new(Amqp091::decodeMethodPayload(f2.payload).args);
+        const f2 = Amqp091::readFrame(sconn);
+        const tuneOkArgs = AmqpReader091::new(Amqp091::decodeMethodPayload(f2.payload).args);
         tuneOkArgs.short(); // channel-max, unchecked
         tuneOkArgs.long();  // frame-max, unchecked
-        let echoedHeartbeat = tuneOkArgs.short();
+        const echoedHeartbeat = tuneOkArgs.short();
         var ok2: Bool = false;
         if (echoedHeartbeat == 2) {
             ok2 = true;
@@ -57,9 +57,9 @@ class Main
 
         Amqp091::readFrame(sconn); // connection.open
 
-        let w3 = AmqpWriter091::new();
+        const w3 = AmqpWriter091::new();
         w3.shortstr("");
-        let openOkPayload = Amqp091::encodeMethodPayload(10, 41, w3.bytes);
+        const openOkPayload = Amqp091::encodeMethodPayload(10, 41, w3.bytes);
         Amqp091::writeFrame(sconn, 1, 0, openOkPayload);
 
         // Wait for at least one heartbeat frame (frameType 8) before the
@@ -67,7 +67,7 @@ class Main
         var sawHeartbeat: Bool = false;
         var i: Int64 = 0;
         while i < 20 {
-            let f = Amqp091::readFrame(sconn);
+            const f = Amqp091::readFrame(sconn);
             if (f.frameType == 8) {
                 sawHeartbeat = true;
             }
@@ -77,12 +77,12 @@ class Main
             i = i + 1;
         }
 
-        let wc = AmqpWriter091::new();
+        const wc = AmqpWriter091::new();
         wc.short(200);
         wc.shortstr("OK");
         wc.short(0);
         wc.short(0);
-        let closeOkPayload = Amqp091::encodeMethodPayload(10, 51, wc.bytes);
+        const closeOkPayload = Amqp091::encodeMethodPayload(10, 51, wc.bytes);
         Amqp091::writeFrame(sconn, 1, 0, closeOkPayload);
         httpConnClose(sconn);
 
@@ -97,15 +97,15 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv);
 
-        let c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
+        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
         if (c.conn > 0) {
             println("ok-connect");
         }
@@ -118,7 +118,7 @@ class Main
         c.stopHeartbeat();
         c.close();
 
-        let brokerResult = await handle;
+        const brokerResult = await handle;
         if (brokerResult == 1) {
             println("ok-broker-saw-echo");
             println("ok-broker-saw-heartbeat-frame");

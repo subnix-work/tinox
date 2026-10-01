@@ -23,47 +23,47 @@ class Main
 {
     fnc main() -> Int32 {
         // Int64
-        let xs = [1, 2, 3];
-        let doubled = xs.map(x => x * 2);
+        const xs = [1, 2, 3];
+        const doubled = xs.map(x => x * 2);
         println(doubled[0].toString());
         println(doubled[1].toString());
         println(doubled[2].toString());
 
         // Float64 (slots are bitcast doubles)
-        let fs = [1.5, 3.5];
-        let fdoubled = fs.map(x => x * 2.0);
+        const fs = [1.5, 3.5];
+        const fdoubled = fs.map(x => x * 2.0);
         println(fdoubled[0].toString());
         println(fdoubled[1].toString());
 
         // String (marker Array:String remains usable on the result)
-        let names = ["anna", "carl"];
-        let upper = names.map(s => s.toUpper());
+        const names = ["anna", "carl"];
+        const upper = names.map(s => s.toUpper());
         println(upper[0]);
         println(upper[1]);
 
         // capturing lambda
-        let factor = 10;
-        let scaled = xs.map(x => x * factor);
+        const factor = 10;
+        const scaled = xs.map(x => x * factor);
         println(scaled[2].toString());
 
         // type-changing: Int -> String and String -> Int
-        let strs = xs.map(x => x.toString() + "!");
+        const strs = xs.map(x => x.toString() + "!");
         println(strs[0]);
-        let lens = ["a", "bb", "ccc"].map(s => s.len());
+        const lens = ["a", "bb", "ccc"].map(s => s.len());
         println(lens[2].toString());
 
         // object array: method dispatch inside the lambda body
-        let ps = [array_map_lambda { x: 1, y: 2 }, array_map_lambda { x: 3, y: 4 }];
-        let sums = ps.map(p => p.sum());
+        const ps = [array_map_lambda { x: 1, y: 2 }, array_map_lambda { x: 3, y: 4 }];
+        const sums = ps.map(p => p.sum());
         println(sums[0].toString());
         println(sums[1].toString());
 
         // Chaining: map on a map result
-        let chained = xs.map(x => x * 2).map(x => x + 2);
+        const chained = xs.map(x => x * 2).map(x => x + 2);
         println(chained[2].toString());
 
         // empty array
-        let e: List<Int64> = [];
+        const e: List<Int64> = [];
         println(e.map(x => x * 2).len().toString());
         return 0;
     }

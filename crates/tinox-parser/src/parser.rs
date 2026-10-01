@@ -291,8 +291,9 @@ impl Parser {
             let member_annotations = self.parse_annotations();
             let doc = self.take_doc();
             let vis = self.parse_visibility();
-            // `var` = mutable field, `let` = immutable field; consume both
+            // `var` = mutable field, `const` (or legacy `let`) = immutable field; consume all
             let mutable = self.consume_keyword(Keyword::Var)
+                || self.consume_keyword(Keyword::Const)
                 || self.consume_keyword(Keyword::Let)
                 || self.consume_keyword(Keyword::Mut);
             let is_async = self.consume_keyword(Keyword::Async);
@@ -852,7 +853,9 @@ impl Parser {
         let span = self.mk_span();
 
         let stmt = match self.peek().kind {
-            TokenKind::Keyword(Keyword::Let) => self.parse_let_stmt()?,
+            TokenKind::Keyword(Keyword::Const) | TokenKind::Keyword(Keyword::Let) => {
+                self.parse_let_stmt()?
+            }
             TokenKind::Keyword(Keyword::Var) => self.parse_var_stmt()?,
             TokenKind::Keyword(Keyword::If) => self.parse_if_stmt()?,
             TokenKind::Keyword(Keyword::While) => self.parse_while_stmt()?,
@@ -1198,8 +1201,12 @@ impl Parser {
         Ok(Spanned::new(stmt, span))
     }
 
+    /// Immutable binding: `const name = ...;`. `let` is still accepted as a
+    /// legacy alias so already-published packages keep compiling.
     fn parse_let_stmt(&mut self) -> Result<StmtKind, Error> {
-        self.expect_keyword(Keyword::Let)?;
+        if !self.consume_keyword(Keyword::Const) {
+            self.expect_keyword(Keyword::Let)?;
+        }
         let name = self.parse_ident()?;
         let ty = if self.consume(TokenKind::Colon) {
             Some(self.parse_type()?)
@@ -1307,7 +1314,7 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
 
         let init = if !self.check(TokenKind::Semicolon) {
-            let stmt = if self.check_keyword(Keyword::Let) {
+            let stmt = if self.check_keyword(Keyword::Const) || self.check_keyword(Keyword::Let) {
                 self.parse_let_stmt()?
             } else if self.check_keyword(Keyword::Var) {
                 self.parse_var_stmt()?
@@ -3471,7 +3478,26 @@ mod tests {
         assert_eq!(name, "myapp");
     }
 
-    // --- Statements: let / var ---
+    // --- Statements: const (legacy alias: let) / var ---
+
+    #[test]
+    fn test_const_stmt() {
+        let d = first_decl("fn f() { const x: Int32 = 5; const y = 1; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { name, ty, .. } = &stmts[0].node else { panic!() };
+        assert_eq!(name, "x");
+        assert!(matches!(ty, Some(Type::Int32)));
+        let StmtKind::Let { name, ty, .. } = &stmts[1].node else { panic!() };
+        assert_eq!(name, "y");
+        assert!(ty.is_none());
+    }
+
+    #[test]
+    fn test_const_in_c_style_for_init() {
+        let d = first_decl("fn f() { for (const i = 0; i < 3; i = i + 1) { } }");
+        let DeclKind::Function(_) = d else { panic!() };
+    }
 
     #[test]
     fn test_let_with_type() {

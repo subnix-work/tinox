@@ -98,7 +98,7 @@ fn add(a: Int64, b: Int64) -> Int64 {
 }
 
 fn main() -> Int64 {
-    let x = add(1, 2);
+    const x = add(1, 2);
     return x;
 }
 ```

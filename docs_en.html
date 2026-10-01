@@ -738,8 +738,8 @@
     <span class="ann">@Produces</span>(<span class="type">MediaType</span>.APPLICATION_JSON)
     <span class="kw">fn</span> <span class="fn">sort</span>(ctx: <span class="type">HttpContext</span>) -> <span class="type">Nothing</span>
     {
-        <span class="kw">let</span> root: <span class="type">JsonValue</span> = <span class="type">Json</span>.<span class="fn">parse</span>(ctx.request.body);
-        <span class="kw">let</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = <span class="type">Json</span>.<span class="fn">intArrayFromJson</span>(root.<span class="fn">getField</span>(<span class="str">"numbers"</span>));
+        <span class="kw">const</span> root: <span class="type">JsonValue</span> = <span class="type">Json</span>.<span class="fn">parse</span>(ctx.request.body);
+        <span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = <span class="type">Json</span>.<span class="fn">intArrayFromJson</span>(root.<span class="fn">getField</span>(<span class="str">"numbers"</span>));
         ctx.response.body = <span class="type">Json</span>.<span class="fn">intArrayWrap</span>(<span class="str">"sorted"</span>, numbers.<span class="fn">sort</span>());
     }
 }</code></pre>
@@ -1052,11 +1052,11 @@
     </table>
 
     <h3>Composite Types</h3>
-    <pre><code><span class="kw">let</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>];                 <span class="cmt">// Array</span>
-<span class="kw">let</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>};  <span class="cmt">// Map/Dictionary</span>
-<span class="kw">let</span> pair: (<span class="type">Int32</span>, <span class="type">String</span>) = (<span class="num">42</span>, <span class="str">"hello"</span>);           <span class="cmt">// Tuple</span>
-<span class="kw">let</span> name: <span class="type">String</span>? = <span class="kw">null</span>;                             <span class="cmt">// Nullable</span>
-<span class="kw">let</span> fn add: <span class="kw">fn</span>(<span class="type">Int32</span>, <span class="type">Int32</span>) -> <span class="type">Int32</span> = |a, b| a + b; <span class="cmt">// Function type</span></code></pre>
+    <pre><code><span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>];                 <span class="cmt">// Array</span>
+<span class="kw">const</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>};  <span class="cmt">// Map/Dictionary</span>
+<span class="kw">const</span> pair: (<span class="type">Int32</span>, <span class="type">String</span>) = (<span class="num">42</span>, <span class="str">"hello"</span>);           <span class="cmt">// Tuple</span>
+<span class="kw">const</span> name: <span class="type">String</span>? = <span class="kw">null</span>;                             <span class="cmt">// Nullable</span>
+<span class="kw">const</span> fn add: <span class="kw">fn</span>(<span class="type">Int32</span>, <span class="type">Int32</span>) -> <span class="type">Int32</span> = |a, b| a + b; <span class="cmt">// Function type</span></code></pre>
 
     <h3>Generics</h3>
     <p>
@@ -1137,7 +1137,7 @@
       <tbody>
         <tr><td><code>fn</code></td><td>Instance method (has implicit <code>this</code>)</td></tr>
         <tr><td><code>fnc</code></td><td>Static method (no <code>this</code>, called via class name)</td></tr>
-        <tr><td><code>let</code></td><td>Immutable local variable</td></tr>
+        <tr><td><code>const</code></td><td>Immutable local variable (<code>let</code> is still accepted as a deprecated alias)</td></tr>
         <tr><td><code>var</code></td><td>Mutable local variable or field</td></tr>
         <tr><td><code>class</code></td><td>Class declaration</td></tr>
         <tr><td><code>interface</code></td><td>Interface declaration (like Java interface)</td></tr>
@@ -1202,11 +1202,11 @@
       <thead><tr><th>Before</th><th>After</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>fn getUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;let id: Int64 = ctx.request.getParam("id").toInt();<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(user));<br>}</code></td>
+          <td><code>fn getUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;const id: Int64 = ctx.request.getParam("id").toInt();<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(user));<br>}</code></td>
           <td><code>fn getUser(@PathParam id: Int64) -> User<br>{<br>&nbsp;&nbsp;return user;<br>}</code></td>
         </tr>
         <tr>
-          <td><code>fn createUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;let u: User = Json::deserialize&lt;User&gt;(ctx.request.body);<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(u));<br>}</code></td>
+          <td><code>fn createUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;const u: User = Json::deserialize&lt;User&gt;(ctx.request.body);<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(u));<br>}</code></td>
           <td><code>fn createUser(@PostParam u: User) -> User<br>{<br>&nbsp;&nbsp;return u;<br>}</code></td>
         </tr>
         <tr>
@@ -2427,19 +2427,19 @@ url    = "sqlite:///path/to/database.db"</code></pre></div>
 
   <h3>Lambda Query DSL</h3>
   <div class="card"><pre><code>// All users over 18, sorted alphabetically, max 10 results
-let adults: List&lt;User&gt; = DB::of(User)
+const adults: List&lt;User&gt; = DB::of(User)
     .filter(u -&gt; u.age &gt; 18)
     .orderBy(u -&gt; u.name)
     .limit(10)
     .list();
 
 // Read a single user
-let alice: User = DB::of(User)
+const alice: User = DB::of(User)
     .filter(u -&gt; u.name == "Alice")
     .first();
 
 // Count active users
-let n: Int64 = DB::of(User)
+const n: Int64 = DB::of(User)
     .filter(u -&gt; u.active == true)
     .count();</code></pre></div>
 
@@ -2461,16 +2461,16 @@ let n: Int64 = DB::of(User)
 
   <h3>Save, Update, Delete</h3>
   <div class="card"><pre><code>// INSERT (ID assigned by the DB)
-let user: User = User {};
+const user: User = User {};
 user.name = "Alice";
 user.age  = 30;
-let saved: User = DB::of(User).save(user);
+const saved: User = DB::of(User).save(user);
 
 // DELETE
 DB::of(User).delete(saved);
 
 // Save multiple entities
-let list: List&lt;User&gt; = List::new();
+const list: List&lt;User&gt; = List::new();
 list.add(user1);
 list.add(user2);
 DB::of(User).saveAll(list);</code></pre></div>

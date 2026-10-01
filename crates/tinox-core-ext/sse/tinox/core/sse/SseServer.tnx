@@ -26,7 +26,7 @@ namespace tinox.core.sse
          */
         fn accept(srv: Int64) -> Int64
         {
-            let conn = httpServerAcceptConnHandle(srv);
+            const conn = httpServerAcceptConnHandle(srv);
             if (conn <= 0) {
                 return -1;
             }
@@ -46,7 +46,7 @@ namespace tinox.core.sse
         // TLS variant of accept() — mirrors WsServer::acceptTls.
         fn acceptTls(srv: Int64) -> Int64
         {
-            let conn = httpServerAcceptTls(srv);
+            const conn = httpServerAcceptTls(srv);
             if (conn <= 0) {
                 return -1;
             }

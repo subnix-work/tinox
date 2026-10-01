@@ -21,7 +21,7 @@
  *       @Produces(MediaType::Json)
  *       fn getUser(ctx: HttpContext) -> Nothing
  *       {
- *           let id: String = ctx.request.getParam("id");
+ *           const id: String = ctx.request.getParam("id");
  *           ctx.response.json("{\"id\": " + id + "}");
  *       }
  *
@@ -31,12 +31,12 @@
  *       @Produces(MediaType::Json)
  *       fn createUser(ctx: HttpContext) -> Nothing
  *       {
- *           let req: CreateUserRequest = ctx.request.bodyAs<CreateUserRequest>();
+ *           const req: CreateUserRequest = ctx.request.bodyAs<CreateUserRequest>();
  *           ctx.response.status(201).json(req);
  *       }
  *   }
  *
- *   let app: RestApi = RestApi::new(8080);
+ *   const app: RestApi = RestApi::new(8080);
  *   app.register(new UserController());
  *   app.start();
  */

@@ -21,12 +21,12 @@ namespace tinox.core.collections
 
         fn dequeue() -> T
         {
-            let len: Int64 = this.data.len();
+            const len: Int64 = this.data.len();
             if (len == 0)
             {
                 throw "Queue is empty";
             }
-            let value: T = this.data[0];
+            const value: T = this.data[0];
             this.data.removeAt(0);
             return value;
         }

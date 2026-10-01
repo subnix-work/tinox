@@ -97,7 +97,7 @@ class TaskController
     fn getTask(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
         this.ensureInit();
-        let idx: Int64 = findTaskIndex(this.tasks, id);
+        const idx: Int64 = findTaskIndex(this.tasks, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
@@ -123,7 +123,7 @@ class TaskController
     fn updateTask(@PathParam id: Int64, @PostParam task: Task, @HttpContext ctx: HttpContext) -> HttpContext
     {
         this.ensureInit();
-        let idx: Int64 = findTaskIndex(this.tasks, id);
+        const idx: Int64 = findTaskIndex(this.tasks, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
@@ -140,7 +140,7 @@ class TaskController
     fn toggleDone(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
         this.ensureInit();
-        let idx: Int64 = findTaskIndex(this.tasks, id);
+        const idx: Int64 = findTaskIndex(this.tasks, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
@@ -157,7 +157,7 @@ class TaskController
     fn deleteTask(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
         this.ensureInit();
-        let idx: Int64 = findTaskIndex(this.tasks, id);
+        const idx: Int64 = findTaskIndex(this.tasks, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");

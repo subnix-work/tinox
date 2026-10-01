@@ -4,7 +4,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let client: OAuth2Client = OAuth2Client::new(
+        const client: OAuth2Client = OAuth2Client::new(
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://oauth2.googleapis.com/token",
             "my-client-id",
@@ -14,12 +14,12 @@ class Main
 
         // Step 1: redirect the user-agent to req.url, store req.state +
         // req.codeVerifier in the session (needed again at the callback).
-        let req: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
+        const req: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
         println("redirect user to: " + req.url);
 
         // Step 2: in the callback handler, after checking req.state against
         // the callback's "state" query param:
-        let tokens: OAuth2TokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier);
+        const tokens: OAuth2TokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier);
         if (tokens.ok)
         {
             println("access token: " + tokens.accessToken);

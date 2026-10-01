@@ -26,16 +26,16 @@ class Main
         // resolution, unlike tinox.core.time's millisecond clock. Averaging a
         // few back-to-back full collections over the same live set smooths
         // out scheduling noise.
-        let reps: Int64 = 10;
-        let startNs: Int64 = tinox_clock_nanos();
+        const reps: Int64 = 10;
+        const startNs: Int64 = tinox_clock_nanos();
         var r: Int64 = 0;
         while r < reps
         {
             Debug::gcCollect();
             r = r + 1;
         }
-        let totalNs: Int64 = tinox_clock_nanos() - startNs;
-        let avgUs: Int64 = totalNs / reps / 1000;
+        const totalNs: Int64 = tinox_clock_nanos() - startNs;
+        const avgUs: Int64 = totalNs / reps / 1000;
 
         // Read `heap` here, after the timed collections: a conservative GC
         // only sees roots that are still physically live somewhere (stack/

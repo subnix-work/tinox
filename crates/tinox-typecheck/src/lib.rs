@@ -5913,6 +5913,11 @@ class Jogger implements Runner {
     // ================================================================
 
     #[test]
+    fn test_const_reassign_err() {
+        err_contains("fn f() { const x = 1; x = 2; }", "immutable");
+    }
+
+    #[test]
     fn test_let_reassign_err() {
         err_contains(
             "fn f() { let x = 1; x = 2; }",

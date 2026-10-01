@@ -15,15 +15,15 @@ class Main
 {
     fnc main() -> Int32 {
         // T=Int64: .toString() on T-field must be resolved
-        let bi: generic_field_type_resolution<Int64> = generic_field_type_resolution::make(42, 1);
+        const bi: generic_field_type_resolution<Int64> = generic_field_type_resolution::make(42, 1);
         println(bi.value.toString());        // 42
 
         // T=String: direct T-field read (println(String))
-        let bs: generic_field_type_resolution<String> = generic_field_type_resolution::make("hi", 2);
+        const bs: generic_field_type_resolution<String> = generic_field_type_resolution::make("hi", 2);
         println(bs.value);                    // hi
 
         // T=Float64
-        let bf: generic_field_type_resolution<Float64> = generic_field_type_resolution::make(3.5, 3);
+        const bf: generic_field_type_resolution<Float64> = generic_field_type_resolution::make(3.5, 3);
         println(bf.value.toString());        // 3.5
 
         // T-field assignment: literal must match the resolved T (String)

@@ -10,7 +10,7 @@ class fromcharcode_side_effect
 
     fn next() -> Int64
     {
-        let v = this.bytes[this.pos];
+        const v = this.bytes[this.pos];
         this.pos = this.pos + 1;
         return v;
     }

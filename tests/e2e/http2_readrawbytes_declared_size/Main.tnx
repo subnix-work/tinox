@@ -30,16 +30,16 @@ import tinox.core.socket;
 class Main
 {
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
 
-        let cfd = socketCreateTcp();
+        const cfd = socketCreateTcp();
         socketConnect(cfd, "127.0.0.1", port);
-        let clientFd = httpServerAcceptConn(srv);
+        const clientFd = httpServerAcceptConn(srv);
 
         var payload: String = "";
         for i in 0..10000 {
@@ -49,10 +49,10 @@ class Main
         for i in 0..payload.len() {
             bytes.push(payload.charCodeAt(i));
         }
-        let cconn = httpConnFromFd(cfd);
+        const cconn = httpConnFromFd(cfd);
         httpConnWriteBytes(cconn, bytes);
 
-        let got = httpServerReadRawBytes(clientFd, 10000);
+        const got = httpServerReadRawBytes(clientFd, 10000);
         if (got.len() == 10000) {
             println("ok-len");
         }
@@ -68,18 +68,18 @@ class Main
 
         // Short read: only 100 bytes actually sent (then connection closed),
         // but the caller declares/requests 5000 — must not hang or over-read.
-        let cfd2 = socketCreateTcp();
+        const cfd2 = socketCreateTcp();
         socketConnect(cfd2, "127.0.0.1", port);
-        let clientFd2 = httpServerAcceptConn(srv);
+        const clientFd2 = httpServerAcceptConn(srv);
         var small: List<Int64> = [];
         for i in 0..100 {
             small.push(65);
         }
-        let cconn2 = httpConnFromFd(cfd2);
+        const cconn2 = httpConnFromFd(cfd2);
         httpConnWriteBytes(cconn2, small);
         httpConnClose(cconn2);
 
-        let got2 = httpServerReadRawBytes(clientFd2, 5000);
+        const got2 = httpServerReadRawBytes(clientFd2, 5000);
         if (got2.len() == 100) {
             println("ok-short-read");
         }

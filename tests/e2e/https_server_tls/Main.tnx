@@ -17,7 +17,7 @@ class Main
 {
 
     async fnc runServer() -> Int64 {
-        let server: HttpServer = HttpServer::new(47700);
+        const server: HttpServer = HttpServer::new(47700);
         server.get("/hello", ctx => {
             ctx.response.text("Hello over TLS!");
         });
@@ -32,7 +32,7 @@ class Main
     fnc dialRetry(port: Int64) -> Int64 {
         var attempt: Int64 = 0;
         while attempt < 50 {
-            let fd: Int64 = socketCreateTcp();
+            const fd: Int64 = socketCreateTcp();
             if (socketConnect(fd, "127.0.0.1", port)) {
                 return fd;
             }
@@ -47,18 +47,18 @@ class Main
         spawn runServer();
 
         // --- Positive path: verify=false accepts the self-signed test cert ---
-        let fd: Int64 = dialRetry(47700);
+        const fd: Int64 = dialRetry(47700);
         if (fd < 0) {
             println("connect failed");
             return 1;
         }
-        let conn: Int64 = httpConnFromFdTls(fd, "localhost", false);
+        const conn: Int64 = httpConnFromFdTls(fd, "localhost", false);
         if (conn < 0) {
             println("tls handshake failed");
             return 1;
         }
         httpConnSendRaw(conn, "GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        let resp: String = httpConnReadRequest(conn);
+        const resp: String = httpConnReadRequest(conn);
         if (resp.contains("200")) {
             println("ok-status");
         }
@@ -68,12 +68,12 @@ class Main
         httpConnClose(conn);
 
         // --- Negative path: verify=true must reject the self-signed cert ---
-        let fd2: Int64 = dialRetry(47700);
+        const fd2: Int64 = dialRetry(47700);
         if (fd2 < 0) {
             println("connect2 failed");
             return 1;
         }
-        let conn2: Int64 = httpConnFromFdTls(fd2, "localhost", true);
+        const conn2: Int64 = httpConnFromFdTls(fd2, "localhost", true);
         if (conn2 < 0) {
             println("ok-verify-reject");
         }

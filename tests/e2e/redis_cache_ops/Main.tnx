@@ -28,19 +28,19 @@ import tinox.core.redis;
 class Main
 {
     fnc skipCommand(conn: Int64) -> Nothing {
-        let header = httpConnReadLine(conn);
-        let argc = header.substring(1, header.len()).toInt();
+        const header = httpConnReadLine(conn);
+        const argc = header.substring(1, header.len()).toInt();
         var i: Int64 = 0;
         while i < argc {
-            let lenLine = httpConnReadLine(conn);
-            let len = lenLine.substring(1, lenLine.len()).toInt();
+            const lenLine = httpConnReadLine(conn);
+            const len = lenLine.substring(1, lenLine.len()).toInt();
             httpConnReadN(conn, len + 2);
             i = i + 1;
         }
     }
 
     async fnc fakeServer(srv: Int64) -> Int64 {
-        let conn = httpServerAcceptConnHandle(srv);
+        const conn = httpServerAcceptConnHandle(srv);
         if (conn <= 0) {
             return 0;
         }
@@ -68,36 +68,36 @@ class Main
     }
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeServer(srv);
+        const handle = spawn fakeServer(srv);
 
-        let client: RedisClient = RedisClient::connect("127.0.0.1", port);
+        const client: RedisClient = RedisClient::connect("127.0.0.1", port);
         if (client.conn <= 0) {
             println("connect failed: " + client.errorMessage);
             return 1;
         }
         println("connected");
 
-        let missBefore: String = client.get("mykey");
+        const missBefore: String = client.get("mykey");
         println("get before set (should be empty): [" + missBefore + "]");
         println("found before set (should be false): " + client.lastGetFound().toString());
 
-        let setOk: Bool = client.set("mykey", "hello world");
+        const setOk: Bool = client.set("mykey", "hello world");
         println("set ok: " + setOk.toString());
 
-        let v: String = client.get("mykey");
+        const v: String = client.get("mykey");
         println("get value: [" + v + "]");
         println("found: " + client.lastGetFound().toString());
 
-        let delOk: Bool = client.del("mykey");
+        const delOk: Bool = client.del("mykey");
         println("del ok: " + delOk.toString());
 
-        let incrVal: Int64 = client.incr("counter");
+        const incrVal: Int64 = client.incr("counter");
         println("incr value (should be 11): " + incrVal.toString());
         println("incr ok: " + client.lastIncrOk().toString());
 

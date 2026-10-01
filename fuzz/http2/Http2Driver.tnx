@@ -4,9 +4,9 @@ class Http2Driver
 {
     fnc tinoxHttp2ReadFrame(conn: Int64) -> Int64
     {
-        let server = Http2Server::new(0);
-        let c = Http2Conn::new(conn);
-        let f = server.readFrame(c);
+        const server = Http2Server::new(0);
+        const c = Http2Conn::new(conn);
+        const f = server.readFrame(c);
         return f.type;
     }
 }

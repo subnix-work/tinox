@@ -8,29 +8,29 @@
 // method directly. Every assertion below also confirms the capture is a
 // REFERENCE, not a value snapshot -- repeated calls to the same closure
 // instance keep mutating the one underlying object (the same semantics
-// the documented `let self_: Foo = this;` workaround already had).
+// the documented `const self_: Foo = this;` workaround already had).
 import Counter;
 
 class Main
 {
     fnc main() -> Int32
     {
-        let c: Counter = Counter { x: 0, label: "" };
+        const c: Counter = Counter { x: 0, label: "" };
 
-        let h: fnc(Int64) -> Nothing = c.makeHandler();
+        const h: fnc(Int64) -> Nothing = c.makeHandler();
         h(5);
         h(3);
         println("after handler: " + c.x.toString());
 
-        let d: fnc(Int64) -> Nothing = c.makeDoubler();
+        const d: fnc(Int64) -> Nothing = c.makeDoubler();
         d(10);
         println("after doubler: " + c.x.toString());
 
-        let t: fnc(String) -> Nothing = c.makeTagger("-tagged");
+        const t: fnc(String) -> Nothing = c.makeTagger("-tagged");
         t("hello");
         println("label: " + c.label);
 
-        let n: fnc(Int64) -> Nothing = c.makeNested();
+        const n: fnc(Int64) -> Nothing = c.makeNested();
         n(100);
         println("after nested: " + c.x.toString());
 

@@ -82,7 +82,7 @@ namespace tinox.core.json
 
         fnc deserialize<T>(text: String) -> T
         {
-            let value: JsonValue = jsonParse(text);
+            const value: JsonValue = jsonParse(text);
             return T::fromJson(value);
         }
     }

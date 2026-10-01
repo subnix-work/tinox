@@ -4,9 +4,9 @@ class Main
 {
     fnc main() -> Int32
     {
-        let x = math_lib::add(3, 4);
+        const x = math_lib::add(3, 4);
         println(x);
-        let y = math_lib::mul(3, 4);
+        const y = math_lib::mul(3, 4);
         println(y);
         return 0;
     }

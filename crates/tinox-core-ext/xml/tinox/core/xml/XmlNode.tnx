@@ -35,7 +35,7 @@ namespace tinox.core.xml
 
         fn firstChild(tag: String) -> XmlNode
         {
-            let children: List<XmlNode> = XmlNode::children(this);
+            const children: List<XmlNode> = XmlNode::children(this);
             var i: Int64 = 0;
             while i < children.len()
             {

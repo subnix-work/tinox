@@ -14,12 +14,12 @@ namespace tinox.core.http_server
      * middleware chains, and automatic request parsing.
      *
      * Example usage:
-     *   let server: HttpServer = HttpServer::new(8080);
+     *   const server: HttpServer = HttpServer::new(8080);
      *   server.get("/hello", ctx => {
      *       ctx.response.text("Hello, World!");
      *   });
      *   server.post("/users", ctx => {
-     *       let data: JsonValue = ctx.request.json();
+     *       const data: JsonValue = ctx.request.json();
      *       ctx.response.status(201).json("{\"id\": 1}");
      *   });
      *   server.listen();
@@ -171,13 +171,13 @@ namespace tinox.core.http_server
             this.running = true;
             while this.running
             {
-                let conn: Int64 = httpServerAcceptConnHandle(this.socketHandle);
+                const conn: Int64 = httpServerAcceptConnHandle(this.socketHandle);
                 if (conn > 0)
                 {
-                    let raw: String = httpConnReadRequest(conn);
+                    const raw: String = httpConnReadRequest(conn);
                     if (raw.len() > 0)
                     {
-                        let ctx: HttpContext = this.parseRawRequest(raw);
+                        const ctx: HttpContext = this.parseRawRequest(raw);
                         this.handleRequest(ctx, conn);
                     }
                     else
@@ -215,13 +215,13 @@ namespace tinox.core.http_server
             this.running = true;
             while this.running
             {
-                let conn: Int64 = httpServerAcceptTls(this.socketHandle);
+                const conn: Int64 = httpServerAcceptTls(this.socketHandle);
                 if (conn > 0)
                 {
-                    let raw: String = httpConnReadRequest(conn);
+                    const raw: String = httpConnReadRequest(conn);
                     if (raw.len() > 0)
                     {
-                        let ctx: HttpContext = this.parseRawRequest(raw);
+                        const ctx: HttpContext = this.parseRawRequest(raw);
                         this.handleRequest(ctx, conn);
                     }
                     else
@@ -238,18 +238,18 @@ namespace tinox.core.http_server
          */
         fn parseRawRequest(raw: String) -> HttpContext
         {
-            let request: HttpRequest = HttpRequest::new("", "", "", Map::new(), "");
-            let response: HttpResponse = HttpResponse::new();
-            let lines: List<String> = raw.split("\r\n");
+            const request: HttpRequest = HttpRequest::new("", "", "", Map::new(), "");
+            const response: HttpResponse = HttpResponse::new();
+            const lines: List<String> = raw.split("\r\n");
             if (lines.len() > 0)
             {
-                let firstLine: String = lines[0];
-                let parts: List<String> = firstLine.split(" ");
+                const firstLine: String = lines[0];
+                const parts: List<String> = firstLine.split(" ");
                 if (parts.len() >= 2)
                 {
                     request.method = parts[0];
-                    let fullPath: String = parts[1];
-                    let qIdx: Int64 = fullPath.indexOf("?");
+                    const fullPath: String = parts[1];
+                    const qIdx: Int64 = fullPath.indexOf("?");
                     if (qIdx >= 0)
                     {
                         request.path = fullPath.substring(0, qIdx);
@@ -264,17 +264,17 @@ namespace tinox.core.http_server
             var i: Int64 = 1;
             while i < lines.len()
             {
-                let line: String = lines[i];
+                const line: String = lines[i];
                 if (line.len() == 0)
                 {
                     i = i + 1;
                     break;
                 }
-                let colonIdx: Int64 = line.indexOf(":");
+                const colonIdx: Int64 = line.indexOf(":");
                 if (colonIdx > 0)
                 {
-                    let key: String = line.substring(0, colonIdx).trim();
-                    let hdrVal: String = line.substring(colonIdx + 1, line.len()).trim();
+                    const key: String = line.substring(0, colonIdx).trim();
+                    const hdrVal: String = line.substring(colonIdx + 1, line.len()).trim();
                     request.headers[key] = hdrVal;
                 }
                 i = i + 1;
@@ -298,9 +298,9 @@ namespace tinox.core.http_server
          */
         fn formatResponse(response: HttpResponse) -> String
         {
-            let statusText: String = HttpServer::statusText(response.statusCode);
+            const statusText: String = HttpServer::statusText(response.statusCode);
             var raw: String = "HTTP/1.1 " + response.statusCode.toString() + " " + statusText + "\r\n";
-            let keys: List<String> = response.headers.keys();
+            const keys: List<String> = response.headers.keys();
             var hi: Int64 = 0;
             while hi < keys.len()
             {
@@ -350,7 +350,7 @@ namespace tinox.core.http_server
          */
         fn handleRequest(ctx: HttpContext, conn: Int64) -> Nothing
         {
-            let middlewareContinue: Bool = this.runMiddleware(ctx);
+            const middlewareContinue: Bool = this.runMiddleware(ctx);
             if (middlewareContinue == false)
             {
                 ctx.response.statusCode = 403;
@@ -358,14 +358,14 @@ namespace tinox.core.http_server
             }
             else
             {
-                let matched: Bool = this.matchRoute(ctx);
+                const matched: Bool = this.matchRoute(ctx);
                 if (matched == false)
                 {
                     ctx.response.statusCode = 404;
                     ctx.response.text("Not Found");
                 }
             }
-            let raw: String = this.formatResponse(ctx.response);
+            const raw: String = this.formatResponse(ctx.response);
             httpConnSendRaw(conn, raw);
             httpConnClose(conn);
         }
@@ -381,7 +381,7 @@ namespace tinox.core.http_server
             var i: Int64 = 0;
             while i < this.middleware.len()
             {
-                let result: Bool = this.middleware[i](ctx);
+                const result: Bool = this.middleware[i](ctx);
                 if (result == false)
                 {
                     return false;
@@ -405,10 +405,10 @@ namespace tinox.core.http_server
             var i: Int64 = 0;
             while i < this.routes.len()
             {
-                let route: Route = this.routes[i];
+                const route: Route = this.routes[i];
                 if (route.method == ctx.request.method && RouteMatcher::matches(route.path, ctx.request.path))
                 {
-                    let params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
+                    const params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path);
                     ctx.request.setParams(params);
                     route.handler(ctx);
                     return true;

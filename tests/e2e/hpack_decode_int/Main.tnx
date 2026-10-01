@@ -9,13 +9,13 @@ class Main
     fnc main() -> Int32
     {
         // Decode integer 1337 from bytes [31, 154, 10] with 5-bit prefix
-        let data: List<Int64> = [31, 154, 10];
-        let result: HpackIntResult = Hpack::decodeInt(data, 0, 5);
+        const data: List<Int64> = [31, 154, 10];
+        const result: HpackIntResult = Hpack::decodeInt(data, 0, 5);
         println(result.value);
         println(result.nextOffset);
         // Decode small integer 10 from single byte [10] with 5-bit prefix
-        let data2: List<Int64> = [10];
-        let r2: HpackIntResult = Hpack::decodeInt(data2, 0, 5);
+        const data2: List<Int64> = [10];
+        const r2: HpackIntResult = Hpack::decodeInt(data2, 0, 5);
         println(r2.value);
         println(r2.nextOffset);
         return 0;

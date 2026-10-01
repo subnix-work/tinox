@@ -7,10 +7,10 @@
  * memory. Wire-compatible with both Redis and Valkey (the two speak the
  * same RESP2 protocol for everything this client uses).
  *
- *   let client: RedisClient = RedisClient::connect("localhost", 6379);
+ *   const client: RedisClient = RedisClient::connect("localhost", 6379);
  *   if client.conn <= 0 { throw client.errorMessage; }
  *   client.setEx("session:abc", "user-42", 3600);
- *   let value: String = client.get("session:abc");
+ *   const value: String = client.get("session:abc");
  *   if !client.lastGetFound() { throw "cache miss"; }
  *   client.close();
  *
@@ -49,7 +49,7 @@ namespace tinox.core.redis
          */
         fn connect(host: String, port: Int64) -> RedisClient
         {
-            let fd = socketCreateTcp();
+            const fd = socketCreateTcp();
             if (!socketConnect(fd, host, port)) {
                 socketClose(fd);
                 return RedisClient { conn: -1, errorMessage: "connect failed", getFound: false, incrOk: false };
@@ -79,13 +79,13 @@ namespace tinox.core.redis
         fn get(key: String) -> String
         {
             this.sendCommand(["GET", key]);
-            let header = httpConnReadLine(this.conn);
+            const header = httpConnReadLine(this.conn);
             if (!header.startsWith("$") || header == "$-1") {
                 this.getFound = false;
                 return "";
             }
-            let len = header.substring(1, header.len()).toInt();
-            let bytes = httpConnReadN(this.conn, len + 2); // value + trailing \r\n
+            const len = header.substring(1, header.len()).toInt();
+            const bytes = httpConnReadN(this.conn, len + 2); // value + trailing \r\n
             // tinoxBytesToString does the byte->char conversion in one
             // pass instead of `result = result + fromCharCode(...)` in a
             // loop, which is O(n^2) over the value length (issue #167).
@@ -123,7 +123,7 @@ namespace tinox.core.redis
         fn del(key: String) -> Bool
         {
             this.sendCommand(["DEL", key]);
-            let line = httpConnReadLine(this.conn);
+            const line = httpConnReadLine(this.conn);
             if (!line.startsWith(":")) {
                 return false;
             }
@@ -133,7 +133,7 @@ namespace tinox.core.redis
         fn expire(key: String, ttlSeconds: Int64) -> Bool
         {
             this.sendCommand(["EXPIRE", key, ttlSeconds.toString()]);
-            let line = httpConnReadLine(this.conn);
+            const line = httpConnReadLine(this.conn);
             if (!line.startsWith(":")) {
                 return false;
             }
@@ -149,7 +149,7 @@ namespace tinox.core.redis
         fn incr(key: String) -> Int64
         {
             this.sendCommand(["INCR", key]);
-            let line = httpConnReadLine(this.conn);
+            const line = httpConnReadLine(this.conn);
             if (!line.startsWith(":")) {
                 this.incrOk = false;
                 return 0;

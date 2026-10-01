@@ -14,13 +14,13 @@ import typed_generic_layout;
 class Main
 {
     fnc main() -> Int32 {
-        let a: typed_generic_layout<Int64> = typed_generic_layout::make(42);
+        const a: typed_generic_layout<Int64> = typed_generic_layout::make(42);
         println(typed_generic_layout::get(a).toString());        // 42 — T field (i64 slot) via typed read
         typed_generic_layout::setCount(a, 5);                      // typed assignment on Box__i64.count
         println(typed_generic_layout::getCount(a).toString());    // 5
 
         // second specialization — the same named type Box__i64 is reused
-        let b: typed_generic_layout<Int64> = typed_generic_layout::make(7);
+        const b: typed_generic_layout<Int64> = typed_generic_layout::make(7);
         println(typed_generic_layout::get(b).toString());        // 7
         b.count = 100;                            // direct typed assignment
         println(b.count.toString());             // 100

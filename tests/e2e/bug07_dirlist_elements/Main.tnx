@@ -7,7 +7,7 @@ class Main
         dirCreate("d");
         fileWriteAllText("d/a.txt", "x");
         fileWriteAllText("d/b.txt", "y");
-        let entries = dirList("d");
+        const entries = dirList("d");
         println(entries.len());
         var found = 0;
         var i = 0;

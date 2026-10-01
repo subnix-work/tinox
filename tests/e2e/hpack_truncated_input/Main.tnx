@@ -13,16 +13,16 @@ class Main
         // fuzz/hpack (issue #111): used to crash the whole process (unchecked
         // data[offset] in decodeInt/decodeStr on a truncated header block),
         // not just fail this one decode.
-        let truncated: List<Int64> = [31, 154, 10];
-        let dynTable1: HpackDynTable = HpackDynTable::new(4096);
-        let headers1: List<HpackHeader> = Hpack::decode(truncated, dynTable1);
+        const truncated: List<Int64> = [31, 154, 10];
+        const dynTable1: HpackDynTable = HpackDynTable::new(4096);
+        const headers1: List<HpackHeader> = Hpack::decode(truncated, dynTable1);
         println(headers1.len());
 
         // decodeStr with a declared string length far longer than the
         // remaining buffer must stop at the buffer end, not read past it.
-        let truncatedStr: List<Int64> = [0, 250];
-        let dynTable2: HpackDynTable = HpackDynTable::new(4096);
-        let headers2: List<HpackHeader> = Hpack::decode(truncatedStr, dynTable2);
+        const truncatedStr: List<Int64> = [0, 250];
+        const dynTable2: HpackDynTable = HpackDynTable::new(4096);
+        const headers2: List<HpackHeader> = Hpack::decode(truncatedStr, dynTable2);
         println(headers2.len());
 
         println("ok");

@@ -22,18 +22,18 @@ class Main
 {
     fnc main() -> Int32 {
         // --- shortstr / longstr round trip ---
-        let w1 = AmqpWriter091::new();
+        const w1 = AmqpWriter091::new();
         w1.shortstr("hi");
-        let r1 = AmqpReader091::new(w1.bytes);
+        const r1 = AmqpReader091::new(w1.bytes);
         if (r1.shortstr() == "hi") {
             if (r1.pos == w1.bytes.len()) {
                 println("ok-shortstr");
             }
         }
 
-        let w2 = AmqpWriter091::new();
+        const w2 = AmqpWriter091::new();
         w2.longstr("a longer string value");
-        let r2 = AmqpReader091::new(w2.bytes);
+        const r2 = AmqpReader091::new(w2.bytes);
         if (r2.longstr() == "a longer string value") {
             if (r2.pos == w2.bytes.len()) {
                 println("ok-longstr");
@@ -49,10 +49,10 @@ class Main
         mixed.insert("when", AmqpFieldValue091::TimestampVal(1700000000));
         mixed.insert("nothing", AmqpFieldValue091::VoidVal);
 
-        let w3 = AmqpWriter091::new();
+        const w3 = AmqpWriter091::new();
         w3.fieldValue(AmqpFieldValue091::TableVal(mixed));
-        let r3 = AmqpReader091::new(w3.bytes);
-        let decoded3 = r3.fieldValue();
+        const r3 = AmqpReader091::new(w3.bytes);
+        const decoded3 = r3.fieldValue();
         match decoded3 {
             TableVal(t) => {
                 if (t.len() == 6) {
@@ -93,9 +93,9 @@ class Main
         var outer: Map<String, AmqpFieldValue091> = Map::new();
         outer.insert("capabilities", AmqpFieldValue091::TableVal(inner));
 
-        let w4 = AmqpWriter091::new();
+        const w4 = AmqpWriter091::new();
         w4.fieldValue(AmqpFieldValue091::TableVal(outer));
-        let r4 = AmqpReader091::new(w4.bytes);
+        const r4 = AmqpReader091::new(w4.bytes);
         match r4.fieldValue() {
             TableVal(t) => {
                 match t.get("capabilities") {
@@ -112,10 +112,10 @@ class Main
         }
 
         // --- field array ---
-        let arr: List<AmqpFieldValue091> = [AmqpFieldValue091::Int32Val(1), AmqpFieldValue091::Int32Val(2), AmqpFieldValue091::StrVal("x")];
-        let w5 = AmqpWriter091::new();
+        const arr: List<AmqpFieldValue091> = [AmqpFieldValue091::Int32Val(1), AmqpFieldValue091::Int32Val(2), AmqpFieldValue091::StrVal("x")];
+        const w5 = AmqpWriter091::new();
         w5.fieldValue(AmqpFieldValue091::ArrayVal(arr));
-        let r5 = AmqpReader091::new(w5.bytes);
+        const r5 = AmqpReader091::new(w5.bytes);
         match r5.fieldValue() {
             ArrayVal(a) => {
                 if (a.len() == 3) {
@@ -126,17 +126,17 @@ class Main
         }
 
         // --- unknown type marker: hard ErrorVal instead of guessing ---
-        let badBytes: List<Int64> = [90]; // 'Z', not a known type marker
-        let r6 = AmqpReader091::new(badBytes);
+        const badBytes: List<Int64> = [90]; // 'Z', not a known type marker
+        const r6 = AmqpReader091::new(badBytes);
         match r6.fieldValue() {
             ErrorVal(_msg) => { println("ok-unknown-tag"); }
             _ => {}
         }
 
         // --- method frame envelope round trip ---
-        let args: List<Int64> = [1, 2, 3, 4, 5];
-        let payload = Amqp091::encodeMethodPayload(10, 10, args);
-        let mf = Amqp091::decodeMethodPayload(payload);
+        const args: List<Int64> = [1, 2, 3, 4, 5];
+        const payload = Amqp091::encodeMethodPayload(10, 10, args);
+        const mf = Amqp091::decodeMethodPayload(payload);
         if (mf.classId == 10) {
             if (mf.methodId == 10) {
                 if (mf.args.len() == 5) {
@@ -148,22 +148,22 @@ class Main
         }
 
         // --- readFrame/writeFrame over a real loopback conn ---
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
 
-        let cfd = socketCreateTcp();
+        const cfd = socketCreateTcp();
         socketConnect(cfd, "127.0.0.1", port);
-        let cconn = httpConnFromFd(cfd);
-        let sconn = httpServerAcceptConnHandle(srv);
+        const cconn = httpConnFromFd(cfd);
+        const sconn = httpServerAcceptConnHandle(srv);
 
         // Client -> server
-        let framePayload: List<Int64> = [10, 10, 1, 2, 3];
+        const framePayload: List<Int64> = [10, 10, 1, 2, 3];
         Amqp091::writeFrame(cconn, 1, 0, framePayload);
-        let f = Amqp091::readFrame(sconn);
+        const f = Amqp091::readFrame(sconn);
         if (f.frameType == 1) {
             if (f.chanId == 0) {
                 if (f.payload.len() == 5) {
@@ -176,20 +176,20 @@ class Main
 
         // --- protocol error: wrong frame terminator instead of 0xCE ---
         httpConnWriteBytes(cconn, [1, 0, 0, 0, 0, 0, 1, 42, 0xFF]);
-        let fBad = Amqp091::readFrame(sconn);
+        const fBad = Amqp091::readFrame(sconn);
         if (fBad.frameType == -2) {
             println("ok-frame-badend");
         }
 
         // --- payload cap exceeded (size > 16 MB, no actual read) ---
         httpConnWriteBytes(cconn, [1, 0, 0, 127, 255, 255, 255]);
-        let fCap = Amqp091::readFrame(sconn);
+        const fCap = Amqp091::readFrame(sconn);
         if (fCap.frameType == -2) {
             println("ok-frame-cap");
         }
 
         httpConnClose(cconn);
-        let fEof = Amqp091::readFrame(sconn);
+        const fEof = Amqp091::readFrame(sconn);
         if (fEof.frameType == -1) {
             println("ok-frame-eof");
         }

@@ -22,19 +22,19 @@ class Main
 {
     fnc main() -> Int32 {
         // non-generic, this.value via ::
-        let b: IntBox = IntBox::wrap(42);
+        const b: IntBox = IntBox::wrap(42);
         println(IntBox::get(b).toString());        // 42 (obj == self)
 
         // obj + additional declared param
-        let a: Acc = Acc::make();
+        const a: Acc = Acc::make();
         println(Acc::addAndGet(a, 5).toString());  // 5
         println(Acc::addAndGet(a, 3).toString());  // 8
 
         // generic, this.value via ::
-        let g: Box<Int64> = Box::wrap(7);
+        const g: Box<Int64> = Box::wrap(7);
         println(Box::get(g).toString());           // 7
 
-        let h: Box<Int64> = Box::wrap(99);
+        const h: Box<Int64> = Box::wrap(99);
         println(Box::get(h).toString());           // 99
 
         // generic, T param, direct .toString() on the return value (Bug 39)

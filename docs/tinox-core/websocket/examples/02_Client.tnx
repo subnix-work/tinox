@@ -4,10 +4,10 @@ class Main
 {
     fnc main() -> Int32
     {
-        let conn: Int64 = WsClient::connect("localhost", 8080, "/");
+        const conn: Int64 = WsClient::connect("localhost", 8080, "/");
         WsClient::sendText(conn, "hello from client");
 
-        let f: WsFrame = WsClient::readMessage(conn);
+        const f: WsFrame = WsClient::readMessage(conn);
         println(WsClient::text(f));
 
         WsClient::close(conn);

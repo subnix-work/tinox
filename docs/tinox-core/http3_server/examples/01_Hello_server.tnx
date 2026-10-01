@@ -6,7 +6,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let server: Http3Server = Http3Server::new(8443, "cert.pem", "key.pem");
+        const server: Http3Server = Http3Server::new(8443, "cert.pem", "key.pem");
         server.get("/hello", ctx => {
             ctx.response.text("Hello over HTTP/3!");
         });

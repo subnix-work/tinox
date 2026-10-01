@@ -95,7 +95,7 @@ namespace tinox.core.json
         {
             var result: List<JsonValue> = [];
             var i: Int64 = 0;
-            let n: Int64 = this.len();
+            const n: Int64 = this.len();
             while i < n
             {
                 result.push(this.get(i));

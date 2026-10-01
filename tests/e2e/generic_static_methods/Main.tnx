@@ -11,13 +11,13 @@ import generic_static_methods;
 class Main
 {
     fnc main() -> Int32 {
-        let u = generic_static_methods { id: 7, name: "Alice" };
-        let j: String = Json::serialize(u);
+        const u = generic_static_methods { id: 7, name: "Alice" };
+        const j: String = Json::serialize(u);
         println(j);
-        let back: generic_static_methods = Json::deserialize<generic_static_methods>(j);
+        const back: generic_static_methods = Json::deserialize<generic_static_methods>(j);
         println(back.id);
         println(back.name);
-        let users: List<generic_static_methods> = [generic_static_methods { id: 1, name: "A" }, generic_static_methods { id: 2, name: "B" }];
+        const users: List<generic_static_methods> = [generic_static_methods { id: 1, name: "A" }, generic_static_methods { id: 2, name: "B" }];
         println(Json::serialize(users));
         return 0;
     }

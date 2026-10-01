@@ -47,7 +47,7 @@ namespace tinox.core.iter
 
         fn zip<T, U>(a: List<T>, b: List<U>) -> List<Pair<T, U>>
         {
-            let len: Int64 = (a.len() < b.len()) ? a.len() : b.len();
+            const len: Int64 = (a.len() < b.len()) ? a.len() : b.len();
             var result: List<Pair<T, U>> = [];
             var i: Int64 = 0;
             while i < len

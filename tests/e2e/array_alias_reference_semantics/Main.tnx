@@ -16,7 +16,7 @@ class Main
     fnc main() -> Int32
     {
         var a: List<Int64> = [1, 2];
-        let b = a;
+        const b = a;
         a.push(3);
         println(b.len());
         println(b[2]);

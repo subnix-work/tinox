@@ -19,38 +19,38 @@ class Main
 {
 
     async fnc fakeBrokerTls(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptTls(srv);
+        const sconn = httpServerAcceptTls(srv);
         if (sconn <= 0) {
             return 0;
         }
         httpConnReadN(sconn, 8); // protocol header, see amqp10_phase1_handshake.tnx
 
-        let w1 = AmqpWriter091::new();
+        const w1 = AmqpWriter091::new();
         w1.octet(0);
         w1.octet(9);
         var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
         w1.fieldTable(emptyProps);
         w1.longstr("PLAIN");
         w1.longstr("en_US");
-        let startPayload = Amqp091::encodeMethodPayload(10, 10, w1.bytes);
+        const startPayload = Amqp091::encodeMethodPayload(10, 10, w1.bytes);
         Amqp091::writeFrame(sconn, 1, 0, startPayload);
 
-        let f1 = Amqp091::readFrame(sconn);
+        const f1 = Amqp091::readFrame(sconn);
         Amqp091::decodeMethodPayload(f1.payload); // start-ok, unchecked (positive path is enough here)
 
-        let w2 = AmqpWriter091::new();
+        const w2 = AmqpWriter091::new();
         w2.short(2047);
         w2.long(131072);
         w2.short(60);
-        let tunePayload = Amqp091::encodeMethodPayload(10, 30, w2.bytes);
+        const tunePayload = Amqp091::encodeMethodPayload(10, 30, w2.bytes);
         Amqp091::writeFrame(sconn, 1, 0, tunePayload);
 
         Amqp091::readFrame(sconn); // tune-ok
         Amqp091::readFrame(sconn); // connection.open
 
-        let w3 = AmqpWriter091::new();
+        const w3 = AmqpWriter091::new();
         w3.shortstr("");
-        let openOkPayload = Amqp091::encodeMethodPayload(10, 41, w3.bytes);
+        const openOkPayload = Amqp091::encodeMethodPayload(10, 41, w3.bytes);
         Amqp091::writeFrame(sconn, 1, 0, openOkPayload);
 
         httpConnClose(sconn);
@@ -69,16 +69,16 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreateTls(47705, "tls_cert.pem", "tls_key.pem");
+        const srv = httpServerCreateTls(47705, "tls_cert.pem", "tls_key.pem");
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeBrokerTls(srv);
+        const handle = spawn fakeBrokerTls(srv);
 
         // --- Positive path: verify=false accepts the self-signed test cert ---
-        let c = AmqpConnection091::connectTls("127.0.0.1", 47705, "/", "guest", "guest", false);
-        let brokerOk = await handle;
+        const c = AmqpConnection091::connectTls("127.0.0.1", 47705, "/", "guest", "guest", false);
+        const brokerOk = await handle;
 
         if (c.conn > 0) {
             println("ok-connect");
@@ -91,8 +91,8 @@ class Main
         }
 
         // --- Negative path: verify=true must reject the self-signed cert ---
-        let handle2 = spawn acceptRejected(srv);
-        let c2 = AmqpConnection091::connectTls("127.0.0.1", 47705, "/", "guest", "guest", true);
+        const handle2 = spawn acceptRejected(srv);
+        const c2 = AmqpConnection091::connectTls("127.0.0.1", 47705, "/", "guest", "guest", true);
         if (c2.conn <= 0) {
             println("ok-verify-reject");
         }

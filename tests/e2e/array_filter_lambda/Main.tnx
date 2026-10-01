@@ -23,42 +23,42 @@ class Main
 {
     fnc main() -> Int32 {
         // Int64
-        let xs = [1, 2, 3];
-        let evens = xs.filter(x => x % 2 == 0);
+        const xs = [1, 2, 3];
+        const evens = xs.filter(x => x % 2 == 0);
         println(evens.len().toString());
         println(evens[0].toString());
 
         // Float64
-        let fs = [1.0, 2.5, 3.0];
-        let big = fs.filter(x => x > 2.0);
+        const fs = [1.0, 2.5, 3.0];
+        const big = fs.filter(x => x > 2.0);
         println(big.len().toString());
         println(big[0].toString());
         println(big[1].toString());
 
         // String: marker is preserved, result stays method-capable
-        let ws = ["hi", "world", "ok"].filter(s => s.len() <= 2);
+        const ws = ["hi", "world", "ok"].filter(s => s.len() <= 2);
         println(ws.len().toString());
         println(ws[0]);
         println(ws[1]);
 
         // Objects: field access in the predicate, method call afterward
-        let ps = [array_filter_lambda { x: 1, y: 2 }, array_filter_lambda { x: 3, y: 4 }];
-        let bigp = ps.filter(p => p.x > 2);
+        const ps = [array_filter_lambda { x: 1, y: 2 }, array_filter_lambda { x: 3, y: 4 }];
+        const bigp = ps.filter(p => p.x > 2);
         println(bigp.len().toString());
         println(bigp[0].sum().toString());
 
         // capturing predicate
-        let limit = 3;
-        let below = xs.filter(x => x < limit);
+        const limit = 3;
+        const below = xs.filter(x => x < limit);
         println(below.len().toString());
         println(below[0].toString());
 
         // Chaining filter -> map
-        let r = xs.filter(x => x >= 2).map(x => x * 2);
+        const r = xs.filter(x => x >= 2).map(x => x * 2);
         println(r[1].toString());
 
         // empty array
-        let e: List<Int64> = [];
+        const e: List<Int64> = [];
         println(e.filter(x => x > 0).len().toString());
         return 0;
     }

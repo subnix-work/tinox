@@ -5,12 +5,12 @@
  *
  * The API mirrors HttpServer so existing route handlers work unchanged:
  *
- *   let server: Http2Server = Http2Server::new(8080);
+ *   const server: Http2Server = Http2Server::new(8080);
  *   server.get("/hello", ctx => {
  *       ctx.response.text("Hello HTTP/2!");
  *   });
  *   server.post("/api/data", ctx => {
- *       let body: JsonValue = ctx.request.json();
+ *       const body: JsonValue = ctx.request.json();
  *       ctx.response.status(201).json("{\"ok\": true}");
  *   });
  *   server.listen();

@@ -289,7 +289,7 @@
       <div>Immutability by default</div>
       <div><span class="badge no">NO</span> (final explicit)</div>
       <div><span class="badge yes">YES</span> (val/var)</div>
-      <div><span class="badge yes">YES</span> (let/var)</div>
+      <div><span class="badge yes">YES</span> (const/var)</div>
       <div><span class="badge part">PARTIAL</span> (const / let)</div>
 
       <div>Type inference</div>
@@ -425,10 +425,10 @@ val expr = "2+2=${2 + 2}"    // expression in ${}</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
-        <pre><code>let x: Int64 = 42;           // immutable
+        <pre><code>const x: Int64 = 42;           // immutable
 var y: Int64 = 10;           // mutable
-let name = "Alice";          // inference everywhere
-let msg = "Hi ${name}!";     // string interpolation</code></pre>
+const name = "Alice";          // inference everywhere
+const msg = "Hi ${name}!";     // string interpolation</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript</h3>
@@ -494,7 +494,7 @@ for (const s of list) {
         <h4>Tinox — Syntax Advantages</h4>
         <ul>
           <li>Less boilerplate than Java (no public class wrapper)</li>
-          <li>let/var makes mutability immediately visible</li>
+          <li>const/var makes mutability immediately visible</li>
           <li>String interpolation built into the language</li>
           <li>Ranges (0..5, 0...5) — no iterator API needed</li>
           <li>Allman-style formatter enforces a consistent style</li>
@@ -557,7 +557,7 @@ class Box&lt;T&gt;
     }
 }
 
-let b = new Box&lt;Int64&gt;(42);
+const b = new Box&lt;Int64&gt;(42);
 // Primitives usable directly (no boxing)</code></pre>
       </div>
       <div class="compare-col typescript">
@@ -603,16 +603,16 @@ val ro = listOf(1, 2, 3)</code></pre>
       </div>
       <div class="compare-col tinox">
         <h3>Tinox</h3>
-        <pre><code>let arr = ["hello"];
+        <pre><code>const arr = ["hello"];
 arr.push("world");
 arr.len();
 arr[0];
 
-let m = @{"a" => 1};
+const m = @{"a" => 1};
 m.insert("b", 2);
 m.get("a");
 // typed:
-let m: Map&lt;String, Int64&gt; = Map::new();</code></pre>
+const m: Map&lt;String, Int64&gt; = Map::new();</code></pre>
       </div>
       <div class="compare-col typescript">
         <h3>TypeScript</h3>
@@ -710,7 +710,7 @@ class Dog extends Animal
     }
 }
 
-let a: Animal = new Dog();
+const a: Animal = new Dog();
 a.name = "Rex";
 println(a.speak());</code></pre>
       </div>
@@ -763,7 +763,7 @@ val p2 = p.copy(y = 10)</code></pre>
 // new() is auto-generated
 immutable Point(x: Int64, y: Int64)
 
-let p = new Point(3, 4);
+const p = new Point(3, 4);
 println(p.x); // 3
 
 // Fields via field access (read-only)</code></pre>
@@ -929,10 +929,10 @@ listOf(1, 2, 3)
     return f(x);
 }
 
-let result = apply(21, n => n * 2); // 42
+const result = apply(21, n => n * 2); // 42
 
 // Lambda as a value
-let square: fnc(Int64) -> Int64
+const square: fnc(Int64) -> Int64
     = fn(x: Int64) -> Int64
 {
     return x * x;
@@ -1112,14 +1112,14 @@ fun main() = runBlocking {
 
 fn main() -> Int64
 {
-    let handle = spawn fetchData(21);
-    let result = await handle; // 42
+    const handle = spawn fetchData(21);
+    const result = await handle; // 42
     println(result);
 
     // Channels (Go-inspired)
-    let ch = channel;
+    const ch = channel;
     send ch -> 99;
-    let v = recv ch;
+    const v = recv ch;
     println(v);
 
     return 0;
@@ -1642,7 +1642,7 @@ class UserController
     @StatusCode(200)
     fn listUsers(ctx: HttpContext) -> Nothing
     {
-        let users: User[] = [
+        const users: User[] = [
             User { id: 1, name: "Alice" },
             User { id: 2, name: "Bob" }
         ];
@@ -1655,7 +1655,7 @@ class UserController
     @StatusCode(201)
     fn createUser(ctx: HttpContext) -> Nothing
     {
-        let user: User = Json::deserialize&lt;User&gt;(
+        const user: User = Json::deserialize&lt;User&gt;(
             ctx.request.body
         );
         ctx.response.body = Json::serialize(user);
@@ -1786,7 +1786,7 @@ class User
         // prints: User{name=Alice, password=***, email=al***ce}
 
         // Also for direct string expressions:
-        let s: String = this.email;
+        const s: String = this.email;
         Logger::info(this.log, s); // unmasked value
         // Only the toString() conversion is masked
     }
@@ -1904,7 +1904,7 @@ s!!.length            // force unwrap (NPE possible)</code></pre>
 
 try
 {
-    let r = divide(10, 0);
+    const r = divide(10, 0);
 }
 catch e: RuntimeError
 {
@@ -1915,7 +1915,7 @@ finally { cleanup(); }
 // defer for automatic cleanup
 fn readFile(path: String) -> String
 {
-    let f = open(path);
+    const f = open(path);
     defer { f.close(); }
     return f.read();
 }</code></pre>

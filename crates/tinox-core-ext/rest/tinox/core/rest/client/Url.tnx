@@ -17,7 +17,7 @@ namespace tinox.core.rest.client
          */
         fn build(baseUrl: String, path: String) -> String
         {
-            let base: String = baseUrl.trim();
+            const base: String = baseUrl.trim();
             if (base.endsWith("/") && path.startsWith("/"))
             {
                 return base.substring(0, base.len() - 1) + path;
@@ -39,14 +39,14 @@ namespace tinox.core.rest.client
          */
         fn buildWithParams(baseUrl: String, path: String, params: Map<String, String>) -> String
         {
-            let url: String = Url::build(baseUrl, path);
+            const url: String = Url::build(baseUrl, path);
             if (params.len() == 0)
             {
                 return url;
             }
             var result: String = url + "?";
             var first: Bool = true;
-            let keys: List<String> = params.keys();
+            const keys: List<String> = params.keys();
             var i: Int64 = 0;
             while i < keys.len()
             {
@@ -76,8 +76,8 @@ namespace tinox.core.rest.client
             var i: Int64 = 0;
             while i < s.len()
             {
-                let ch: String = s.substring(i, i + 1);
-                let code: Int64 = ch.charCodeAt(0);
+                const ch: String = s.substring(i, i + 1);
+                const code: Int64 = ch.charCodeAt(0);
                 if (Url::isUnreserved(ch))
                 {
                     result = result + ch;
@@ -101,7 +101,7 @@ namespace tinox.core.rest.client
          */
         fn isUnreserved(ch: String) -> Bool
         {
-            let code: Int64 = ch.charCodeAt(0);
+            const code: Int64 = ch.charCodeAt(0);
             if (code >= 65 && code <= 90)
             {
                 return true;
@@ -129,9 +129,9 @@ namespace tinox.core.rest.client
          */
         fn toHex(n: Int64) -> String
         {
-            let hex: String = "0123456789ABCDEF";
-            let high: Int64 = (n / 16) % 16;
-            let low: Int64 = n % 16;
+            const hex: String = "0123456789ABCDEF";
+            const high: Int64 = (n / 16) % 16;
+            const low: Int64 = n % 16;
             return hex.substring(high, high + 1) + hex.substring(low, low + 1);
         }
 
@@ -149,7 +149,7 @@ namespace tinox.core.rest.client
             var i: Int64 = 0;
             while i < segments.len()
             {
-                let seg: String = segments[i].trim();
+                const seg: String = segments[i].trim();
                 if (seg.len() > 0)
                 {
                     if (result.len() > 0 && result.endsWith("/") == false && seg.startsWith("/") == false)

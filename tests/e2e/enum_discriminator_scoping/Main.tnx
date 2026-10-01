@@ -34,8 +34,8 @@ class Main
 
 
     fnc main() -> Int32 {
-        let alphaFoo: Int64 = AlphaKind::Foo as Int64;
-        let betaFoo: Int64 = BetaKind::Foo as Int64;
+        const alphaFoo: Int64 = AlphaKind::Foo as Int64;
+        const betaFoo: Int64 = BetaKind::Foo as Int64;
         println("distinct:" + (alphaFoo != betaFoo).toString());
 
         showAlpha(AlphaKind::Foo);

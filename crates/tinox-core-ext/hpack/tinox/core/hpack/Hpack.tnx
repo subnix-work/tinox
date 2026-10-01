@@ -112,7 +112,7 @@ namespace tinox.core.hpack
             {
                 return HpackHeader::new(Hpack::staticName(index), Hpack::staticValue(index));
             }
-            let dynIndex: Int64 = index - 62;
+            const dynIndex: Int64 = index - 62;
             if (dynIndex >= 0 && dynIndex < dynTable.entries.len())
             {
                 return dynTable.entries[dynIndex];
@@ -139,7 +139,7 @@ namespace tinox.core.hpack
             {
                 return HpackIntResult { value: 0, nextOffset: data.len() };
             }
-            let mask: Int64 = (1 << prefixBits) - 1;
+            const mask: Int64 = (1 << prefixBits) - 1;
             var value: Int64 = data[offset] & mask;
             var pos: Int64 = offset + 1;
             if (value < mask)
@@ -153,7 +153,7 @@ namespace tinox.core.hpack
             // bytes can't shift `m` up to/past 64 and hit shift-overflow.
             while pos < data.len() && m < 63
             {
-                let b: Int64 = data[pos];
+                const b: Int64 = data[pos];
                 pos = pos + 1;
                 value = value + ((b & 127) << m);
                 m = m + 7;
@@ -175,9 +175,9 @@ namespace tinox.core.hpack
          */
         fn decodeStr(data: List<Int64>, offset: Int64) -> HpackStrResult
         {
-            let lenResult: HpackIntResult = Hpack::decodeInt(data, offset, 7);
-            let strLen: Int64 = lenResult.value;
-            let pos: Int64 = lenResult.nextOffset;
+            const lenResult: HpackIntResult = Hpack::decodeInt(data, offset, 7);
+            const strLen: Int64 = lenResult.value;
+            const pos: Int64 = lenResult.nextOffset;
             var bytes: List<Int64> = [];
             var i: Int64 = 0;
             // strLen comes straight off the wire (decodeInt) and can claim
@@ -213,28 +213,28 @@ namespace tinox.core.hpack
          */
         fn decode(data: List<Int64>, dynTable: HpackDynTable) -> List<HpackHeader>
         {
-            let headers: List<HpackHeader> = [];
+            const headers: List<HpackHeader> = [];
             var offset: Int64 = 0;
             while offset < data.len()
             {
-                let b: Int64 = data[offset];
+                const b: Int64 = data[offset];
                 if ((b & 128) != 0)
                 {
                     // §6.1 Indexed header field representation
-                    let result: HpackIntResult = Hpack::decodeInt(data, offset, 7);
-                    let header: HpackHeader = Hpack::lookupHeader(dynTable, result.value);
+                    const result: HpackIntResult = Hpack::decodeInt(data, offset, 7);
+                    const header: HpackHeader = Hpack::lookupHeader(dynTable, result.value);
                     headers.push(header);
                     offset = result.nextOffset;
                 }
                 else if ((b & 64) != 0)
                 {
                     // §6.2.1 Literal with incremental indexing
-                    let nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 6);
+                    const nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 6);
                     offset = nameResult.nextOffset;
                     var name: String = "";
                     if (nameResult.value == 0)
                     {
-                        let nameStr: HpackStrResult = Hpack::decodeStr(data, offset);
+                        const nameStr: HpackStrResult = Hpack::decodeStr(data, offset);
                         name = nameStr.value;
                         offset = nameStr.nextOffset;
                     }
@@ -242,28 +242,28 @@ namespace tinox.core.hpack
                     {
                         name = Hpack::lookupHeader(dynTable, nameResult.value).name;
                     }
-                    let valStr: HpackStrResult = Hpack::decodeStr(data, offset);
+                    const valStr: HpackStrResult = Hpack::decodeStr(data, offset);
                     offset = valStr.nextOffset;
-                    let header: HpackHeader = HpackHeader::new(name, valStr.value);
+                    const header: HpackHeader = HpackHeader::new(name, valStr.value);
                     dynTable.add(header);
                     headers.push(header);
                 }
                 else if ((b & 32) != 0)
                 {
                     // §6.3 Dynamic table size update
-                    let result: HpackIntResult = Hpack::decodeInt(data, offset, 5);
+                    const result: HpackIntResult = Hpack::decodeInt(data, offset, 5);
                     dynTable.setMaxSize(result.value);
                     offset = result.nextOffset;
                 }
                 else
                 {
                     // §6.2.2 / §6.2.3 Literal without indexing / never indexed
-                    let nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 4);
+                    const nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 4);
                     offset = nameResult.nextOffset;
                     var name: String = "";
                     if (nameResult.value == 0)
                     {
-                        let nameStr: HpackStrResult = Hpack::decodeStr(data, offset);
+                        const nameStr: HpackStrResult = Hpack::decodeStr(data, offset);
                         name = nameStr.value;
                         offset = nameStr.nextOffset;
                     }
@@ -271,7 +271,7 @@ namespace tinox.core.hpack
                     {
                         name = Hpack::lookupHeader(dynTable, nameResult.value).name;
                     }
-                    let valStr: HpackStrResult = Hpack::decodeStr(data, offset);
+                    const valStr: HpackStrResult = Hpack::decodeStr(data, offset);
                     offset = valStr.nextOffset;
                     headers.push(HpackHeader::new(name, valStr.value));
                 }
@@ -284,8 +284,8 @@ namespace tinox.core.hpack
          */
         fn encodeInt(value: Int64, prefixBits: Int64, firstByteMask: Int64) -> List<Int64>
         {
-            let result: List<Int64> = [];
-            let maxPrefix: Int64 = (1 << prefixBits) - 1;
+            const result: List<Int64> = [];
+            const maxPrefix: Int64 = (1 << prefixBits) - 1;
             if (value < maxPrefix)
             {
                 result.push(firstByteMask | value);
@@ -307,8 +307,8 @@ namespace tinox.core.hpack
          */
         fn encodeStr(s: String) -> List<Int64>
         {
-            let result: List<Int64> = [];
-            let lenBytes: List<Int64> = Hpack::encodeInt(s.len(), 7, 0);
+            const result: List<Int64> = [];
+            const lenBytes: List<Int64> = Hpack::encodeInt(s.len(), 7, 0);
             var i: Int64 = 0;
             while i < lenBytes.len()
             {
@@ -364,16 +364,16 @@ namespace tinox.core.hpack
          */
         fn encode(headers: List<HpackHeader>, dynTable: HpackDynTable) -> List<Int64>
         {
-            let result: List<Int64> = [];
+            const result: List<Int64> = [];
             var i: Int64 = 0;
             while i < headers.len()
             {
-                let h: HpackHeader = headers[i];
-                let staticIdx: Int64 = Hpack::findStatic(h.name, h.value);
+                const h: HpackHeader = headers[i];
+                const staticIdx: Int64 = Hpack::findStatic(h.name, h.value);
                 if (staticIdx > 0 && Hpack::staticValue(staticIdx) == h.value)
                 {
                     // §6.1 Indexed header field — full static table hit
-                    let encoded: List<Int64> = Hpack::encodeInt(staticIdx, 7, 128);
+                    const encoded: List<Int64> = Hpack::encodeInt(staticIdx, 7, 128);
                     var j: Int64 = 0;
                     while j < encoded.len()
                     {
@@ -389,7 +389,7 @@ namespace tinox.core.hpack
                     {
                         nameIdx = staticIdx;
                     }
-                    let nameEncoded: List<Int64> = Hpack::encodeInt(nameIdx, 6, 64);
+                    const nameEncoded: List<Int64> = Hpack::encodeInt(nameIdx, 6, 64);
                     var j: Int64 = 0;
                     while j < nameEncoded.len()
                     {
@@ -398,7 +398,7 @@ namespace tinox.core.hpack
                     }
                     if (nameIdx == 0)
                     {
-                        let nameBytes: List<Int64> = Hpack::encodeStr(h.name);
+                        const nameBytes: List<Int64> = Hpack::encodeStr(h.name);
                         j = 0;
                         while j < nameBytes.len()
                         {
@@ -406,7 +406,7 @@ namespace tinox.core.hpack
                             j = j + 1;
                         }
                     }
-                    let valBytes: List<Int64> = Hpack::encodeStr(h.value);
+                    const valBytes: List<Int64> = Hpack::encodeStr(h.value);
                     j = 0;
                     while j < valBytes.len()
                     {

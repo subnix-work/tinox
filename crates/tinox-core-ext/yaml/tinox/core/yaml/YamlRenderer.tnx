@@ -9,7 +9,7 @@ namespace tinox.core.yaml
             if (value.isMap())
             {
                 var result: String = "";
-                let keys: List<String> = value.mapValue.keys();
+                const keys: List<String> = value.mapValue.keys();
                 var i: Int64 = 0;
                 while i < keys.len()
                 {

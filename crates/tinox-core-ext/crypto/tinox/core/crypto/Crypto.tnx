@@ -23,7 +23,7 @@ namespace tinox.core.crypto
          */
         fn secureRandomBytes(n: Int64) -> List<Int64>
         {
-            let result = secureRandomBytesRaw(n);
+            const result = secureRandomBytesRaw(n);
             if (result.len() != n)
             {
                 throw "Crypto::secureRandomBytes failed (runtime built without TLS/OpenSSL, or RAND_bytes failed)";
@@ -61,7 +61,7 @@ namespace tinox.core.crypto
         // OpenSSL) instead of a silent empty/wrong result.
         fn aesEncrypt(data: String, key: String) -> String
         {
-            let result: String = aesEncryptRaw(data, key);
+            const result: String = aesEncryptRaw(data, key);
             if (result.len() == 0)
             {
                 throw "Crypto::aesEncrypt failed (runtime built without TLS/OpenSSL?)";
@@ -79,7 +79,7 @@ namespace tinox.core.crypto
         // indistinguishable from "" as an error sentinel.
         fn aesDecrypt(data: String, key: String) -> String
         {
-            let result: String = aesDecryptRaw(data, key);
+            const result: String = aesDecryptRaw(data, key);
             if (result.len() == 0)
             {
                 throw "Crypto::aesDecrypt failed (wrong key, tampered data, or runtime built without TLS/OpenSSL)";

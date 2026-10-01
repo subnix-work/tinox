@@ -268,7 +268,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
             StmtKind::Let { name, ty, value } => {
                 let ty_str = ty.as_ref().map(|t| format!(": {}", self.fmt_type(t))).unwrap_or_default();
                 let val_str = value.as_ref().map(|v| format!(" = {}", self.fmt_expr(&v.node))).unwrap_or_default();
-                format!("let {}{}{};", name, ty_str, val_str)
+                format!("const {}{}{};", name, ty_str, val_str)
             }
             StmtKind::Var { name, ty, value, .. } => {
                 let ty_str = ty.as_ref().map(|t| format!(": {}", self.fmt_type(t))).unwrap_or_default();
@@ -757,14 +757,15 @@ mod tests {
 
     #[test]
     fn test_fmt_let_with_type() {
-        let out = fmt("fn f() { let x: Int32 = 5; }");
-        assert!(out.contains("let x: Int32 = 5;"));
+        let out = fmt("fn f() { const x: Int32 = 5; }");
+        assert!(out.contains("const x: Int32 = 5;"));
     }
 
     #[test]
     fn test_fmt_let_inferred() {
         let out = fmt("fn f() { let x = 42; }");
-        assert!(out.contains("let x = 42;"));
+        // legacy `let` is normalized to `const`
+        assert!(out.contains("const x = 42;"));
     }
 
     #[test]

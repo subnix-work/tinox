@@ -28,7 +28,7 @@ class DiffCounterApp
         this.clicks = 0;
         this.idCounter = 0;
         this.root = this.build();
-        let idc: List<Int64> = [this.idCounter];
+        const idc: List<Int64> = [this.idCounter];
         TinoxUIRuntime::assignIdsOnly(this.root, idc);
         this.idCounter = idc[0];
         this.handlers = Map::new();
@@ -40,9 +40,9 @@ class DiffCounterApp
     fn onMessage(conn: Int64, msg: String) -> Nothing
     {
         TinoxUIRuntime::dispatchEvent(this.handlers, msg);
-        let newRoot: Component = this.build();
+        const newRoot: Component = this.build();
         var ops: List<TinoxUIPatchOp> = [];
-        let idc: List<Int64> = [this.idCounter];
+        const idc: List<Int64> = [this.idCounter];
         TinoxUIRuntime::diff(this.root, newRoot, idc, ops);
         this.idCounter = idc[0];
         this.root = newRoot;
@@ -61,7 +61,7 @@ class DiffCounterApp
 
     fn build() -> Component
     {
-        let app: DiffCounterApp = this;
+        const app: DiffCounterApp = this;
         return Component::vbox([
             Component::label("Tinox-UI Diff Counter"),
             Component::label("Clicks: " + this.clicks.toString()),
