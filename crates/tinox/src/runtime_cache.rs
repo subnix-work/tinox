@@ -17,16 +17,41 @@ fn trace(message: &str) {
         eprintln!("[runtime-cache] {message}");
     }
 }
-fn executable(name: &str) -> Option<PathBuf> {
+pub(crate) fn executable(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     if path.components().count() > 1 {
-        return path.canonicalize().ok();
+        return can_execute(path)
+            .then(|| path.canonicalize().ok())
+            .flatten();
     }
     env::split_paths(&env::var_os("PATH")?).find_map(|dir| {
         let p = dir.join(name);
-        p.is_file().then(|| p.canonicalize().ok()).flatten()
+        can_execute(&p).then(|| p.canonicalize().ok()).flatten()
     })
 }
+#[cfg(unix)]
+pub(crate) fn can_execute(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path_c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: path_c is a valid, NUL-terminated path for the duration of
+    // faccessat. AT_EACCESS checks the effective credentials used by exec.
+    path.is_file()
+        && unsafe {
+            libc::faccessat(
+                libc::AT_FDCWD,
+                path_c.as_ptr(),
+                libc::X_OK,
+                libc::AT_EACCESS,
+            ) == 0
+        }
+}
+#[cfg(not(unix))]
+pub(crate) fn can_execute(path: &Path) -> bool {
+    path.is_file()
+}
+
 fn command_output(compiler: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let out = Command::new(compiler)
         .args(args)
@@ -176,6 +201,10 @@ impl RuntimeBuildConfig {
             key: format!("{:x}", hash.finalize()),
         }))
     }
+}
+
+pub(crate) fn fingerprint(source: &str, flags: &[&str]) -> Result<Option<String>, String> {
+    RuntimeBuildConfig::capture(source, flags).map(|config| config.map(|config| config.key))
 }
 
 struct TempDir(PathBuf);

@@ -11,6 +11,7 @@ use tinox_parser::{DeclKind, Formatter, Parser};
 mod callgraph;
 mod pm;
 mod runtime_cache;
+mod build_cache;
 
 fn main() {
     // Run the compiler on a thread with a large stack. The parser, type checker
@@ -71,6 +72,8 @@ fn print_help() {
     println!();
     println!("Usage:");
     println!("  tinox new <name>           Create a new Tinox project");
+    println!("  tinox build --force        Rebuild even when the executable is up to date");
+    println!("  tinox run --force          Rebuild before running");
     println!("  tinox build [file]         Compile to an executable (uses tinox.toml if no file)");
     println!("  tinox docker               Build a minimal Docker image (needs [docker] in tinox.toml)");
     println!("  tinox docker --tag n:t     Build the image under an explicit name:tag");
@@ -162,7 +165,7 @@ fn new_project(args: &[String]) {
     if !create(&src_dir) || !create(&tests_dir) { return; }
 
     let (toml, main_tnx, test_class, test_tnx) = new_project_files(&name);
-    let gitignore = ".tinox/\n";
+    let gitignore = ".tinox/\n*.tinox-build/\n";
 
     if !write_file(&root.join("tinox.toml"), &toml) { return; }
     if !write_file(&root.join(".gitignore"), gitignore) { return; }
@@ -194,7 +197,7 @@ fn fmt(args: &[String]) {
         }
     };
 
-    let source = match fs::read_to_string(input_file) {
+    let source = match build_cache::read_to_string(input_file) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: cannot read '{}': {}", input_file, e);
@@ -297,7 +300,7 @@ fn resolve_entry_file(args: &[String]) -> Option<String> {
     loop {
         let toml = dir.join("tinox.toml");
         if toml.exists() {
-            let content = fs::read_to_string(&toml).ok()?;
+            let content = build_cache::read_to_string(&toml).ok()?;
             let candidates = entry_candidates(&content);
             for entry in &candidates {
                 let candidate = dir.join(entry);
@@ -346,7 +349,14 @@ fn build(args: &[String]) {
 
     let input_file = match resolve_entry_file(args) {
         Some(f) => f,
-        None => return,
+        None => {
+            if let Some(output) = parse_output_flag(args).or_else(read_project_name) {
+                // Entry discovery fails before compile_file acquires its guard.
+                // Invalidate a known output under the same per-output lock.
+                if let Err(e) = build_cache::Build::begin(&output) { eprintln!("error invalidating build: {e}"); }
+            }
+            std::process::exit(1);
+        },
     };
     let output_name = parse_output_flag(args).unwrap_or_else(|| {
         read_project_name().unwrap_or_else(|| {
@@ -373,7 +383,7 @@ fn read_metrics_config() -> Option<String> {
     loop {
         let toml_path = dir.join("tinox.toml");
         if toml_path.exists() {
-            let content = fs::read_to_string(&toml_path).ok()?;
+            let content = build_cache::read_to_string(&toml_path).ok()?;
             let mut in_metrics = false;
             let mut enabled = false;
             let mut path = "/metrics".to_string();
@@ -419,7 +429,7 @@ fn read_startup_banner_config() -> bool {
     loop {
         let toml_path = dir.join("tinox.toml");
         if toml_path.exists() {
-            let content = match fs::read_to_string(&toml_path) {
+            let content = match build_cache::read_to_string(&toml_path) {
                 Ok(c) => c,
                 Err(_) => return true,
             };
@@ -456,7 +466,7 @@ fn read_database_config() -> Option<DbConfig> {
     loop {
         let toml_path = dir.join("tinox.toml");
         if toml_path.exists() {
-            let content = fs::read_to_string(&toml_path).ok()?;
+            let content = build_cache::read_to_string(&toml_path).ok()?;
             let mut in_db = false;
             let mut driver = String::new();
             let mut url = String::new();
@@ -509,7 +519,7 @@ fn read_project_name() -> Option<String> {
     loop {
         let toml_path = dir.join("tinox.toml");
         if toml_path.exists() {
-            let content = fs::read_to_string(&toml_path).ok()?;
+            let content = build_cache::read_to_string(&toml_path).ok()?;
             for line in content.lines() {
                 let line = line.trim();
                 if let Some(rest) = line.strip_prefix("name") {
@@ -537,7 +547,7 @@ fn read_project_version() -> Option<String> {
     loop {
         let toml_path = dir.join("tinox.toml");
         if toml_path.exists() {
-            let content = fs::read_to_string(&toml_path).ok()?;
+            let content = build_cache::read_to_string(&toml_path).ok()?;
             for line in content.lines() {
                 let line = line.trim();
                 if let Some(rest) = line.strip_prefix("version") {
@@ -590,7 +600,7 @@ fn read_docker_config() -> Option<DockerConfig> {
     loop {
         let toml_path = dir.join("tinox.toml");
         if toml_path.exists() {
-            let content = fs::read_to_string(&toml_path).ok()?;
+            let content = build_cache::read_to_string(&toml_path).ok()?;
             let mut in_docker = false;
             let mut found = false;
             let mut cfg = DockerConfig::default();
@@ -652,7 +662,7 @@ fn read_dev_config() -> Option<DevConfig> {
     loop {
         let toml_path = dir.join("tinox.toml");
         if toml_path.exists() {
-            let content = fs::read_to_string(&toml_path).ok()?;
+            let content = build_cache::read_to_string(&toml_path).ok()?;
             let mut in_dev = false;
             let mut found = false;
             let mut cfg = DevConfig::default();
@@ -1303,21 +1313,19 @@ fn find_runtime_object() -> Option<String> {
 fn run_file(args: &[String]) {
     let input_file = match resolve_entry_file(args) {
         Some(f) => f,
-        None => return,
+        None => std::process::exit(1),
     };
-    let exe_name = format!(".tinox_tmp_{}", std::process::id());
-
     let opt = if args.iter().any(|a| a == "--debug") { OptLevel::Debug } else { OptLevel::Release };
     apply_checked_flag(args);
-    match compile_file(&input_file, &exe_name, opt) {
-        Ok(_) => {
-            let status = Command::new(format!("./{}", exe_name))
-                .status()
-                .expect("Failed to run executable");
-
-            let _ = fs::remove_file(&exe_name);
-            let _ = fs::remove_file(format!("{}.ll", exe_name));
-
+    let output = match build_cache::run_output(&input_file, &format!("{opt:?}")) {
+        Ok(path) => path,
+        Err(e) => { eprintln!("Compilation failed: {}", e); std::process::exit(1); }
+    };
+    match compile_file(&input_file, &output.to_string_lossy(), opt) {
+        Ok(executable) => {
+            // Immutable artifacts preserve each run's binary across concurrent
+            // rebuilds of the requested output path.
+            let status = Command::new(executable).status().expect("Failed to run executable");
             std::process::exit(status.code().unwrap_or(1));
         }
         Err(e) => {
@@ -1544,7 +1552,7 @@ fn check(args: &[String]) {
         Some(f) => f,
         None => std::process::exit(1),
     };
-    let source = match fs::read_to_string(&input_file) {
+    let source = match build_cache::read_to_string(&input_file) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: cannot read '{}': {}", input_file, e);
@@ -1902,7 +1910,7 @@ fn gen_docs(args: &[String]) {
     let mut doc_items: Vec<DocItem> = Vec::new();
 
     for path in &source_files {
-        let src = match fs::read_to_string(path) { Ok(s) => s, Err(_) => continue };
+        let src = match build_cache::read_to_string(path) { Ok(s) => s, Err(_) => continue };
         let mut lexer = Lexer::new(&src);
         let tokens = match lexer.tokenize() { Ok(t) => t, Err(_) => continue };
         let mut parser = tinox_parser::Parser::new(tokens);
@@ -1940,7 +1948,7 @@ fn gen_docs(args: &[String]) {
             files.sort();
             files.into_iter()
                 .filter_map(|p| {
-                    let src = fs::read_to_string(&p).ok()?;
+                    let src = build_cache::read_to_string(&p).ok()?;
                     let stem = p.file_stem()?.to_string_lossy().into_owned();
                     Some((humanize_example_name(&stem), src))
                 })
@@ -1993,7 +2001,7 @@ fn gen_call_graph(args: &[String]) {
         None => std::process::exit(1),
     };
 
-    let source = match fs::read_to_string(&input_file) {
+    let source = match build_cache::read_to_string(&input_file) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: cannot read {}: {}", input_file, e);
@@ -2592,7 +2600,7 @@ fn highlight_tinox_source(src: &str) -> String {
 
 /// Parse a file and return all @Test entries without compiling.
 fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInfo>, String> {
-    let source = fs::read_to_string(path)
+    let source = build_cache::read_to_string(path)
         .map_err(|e| format!("cannot read: {e}"))?;
     let mut lexer = Lexer::new(&source);
     let tokens = lexer.tokenize().map_err(|e| format!("lex error: {e:?}"))?;
@@ -2616,7 +2624,7 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
 /// Compile `source` with a synthetic main that runs one test method and exits 0/1.
 /// Compile a test-mode executable: the test method returns Bool; main exits 0 on true.
 fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str) -> Result<(), String> {
-    let src = fs::read_to_string(source)
+    let src = build_cache::read_to_string(source)
         .map_err(|e| format!("cannot read: {e}"))?;
 
     let mut lexer = Lexer::new(&src);
@@ -2998,7 +3006,7 @@ fn find_namespace_siblings(dir: &Path, ns_path: &[String]) -> Vec<PathBuf> {
         if !p.extension().map(|e| e == "tnx").unwrap_or(false) {
             continue;
         }
-        let Ok(source) = fs::read_to_string(&p) else { continue };
+        let Ok(source) = build_cache::read_to_string(&p) else { continue };
         let Ok(tokens) = Lexer::new(&source).tokenize() else { continue };
         let Ok(parsed) = Parser::new(tokens).parse() else { continue };
         if own_namespace_paths(&parsed.decls).iter().any(|s| s.as_slice() == ns_path) {
@@ -3660,7 +3668,7 @@ fn resolve_and_merge_file(
     }
     visited.insert(full_path.to_path_buf());
 
-    let source = fs::read_to_string(full_path)
+    let source = build_cache::read_to_string(full_path)
         .map_err(|e| format!("Failed to read '{}': {}", full_path.display(), e))?;
     let tokens = Lexer::new(&source)
         .tokenize()
@@ -3687,7 +3695,7 @@ fn parse_into_cache(
     if cache.contains_key(path) {
         return Ok(());
     }
-    let source = fs::read_to_string(path)
+    let source = build_cache::read_to_string(path)
         .map_err(|e| format!("Failed to read '{}': {}", path.display(), e))?;
     let tokens = Lexer::new(&source)
         .tokenize()
@@ -3968,9 +3976,11 @@ fn is_unresolved_name_error(message: &str) -> bool {
     message.starts_with("undefined ") || message.starts_with("unresolved ")
 }
 
-fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<(), String> {
+fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<PathBuf, String> {
+    let mut build = build_cache::Build::begin(output_name)?;
+    let input_guard = build_cache::InputGuard::begin();
     let source =
-        fs::read_to_string(input_path).map_err(|e| format!("Failed to read file: {}", e))?;
+        build_cache::read_to_string(input_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
     let mut lexer = Lexer::new(&source);
     let tokens = lexer
@@ -4419,10 +4429,28 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<()
         .map_err(|e| format!("Codegen error: {:?}", e))?;
 
     let ir = codegen.into_ir();
-    let ir_path = format!("{}.ll", output_name);
-    fs::write(&ir_path, ir).map_err(|e| format!("Failed to write IR: {}", e))?;
-
-    compile_ll_to_exe(&ir_path, output_name, opt)
+    let options = runtime_options()?;
+    let inputs = input_guard.snapshot();
+    let flags: Vec<_> = options.flags.iter().map(String::as_str).collect();
+    let link_flags: Vec<_> = options.link_flags.iter().map(String::as_str).collect();
+    let mode = format!("{opt:?}");
+    let fingerprint = || build_cache::fingerprint(ir.as_bytes(), &mode, &options.source, &flags, &link_flags, &inputs);
+    let enabled = env::var_os("TINOX_BUILD_CACHE").is_none_or(|v| v != "0")
+        && env::var_os("TINOX_RUNTIME_CACHE").is_none_or(|v| v != "0");
+    let key = if enabled { fingerprint() } else { None };
+    let force = env::args().any(|arg| arg == "--force");
+    if let Some(executable) = build.reuse(key.as_deref(), force) { return Ok(executable); }
+    build_cache::trace("miss: compiling application backend");
+    let ir_path = build.ir_path();
+    fs::write(&ir_path, &ir).map_err(|e| format!("Failed to write IR: {}", e))?;
+    let output = build.staged_output();
+    let mut linked = None;
+    compile_ll_to_exe_configured(&ir_path.to_string_lossy(), &output.to_string_lossy(), opt,
+        &options, key.as_ref().map(|_| &mut linked))?;
+    // Compiler/header/config changes during compilation cannot create a marker
+    // for an output compiled from a different native configuration.
+    let key = key.filter(|key| fingerprint().as_ref() == Some(key));
+    build.publish(key.as_deref(), &inputs, linked)
 }
 
 /// IR verifier gate: run the LLVM verifier on the generated .ll so invalid IR
@@ -4450,70 +4478,17 @@ fn verify_ir(ir_path: &str) -> Result<(), String> {
     }
 }
 
-fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<(), String> {
-    let obj_path = format!("{}.o", output_name);
+struct RuntimeOptions {
+    source: String,
+    flags: Vec<String>,
+    link_flags: Vec<String>,
+}
 
-    verify_ir(ir_path)?;
-
-    let (llc_opt_flag, opt_flag) = match opt {
-        OptLevel::Release => ("-O3", "-O3"),
-        OptLevel::Debug   => ("-O0", "-O0"),
-    };
-
-    // In Release mode, try opt for mid-level optimizations before llc.
-    // In Debug mode skip opt entirely for faster compile times.
-    let opt_available = opt == OptLevel::Release && Command::new("opt")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    let llc_input: String;
-    let bc_path_opt: Option<String>;
-
-    if opt_available {
-        let bc_path = format!("{}.opt.bc", output_name);
-        let opt_status = Command::new("opt")
-            .args([opt_flag, "-o", &bc_path, ir_path])
-            .status()
-            .map_err(|e| format!("opt failed: {}", e))?;
-        if !opt_status.success() {
-            return Err("opt failed".to_string());
-        }
-        llc_input = bc_path.clone();
-        bc_path_opt = Some(bc_path);
-    } else {
-        llc_input = ir_path.to_string();
-        bc_path_opt = None;
-    }
-
-    let llc_status = Command::new("llc")
-        .args([
-            llc_opt_flag,
-            "-march=x86-64",
-            "-filetype=obj",
-            "-o",
-            &obj_path,
-            &llc_input,
-        ])
-        .status()
-        .map_err(|e| format!("llc failed: {}", e))?;
-
-    if !llc_status.success() {
-        return Err("llc failed".to_string());
-    }
-
-    if let Some(bc_path) = bc_path_opt {
-        let _ = fs::remove_file(&bc_path);
-    }
-
+fn runtime_options() -> Result<RuntimeOptions, String> {
     let runtime_src = runtime_c_path().ok_or_else(|| {
         "Cannot find runtime.c (checked the dev checkout path and /usr/share/tinox/runtime.c)".to_string()
     })?;
     let runtime_src = runtime_src.to_string_lossy().into_owned();
-    let runtime_obj = format!("{}_runtime.o", output_name);
 
     let db_cfg = read_database_config();
     let db_driver = db_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
@@ -4583,27 +4558,7 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
         runtime_flags.push("-DTINOX_HTTP3");
     }
     runtime_flags.extend(extra_cflags.iter().map(|s| s.as_str()));
-    let runtime_link_path = match runtime_cache::runtime_object(&runtime_src, &runtime_flags)? {
-        Some(path) => path.to_string_lossy().into_owned(),
-        None => {
-            let status = Command::new("cc")
-                .args(&runtime_flags)
-                .args(["-c", &runtime_src, "-o", &runtime_obj])
-                .status()
-                .map_err(|e| format!("Failed to compile runtime: {}", e))?;
-            if !status.success() {
-                return Err("Runtime compilation failed".to_string());
-            }
-            runtime_obj.clone()
-        }
-    };
-
-    // -lz: WebSocket permessage-deflate (issue #122, RFC 7692) raw-deflate
-    // wrappers in runtime.c. Unlike -lssl/-lcrypto (opt-out via TINOX_TLS,
-    // since OpenSSL isn't always available in minimal build environments),
-    // zlib is assumed always present — same tier as -lm/-lpthread/-lgc, no
-    // opt-out needed.
-    let mut link_args = vec![obj_path.as_str(), runtime_link_path.as_str(), "-o", output_name, "-lm", "-lpthread", "-lgc", "-lz", "-no-pie"];
+    let mut link_args = vec!["-lm", "-lpthread", "-lgc", "-lz", "-no-pie"];
     if db_driver == "postgres" {
         link_args.push("-lpq");
     } else if db_driver == "mysql" {
@@ -4621,13 +4576,125 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
         link_args.push("-lnghttp3");
     }
     link_args.extend(extra_cflags.iter().map(|s| s.as_str()));
-    let link_status = Command::new("cc")
-        .args(&link_args)
-        .status()
-        .map_err(|e| format!("Failed to link: {}", e))?;
+    Ok(RuntimeOptions {
+        source: runtime_src,
+        flags: runtime_flags.into_iter().map(String::from).collect(),
+        link_flags: link_args.into_iter().map(String::from).collect(),
+    })
+}
 
-    if !link_status.success() {
-        return Err("Linking failed".to_string());
+fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<(), String> {
+    compile_ll_to_exe_configured(ir_path, output_name, opt, &runtime_options()?, None)
+}
+
+fn compile_ll_to_exe_configured(ir_path: &str, output_name: &str, opt: OptLevel,
+    options: &RuntimeOptions, trace: Option<&mut Option<Vec<PathBuf>>>) -> Result<(), String> {
+    let obj_path = format!("{}.o", output_name);
+
+    verify_ir(ir_path)?;
+
+    let (llc_opt_flag, opt_flag) = match opt {
+        OptLevel::Release => ("-O3", "-O3"),
+        OptLevel::Debug   => ("-O0", "-O0"),
+    };
+
+    // In Release mode, try opt for mid-level optimizations before llc.
+    // In Debug mode skip opt entirely for faster compile times.
+    let opt_available = opt == OptLevel::Release && Command::new("opt")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let llc_input: String;
+    let bc_path_opt: Option<String>;
+
+    if opt_available {
+        let bc_path = format!("{}.opt.bc", output_name);
+        let opt_status = Command::new("opt")
+            .args([opt_flag, "-o", &bc_path, ir_path])
+            .status()
+            .map_err(|e| format!("opt failed: {}", e))?;
+        if !opt_status.success() {
+            return Err("opt failed".to_string());
+        }
+        llc_input = bc_path.clone();
+        bc_path_opt = Some(bc_path);
+    } else {
+        llc_input = ir_path.to_string();
+        bc_path_opt = None;
+    }
+
+    let llc_status = Command::new("llc")
+        .args([
+            llc_opt_flag,
+            "-march=x86-64",
+            "-filetype=obj",
+            "-o",
+            &obj_path,
+            &llc_input,
+        ])
+        .status()
+        .map_err(|e| format!("llc failed: {}", e))?;
+
+    if !llc_status.success() {
+        return Err("llc failed".to_string());
+    }
+
+    if let Some(bc_path) = bc_path_opt {
+        let _ = fs::remove_file(&bc_path);
+    }
+
+    let runtime_src = &options.source;
+    let runtime_flags: Vec<&str> = options.flags.iter().map(String::as_str).collect();
+    let runtime_obj = format!("{}_runtime.o", output_name);
+    let runtime_link_path = match runtime_cache::runtime_object(runtime_src, &runtime_flags)? {
+        Some(path) => path.to_string_lossy().into_owned(),
+        None => {
+            let status = Command::new("cc")
+                .args(&runtime_flags)
+                .args(["-c", runtime_src, "-o", &runtime_obj])
+                .status()
+                .map_err(|e| format!("Failed to compile runtime: {}", e))?;
+            if !status.success() {
+                return Err("Runtime compilation failed".to_string());
+            }
+            runtime_obj.clone()
+        }
+    };
+
+    // -lz: WebSocket permessage-deflate (issue #122, RFC 7692) raw-deflate
+    // wrappers in runtime.c. Unlike -lssl/-lcrypto (opt-out via TINOX_TLS,
+    // since OpenSSL isn't always available in minimal build environments),
+    // zlib is assumed always present — same tier as -lm/-lpthread/-lgc, no
+    // opt-out needed.
+    let mut link_args = vec![obj_path.as_str(), runtime_link_path.as_str(), "-o", output_name];
+    link_args.extend(options.link_flags.iter().map(String::as_str));
+    if let Some(trace) = trace {
+        let output = Command::new("cc").args(&link_args).arg("-Wl,--trace").output()
+            .map_err(|e| format!("Failed to link: {}", e))?;
+        if !output.stderr.is_empty() { eprint!("{}", String::from_utf8_lossy(&output.stderr)); }
+        if !output.status.success() { return Err("Linking failed".into()); }
+        let excluded: HashSet<PathBuf> = [&obj_path, &runtime_link_path].iter()
+            .filter_map(|path| Path::new(path).canonicalize().ok()).collect();
+        let mut paths = std::collections::BTreeSet::new();
+        let mut complete = true;
+        for line in String::from_utf8_lossy(&output.stdout).lines().filter(|s| !s.trim().is_empty()) {
+            let path = Path::new(line.trim());
+            match path.canonicalize() {
+                Ok(resolved) if resolved.is_file() => {
+                    if !excluded.contains(&resolved) { paths.insert(path.to_path_buf()); }
+                }
+                _ => { complete = false; eprintln!("{}", line); }
+            }
+        }
+        *trace = (complete && !paths.is_empty()).then(|| paths.into_iter().collect());
+    } else {
+        let status = Command::new("cc").args(&link_args).status()
+            .map_err(|e| format!("Failed to link: {}", e))?;
+        if !status.success() { return Err("Linking failed".into()); }
     }
 
     let _ = fs::remove_file(&obj_path);
