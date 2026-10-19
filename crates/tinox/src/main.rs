@@ -10,6 +10,7 @@ use tinox_parser::{DeclKind, Formatter, Parser};
 
 mod callgraph;
 mod pm;
+mod runtime_cache;
 
 fn main() {
     // Run the compiler on a thread with a large stack. The parser, type checker
@@ -4563,40 +4564,46 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
     } else {
         None
     };
-    let mut cc_args = vec!["-c", &runtime_src, "-o", &runtime_obj, "-O3"];
+    let mut runtime_flags = vec!["-O3"];
     let pg_include_flag = pg_include_dir.as_ref().map(|d| format!("-I{d}"));
     if db_driver == "postgres" {
-        cc_args.push("-DTINOX_DB_POSTGRES");
+        runtime_flags.push("-DTINOX_DB_POSTGRES");
         if let Some(flag) = &pg_include_flag {
-            cc_args.push(flag);
+            runtime_flags.push(flag);
         }
     } else if db_driver == "mysql" {
-        cc_args.push("-DTINOX_DB_MYSQL");
+        runtime_flags.push("-DTINOX_DB_MYSQL");
     } else if db_driver == "sqlite" {
-        cc_args.push("-DTINOX_DB_SQLITE");
+        runtime_flags.push("-DTINOX_DB_SQLITE");
     }
     if tls_enabled {
-        cc_args.push("-DTINOX_TLS");
+        runtime_flags.push("-DTINOX_TLS");
     }
     if http3_enabled {
-        cc_args.push("-DTINOX_HTTP3");
+        runtime_flags.push("-DTINOX_HTTP3");
     }
-    cc_args.extend(extra_cflags.iter().map(|s| s.as_str()));
-    let cc_status = Command::new("cc")
-        .args(&cc_args)
-        .status()
-        .map_err(|e| format!("Failed to compile runtime: {}", e))?;
-
-    if !cc_status.success() {
-        return Err("Runtime compilation failed".to_string());
-    }
+    runtime_flags.extend(extra_cflags.iter().map(|s| s.as_str()));
+    let runtime_link_path = match runtime_cache::runtime_object(&runtime_src, &runtime_flags)? {
+        Some(path) => path.to_string_lossy().into_owned(),
+        None => {
+            let status = Command::new("cc")
+                .args(&runtime_flags)
+                .args(["-c", &runtime_src, "-o", &runtime_obj])
+                .status()
+                .map_err(|e| format!("Failed to compile runtime: {}", e))?;
+            if !status.success() {
+                return Err("Runtime compilation failed".to_string());
+            }
+            runtime_obj.clone()
+        }
+    };
 
     // -lz: WebSocket permessage-deflate (issue #122, RFC 7692) raw-deflate
     // wrappers in runtime.c. Unlike -lssl/-lcrypto (opt-out via TINOX_TLS,
     // since OpenSSL isn't always available in minimal build environments),
     // zlib is assumed always present — same tier as -lm/-lpthread/-lgc, no
     // opt-out needed.
-    let mut link_args = vec![obj_path.as_str(), runtime_obj.as_str(), "-o", output_name, "-lm", "-lpthread", "-lgc", "-lz", "-no-pie"];
+    let mut link_args = vec![obj_path.as_str(), runtime_link_path.as_str(), "-o", output_name, "-lm", "-lpthread", "-lgc", "-lz", "-no-pie"];
     if db_driver == "postgres" {
         link_args.push("-lpq");
     } else if db_driver == "mysql" {
