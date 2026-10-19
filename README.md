@@ -41,8 +41,8 @@ interested in what porting this would take.
 
 ```bash
 tinox new <name>                             # Scaffold a new project (writes tinox.toml)
-tinox build [file]                           # Compile to an executable (uses tinox.toml if no file)
-tinox run   [file]                           # Compile and run (uses tinox.toml if no file)
+tinox build [file] [--force]                 # Compile to an executable (uses tinox.toml if no file)
+tinox run   [file] [--force]                 # Compile and run (uses tinox.toml if no file)
 tinox dev   [file]                           # Dev mode: hot-reload on file changes
 tinox test  [file]                           # Run all @Test-annotated methods
 tinox test --watch                           # Re-run tests on file changes (TDD mode)
@@ -86,6 +86,52 @@ Tests are discovered recursively under `tests/` and `src/` of the nearest
 `node_modules`, and symlinks are skipped. Discovery/collection errors, failing
 tests, and suites without any `@Test` methods exit unsuccessfully. Watch mode
 keeps running after failures and discovers newly added nested files.
+
+### Application build reuse
+
+`tinox build` and `tinox run` reuse an unchanged executable after validating a
+versioned build fingerprint and the executable's content and execute permission.
+`--force` rebuilds explicitly; `TINOX_BUILD_CACHE=0` disables application reuse.
+`TINOX_CACHE_TRACE=1` reports hits, invalidation and conservative bypasses.
+Disabling the runtime cache also disables application reuse.
+
+The fingerprint covers source/import and manifest bytes actually read by the
+frontend (including installed dependency sources), generated IR, compiler/tool
+contents, target/optimization configuration, the preprocessed runtime/headers,
+C/link flags, environment, native tools' shared libraries and effective
+compiler/linker configuration. Actual
+link inputs and loaded shared libraries are checked by content and selection.
+Unsupported native flags or an incomplete native dependency inventory bypass
+reuse. This currently targets the existing Linux native toolchain.
+
+Native tool digests are memoized under the runtime cache only for files with
+precise change times older than the hash operation's safety window. Inode,
+size, mode, modification time and change time guard reuse, so restoring mtime
+after an update cannot preserve a stale tool digest. Recent/coarse-time files
+are hashed directly, and memo records are checksummed.
+
+Imports, parsing, typechecking and IR generation still run on each invocation;
+only a proven hit skips LLVM verification/optimization, object generation and
+linking. Incremental frontend work is tracked separately in #296. Diagnostics
+remain fresh, and an unsuccessful frontend or backend clears the success marker.
+
+Build metadata and immutable executable artifacts live beside the output in
+`.<output-name>.tinox-build/`. Ignore `*.tinox-build/` in existing projects (new
+projects include this rule). Remove that directory to clear its cache when no
+builds or runs use it. Interrupted staging directories can be removed the same
+way. Different outputs have separate locks; publication uses private staging
+files and atomic renames. Immutable artifacts keep concurrent runs isolated
+from later rebuilds. Old artifacts remain until the directory is cleared.
+
+`tinox run` stores its output under the project's ignored `.tinox/run/`, or the
+user's Tinox cache for standalone files, and preserves the program's exit status
+and working directory.
+
+Measure the no-op path against a warm-runtime build with
+`python3 scripts/benchmark-build-cache.py --compiler target/release/tinox`.
+`--debug` selects debug application builds; `--methods 500` adds a synthetic
+backend workload. The script verifies each program's output and records raw
+samples, host/compiler identity and whether a warm application hit occurred.
 
 ### Runtime object cache
 

@@ -143,7 +143,7 @@ pub fn read_lock(root: &Path) -> Result<TinoxLock, String> {
     if !lock_path.exists() {
         return Ok(TinoxLock::default());
     }
-    let content = fs::read_to_string(&lock_path)
+    let content = crate::build_cache::read_to_string(&lock_path)
         .map_err(|e| format!("Cannot read tinox.lock: {}", e))?;
     serde_yaml::from_str(&content).map_err(|e| format!("Invalid tinox.lock: {}", e))
 }
@@ -325,7 +325,7 @@ pub fn read_manifest(root: &Path) -> Result<TinoxManifest, String> {
     if !toml_path.exists() {
         return Ok(TinoxManifest::default());
     }
-    let content = fs::read_to_string(&toml_path)
+    let content = crate::build_cache::read_to_string(&toml_path)
         .map_err(|e| format!("Cannot read tinox.toml: {}", e))?;
     Ok(parse_manifest(&content))
 }
@@ -362,7 +362,7 @@ fn format_repository(repo: &Repository) -> String {
 pub fn write_manifest(root: &Path, manifest: &TinoxManifest) -> Result<(), String> {
     let toml_path = root.join("tinox.toml");
     let existing = if toml_path.exists() {
-        fs::read_to_string(&toml_path).map_err(|e| format!("Cannot read tinox.toml: {}", e))?
+        crate::build_cache::read_to_string(&toml_path).map_err(|e| format!("Cannot read tinox.toml: {}", e))?
     } else {
         String::new()
     };

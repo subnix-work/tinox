@@ -35,6 +35,7 @@ def main():
         root = Path(temporary)
         (root / "Main.tnx").write_text('class Main { fnc main() -> Int32 { println("42"); return 0; } }\n')
         env = os.environ.copy()
+        env["TINOX_BUILD_CACHE"] = "0"
         env["TINOX_RUNTIME_CACHE_DIR"] = str(root / "cache")
         env["TINOX_CACHE_TRACE"] = "1"
         for mode in ("disabled", "cold", "warm"):
