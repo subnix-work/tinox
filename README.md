@@ -110,10 +110,10 @@ size, mode, modification time and change time guard reuse, so restoring mtime
 after an update cannot preserve a stale tool digest. Recent/coarse-time files
 are hashed directly, and memo records are checksummed.
 
-Imports, parsing, typechecking and IR generation still run on each invocation;
-only a proven hit skips LLVM verification/optimization, object generation and
-linking. Incremental frontend work is tracked separately in #296. Diagnostics
-remain fresh, and an unsuccessful frontend or backend clears the success marker.
+Imports are resolved on every invocation; frontend queries reuse exact parsed
+sources and semantic results as described below. IR generation still runs;
+a proven application hit skips LLVM verification/optimization, object generation
+and linking. An unsuccessful frontend or backend clears the success marker.
 
 Build metadata and immutable executable artifacts live beside the output in
 `.<output-name>.tinox-build/`. Ignore `*.tinox-build/` in existing projects (new
@@ -132,6 +132,69 @@ Measure the no-op path against a warm-runtime build with
 `--debug` selects debug application builds; `--methods 500` adds a synthetic
 backend workload. The script verifies each program's output and records raw
 samples, host/compiler identity and whether a warm application hit occurred.
+
+### Incremental frontend queries
+
+`tinox build`, `run`, `dev` and `check` reuse immutable parsed sources, per-file
+visibility/typechecking results, and whole-program expression types. The LSP
+uses the same parse and per-file semantic query layer for buffer diagnostics
+and imported project sources. Resolution remains owned by each frontend;
+this does not change the LSP's existing import-resolution capabilities.
+
+- `TINOX_FRONTEND_CACHE=0` disables all frontend reuse, independently of the
+  application/runtime caches. Use this to compare a clean frontend run.
+- `TINOX_FRONTEND_CACHE_DIR=/path` selects storage (default:
+  `$XDG_CACHE_HOME/tinox/frontend-v1` or `~/.cache/tinox/frontend-v1`).
+- `TINOX_CACHE_TRACE=1` reports parse, visibility and program query hits/misses.
+- `TINOX_TIMINGS=1` reports parsing, import resolution, per-file visibility,
+  typechecking, annotation processing and build backend milliseconds, including
+  failed queries. Import/visibility/total scopes include nested stages; their
+  timings must not be added together.
+
+Parsed sources are keyed by content and a schema fingerprint covering frontend
+compiler sources, manifests, dependency lockfile, target and Rust toolchain.
+They contain no resolved imports, generated accessors or assigned node IDs.
+Each caller gets its own AST, stamps canonical file origins, checks file and
+namespace rules, resolves explicit/implied/sibling imports afresh, and assigns
+IDs after merging in the existing declaration order.
+
+Per-file semantic queries depend on the canonical file identity and the exact
+ordered ASTs of that file and its resolved prelude closure, including annotations
+and spans. Editing a leaf reuses unrelated parsing and per-file checking;
+changing a signature or annotation invalidates every dependent query. Dependency
+bodies also invalidate users conservatively: `this` usage currently affects
+method-call semantics, so a signature-only approximation would be unsafe.
+Whole-program typechecking reruns after graph changes; its cached expression
+table is reused only with the *exact same AST and node numbering*. This is
+incrementality at file/query boundaries, not incremental LLVM generation or
+method-level semantic recomputation.
+
+Directory membership, deletions, ambiguity, namespace checks and import cycles
+are never inferred from cached filesystem metadata. Diagnostics are stored as
+structured spans/messages and rendered by the caller. Entries are size-limited,
+checksummed against their query key and atomically published; missing, damaged
+or unwritable caches recompute normally. Independent writers can safely race.
+There is no automatic disk eviction yet: remove the selected frontend cache to
+reclaim space; abandoned `.tmp-*` files from killed writers can be removed too.
+
+Reproduce the synthetic scale measurements (clean/cold/warm/leaf edits) with
+`python3 scripts/benchmark-frontend.py --compiler target/release/tinox`.
+Wall-time samples, query counts and nested stage summaries live in
+`benchmarks/frontend_cache_results.json`.
+
+Measured medians on the recorded Linux machine (three runs, synthetic 100-statement
+leaf methods; milliseconds for `tinox check`):
+
+| Files | Cache disabled | Cold | Warm | One leaf edited |
+| --- | ---: | ---: | ---: | ---: |
+| 21 | 12.3 | 13.2 | 4.4 | 7.8 |
+| 101 | 54.6 | 60.1 | 19.7 | 37.2 |
+| 301 | 165.1 | 166.9 | 56.5 | 114.1 |
+
+The 301-file leaf edit reparses one source and reuses 299 independent semantic
+queries; the entry and edited leaf recheck. Whole-program checking remains a
+material part of edit latency. Cold caching can cost more than a disabled run;
+these synthetic timings do not predict full application or service latency.
 
 ### Runtime object cache
 

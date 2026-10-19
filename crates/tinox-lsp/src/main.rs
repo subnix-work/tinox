@@ -11,7 +11,6 @@ use dashmap::DashMap;
 use tinox_common::Error;
 use tinox_lexer::Lexer;
 use tinox_parser::{ast::SourceFile, Parser};
-use tinox_typecheck::{typecheck_with_prelude};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -298,8 +297,7 @@ fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path
             continue;
         }
         let Ok(src) = std::fs::read_to_string(&target) else { continue };
-        let Ok(tokens) = Lexer::new(&src).tokenize() else { continue };
-        let Ok(ast) = Parser::new(tokens).parse() else { continue };
+        let Ok(ast) = tinox_parser::parse_source_cached(&src) else { continue };
         for p in import_paths(&ast) {
             queue.push((p, target.clone()));
         }
@@ -342,11 +340,7 @@ fn load_stdlib(path: &Path) -> TypeRegistry {
 impl Backend {
     async fn update(&self, uri: Url, text: String) {
         // Quick pre-parse to extract import names for stdlib prelude resolution.
-        let parsed = if let Ok(tokens) = Lexer::new(&text).tokenize() {
-            Parser::new(tokens).parse().ok()
-        } else {
-            None
-        };
+        let parsed = tinox_parser::parse_source_cached(&text).ok();
         let import_names = parsed.as_ref().map(module_names_from_imports).unwrap_or_default();
         let mut preludes: Vec<&SourceFile> = import_names
             .iter()
@@ -391,17 +385,12 @@ fn err_to_diag(e: Error) -> Diagnostic {
 
 // Lex → parse → typecheck; calls on_ast if parsing succeeded; returns diagnostics.
 fn compile(src: &str, preludes: &[&SourceFile], on_ast: impl FnOnce(SourceFile)) -> Vec<Diagnostic> {
-    let tokens = match Lexer::new(src).tokenize() {
-        Ok(t) => t,
-        Err(errs) => return errs.into_iter().map(err_to_diag).collect(),
+    let ast = match tinox_parser::parse_source_cached(src) {
+        Ok(ast) => ast,
+        Err(error) => return error.into_errors().into_iter().map(err_to_diag).collect(),
     };
 
-    let ast = match Parser::new(tokens).parse() {
-        Ok(a) => a,
-        Err(bag) => return bag.errors.into_iter().map(err_to_diag).collect(),
-    };
-
-    let diags = match typecheck_with_prelude(&ast, preludes) {
+    let diags = match tinox_typecheck::cache::check_with_prelude_cached(&ast, preludes, "<lsp-buffer>") {
         Ok(_) => vec![],
         Err(bag) => bag.errors.into_iter().map(err_to_diag).collect(),
     };
@@ -710,7 +699,7 @@ mod tests {
         assert_eq!(preludes_owned.len(), 2, "expected PersonDao.tnx and Person.tnx to both resolve");
 
         let preludes: Vec<&SourceFile> = preludes_owned.iter().collect();
-        let result = typecheck_with_prelude(&ast, &preludes);
+        let result = tinox_typecheck::typecheck_with_prelude(&ast, &preludes);
         assert!(result.is_ok(), "expected clean typecheck, got: {:?}", result.err().map(|b| b.errors));
 
         std::fs::remove_dir_all(&root).ok();

@@ -1,12 +1,14 @@
+pub mod frontend;
+
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub start: Pos,
     pub end: Pos,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct Pos {
     pub offset: u32,
     pub line: u32,
@@ -61,7 +63,7 @@ impl fmt::Display for Span {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
@@ -85,7 +87,7 @@ impl<T> Spanned<T> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Error {
     pub span: Span,
     pub message: String,
@@ -115,7 +117,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ErrorBag {
     pub errors: Vec<Error>,
 }
