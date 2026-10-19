@@ -1562,29 +1562,14 @@ fn check(args: &[String]) {
 
     let lines: Vec<&str> = source.lines().collect();
 
-    // Lex
-    let mut lexer = Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(errors) => {
+    let mut ast = match tinox_parser::parse_source_cached(&source) {
+        Ok(ast) => ast,
+        Err(error) => {
+            let errors = error.into_errors();
             for e in &errors {
                 print_error(&input_file, &lines, e.span, &e.message);
             }
             eprintln!("\naborting: {} error{}", errors.len(), if errors.len() == 1 { "" } else { "s" });
-            std::process::exit(1);
-        }
-    };
-
-    // Parse
-    let mut parser = tinox_parser::Parser::new(tokens);
-    let mut ast = match parser.parse() {
-        Ok(a) => a,
-        Err(bag) => {
-            let count = bag.errors.len();
-            for e in &bag.errors {
-                print_error(&input_file, &lines, e.span, &e.message);
-            }
-            eprintln!("\naborting: {} error{}", count, if count == 1 { "" } else { "s" });
             std::process::exit(1);
         }
     };
@@ -1600,6 +1585,8 @@ fn check(args: &[String]) {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
+
+    stamp_file_identity(&mut ast.decls, Path::new(&input_file));
 
     // Resolve imports
     let base_dir = Path::new(&input_file)
@@ -1630,11 +1617,12 @@ fn check(args: &[String]) {
     tinox_parser::assign_node_ids(&mut ast);
 
     // Type-check
-    let mut typechecker = tinox_typecheck::TypeChecker::new();
-    match typechecker.check(&ast) {
+    match tinox_typecheck::cache::check_program_cached(&ast) {
         Ok(_) => {
             // Also run annotation processing for check mode
+            let annotation_stage = tinox_common::frontend::Stage::new("annotations");
             let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
+            drop(annotation_stage);
             for warning in &ann_result.deprecated_warnings {
                 eprintln!("warning: {}", warning);
             }
@@ -3566,6 +3554,7 @@ fn resolve_imports(
     dep_dirs: &[PathBuf],
     missing_deps: &[pm::MissingDep],
 ) -> Result<(), String> {
+    let _stage = tinox_common::frontend::Stage::new("imports");
     let imports: Vec<_> = ast
         .decls
         .iter()
@@ -3650,6 +3639,16 @@ fn resolve_imports(
     Ok(())
 }
 
+fn parse_frontend(source: &str, path: Option<&Path>) -> Result<tinox_parser::SourceFile, String> {
+    tinox_parser::parse_source_cached(source).map_err(|error| {
+        let location = path.map(|p| format!(" in '{}'", p.display())).unwrap_or_default();
+        match error {
+            tinox_parser::ParseFailure::Lex(errors) => format!("Lexer error{location}: {errors:?}"),
+            tinox_parser::ParseFailure::Parse(bag) => format!("Parse error{location}: {bag:?}"),
+        }
+    })
+}
+
 /// Reads, parses, validates, and recursively resolves one file's own
 /// imports (plus, transitively, its own same-namespace siblings) — the
 /// common tail shared by explicit `import` resolution and issue #194 Phase
@@ -3670,13 +3669,7 @@ fn resolve_and_merge_file(
 
     let source = build_cache::read_to_string(full_path)
         .map_err(|e| format!("Failed to read '{}': {}", full_path.display(), e))?;
-    let tokens = Lexer::new(&source)
-        .tokenize()
-        .map_err(|e| format!("Lexer error in '{}': {:?}", full_path.display(), e))?;
-    let mut parser = Parser::new(tokens);
-    let mut imported = parser
-        .parse()
-        .map_err(|e| format!("Parse error in '{}': {:?}", full_path.display(), e))?;
+    let mut imported = parse_frontend(&source, Some(full_path))?;
     check_one_type_per_file(&imported.decls, full_path)?;
     check_no_top_level_fn(&imported.decls, full_path)?;
     check_namespace_path_matches(&imported.decls, full_path)?;
@@ -3697,12 +3690,8 @@ fn parse_into_cache(
     }
     let source = build_cache::read_to_string(path)
         .map_err(|e| format!("Failed to read '{}': {}", path.display(), e))?;
-    let tokens = Lexer::new(&source)
-        .tokenize()
-        .map_err(|e| format!("Lexer error in '{}': {:?}", path.display(), e))?;
-    let mut ast = Parser::new(tokens)
-        .parse()
-        .map_err(|e| format!("Parse error in '{}': {:?}", path.display(), e))?;
+    let mut ast = parse_frontend(&source, Some(path))?;
+    stamp_file_identity(&mut ast.decls, path);
     // check_explicit_imports (issue #194) validates each file independently
     // via typecheck_with_prelude, never going through resolve_imports/
     // compile_file's own synthesize_accessors call -- so a class using
@@ -3841,9 +3830,8 @@ fn transitive_import_closure(
 /// not a bug to flag.
 ///
 /// Runs as its own, independent traversal — deliberately not threaded
-/// through `resolve_imports`'s own merge/`visited` state, so it re-parses
-/// files `resolve_imports` also parses. A narrow, acceptable trade-off:
-/// `.tnx` files are small and this is compile-time-only, and it keeps
+/// through `resolve_imports`'s own merge/`visited` state. The shared frontend
+/// query reuses pristine parses without sharing mutable ASTs, keeping
 /// `resolve_imports`'s existing, proven merge path (used by codegen)
 /// completely untouched.
 fn check_explicit_imports(
@@ -3851,6 +3839,7 @@ fn check_explicit_imports(
     dep_dirs: &[PathBuf],
     missing_deps: &[pm::MissingDep],
 ) -> Result<(), String> {
+    let _stage = tinox_common::frontend::Stage::new("visibility");
     let mut cache: std::collections::HashMap<PathBuf, tinox_parser::SourceFile> =
         std::collections::HashMap::new();
     let entry_canon = entry_path
@@ -3893,7 +3882,7 @@ fn check_explicit_imports(
             .filter_map(|p| cache.get(p))
             .collect();
 
-        if let Err(bag) = tinox_typecheck::typecheck_with_prelude(&cache[&path], &preludes) {
+        if let Err(bag) = tinox_typecheck::cache::check_with_prelude_cached(&cache[&path], &preludes, &path.to_string_lossy()) {
             for err in bag.errors {
                 // Everything this pass finds is reported, including errors
                 // that have nothing to do with imports ("missing return
@@ -3977,20 +3966,13 @@ fn is_unresolved_name_error(message: &str) -> bool {
 }
 
 fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<PathBuf, String> {
+    let _stage = tinox_common::frontend::Stage::new("total-build");
     let mut build = build_cache::Build::begin(output_name)?;
     let input_guard = build_cache::InputGuard::begin();
     let source =
         build_cache::read_to_string(input_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    let mut lexer = Lexer::new(&source);
-    let tokens = lexer
-        .tokenize()
-        .map_err(|e| format!("Lexer error: {:?}", e))?;
-
-    let mut parser = Parser::new(tokens);
-    let mut ast = parser
-        .parse()
-        .map_err(|e| format!("Parse error: {:?}", e))?;
+    let mut ast = parse_frontend(&source, None)?;
     check_one_type_per_file(&ast.decls, Path::new(input_path))?;
     check_no_top_level_fn(&ast.decls, Path::new(input_path))?;
     check_namespace_path_matches(&ast.decls, Path::new(input_path))?;
@@ -4024,15 +4006,15 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
     // NodeIds for the type table (typecheck → codegen)
     tinox_parser::assign_node_ids(&mut ast);
 
-    let mut typechecker = tinox_typecheck::TypeChecker::new();
-    typechecker
-        .check(&ast)
+    let checked = tinox_typecheck::cache::check_program_cached(&ast)
         .map_err(|e| format!("Type error:\n{}", e))?;
-
-    let (iface_methods, class_implements) = typechecker.interface_info();
+    let iface_methods = checked.interface_methods;
+    let class_implements = checked.class_implements;
 
     // Annotation processing pass
+    let annotation_stage = tinox_common::frontend::Stage::new("annotations");
     let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
+    drop(annotation_stage);
     for warning in &ann_result.deprecated_warnings {
         eprintln!("warning: {}", warning);
     }
@@ -4286,8 +4268,9 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
         })
         .collect();
 
+    let _backend_stage = tinox_common::frontend::Stage::new("backend");
     let mut codegen = CodeGen::new();
-    codegen.set_expr_value_types(typechecker.expr_value_types());
+    codegen.set_expr_value_types(checked.expr_types);
     codegen.set_interface_info(iface_methods, class_implements);
     codegen.set_loaded_modules(loaded_modules);
     codegen.set_startup_banner_enabled(startup_banner_enabled);

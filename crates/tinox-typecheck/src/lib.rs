@@ -1,3 +1,5 @@
+pub mod cache;
+
 pub mod annotations;
 
 use std::collections::{HashMap, HashSet};
@@ -236,7 +238,7 @@ impl TypeError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ValueType {
     Int,
     Float,
