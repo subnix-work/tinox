@@ -1670,45 +1670,35 @@ fn run_tests(args: &[String]) {
         run_tests_watch(&filtered_args);
         return;
     }
-    run_tests_once(&filtered_args);
+    if !run_tests_once(&filtered_args) {
+        std::process::exit(1);
+    }
 }
 
 fn run_tests_watch(args: &[String]) {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc;
 
-    let source_files = collect_test_files(args);
-    if source_files.is_empty() { return; }
+    let watch_dir = if let Some(file) = args.first().filter(|a| !a.starts_with('-')) {
+        Path::new(file).canonicalize().ok().and_then(|p| p.parent().map(Path::to_path_buf))
+    } else {
+        find_project_root()
+    };
+    let Some(watch_dir) = watch_dir else {
+        eprintln!("error: cannot determine test watch directory");
+        std::process::exit(1);
+    };
 
-    eprintln!();
-    eprintln!("  Tinox Test Watch");
-    eprintln!("  ─────────────────────────────────────────");
-    eprintln!("  Press Ctrl+C to stop");
-    eprintln!();
-
-    run_tests_once(args);
-
+    eprintln!("\n  Tinox Test Watch\n  Press Ctrl+C to stop\n");
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |res| { let _ = tx.send(res); })
         .expect("watcher");
-
-    // Watch every directory that contains a test or source file
-    let mut watched_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    for f in &source_files {
-        if let Some(parent) = Path::new(f).parent() {
-            let dir = parent.to_path_buf();
-            if watched_dirs.insert(dir.clone()) {
-                let _ = watcher.watch(&dir, RecursiveMode::Recursive);
-            }
-        }
+    // Watch before the first run, including empty suites and future nested files.
+    if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::Recursive) {
+        eprintln!("error: cannot watch {}: {}", watch_dir.display(), e);
+        std::process::exit(1);
     }
-    // Also watch src/
-    if let Ok(cwd) = std::env::current_dir() {
-        let src = cwd.join("src");
-        if src.is_dir() && watched_dirs.insert(src.clone()) {
-            let _ = watcher.watch(&src, RecursiveMode::Recursive);
-        }
-    }
+    run_tests_once(args);
 
     loop {
         match rx.recv() {
@@ -1716,7 +1706,14 @@ fn run_tests_watch(args: &[String]) {
                 let is_tnx = event.paths.iter().any(|p| {
                     p.extension().map(|e| e == "tnx").unwrap_or(false)
                 });
-                if is_tnx {
+                // A new directory may already contain files before the OS
+                // attaches its recursive watch; rescan on directory changes too.
+                let directory_change = matches!(event.kind,
+                    notify::EventKind::Create(notify::event::CreateKind::Folder)
+                    | notify::EventKind::Remove(notify::event::RemoveKind::Folder))
+                    || (matches!(event.kind, notify::EventKind::Modify(notify::event::ModifyKind::Name(_)))
+                        && event.paths.iter().any(|p| p.is_dir() || p.extension().is_none()));
+                if is_tnx || directory_change {
                     eprintln!("\n[watch] change detected — re-running tests...");
                     std::thread::sleep(std::time::Duration::from_millis(100));
                     while rx.try_recv().is_ok() {}
@@ -1729,50 +1726,72 @@ fn run_tests_watch(args: &[String]) {
     }
 }
 
-fn collect_test_files(args: &[String]) -> Vec<String> {
-    if let Some(f) = args.first().filter(|a| !a.starts_with('-')) {
-        return vec![f.clone()];
-    }
-    let mut files = Vec::new();
-    let mut dir = std::env::current_dir().unwrap_or_default();
-    loop {
-        if dir.join("tinox.toml").exists() {
-            for sub in &["tests", "src"] {
-                let d = dir.join(sub);
-                if d.is_dir() {
-                    if let Ok(entries) = fs::read_dir(&d) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if p.extension().map(|e| e == "tnx").unwrap_or(false) {
-                                files.push(p.to_string_lossy().into_owned());
-                            }
-                        }
-                    }
-                }
+/// Do not follow symlinks: dependency aliases and directory cycles must not
+/// duplicate tests. Propagate I/O errors rather than reporting a partial suite.
+fn collect_test_dir(dir: &Path, files: &mut Vec<String>) -> Result<(), String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("{}: {}", dir.display(), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {}", dir.display(), e))?;
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|e| format!("{}: {}", path.display(), e))?;
+        if kind.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with('.') && !matches!(name.as_ref(), "target" | "build" | "dist" | "node_modules") {
+                collect_test_dir(&path, files)?;
             }
-            break;
+        } else if kind.is_file() && path.extension().is_some_and(|e| e == "tnx") {
+            files.push(path.to_string_lossy().into_owned());
         }
-        if !dir.pop() { break; }
     }
-    files
+    Ok(())
 }
 
-fn run_tests_once(args: &[String]) {
-    let source_files = collect_test_files(args);
+fn collect_test_files(args: &[String]) -> Result<Vec<String>, String> {
+    if let Some(f) = args.first().filter(|a| !a.starts_with('-')) {
+        let path = Path::new(f).canonicalize().map_err(|e| format!("{}: {}", f, e))?;
+        return Ok(vec![path.to_string_lossy().into_owned()]);
+    }
+    let root = find_project_root().ok_or("no tinox.toml found — run from a project directory or pass a file")?;
+    let mut files = Vec::new();
+    for sub in ["tests", "src"] {
+        let dir = root.join(sub);
+        match fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() => collect_test_dir(&dir, &mut files)?,
+            Ok(_) => return Err(format!("{} must be a directory, not a file or symlink", dir.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(format!("{}: {}", dir.display(), e)),
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn run_tests_once(args: &[String]) -> bool {
+    let source_files = match collect_test_files(args) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("error discovering tests: {}", e);
+            return false;
+        }
+    };
     if source_files.is_empty() {
         eprintln!("error: no test files found — run from a project directory or pass a file");
-        return;
+        return false;
     }
 
     let mut total = 0usize;
     let mut passed = 0usize;
     let mut failed = 0usize;
+    let mut collection_errors = 0usize;
 
     for source_path in &source_files {
         let test_entries = match collect_tests(source_path) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("error processing {}: {}", source_path, e);
+                collection_errors += 1;
                 continue;
             }
         };
@@ -1816,9 +1835,11 @@ fn run_tests_once(args: &[String]) {
     println!("{total} test{} — {passed} passed, {failed} failed",
         if total == 1 { "" } else { "s" });
 
-    if failed > 0 {
-        std::process::exit(1);
+    println!("{collection_errors} collection errors");
+    if total == 0 {
+        eprintln!("error: no @Test methods found");
     }
+    total > 0 && failed == 0 && collection_errors == 0
 }
 
 // ─── tinox doc ────────────────────────────────────────────────────────────────

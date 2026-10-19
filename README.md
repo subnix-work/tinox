@@ -81,6 +81,12 @@ tinox test              # run once
 tinox test --watch      # re-run on file changes
 ```
 
+Tests are discovered recursively under `tests/` and `src/` of the nearest
+`tinox.toml` project. Hidden directories, `target`, `build`, `dist`,
+`node_modules`, and symlinks are skipped. Discovery/collection errors, failing
+tests, and suites without any `@Test` methods exit unsuccessfully. Watch mode
+keeps running after failures and discovers newly added nested files.
+
 ### Runtime object cache
 
 Builds share runtime C objects under `$XDG_CACHE_HOME/tinox/runtime-v1` (or
