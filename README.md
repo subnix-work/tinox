@@ -81,6 +81,30 @@ tinox test              # run once
 tinox test --watch      # re-run on file changes
 ```
 
+### Runtime object cache
+
+Builds share runtime C objects under `$XDG_CACHE_HOME/tinox/runtime-v1` (or
+`~/.cache/tinox/runtime-v1`). The key includes the preprocessed runtime and
+headers, C compiler and tool contents/version/target, effective flags and include
+configuration. Linking still runs against the current host libraries.
+
+- `TINOX_CACHE_TRACE=1 tinox build` reports the cache key and hit/miss/bypass.
+- `TINOX_RUNTIME_CACHE=0 tinox build` compiles the runtime without caching.
+- `TINOX_RUNTIME_CACHE_DIR=/path tinox build` selects a separate cache.
+- To clear it, remove the selected cache directory while no builds are running.
+
+ASan, checked, TLS, database and HTTP/3 configurations have separate keys.
+Unknown C flags (including plugins, response files and native CPU selection)
+bypass caching conservatively. Objects are checksummed; a damaged entry rebuilds.
+Per-key kernel locks and atomic publication prevent concurrent or interrupted
+builds from exposing partially compiled objects. Interrupted builds can leave
+unused `.tmp-*` directories; clearing the cache removes them too.
+
+Measure disabled, cold and warm builds (including output verification) with
+`python3 scripts/benchmark-runtime-cache.py --compiler target/release/tinox`.
+Use `--debug` for debug application builds. Results include raw timings and host/
+compiler metadata; they describe this machine, not a service-readiness guarantee.
+
 ### Package Manager
 
 `tinox install`/`tinox add` resolve dependencies declared in a project's
