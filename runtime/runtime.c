@@ -37,6 +37,9 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <limits.h>
 #include <zlib.h>
 #include <stdatomic.h>
 #ifdef __GLIBC__
@@ -122,6 +125,7 @@ void tinox_free(void* ptr) {
 // it registers has been declared); this forward declaration lets the
 // earlier call sites (tinox_task_spawn, main) reference it.
 static void tinox_gc_register_thread_roots(void);
+static void tinox_gc_unregister_thread_roots(void);
 
 // Print functions
 void tinox_print_int(int64_t val) {
@@ -781,7 +785,9 @@ static void* tinox_spawn_trampoline(void* raw) {
     void* (*fn)(void*) = t->fn;
     void* args = t->args;
     free(t);
-    return fn(args);
+    void* ret = fn(args);
+    tinox_gc_unregister_thread_roots();
+    return ret;
 }
 
 void* tinox_task_spawn(void* (*fn)(void*), void* args) {
@@ -1392,6 +1398,172 @@ int64_t* tinoxStdinReadAllBytes(void) {
     for (size_t i = 0; i < used; i++) a->data[i] = (int64_t)raw[i];
     free(raw);
     return h;
+}
+
+// ---- Streaming byte-exact file I/O ----
+// The *AllBytes primitives above materialize a whole file as one
+// List<Int64> -- 8 bytes of heap per file byte, so a multi-GB input needs
+// tens of GB of RAM. These operate on an open handle (the FILE* as an
+// Int64, 0 = open failed) in caller-sized chunks instead, so memory stays
+// bounded by the chunk size regardless of file size. Every I/O error
+// (short write, read error, failed flush on close) is a hard runtime
+// error, never a silently truncated file. Consumed via `extern fn`, same
+// as the primitives above.
+
+int64_t tinoxFileOpenBytes(const char* path, const char* mode) {
+    FILE* f = fopen(path, mode);
+    return (int64_t)(intptr_t)f;
+}
+
+// Reads up to maxBytes; returns fewer only at EOF (an empty list = EOF).
+int64_t* tinoxFileReadChunk(int64_t handle, int64_t maxBytes) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) {
+        fprintf(stderr, "runtime error: tinoxFileReadChunk on a closed/invalid handle\n");
+        exit(1);
+    }
+    if (maxBytes < 0) maxBytes = 0;
+    unsigned char* raw = (unsigned char*)malloc(maxBytes > 0 ? (size_t)maxBytes : 1);
+    size_t used = 0;
+    while (used < (size_t)maxBytes) {
+        size_t n = fread(raw + used, 1, (size_t)maxBytes - used, f);
+        if (n == 0) break;
+        used += n;
+    }
+    if (ferror(f)) {
+        free(raw);
+        fprintf(stderr, "runtime error: read error: %s\n", strerror(errno));
+        exit(1);
+    }
+    int64_t* h = tinox_array_new((int64_t)used, (int64_t)used);
+    TinoxArray* a = (TinoxArray*)h;
+    for (size_t i = 0; i < used; i++) a->data[i] = (int64_t)raw[i];
+    free(raw);
+    return h;
+}
+
+void tinoxFileWriteChunk(int64_t handle, int64_t* bytes) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) {
+        fprintf(stderr, "runtime error: tinoxFileWriteChunk on a closed/invalid handle\n");
+        exit(1);
+    }
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t len = a->len;
+    if (len <= 0) return;
+    unsigned char* raw = (unsigned char*)malloc((size_t)len);
+    for (int64_t i = 0; i < len; i++) raw[i] = (unsigned char)(a->data[i] & 0xFF);
+    size_t wrote = fwrite(raw, 1, (size_t)len, f);
+    free(raw);
+    if (wrote != (size_t)len) {
+        fprintf(stderr, "runtime error: write error: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+// Skips n bytes forward; returns false if the seek failed or would land
+// past EOF (e.g. a truncated file).
+bool tinoxFileSkipBytes(int64_t handle, int64_t n) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f || n < 0) return false;
+    off_t cur = ftello(f);
+    if (cur < 0 || fseeko(f, 0, SEEK_END) != 0) return false;
+    off_t end = ftello(f);
+    if (end < 0 || (int64_t)(end - cur) < n) {
+        fseeko(f, cur, SEEK_SET);
+        return false;
+    }
+    return fseeko(f, cur + (off_t)n, SEEK_SET) == 0;
+}
+
+void tinoxFileCloseBytes(int64_t handle) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) return;
+    if (fclose(f) != 0) {
+        fprintf(stderr, "runtime error: error closing file: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+// Size of a regular file in bytes, or -1 if it doesn't exist / isn't one.
+int64_t tinoxFileSizeBytes(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
+    return (int64_t)st.st_size;
+}
+
+// What a path is, for recursive directory walks:
+//   0 = doesn't exist (incl. a dangling symlink), 1 = regular file (or a
+//   symlink to one), 2 = directory, 3 = something else (fifo, device,
+//   socket), 4 = symlink to a directory, 5 = directory that can't be read.
+// Distinguishing 4 from 2 lets a walker avoid following symlinked
+// directories (loops); 5 lets it fail loudly instead of silently treating
+// an unreadable directory as empty, which is what dirList() does.
+int64_t tinoxPathKind(const char* path) {
+    struct stat lst, st;
+    if (lstat(path, &lst) != 0) return 0;
+    if (stat(path, &st) != 0) return 0;
+    if (S_ISREG(st.st_mode)) return 1;
+    if (S_ISDIR(st.st_mode)) {
+        if (S_ISLNK(lst.st_mode)) return 4;
+        return access(path, R_OK | X_OK) == 0 ? 2 : 5;
+    }
+    return 3;
+}
+
+static int tinox_cmp_cstr(const void* a, const void* b) {
+    return strcmp(*(const char* const*)a, *(const char* const*)b);
+}
+
+// Directory entry names (without "." / ".."), sorted bytewise so walks are
+// deterministic. Unlike dirList(), an unreadable directory is a hard error.
+int64_t* tinoxDirEntriesSorted(const char* path) {
+    DIR* d = opendir(path);
+    if (!d) {
+        fprintf(stderr, "runtime error: cannot read directory %s: %s\n", path, strerror(errno));
+        exit(1);
+    }
+    size_t cap = 32, n = 0;
+    char** names = (char**)malloc(cap * sizeof(char*));
+    struct dirent* ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        if (n == cap) {
+            cap *= 2;
+            names = (char**)realloc(names, cap * sizeof(char*));
+        }
+        names[n++] = GC_strdup(ent->d_name);
+    }
+    closedir(d);
+    qsort(names, n, sizeof(char*), tinox_cmp_cstr);
+    int64_t* h = tinox_array_new(0, (int64_t)(n > 0 ? n : 4));
+    for (size_t i = 0; i < n; i++) tinox_array_push(h, (int64_t)names[i]);
+    free(names);
+    return h;
+}
+
+// Canonical absolute path (symlinks resolved), or "" if it can't be
+// resolved (e.g. doesn't exist).
+char* tinoxRealPath(const char* path) {
+    char buf[PATH_MAX];
+    if (!realpath(path, buf)) return GC_strdup("");
+    return GC_strdup(buf);
+}
+
+int64_t tinoxCpuCount(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int64_t)n : 1;
+}
+
+// Unlike printStderr, no trailing newline -- for in-place "\r" progress
+// lines. Only meaningful on a terminal; callers check tinoxStderrIsTty().
+void tinoxStderrWrite(const char* msg) {
+    fputs(msg, stderr);
+    fflush(stderr);
+}
+
+bool tinoxStderrIsTty(void) {
+    return isatty(2) != 0;
 }
 
 // ---- Socket builtins (tinox.core.socket) ----
@@ -8026,6 +8198,21 @@ extern __thread int64_t __tinox_err;
 // only adds the CALLING thread's TLS slot, so this must run once per
 // thread (the `registered` guard below is itself `__thread`, so each
 // thread gets its own independent one-shot check).
+// Every `__thread` GC pointer a thread running Tinox code may hold (see
+// Bug 140 above) -- one list, shared by register and unregister below.
+#define TINOX_GC_THREAD_ROOTS(X) \
+    X(_tinox_http_req_headers) \
+    X(g_recv_buf) \
+    X(g_resp_buf) \
+    X(g_wrap_buf) \
+    X(g_response) \
+    X(g_request) \
+    X(g_ctx) \
+    X(g_req_headers_map) \
+    X(g_resp_headers_map) \
+    X(g_path_params_map) \
+    X(__tinox_err)
+
 static void tinox_gc_register_thread_roots(void) {
 #ifndef TINOX_NO_GC
     // GC_add_roots is a Boehm-GC-specific API (<gc.h>, only included in
@@ -8042,19 +8229,35 @@ static void tinox_gc_register_thread_roots(void) {
     static __thread int registered = 0;
     if (registered) return;
     registered = 1;
-#define TINOX_GC_ROOT(var) GC_add_roots(&(var), (char*)&(var) + sizeof(var) + 1)
-    TINOX_GC_ROOT(_tinox_http_req_headers);
-    TINOX_GC_ROOT(g_recv_buf);
-    TINOX_GC_ROOT(g_resp_buf);
-    TINOX_GC_ROOT(g_wrap_buf);
-    TINOX_GC_ROOT(g_response);
-    TINOX_GC_ROOT(g_request);
-    TINOX_GC_ROOT(g_ctx);
-    TINOX_GC_ROOT(g_req_headers_map);
-    TINOX_GC_ROOT(g_resp_headers_map);
-    TINOX_GC_ROOT(g_path_params_map);
-    TINOX_GC_ROOT(__tinox_err);
+#define TINOX_GC_ROOT(var) GC_add_roots(&(var), (char*)&(var) + sizeof(var) + 1);
+    TINOX_GC_THREAD_ROOTS(TINOX_GC_ROOT)
 #undef TINOX_GC_ROOT
+#endif
+}
+
+// Counterpart to tinox_gc_register_thread_roots, for a thread that is
+// about to exit. The roots it registered point into THIS thread's TLS
+// block, which glibc frees together with the thread's stack once the
+// thread is gone (munmap'd outright once its stack cache is full, ~40MB
+// -- i.e. after a few 8MB-stack threads). Left registered, the next
+// collection's root scan reads that unmapped range and SIGSEGVs inside
+// libgc's mark code. Found via zox (tinox-compress) spawning 32 short-
+// lived block-decoder threads per batch: ~40% of runs of a 20MB
+// extraction crashed in GC_malloc -> mark; 0% with GC_DONT_GC=1. Boehm
+// may merge adjacent root segments, so the whole [lowest, highest) span
+// of this thread's variables is removed in one call rather than one
+// var at a time (GC_remove_roots only drops segments fully inside the
+// given range).
+static void tinox_gc_unregister_thread_roots(void) {
+#ifndef TINOX_NO_GC
+    char* lo = (char*)UINTPTR_MAX;
+    char* hi = NULL;
+#define TINOX_GC_ROOT_SPAN(var) \
+    if ((char*)&(var) < lo) lo = (char*)&(var); \
+    if ((char*)&(var) + sizeof(var) + 1 > hi) hi = (char*)&(var) + sizeof(var) + 1;
+    TINOX_GC_THREAD_ROOTS(TINOX_GC_ROOT_SPAN)
+#undef TINOX_GC_ROOT_SPAN
+    GC_remove_roots(lo, hi);
 #endif
 }
 
