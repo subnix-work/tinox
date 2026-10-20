@@ -137,3 +137,92 @@ fn missing_checked_callback_data_is_an_actionable_lowering_error() {
         "{errors:?}"
     );
 }
+
+#[test]
+fn complete_semantic_compositions_run_in_all_modes() {
+    let work = Work::new();
+    let expected = "256\n3.5\n127\ntrue\n255\n-1\ntext\nnested\n255\n2.5\n1.5\n2.5\n2.5\n256\n1.5\n2\n1.5\n255\n1.5\n3.5\n4.5\n4.5\n3.5\n7.5\n6.5\n255\n1.5\nb\n3.5\n255\n255\n";
+    for flags in [vec!["--debug"], vec![], vec!["--checked"]] {
+        let executable = work.0.join("complete");
+        let build = work
+            .command("build")
+            .arg(fixture("semantic_complete"))
+            .args(flags)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(build.status.success(), "{build:?}");
+        for _ in 0..20 {
+            let run = Command::new(&executable).output().unwrap();
+            assert!(run.status.success(), "{run:?}");
+            assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+        }
+        let ir = fs::read_to_string(executable.with_extension("ll")).unwrap();
+        assert!(ir.contains("udiv i8"));
+        assert!(ir.contains("icmp ugt i8"));
+        assert!(ir.contains("sitofp i64"));
+        assert!(ir.contains("Cell__u8_get"));
+        assert!(ir.contains("Cell__i8_get"));
+    }
+}
+
+#[test]
+fn unresolved_and_conflicting_generic_bindings_fail_before_lowering() {
+    let work = Work::new();
+    for source in [
+        "class Main { fnc main() -> Int32 { const source: List<Float64> = [1.5]; const invalid: List<Float32> = source; return 0; } }",
+        "class Main { fnc make<T>() -> T { throw 1; } fnc main() -> Int32 { Main::make(); return 0; } }",
+        "class Main { fnc same<T>(left: T, right: T) -> T { return left; } fnc main() -> Int32 { Main::same(\"text\", 42); return 0; } }",
+    ] {
+        fs::write(work.0.join("Main.tnx"), source).unwrap();
+        let result = work.command("build").args(["Main.tnx", "--json"]).env("PATH", "").output().unwrap();
+        assert!(!result.status.success(), "{result:?}");
+        let result: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(result["diagnostics"][0]["category"], "type", "{result}");
+    }
+}
+
+#[test]
+fn unsigned_zero_division_and_remainder_fail_with_visible_runtime_diagnostics() {
+    let work = Work::new();
+    for (operator, message) in [("/", "division by zero"), ("%", "modulo by zero")] {
+        fs::write(work.0.join("Main.tnx"), format!("class Main {{ fnc main() -> Int32 {{ const value: UInt8 = 255; const zero: UInt8 = 0; println(value {operator} zero); return 0; }} }}")).unwrap();
+        for flags in [vec!["--debug"], vec![], vec!["--checked"]] {
+            let executable = work.0.join("zero");
+            let build = work
+                .command("build")
+                .arg("Main.tnx")
+                .args(flags)
+                .arg("-o")
+                .arg(&executable)
+                .output()
+                .unwrap();
+            assert!(build.status.success(), "{build:?}");
+            let run = Command::new(executable).output().unwrap();
+            assert_eq!(run.status.code(), Some(1), "{run:?}");
+            assert!(
+                String::from_utf8_lossy(&run.stderr).contains(message),
+                "{run:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ambiguous_qualified_declarations_never_reach_native_emission() {
+    let source = "namespace left { class Thing { fnc side() -> String { return \"left\"; } } } namespace right { class Thing { fnc side() -> String { return \"right\"; } } }";
+    let tokens = tinox_lexer::Lexer::new(source).tokenize().unwrap();
+    let mut ast = tinox_parser::Parser::new(tokens).parse().unwrap();
+    tinox_parser::assign_node_ids(&mut ast);
+    let mut checker = tinox_typecheck::TypeChecker::new();
+    checker.check(&ast).unwrap();
+    let mut codegen = tinox_codegen::CodeGen::new();
+    codegen.set_expr_value_types(checker.expr_value_types());
+    codegen.set_semantic_facts(checker.semantic_facts());
+    let errors = codegen.gen(&ast).unwrap_err();
+    assert!(errors
+        .errors
+        .iter()
+        .any(|error| error.message.contains("Ambiguous declaration")));
+}

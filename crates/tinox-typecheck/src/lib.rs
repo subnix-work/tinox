@@ -1299,7 +1299,9 @@ impl TypeChecker {
     }
 
     pub fn check(&mut self, source: &SourceFile) -> Result<SourceFile, ErrorBag> {
+        self.register_semantic_declarations(source);
         self.check_source_file(source);
+        if self.errors.is_empty() { self.validate_semantic_contracts(); }
         if self.errors.is_empty() {
             Ok(source.clone())
         } else {
@@ -1483,9 +1485,10 @@ impl TypeChecker {
                             .iter()
                             .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &f.type_params)))
                             .collect(),
-                        return_type: Self::type_to_value_erasing(&f.ret_type, &f.type_params),
+                        return_type: Self::type_to_value(&f.ret_type),
                     };
                     self.symbols.functions.insert(f.name.clone(), sig);
+                    if !f.type_params.is_empty() { self.generic_method_param_types.insert(f.name.clone(), (f.params.iter().map(|p| Self::type_to_value(&p.param_type)).collect(), f.type_params.clone())); }
                 }
                 DeclKind::Class(c) => {
                     if c.name == "Task" {
@@ -1550,7 +1553,7 @@ impl TypeChecker {
                         );
                         let sig = FunctionSignature {
                             params,
-                            return_type: Self::erase_method_return_type(&method.ret_type, &method.type_params, &erase_params),
+                            return_type: Self::type_to_value(&method.ret_type),
                         };
                         let key = format!("{}_{}", c.name, method.name);
                         if !method.static_ && Self::stmt_uses_this(&method.body) {
@@ -2088,21 +2091,9 @@ impl TypeChecker {
         for method in &c.methods {
             let saved_vars = self.symbols.enter_scope();
             let saved_type_params = std::mem::take(&mut self.type_param_scope);
-            for tp in &method.type_params {
+            for tp in c.type_params.iter().chain(&method.type_params) {
                 self.type_param_scope.insert(tp.clone());
             }
-            // Erase class-level type params too, not just the method's own
-            // (see the DeclKind::Class signature-registration arms) — a
-            // method BODY referencing a class param directly (`cache.data[key]`
-            // with `key: K`, `Cache<K,V>`) needs `key`'s registered type to be
-            // Any for the Map-index-validity check, else every generic-class
-            // method body with T-typed indexing/comparison spuriously errors.
-            let erase_params: Vec<String> = c
-                .type_params
-                .iter()
-                .chain(method.type_params.iter())
-                .cloned()
-                .collect();
             self.symbols.variables.insert(
                 "self".to_string(),
                 (ValueType::Named(c.name.clone(), c.type_params.iter().map(|p| ValueType::Named(p.clone(), vec![])).collect()), false),
@@ -2110,10 +2101,10 @@ impl TypeChecker {
             for param in &method.params {
                 self.symbols.variables.insert(
                     param.name.clone(),
-                    (Self::type_to_value_erasing(&param.param_type, &erase_params), false),
+                    (Self::type_to_value(&param.param_type), false),
                 );
             }
-            let expected = Self::type_to_value_erasing(&method.ret_type, &erase_params);
+            let expected = Self::type_to_value(&method.ret_type);
             let saved_return_type = self.current_return_type.replace(expected.clone());
             let has_return = self.check_stmt(&method.body);
             self.current_return_type = saved_return_type;
@@ -2269,7 +2260,7 @@ impl TypeChecker {
             }
             StmtKind::Assignment { target, value } => {
                 let target_ty = self.infer_type(target);
-                let value_ty = self.infer_type(value);
+                let value_ty = self.infer_argument(value, &target_ty);
                 if !self.types_compatible(&target_ty, &value_ty) {
                     self.errors.push(
                         TypeError::TypeMismatch {
@@ -2628,6 +2619,10 @@ impl TypeChecker {
                         }
                     }
                 }
+                if matches!(&obj_ty, ValueType::Named(name, args) if args.is_empty() && self.type_param_scope.contains(name)) {
+                    for arg in args { self.infer_type(arg); }
+                    return ValueType::Any;
+                }
                 let class_name = obj_ty.dispatch_name();
 
                 // Check if method is a Fn-type field (callable field) on the class
@@ -2764,7 +2759,7 @@ impl TypeChecker {
                 let obj_ty = self.infer_type(obj);
                 let index_ty = self.infer_type(index);
                 let valid_index = match &obj_ty {
-                    ValueType::Map(_) => matches!(index_ty, ValueType::String | ValueType::Any),
+                    ValueType::Map(_) => matches!(index_ty, ValueType::String | ValueType::Any) || matches!(&index_ty, ValueType::Named(name,args) if args.is_empty() && self.type_param_scope.contains(name)),
                     ValueType::String => true,
                     ValueType::Any => true,
                     _ => index_ty.is_integer() || index_ty == ValueType::Any,
@@ -3080,8 +3075,12 @@ impl TypeChecker {
                 ValueType::Any
             }
             ExprKind::Assign { target, value } => {
-                self.infer_type(target);
-                self.infer_type(value)
+                let target_ty = self.infer_type(target);
+                let found = self.infer_argument(value, &target_ty);
+                if !self.types_compatible(&target_ty, &found) {
+                    self.errors.push(TypeError::TypeMismatch { expected: target_ty.display(), found: found.display(), span: value.span }.to_error());
+                }
+                target_ty
             }
             ExprKind::CompoundAssign {
                 op: _,
@@ -3525,7 +3524,7 @@ impl TypeChecker {
                         );
                     }
                 }
-                return sig.return_type.clone();
+                return self.unify_generic_return(name, &sig.return_type, args, &[]).unwrap_or(sig.return_type);
             }
 
             if let Some((ty, _)) = self.symbols.variables.get(name).cloned() {
@@ -3729,9 +3728,7 @@ impl TypeChecker {
                     || matches!(rhs, ValueType::Any | ValueType::Named(_, _))
                 {
                     ValueType::Any
-                } else if lhs.is_float() || rhs.is_float() {
-                    if *lhs == ValueType::Float32 && *rhs == ValueType::Float32 { ValueType::Float32 } else { ValueType::Float }
-                } else if lhs == rhs { lhs.clone() } else { ValueType::Int }
+                } else { ValueType::numeric_promotion(lhs, rhs).unwrap_or_else(|| lhs.clone()) }
             }
         }
     }
@@ -3809,35 +3806,13 @@ impl TypeChecker {
         let Some(tparams) = self.class_type_params.get(class_name) else {
             return ty.clone();
         };
-        match ty {
-            ValueType::Named(n, _) => {
-                if let Some(idx) = tparams.iter().position(|p| p == n) {
-                    targs.get(idx).cloned().unwrap_or_else(|| ty.clone())
-                } else {
-                    ValueType::Named(n.clone(), match ty { ValueType::Named(_, args) => args.iter().map(|a| self.substitute_type_params(a, class_name, targs)).collect(), _ => unreachable!() })
-                }
-            }
-            ValueType::Array(inner) => {
-                ValueType::Array(Box::new(self.substitute_type_params(inner, class_name, targs)))
-            }
-            ValueType::Map(v) => {
-                ValueType::Map(Box::new(self.substitute_type_params(v, class_name, targs)))
-            }
-            ValueType::Nullable(inner) => {
-                ValueType::Nullable(Box::new(self.substitute_type_params(inner, class_name, targs)))
-            }
-            ValueType::Callable { params, ret } => ValueType::Callable { params: params.iter().map(|p| self.substitute_type_params(p, class_name, targs)).collect(), ret: Box::new(self.substitute_type_params(ret, class_name, targs)) },
-            _ => ty.clone(),
-        }
+        let bindings = tparams.iter().cloned().zip(targs.iter().cloned()).collect();
+        Self::substitute_bindings(ty, &bindings)
     }
 
-    /// Like `type_to_value` but resolves type parameters in scope to `Any`.
+    /// Preserve symbolic parameters until checked call-site specialization.
     fn resolve_type(&self, ty: &Type) -> ValueType {
-        match ty {
-            Type::Named(name) if self.type_param_scope.contains(name) => ValueType::Any,
-            Type::Generic { name, .. } if self.type_param_scope.contains(name) => ValueType::Any,
-            _ => Self::type_to_value(ty),
-        }
+        Self::type_to_value(ty)
     }
 
     /// Used during registration to erase type parameters to `Any`.
@@ -3867,6 +3842,7 @@ impl TypeChecker {
             }
             (ValueType::Array(p), ValueType::Array(a)) => Self::unify_param(p, a, tparams, bindings),
             (ValueType::Map(p), ValueType::Map(a)) => Self::unify_param(p, a, tparams, bindings),
+            (ValueType::Task(p), ValueType::Task(a)) => Self::unify_param(p, a, tparams, bindings),
             (ValueType::Nullable(p), ValueType::Nullable(a)) => {
                 Self::unify_param(p, a, tparams, bindings)
             }
@@ -3898,6 +3874,9 @@ impl TypeChecker {
                 ValueType::Nullable(Box::new(Self::substitute_bindings(inner, bindings)))
             }
             ValueType::Callable { params, ret } => ValueType::Callable { params: params.iter().map(|p| Self::substitute_bindings(p, bindings)).collect(), ret: Box::new(Self::substitute_bindings(ret, bindings)) },
+            ValueType::Reference { inner, mutable } => ValueType::Reference { inner: Box::new(Self::substitute_bindings(inner, bindings)), mutable: *mutable },
+            ValueType::TupleOf(items) => ValueType::TupleOf(items.iter().map(|ty| Self::substitute_bindings(ty, bindings)).collect()),
+            ValueType::Task(result) => ValueType::Task(Box::new(Self::substitute_bindings(result, bindings))),
             _ => ty.clone(),
         }
     }
@@ -3908,7 +3887,7 @@ impl TypeChecker {
             ValueType::Named(n, args) => {
                 tparams.contains(n) || args.iter().any(|a| Self::contains_type_param(a, tparams))
             }
-            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) => {
+            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) | ValueType::Task(inner) | ValueType::Reference { inner, .. } => {
                 Self::contains_type_param(inner, tparams)
             }
             ValueType::Callable { params, ret } => params.iter().any(|p| Self::contains_type_param(p, tparams)) || Self::contains_type_param(ret, tparams),
@@ -3927,7 +3906,7 @@ impl TypeChecker {
                 self.type_param_scope.contains(n)
                     || args.iter().any(|a| self.contains_scoped_type_param(a))
             }
-            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) => {
+            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) | ValueType::Task(inner) | ValueType::Reference { inner, .. } => {
                 self.contains_scoped_type_param(inner)
             }
             ValueType::Callable { params, ret } => params.iter().any(|p| self.contains_scoped_type_param(p)) || self.contains_scoped_type_param(ret),
@@ -3962,74 +3941,6 @@ impl TypeChecker {
             Type::Generic { name, args } => ValueType::Named(name.clone(), args.iter().map(|a| Self::type_to_value_erasing(a, type_params)).collect()),
             _ => Self::type_to_value(ty),
         }
-    }
-
-    /// Does `ty` reference any of `type_params` anywhere in its structure
-    /// (not just at the top level)? Used by `erase_method_return_type`
-    /// below — see #158.
-    fn type_references_param(ty: &Type, type_params: &[String]) -> bool {
-        match ty {
-            Type::Named(n) => type_params.contains(n),
-            Type::Generic { name, args } => {
-                type_params.contains(name) || args.iter().any(|a| Self::type_references_param(a, type_params))
-            }
-            Type::Array(inner) | Type::Ref(inner) | Type::Mutable(inner) | Type::Nullable(inner) => {
-                Self::type_references_param(inner, type_params)
-            }
-            Type::Map(k, v) => {
-                Self::type_references_param(k, type_params) || Self::type_references_param(v, type_params)
-            }
-            Type::Fn { params, ret } => {
-                params.iter().any(|p| Self::type_references_param(p, type_params))
-                    || Self::type_references_param(ret, type_params)
-            }
-            Type::Tuple(ts) => ts.iter().any(|t| Self::type_references_param(t, type_params)),
-            _ => false,
-        }
-    }
-
-    /// Return-type-specific extension of `type_to_value_erasing`, used
-    /// ONLY for a method's registered return type (#158): a user-defined
-    /// generic class's own type argument (`Option<U>`, `Box<U>`, …) that
-    /// mentions a type param owned by the METHOD ITSELF — not the
-    /// enclosing class — erases to `Any` wholesale, on top of
-    /// `type_to_value_erasing`'s existing behavior.
-    ///
-    /// Deliberately narrower than erasing on ANY type-param match found
-    /// anywhere: the enclosing CLASS's own type param (`Option<T>`'s `T`
-    /// in `fn some(value: T) -> Option<T>`) must stay structurally intact
-    /// (`Named("Option", [Named("T")])`) here, because
-    /// `check_class_method_call`'s call-site unification
-    /// (`unify_generic_return`) needs that literal `Named("T")` PRESENT
-    /// to even attempt resolving it from the receiver's actual type —
-    /// erasing it to `Any` breaks that already-working resolution
-    /// (confirmed empirically: erasing on ANY match regressed
-    /// `Option<Int64>::some(1).unwrap()`, a plain non-chained call with
-    /// no own-type-param method involved at all, into the exact same ICE
-    /// this fix exists to remove).
-    ///
-    /// A method-own type param mentioned this way (typically nested
-    /// inside an `fnc(T) -> U`-shaped parameter, e.g. `map`/`andThen`)
-    /// has no such existing resolution path to protect — `ValueType::Fn`
-    /// carries no parameter/return substructure for `unify_param` to
-    /// unify against in the first place, so erasing to `Any` costs
-    /// nothing there and instead makes `valuetype_to_marker`
-    /// (tinox-codegen) correctly return `None` for the call-site node,
-    /// falling back to codegen's own per-call-node marker inference
-    /// (`infer_own_type_params` / `methodcall_result_markers`, #153).
-    fn erase_method_return_type(ret_type: &Type, method_own_params: &[String], erase_params: &[String]) -> ValueType {
-        if !method_own_params.is_empty()
-            && matches!(ret_type, Type::Generic { .. })
-            && Self::type_references_param(ret_type, method_own_params)
-        {
-            return ValueType::Any;
-        }
-        // Class generic arguments are the binding pattern for call-site
-        // return inference. Erasing them here loses the receiver/factory type.
-        if matches!(ret_type, Type::Generic { name, .. } if !matches!(name.as_str(), "List" | "Array" | "Map")) {
-            return Self::type_to_value(ret_type);
-        }
-        Self::type_to_value_erasing(ret_type, erase_params)
     }
 
     fn is_subclass_or_equal(&self, candidate: &str, base: &str) -> bool {
@@ -4105,10 +4016,11 @@ impl TypeChecker {
             (ValueType::Callable { params: a, ret: ar }, ValueType::Callable { params: b, ret: br }) => a.len() == b.len() && a.iter().zip(b).all(|(a,b)| self.semantic_compatible(a,b)) && self.semantic_compatible(ar,br),
             (ValueType::Int, ValueType::Task(_)) => true,
 
-            // Containers: compatible if the element/value types are compatible
-            // (Any elements stay wildcards — erased sources allow anything)
-            (ValueType::Array(a), ValueType::Array(b)) => self.types_compatible(a, b),
-            (ValueType::Map(a), ValueType::Map(b)) => self.types_compatible(a, b),
+            // Existing containers cannot reinterpret their stored element words.
+            // Literal conversions are checked separately in infer_argument.
+            (ValueType::Array(a), ValueType::Array(b)) => self.semantic_compatible(a, b),
+            (ValueType::Map(a), ValueType::Map(b)) => self.semantic_compatible(a, b),
+            (ValueType::Task(a), ValueType::Task(b)) => self.semantic_compatible(a, b),
             // Null safety: null can only go into nullable types
             (ValueType::Nullable(_), ValueType::Null) => true,
             (_, ValueType::Null) => false,
@@ -4149,10 +4061,8 @@ impl TypeChecker {
         if a == b {
             return a.clone();
         }
+        if let Some(promoted) = ValueType::numeric_promotion(a, b) { return promoted; }
         match (a, b) {
-            (ValueType::Int, ValueType::Float) | (ValueType::Float, ValueType::Int) => {
-                ValueType::Float
-            }
             (ValueType::Array(x), ValueType::Array(y)) => {
                 ValueType::Array(Box::new(Self::lub(x, y)))
             }
