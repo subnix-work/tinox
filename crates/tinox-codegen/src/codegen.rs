@@ -1616,6 +1616,11 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @tinox_array_insert(i64*, i64, i64)").unwrap();
         // HTTP server C runtime (low-level)
         writeln!(&mut self.ir, "declare i64 @httpServerCreate(i64)").unwrap();
+        // Task scopes (issue #301): runtime side of the parser's `scope { }` desugaring.
+        writeln!(&mut self.ir, "declare i64 @__scope_new()").unwrap();
+        writeln!(&mut self.ir, "declare void @__scope_add(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @__scope_join(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @__scope_abort(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerBoundPort(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConn(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @httpServerReadRequest(i64)").unwrap();
@@ -8762,6 +8767,19 @@ impl CodeGen {
                 Ok((result, ty))
             }
             ExprKind::Call { func, args } => {
+                // `__scope_register(scope, spawn ...)` (parser desugaring of
+                // `scope { }`, issue #301): spawn, hand the task to the
+                // scope, and yield the task handle unchanged.
+                if let ExprKind::Ident(name) = &func.node {
+                    if name == "__scope_register" && args.len() == 2 {
+                        let (scope, scope_ty) = self.gen_expr(&args[0], ctx)?;
+                        let scope = self.coerce_to_i64(&scope, &scope_ty);
+                        let (task, task_ty) = self.gen_expr(&args[1], ctx)?;
+                        let task_i64 = self.coerce_to_i64(&task, &task_ty);
+                        writeln!(&mut self.ir, "  call void @__scope_add(i64 {}, i64 {})", scope, task_i64).unwrap();
+                        return Ok((task_i64, "i64".to_string()));
+                    }
+                }
                 // Same-class bare `fnc` call (issue #149 stage 2): a
                 // sibling STATIC method of the class this method body
                 // belongs to, called without a `ClassName::` qualifier.
@@ -13591,6 +13609,8 @@ impl CodeGen {
                     // to be something else entirely (lambda var, etc.).
                     tf.contains(name.as_str())
                         || tm.contains(name.as_str())
+                        // Joining a task scope re-throws a child's failure.
+                        || name == "__scope_join"
                         || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
                 } else {
                     true // dynamic/lambda call — cannot prove non-throwing
