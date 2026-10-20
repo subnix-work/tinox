@@ -60,6 +60,11 @@ tinox search <query> [--repository <id>]     # Search a registry's package catal
 
 Run `tinox help` for the same list from the CLI itself.
 
+Use `tinox describe <Symbol>` for compact, checked API signatures and imports
+from the current project's resolved sources. `--member`, `--signatures-only`,
+`--limit`, and `--json` support focused queries; see the
+[symbol-description protocol](docs/compiler-describe.md).
+
 `tinox check --json` and `tinox build --json` provide versioned structured
 diagnostics for tooling. See the [diagnostics protocol](docs/compiler-diagnostics.md)
 for the schema, stable codes, source ranges, and LSP mapping.

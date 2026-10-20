@@ -552,10 +552,10 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
             Type::Array(inner) => format!("Array<{}>", self.fmt_type(inner)),
             Type::Map(k, v) => format!("Map<{}, {}>", self.fmt_type(k), self.fmt_type(v)),
             Type::Mutable(inner) => format!("mut {}", self.fmt_type(inner)),
-            Type::Ref(inner) => format!("&{}", self.fmt_type(inner)),
+            Type::Ref(inner) => format!("?{}", self.fmt_type(inner)),
             Type::Fn { params, ret } => {
                 let ps: Vec<String> = params.iter().map(|t| self.fmt_type(t)).collect();
-                format!("fn({}) -> {}", ps.join(", "), self.fmt_type(ret))
+                format!("fnc({}) -> {}", ps.join(", "), self.fmt_type(ret))
             }
             Type::Tuple(types) => {
                 let ts: Vec<String> = types.iter().map(|t| self.fmt_type(t)).collect();
@@ -583,7 +583,7 @@ fn fmt_visibility(vis: &Visibility) -> &'static str {
     }
 }
 
-fn fmt_annotation_arg(arg: &AnnotationArg) -> String {
+pub(crate) fn fmt_annotation_arg(arg: &AnnotationArg) -> String {
     match arg {
         AnnotationArg::Literal(lit) => fmt_literal(lit),
         AnnotationArg::EnumValue(type_name, variant) => format!("{}.{}", type_name, variant),

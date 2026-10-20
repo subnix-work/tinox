@@ -17,7 +17,8 @@ fn media_type_arg_to_mime(arg: &AnnotationArg) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AnnotationTarget {
     Function,
     Method,
@@ -30,7 +31,7 @@ pub enum AnnotationTarget {
     Param,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AnnotationInfo {
     pub name: String,
     pub valid_targets: Vec<AnnotationTarget>,
@@ -342,6 +343,13 @@ pub struct AnnotationProcessor {
 }
 
 impl AnnotationProcessor {
+    /// Expose the exact metadata used by annotation validation to API consumers.
+    pub fn info(&self, name: &str) -> Option<&AnnotationInfo> { self.registry.get(name) }
+
+    pub fn register_source(&mut self, source: &tinox_parser::SourceFile) {
+        for decl in &source.decls { collect_custom_annotation_classes(&decl.node, self); }
+    }
+
     pub fn new() -> Self {
         let mut registry: HashMap<String, AnnotationInfo> = HashMap::new();
 
