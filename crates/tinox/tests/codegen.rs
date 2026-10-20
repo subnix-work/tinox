@@ -21,7 +21,8 @@ fn runtime_src() -> PathBuf {
 /// Panics with a descriptive message on any failure.
 fn run(source: &str) -> String {
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let tmp = format!("/tmp/tinox_test_{}", id);
+    // PID-scoped: the counter alone collides across processes (nextest runs each test in its own).
+    let tmp = format!("/tmp/tinox_test_{}_{}", std::process::id(), id);
 
     // Pipeline
     let mut lexer = Lexer::new(source);
