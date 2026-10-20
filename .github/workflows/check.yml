@@ -92,5 +92,10 @@ jobs:
           path: ~/.tinox/repository
           key: tinox-pkg-cache-v1
 
+      # `make test` uses cargo-nextest when present (parallel across all
+      # cores) and falls back to plain `cargo test` otherwise.
+      - name: install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
       - name: make check
         run: make -C tinox check
