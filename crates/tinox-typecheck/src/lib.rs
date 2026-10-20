@@ -1468,6 +1468,12 @@ impl TypeChecker {
                     self.symbols.functions.insert(f.name.clone(), sig);
                 }
                 DeclKind::Class(c) => {
+                    if c.name == "Task" {
+                        self.errors.push(Error::new(
+                            decl.span,
+                            "`Task` is a built-in type (the result of `spawn`, see Task<T>); rename this class".to_string(),
+                        ));
+                    }
                     if let Some(parent) = &c.extends {
                         self.class_parents.insert(c.name.clone(), parent.clone());
                     }
@@ -3090,12 +3096,33 @@ impl TypeChecker {
                 ValueType::Fn
             }
             ExprKind::Spawn(inner) => {
-                self.infer_type(inner);
-                ValueType::Int // task handle (opaque i64)
+                // `spawn f(..)` is a `Task<T>` where T is f's declared
+                // return type (issue #301). At the LLVM level the handle
+                // is still one opaque i64; the type argument exists so
+                // `await` can recover T (String/Float64/Bool/class
+                // results used to be handed back as a raw Int64).
+                let result = self.infer_type(inner);
+                ValueType::Named("Task".to_string(), vec![result])
             }
             ExprKind::Await(inner) => {
-                self.infer_type(inner);
-                ValueType::Int // task result
+                match self.infer_type(inner) {
+                    ValueType::Named(name, args) if name == "Task" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    // Legacy opaque Int64 handle (e.g. a stdlib field
+                    // declared `Int64` that stores a `spawn` result):
+                    // unchanged, the result stays an Int64.
+                    ValueType::Int | ValueType::Any => ValueType::Int,
+                    other => {
+                        self.errors.push(
+                            Error::new(
+                                expr.span,
+                                format!("`await` expects a Task<T>, found {}", other),
+                            ),
+                        );
+                        ValueType::Any
+                    }
+                }
             }
             ExprKind::Channel => ValueType::Int, // channel handle (opaque i64)
             ExprKind::Send { channel, value } => {
@@ -4083,6 +4110,11 @@ impl TypeChecker {
             // says. Mirrors how ExprKind::Recv recovers T from the
             // declared side instead of the (always-Int) channel handle.
             (ValueType::Named(name, _), ValueType::Int) if name == "Channel" => true,
+            // A Task<T> may still be stored in a legacy `Int64` handle
+            // field/variable (the pre-#301 representation, used by
+            // published stdlib packages), but not the other way round:
+            // an arbitrary Int must not silently pass as a task.
+            (ValueType::Int, ValueType::Named(name, _)) if name == "Task" => true,
             _ => false,
         }
     }
@@ -4158,6 +4190,47 @@ mod tests {
             msg,
             bag.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
+    }
+
+    // --- typed tasks: spawn -> Task<T>, await -> T (issue #301) ---
+
+    #[test]
+    fn test_await_task_yields_declared_result_type() {
+        ok("class C { async fnc name() -> String { return \"x\"; } fnc main() -> Nothing { const t = spawn C::name(); const s: String = await t; } }");
+    }
+
+    #[test]
+    fn test_await_task_result_type_mismatch_errors() {
+        err_contains(
+            "class C { async fnc name() -> String { return \"x\"; } fnc main() -> Nothing { const t = spawn C::name(); const n: Int64 = await t; } }",
+            "Int",
+        );
+    }
+
+    #[test]
+    fn test_task_annotation_and_legacy_int_handle_storage_ok() {
+        ok("class C { async fnc f() -> Int64 { return 1; } fnc main() -> Nothing { const t: Task<Int64> = spawn C::f(); var legacy: Int64 = spawn C::f(); const r: Int64 = await t; const q = await legacy; } }");
+    }
+
+    #[test]
+    fn test_plain_int_is_not_a_task() {
+        err_contains(
+            "class C { fnc main() -> Nothing { const t: Task<Int64> = 5; } }",
+            "Task",
+        );
+    }
+
+    #[test]
+    fn test_await_on_non_task_errors() {
+        err_contains(
+            "class C { fnc main() -> Nothing { const s = \"x\"; const r = await s; } }",
+            "await",
+        );
+    }
+
+    #[test]
+    fn test_user_class_named_task_is_rejected() {
+        err_contains("class Task { var id: Int64; }", "built-in type");
     }
 
     // --- same-class bare `fnc` calls (issue #149 stage 2) ---

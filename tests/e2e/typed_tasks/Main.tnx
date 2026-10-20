@@ -1,0 +1,65 @@
+// expect: hi 7
+// expect: 0.5
+// expect: 42
+// expect: true
+// expect: 3,4
+// expect: 5
+// expect: 99
+// expect: 99
+// expect: 36
+// expect: list 3
+// expect: wrapped 8
+import Point;
+
+class Main {
+    async fnc greet(n: Int64) -> String { return "hi " + n.toString(); }
+    async fnc half(n: Int64) -> Float64 { return 0.5; }
+    async fnc small(n: Int32) -> Int32 { return n + 1; }
+    async fnc flag(b: Bool) -> Bool { return !b; }
+    async fnc makePoint(x: Int64, y: Int64) -> Point { return Point { x: x, y: y }; }
+    async fnc sum(a: Int64, b: Int64) -> Int64 { return a + b; }
+    async fnc nothing() -> Nothing { }
+    async fnc numbers() -> List<Int64> { return [1, 2, 3]; }
+
+    fnc join(t: Task<Int64>) -> Int64 {
+        return await t;
+    }
+
+    fnc main() -> Int32 {
+        const g = spawn Main::greet(7);
+        const h = spawn Main::half(1);
+        const s = spawn Main::small(41);
+        const f = spawn Main::flag(false);
+        println(await g);
+        println((await h).toString());
+        println((await s).toString());
+        println((await f).toString());
+
+        const p: Point = await spawn Main::makePoint(3, 4);
+        println(p.x.toString() + "," + p.y.toString());
+
+        // Task<T> as a parameter type; Nothing-returning tasks are awaitable.
+        const j = spawn Main::sum(2, 3);
+        println(Main::join(j).toString());
+        await spawn Main::nothing();
+
+        // Repeat await returns the same cached result.
+        const r = spawn Main::sum(90, 9);
+        println((await r).toString());
+        println((await r).toString());
+
+        // Many tasks in one expression.
+        const t1: Task<Int64> = spawn Main::sum(1, 2);
+        const t2: Task<Int64> = spawn Main::sum(3, 4);
+        const t3: Task<Int64> = spawn Main::sum(5, 6);
+        const t4: Task<Int64> = spawn Main::sum(7, 8);
+        println((await t1 + await t2 + await t3 + await t4).toString());
+
+        const nums = await spawn Main::numbers();
+        println("list " + nums.len().toString());
+
+        const w = spawn Main::sum(3, 5);
+        println("wrapped " + (await w).toString());
+        return 0;
+    }
+}

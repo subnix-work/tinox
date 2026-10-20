@@ -1146,8 +1146,8 @@
         <tr><td><code>enum</code></td><td>Aufzählungstyp</td></tr>
         <tr><td><code>extends</code></td><td>Einfachvererbung</td></tr>
         <tr><td><code>implements</code></td><td>Interface-Implementierung</td></tr>
-        <tr><td><code>spawn</code></td><td>Neuen Thread starten</td></tr>
-        <tr><td><code>await</code></td><td>Auf Thread-Ergebnis warten</td></tr>
+        <tr><td><code>spawn</code></td><td>Neuen Thread starten; der Ausdruck hat den Typ <code>Task&lt;T&gt;</code> (<code>T</code> = Rückgabetyp der Funktion)</td></tr>
+        <tr><td><code>await</code></td><td>Auf einen <code>Task&lt;T&gt;</code> warten und dessen <code>T</code> liefern (String, Float64, Bool, Klassen, ... nicht nur Int64); erneutes <code>await</code> auf denselben Task liefert dasselbe Ergebnis. <code>Task</code> ist ein eingebauter Typname und kann nicht mehr für eigene Klassen verwendet werden</td></tr>
         <tr><td><code>defer</code></td><td>Code beim Verlassen des Scopes ausführen</td></tr>
         <tr><td><code>match</code></td><td>Pattern-Matching-Ausdruck</td></tr>
       </tbody>

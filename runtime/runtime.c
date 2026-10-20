@@ -755,8 +755,18 @@ int64_t* tinox_array_remove_at(int64_t* h, int64_t idx) {
 
 // ---- Async runtime ----
 
+// A joinable task (issue #301). The struct lives on the GC heap (malloc is
+// macro-redirected to GC_malloc above) and is intentionally NOT freed by
+// tinox_task_await: the first await joins the thread and caches the
+// result, so a repeated `await t` deterministically returns the same
+// value instead of joining a freed/dangling handle. The mutex makes
+// concurrent awaits from several threads safe (one joins, the rest
+// observe the cached result).
 typedef struct {
     pthread_t thread;
+    pthread_mutex_t mu;
+    int joined;
+    void* retval;
 } TinoxTask;
 
 typedef struct TinoxChannelNode {
@@ -795,16 +805,39 @@ void* tinox_task_spawn(void* (*fn)(void*), void* args) {
     TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
     t->fn = fn;
     t->args = args;
-    pthread_create(&task->thread, NULL, tinox_spawn_trampoline, t);
+    pthread_mutex_init(&task->mu, NULL);
+    task->joined = 0;
+    task->retval = NULL;
+    int rc = pthread_create(&task->thread, NULL, tinox_spawn_trampoline, t);
+    if (rc != 0) {
+        // No silent garbage: a task that never started must not be
+        // awaitable as if it had produced a result.
+        fprintf(stderr, "tinox: spawn failed: pthread_create: %s\n", strerror(rc));
+        exit(1);
+    }
     return task;
 }
 
 int64_t tinox_task_await(void* handle) {
     TinoxTask* task = (TinoxTask*)handle;
-    void* retval = NULL;
-    pthread_join(task->thread, &retval);
-    free(task);
-    return (int64_t)(uintptr_t)retval;
+    if (task == NULL) {
+        fprintf(stderr, "tinox: await on a null task handle\n");
+        exit(1);
+    }
+    pthread_mutex_lock(&task->mu);
+    if (!task->joined) {
+        void* retval = NULL;
+        int rc = pthread_join(task->thread, &retval);
+        if (rc != 0) {
+            fprintf(stderr, "tinox: await failed: pthread_join: %s\n", strerror(rc));
+            exit(1);
+        }
+        task->retval = retval;
+        task->joined = 1;
+    }
+    void* result = task->retval;
+    pthread_mutex_unlock(&task->mu);
+    return (int64_t)(uintptr_t)result;
 }
 
 // Fire-and-forget variant of tinox_task_spawn -- no TinoxTask handle, no
@@ -826,7 +859,11 @@ void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
     t->fn = fn;
     t->args = args;
     pthread_t tid;
-    pthread_create(&tid, NULL, tinox_spawn_trampoline, t);
+    int rc = pthread_create(&tid, NULL, tinox_spawn_trampoline, t);
+    if (rc != 0) {
+        fprintf(stderr, "tinox: spawn failed: pthread_create: %s\n", strerror(rc));
+        exit(1);
+    }
     pthread_detach(tid);
 }
 

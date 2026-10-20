@@ -12103,7 +12103,37 @@ impl CodeGen {
                 writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", handle_ptr, handle_i64).unwrap();
                 let result = self.temp();
                 writeln!(&mut self.ir, "  {} = call i64 @tinox_task_await(i8* {})", result, handle_ptr).unwrap();
-                Ok((result, "i64".to_string()))
+                // The runtime hands every task result back as one raw i64
+                // (the spawn wrapper boxes doubles/bools/pointers into it,
+                // see emit_spawn_wrapper). For a `Task<T>` (issue #301)
+                // recover T here; a legacy opaque Int64 handle has no T
+                // and keeps returning the raw i64.
+                use tinox_typecheck::ValueType as VT;
+                let task_result = match self.expr_value_types.get(&inner.id) {
+                    Some(VT::Named(name, args)) if name == "Task" && args.len() == 1 => {
+                        Some(args[0].clone())
+                    }
+                    _ => None,
+                };
+                let Some(result_vt) = task_result else {
+                    return Ok((result, "i64".to_string()));
+                };
+                let llvm = match &result_vt {
+                    VT::Char => "i32".to_string(),
+                    VT::Map(_) => "i8*".to_string(),
+                    other => Self::valuetype_to_llvm(other),
+                };
+                if matches!(result_vt, VT::Nothing | VT::Never) {
+                    return Ok((result, "i64".to_string()));
+                }
+                let converted = self.temp();
+                match llvm.as_str() {
+                    "i64" => return Ok((result, llvm)),
+                    "double" => writeln!(&mut self.ir, "  {} = bitcast i64 {} to double", converted, result).unwrap(),
+                    l if l.ends_with('*') => writeln!(&mut self.ir, "  {} = inttoptr i64 {} to {}", converted, result, l).unwrap(),
+                    l => writeln!(&mut self.ir, "  {} = trunc i64 {} to {}", converted, result, l).unwrap(),
+                }
+                Ok((converted, llvm))
             }
             ExprKind::Channel => {
                 let ch_ptr = self.temp();
@@ -13279,7 +13309,7 @@ impl CodeGen {
             // #123 hit this the first time this language feature was
             // used with a real T beyond the parser-only test coverage it
             // had before).
-            Type::Generic { name, .. } if name == "Channel" => "i64".to_string(),
+            Type::Generic { name, .. } if name == "Channel" || name == "Task" => "i64".to_string(),
             Type::Generic { .. } => "i64*".to_string(),
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),
@@ -15559,6 +15589,12 @@ impl CodeGen {
                 let t = wt!();
                 writeln!(&mut w, "  {} = inttoptr i64 {} to {}", t, raw, param_ty).unwrap();
                 t
+            } else if param_ty.starts_with('i') && param_ty[1..].chars().all(|c| c.is_ascii_digit()) {
+                // Narrow integer parameter (Int32/Int16/Int8/Char): the
+                // args array stores everything widened to i64.
+                let t = wt!();
+                writeln!(&mut w, "  {} = trunc i64 {} to {}", t, raw, param_ty).unwrap();
+                t
             } else {
                 raw
             };
@@ -15586,6 +15622,12 @@ impl CodeGen {
                 writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, as_i64).unwrap();
             } else if ret_ty.ends_with('*') {
                 writeln!(&mut w, "  {} = bitcast {} {} to i8*", ret_ptr, ret_ty, res).unwrap();
+            } else if ret_ty.starts_with('i') && ret_ty[1..].chars().all(|c| c.is_ascii_digit()) {
+                // Narrow integer result (Int32/Int16/Int8/Char): sign-extend
+                // so `await` can trunc it back to the declared width.
+                let as_i64 = wt!();
+                writeln!(&mut w, "  {} = sext {} {} to i64", as_i64, ret_ty, res).unwrap();
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, as_i64).unwrap();
             } else {
                 writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, res).unwrap();
             }
