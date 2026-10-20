@@ -731,7 +731,7 @@ mod diagnostic_tests {
         assert_eq!(diagnostic.range.start.character, prefix.encode_utf16().count() as u32);
         let diagnostics = compile("class Main { fnc main() -> Int32 { return \"wrong\"; } }", None, &[], |_| {});
         let data = diagnostics[0].data.as_ref().unwrap();
-        assert_eq!(data["diagnostic"]["expected"], "Int64");
+        assert_eq!(data["diagnostic"]["expected"], "Int32");
         assert_eq!(data["diagnostic"]["actual"], "String");
         assert_eq!(data["diagnostic"]["code"], "TINOX-TYPE-MISMATCH");
     }
