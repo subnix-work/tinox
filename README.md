@@ -60,6 +60,10 @@ tinox search <query> [--repository <id>]     # Search a registry's package catal
 
 Run `tinox help` for the same list from the CLI itself.
 
+`tinox check --json` and `tinox build --json` provide versioned structured
+diagnostics for tooling. See the [diagnostics protocol](docs/compiler-diagnostics.md)
+for the schema, stable codes, source ranges, and LSP mapping.
+
 ### Testing
 
 Methods annotated `@Test` (optionally `@Test("description")`) are discovered and
