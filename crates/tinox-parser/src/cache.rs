@@ -9,6 +9,11 @@ pub enum ParseFailure {
     Parse(ErrorBag),
 }
 impl ParseFailure {
+    pub fn into_diagnostics(self, file: Option<&str>) -> tinox_common::diagnostic::Failure {
+        let category = match &self { Self::Lex(_) => "lex", Self::Parse(_) => "syntax" };
+        tinox_common::diagnostic::Failure::errors(self.into_errors(), category, file)
+    }
+
     pub fn into_errors(self) -> Vec<Error> {
         match self {
             Self::Lex(errors) => errors,

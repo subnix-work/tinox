@@ -111,7 +111,7 @@ impl TypeError {
                 expected,
                 found,
                 span,
-            } => Error::new(*span, format!("expected {}, found {}", expected, found)),
+            } => Error::new(*span, format!("expected {}, found {}", expected, found)).with_types(expected, found),
             TypeError::BinaryOpTypeMismatch { op, lhs, rhs, span } => Error::new(
                 *span,
                 format!(
@@ -158,7 +158,7 @@ impl TypeError {
                     "function return type mismatch: expected {}, found {}",
                     expected, found
                 ),
-            ),
+            ).with_types(expected, found),
             TypeError::MissingReturn(span) => {
                 Error::new(*span, "missing return statement in function".to_string())
             }
@@ -174,7 +174,7 @@ impl TypeError {
                     "catch parameter type mismatch: expected {}, found {}",
                     expected, found
                 ),
-            ),
+            ).with_types(expected, found),
             TypeError::ThrowTypeMismatch(ty, span) => Error::new(
                 *span,
                 format!("throw requires a string or error type, found: {}", ty),
@@ -1958,6 +1958,7 @@ impl TypeChecker {
         self.expand_class_inheritance(source);
 
         for decl in Self::flatten_decls(source) {
+            let first_error = self.errors.len();
             match &decl.node {
                 DeclKind::Function(f) => {
                     self.check_function(f);
@@ -1966,6 +1967,9 @@ impl TypeChecker {
                     self.check_class(c);
                 }
                 _ => {}
+            }
+            for error in &mut self.errors[first_error..] {
+                error.file = decl.file.as_deref().map(Into::into);
             }
         }
 

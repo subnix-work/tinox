@@ -1694,8 +1694,9 @@ fn collect_custom_annotation_classes(decl: &DeclKind, processor: &mut Annotation
     }
 }
 
-fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
-    match decl {
+fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
+    let first_error = errors.len();
+    match &decl.node {
         DeclKind::Function(f) => {
             errors.extend(processor.validate(&f.annotations, AnnotationTarget::Function));
             for param in &f.params {
@@ -1739,10 +1740,13 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializ
         DeclKind::Namespace(ns) => {
             errors.extend(processor.validate(&ns.annotations, AnnotationTarget::Namespace));
             for inner in &ns.decls {
-                validate_decl(processor, &inner.node, json_serializable, errors);
+                validate_decl(processor, inner, json_serializable, errors);
             }
         }
         _ => {}
+    }
+    for error in &mut errors[first_error..] {
+        if error.file.is_none() { error.file = decl.file.as_deref().map(Into::into); }
     }
 }
 
@@ -1891,8 +1895,9 @@ pub fn validate_annotations(
 
     let mut errors = Vec::new();
     for decl in &source.decls {
-        validate_decl(&processor, &decl.node, &json_serializable, &mut errors);
+        validate_decl(&processor, decl, &json_serializable, &mut errors);
     }
+    for error in &mut errors { error.code = Some("TINOX-ANNOTATION".into()); }
     errors
 }
 

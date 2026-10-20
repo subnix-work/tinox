@@ -13,6 +13,8 @@ mod pm;
 mod runtime_cache;
 mod build_cache;
 mod describe;
+mod diagnostics;
+use tinox_common::diagnostic::Failure;
 
 fn main() {
     // Run the compiler on a thread with a large stack. The parser, type checker
@@ -87,6 +89,7 @@ fn print_help() {
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox describe <Symbol>    Describe a resolved API (--json, --member name)");
+    println!("  tinox check/build --json    Emit versioned JSON diagnostics on stdout");
     println!("  tinox fmt   <file>         Format a Tinox file (print to stdout)");
     println!("  tinox fmt --write <file>   Format a Tinox file in place");
     println!("  tinox repl                 Start interactive REPL");
@@ -295,7 +298,7 @@ fn entry_candidates(content: &str) -> Vec<String> {
 /// the naming rule, so a project really can have a lowercase entry script,
 /// and silently ignoring it would trade one broken default for another.
 fn resolve_entry_file(args: &[String]) -> Option<String> {
-    if let Some(f) = args.iter().find(|a| !a.starts_with('-')) {
+    if let Some(f) = args.iter().enumerate().find(|(i, a)| !a.starts_with('-') && (*i == 0 || !matches!(args[*i - 1].as_str(), "-o" | "--output" | "--error-format"))).map(|(_, a)| a) {
         return Some(f.clone());
     }
     // Project mode: look for tinox.toml in current dir or parents
@@ -345,6 +348,7 @@ fn apply_checked_flag(args: &[String]) {
 }
 
 fn build(args: &[String]) {
+    if let Err(failure) = diagnostics::validate_format(args) { diagnostics::finish(args, Err(failure)); }
     let release = args.iter().any(|a| a == "--release");
     let debug   = args.iter().any(|a| a == "--debug");
     apply_checked_flag(args);
@@ -358,6 +362,7 @@ fn build(args: &[String]) {
                 // Invalidate a known output under the same per-output lock.
                 if let Err(e) = build_cache::Build::begin(&output) { eprintln!("error invalidating build: {e}"); }
             }
+            diagnostics::finish(args, Err(Failure::new("driver", None, None, "No entry file found")));
             std::process::exit(1);
         },
     };
@@ -368,11 +373,8 @@ fn build(args: &[String]) {
     });
 
     match compile_file(&input_file, &output_name, opt) {
-        Ok(_) => println!("Compiled successfully: {} ({:?})", output_name, opt),
-        Err(e) => {
-            eprintln!("Compilation failed: {}", e);
-            std::process::exit(1);
-        }
+        Ok(_) => diagnostics::finish_with_message(args, Ok(()), &format!("Compiled successfully: {} ({:?})", output_name, opt)),
+        Err(e) => diagnostics::finish(args, Err(e)),
     }
 }
 
@@ -1551,99 +1553,18 @@ fn dev_mode(args: &[String]) {
 }
 
 fn check(args: &[String]) {
-    let input_file = match resolve_entry_file(args) {
-        Some(f) => f,
-        None => std::process::exit(1),
-    };
-    let source = match build_cache::read_to_string(&input_file) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: cannot read '{}': {}", input_file, e);
-            std::process::exit(1);
-        }
-    };
-
-    let lines: Vec<&str> = source.lines().collect();
-
-    let mut ast = match tinox_parser::parse_source_cached(&source) {
-        Ok(ast) => ast,
-        Err(error) => {
-            let errors = error.into_errors();
-            for e in &errors {
-                print_error(&input_file, &lines, e.span, &e.message);
-            }
-            eprintln!("\naborting: {} error{}", errors.len(), if errors.len() == 1 { "" } else { "s" });
-            std::process::exit(1);
-        }
-    };
-    if let Err(e) = check_one_type_per_file(&ast.decls, Path::new(&input_file)) {
-        eprintln!("error: {}", e);
+    if let Err(failure) = diagnostics::validate_format(args) { diagnostics::finish(args, Err(failure)); }
+    let input = resolve_entry_file(args).unwrap_or_else(|| {
+        diagnostics::finish(args, Err(Failure::new("driver", None, None, "No entry file found")));
         std::process::exit(1);
-    }
-    if let Err(e) = check_no_top_level_fn(&ast.decls, Path::new(&input_file)) {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    }
-    if let Err(e) = check_namespace_path_matches(&ast.decls, Path::new(&input_file)) {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    }
-
-    stamp_file_identity(&mut ast.decls, Path::new(&input_file));
-
-    // Resolve imports
-    let base_dir = Path::new(&input_file)
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_path_buf();
-    let mut visited = HashSet::new();
-    if let Ok(canonical) = Path::new(&input_file).canonicalize() {
-        visited.insert(canonical);
-    }
-    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
-    if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps) {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    }
-    if let Err(e) = check_explicit_imports(Path::new(&input_file), &dep_dirs, &missing_deps) {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    }
-    if let Err(e) = synthesize_accessors(&mut ast, &input_file) {
-        eprintln!("error: {}", e);
-        std::process::exit(1);
-    }
-
-    // Assign node ids before type-checking so infer_type's memoization is active
-    // (Bug 50) — without ids every sub-expression is re-inferred, making deep
-    // method chains exponential. The build path already does this before check.
-    tinox_parser::assign_node_ids(&mut ast);
-
-    // Type-check
-    match tinox_typecheck::cache::check_program_cached(&ast) {
-        Ok(_) => {
-            // Also run annotation processing for check mode
-            let annotation_stage = tinox_common::frontend::Stage::new("annotations");
-            let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
-            drop(annotation_stage);
-            for warning in &ann_result.deprecated_warnings {
-                eprintln!("warning: {}", warning);
-            }
-            for route in &ann_result.route_entries {
-                eprintln!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
-            }
-            println!("{}: no errors", input_file);
-            std::process::exit(0);
-        }
-        Err(bag) => {
-            let count = bag.errors.len();
-            for e in &bag.errors {
-                print_error(&input_file, &lines, e.span, &e.message);
-            }
-            eprintln!("\n{} error{} found", count, if count == 1 { "" } else { "s" });
-            std::process::exit(1);
-        }
-    }
+    });
+    let result = prepare_program(&input).and_then(|(ast, _)| {
+        let ann = tinox_typecheck::annotations::process_annotations(&ast);
+        validate_program_annotations(&ast, &ann, &input)?;
+        for warning in ann.deprecated_warnings { eprintln!("warning: {warning}"); }
+        Ok(())
+    });
+    diagnostics::finish_with_message(args, result, &format!("{input}: no errors"));
 }
 
 fn print_error(file: &str, lines: &[&str], span: tinox_common::Span, message: &str) {
@@ -2035,7 +1956,7 @@ fn gen_call_graph(args: &[String]) {
         visited.insert(c);
     }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
-    if let Err(e) = resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps) {
+    if let Err(e) = resolve_imports(&mut ast, &base_dir, Path::new(&input_file), &mut visited, &dep_dirs, &missing_deps) {
         eprintln!("error: import error: {}", e);
         std::process::exit(1);
     }
@@ -2579,7 +2500,7 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(path).canonicalize() { visited.insert(c); }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base);
-    resolve_imports(&mut ast, &base, &mut visited, &dep_dirs, &missing_deps)
+    resolve_imports(&mut ast, &base, Path::new(path), &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("import error: {e}"))?;
     check_explicit_imports(Path::new(path), &dep_dirs, &missing_deps)?;
     synthesize_accessors(&mut ast, path)?;
@@ -2605,7 +2526,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(source).canonicalize() { visited.insert(c); }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base);
-    resolve_imports(&mut ast, &base, &mut visited, &dep_dirs, &missing_deps)?;
+    resolve_imports(&mut ast, &base, Path::new(source), &mut visited, &dep_dirs, &missing_deps)?;
     check_explicit_imports(Path::new(source), &dep_dirs, &missing_deps)?;
     synthesize_accessors(&mut ast, source)?;
     tinox_parser::assign_node_ids(&mut ast);
@@ -2710,7 +2631,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let ir = cg.into_ir();
     let ir_path = format!("{exe}.ll");
     fs::write(&ir_path, ir).map_err(|e| format!("write IR: {e}"))?;
-    compile_ll_to_exe(&ir_path, exe, OptLevel::Debug)
+    Ok(compile_ll_to_exe(&ir_path, exe, OptLevel::Debug)?)
 }
 
 /// Returns the Tinox standard library directory.
@@ -3242,6 +3163,7 @@ fn stamp_file_identity(decls: &mut [tinox_parser::Decl], path: &Path) {
 
 fn stamp_file_identity_with(decls: &mut [tinox_parser::Decl], file: &std::sync::Arc<str>) {
     for decl in decls {
+        decl.file = Some(file.clone());
         match &mut decl.node {
             DeclKind::Function(f) => f.file = file.clone(),
             DeclKind::Class(c) => {
@@ -3528,10 +3450,11 @@ fn implied_import_paths_for(decls: &[tinox_parser::Decl]) -> Vec<Vec<String>> {
 fn resolve_imports(
     ast: &mut tinox_parser::SourceFile,
     base_dir: &Path,
+    source_path: &Path,
     visited: &mut HashSet<PathBuf>,
     dep_dirs: &[PathBuf],
     missing_deps: &[pm::MissingDep],
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let _stage = tinox_common::frontend::Stage::new("imports");
     let imports: Vec<_> = ast
         .decls
@@ -3561,7 +3484,8 @@ fn resolve_imports(
     let mut imported_decls: Vec<tinox_parser::Decl> = Vec::new();
 
     for import in imports {
-        let (full_paths, _origin) = resolve_import_target(&import, base_dir, dep_dirs, missing_deps)?;
+        let (full_paths, _origin) = resolve_import_target(&import, base_dir, dep_dirs, missing_deps)
+            .map_err(|e| Failure::new("import", source_path.to_str(), Some(import.span), e))?;
 
         for full_path in full_paths {
             if let Some(decls) = resolve_and_merge_file(&full_path, visited, dep_dirs, missing_deps)? {
@@ -3586,7 +3510,8 @@ fn resolve_imports(
             alias: None,
             span: tinox_common::Span::dummy(),
         };
-        let (full_paths, _origin) = resolve_import_target(&synthetic, base_dir, dep_dirs, missing_deps)?;
+        let (full_paths, _origin) = resolve_import_target(&synthetic, base_dir, dep_dirs, missing_deps)
+            .map_err(|e| Failure::new("import", source_path.to_str(), None, e))?;
         for full_path in full_paths {
             if let Some(decls) = resolve_and_merge_file(&full_path, visited, dep_dirs, missing_deps)? {
                 imported_decls.extend(decls);
@@ -3617,14 +3542,9 @@ fn resolve_imports(
     Ok(())
 }
 
-fn parse_frontend(source: &str, path: Option<&Path>) -> Result<tinox_parser::SourceFile, String> {
-    tinox_parser::parse_source_cached(source).map_err(|error| {
-        let location = path.map(|p| format!(" in '{}'", p.display())).unwrap_or_default();
-        match error {
-            tinox_parser::ParseFailure::Lex(errors) => format!("Lexer error{location}: {errors:?}"),
-            tinox_parser::ParseFailure::Parse(bag) => format!("Parse error{location}: {bag:?}"),
-        }
-    })
+fn parse_frontend(source: &str, path: Option<&Path>) -> Result<tinox_parser::SourceFile, Failure> {
+    tinox_parser::parse_source_cached(source)
+        .map_err(|error| error.into_diagnostics(path.and_then(Path::to_str)))
 }
 
 /// Reads, parses, validates, and recursively resolves one file's own
@@ -3639,22 +3559,25 @@ fn resolve_and_merge_file(
     visited: &mut HashSet<PathBuf>,
     dep_dirs: &[PathBuf],
     missing_deps: &[pm::MissingDep],
-) -> Result<Option<Vec<tinox_parser::Decl>>, String> {
+) -> Result<Option<Vec<tinox_parser::Decl>>, Failure> {
     if visited.contains(full_path) {
         return Ok(None);
     }
     visited.insert(full_path.to_path_buf());
 
     let source = build_cache::read_to_string(full_path)
-        .map_err(|e| format!("Failed to read '{}': {}", full_path.display(), e))?;
+        .map_err(|e| Failure::new("io", full_path.to_str(), None, e.to_string()))?;
     let mut imported = parse_frontend(&source, Some(full_path))?;
-    check_one_type_per_file(&imported.decls, full_path)?;
-    check_no_top_level_fn(&imported.decls, full_path)?;
-    check_namespace_path_matches(&imported.decls, full_path)?;
+    check_one_type_per_file(&imported.decls, full_path)
+        .map_err(|e| Failure::new("source-layout", full_path.to_str(), imported.decls.first().map(|d| d.span), e))?;
+    check_no_top_level_fn(&imported.decls, full_path)
+        .map_err(|e| Failure::new("source-layout", full_path.to_str(), imported.decls.first().map(|d| d.span), e))?;
+    check_namespace_path_matches(&imported.decls, full_path)
+        .map_err(|e| Failure::new("source-layout", full_path.to_str(), imported.decls.first().map(|d| d.span), e))?;
     stamp_file_identity(&mut imported.decls, full_path);
 
     let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    resolve_imports(&mut imported, &imported_dir, visited, dep_dirs, missing_deps)?;
+    resolve_imports(&mut imported, &imported_dir, full_path, visited, dep_dirs, missing_deps)?;
 
     Ok(Some(imported.decls))
 }
@@ -3662,12 +3585,12 @@ fn resolve_and_merge_file(
 fn parse_into_cache(
     path: &Path,
     cache: &mut std::collections::HashMap<PathBuf, tinox_parser::SourceFile>,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     if cache.contains_key(path) {
         return Ok(());
     }
     let source = build_cache::read_to_string(path)
-        .map_err(|e| format!("Failed to read '{}': {}", path.display(), e))?;
+        .map_err(|e| Failure::new("io", path.to_str(), None, e.to_string()))?;
     let mut ast = parse_frontend(&source, Some(path))?;
     stamp_file_identity(&mut ast.decls, path);
     // check_explicit_imports (issue #194) validates each file independently
@@ -3696,7 +3619,7 @@ fn file_direct_imports(
     cache: &mut std::collections::HashMap<PathBuf, tinox_parser::SourceFile>,
     dep_dirs: &[PathBuf],
     missing_deps: &[pm::MissingDep],
-) -> Result<Vec<(PathBuf, ImportOrigin)>, String> {
+) -> Result<Vec<(PathBuf, ImportOrigin)>, Failure> {
     parse_into_cache(path, cache)?;
     let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let imports: Vec<tinox_parser::ast::Import> = cache[path]
@@ -3707,7 +3630,8 @@ fn file_direct_imports(
 
     let mut out = Vec::new();
     for import in &imports {
-        let (targets, origin) = resolve_import_target(import, &base_dir, dep_dirs, missing_deps)?;
+        let (targets, origin) = resolve_import_target(import, &base_dir, dep_dirs, missing_deps)
+            .map_err(|e| Failure::new("import", path.to_str(), Some(import.span), e))?;
         for t in targets {
             parse_into_cache(&t, cache)?;
             out.push((t, origin));
@@ -3757,7 +3681,7 @@ fn transitive_import_closure(
     cache: &mut std::collections::HashMap<PathBuf, tinox_parser::SourceFile>,
     dep_dirs: &[PathBuf],
     missing_deps: &[pm::MissingDep],
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Vec<PathBuf>, Failure> {
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut stack = seeds;
     let mut ordered = Vec::new();
@@ -3816,7 +3740,7 @@ fn check_explicit_imports(
     entry_path: &Path,
     dep_dirs: &[PathBuf],
     missing_deps: &[pm::MissingDep],
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let _stage = tinox_common::frontend::Stage::new("visibility");
     let mut cache: std::collections::HashMap<PathBuf, tinox_parser::SourceFile> =
         std::collections::HashMap::new();
@@ -3825,11 +3749,7 @@ fn check_explicit_imports(
         .map_err(|e| format!("Cannot read '{}': {}", entry_path.display(), e))?;
     let mut queue: Vec<PathBuf> = vec![entry_canon];
     let mut seen: HashSet<PathBuf> = HashSet::new();
-    // Unresolved-name errors (what this check is actually for) and
-    // everything else this pass surfaces, kept apart so only the former
-    // gets the "add the missing `import`" trailer.
-    let mut violations: Vec<String> = Vec::new();
-    let mut other_violations: Vec<String> = Vec::new();
+    let mut diagnostics = Vec::new();
 
     while let Some(path) = queue.pop() {
         if !seen.insert(path.clone()) {
@@ -3862,62 +3782,17 @@ fn check_explicit_imports(
 
         if let Err(bag) = tinox_typecheck::cache::check_with_prelude_cached(&cache[&path], &preludes, &path.to_string_lossy()) {
             for err in bag.errors {
-                // Everything this pass finds is reported, including errors
-                // that have nothing to do with imports ("missing return
-                // statement", a bad field default, a bad annotation
-                // argument). They are worth reporting from HERE rather than
-                // leaving to the whole-program pass that runs right after:
-                // this loop knows which file each error is actually in,
-                // while the later pass names the ENTRY file instead.
-                //
-                // "missing return statement" used to be skipped by name,
-                // purely so it wouldn't be printed under the import
-                // trailer. That trade (a wrong file, to avoid an irrelevant
-                // hint) is no longer necessary: the trailer now only
-                // follows the errors it applies to, so non-import errors
-                // keep their accurate attribution AND lose the bad advice.
-                let rendered = format!(
-                    "{}:{}: {}",
-                    path.display(),
-                    err.span.start.line,
-                    err.message
-                );
-                if is_unresolved_name_error(&err.message) {
-                    violations.push(rendered);
-                } else {
-                    other_violations.push(rendered);
+                let needs_import = is_unresolved_name_error(&err.message);
+                let mut diagnostic = tinox_common::diagnostic::Diagnostic::from_error(err, "type", path.to_str());
+                if needs_import {
+                    diagnostic.notes.push("Import error: Every cross-namespace name must be explicitly imported in the file that uses it. Add the missing `import` statement.".into());
                 }
+                diagnostics.push(diagnostic);
             }
         }
     }
 
-    if violations.is_empty() && other_violations.is_empty() {
-        return Ok(());
-    }
-    // Only the unresolved-name errors are actually about imports, and the
-    // trailer below only makes sense for those. Everything else this pass
-    // happens to surface -- an annotation argument that isn't a valid
-    // literal, a field default that isn't one, a missing return -- used to
-    // be printed under the same "Import error:" heading with a paragraph
-    // telling the reader to add an `import` statement, which is advice that
-    // cannot possibly fix it. The carve-out that used to live here skipped
-    // ONE such message by exact text; this replaces it, because the wart
-    // was never specific to that message (its own NOTE said as much) and
-    // grew a third case the moment @TinoxUIApp gained an argument check.
-    //
-    let mut parts: Vec<String> = Vec::new();
-    if !violations.is_empty() {
-        parts.push(format!(
-            "Import error:\n{}\n\nEvery cross-namespace name must be explicitly imported in the file that uses it — \
-             being imported transitively by some other file in the program is no longer sufficient \
-             (see issue #194). Add the missing `import` statement(s) above.",
-            violations.join("\n")
-        ));
-    }
-    if !other_violations.is_empty() {
-        parts.push(other_violations.join("\n"));
-    }
-    Err(parts.join("\n\n"))
+    if diagnostics.is_empty() { Ok(()) } else { Err(Failure(diagnostics)) }
 }
 
 /// Does this typechecker message describe a name that couldn't be resolved?
@@ -3943,17 +3818,17 @@ fn is_unresolved_name_error(message: &str) -> bool {
     message.starts_with("undefined ") || message.starts_with("unresolved ")
 }
 
-fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<PathBuf, String> {
-    let _stage = tinox_common::frontend::Stage::new("total-build");
-    let mut build = build_cache::Build::begin(output_name)?;
-    let input_guard = build_cache::InputGuard::begin();
+fn prepare_program(input_path: &str) -> Result<(tinox_parser::SourceFile, tinox_typecheck::cache::CheckedProgram), Failure> {
     let source =
-        build_cache::read_to_string(input_path).map_err(|e| format!("Failed to read file: {}", e))?;
+        build_cache::read_to_string(input_path).map_err(|e| Failure::new("io", Some(input_path), None, format!("Failed to read file: {e}")))?;
 
-    let mut ast = parse_frontend(&source, None)?;
-    check_one_type_per_file(&ast.decls, Path::new(input_path))?;
-    check_no_top_level_fn(&ast.decls, Path::new(input_path))?;
-    check_namespace_path_matches(&ast.decls, Path::new(input_path))?;
+    let mut ast = parse_frontend(&source, Some(Path::new(input_path)))?;
+    check_one_type_per_file(&ast.decls, Path::new(input_path))
+        .map_err(|e| Failure::new("source-layout", Path::new(input_path).to_str(), ast.decls.first().map(|d| d.span), e))?;
+    check_no_top_level_fn(&ast.decls, Path::new(input_path))
+        .map_err(|e| Failure::new("source-layout", Path::new(input_path).to_str(), ast.decls.first().map(|d| d.span), e))?;
+    check_namespace_path_matches(&ast.decls, Path::new(input_path))
+        .map_err(|e| Failure::new("source-layout", Path::new(input_path).to_str(), ast.decls.first().map(|d| d.span), e))?;
     stamp_file_identity(&mut ast.decls, Path::new(input_path));
 
     let base_dir = Path::new(input_path)
@@ -3965,53 +3840,45 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
         visited.insert(canonical);
     }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
-    let loaded_modules = loaded_tinox_core_modules(&base_dir);
-    let startup_banner_enabled = read_startup_banner_config();
-    let dev_config = read_dev_config().unwrap_or_default();
-    if dev_config.enabled && opt == OptLevel::Release {
-        eprintln!(
-            "warning: [dev] is enabled in a release build -- the dev UI introspection API \
-             will be reachable on 127.0.0.1:{} at runtime",
-            dev_config.port
-        );
-    }
-    resolve_imports(&mut ast, &base_dir, &mut visited, &dep_dirs, &missing_deps)
-        .map_err(|e| format!("Import error: {}", e))?;
+    resolve_imports(&mut ast, &base_dir, Path::new(input_path), &mut visited, &dep_dirs, &missing_deps)?;
     // No "Import error:" prefix here: this pass reports more than import
     // problems, and labels the import ones itself (see its own tail).
     check_explicit_imports(Path::new(input_path), &dep_dirs, &missing_deps)?;
-    synthesize_accessors(&mut ast, input_path)?;
+    synthesize_accessors(&mut ast, input_path)
+        .map_err(|e| Failure::new("internal", Some(input_path), None, e))?;
     // NodeIds for the type table (typecheck → codegen)
     tinox_parser::assign_node_ids(&mut ast);
 
     let checked = tinox_typecheck::cache::check_program_cached(&ast)
-        .map_err(|e| format!("Type error:\n{}", e))?;
-    let iface_methods = checked.interface_methods;
-    let class_implements = checked.class_implements;
+        .map_err(|e| Failure::errors(e.errors, "type", Some(input_path)))?;
+    Ok((ast, checked))
+}
 
-    // Annotation processing pass
-    let annotation_stage = tinox_common::frontend::Stage::new("annotations");
-    let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
-    drop(annotation_stage);
-    for warning in &ann_result.deprecated_warnings {
-        eprintln!("warning: {}", warning);
+/// Validate program-wide annotation wiring before either consumer proceeds.
+fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tinox_typecheck::annotations::AnnotationProcessingResult, input_path: &str) -> Result<(), Failure> {
+    fn classes<'a>(decls: &'a [tinox_parser::Decl], names: &[&str], out: &mut Vec<&'a tinox_parser::Decl>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Class(class) if names.contains(&class.name.as_str()) => out.push(decl),
+                DeclKind::Namespace(namespace) => classes(&namespace.decls, names, out),
+                _ => {}
+            }
+        }
     }
-    for route in &ann_result.route_entries {
-        eprintln!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
-    }
-
-    // `class Main { fnc main() -> Int32 }` is now the mandatory program
-    // entry point (shape itself is still validated with a real Span by
-    // emit_class_main_entry_point in codegen) -- @Command CLI programs are
-    // exempt, they dispatch via argv through their own, separately
-    // generated tinox_main and were never part of this unification.
-    if ann_result.cli_commands.is_empty() && !has_class_named_main(&ast.decls) {
-        return Err(format!(
-            "'{}' has no `class Main {{ fnc main() -> Int32 }}` -- every Tinox program requires this as its entry point now (create src/Main.tnx, see `tinox new` for the scaffold shape); @GET/@Http3RestController/@WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer classes run alongside it instead of providing their own implicit main",
-            input_path
-        ));
-    }
-
+    let annotation_error = |names: &[&str], message: String| {
+        let mut declarations = Vec::new();
+        classes(&ast.decls, names, &mut declarations);
+        let primary = declarations.first();
+        let mut failure = Failure::new("annotation", primary.and_then(|d| d.file.as_deref()).or(Some(input_path)), primary.map(|d| d.span), message);
+        for decl in declarations.iter().skip(1) {
+            if let Some(file) = &decl.file {
+                failure.0[0].related.push(tinox_common::diagnostic::RelatedLocation {
+                    file: file.to_string(), range: decl.span, message: "Related annotation declaration".into(),
+                });
+            }
+        }
+        failure
+    };
     // @Transactional is postgres-only in v1 (issue #191): the connection
     // pool + BEGIN/COMMIT/ROLLBACK primitives it compiles down to only
     // exist for that driver (runtime.c's sqlite/mysql tinox_db_tx_* stubs
@@ -4026,32 +3893,13 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
         let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
         if driver != "postgres" {
             let (class_name, method_name) = ann_result.transactional_methods.iter().next().unwrap();
-            return Err(format!(
+            return Err(annotation_error(&[class_name.as_str()], format!(
                 "'{class_name}.{method_name}' is @Transactional, but [database] driver is {} -- \
                  @Transactional is only supported for driver = \"postgres\" in this version",
                 if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
-            ));
+            )));
         }
     }
-
-    let route_entries: Vec<tinox_codegen::RouteEntry> = ann_result
-        .route_entries
-        .iter()
-        .map(|r| tinox_codegen::RouteEntry {
-            http_method: r.method.clone(),
-            path: r.path.clone(),
-            class_name: r.class_name.clone(),
-            method_name: r.method_name.clone(),
-            status_code: r.status_code,
-            produces: r.produces.clone(),
-            consumes: r.consumes.clone(),
-            auth_type: r.auth_type.clone(),
-            oidc_roles: r.oidc_roles.clone(),
-            is_static: r.is_static,
-            params: convert_route_params(&r.params),
-            return_type: r.return_type.clone(),
-        })
-        .collect();
 
     // Every port this program will bind, checked against every other one.
     //
@@ -4079,32 +3927,32 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
         };
         // (port, what owns it) -- the owner string is what the error
         // message names, so it has to read like something the user wrote.
-        let mut binders: Vec<(i64, String)> = Vec::new();
+        let mut binders: Vec<(i64, String, String)> = Vec::new();
         for e in &ann_result.ws_endpoints {
             // Mirrors emit_ws_code's own resolution exactly (explicit port,
             // else TINOX_PORT, else 8080) so this can't disagree with what
             // actually gets bound.
             let port = e.port.or_else(env_port).unwrap_or(8080);
-            binders.push((port, format!("@WebsocketEndpoint class {}", e.class_name)));
+            binders.push((port, format!("@WebsocketEndpoint class {}", e.class_name), e.class_name.clone()));
         }
         for a in &ann_result.tinoxui_apps {
-            binders.push((a.http_port, format!("@TinoxUIApp class {}'s HTTP port", a.class_name)));
-            binders.push((a.ws_port, format!("@TinoxUIApp class {}'s WebSocket port", a.class_name)));
+            binders.push((a.http_port, format!("@TinoxUIApp class {}'s HTTP port", a.class_name), a.class_name.clone()));
+            binders.push((a.ws_port, format!("@TinoxUIApp class {}'s WebSocket port", a.class_name), a.class_name.clone()));
         }
         for c in &ann_result.http3_rest_controllers {
-            binders.push((c.port, format!("@Http3RestController class {}", c.class_name)));
+            binders.push((c.port, format!("@Http3RestController class {}", c.class_name), c.class_name.clone()));
         }
         // The REST auto-server binds one port for every @GET/@POST/... in
         // the program (emit_route_code's `__tinox_run_http`), unless an
         // @Http3RestController takes those routes over instead.
         if !ann_result.route_entries.is_empty() && ann_result.http3_rest_controllers.is_empty() {
-            binders.push((env_port().unwrap_or(8080), "the REST auto-server (@GET/@POST/...)".to_string()));
+            binders.push((env_port().unwrap_or(8080), "the REST auto-server (@GET/@POST/...)".to_string(), ann_result.route_entries[0].class_name.clone()));
         }
-        let mut by_port: std::collections::HashMap<i64, Vec<&str>> = std::collections::HashMap::new();
-        for (port, owner) in &binders {
-            by_port.entry(*port).or_default().push(owner.as_str());
+        let mut by_port: std::collections::HashMap<i64, Vec<(&str, &str)>> = std::collections::HashMap::new();
+        for (port, owner, class) in &binders {
+            by_port.entry(*port).or_default().push((owner.as_str(), class.as_str()));
         }
-        let mut collisions: Vec<(i64, Vec<&str>)> = by_port
+        let mut collisions: Vec<(i64, Vec<(&str, &str)>)> = by_port
             .into_iter()
             .filter(|(_, owners)| owners.len() > 1)
             .collect();
@@ -4112,13 +3960,113 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
         // always fails with the same message.
         collisions.sort_by_key(|(port, _)| *port);
         if let Some((port, owners)) = collisions.first() {
-            return Err(format!(
+            return Err(annotation_error(&owners.iter().map(|(_, class)| *class).collect::<Vec<_>>(), format!(
                 "port {port} is bound by more than one component: {} -- give each one a distinct port. \
                  Two binders on one port do NOT fail loudly at runtime (SO_REUSEPORT is set), they silently split the traffic between them.",
-                owners.join(" and ")
-            ));
+                owners.iter().map(|(owner, _)| *owner).collect::<Vec<_>>().join(" and ")
+            )));
         }
     }
+    if ann_result.http3_rest_controllers.len() > 1 {
+        return Err(annotation_error(&ann_result.http3_rest_controllers.iter().map(|c| c.class_name.as_str()).collect::<Vec<_>>(), format!(
+            "found {} @Http3RestController classes ({}); v1 supports exactly one auto-run HTTP/3 REST controller per program",
+            ann_result.http3_rest_controllers.len(),
+            ann_result.http3_rest_controllers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
+        )));
+    }
+    // @TinoxUIApp (issue #215, Phase 4): at most one class per program
+    // (same v1 restriction as @Http3RestController -- multiple apps in one
+    // program is architecturally ambiguous for now), and exactly one
+    // @View method on that class (zero = nothing to render; more than one
+    // = ambiguous which builds the tree).
+    if ann_result.tinoxui_apps.len() > 1 {
+        return Err(annotation_error(&ann_result.tinoxui_apps.iter().map(|c| c.class_name.as_str()).collect::<Vec<_>>(), format!(
+            "found {} @TinoxUIApp classes ({}); v1 supports exactly one Tinox-UI app per program",
+            ann_result.tinoxui_apps.len(),
+            ann_result.tinoxui_apps.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
+        )));
+    }
+    for app in &ann_result.tinoxui_apps {
+        if app.view_methods.is_empty() {
+            return Err(annotation_error(&[app.class_name.as_str()], format!(
+                "@TinoxUIApp class '{}' has no @View method -- exactly one method returning Component is required to build its UI",
+                app.class_name
+            )));
+        }
+        if app.view_methods.len() > 1 {
+            return Err(annotation_error(&[app.class_name.as_str()], format!(
+                "@TinoxUIApp class '{}' has {} @View methods ({}); exactly one is required",
+                app.class_name,
+                app.view_methods.len(),
+                app.view_methods.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<PathBuf, Failure> {
+    let _stage = tinox_common::frontend::Stage::new("total-build");
+    let mut build = build_cache::Build::begin(output_name)?;
+    let input_guard = build_cache::InputGuard::begin();
+    let (ast, checked) = prepare_program(input_path)?;
+    let base_dir = Path::new(input_path).parent().unwrap_or(Path::new("."));
+    let loaded_modules = loaded_tinox_core_modules(base_dir);
+    let startup_banner_enabled = read_startup_banner_config();
+    let dev_config = read_dev_config().unwrap_or_default();
+    if dev_config.enabled && opt == OptLevel::Release {
+        eprintln!(
+            "warning: [dev] is enabled in a release build -- the dev UI introspection API \
+             will be reachable on 127.0.0.1:{} at runtime",
+            dev_config.port
+        );
+    }
+    let iface_methods = checked.interface_methods;
+    let class_implements = checked.class_implements;
+
+    // Annotation processing pass
+    let annotation_stage = tinox_common::frontend::Stage::new("annotations");
+    let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
+    drop(annotation_stage);
+    validate_program_annotations(&ast, &ann_result, input_path)?;
+    for warning in &ann_result.deprecated_warnings {
+        eprintln!("warning: {}", warning);
+    }
+    for route in &ann_result.route_entries {
+        eprintln!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
+    }
+
+    // `class Main { fnc main() -> Int32 }` is now the mandatory program
+    // entry point (shape itself is still validated with a real Span by
+    // emit_class_main_entry_point in codegen) -- @Command CLI programs are
+    // exempt, they dispatch via argv through their own, separately
+    // generated tinox_main and were never part of this unification.
+    if ann_result.cli_commands.is_empty() && !has_class_named_main(&ast.decls) {
+        return Err(Failure::new("entry", Some(input_path), None, format!(
+            "'{}' has no `class Main {{ fnc main() -> Int32 }}` -- every Tinox program requires this as its entry point now (create src/Main.tnx, see `tinox new` for the scaffold shape); @GET/@Http3RestController/@WebsocketEndpoint/@Amqp10Consumer/@Amqp091Consumer classes run alongside it instead of providing their own implicit main",
+            input_path
+        )));
+    }
+
+    let route_entries: Vec<tinox_codegen::RouteEntry> = ann_result
+        .route_entries
+        .iter()
+        .map(|r| tinox_codegen::RouteEntry {
+            http_method: r.method.clone(),
+            path: r.path.clone(),
+            class_name: r.class_name.clone(),
+            method_name: r.method_name.clone(),
+            status_code: r.status_code,
+            produces: r.produces.clone(),
+            consumes: r.consumes.clone(),
+            auth_type: r.auth_type.clone(),
+            oidc_roles: r.oidc_roles.clone(),
+            is_static: r.is_static,
+            params: convert_route_params(&r.params),
+            return_type: r.return_type.clone(),
+        })
+        .collect();
+
     let ws_endpoints: Vec<tinox_codegen::WsEndpointEntry> = ann_result
         .ws_endpoints
         .iter()
@@ -4168,51 +4116,13 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
         })
         .collect();
 
-    if ann_result.http3_rest_controllers.len() > 1 {
-        return Err(format!(
-            "found {} @Http3RestController classes ({}); v1 supports exactly one auto-run HTTP/3 REST controller per program",
-            ann_result.http3_rest_controllers.len(),
-            ann_result.http3_rest_controllers.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
-        ));
-    }
-    // @TinoxUIApp (issue #215, Phase 4): at most one class per program
-    // (same v1 restriction as @Http3RestController -- multiple apps in one
-    // program is architecturally ambiguous for now), and exactly one
-    // @View method on that class (zero = nothing to render; more than one
-    // = ambiguous which builds the tree).
-    if ann_result.tinoxui_apps.len() > 1 {
-        return Err(format!(
-            "found {} @TinoxUIApp classes ({}); v1 supports exactly one Tinox-UI app per program",
-            ann_result.tinoxui_apps.len(),
-            ann_result.tinoxui_apps.iter().map(|e| e.class_name.as_str()).collect::<Vec<_>>().join(", ")
-        ));
-    }
-    let tinoxui_app: Option<tinox_codegen::TinoxUIAppEntry> = match ann_result.tinoxui_apps.first() {
-        Some(app) => {
-            if app.view_methods.is_empty() {
-                return Err(format!(
-                    "@TinoxUIApp class '{}' has no @View method -- exactly one method returning Component is required to build its UI",
-                    app.class_name
-                ));
-            }
-            if app.view_methods.len() > 1 {
-                return Err(format!(
-                    "@TinoxUIApp class '{}' has {} @View methods ({}); exactly one is required",
-                    app.class_name,
-                    app.view_methods.len(),
-                    app.view_methods.join(", ")
-                ));
-            }
-            Some(tinox_codegen::TinoxUIAppEntry {
-                class_name: app.class_name.clone(),
-                http_port: app.http_port,
-                ws_port: app.ws_port,
-                view_method: app.view_methods[0].clone(),
-                route_entries: app.route_entries.clone(),
-            })
-        }
-        None => None,
-    };
+    let tinoxui_app = ann_result.tinoxui_apps.first().map(|app| tinox_codegen::TinoxUIAppEntry {
+        class_name: app.class_name.clone(),
+        http_port: app.http_port,
+        ws_port: app.ws_port,
+        view_method: app.view_methods[0].clone(),
+        route_entries: app.route_entries.clone(),
+    });
     // Cross-kind combos (@Http3RestController + @WebsocketEndpoint/@Amqp10Consumer/
     // @Amqp091Consumer, or any of those + plain @GET/@Path routes) used to be
     // rejected here because each auto-run kind generated its own competing
@@ -4387,10 +4297,10 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
     }
     codegen
         .gen(&ast)
-        .map_err(|e| format!("Codegen error: {:?}", e))?;
+        .map_err(|e| Failure::errors(e.errors, "codegen", Some(input_path)))?;
 
     let ir = codegen.into_ir();
-    let options = runtime_options()?;
+    let options = runtime_options().map_err(|e| Failure::new("toolchain", Some(input_path), None, e))?;
     let inputs = input_guard.snapshot();
     let flags: Vec<_> = options.flags.iter().map(String::as_str).collect();
     let link_flags: Vec<_> = options.link_flags.iter().map(String::as_str).collect();
@@ -4407,18 +4317,26 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
     let output = build.staged_output();
     let mut linked = None;
     compile_ll_to_exe_configured(&ir_path.to_string_lossy(), &output.to_string_lossy(), opt,
-        &options, key.as_ref().map(|_| &mut linked))?;
+        &options, key.as_ref().map(|_| &mut linked))
+        .map_err(|mut failure| {
+            for diagnostic in &mut failure.0 {
+                if diagnostic.file.is_none() {
+                    diagnostic.file = Some(Path::new(input_path).canonicalize().unwrap_or_else(|_| PathBuf::from(input_path)).to_string_lossy().into_owned());
+                }
+            }
+            failure
+        })?;
     // Compiler/header/config changes during compilation cannot create a marker
     // for an output compiled from a different native configuration.
     let key = key.filter(|key| fingerprint().as_ref() == Some(key));
-    build.publish(key.as_deref(), &inputs, linked)
+    Ok(build.publish(key.as_deref(), &inputs, linked)?)
 }
 
 /// IR verifier gate: run the LLVM verifier on the generated .ll so invalid IR
 /// fails immediately with a real diagnostic (instead of a bare "opt failed"/
 /// "llc failed" later — or a silent miscompile in Debug mode, where opt is
 /// skipped entirely). Invalid IR is always a codegen bug, never a user error.
-fn verify_ir(ir_path: &str) -> Result<(), String> {
+fn verify_ir(ir_path: &str) -> Result<(), Failure> {
     let out = Command::new("opt")
         .args(["-passes=verify", "-disable-output", ir_path])
         .output();
@@ -4427,12 +4345,12 @@ fn verify_ir(ir_path: &str) -> Result<(), String> {
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
             let excerpt: Vec<&str> = stderr.lines().take(20).collect();
-            Err(format!(
+            Err(Failure::new("internal", None, None, format!(
                 "internal compiler error: generated invalid LLVM IR ({})\n{}\n\
                  This is a Tinox codegen bug — please report it with the source file.",
                 ir_path,
                 excerpt.join("\n")
-            ))
+            )).with_code("TINOX-LLVM-VERIFIER"))
         }
         // opt not installed — skip the gate, the normal pipeline will complain.
         Err(_) => Ok(()),
@@ -4544,124 +4462,129 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
     })
 }
 
-fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<(), String> {
+fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<(), Failure> {
     compile_ll_to_exe_configured(ir_path, output_name, opt, &runtime_options()?, None)
 }
 
 fn compile_ll_to_exe_configured(ir_path: &str, output_name: &str, opt: OptLevel,
-    options: &RuntimeOptions, trace: Option<&mut Option<Vec<PathBuf>>>) -> Result<(), String> {
-    let obj_path = format!("{}.o", output_name);
+    options: &RuntimeOptions, trace: Option<&mut Option<Vec<PathBuf>>>) -> Result<(), Failure> {
+    let toolchain_result = (|| -> Result<(), Failure> {
+        let obj_path = format!("{}.o", output_name);
 
-    verify_ir(ir_path)?;
+        verify_ir(ir_path)?;
 
-    let (llc_opt_flag, opt_flag) = match opt {
-        OptLevel::Release => ("-O3", "-O3"),
-        OptLevel::Debug   => ("-O0", "-O0"),
-    };
+        let (llc_opt_flag, opt_flag) = match opt {
+            OptLevel::Release => ("-O3", "-O3"),
+            OptLevel::Debug   => ("-O0", "-O0"),
+        };
 
-    // In Release mode, try opt for mid-level optimizations before llc.
-    // In Debug mode skip opt entirely for faster compile times.
-    let opt_available = opt == OptLevel::Release && Command::new("opt")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    let llc_input: String;
-    let bc_path_opt: Option<String>;
-
-    if opt_available {
-        let bc_path = format!("{}.opt.bc", output_name);
-        let opt_status = Command::new("opt")
-            .args([opt_flag, "-o", &bc_path, ir_path])
+        // In Release mode, try opt for mid-level optimizations before llc.
+        // In Debug mode skip opt entirely for faster compile times.
+        let opt_available = opt == OptLevel::Release && Command::new("opt")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status()
-            .map_err(|e| format!("opt failed: {}", e))?;
-        if !opt_status.success() {
-            return Err("opt failed".to_string());
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        let llc_input: String;
+        let bc_path_opt: Option<String>;
+
+        if opt_available {
+            let bc_path = format!("{}.opt.bc", output_name);
+            let opt_status = Command::new("opt")
+                .args([opt_flag, "-o", &bc_path, ir_path])
+                .output()
+                .map_err(|e| format!("opt failed: {}", e))?;
+            diagnostics::tool_output("opt", opt_status)?;
+            llc_input = bc_path.clone();
+            bc_path_opt = Some(bc_path);
+        } else {
+            llc_input = ir_path.to_string();
+            bc_path_opt = None;
         }
-        llc_input = bc_path.clone();
-        bc_path_opt = Some(bc_path);
-    } else {
-        llc_input = ir_path.to_string();
-        bc_path_opt = None;
-    }
 
-    let llc_status = Command::new("llc")
-        .args([
-            llc_opt_flag,
-            "-march=x86-64",
-            "-filetype=obj",
-            "-o",
-            &obj_path,
-            &llc_input,
-        ])
-        .status()
-        .map_err(|e| format!("llc failed: {}", e))?;
+        let llc_status = Command::new("llc")
+            .args([
+                llc_opt_flag,
+                "-march=x86-64",
+                "-filetype=obj",
+                "-o",
+                &obj_path,
+                &llc_input,
+            ])
+            .output()
+            .map_err(|e| format!("llc failed: {}", e))?;
 
-    if !llc_status.success() {
-        return Err("llc failed".to_string());
-    }
+        diagnostics::tool_output("llc", llc_status)?;
 
-    if let Some(bc_path) = bc_path_opt {
-        let _ = fs::remove_file(&bc_path);
-    }
+        if let Some(bc_path) = bc_path_opt {
+            let _ = fs::remove_file(&bc_path);
+        }
 
-    let runtime_src = &options.source;
-    let runtime_flags: Vec<&str> = options.flags.iter().map(String::as_str).collect();
-    let runtime_obj = format!("{}_runtime.o", output_name);
-    let runtime_link_path = match runtime_cache::runtime_object(runtime_src, &runtime_flags)? {
-        Some(path) => path.to_string_lossy().into_owned(),
-        None => {
-            let status = Command::new("cc")
-                .args(&runtime_flags)
-                .args(["-c", runtime_src, "-o", &runtime_obj])
-                .status()
-                .map_err(|e| format!("Failed to compile runtime: {}", e))?;
-            if !status.success() {
-                return Err("Runtime compilation failed".to_string());
+        let runtime_src = &options.source;
+        let runtime_flags: Vec<&str> = options.flags.iter().map(String::as_str).collect();
+        let runtime_obj = format!("{}_runtime.o", output_name);
+        let runtime_link_path = match runtime_cache::runtime_object(runtime_src, &runtime_flags)? {
+            Some(path) => path.to_string_lossy().into_owned(),
+            None => {
+                let status = Command::new("cc")
+                    .args(&runtime_flags)
+                    .args(["-c", runtime_src, "-o", &runtime_obj])
+                    .output()
+                    .map_err(|e| format!("Failed to compile runtime: {}", e))?;
+                diagnostics::tool_output("cc (runtime)", status)?;
+                runtime_obj.clone()
             }
-            runtime_obj.clone()
-        }
-    };
+        };
 
-    // -lz: WebSocket permessage-deflate (issue #122, RFC 7692) raw-deflate
-    // wrappers in runtime.c. Unlike -lssl/-lcrypto (opt-out via TINOX_TLS,
-    // since OpenSSL isn't always available in minimal build environments),
-    // zlib is assumed always present — same tier as -lm/-lpthread/-lgc, no
-    // opt-out needed.
-    let mut link_args = vec![obj_path.as_str(), runtime_link_path.as_str(), "-o", output_name];
-    link_args.extend(options.link_flags.iter().map(String::as_str));
-    if let Some(trace) = trace {
-        let output = Command::new("cc").args(&link_args).arg("-Wl,--trace").output()
-            .map_err(|e| format!("Failed to link: {}", e))?;
-        if !output.stderr.is_empty() { eprint!("{}", String::from_utf8_lossy(&output.stderr)); }
-        if !output.status.success() { return Err("Linking failed".into()); }
-        let excluded: HashSet<PathBuf> = [&obj_path, &runtime_link_path].iter()
-            .filter_map(|path| Path::new(path).canonicalize().ok()).collect();
-        let mut paths = std::collections::BTreeSet::new();
-        let mut complete = true;
-        for line in String::from_utf8_lossy(&output.stdout).lines().filter(|s| !s.trim().is_empty()) {
-            let path = Path::new(line.trim());
-            match path.canonicalize() {
-                Ok(resolved) if resolved.is_file() => {
-                    if !excluded.contains(&resolved) { paths.insert(path.to_path_buf()); }
+        // -lz: WebSocket permessage-deflate (issue #122, RFC 7692) raw-deflate
+        // wrappers in runtime.c. Unlike -lssl/-lcrypto (opt-out via TINOX_TLS,
+        // since OpenSSL isn't always available in minimal build environments),
+        // zlib is assumed always present — same tier as -lm/-lpthread/-lgc, no
+        // opt-out needed.
+        let mut link_args = vec![obj_path.as_str(), runtime_link_path.as_str(), "-o", output_name];
+        link_args.extend(options.link_flags.iter().map(String::as_str));
+        if let Some(trace) = trace {
+            let output = Command::new("cc").args(&link_args).arg("-Wl,--trace").output()
+                .map_err(|e| format!("Failed to link: {}", e))?;
+            if !output.stderr.is_empty() { eprint!("{}", String::from_utf8_lossy(&output.stderr)); }
+            if !output.status.success() { return diagnostics::tool_output("cc (link)", output); }
+            let excluded: HashSet<PathBuf> = [&obj_path, &runtime_link_path].iter()
+                .filter_map(|path| Path::new(path).canonicalize().ok()).collect();
+            let mut paths = std::collections::BTreeSet::new();
+            let mut complete = true;
+            for line in String::from_utf8_lossy(&output.stdout).lines().filter(|s| !s.trim().is_empty()) {
+                let path = Path::new(line.trim());
+                match path.canonicalize() {
+                    Ok(resolved) if resolved.is_file() => {
+                        if !excluded.contains(&resolved) { paths.insert(path.to_path_buf()); }
+                    }
+                    _ => { complete = false; eprintln!("{}", line); }
                 }
-                _ => { complete = false; eprintln!("{}", line); }
+            }
+            *trace = (complete && !paths.is_empty()).then(|| paths.into_iter().collect());
+        } else {
+            let status = Command::new("cc").args(&link_args).output()
+                .map_err(|e| format!("Failed to link: {}", e))?;
+            diagnostics::tool_output("cc (link)", status)?;
+        }
+
+        let _ = fs::remove_file(&obj_path);
+        let _ = fs::remove_file(&runtime_obj);
+
+        Ok(())
+    })();
+    toolchain_result.map_err(|mut failure| {
+        for diagnostic in &mut failure.0 {
+            if diagnostic.category == "driver" {
+                diagnostic.category = "toolchain".into();
+                diagnostic.code = "TINOX-TOOLCHAIN".into();
             }
         }
-        *trace = (complete && !paths.is_empty()).then(|| paths.into_iter().collect());
-    } else {
-        let status = Command::new("cc").args(&link_args).status()
-            .map_err(|e| format!("Failed to link: {}", e))?;
-        if !status.success() { return Err("Linking failed".into()); }
-    }
-
-    let _ = fs::remove_file(&obj_path);
-    let _ = fs::remove_file(&runtime_obj);
-
-    Ok(())
+        failure
+    })
 }
 
 #[cfg(test)]
@@ -5100,5 +5023,27 @@ mod docker_tests {
         let args = vec!["--tag".to_string(), "myapp:v1".to_string()];
         assert_eq!(parse_flag_value(&args, "--tag"), Some("myapp:v1".to_string()));
         assert_eq!(parse_flag_value(&args, "--other"), None);
+    }
+}
+
+#[cfg(test)]
+mod structured_annotation_tests {
+    use super::*;
+
+    #[test]
+    fn port_collisions_retain_both_source_declarations() {
+        let mut first = parse_frontend("@WebsocketEndpoint(\"/one\", 12345) class First {}", None).unwrap();
+        let mut second = parse_frontend("@WebsocketEndpoint(\"/two\", 12345) class Second {}", None).unwrap();
+        stamp_file_identity(&mut first.decls, Path::new("/tmp/First.tnx"));
+        stamp_file_identity(&mut second.decls, Path::new("/tmp/Second.tnx"));
+        first.decls.extend(second.decls);
+        let annotations = tinox_typecheck::annotations::process_annotations(&first);
+        let failure = validate_program_annotations(&first, &annotations, "/tmp/Main.tnx").unwrap_err();
+        let diagnostic = &failure.0[0];
+        assert_eq!(diagnostic.code, "TINOX-ANNOTATION");
+        assert_eq!(diagnostic.file.as_deref(), Some("/tmp/First.tnx"));
+        assert!(diagnostic.range.is_some());
+        assert_eq!(diagnostic.related.len(), 1);
+        assert_eq!(diagnostic.related[0].file, "/tmp/Second.tnx");
     }
 }

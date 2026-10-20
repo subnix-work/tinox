@@ -65,6 +65,10 @@ from the current project's resolved sources. `--member`, `--signatures-only`,
 `--limit`, and `--json` support focused queries; see the
 [symbol-description protocol](docs/compiler-describe.md).
 
+`tinox check --json` and `tinox build --json` provide versioned structured
+diagnostics for tooling. See the [diagnostics protocol](docs/compiler-diagnostics.md)
+for the schema, stable codes, source ranges, and LSP mapping.
+
 ### Testing
 
 Methods annotated `@Test` (optionally `@Test("description")`) are discovered and

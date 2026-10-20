@@ -292,11 +292,9 @@ fn cached_object(
         .arg(&snapshot)
         .arg("-o")
         .arg(&object)
-        .status()
+        .output()
         .map_err(|e| format!("Failed to compile runtime: {e}"))?;
-    if !status.success() {
-        return Err("Runtime compilation failed".into());
-    }
+    crate::diagnostics::tool_output("cc (runtime)", status)?;
     let bytes = fs::read(&object).map_err(|e| e.to_string())?;
     if bytes.is_empty() {
         return Err("C compiler produced an empty runtime object".into());
