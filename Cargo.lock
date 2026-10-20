@@ -1341,6 +1341,7 @@ dependencies = [
  "libc",
  "notify",
  "serde",
+ "serde_json",
  "serde_yaml",
  "sha2",
  "tar",

@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use analysis::{
     build_registry_from_source, completions_at, definition_at, document_symbols,
-    hover_at, lsp_pos_to_offset, pos_to_lsp, TypeRegistry,
+    hover_at, lsp_pos_to_offset, TypeRegistry,
 };
 use dashmap::DashMap;
-use tinox_common::Error;
+use tinox_common::diagnostic::{Diagnostic as CompilerDiagnostic, SCHEMA_VERSION};
 use tinox_lexer::Lexer;
 use tinox_parser::{ast::SourceFile, Parser};
 use tower_lsp::jsonrpc::Result;
@@ -362,7 +362,7 @@ impl Backend {
         };
         preludes.extend(project_local.iter());
 
-        let diags = compile(&text, &preludes, |ast| {
+        let diags = compile(&text, uri.to_file_path().ok().as_deref().and_then(Path::to_str), &preludes, |ast| {
             self.asts.insert(uri.clone(), ast);
         });
         self.docs.insert(uri.clone(), text);
@@ -370,31 +370,39 @@ impl Backend {
     }
 }
 
-fn err_to_diag(e: Error) -> Diagnostic {
+fn err_to_diag(diagnostic: CompilerDiagnostic, source: &str) -> Diagnostic {
+    let range = diagnostic.range.unwrap_or_else(tinox_common::Span::dummy);
+    // Compiler columns count Unicode scalar values; LSP uses UTF-16 units.
+    let position = |pos: tinox_common::Pos| Position {
+        line: pos.line.saturating_sub(1),
+        character: source.lines().nth(pos.line.saturating_sub(1) as usize)
+            .unwrap_or("").chars().take(pos.column.saturating_sub(1) as usize)
+            .map(|c| c.len_utf16() as u32).sum(),
+    };
     Diagnostic {
-        range: Range {
-            start: pos_to_lsp(e.span.start),
-            end: pos_to_lsp(e.span.end),
-        },
+        range: Range { start: position(range.start), end: position(range.end) },
         severity: Some(DiagnosticSeverity::ERROR),
-        message: e.message,
+        code: Some(NumberOrString::String(diagnostic.code.clone())),
+        message: diagnostic.message.clone(),
         source: Some("tinox".into()),
+        data: Some(serde_json::json!({ "schema_version": SCHEMA_VERSION, "diagnostic": diagnostic })),
         ..Default::default()
     }
 }
 
-// Lex → parse → typecheck; calls on_ast if parsing succeeded; returns diagnostics.
-fn compile(src: &str, preludes: &[&SourceFile], on_ast: impl FnOnce(SourceFile)) -> Vec<Diagnostic> {
+// Lex → parse → typecheck, using the same records and codes as the CLI.
+fn compile(src: &str, file: Option<&str>, preludes: &[&SourceFile], on_ast: impl FnOnce(SourceFile)) -> Vec<Diagnostic> {
     let ast = match tinox_parser::parse_source_cached(src) {
         Ok(ast) => ast,
-        Err(error) => return error.into_errors().into_iter().map(err_to_diag).collect(),
+        Err(error) => return error.into_diagnostics(file).0.into_iter()
+            .map(|diagnostic| err_to_diag(diagnostic, src)).collect(),
     };
-
-    let diags = match tinox_typecheck::cache::check_with_prelude_cached(&ast, preludes, "<lsp-buffer>") {
+    let diags = match tinox_typecheck::cache::check_with_prelude_cached(&ast, preludes, file.unwrap_or("<lsp-buffer>")) {
         Ok(_) => vec![],
-        Err(bag) => bag.errors.into_iter().map(err_to_diag).collect(),
+        Err(bag) => bag.errors.into_iter().map(|error| {
+            err_to_diag(CompilerDiagnostic::from_error(error, "type", file), src)
+        }).collect(),
     };
-
     on_ast(ast);
     diags
 }
@@ -703,5 +711,36 @@ mod tests {
         assert!(result.is_ok(), "expected clean typecheck, got: {:?}", result.err().map(|b| b.errors));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn shared_codes_details_and_utf16_ranges_reach_lsp() {
+        let source = "class Main { fnc main() -> Int32 { println(\"😀\"); return absent; } }";
+        let diagnostics = compile(source, Some("/tmp/Main.tnx"), &[], |_| {});
+        let diagnostic = diagnostics.iter().find(|d| d.message.contains("undefined variable")).unwrap();
+        assert_eq!(diagnostic.code, Some(NumberOrString::String("TINOX-TYPE".into())));
+        let data = diagnostic.data.as_ref().unwrap();
+        assert_eq!(data["schema_version"], 1);
+        assert_eq!(data["diagnostic"]["file"], "/tmp/Main.tnx");
+        let prefix = &source[..source.find("absent").unwrap()];
+        assert_eq!(diagnostic.range.start.character, prefix.encode_utf16().count() as u32);
+        let diagnostics = compile("class Main { fnc main() -> Int32 { return \"wrong\"; } }", None, &[], |_| {});
+        let data = diagnostics[0].data.as_ref().unwrap();
+        assert_eq!(data["diagnostic"]["expected"], "Int64");
+        assert_eq!(data["diagnostic"]["actual"], "String");
+        assert_eq!(data["diagnostic"]["code"], "TINOX-TYPE-MISMATCH");
+    }
+
+    #[test]
+    fn parser_and_annotation_categories_match_the_cli() {
+        for (source, category) in [("class Main {", "syntax"), ("`", "lex"), ("@Unknown class Main {}", "annotation")] {
+            let diagnostics = compile(source, None, &[], |_| {});
+            assert_eq!(diagnostics[0].data.as_ref().unwrap()["diagnostic"]["category"], category);
+        }
     }
 }

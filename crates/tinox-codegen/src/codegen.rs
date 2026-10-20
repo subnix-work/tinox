@@ -14918,7 +14918,7 @@ impl CodeGen {
             },
             StmtKind::Empty => StmtKind::Empty,
         };
-        Spanned { node, span: stmt.span, id: stmt.id }
+        Spanned { node, span: stmt.span, id: stmt.id, file: stmt.file.clone() }
     }
 
     /// Counterpart to `substitute_stmt` for expr nodes (see there for `self_rename`).
@@ -15083,7 +15083,7 @@ impl CodeGen {
                 args: args.iter().map(|a| Self::substitute_expr(a, subst, self_rename)).collect(),
             },
         };
-        Spanned { node, span: expr.span, id: expr.id }
+        Spanned { node, span: expr.span, id: expr.id, file: expr.file.clone() }
     }
 
     /// Create a monomorphic copy of a generic function with substituted types and a mangled name.

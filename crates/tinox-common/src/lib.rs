@@ -1,4 +1,5 @@
 pub mod frontend;
+pub mod diagnostic;
 
 use std::fmt;
 
@@ -71,11 +72,13 @@ pub struct Spanned<T> {
     /// import resolution. 0 = unassigned (synthetic nodes, paths without
     /// numbering) — consumers must treat 0 as "unknown".
     pub id: u32,
+    #[serde(default)]
+    pub file: Option<std::sync::Arc<str>>,
 }
 
 impl<T> Spanned<T> {
     pub fn new(node: T, span: Span) -> Self {
-        Self { node, span, id: 0 }
+        Self { node, span, id: 0, file: None }
     }
 
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Spanned<U> {
@@ -83,6 +86,7 @@ impl<T> Spanned<T> {
             node: f(self.node),
             span: self.span,
             id: self.id,
+            file: self.file,
         }
     }
 }
@@ -91,6 +95,14 @@ impl<T> Spanned<T> {
 pub struct Error {
     pub span: Span,
     pub message: String,
+    #[serde(default)]
+    pub code: Option<Box<str>>,
+    #[serde(default)]
+    pub file: Option<Box<str>>,
+    #[serde(default)]
+    pub expected: Option<Box<str>>,
+    #[serde(default)]
+    pub actual: Option<Box<str>>,
 }
 
 impl Error {
@@ -98,13 +110,28 @@ impl Error {
         Self {
             span,
             message: message.into(),
+            code: None,
+            file: None,
+            expected: None,
+            actual: None,
         }
+    }
+
+    pub fn with_types(mut self, expected: impl Into<String>, actual: impl Into<String>) -> Self {
+        self.code = Some("TINOX-TYPE-MISMATCH".into());
+        self.expected = Some(expected.into().into_boxed_str());
+        self.actual = Some(actual.into().into_boxed_str());
+        self
     }
 
     pub fn new_at(span: Span, message: impl Into<String>) -> Self {
         Self {
             span,
             message: message.into(),
+            code: None,
+            file: None,
+            expected: None,
+            actual: None,
         }
     }
 }
