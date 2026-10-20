@@ -2733,7 +2733,9 @@ impl Parser {
     fn parse_await_expr(&mut self) -> Result<Expr, Error> {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Await)?;
-        let expr = Box::new(self.parse_expr()?);
+        // Operand binds at unary precedence, so `await a + await b` is
+        // `(await a) + (await b)`, not `await (a + await b)` (issue #289).
+        let expr = Box::new(self.parse_unary_expr()?);
         Ok(Spanned::new(ExprKind::Await(expr), span))
     }
 
@@ -4136,6 +4138,18 @@ mod tests {
         let StmtKind::Block(stmts) = &c.methods[0].body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
         assert!(matches!(e.node, ExprKind::This));
+    }
+
+    #[test]
+    fn test_expr_await_binds_tighter_than_binary_op() {
+        // Issue #289: `await a + await b` must be `(await a) + (await b)`.
+        let d = first_decl("fn f() { let x = await a + await b; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Binary { lhs: left, rhs: right, .. } = &e.node else { panic!("expected Binary, got {:?}", e.node) };
+        assert!(matches!(&left.node, ExprKind::Await(_)));
+        assert!(matches!(&right.node, ExprKind::Await(_)));
     }
 
     #[test]
