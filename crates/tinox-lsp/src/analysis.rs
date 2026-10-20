@@ -58,13 +58,9 @@ fn class_to_info(c: &Class) -> ClassInfo {
             doc: f.doc.clone(),
         }).collect(),
         methods: c.methods.iter().map(|m| {
-            let params: Vec<String> = m.params.iter()
-                .map(|p| format!("{}: {}", p.name, type_str(&p.param_type)))
-                .collect();
-            let kw = if m.static_ { "fnc" } else { "fn" };
             MethodInfo {
                 name: m.name.clone(),
-                signature: format!("{} {}({}) -> {}", kw, m.name, params.join(", "), type_str(&m.ret_type)),
+                signature: tinox_parser::api::method_signature(m),
                 doc: m.doc.clone(),
             }
         }).collect(),
@@ -401,70 +397,13 @@ fn hover_expr(expr: &Expr, offset: u32) -> Option<String> {
     }
 }
 
-pub fn fn_signature(f: &Function) -> String {
-    let params: Vec<String> = f
-        .params
-        .iter()
-        .map(|p| format!("{}: {}", p.name, type_str(&p.param_type)))
-        .collect();
-    let async_ = if f.is_async { "async " } else { "" };
-    format!("{}fn {}({}) -> {}", async_, f.name, params.join(", "), type_str(&f.ret_type))
-}
+pub fn fn_signature(f: &Function) -> String { tinox_parser::api::function_signature(f) }
 
 pub fn method_signature(class: &str, m: &Method) -> String {
-    let params: Vec<String> = m
-        .params
-        .iter()
-        .map(|p| format!("{}: {}", p.name, type_str(&p.param_type)))
-        .collect();
-    format!(
-        "{}.{}({}) -> {}",
-        class,
-        m.name,
-        params.join(", "),
-        type_str(&m.ret_type)
-    )
+    format!("{}\n{}", class, tinox_parser::api::method_signature(m))
 }
 
-pub fn type_str(ty: &Type) -> String {
-    match ty {
-        Type::Int8 => "Int8".into(),
-        Type::Int16 => "Int16".into(),
-        Type::Int32 => "Int32".into(),
-        Type::Int64 => "Int64".into(),
-        Type::UInt8 => "UInt8".into(),
-        Type::UInt16 => "UInt16".into(),
-        Type::UInt32 => "UInt32".into(),
-        Type::UInt64 => "UInt64".into(),
-        Type::Float32 => "Float32".into(),
-        Type::Float64 => "Float64".into(),
-        Type::Bool => "Bool".into(),
-        Type::String => "String".into(),
-        Type::Char => "Char".into(),
-        Type::Nothing => "Nothing".into(),
-        Type::Never => "Never".into(),
-        Type::Any => "Any".into(),
-        Type::Infer => "_".into(),
-        Type::Named(n) => n.clone(),
-        Type::Array(inner) => format!("Array<{}>", type_str(inner)),
-        Type::Tuple(types) => {
-            let inner: Vec<_> = types.iter().map(type_str).collect();
-            format!("({})", inner.join(", "))
-        }
-        Type::Fn { params, ret } => {
-            let ps: Vec<_> = params.iter().map(type_str).collect();
-            format!("fn({}) -> {}", ps.join(", "), type_str(ret))
-        }
-        Type::Generic { name, args } => {
-            let as_: Vec<_> = args.iter().map(type_str).collect();
-            format!("{}<{}>", name, as_.join(", "))
-        }
-        Type::Map(k, v) => format!("Map<{}, {}>", type_str(k), type_str(v)),
-        Type::Mutable(inner) => format!("mut {}", type_str(inner)),
-        Type::Ref(inner) => format!("&{}", type_str(inner)),
-        Type::Nullable(inner) => format!("{}?", type_str(inner)),
-    }
-}
+pub fn type_str(ty: &Type) -> String { tinox_parser::api::type_name(ty) }
 
 fn literal_str(lit: &Literal) -> String {
     match lit {
@@ -797,9 +736,11 @@ fn annotation_items() -> Vec<CompletionItem> {
 
 /// Returns the documentation string for an annotation name, or None if unknown.
 pub fn annotation_doc(name: &str) -> Option<String> {
-    ANNOTATIONS.iter().find(|a| a.name == name).map(|a| {
-        format!("**@{}** — {}  \n\nTarget: `{}`  \n\n{}", a.name, a.detail, a.target, a.doc)
-    })
+    let processor = tinox_typecheck::annotations::AnnotationProcessor::new();
+    let info = processor.info(name)?;
+    let rich = ANNOTATIONS.iter().find(|annotation| annotation.name == name);
+    Some(format!("**@{}** — {}  \n\nTargets: `{:?}`  \nArguments: {}..{}  \n\n{}", info.name, rich.map(|a| a.detail).unwrap_or(&info.description), info.valid_targets, info.min_args,
+        if info.max_args == usize::MAX { "unbounded".into() } else { info.max_args.to_string() }, rich.map(|a| a.doc).unwrap_or("")))
 }
 
 fn clone_class_info(src: &ClassInfo) -> ClassInfo {
@@ -1469,7 +1410,7 @@ class UserController
             params: vec![Type::Int32],
             ret: Box::new(Type::Bool),
         };
-        assert_eq!(type_str(&t), "fn(Int32) -> Bool");
+        assert_eq!(type_str(&t), "fnc(Int32) -> Bool");
     }
 
     #[test]
@@ -1491,7 +1432,7 @@ class UserController
 
     #[test]
     fn test_type_str_ref() {
-        assert_eq!(type_str(&Type::Ref(Box::new(Type::String))), "&String");
+        assert_eq!(type_str(&Type::Ref(Box::new(Type::String))), "?String");
     }
 
     // --- fn_signature ---
@@ -1793,5 +1734,24 @@ enum Status { Ok, Err }
         if let Some(text) = result {
             assert!(text.contains("String?"), "hover should display nullable type as 'String?', got: {}", text);
         }
+    }
+}
+
+#[cfg(test)]
+mod api_signature_tests {
+    use super::*;
+    #[test]
+    fn completion_and_hover_share_lossless_generic_api_signatures() {
+        let source = tinox_parser::parse_source_cached("class Box<T> { fn map<U>(callback: fnc(T) -> U) -> U { return callback(this.value); } var value: T; }").unwrap();
+        let DeclKind::Class(class) = &source.decls[0].node else { panic!("class") };
+        let expected = tinox_parser::api::method_signature(&class.methods[0]);
+        assert!(expected.contains("map<U>(callback: fnc(T) -> U) -> U"));
+        let registry = build_registry_from_source(&source);
+        assert_eq!(registry["Box"].methods[0].signature, expected);
+        assert!(method_signature("Box", &class.methods[0]).contains(&expected));
+        let metadata = tinox_typecheck::annotations::AnnotationProcessor::new();
+        let get = metadata.info("GET").unwrap();
+        let doc = annotation_doc("GET").unwrap();
+        assert!(doc.contains(&format!("{}..{}", get.min_args, get.max_args)));
     }
 }

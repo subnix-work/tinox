@@ -10,3 +10,5 @@ pub use parser::Parser;
 
 pub mod cache;
 pub use cache::{parse_source_cached, ParseFailure};
+
+pub mod api;

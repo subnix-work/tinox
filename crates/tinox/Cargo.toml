@@ -9,6 +9,7 @@ tinox_parser = { package = "tinox-parser", path = "../tinox-parser" }
 tinox_codegen = { package = "tinox-codegen", path = "../tinox-codegen" }
 tinox_typecheck = { package = "tinox-typecheck", path = "../tinox-typecheck" }
 tinox_common = { package = "tinox-common", path = "../tinox-common" }
+serde_json = "1"
 libc = "0.2"
 notify = "6"
 ctrlc = "3"

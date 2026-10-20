@@ -12,6 +12,7 @@ mod callgraph;
 mod pm;
 mod runtime_cache;
 mod build_cache;
+mod describe;
 
 fn main() {
     // Run the compiler on a thread with a large stack. The parser, type checker
@@ -48,6 +49,7 @@ fn run() {
         "doc"   => gen_docs(&args[2..]),
         "graph" => gen_call_graph(&args[2..]),
         "check"   => check(&args[2..]),
+        "describe" => describe::run(&args[2..]),
         "fmt"     => fmt(&args[2..]),
         "repl"    => repl(),
         "install" => {
@@ -84,6 +86,7 @@ fn print_help() {
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
     println!("  tinox check [file]         Type-check without compiling");
+    println!("  tinox describe <Symbol>    Describe a resolved API (--json, --member name)");
     println!("  tinox fmt   <file>         Format a Tinox file (print to stdout)");
     println!("  tinox fmt --write <file>   Format a Tinox file in place");
     println!("  tinox repl                 Start interactive REPL");
@@ -2210,32 +2213,7 @@ fn method_to_doc(m: &tinox_parser::Method) -> DocMethod {
     }
 }
 
-fn type_str_simple(ty: &tinox_parser::Type) -> String {
-    use tinox_parser::Type;
-    match ty {
-        Type::Int8 => "Int8".into(),   Type::Int16 => "Int16".into(),
-        Type::Int32 => "Int32".into(), Type::Int64 => "Int64".into(),
-        Type::UInt8 => "UInt8".into(), Type::UInt16 => "UInt16".into(),
-        Type::UInt32 => "UInt32".into(), Type::UInt64 => "UInt64".into(),
-        Type::Float32 => "Float32".into(), Type::Float64 => "Float64".into(),
-        Type::Bool => "Bool".into(), Type::String => "String".into(),
-        Type::Char => "Char".into(), Type::Nothing => "Nothing".into(),
-        Type::Named(n) => n.clone(),
-        Type::Array(t) => format!("{}[]", type_str_simple(t)),
-        Type::Map(k, v) => format!("Map<{}, {}>", type_str_simple(k), type_str_simple(v)),
-        Type::Tuple(ts) => format!("({})", ts.iter().map(type_str_simple).collect::<Vec<_>>().join(", ")),
-        Type::Generic { name: n, args } => format!("{}<{}>", n, args.iter().map(type_str_simple).collect::<Vec<_>>().join(", ")),
-        Type::Fn { params, ret } => format!("fn({}) -> {}", params.iter().map(type_str_simple).collect::<Vec<_>>().join(", "), type_str_simple(ret)),
-        Type::Never => "Never".into(),
-        Type::Any => "Any".into(),
-        Type::Infer => "_".into(),
-        Type::Mutable(t) => format!("mut {}", type_str_simple(t)),
-        Type::Ref(t) => format!("&{}", type_str_simple(t)),
-        Type::Nullable(t) => format!("{}?", type_str_simple(t)),
-    }
-}
-
-// ── HTML renderer ─────────────────────────────────────────────────────────────
+fn type_str_simple(ty: &tinox_parser::Type) -> String { tinox_parser::api::type_name(ty) }
 
 fn render_docs_html(
     project_name: &str,
