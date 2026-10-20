@@ -5,11 +5,15 @@
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
 
-.PHONY: check test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync
+.PHONY: check test-and-dogfood test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync
 
-check: clippy
+check: clippy test-and-dogfood grammar-sync
+
+# Runs `test` and `dogfood` concurrently (CI's `test` job runs this alone).
+# The recursive make gives -j2 its own job server regardless of how `check`
+# itself was invoked.
+test-and-dogfood:
 	$(MAKE) --output-sync=target -j2 test dogfood
-	$(MAKE) grammar-sync
 
 # `test` and `dogfood` are independent (dogfood only needs the compiled
 # tinox binary), so `check` runs them concurrently; clippy runs first and
