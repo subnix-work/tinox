@@ -46,7 +46,9 @@ class Main
     // retry the initial TCP connect instead of coordinating on a signal.
     fnc dialRetry(port: Int64) -> Int64 {
         var attempt: Int64 = 0;
-        while attempt < 50 {
+        // Generous budget (10s): under a fully parallel test run the spawned
+        // server thread (cert load + bind) can start well after 1s.
+        while attempt < 500 {
             const fd: Int64 = socketCreateTcp();
             if (socketConnect(fd, "127.0.0.1", port)) {
                 return fd;

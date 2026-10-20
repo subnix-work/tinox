@@ -837,6 +837,13 @@ impl TypeChecker {
         }
         // HTTP low-level builtins (called from http_server.tnx)
         symbols.functions.insert("httpServerCreate".to_string(), FunctionSignature { params: vec![("port".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        // Task scopes (issue #301): internal helpers the parser's `scope { }`
+        // desugaring calls. `__scope_register` returns its second argument
+        // (a Task<T>) unchanged -- see the special case in check_call.
+        symbols.functions.insert("__scope_new".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        symbols.functions.insert("__scope_join".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        symbols.functions.insert("__scope_abort".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        symbols.functions.insert("__scope_register".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int), ("task".to_string(), ValueType::Any)], return_type: ValueType::Any });
         symbols.functions.insert("httpServerBoundPort".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerAcceptConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerReadRequest".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::String });
@@ -3440,6 +3447,14 @@ impl TypeChecker {
     }
 
     fn check_call(&mut self, func: &Expr, args: &[Expr], span: Span) -> ValueType {
+        // `__scope_register(scope, task)` is the identity on `task`: the
+        // spawn it wraps keeps its Task<T> type.
+        if let ExprKind::Ident(name) = &func.node {
+            if name == "__scope_register" && args.len() == 2 {
+                self.infer_type(&args[0]);
+                return self.infer_type(&args[1]);
+            }
+        }
         // Check if it's a simple identifier - could be function or lambda variable
         if let ExprKind::Ident(name) = &func.node {
             // First check if it's a defined function

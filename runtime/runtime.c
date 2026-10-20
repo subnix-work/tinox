@@ -762,11 +762,20 @@ int64_t* tinox_array_remove_at(int64_t* h, int64_t idx) {
 // value instead of joining a freed/dangling handle. The mutex makes
 // concurrent awaits from several threads safe (one joins, the rest
 // observe the cached result).
+extern __thread int64_t __tinox_err;
+
 typedef struct {
     pthread_t thread;
     pthread_mutex_t mu;
     int joined;
     void* retval;
+    // Error a `throw` left in the child thread's own (thread-local) error
+    // slot when the task body returned. Delivered to whoever awaits the
+    // task / to the owning scope; `error_delivered` makes sure one failure
+    // is surfaced exactly once (see tinox_task_await / __scope_join).
+    int has_error;
+    int error_delivered;
+    int64_t error;
 } TinoxTask;
 
 typedef struct TinoxChannelNode {
@@ -784,6 +793,7 @@ typedef struct {
 typedef struct {
     void* (*fn)(void*);
     void* args;
+    TinoxTask* task;  // NULL for detached tasks (nobody can await them)
 } TinoxSpawnTrampolineArgs;
 
 // Registers this new thread's GC TLS roots (Bug 140) before running the
@@ -794,8 +804,24 @@ static void* tinox_spawn_trampoline(void* raw) {
     tinox_gc_register_thread_roots();
     void* (*fn)(void*) = t->fn;
     void* args = t->args;
+    TinoxTask* task = t->task;
     free(t);
     void* ret = fn(args);
+    // A `throw` in the task body parks its value in THIS thread's
+    // thread-local error slot, which dies with the thread: without this
+    // capture a failing child silently looked like a normal return (0).
+    if (__tinox_err != 0) {
+        int64_t err = __tinox_err;
+        __tinox_err = 0;
+        if (task != NULL) {
+            task->error = err;
+            task->has_error = 1;
+        } else {
+            // Detached: nobody can ever await it, so report it here.
+            const char* msg = (const char*)(intptr_t)err;
+            fprintf(stderr, "Uncaught error in detached task: %s\n", msg ? msg : "(unknown)");
+        }
+    }
     tinox_gc_unregister_thread_roots();
     return ret;
 }
@@ -805,9 +831,13 @@ void* tinox_task_spawn(void* (*fn)(void*), void* args) {
     TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
     t->fn = fn;
     t->args = args;
+    t->task = task;
     pthread_mutex_init(&task->mu, NULL);
     task->joined = 0;
     task->retval = NULL;
+    task->has_error = 0;
+    task->error_delivered = 0;
+    task->error = 0;
     int rc = pthread_create(&task->thread, NULL, tinox_spawn_trampoline, t);
     if (rc != 0) {
         // No silent garbage: a task that never started must not be
@@ -818,12 +848,8 @@ void* tinox_task_spawn(void* (*fn)(void*), void* args) {
     return task;
 }
 
-int64_t tinox_task_await(void* handle) {
-    TinoxTask* task = (TinoxTask*)handle;
-    if (task == NULL) {
-        fprintf(stderr, "tinox: await on a null task handle\n");
-        exit(1);
-    }
+// Joins the task's thread (once) and caches its result.
+static void tinox_task_join_once(TinoxTask* task) {
     pthread_mutex_lock(&task->mu);
     if (!task->joined) {
         void* retval = NULL;
@@ -835,10 +861,81 @@ int64_t tinox_task_await(void* handle) {
         task->retval = retval;
         task->joined = 1;
     }
-    void* result = task->retval;
     pthread_mutex_unlock(&task->mu);
-    return (int64_t)(uintptr_t)result;
 }
+
+// A task that failed re-throws its error in the awaiting thread (every
+// await of the same task sees the same failure) and yields 0 -- the normal
+// "thrown, return a default" convention; the caller's post-statement
+// throw check then propagates it.
+int64_t tinox_task_await(void* handle) {
+    TinoxTask* task = (TinoxTask*)handle;
+    if (task == NULL) {
+        fprintf(stderr, "tinox: await on a null task handle\n");
+        exit(1);
+    }
+    tinox_task_join_once(task);
+    if (task->has_error) {
+        task->error_delivered = 1;
+        __tinox_err = task->error;
+        return 0;
+    }
+    return (int64_t)(uintptr_t)task->retval;
+}
+
+// ---- Task scopes (issue #301, phase 3) ----
+// `scope { ... }` owns every task spawned lexically inside it. The block's
+// exit joins them all, so a child can never outlive its owner, and a child
+// failure that nobody awaited is delivered to the owner as the scope's
+// error instead of vanishing. The first undelivered failure (in spawn
+// order) is re-thrown; further ones are reported on stderr as suppressed.
+
+typedef struct {
+    TinoxTask** tasks;
+    int64_t n;
+    int64_t cap;
+} TinoxScope;
+
+int64_t __scope_new(void) {
+    TinoxScope* sc = malloc(sizeof(TinoxScope));
+    sc->tasks = NULL;
+    sc->n = 0;
+    sc->cap = 0;
+    return (int64_t)(intptr_t)sc;
+}
+
+void __scope_add(int64_t scope, int64_t task) {
+    TinoxScope* sc = (TinoxScope*)(intptr_t)scope;
+    if (sc->n == sc->cap) {
+        sc->cap = sc->cap ? sc->cap * 2 : 8;
+        sc->tasks = realloc(sc->tasks, (size_t)sc->cap * sizeof(TinoxTask*));
+    }
+    sc->tasks[sc->n++] = (TinoxTask*)(intptr_t)task;
+}
+
+static void tinox_scope_join_impl(int64_t scope, int suppress_all) {
+    TinoxScope* sc = (TinoxScope*)(intptr_t)scope;
+    for (int64_t i = 0; i < sc->n; i++) {
+        tinox_task_join_once(sc->tasks[i]);
+    }
+    for (int64_t i = 0; i < sc->n; i++) {
+        TinoxTask* task = sc->tasks[i];
+        if (!task->has_error || task->error_delivered) continue;
+        task->error_delivered = 1;
+        if (!suppress_all && __tinox_err == 0) {
+            __tinox_err = task->error;
+        } else {
+            const char* msg = (const char*)(intptr_t)task->error;
+            fprintf(stderr, "tinox: task error suppressed: %s\n", msg ? msg : "(unknown)");
+        }
+    }
+}
+
+// Normal exit / return: join, then surface the first child failure.
+void __scope_join(int64_t scope) { tinox_scope_join_impl(scope, 0); }
+// The scope body itself failed: its error wins, child failures are only
+// reported.
+void __scope_abort(int64_t scope) { tinox_scope_join_impl(scope, 1); }
 
 // Fire-and-forget variant of tinox_task_spawn -- no TinoxTask handle, no
 // tinox_task_await ever expected. Reuses the SAME tinox_spawn_trampoline
@@ -858,6 +955,7 @@ void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
     TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
     t->fn = fn;
     t->args = args;
+    t->task = NULL;
     pthread_t tid;
     int rc = pthread_create(&tid, NULL, tinox_spawn_trampoline, t);
     if (rc != 0) {

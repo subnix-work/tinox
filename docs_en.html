@@ -1146,6 +1146,7 @@
         <tr><td><code>implements</code></td><td>Interface implementation</td></tr>
         <tr><td><code>spawn</code></td><td>Start a new thread; the expression has type <code>Task&lt;T&gt;</code> (<code>T</code> = the function's return type)</td></tr>
         <tr><td><code>await</code></td><td>Wait for a <code>Task&lt;T&gt;</code> and yield its <code>T</code> (String, Float64, Bool, classes, ... not just Int64); awaiting the same task again returns the same result. <code>Task</code> is a built-in type name and can no longer be used for your own classes</td></tr>
+        <tr><td><code>scope { ... }</code></td><td>Structured concurrency: every <code>spawn</code> lexically inside the block belongs to it, and leaving the block (normally, via <code>return</code>/<code>break</code> or <code>throw</code>) joins them all. A child failure nobody awaited is re-thrown at the block's end; if the block itself threw, its error wins and child failures are reported on stderr. A <code>throw</code> inside a spawned function is re-thrown by <code>await</code>. <code>scope</code> is contextual, not a reserved word. A <code>spawn</code> in a closure inside the block is not owned by it</td></tr>
         <tr><td><code>defer</code></td><td>Execute code when leaving the scope</td></tr>
         <tr><td><code>match</code></td><td>Pattern matching expression</td></tr>
       </tbody>

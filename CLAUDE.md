@@ -1741,3 +1741,45 @@ unchanged and already existed; this adds real pooling and a
   pre-existing, not caused by this work: `docs.html`/`docs_en.html` have
   no `tinox.core.db` module section at all yet (unlike every other stdlib
   module) — filling that gap is a separate, still-open task.
+
+## Typed Tasks + `scope { }` Structured Concurrency (issue #301, since 2026-10-20)
+
+`spawn f()` is a `Task<T>` (T = `f`'s return type) and `await` yields `T`;
+a legacy `Int64` handle field still accepts a `Task<T>` (published stdlib
+packages store `spawn` results that way), but a plain Int is not a
+`Task<T>`, and a user class named `Task` is a hard error. `develop`'s
+`ValueType::Task` (semantic lowering, #335) is the representation; the
+`Task<T>` annotation maps onto it in `from_parser_type` and
+`type_to_value_erasing`.
+
+- **A `throw` inside a spawned function used to vanish** (`__tinox_err` is
+  thread-local, so the child's slot died with its thread and `await`
+  returned 0). `tinox_spawn_trampoline` now captures it into the
+  `TinoxTask`; `tinox_task_await` re-throws it in the awaiting thread
+  (every await of the same task, same error) and yields 0. A *detached*
+  task (`tinox_task_spawn_detached`, no handle) reports the error on stderr
+  instead. The task struct is GC-allocated, never freed on await, and the
+  result is cached, so repeat `await` is deterministic.
+- **`scope { ... }` is contextual (not reserved) and pure parser
+  desugaring** -- no new AST node, nothing downstream knows about it:
+  `const __scope_N = __scope_new(); try { body } catch (e: String) {
+  __scope_abort(...); throw e; } finally { __scope_join(...); }`, and every
+  `spawn` lexically inside becomes `__scope_register(scope, spawn ...)`
+  (typechecker/codegen special-case it as the identity on the task). The
+  parser clears its scope stack at every fn/method/lambda boundary, so a
+  spawn inside a closure is NOT owned by the enclosing scope.
+- **Error semantics:** normal exit / `return` / `break` -> `finally` joins,
+  then the first undelivered child failure (spawn order) is re-thrown; the
+  rest go to stderr as "task error suppressed". If the body itself throws,
+  the catch clause joins first via `__scope_abort`, the body's error wins
+  and all child failures are only reported. A failure already delivered
+  through `await` is not delivered again (`error_delivered`).
+- **Gotchas:** `__scope_join` is hardcoded as "may throw" in
+  `expr_may_throw` (otherwise no post-statement throw check follows it).
+  Static-call argument types are not type-checked at all (pre-existing,
+  e.g. `Main::take("s")` for a `Channel<Int64>` parameter passes), so
+  `Task<T>` parameter misuse is only caught for assignments.
+- **Not done yet (phases 4-5 of #301):** deadlines/cancellation tokens and
+  service-shutdown integration. A joinable task that is never awaited and
+  not in a scope still loses its error silently (`spawn work();` as a bare
+  statement).
