@@ -12145,6 +12145,25 @@ impl CodeGen {
                 // Store each arg coerced to i64
                 let arg_vals_clone = arg_vals.clone();
                 for (i, (val, ty)) in arg_vals_clone.iter().enumerate() {
+                    // The wrapper decodes each slot as the callee's declared
+                    // parameter type, so a Float64 argument for a Float32
+                    // parameter (a plain `1.5` literal) must be narrowed
+                    // here; the raw double bits would otherwise be read as
+                    // a float and silently become garbage.
+                    let (val, ty) = match (param_tys.get(i).map(String::as_str), ty.as_str()) {
+                        (Some("float"), "double") => {
+                            let t = self.temp();
+                            writeln!(&mut self.ir, "  {} = fptrunc double {} to float", t, val).unwrap();
+                            (t, "float".to_string())
+                        }
+                        (Some("double"), "float") => {
+                            let t = self.temp();
+                            writeln!(&mut self.ir, "  {} = fpext float {} to double", t, val).unwrap();
+                            (t, "double".to_string())
+                        }
+                        _ => (val.clone(), ty.clone()),
+                    };
+                    let (val, ty) = (&val, &ty);
                     let slot = self.temp();
                     writeln!(&mut self.ir, "  {} = getelementptr [{} x i64], [{} x i64]* {}, i64 0, i64 {}", slot, n_slots, n_slots, ap, i + 1).unwrap();
                     let i64_val = self.coerce_to_i64(val, ty);
@@ -13350,7 +13369,7 @@ impl CodeGen {
             // #123 hit this the first time this language feature was
             // used with a real T beyond the parser-only test coverage it
             // had before).
-            Type::Generic { name, .. } if name == "Channel" => "i64".to_string(),
+            Type::Generic { name, .. } if name == "Channel" || name == "Task" => "i64".to_string(),
             Type::Generic { .. } => "i64*".to_string(),
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),
@@ -14801,7 +14820,11 @@ impl CodeGen {
             VT::Char => "i32".to_string(),
             VT::String => "i8*".to_string(),
             VT::Named(_, _) => "i64*".to_string(),
-            VT::Array(_) | VT::Map(_) => "i64*".to_string(),
+            VT::Array(_) => "i64*".to_string(),
+            // Maps are `i8*` everywhere else in codegen (type_to_llvm); a
+            // decoded Map word typed `i64*` was rejected by the verifier
+            // as soon as it was indexed (e.g. `await` on a Map result).
+            VT::Map(_) => "i8*".to_string(),
             VT::Nullable(inner) => Self::valuetype_to_llvm(inner),
             _ => "i64".to_string(),
         }

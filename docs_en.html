@@ -1144,8 +1144,8 @@
         <tr><td><code>enum</code></td><td>Enumeration type</td></tr>
         <tr><td><code>extends</code></td><td>Single inheritance</td></tr>
         <tr><td><code>implements</code></td><td>Interface implementation</td></tr>
-        <tr><td><code>spawn</code></td><td>Start a new thread</td></tr>
-        <tr><td><code>await</code></td><td>Wait for thread result</td></tr>
+        <tr><td><code>spawn</code></td><td>Start a new thread; the expression has type <code>Task&lt;T&gt;</code> (<code>T</code> = the function's return type)</td></tr>
+        <tr><td><code>await</code></td><td>Wait for a <code>Task&lt;T&gt;</code> and yield its <code>T</code> (String, Float64, Bool, classes, ... not just Int64); awaiting the same task again returns the same result. <code>Task</code> is a built-in type name and can no longer be used for your own classes</td></tr>
         <tr><td><code>defer</code></td><td>Execute code when leaving the scope</td></tr>
         <tr><td><code>match</code></td><td>Pattern matching expression</td></tr>
       </tbody>

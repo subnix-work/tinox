@@ -1,5 +1,5 @@
 // Declarative counterpart to examples/http3_rest_api/src/Main.tnx's
-// hand-written Http3Server::new()/.get()/.post()/... version -- same Task
+// hand-written Http3Server::new()/.get()/.post()/... version -- same TodoItem
 // CRUD surface, but every route is just a @GET/@POST/@PUT/@PATCH/@DELETE +
 // @Path method, exactly like the plain (TCP) REST annotations in
 // examples/rest_minimal. The single @Http3RestController(port, cert, key)
@@ -19,20 +19,20 @@
 // never runs.
 import tinox.core.http3_server;
 import tinox.core.json;
-import Task;
+import TodoItem;
 
 @ApplicationComponent
 @Http3RestController(8843, "cert.pem", "key.pem")
 class TaskController
 {
-    var tasks: List<Task>;
+    var tasks: List<TodoItem>;
     var initialized: Bool;
 
     // Issue #149 stage 2: these three were free top-level functions;
     // now static `fnc` siblings, called bare from the instance methods
     // below exactly as before (resolved via check_call's same-class
     // fallback, not `this.` -- they don't need a TaskController receiver).
-    fnc findTaskIndex(tasks: List<Task>, id: Int64) -> Int64
+    fnc findTaskIndex(tasks: List<TodoItem>, id: Int64) -> Int64
     {
         var i: Int64 = 0;
         while i < tasks.len()
@@ -46,7 +46,7 @@ class TaskController
         return -1;
     }
 
-    fnc nextTaskId(tasks: List<Task>) -> Int64
+    fnc nextTaskId(tasks: List<TodoItem>) -> Int64
     {
         var maxId: Int64 = 0;
         var i: Int64 = 0;
@@ -61,7 +61,7 @@ class TaskController
         return maxId + 1;
     }
 
-    fnc removeTaskAt(tasks: List<Task>, index: Int64) -> Nothing
+    fnc removeTaskAt(tasks: List<TodoItem>, index: Int64) -> Nothing
     {
         var i: Int64 = index;
         while i < tasks.len() - 1
@@ -77,8 +77,8 @@ class TaskController
         if (!this.initialized)
         {
             this.tasks = [
-                Task { id: 1, title: "Try tinox.core.http3_server", done: false },
-                Task { id: 2, title: "curl --http3-only this API", done: false }
+                TodoItem { id: 1, title: "Try tinox.core.http3_server", done: false },
+                TodoItem { id: 2, title: "curl --http3-only this API", done: false }
             ];
             this.initialized = true;
         }
@@ -86,7 +86,7 @@ class TaskController
 
     @GET
     @Path("/tasks")
-    fn listTasks() -> List<Task>
+    fn listTasks() -> List<TodoItem>
     {
         this.ensureInit();
         return this.tasks;
@@ -110,7 +110,7 @@ class TaskController
     @POST
     @Path("/tasks")
     @StatusCode(201)
-    fn createTask(@PostParam task: Task) -> Task
+    fn createTask(@PostParam task: TodoItem) -> TodoItem
     {
         this.ensureInit();
         task.id = nextTaskId(this.tasks);
@@ -120,7 +120,7 @@ class TaskController
 
     @PUT
     @Path("/tasks/:id")
-    fn updateTask(@PathParam id: Int64, @PostParam task: Task, @HttpContext ctx: HttpContext) -> HttpContext
+    fn updateTask(@PathParam id: Int64, @PostParam task: TodoItem, @HttpContext ctx: HttpContext) -> HttpContext
     {
         this.ensureInit();
         const idx: Int64 = findTaskIndex(this.tasks, id);
