@@ -1,3 +1,6 @@
+#[path = "bootstrap.rs"]
+pub mod bootstrap;
+use bootstrap::{BackgroundTask, Endpoint};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::Path;
@@ -506,7 +509,8 @@ pub struct CodeGen {
     /// each one claiming @tinox_main directly, so emit_tinox_main_bootstrap
     /// can spawn all of them (plus call Main_main if present) from one
     /// unified entry point.
-    background_run_fns: Vec<String>,
+    background_tasks: Vec<BackgroundTask>,
+    bootstrap_emitted: bool,
     /// `(protocol, detail)` pairs -- one per background auto-run kind
     /// registered above, in the same order -- consumed by
     /// emit_tinox_main_bootstrap to print the startup "Endpoints:" block.
@@ -557,7 +561,7 @@ pub struct CodeGen {
     /// by emit_class_main_entry_point -- consumed by
     /// emit_tinox_main_bootstrap, which calls @Main_main from the
     /// synthesized @tinox_main instead of emit_class_main_entry_point
-    /// wiring it directly (so it can coexist with background_run_fns).
+    /// wiring it directly (so it can coexist with background_tasks).
     user_main_class: bool,
     /// Set of class names defined in user/imported code
     defined_classes: HashSet<String>,
@@ -651,7 +655,8 @@ impl CodeGen {
             metrics_path: None,
             test_entry: None,
             has_main: false,
-            background_run_fns: Vec::new(),
+            background_tasks: Vec::new(),
+            bootstrap_emitted: false,
             startup_endpoints: Vec::new(),
             loaded_modules: Vec::new(),
             banner_enabled: true,
@@ -2106,7 +2111,7 @@ impl CodeGen {
         // (Issue #149 stage 1) — validates the shape and (if valid) records
         // user_main_class; emit_tinox_main_bootstrap below wires it into
         // @tinox_main once every auto-run kind has had a chance to register
-        // into background_run_fns, so class Main can coexist with them.
+        // into background_tasks, so class Main can coexist with them.
         self.emit_class_main_entry_point(source)?;
 
         // Emit vtable globals for classes that implement interfaces
@@ -2134,7 +2139,7 @@ impl CodeGen {
         // Emit the dev-mode introspection API (no-op unless [dev] enabled)
         self.emit_devui_code(&class_ast_map);
 
-        // Unify user_main_class + background_run_fns into @tinox_main
+        // Unify user_main_class + background_tasks into @tinox_main
         self.emit_tinox_main_bootstrap();
 
         // Emit DI globals, getters, factories, and startup initializer
@@ -2155,6 +2160,7 @@ impl CodeGen {
 
         // Emit SQL-constant functions and row-mapping helpers for @Entity classes
         self.emit_entity_code();
+        self.emit_global_initializers();
 
         for (name, s) in &self.strings {
             let escaped = Self::escape_llvm_string(s);
@@ -2307,7 +2313,7 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir).unwrap();
 
         // ── Auto-run listen loop (only when no legacy bare-fn-main exists) ──────
-        // Registered into background_run_fns instead of claiming @tinox_main
+        // Registered into background_tasks instead of claiming @tinox_main
         // directly, so emit_tinox_main_bootstrap can spawn it (and call
         // Main_main, and any other registered kind) from one unified entry
         // point.
@@ -2325,7 +2331,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
 
-            self.background_run_fns.push("__tinox_run_http".to_string());
+            self.register_background_task(BackgroundTask::new("rest", None, "__tinox_run_http", "route-specific", "HTTP request dispatch", Endpoint::listen("HTTP", port as i64, bootstrap::environment_port_source(port as i64), None)));
             self.startup_endpoints.push(("HTTP".to_string(), format!(":{port}")));
         }
     }
@@ -2997,7 +3003,7 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
-        self.background_run_fns.push("__tinox_run_http3".to_string());
+        self.register_background_task(BackgroundTask::new("http3_rest", Some(&controller.class_name), "__tinox_run_http3", "route-specific", "HTTP/3 request dispatch", Endpoint::listen("HTTP/3", controller.port, "annotation", None)));
         self.startup_endpoints.push(("HTTP/3 (QUIC)".to_string(), format!(":{}", controller.port)));
     }
 
@@ -3253,7 +3259,7 @@ impl CodeGen {
 
             self.emit_spawn_wrapper(&worker_wrapper, 2, "i64", &["i64".to_string()]);
 
-            self.background_run_fns.push(run_fn);
+            self.register_background_task(BackgroundTask::new("websocket", Some(&ep.class_name), &run_fn, "per_connection", "detached worker thread per accepted connection", Endpoint::listen("WebSocket", port, if ep.port.is_some() { "annotation" } else { bootstrap::environment_port_source(port) }, Some(&ep.path))));
             self.startup_endpoints.push(("WebSocket".to_string(), format!(":{port}")));
         }
     }
@@ -3495,7 +3501,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
 
-            self.background_run_fns.push(run_http_fn);
+            self.register_background_task(BackgroundTask::new("ui_http", Some(&app.class_name), &run_http_fn, "static shell", "HTTP shell and client-JS requests", Endpoint::listen("HTTP", app.http_port, "annotation_or_ui_default", None)));
             self.startup_endpoints.push(("HTTP".to_string(), format!(":{}", app.http_port)));
 
             // ── WebSocket accept loop -- identical shape to emit_ws_code's
@@ -3672,7 +3678,7 @@ impl CodeGen {
 
             self.emit_spawn_wrapper(&worker_wrapper, 2, "i64", &["i64".to_string()]);
 
-            self.background_run_fns.push(run_ws_fn);
+            self.register_background_task(BackgroundTask::new("ui_websocket", Some(&app.class_name), &run_ws_fn, "per_connection", "detached UI session worker per connection", Endpoint::listen("WebSocket", app.ws_port, "annotation_or_ui_default", None)));
             self.startup_endpoints.push(("WebSocket".to_string(), format!(":{}", app.ws_port)));
         }
     }
@@ -3790,7 +3796,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
 
-            self.background_run_fns.push(run_fn);
+            self.register_background_task(BackgroundTask::new("amqp10", Some(&c.class_name), &run_fn, "per_consumer_connection", "sequential receive/handler/credit loop", Endpoint::connect("AMQP 1.0", c.port, &c.host, &c.address)));
             self.startup_endpoints.push((
                 "AMQP 1.0 (consumer)".to_string(),
                 format!("{}:{} ({})", c.host, c.port, c.address),
@@ -3904,7 +3910,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
 
-            self.background_run_fns.push(run_fn);
+            self.register_background_task(BackgroundTask::new("amqp091", Some(&c.class_name), &run_fn, "per_consumer_connection", "sequential receive/handler/ack loop", Endpoint::connect("AMQP 0-9-1", c.port, &c.host, &c.queue)));
             self.startup_endpoints.push((
                 "AMQP 0-9-1 (consumer)".to_string(),
                 format!("{}:{} (queue: {})", c.host, c.port, c.queue),
@@ -3922,7 +3928,7 @@ impl CodeGen {
     /// `startup_endpoints` entry are registered in time to be spawned/
     /// reported by it -- LLVM itself doesn't care about declaration order
     /// for the `@{Class}_di_instance` globals this references (`/components`
-    /// below), only `background_run_fns` registration is order-sensitive.
+    /// below), only `background_tasks` registration is order-sensitive.
     fn emit_devui_code(&mut self, class_ast_map: &HashMap<String, tinox_parser::Class>) {
         if !self.dev_enabled {
             return;
@@ -4000,7 +4006,7 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
-        self.background_run_fns.push("__tinox_run_devui".to_string());
+        self.register_background_task(BackgroundTask::new("dev_ui", None, "__tinox_run_devui", "introspection server", "HTTP introspection requests", Endpoint::listen("Dev UI", port as i64, "project_configuration", None).with_host("127.0.0.1")));
         self.startup_endpoints.push(("Dev UI".to_string(), format!(":{port}")));
     }
 
@@ -4579,7 +4585,7 @@ impl CodeGen {
     }
 
     /// Unifies `class Main { fnc main() }` (user_main_class) and the
-    /// auto-run kinds registered in background_run_fns (REST/HTTP3/WS/AMQP)
+    /// auto-run kinds registered in background_tasks (REST/HTTP3/WS/AMQP)
     /// into one @tinox_main, instead of each claiming it directly and
     /// silently pre-empting the others via has_main. Each background kind
     /// runs on its own real thread (tinox_task_spawn) so e.g. a REST
@@ -4599,7 +4605,7 @@ impl CodeGen {
     /// Also owns the startup banner: ASCII art, the `tinox.core` modules
     /// from `[[dependencies]]` (via `set_loaded_modules`), the auto-run
     /// endpoints registered in `startup_endpoints` (protocol + port/detail,
-    /// pushed alongside each `background_run_fns` entry above), and the
+    /// pushed alongside each `background_tasks` entry above), and the
     /// bootstrap's own elapsed time. Printed by default -- no `import
     /// tinox.core.logger;`/annotation needed -- since this is the one
     /// place in the generated program that already knows about every
@@ -4613,7 +4619,7 @@ impl CodeGen {
         // test file importing a class with its own auto-run annotations
         // (e.g. testing a helper method on an @GET/@ApplicationComponent
         // REST controller, a completely ordinary thing to want to test)
-        // populates `background_run_fns` from THAT class's routes, same
+        // populates `background_tasks` from THAT class's routes, same
         // as any real program would. Found live: without this guard, this
         // function runs BEFORE `emit_test_code` (which only defines
         // `@tinox_main` when `!self.has_main`) and unconditionally claims
@@ -4625,7 +4631,7 @@ impl CodeGen {
         // hangs, which is arguably worse. `test_entry.is_some()` means
         // `emit_test_code` is going to define `@tinox_main` itself
         // (guarded on `!has_main`, so it MUST see this function skip);
-        // background_run_fns/route_entries etc. still get populated and
+        // background_tasks/route_entries etc. still get populated and
         // their functions still get emitted as harmless unused IR -- only
         // this bootstrap step (deciding what `@tinox_main` becomes) needs
         // to defer to the test runner.
@@ -4635,11 +4641,13 @@ impl CodeGen {
         if self.has_main {
             return;
         }
-        if !self.user_main_class && self.background_run_fns.is_empty() {
+        if !self.user_main_class && self.background_tasks.is_empty() {
             return;
         }
 
-        let run_fns = self.background_run_fns.clone();
+        self.bootstrap_emitted = true;
+        let plan = self.bootstrap_plan();
+        let run_fns: Vec<_> = plan.background_tasks.iter().map(|task| task.function.clone()).collect();
         let mut handles = Vec::new();
         for (idx, run_fn) in run_fns.iter().enumerate() {
             let tramp = format!("__tinox_trampoline_{idx}");
@@ -4663,7 +4671,7 @@ impl CodeGen {
         // serving on port X" moment for a one-shot script. `banner_enabled`
         // is the separate, explicit `[startup] banner = false` opt-out for
         // programs that DO have an endpoint but still want clean stdout.
-        let show_banner = self.banner_enabled && !self.background_run_fns.is_empty();
+        let show_banner = self.banner_enabled && !self.background_tasks.is_empty();
 
         // figlet -f standard "Tinox" -- generated once, hardcoded here since
         // it's fixed text with no dynamic content.
@@ -4848,17 +4856,11 @@ impl CodeGen {
         if has_startup {
             writeln!(&mut self.lambda_ir, "define void @tinox_di_startup() {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
-            for comp in components.iter().filter(|c| matches!(c.scope, DiScope::Startup)) {
-                writeln!(&mut self.lambda_ir, "  call i64* @{}_di_get()", comp.class_name).unwrap();
+            for class_name in self.startup_component_names() {
+                writeln!(&mut self.lambda_ir, "  call i64* @{class_name}_di_get()").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
-            writeln!(&mut self.lambda_ir).unwrap();
-
-            // Register tinox_di_startup as a global constructor so it runs before main
-            writeln!(&mut self.lambda_ir,
-                "@llvm.global_ctors = appending global [1 x {{ i32, void ()*, i8* }}] \
-                [{{ i32, void ()*, i8* }} {{ i32 65535, void ()* @tinox_di_startup, i8* null }}]").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
         }
     }
@@ -6676,7 +6678,6 @@ impl CodeGen {
             writeln!(&mut self.ir, "  call void @tinox_db_pool_init(i8* %url, i64 {})", self.db_pool_size).unwrap();
             writeln!(&mut self.ir, "  ret void").unwrap();
             writeln!(&mut self.ir, "}}").unwrap();
-            writeln!(&mut self.ir, "@llvm.global_ctors = appending global [1 x {{ i32, void ()*, i8* }}] [{{ i32, void ()*, i8* }} {{ i32 10, void ()* @__tinox_db_init, i8* null }}]").unwrap();
             writeln!(&mut self.ir).unwrap();
         }
 
@@ -6967,7 +6968,7 @@ impl CodeGen {
         }
 
         // The actual @tinox_main wiring (call Main_main, plus spawning any
-        // background_run_fns registered by the REST/HTTP3/WS/AMQP
+        // background_tasks registered by the REST/HTTP3/WS/AMQP
         // annotation processors) happens later in
         // emit_tinox_main_bootstrap, once all of those have had a chance to
         // run -- letting class Main coexist with them instead of one
