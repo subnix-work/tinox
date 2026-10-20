@@ -13,6 +13,7 @@ mod pm;
 mod runtime_cache;
 mod build_cache;
 mod describe;
+mod explain;
 mod diagnostics;
 use tinox_common::diagnostic::Failure;
 
@@ -52,6 +53,7 @@ fn run() {
         "graph" => gen_call_graph(&args[2..]),
         "check"   => check(&args[2..]),
         "describe" => describe::run(&args[2..]),
+        "explain" => explain::run(&args[2..]),
         "fmt"     => fmt(&args[2..]),
         "repl"    => repl(),
         "install" => {
@@ -88,6 +90,7 @@ fn print_help() {
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
     println!("  tinox check [file]         Type-check without compiling");
+    println!("  tinox explain --bootstrap [file]  Explain generated wiring (--json)");
     println!("  tinox describe <Symbol>    Describe a resolved API (--json, --member name)");
     println!("  tinox check/build --json    Emit versioned JSON diagnostics on stdout");
     println!("  tinox fmt   <file>         Format a Tinox file (print to stdout)");
@@ -3879,6 +3882,35 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         }
         failure
     };
+    // Providers recurse before publishing singleton instances. Reject missing
+    // providers and every cycle before LLVM generation or startup can fail.
+    fn visit_di(index: usize, components: &[tinox_typecheck::annotations::DiComponentInfo],
+                state: &mut [u8], stack: &mut Vec<String>) -> Result<(), (String, String)> {
+        let component = &components[index];
+        if state[index] == 2 { return Ok(()); }
+        if state[index] == 1 {
+            stack.push(component.class_name.clone());
+            return Err((component.class_name.clone(), format!("Cyclic @Inject dependency: {}", stack.join(" -> "))));
+        }
+        state[index] = 1;
+        stack.push(component.class_name.clone());
+        for field in &component.inject_fields {
+            let target = components.iter().position(|candidate| candidate.class_name == field.field_type)
+                .ok_or_else(|| (component.class_name.clone(), format!(
+                    "@Inject field '{}.{}' targets '{}', which has no component scope annotation",
+                    component.class_name, field.field_name, field.field_type)))?;
+            visit_di(target, components, state, stack)?;
+        }
+        stack.pop();
+        state[index] = 2;
+        Ok(())
+    }
+    let mut state = vec![0; ann_result.di_components.len()];
+    for index in 0..ann_result.di_components.len() {
+        if let Err((class, message)) = visit_di(index, &ann_result.di_components, &mut state, &mut vec![]) {
+            return Err(annotation_error(&[&class], message));
+        }
+    }
     // @Transactional is postgres-only in v1 (issue #191): the connection
     // pool + BEGIN/COMMIT/ROLLBACK primitives it compiles down to only
     // exist for that driver (runtime.c's sqlite/mysql tinox_db_tx_* stubs
@@ -4005,16 +4037,14 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
     Ok(())
 }
 
-fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<PathBuf, Failure> {
-    let _stage = tinox_common::frontend::Stage::new("total-build");
-    let mut build = build_cache::Build::begin(output_name)?;
-    let input_guard = build_cache::InputGuard::begin();
+/// Shared in-memory lowering. Inspection stops here before native tools or artifacts.
+fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<CodeGen, Failure> {
     let (ast, checked) = prepare_program(input_path)?;
     let base_dir = Path::new(input_path).parent().unwrap_or(Path::new("."));
     let loaded_modules = loaded_tinox_core_modules(base_dir);
     let startup_banner_enabled = read_startup_banner_config();
     let dev_config = read_dev_config().unwrap_or_default();
-    if dev_config.enabled && opt == OptLevel::Release {
+    if progress && dev_config.enabled && opt == OptLevel::Release {
         eprintln!(
             "warning: [dev] is enabled in a release build -- the dev UI introspection API \
              will be reachable on 127.0.0.1:{} at runtime",
@@ -4029,13 +4059,14 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
     let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
     drop(annotation_stage);
     validate_program_annotations(&ast, &ann_result, input_path)?;
-    for warning in &ann_result.deprecated_warnings {
-        eprintln!("warning: {}", warning);
+    if progress {
+        for warning in &ann_result.deprecated_warnings {
+            eprintln!("warning: {}", warning);
+        }
+        for route in &ann_result.route_entries {
+            eprintln!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
+        }
     }
-    for route in &ann_result.route_entries {
-        eprintln!("  route: {} {} -> {}.{}", route.method, route.path, route.class_name, route.method_name);
-    }
-
     // `class Main { fnc main() -> Int32 }` is now the mandatory program
     // entry point (shape itself is still validated with a real Span by
     // emit_class_main_entry_point in codegen) -- @Command CLI programs are
@@ -4299,6 +4330,14 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
         .gen(&ast)
         .map_err(|e| Failure::errors(e.errors, "codegen", Some(input_path)))?;
 
+    Ok(codegen)
+}
+
+fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<PathBuf, Failure> {
+    let _stage = tinox_common::frontend::Stage::new("total-build");
+    let mut build = build_cache::Build::begin(output_name)?;
+    let input_guard = build_cache::InputGuard::begin();
+    let codegen = generate_program(input_path, opt, true)?;
     let ir = codegen.into_ir();
     let options = runtime_options().map_err(|e| Failure::new("toolchain", Some(input_path), None, e))?;
     let inputs = input_guard.snapshot();

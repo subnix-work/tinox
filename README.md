@@ -65,6 +65,11 @@ from the current project's resolved sources. `--member`, `--signatures-only`,
 `--limit`, and `--json` support focused queries; see the
 [symbol-description protocol](docs/compiler-describe.md).
 
+Use `tinox explain --bootstrap [file]` to inspect generated components, routes,
+scopes, injection and startup/join ordering without starting the application.
+`--json` exposes the same plan for tooling; see the
+[bootstrap explanation protocol](docs/compiler-explain.md).
+
 `tinox check --json` and `tinox build --json` provide versioned structured
 diagnostics for tooling. See the [diagnostics protocol](docs/compiler-diagnostics.md)
 for the schema, stable codes, source ranges, and LSP mapping.
