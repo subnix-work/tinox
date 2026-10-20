@@ -29,7 +29,8 @@ fn run(source: &str) -> String {
     let tokens = lexer.tokenize().unwrap_or_else(|e| panic!("lex error: {:?}", e));
 
     let mut parser = Parser::new(tokens);
-    let ast = parser.parse().unwrap_or_else(|e| panic!("parse error: {:?}", e));
+    let mut ast = parser.parse().unwrap_or_else(|e| panic!("parse error: {:?}", e));
+    tinox_parser::assign_node_ids(&mut ast);
 
     let mut tc = TypeChecker::new();
     let checked = tc.check(&ast).unwrap_or_else(|e| panic!("typecheck error: {}", e));
@@ -37,6 +38,8 @@ fn run(source: &str) -> String {
 
     let mut cg = CodeGen::new();
     cg.set_interface_info(iface_methods, class_implements);
+    cg.set_expr_value_types(tc.expr_value_types());
+    cg.set_semantic_facts(tc.semantic_facts());
     cg.gen(&checked).unwrap_or_else(|e| panic!("codegen error: {:?}", e));
     let ir = cg.into_ir();
 

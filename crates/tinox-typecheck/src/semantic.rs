@@ -7,6 +7,11 @@ use tinox_parser::{Expr, ExprKind, Type};
 pub struct ResolvedCall {
     /// The same unambiguous class/member symbol key used by emission.
     pub symbol: Option<String>,
+    pub declaration: Option<DeclarationId>,
+    pub bindings: HashMap<String, ValueType>,
+    pub type_params: Vec<String>,
+    pub scope_params: Vec<String>,
+    pub span: tinox_common::Span,
     pub owner: Option<String>,
     pub dispatch: CallDispatch,
     pub params: Vec<ValueType>,
@@ -34,10 +39,51 @@ pub struct Conversion {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SemanticFacts {
     pub calls: HashMap<u32, ResolvedCall>,
+    pub declarations: HashMap<String, DeclarationId>,
+    pub ambiguous_declarations: HashMap<String, Vec<DeclarationId>>,
     pub fields: HashMap<u32, ResolvedField>,
+    pub field_types: HashMap<String, HashMap<String, ValueType>>,
     pub conversions: HashMap<u32, Conversion>,
+    pub numeric_operations: HashMap<u32, NumericOperation>,
+    pub enum_payloads: HashMap<String, Vec<ValueType>>,
 }
+/// Stable source identity is distinct from the backend's linkage spelling.
+/// Namespace plus source identity disambiguates declarations from dependencies.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeclarationId {
+    pub namespace: Vec<String>,
+    pub file: String,
+    pub owner: Option<String>,
+    pub name: String,
+}
+
+/// Checked promotion shared by arithmetic and comparisons. Both operands are
+/// converted as values before emission; an LLVM word is never a type decision.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NumericOperation {
+    pub left: ValueType,
+    pub right: ValueType,
+    pub operand: ValueType,
+}
+
 impl ValueType {
+    pub fn with_bindings(&self, bindings: &HashMap<String, ValueType>) -> Self {
+        TypeChecker::substitute_bindings(self, bindings)
+    }
+
+    pub fn numeric_promotion(left: &Self, right: &Self) -> Option<Self> {
+        if !(left.is_integer() || left.is_float()) || !(right.is_integer() || right.is_float()) {
+            return None;
+        }
+        Some(if left == right {
+            left.clone()
+        } else if left.is_float() || right.is_float() {
+            Self::Float
+        } else {
+            Self::Int
+        })
+    }
+
     pub fn is_integer(&self) -> bool {
         matches!(self, Self::Int | Self::Integer { .. })
     }
@@ -112,16 +158,143 @@ impl ValueType {
                     .collect::<Option<_>>()?,
                 ret: Box::new(ret.to_parser_type()?),
             },
-            // Legacy builtin categories and runtime handles have no parser spelling.
-            Self::Task(_) | Self::Ref | Self::Fn | Self::Tuple | Self::Range | Self::Null => {
-                return None
-            }
+            Self::Task(result) => Type::Generic {
+                name: "Task".into(),
+                args: vec![result.to_parser_type()?],
+            },
+            // Legacy builtin categories have no parser spelling.
+            Self::Ref | Self::Fn | Self::Tuple | Self::Range | Self::Null => return None,
         })
     }
 }
 impl TypeChecker {
+    pub(crate) fn register_semantic_declarations(&mut self, source: &tinox_parser::SourceFile) {
+        fn visit(
+            decls: &[tinox_parser::Decl],
+            namespace: &[String],
+            out: &mut Vec<(String, DeclarationId)>,
+        ) {
+            use tinox_parser::DeclKind;
+            for decl in decls {
+                match &decl.node {
+                    DeclKind::Namespace(ns) => {
+                        let mut nested = namespace.to_vec();
+                        nested.extend(ns.name.iter().cloned());
+                        visit(&ns.decls, &nested, out);
+                    }
+                    DeclKind::Function(f) => {
+                        let native = matches!(f.body.node, tinox_parser::StmtKind::Empty);
+                        out.push((
+                            f.name.clone(),
+                            DeclarationId {
+                                namespace: if native { vec![] } else { namespace.to_vec() },
+                                file: if native {
+                                    "<native>".into()
+                                } else {
+                                    f.file.to_string()
+                                },
+                                owner: None,
+                                name: f.name.clone(),
+                            },
+                        ));
+                    }
+                    DeclKind::Class(c) => {
+                        out.push((
+                            format!("type:{}", c.name),
+                            DeclarationId {
+                                namespace: namespace.to_vec(),
+                                file: decl
+                                    .file
+                                    .as_deref()
+                                    .unwrap_or(tinox_parser::UNKNOWN_FILE)
+                                    .into(),
+                                owner: None,
+                                name: c.name.clone(),
+                            },
+                        ));
+                        for method in &c.methods {
+                            out.push((
+                                format!("{}_{}", c.name, method.name),
+                                DeclarationId {
+                                    namespace: namespace.to_vec(),
+                                    file: method.file.to_string(),
+                                    owner: Some(c.name.clone()),
+                                    name: method.name.clone(),
+                                },
+                            ));
+                        }
+                    }
+                    DeclKind::Interface(interface) => {
+                        for method in &interface.methods {
+                            out.push((
+                                format!("{}_{}", interface.name, method.name),
+                                DeclarationId {
+                                    namespace: namespace.to_vec(),
+                                    file: decl
+                                        .file
+                                        .as_deref()
+                                        .unwrap_or(tinox_parser::UNKNOWN_FILE)
+                                        .into(),
+                                    owner: Some(interface.name.clone()),
+                                    name: method.name.clone(),
+                                },
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut declarations = Vec::new();
+        visit(&source.decls, &[], &mut declarations);
+        for decl in Self::flatten_decls(source) {
+            if let tinox_parser::DeclKind::Class(class) = &decl.node {
+                self.semantic_facts.field_types.insert(
+                    class.name.clone(),
+                    class
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            (
+                                field.name.clone(),
+                                ValueType::from_parser_type(&field.field_type),
+                            )
+                        })
+                        .collect(),
+                );
+            }
+        }
+        for (symbol, identity) in declarations {
+            if let Some(previous) = self.semantic_facts.declarations.get(&symbol) {
+                if previous != &identity {
+                    self.semantic_facts
+                        .ambiguous_declarations
+                        .entry(symbol.clone())
+                        .or_insert_with(|| vec![previous.clone()])
+                        .push(identity);
+                    continue;
+                }
+            }
+            self.semantic_facts.declarations.insert(symbol, identity);
+        }
+    }
+
+    pub(crate) fn validate_semantic_contracts(&mut self) {
+        let mut calls: Vec<_> = self.semantic_facts.calls.values().collect();
+        calls.sort_by_key(|call| (call.span.start.offset, call.symbol.as_deref()));
+        for call in calls {
+            for param in &call.type_params {
+                if !call.bindings.contains_key(param) && !call.scope_params.contains(param) {
+                    self.errors.push(tinox_common::Error::new(call.span, format!("Cannot resolve generic type parameter '{param}' for {}; provide a concrete type argument or receiving annotation", call.symbol.as_deref().unwrap_or("call"))));
+                }
+            }
+        }
+    }
+
     pub fn semantic_facts(&self) -> SemanticFacts {
-        self.semantic_facts.clone()
+        let mut facts = self.semantic_facts.clone();
+        facts.enum_payloads = self.enum_variant_payloads.clone();
+        facts
     }
     // Function ABI and generic identity require exact scalar types: implicit
     // numeric conversions at ordinary value boundaries do not adapt closures
@@ -146,7 +319,8 @@ impl TypeChecker {
             }
             (ValueType::Array(a), ValueType::Array(b))
             | (ValueType::Map(a), ValueType::Map(b))
-            | (ValueType::Nullable(a), ValueType::Nullable(b)) => self.semantic_compatible(a, b),
+            | (ValueType::Nullable(a), ValueType::Nullable(b))
+            | (ValueType::Task(a), ValueType::Task(b)) => self.semantic_compatible(a, b),
             (
                 ValueType::Callable { params: a, ret: ar },
                 ValueType::Callable { params: b, ret: br },
@@ -165,10 +339,25 @@ impl TypeChecker {
                 .cloned()
                 .unwrap_or(ValueType::Any)
         };
+        if let ExprKind::Binary { lhs, rhs, .. } = &expr.node {
+            let left = node_type(lhs);
+            let right = node_type(rhs);
+            if let Some(operand) = ValueType::numeric_promotion(&left, &right) {
+                self.semantic_facts.numeric_operations.insert(
+                    expr.id,
+                    NumericOperation {
+                        left,
+                        right,
+                        operand,
+                    },
+                );
+            }
+            return;
+        }
         let mut owner = None;
         let mut dispatch = CallDispatch::Direct;
         let mut callable = None;
-        let symbol = match &expr.node {
+        let mut symbol = match &expr.node {
             ExprKind::Call { func, .. } => match &func.node {
                 ExprKind::Ident(name) if self.symbols.variables.contains_key(name) => {
                     dispatch = CallDispatch::Closure;
@@ -261,18 +450,130 @@ impl TypeChecker {
             }
             _ => return,
         };
-        let params = if let Some(ValueType::Callable { params, .. }) = callable {
+        if let (Some(class), ExprKind::MethodCall { method, .. }) = (&owner, &expr.node) {
+            let mut declaring = class.clone();
+            let mut visited = std::collections::HashSet::new();
+            while visited.insert(declaring.clone())
+                && !self
+                    .semantic_facts
+                    .declarations
+                    .contains_key(&format!("{declaring}_{method}"))
+            {
+                let Some(parent) = self.class_parents.get(&declaring) else {
+                    break;
+                };
+                declaring = parent.clone();
+            }
+            if self
+                .semantic_facts
+                .declarations
+                .contains_key(&format!("{declaring}_{method}"))
+            {
+                symbol = Some(format!("{declaring}_{method}"));
+            }
+        }
+        let mut bindings = HashMap::new();
+        let signature = symbol
+            .as_ref()
+            .and_then(|key| self.symbols.functions.get(key));
+        let mut params = if let Some(ValueType::Callable { params, .. }) = callable {
             params
         } else {
             symbol
                 .as_ref()
-                .and_then(|key| self.symbols.functions.get(key))
-                .map(|sig| sig.params.iter().map(|(_, t)| t.clone()).collect())
+                .and_then(|key| self.generic_method_param_types.get(key))
+                .map(|(params, _)| params.clone())
+                .or_else(|| {
+                    signature.map(|sig| sig.params.iter().map(|(_, t)| t.clone()).collect())
+                })
                 .unwrap_or_default()
         };
+        let args = match &expr.node {
+            ExprKind::Call { args, .. }
+            | ExprKind::MethodCall { args, .. }
+            | ExprKind::EnumValue { args, .. } => args.as_slice(),
+            _ => &[],
+        };
+        let has_self =
+            signature.is_some_and(|sig| sig.params.first().is_some_and(|(name, _)| name == "self"));
+        let builtin_instance = matches!(dispatch, CallDispatch::Instance)
+            && symbol
+                .as_ref()
+                .is_some_and(|key| !self.semantic_facts.declarations.contains_key(key));
+        if !params.is_empty()
+            && ((has_self && params.len() == args.len() + 1)
+                || builtin_instance
+                || (matches!(dispatch, CallDispatch::Instance | CallDispatch::Interface)
+                    && params.len() == args.len() + 1))
+        {
+            params.remove(0);
+        }
+        if builtin_instance {
+            params.resize(args.len(), ValueType::Any);
+        }
+        if let ExprKind::MethodCall { obj, .. } = &expr.node {
+            if let ValueType::Named(class, args) = node_type(obj) {
+                if let Some(names) = self.class_type_params.get(&class) {
+                    bindings.extend(names.iter().cloned().zip(args));
+                }
+            }
+        }
+        let type_params = symbol
+            .as_ref()
+            .and_then(|key| self.generic_method_param_types.get(key))
+            .map(|(_, names)| names.clone())
+            .unwrap_or_default();
+        if let ExprKind::EnumValue { type_args, .. } = &expr.node {
+            bindings.extend(
+                type_params
+                    .iter()
+                    .cloned()
+                    .zip(type_args.iter().map(ValueType::from_parser_type)),
+            );
+        }
+        if !type_params.is_empty() {
+            let names = &type_params;
+            for (formal, actual) in params.iter().zip(args) {
+                Self::unify_param(formal, &node_type(actual), names, &mut bindings);
+            }
+            if let Some(signature) = signature {
+                Self::unify_param(&signature.return_type, result, names, &mut bindings);
+            }
+        }
+        params = params
+            .iter()
+            .map(|param| Self::substitute_bindings(param, &bindings))
+            .collect();
+        let actual_types: Vec<_> = args.iter().map(node_type).collect();
+        for ((expected, actual), found) in params.iter().zip(args).zip(actual_types) {
+            let found = if !type_params.is_empty() {
+                self.infer_argument(actual, expected)
+            } else {
+                found
+            };
+            if !type_params.is_empty() && !self.types_compatible(expected, &found) {
+                self.errors.push(
+                    crate::TypeError::TypeMismatch {
+                        expected: expected.display(),
+                        found: found.display(),
+                        span: actual.span,
+                    }
+                    .to_error(),
+                );
+            }
+        }
+        let declaration = symbol
+            .as_ref()
+            .and_then(|symbol| self.semantic_facts.declarations.get(symbol))
+            .cloned();
         self.semantic_facts.calls.insert(
             expr.id,
             ResolvedCall {
+                declaration,
+                bindings,
+                type_params,
+                scope_params: self.type_param_scope.iter().cloned().collect(),
+                span: expr.span,
                 symbol,
                 owner,
                 dispatch,
@@ -369,6 +670,33 @@ impl TypeChecker {
             }
         }
         let result = self.infer_type(expr);
+        let contextual_literal = match (&expr.node, expected) {
+            (ExprKind::ArrayLiteral(items), ValueType::Array(element))
+                if **element != ValueType::Any =>
+            {
+                items.iter().all(|item| {
+                    let found = self.infer_argument(item, element);
+                    self.types_compatible(element, &found)
+                })
+            }
+            (ExprKind::MapLiteral(entries), ValueType::Map(value)) if **value != ValueType::Any => {
+                entries.iter().all(|(_, item)| {
+                    let found = self.infer_argument(item, value);
+                    self.types_compatible(value, &found)
+                })
+            }
+            (ExprKind::Tuple(items), ValueType::TupleOf(types)) if items.len() == types.len() => {
+                items.iter().zip(types).all(|(item, expected)| {
+                    let found = self.infer_argument(item, expected);
+                    self.types_compatible(expected, &found)
+                })
+            }
+            _ => false,
+        };
+        if contextual_literal {
+            self.expr_types.insert(expr.id, expected.clone());
+            return expected.clone();
+        }
         // A factory without value arguments can bind its class parameters from
         // the receiving annotation (Stack<Int64> = Stack::new()).
         if let (ValueType::Named(expected_class, expected_args), ValueType::Named(class, _)) =
@@ -387,6 +715,12 @@ impl TypeChecker {
                             self.expr_types.insert(expr.id, resolved.clone());
                             if let Some(call) = self.semantic_facts.calls.get_mut(&expr.id) {
                                 call.result = resolved.clone();
+                                call.bindings.extend(bindings.clone());
+                                call.params = call
+                                    .params
+                                    .iter()
+                                    .map(|ty| Self::substitute_bindings(ty, &bindings))
+                                    .collect();
                             }
                             if let Some(field) = self.semantic_facts.fields.get_mut(&expr.id) {
                                 field.result = resolved.clone();
@@ -441,6 +775,88 @@ mod tests {
         checker.check(&source).unwrap();
         checker
     }
+    #[test]
+    fn task_annotation_identity_roundtrips_through_nested_generic_bindings() {
+        let task = ValueType::Task(Box::new(ValueType::Named("T".into(), vec![])));
+        let bindings = [(
+            "T".into(),
+            ValueType::Integer {
+                bits: 8,
+                signed: false,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let concrete = task.with_bindings(&bindings);
+        assert_eq!(
+            ValueType::from_parser_type(&concrete.to_parser_type().unwrap()),
+            concrete
+        );
+        let nested = ValueType::Named("Box".into(), vec![concrete.clone()]);
+        assert_eq!(
+            ValueType::from_parser_type(&nested.to_parser_type().unwrap()),
+            nested
+        );
+    }
+
+    #[test]
+    fn qualified_type_collisions_are_preserved_and_shared_native_linkage_is_allowed() {
+        let tokens = tinox_lexer::Lexer::new("namespace first { class Value { var n: Int64; } } namespace second { class Value { var n: String; } }").tokenize().unwrap();
+        let mut source = tinox_parser::Parser::new(tokens).parse().unwrap();
+        tinox_parser::assign_node_ids(&mut source);
+        let mut checker = TypeChecker::new();
+        checker.check(&source).unwrap();
+        assert_eq!(
+            checker.semantic_facts().ambiguous_declarations["type:Value"].len(),
+            2
+        );
+        check("namespace first { extern fn nativeShared(value: Int64) -> Int64; } namespace second { extern fn nativeShared(value: Int64) -> Int64; }");
+    }
+
+    #[test]
+    fn generic_calls_export_concrete_bindings_and_full_returns() {
+        let checker = check("class Cell<T> { var value: T; fnc of(value: T) -> Cell<T> { return Cell { value: value }; } fn get() -> T { return this.value; } } class Main { fnc use() -> String { return Cell::of(Cell::of(\"nested\")).get().get(); } }");
+        let facts = checker.semantic_facts();
+        assert!(facts
+            .calls
+            .values()
+            .any(|call| call.symbol.as_deref() == Some("Cell_get")
+                && call.result == ValueType::String));
+        assert!(facts.calls.values().any(|call| call.bindings.get("T")
+            == Some(&ValueType::Named("Cell".into(), vec![ValueType::String]))));
+    }
+
+    #[test]
+    fn qualified_declaration_identity_survives_the_checked_boundary() {
+        let checker = check("namespace demo.library { class Reader { fnc read() -> Int32 { return 7; } } } class Main { fnc use() -> Int32 { return Reader::read(); } }");
+        let facts = checker.semantic_facts();
+        let call = facts
+            .calls
+            .values()
+            .find(|call| call.symbol.as_deref() == Some("Reader_read"))
+            .unwrap();
+        let identity = call.declaration.as_ref().unwrap();
+        assert_eq!(identity.namespace, ["demo", "library"]);
+        assert_eq!(identity.owner.as_deref(), Some("Reader"));
+        assert_eq!(facts.declarations.get("Reader_read"), Some(identity));
+    }
+
+    #[test]
+    fn numeric_operations_export_promotions_without_changing_sources() {
+        let checker = check("fn compare(byte: UInt8, small: Float32) -> Float64 { const larger = byte > (2 as UInt8); return byte + small; }");
+        let facts = checker.semantic_facts();
+        assert!(facts
+            .numeric_operations
+            .values()
+            .any(|plan| plan.operand == ValueType::Float
+                && plan.left.is_unsigned()
+                && plan.right == ValueType::Float32));
+        assert!(facts
+            .numeric_operations
+            .values()
+            .any(|plan| plan.operand.is_unsigned()));
+    }
+
     #[test]
     fn scalar_identity_does_not_forbid_numeric_value_comparisons() {
         check("fn compare(a: Int32, b: UInt8) -> Bool { return a == 0 && b != 0; }");

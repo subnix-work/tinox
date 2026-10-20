@@ -1232,15 +1232,33 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
     }
 }
 
+#[cfg(test)]
+mod repl_semantics_tests {
+    #[test]
+    fn repl_preserves_checked_generic_types_and_numeric_promotions() {
+        let source = "fn identity<T>(value: T) -> T { return value; } fn main() -> Int64 { const byte: UInt8 = 255; println(identity(byte) + 1); println(identity(1.5)); return 0; }";
+        let output = super::repl_compile_and_run(source, std::process::id() as usize).unwrap();
+        assert_eq!(output.trim(), "256\n1.5");
+    }
+
+}
+
 fn repl_compile_and_run(src: &str, turn: usize) -> Result<String, String> {
-    // Lex + parse + codegen
+    // Lex + parse + check + lower through the same semantic boundary as builds.
     let tokens = Lexer::new(src).tokenize()
         .map_err(|errs| errs.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))?;
 
-    let ast = tinox_parser::Parser::new(tokens).parse()
+    let mut ast = tinox_parser::Parser::new(tokens).parse()
         .map_err(|bag| bag.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))?;
 
+    tinox_parser::assign_node_ids(&mut ast);
+    let mut checker = tinox_typecheck::TypeChecker::new();
+    checker.check(&ast).map_err(|bag| bag.errors.iter().map(|error| error.message.clone()).collect::<Vec<_>>().join("; "))?;
     let mut cg = CodeGen::new();
+    cg.set_expr_value_types(checker.expr_value_types());
+    cg.set_semantic_facts(checker.semantic_facts());
+    let (interfaces, implementations) = checker.interface_info();
+    cg.set_interface_info(interfaces, implementations);
     cg.gen(&ast).map_err(|e| format!("{:?}", e))?;
     let ir = cg.into_ir();
 
@@ -4638,6 +4656,7 @@ mod one_type_per_file_tests {
         let mut parser = Parser::new(tokens);
         parser.parse().expect("parse").decls
     }
+
 
     #[test]
     fn zero_types_ok() {

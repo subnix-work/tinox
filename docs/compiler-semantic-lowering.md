@@ -1,95 +1,86 @@
-# Semantic lowering migration (#300)
+# Semantic lowering contracts (#300)
 
-This is the first migration slice of #300. The issue remains open: the frontend
-now preserves more semantic information, and selected consumers use it directly.
-The remaining emission paths are inventoried below rather than removed before
-their required data exists.
+The compiler carries one checked semantic representation into lowering. It keeps
+source type identity separate from the LLVM representation and from the physical
+word slots used by the runtime. PR #335 introduced this boundary; the completion
+migration extends it to generic specialization, ordinary calls, arithmetic,
+containers and expression joins.
 
-## Current contract
+## Checked boundary
 
-`TypeChecker::expr_value_types()` remains the single per-expression type channel.
-It is keyed by the node IDs assigned after import resolution and accessor
-synthesis. `ValueType` now distinguishes integer width and signedness, Float32
-from Float64, complete callable signatures, reference targets/mutability, tuple
-elements, generic arguments and task result types. Int and Float denote the
-language's default Int64 and Float64; they no longer stand for every numeric
-width. Generic equality includes arguments. Ordinary numeric value compatibility
-is separate from function ABI compatibility and generic identity.
+`CheckedProgram` persists `TypeChecker::expr_value_types()` and `SemanticFacts`
+together, keyed by the exact ordered AST and assigned node IDs. The normal CLI,
+test compiler and REPL pass both exports to codegen. A specialization reuses those
+node IDs and substitutes the checked symbolic types using its concrete bindings.
+It does not run a second typechecker or infer source types from LLVM strings.
 
-`semantic::SemanticFacts` adds explicit contracts for resolved calls, fields and
-casts. Calls retain the checked owner/emission symbol, dispatch kind (direct,
-instance, interface, closure or dynamic), parameters and result. Field facts
-retain owner, member and result. Cast facts retain source and target types.
-These facts and expression types are persisted together in `CheckedProgram`,
-under the existing exact-AST/node-numbering cache key. The compiler hands both to
-codegen in normal builds and test builds. They are not reconstructed by parsing
-rendered API descriptions or by independently type-checking a second AST.
+`ValueType` retains primitive widths and signedness, callable signatures,
+generic arguments, reference mutability, tuple elements and task result types.
+Numeric value compatibility is distinct from callable ABI compatibility and
+generic identity. `Cell<UInt8>` and `Cell<Int8>` therefore remain different even
+though both store their payload in the same runtime word layout.
 
-Callable arguments now receive contextual parameter types before body inference;
-block lambda returns contribute their actual result. An explicit receiving
-annotation can bind a generic factory with no constraining value arguments. Known callback calls check
-arity and argument types. Static class calls apply the same compatibility check.
-Function signature identity does not silently adapt a callback with a different
-parameter ABI. Unannotated lambdas can explicitly discard a result when their
-context requires Nothing, retaining the existing closure convention.
+`SemanticFacts` provides:
 
-## Consumers migrated in this slice
+- Resolved calls with owner, dispatch, parameter/result types and generic
+  bindings. The receiver is normalized out of instance-call argument contracts.
+- Declaration identities with namespace, source identity, owner and member,
+  separate from backend linkage spellings. Installed source identities include
+  the dependency's versioned path. Native extern declarations share the explicit
+  native linkage identity. Read-only `tinox describe` can select a qualified
+  candidate; native emission rejects ambiguous non-native linkage.
+- Field owner/result contracts and declared field type templates.
+- Cast source/target contracts and numeric operand promotion plans.
 
-| Consumer | Authoritative input | Behavior |
-| --- | --- | --- |
-| Local and indirect callback calls | Resolved call signature/result | Emit the actual return ABI and numeric argument conversions; missing checked call data produces an internal-invariant diagnostic. |
-| Callbacks in generic method bodies | Declared signature after existing monomorphization | Use the substituted signature for parameter ABI, including callbacks captured by a nested lambda. |
-| Explicit numeric casts | Cast source/target facts | Select signed versus unsigned extension and integer/float conversion. |
-| Numeric returns | Declared return representation and source type | Convert numeric values instead of emitting mismatched LLVM return types. |
-| Narrow typed field reads | Checked field result and verified physical layout | Restore the semantic width from the existing uniform word slot. |
-| Tuple elements | Checked element type | Encode and decode words for float, pointer and narrow values. |
-| Task results | Checked task/result type | Decode the existing pthread result word, including Float32, Float64, narrow integers and pointers. No new task lifecycle/cancellation API is introduced. |
-| Closure environments | Substituted captured-variable representation | Encode words and restore the actual local type; do not store an eight-byte word into a four-byte Float32 alloca. |
-| Generic callback inference | Structural callable/generic type | Preserve nested return arguments instead of treating every callback as an opaque Fn. |
+Receiving annotations can bind otherwise unconstrained factories. Missing
+bindings fail in the frontend with an actionable diagnostic. Codegen validates
+required bindings and checked call/declaration identity; it never substitutes an
+unresolved parameter with a guessed `Int64`.
 
-`Any` remains explicit. The `Fn` category in polymorphic runtime builtin
-signatures is deliberately erased; it is distinct from a declared
-`fnc(A) -> B`, which now carries its signature. Raw class annotations/receiver contracts explicitly erase arguments and
-still accept different instantiations of that class. An explicitly parameterized
-`Box<String>` does not accept `Box<Int64>` merely because the base names match.
+## Consumers
 
-Bool field reads now retain their Bool type: printing a Bool field produces
-`true`/`false`, consistently with a Bool-returning interface call. Structured
-frontend diagnostics likewise report the declared width (for example Int32
-instead of the previously erased Int64).
+| Consumer | Checked input and lowering behavior |
+| --- | --- |
+| Generic classes, functions and methods | Full structural bindings drive body/declaration substitution and specialization keys. Width, signedness, class identity, nested arguments, maps, nullable/reference types, tuples and callable signatures participate in identity. LLVM types are derived only afterward. |
+| Direct, instance and interface calls | Checked receiver/dispatch and concrete declaration tables select the implementation; declared parameter contracts drive numeric argument conversion. Return ABIs come from checked results or concrete declarations, never the first argument. |
+| Indirect callbacks and callback fields | Callable contracts supply the real return ABI and argument conversions. Missing checked call facts produce a compiler invariant diagnostic. |
+| Arithmetic and comparisons | Checked promotion converts both operands as values. Unsigned extension, comparison, division and remainder retain unsigned semantics; zero division fails visibly. Float32/Float64 promotion uses numeric conversions instead of bit reinterpretation. |
+| Explicit casts and returns | Semantic source/target types determine signedness, width and integer/floating-point conversion. |
+| Fields | Checked field templates are specialized before numeric values are converted and stored; reads restore narrow/float/boolean values from the physical word layout. |
+| Lists and maps | Literal and assignment values convert to their checked element/value type before word encoding. Indexing, map get, list first/last and tuple access decode using the checked result type. |
+| Conditional and match expressions | Each branch converts to the checked join before storage; the merge decodes that join rather than selecting the last emitted branch's representation. |
+| Captures, tuples and task results | Shared word encoding/decoding preserves pointers, Float32, Float64 and narrow integers without invalid-width bitcasts. |
+| Channels | `Channel<T>` has an explicit word-handle ABI, distinct from a class pointer; send/recv convert and decode the checked element type. |
 
-## Audit of remaining context and fallbacks
+Mixed numeric values retain the language's existing promotion policy: identical
+types preserve their type, differing integer types promote to Int64, and mixed
+floating-point/numeric types promote to Float64. Implicit conversion of a numeric
+value does not adapt a callback signature or mutate an existing generic object.
 
-| Location in codegen.rs | Classification | Remaining work |
-| --- | --- | --- |
-| `This`, `ctx.current_struct`, specialized field layouts | Legitimate emission context | Keep the concrete class specialization while the frontend checks its symbolic generic body. |
-| `infer_struct_type_local` and let/var marker propagation | Mixed | Some receiver/layout context is legitimate; erased Any/container and generic-return cases still need consumer-specific migration before deleting these arms. |
-| `marker_to_type`, generic name mangling and binding tables | Missing semantic identity | Existing specialization keys are based on LLVM representations. Complete semantic keys, nested identities and signedness-aware substitutions require a separate slice. |
-| `infer_own_type_params`'s final Int64 fallback | Missing authoritative specialization binding | Replace only after every generic callback/body shape exports resolved bindings; it is not presented as an established concrete type here. |
-| Non-closure MethodCall/static emission | Mixed | Resolved owner/dispatch facts are exported, but several consumers still use the existing method tables and marker paths. Migrate individually, preserving interface dispatch and specialization context. |
-| Arithmetic and implicit conversions outside migrated call/return/cast paths | Missing explicit conversion plan | Continue replacing LLVM-type heuristics with checked conversion plans, including mixed signedness and floating-point promotion. |
-| Namespace/package-qualified declaration IDs | Missing semantic identity | Current facts retain the checked class/member and emission key. Package-qualified stable symbol IDs remain future work. |
-| Map key type and raw runtime handles | Deliberately erased or incomplete, depending on origin | Maps retain the existing canonical runtime-key contract. Typed task results do not settle ownership, cancellation, deadlines or handle API design (#301). |
-| Opaque builtin callback contracts | Deliberately dynamic | Keep erasure explicit and add typed builtin contracts as their consumers migrate. |
+## Context that remains intentionally in emission
 
-This slice does not claim that every i64 fallback is removed or that #300 is
-complete. It establishes checked contracts and removes the reproduced failure
-paths in #333 while retaining existing #61/#62/#64 composition behavior.
+The concrete `this` layout, inheritance implementation tables, field offsets,
+closure environment slots and runtime ABI signatures are emission context, not
+alternative semantic type inference. Checked expression types take precedence
+over legacy marker propagation. Legacy inference helpers serve synthetic or
+unchecked internal ASTs and explicitly dynamic `Any` paths; they do not choose
+generic bindings for checked programs.
+
+The runtime's map-key representation remains canonicalized by its existing key
+API. Erased native builtin `Fn`/`Any` signatures are explicit dynamic contracts,
+not invented concrete source types. Task ownership, cancellation, deadlines and
+handle APIs are tracked separately in #301; this migration integrates its
+checked `Task<T>` annotations and preserves the pthread/word ABI.
 
 ## Verification
 
-- Structural type roundtrips retain widths, signedness, signatures, nested generic
-  arguments, reference targets and tuple elements.
-- Semantic contract tests compare call results with the expression type export
-  and check interface owners, callback parameters, fields and cast types.
-- `semantic_composition` combines returned/captured callbacks, generic factories,
-  interface dispatch, UInt8 fields, Float32 captures, numeric conversions and
-  mixed tuple elements.
-- The CLI integration test builds and runs that composition in debug, release
-  and checked modes, using the real LLVM verifier and backend.
-- Known invalid callback and generic compositions fail in the frontend, even
-  with an empty PATH and therefore no native compiler tools available.
-- Typed task results run 20 times in each of those three modes. The runtime word
-  ABI and real-thread implementation are unchanged.
-- Every commit is gated by the complete background `make check`, including
-  clippy, unit/integration tests, dogfood and grammar sync.
+Semantic unit tests cover exact type roundtrips, checked call/field/cast/numeric
+contracts, full nested generic returns and qualified declaration identities.
+The CLI composition tests use the real LLVM verifier and native backend in
+debug, release and checked modes. They combine callbacks, interfaces, unsigned
+and signed narrow fields, Float32 captures/containers, nested generic factories,
+ordinary numeric calls and conditional joins. Invalid callback signatures,
+generic values and unresolved/conflicting bindings fail before native tools are
+available. Typed task results run 20 times per mode. The complete `make check`
+gate includes Clippy, all unit/integration suites, dogfood/jgrep-tinox and grammar
+synchronization.
