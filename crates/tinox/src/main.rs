@@ -2589,6 +2589,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
 
     let mut cg = CodeGen::new();
     cg.set_expr_value_types(tc.expr_value_types());
+    cg.set_semantic_facts(tc.semantic_facts());
     cg.set_interface_info(iface, impls);
     let do_not_serialize_fields: Vec<tinox_codegen::LogMaskFieldInfo> = ann.do_not_serialize_fields
         .iter()
@@ -4190,6 +4191,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     let _backend_stage = tinox_common::frontend::Stage::new("backend");
     let mut codegen = CodeGen::new();
     codegen.set_expr_value_types(checked.expr_types);
+    codegen.set_semantic_facts(checked.semantics);
     codegen.set_interface_info(iface_methods, class_implements);
     codegen.set_loaded_modules(loaded_modules);
     codegen.set_startup_banner_enabled(startup_banner_enabled);

@@ -491,6 +491,7 @@ pub struct CodeGen {
     /// gone); consumed via `rich_marker`. ID 0 (synthetic nodes) never has an
     /// entry.
     expr_value_types: HashMap<u32, tinox_typecheck::ValueType>,
+    semantics: tinox_typecheck::semantic::SemanticFacts,
     /// DB connection URL from tinox.toml [database] — emitted as compile-time constant
     db_url: Option<String>,
     /// [database] pool size from tinox.toml, default 5 when omitted (see
@@ -650,6 +651,7 @@ impl CodeGen {
             amqp091_consumers: Vec::new(),
             http3_rest_controller: None,
             expr_value_types: HashMap::new(),
+            semantics: tinox_typecheck::semantic::SemanticFacts::default(),
             db_url: None,
             db_pool_size: 5,
             metrics_path: None,
@@ -736,6 +738,8 @@ impl CodeGen {
     pub fn set_metrics_config(&mut self, path: Option<String>) {
         self.metrics_path = path;
     }
+
+    pub fn set_semantic_facts(&mut self, facts: tinox_typecheck::semantic::SemanticFacts) { self.semantics = facts; }
 
     pub fn set_expr_value_types(&mut self, types: HashMap<u32, tinox_typecheck::ValueType>) {
         self.expr_value_types = types;
@@ -1246,6 +1250,47 @@ impl CodeGen {
         }
     }
 
+    /// Decode the runtime's uniform word without guessing an integer result.
+    fn decode_semantic_word(&mut self, raw: String, semantic: &tinox_typecheck::ValueType) -> (String, String) {
+        self.decode_word(raw, Self::valuetype_to_llvm(semantic))
+    }
+
+    fn decode_word(&mut self, raw: String, target: String) -> (String, String) {
+        if target == "i64" { return (raw, target); }
+        let decoded = self.temp();
+        if target == "float" {
+            let bits = self.temp(); writeln!(&mut self.ir, "{} = trunc i64 {} to i32", bits, raw).unwrap();
+            writeln!(&mut self.ir, "{} = bitcast i32 {} to float", decoded, bits).unwrap();
+        } else {
+            let op = if target == "double" { "bitcast" } else if target.ends_with('*') { "inttoptr" } else { "trunc" };
+            writeln!(&mut self.ir, "{} = {} i64 {} to {}", decoded, op, raw, target).unwrap();
+        }
+        (decoded, target)
+    }
+
+    /// A numeric value conversion at a checked closure-call boundary. Signature
+    /// compatibility itself is invariant: no implicit adapter changes a closure.
+    fn convert_semantic_argument(&mut self, value: String, actual: String, expected: &tinox_typecheck::ValueType, expr: &Expr) -> Result<(String, String), ErrorBag> {
+        use tinox_typecheck::ValueType as VT;
+        if matches!(expected, VT::Any | VT::Named(_, _)) { return Ok((value, actual)); }
+        let target = Self::valuetype_to_llvm(expected);
+        if actual == target { return Ok((value, actual)); }
+        let source_unsigned = self.expr_value_types.get(&expr.id).is_some_and(VT::is_unsigned);
+        let from_float = Self::is_float(&actual);
+        let to_float = Self::is_float(&target);
+        let op = if from_float && to_float { if actual == "float" { "fpext" } else { "fptrunc" } }
+            else if from_float && expected.is_integer() { if expected.is_unsigned() { "fptoui" } else { "fptosi" } }
+            else if to_float && actual.starts_with('i') && !actual.ends_with('*') { if source_unsigned { "uitofp" } else { "sitofp" } }
+            else if expected.is_integer() && actual.starts_with('i') && !actual.ends_with('*') {
+                let from: u32 = actual[1..].parse().unwrap_or(64);
+                let to: u32 = target[1..].parse().unwrap_or(64);
+                if from > to { "trunc" } else if source_unsigned || actual == "i1" { "zext" } else { "sext" }
+            } else { return Ok((value, actual)); };
+        let converted = self.temp();
+        writeln!(&mut self.ir, "{} = {} {} {} to {}", converted, op, actual, value, target).unwrap();
+        Ok((converted, target))
+    }
+
     /// Infer the struct/class type name for an expression (for nested field access).
     fn infer_struct_type(&self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
         use tinox_parser::ExprKind;
@@ -1281,8 +1326,8 @@ impl CodeGen {
     /// Marker from the rich typed export, if the checker recorded a type for
     /// this node. The non-local half of `infer_struct_type`.
     fn rich_marker(&self, expr: &tinox_parser::Expr) -> Option<String> {
-        self.expr_value_types
-            .get(&expr.id)
+        self.semantics.fields.get(&expr.id).map(|field| &field.result)
+            .or_else(|| self.expr_value_types.get(&expr.id))
             .and_then(|vt| self.valuetype_to_marker(vt))
     }
 
@@ -5118,6 +5163,7 @@ impl CodeGen {
         let mut ctx = GenCtx {
             locals: HashMap::new(),
             local_slots: HashMap::new(),
+            callable_types: f.params.iter().filter(|p| matches!(p.param_type, Type::Fn { .. })).map(|p| (p.name.clone(), tinox_typecheck::ValueType::from_parser_type(&p.param_type))).collect(),
             range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
@@ -5238,6 +5284,7 @@ impl CodeGen {
         let mut ctx = GenCtx {
             locals: HashMap::new(),
             local_slots: HashMap::new(),
+            callable_types: method.params.iter().filter(|p| matches!(p.param_type, Type::Fn { .. })).map(|p| (p.name.clone(), tinox_typecheck::ValueType::from_parser_type(&p.param_type))).collect(),
             range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
@@ -7208,11 +7255,14 @@ impl CodeGen {
                 }
                 let (final_val, final_ty) = if !expected.is_empty() && &ty != expected {
                     let cast_op = match (ty.as_str(), expected.as_str()) {
+                        (from, to) if Self::is_float(from) && Self::is_float(to) => if from == "float" { "fpext" } else { "fptrunc" },
+                        (from, to) if Self::is_float(to) && from.starts_with('i') && !from.ends_with('*') => if self.expr_value_types.get(&expr.id).is_some_and(tinox_typecheck::ValueType::is_unsigned) { "uitofp" } else { "sitofp" },
+                        (from, to) if Self::is_float(from) && to.starts_with('i') && !to.ends_with('*') => "fptosi",
                         (from, to) if from.ends_with('*') && to.ends_with('*') => "bitcast",
                         (from, to) if from.starts_with('i') && to.starts_with('i') && !from.contains('*') && !to.contains('*') => {
                             let from_bits: u32 = from[1..].parse().unwrap_or(64);
                             let to_bits: u32 = to[1..].parse().unwrap_or(64);
-                            if from_bits > to_bits { "trunc" } else { "zext" }
+                            if from_bits > to_bits { "trunc" } else if self.expr_value_types.get(&expr.id).is_some_and(|t| t.is_unsigned() || *t == tinox_typecheck::ValueType::Bool) { "zext" } else { "sext" }
                         }
                         (from, to) if !from.ends_with('*') && to.ends_with('*') => "inttoptr",
                         (from, to) if from.ends_with('*') && !to.ends_with('*') => "ptrtoint",
@@ -8740,6 +8790,9 @@ impl CodeGen {
                         }
                     }
                 }
+                let resolved_call = self.semantics.calls.get(&expr.id).cloned();
+                let specialized_callable = if let ExprKind::Ident(name) = &func.node { ctx.callable_types.get(name).cloned() } else { None };
+                let closure_params = if let Some(tinox_typecheck::ValueType::Callable { params, .. }) = &specialized_callable { Some(params.clone()) } else { resolved_call.as_ref().filter(|call| call.dispatch == tinox_typecheck::semantic::CallDispatch::Closure).map(|call| call.params.clone()) };
                 let mut args_str = String::new();
                 let mut arg_types = Vec::new();
                 let mut arg_vals = Vec::new();
@@ -8748,6 +8801,9 @@ impl CodeGen {
                         args_str.push_str(", ");
                     }
                     let (val, ty) = self.gen_expr(arg, ctx)?;
+                    let (val, ty) = if let Some(expected) = closure_params.as_ref().and_then(|types| types.get(i)) {
+                        self.convert_semantic_argument(val, ty, expected, arg)?
+                    } else { (val, ty) };
                     args_str.push_str(&format!("{} {}", ty, val));
                     arg_types.push(ty);
                     arg_vals.push(val);
@@ -9360,11 +9416,13 @@ impl CodeGen {
                 // underlying `casted_fn` signature fix below (using this
                 // `ret_ty`, not a hardcoded "i64", for the function-pointer
                 // cast) applies to both call shapes identically.
-                let closure_ret_ty = self
-                    .expr_value_types
-                    .get(&expr.id)
-                    .map(Self::valuetype_to_llvm)
-                    .unwrap_or_else(|| "i64".to_string());
+                let closure_ret_ty = if let Some(tinox_typecheck::ValueType::Callable { ret, .. }) = &specialized_callable { Self::valuetype_to_llvm(ret) }
+                else if let Some(call) = &resolved_call {
+                    Self::valuetype_to_llvm(&call.result)
+                } else if let Some(ty) = self.expr_value_types.get(&expr.id) { Self::valuetype_to_llvm(ty) }
+                else if expr.id != 0 && !self.semantics.calls.is_empty() {
+                    return Err(ErrorBag { errors: vec![Error::new(expr.span, "Missing resolved call semantics during lowering; report this compiler invariant failure")] });
+                } else { "i64".into() };
                 let ret_ty = if let ExprKind::Ident(callee) = &func.node {
                     if ctx.locals.contains_key(callee) {
                         // `callee` is a local variable holding a closure
@@ -10636,6 +10694,9 @@ impl CodeGen {
                     ).unwrap();
                     let loaded = self.temp();
                     writeln!(&mut self.ir, "{} = load {}, {}* {}", loaded, slot, slot, field_ptr).unwrap();
+                    if slot == "i64" && self.semantics.fields.contains_key(&expr.id) && matches!(field_llvm_ty.as_str(), "float" | "i1" | "i8" | "i16" | "i32") {
+                        return Ok(self.decode_word(loaded, field_llvm_ty.clone()));
+                    }
                     return Ok((loaded, slot));
                 }
 
@@ -10881,7 +10942,8 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, ptr, index).unwrap();
                 let val = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* {}", val, field_ptr).unwrap();
-                Ok((val, "i64".to_string()))
+                let semantic = self.expr_value_types.get(&expr.id).cloned();
+                Ok(if let Some(semantic) = semantic { self.decode_semantic_word(val, &semantic) } else { (val, "i64".into()) })
             }
             ExprKind::Tuple(exprs) => {
                 let ptr = self.temp();
@@ -10891,14 +10953,7 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
                 for (i, expr) in exprs.iter().enumerate() {
                     let (val, val_ty) = self.gen_expr(expr, ctx)?;
-                    // Pointer elements must be ptrtoint'd to i64 for uniform storage
-                    let store_val = if val_ty != "i64" && val_ty != "i1" && val_ty != "double" && val_ty != "float" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else {
-                        val
-                    };
+                    let store_val = self.coerce_to_i64(&val, &val_ty);
                     let field_ptr = self.temp();
                     writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, typed_ptr, i).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
@@ -11197,8 +11252,12 @@ impl CodeGen {
                 writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
                 Ok(("0".to_string(), "i64".to_string()))
             }
-            ExprKind::Cast { expr, ty } => {
+            ExprKind::Cast { expr: source, ty } => {
+                let conversion = self.semantics.conversions.get(&expr.id).cloned();
+                let expr = source;
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
+                let source_unsigned = conversion.as_ref().map(|c| &c.source).or_else(|| self.expr_value_types.get(&expr.id)).is_some_and(|t| t.is_unsigned());
+                let target_unsigned = conversion.as_ref().map(|c| c.target.is_unsigned()).unwrap_or_else(|| tinox_typecheck::ValueType::from_parser_type(ty).is_unsigned());
                 let llvm_ty = Self::type_to_llvm(ty);
                 if llvm_ty == val_ty {
                     return Ok((val, llvm_ty));
@@ -11234,16 +11293,16 @@ impl CodeGen {
                     writeln!(&mut self.ir, "{} = {} {} {} to {}", result, op, val_ty, val, llvm_ty).unwrap();
                 } else if src_float {
                     // float → int: fptosi
-                    writeln!(&mut self.ir, "{} = fptosi {} {} to {}", result, val_ty, val, llvm_ty).unwrap();
+                    writeln!(&mut self.ir, "{} = {} {} {} to {}", result, if target_unsigned { "fptoui" } else { "fptosi" }, val_ty, val, llvm_ty).unwrap();
                 } else if dst_float {
                     // int → float: sitofp
-                    writeln!(&mut self.ir, "{} = sitofp {} {} to {}", result, val_ty, val, llvm_ty).unwrap();
+                    writeln!(&mut self.ir, "{} = {} {} {} to {}", result, if source_unsigned { "uitofp" } else { "sitofp" }, val_ty, val, llvm_ty).unwrap();
                 } else if val_ty == "i1" {
                     writeln!(&mut self.ir, "{} = zext i1 {} to {}", result, val, llvm_ty).unwrap();
                 } else if val_ty.starts_with('i') && llvm_ty.starts_with('i') {
                     let val_bits: u32 = val_ty[1..].parse().unwrap_or(64);
                     let tgt_bits: u32 = llvm_ty[1..].parse().unwrap_or(64);
-                    let op = if val_bits < tgt_bits { "sext" } else { "trunc" };
+                    let op = if val_bits < tgt_bits { if source_unsigned { "zext" } else { "sext" } } else { "trunc" };
                     writeln!(&mut self.ir, "{} = {} {} {} to {}", result, op, val_ty, val, llvm_ty).unwrap();
                 } else {
                     writeln!(&mut self.ir, "{} = bitcast {} {} to {}", result, val_ty, val, llvm_ty).unwrap();
@@ -11353,7 +11412,13 @@ impl CodeGen {
                 params,
                 ret_type,
                 body,
-            } => self.gen_lambda(params, ret_type.as_ref(), body, ctx),
+            } => {
+                if let Some(tinox_typecheck::ValueType::Callable { params: types, ret }) = self.expr_value_types.get(&expr.id) {
+                    if self.pending_lambda_param_llvm.is_empty() { self.pending_lambda_param_llvm = types.iter().map(|t| if matches!(t, tinox_typecheck::ValueType::Any | tinox_typecheck::ValueType::Named(_, _)) { None } else { Some(Self::valuetype_to_llvm(t)) }).collect(); }
+                    if self.pending_lambda_ret_llvm.is_none() && !matches!(ret.as_ref(), tinox_typecheck::ValueType::Any | tinox_typecheck::ValueType::Named(_, _)) { self.pending_lambda_ret_llvm = Some(Self::valuetype_to_llvm(ret)); }
+                }
+                self.gen_lambda(params, ret_type.as_ref(), body, ctx)
+            },
             ExprKind::Range {
                 start,
                 end,
@@ -12103,7 +12168,8 @@ impl CodeGen {
                 writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", handle_ptr, handle_i64).unwrap();
                 let result = self.temp();
                 writeln!(&mut self.ir, "  {} = call i64 @tinox_task_await(i8* {})", result, handle_ptr).unwrap();
-                Ok((result, "i64".to_string()))
+                let semantic = self.expr_value_types.get(&expr.id).cloned();
+                Ok(if let Some(semantic) = semantic { self.decode_semantic_word(result, &semantic) } else { (result, "i64".into()) })
             }
             ExprKind::Channel => {
                 let ch_ptr = self.temp();
@@ -12989,6 +13055,7 @@ impl CodeGen {
         let mut lambda_ctx = GenCtx {
             locals: HashMap::new(),
             local_slots: HashMap::new(),
+            callable_types: ctx.callable_types.clone(),
             range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
@@ -13013,6 +13080,8 @@ impl CodeGen {
             finally_targets: Vec::new(),
         };
         for (i, p) in params.iter().enumerate() {
+            lambda_ctx.callable_types.remove(&p.name);
+            if matches!(p.param_type, Type::Fn { .. }) { lambda_ctx.callable_types.insert(p.name.clone(), tinox_typecheck::ValueType::from_parser_type(&p.param_type)); }
             if i > 0 {
                 params_str.push_str(", ");
                 fn_type_str.push_str(", ");
@@ -13089,7 +13158,8 @@ impl CodeGen {
                         writeln!(&mut self.ir, "{} = load {}, {}* %{}", v, ty, ty, slot).unwrap();
                         v
                     };
-                    writeln!(&mut self.ir, "store {} {}, {}* {}", ty, val, ty, field_ptr).unwrap();
+                    let word = self.coerce_to_i64(&val, ty);
+                    writeln!(&mut self.ir, "store i64 {}, i64* {}", word, field_ptr).unwrap();
                 }
             }
             Some(env_typed)
@@ -13128,7 +13198,8 @@ impl CodeGen {
                 .unwrap();
                 let loaded = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* {}", loaded, env_field).unwrap();
-                writeln!(&mut self.ir, "store i64 {}, i64* %{}", loaded, name).unwrap();
+                let (decoded, decoded_type) = self.decode_word(loaded, ty.clone());
+                writeln!(&mut self.ir, "store {} {}, {}* %{}", decoded_type, decoded, decoded_type, name).unwrap();
                 lambda_ctx
                     .locals
                     .insert(name.clone(), (ty.clone(), lambda_ctx.locals.len()));
@@ -14392,29 +14463,10 @@ impl CodeGen {
         }
     }
 
-    /// Issue #165 counterpart to `marker_to_type`: converts a
-    /// tinox-typecheck-inferred `ValueType` (from `expr_value_types`) into the
-    /// parser `Type` shape `unify_type_param` operates on. Only covers the
-    /// cases that can plausibly appear as a lambda's inferred return type;
-    /// anything else (Tuple, Range, Nullable, ...) isn't needed here and
-    /// falls through to the existing `Int64` fallback, unchanged from before
-    /// this fix.
+    /// Recover the frontend's complete type when specializing a generic call.
+    /// Unknown runtime categories stay explicit rather than becoming Int64.
     fn value_type_to_parser_type(vt: &tinox_typecheck::ValueType) -> Option<tinox_parser::Type> {
-        use tinox_parser::Type;
-        use tinox_typecheck::ValueType as VT;
-        match vt {
-            VT::Int => Some(Type::Int64),
-            VT::Float => Some(Type::Float64),
-            VT::Bool => Some(Type::Bool),
-            VT::String => Some(Type::String),
-            VT::Named(name, args) if args.is_empty() => Some(Type::Named(name.clone())),
-            VT::Named(name, args) => {
-                let arg_types: Option<Vec<Type>> = args.iter().map(Self::value_type_to_parser_type).collect();
-                arg_types.map(|a| Type::Generic { name: name.clone(), args: a })
-            }
-            VT::Array(inner) => Self::value_type_to_parser_type(inner).map(|t| Type::Array(Box::new(t))),
-            _ => None,
-        }
+        vt.to_parser_type()
     }
 
     /// Structural unification: does `pattern` contain the bare type param `tp`
@@ -14703,7 +14755,7 @@ impl CodeGen {
         use tinox_typecheck::ValueType as VT;
         match vt {
             VT::String => Some("String".to_string()),
-            VT::Float => Some("Float".to_string()),
+            VT::Float | VT::Float32 => Some("Float".to_string()),
             VT::Named(name, args) if args.is_empty() => Some(name.clone()),
             VT::Named(name, args) => {
                 // Generic instance → mangled specialization, if the class is known.
@@ -14719,7 +14771,7 @@ impl CodeGen {
             }
             VT::Array(e) => Some(match e.as_ref() {
                 VT::String => "Array:String".to_string(),
-                VT::Float => "Array:Float".to_string(),
+                VT::Float | VT::Float32 => "Array:Float".to_string(),
                 VT::Named(c, _) => format!("List:{}", c),
                 inner => match self.valuetype_to_marker(inner) {
                     Some(m) => format!("Array:{}", m),
@@ -14740,7 +14792,10 @@ impl CodeGen {
     fn valuetype_to_llvm(vt: &tinox_typecheck::ValueType) -> String {
         use tinox_typecheck::ValueType as VT;
         match vt {
-            VT::Int => "i64".to_string(),
+            VT::Int | VT::Task(_) => "i64".to_string(),
+            VT::Integer { bits, .. } => format!("i{bits}"),
+            VT::Float32 => "float".to_string(),
+            VT::Nothing => "i64".to_string(),
             VT::Float => "double".to_string(),
             VT::Bool => "i1".to_string(),
             VT::Char => "i32".to_string(),
@@ -15494,6 +15549,9 @@ impl CodeGen {
             let t = self.temp();
             writeln!(&mut self.ir, "  {} = bitcast double {} to i64", t, val).unwrap();
             t
+        } else if ty == "float" {
+            let bits = self.temp(); writeln!(&mut self.ir, "  {} = bitcast float {} to i32", bits, val).unwrap();
+            let wide = self.temp(); writeln!(&mut self.ir, "  {} = zext i32 {} to i64", wide, bits).unwrap(); wide
         } else if ty == "i1" {
             let t = self.temp();
             writeln!(&mut self.ir, "  {} = zext i1 {} to i64", t, val).unwrap();
@@ -15555,6 +15613,11 @@ impl CodeGen {
                 let t = wt!();
                 writeln!(&mut w, "  {} = trunc i64 {} to i1", t, raw).unwrap();
                 t
+            } else if param_ty == "float" {
+                let bits = wt!(); writeln!(&mut w, "  {} = trunc i64 {} to i32", bits, raw).unwrap();
+                let value = wt!(); writeln!(&mut w, "  {} = bitcast i32 {} to float", value, bits).unwrap(); value
+            } else if matches!(param_ty.as_str(), "i8" | "i16" | "i32") {
+                let value = wt!(); writeln!(&mut w, "  {} = trunc i64 {} to {}", value, raw, param_ty).unwrap(); value
             } else if param_ty.ends_with('*') {
                 let t = wt!();
                 writeln!(&mut w, "  {} = inttoptr i64 {} to {}", t, raw, param_ty).unwrap();
@@ -15584,6 +15647,13 @@ impl CodeGen {
                 let as_i64 = wt!();
                 writeln!(&mut w, "  {} = zext i1 {} to i64", as_i64, res).unwrap();
                 writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, as_i64).unwrap();
+            } else if ret_ty == "float" {
+                let bits = wt!(); writeln!(&mut w, "  {} = bitcast float {} to i32", bits, res).unwrap();
+                let wide = wt!(); writeln!(&mut w, "  {} = zext i32 {} to i64", wide, bits).unwrap();
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, wide).unwrap();
+            } else if matches!(ret_ty, "i8" | "i16" | "i32") {
+                let wide = wt!(); writeln!(&mut w, "  {} = zext {} {} to i64", wide, ret_ty, res).unwrap();
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, wide).unwrap();
             } else if ret_ty.ends_with('*') {
                 writeln!(&mut w, "  {} = bitcast {} {} to i8*", ret_ptr, ret_ty, res).unwrap();
             } else {
@@ -15838,6 +15908,8 @@ pub struct GenCtx {
     locals: HashMap<String, (String, usize)>,
     /// Maps user variable name → unique LLVM alloca slot name (without %)
     local_slots: HashMap<String, String>,
+    /// Declared signatures after monomorphization, including captured callbacks.
+    callable_types: HashMap<String, tinox_typecheck::ValueType>,
     /// Variables that hold a range value (i64* with start/end, not an array)
     range_vars: HashSet<String>,
     params: HashSet<String>,

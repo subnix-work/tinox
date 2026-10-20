@@ -1,0 +1,1 @@
+class Packet { var value: UInt8; }
