@@ -9,6 +9,7 @@ use tinox_parser::SourceFile;
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CheckedProgram {
     pub expr_types: HashMap<u32, ValueType>,
+    pub semantics: crate::semantic::SemanticFacts,
     pub interface_methods: HashMap<String, Vec<String>>,
     pub class_implements: HashMap<String, Vec<String>>,
 }
@@ -23,6 +24,7 @@ pub fn check_program_cached(source: &SourceFile) -> Result<CheckedProgram, Error
         let (interface_methods, class_implements) = checker.interface_info();
         Ok(CheckedProgram {
             expr_types: checker.expr_value_types(),
+            semantics: checker.semantic_facts(),
             interface_methods,
             class_implements,
         })

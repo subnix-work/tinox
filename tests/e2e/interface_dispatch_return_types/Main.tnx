@@ -17,7 +17,7 @@
 // expect: checker-label
 // expect: true
 // expect: 7
-// expect: 1
+// expect: true
 import IChecker;
 import CheckerImpl;
 
@@ -33,6 +33,7 @@ class Main
         println(c.count());
 
         c.touch();
+        // A checked field read retains Bool instead of its raw i64 slot.
         println(impl.touched);
 
         return 0;

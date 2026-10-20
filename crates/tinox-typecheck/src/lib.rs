@@ -1,3 +1,4 @@
+pub mod semantic;
 pub mod cache;
 
 pub mod annotations;
@@ -240,7 +241,14 @@ impl TypeError {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ValueType {
+    /// Default signed Int64, including unsuffixed integer literals.
     Int,
+    Integer { bits: u8, signed: bool },
+    Float32,
+    Callable { params: Vec<ValueType>, ret: Box<ValueType> },
+    Reference { inner: Box<ValueType>, mutable: bool },
+    TupleOf(Vec<ValueType>),
+    Task(Box<ValueType>),
     Float,
     Bool,
     Char,
@@ -253,6 +261,7 @@ pub enum ValueType {
     /// Maps with a value type (keys are always String; Any = unknown)
     Map(Box<ValueType>),
     Ref,
+    /// Intentionally erased callback category for polymorphic runtime builtins.
     Fn,
     /// A class or enum type. The second field holds generic type arguments
     /// (`Box<Int64>` → `Named("Box", [Int])`); empty for non-generic types and
@@ -265,12 +274,8 @@ pub enum ValueType {
     Null,
 }
 
-// Custom equality (B2 step 1): two `Named` types are equal iff their class/enum
-// names match — the generic type args are additional info for field-type
-// substitution, NOT part of type identity. This keeps every existing `==`
-// comparison behaving exactly as before the args were added (`Box<Int>` and
-// `Box<String>` were both `Named("Box")` and compared equal). Arg-aware
-// compatibility is a later step.
+// Semantic identity is structural, including generic arguments and callback
+// signatures. Value-level compatibility/conversions are checked separately.
 impl PartialEq for ValueType {
     fn eq(&self, other: &Self) -> bool {
         use ValueType::*;
@@ -282,7 +287,13 @@ impl PartialEq for ValueType {
             (Array(a), Array(b)) => a == b,
             (Map(a), Map(b)) => a == b,
             (Nullable(a), Nullable(b)) => a == b,
-            (Named(a, _), Named(b, _)) => a == b,
+            (Named(a, aa), Named(b, ba)) => a == b && aa == ba,
+            (Integer { bits: a, signed: sa }, Integer { bits: b, signed: sb }) => a == b && sa == sb,
+            (Float32, Float32) => true,
+            (Callable { params: a, ret: ar }, Callable { params: b, ret: br }) => a == b && ar == br,
+            (Reference { inner: a, mutable: ma }, Reference { inner: b, mutable: mb }) => a == b && ma == mb,
+            (TupleOf(a), TupleOf(b)) => a == b,
+            (Task(a), Task(b)) => a == b,
             _ => false,
         }
     }
@@ -300,17 +311,18 @@ impl ValueType {
         ValueType::Map(Box::new(ValueType::Any))
     }
 
-    fn from_parser_type(ty: &Type) -> Self {
+    pub fn from_parser_type(ty: &Type) -> Self {
         match ty {
-            Type::Int8
-            | Type::Int16
-            | Type::Int32
-            | Type::Int64
-            | Type::UInt8
-            | Type::UInt16
-            | Type::UInt32
-            | Type::UInt64 => ValueType::Int,
-            Type::Float32 | Type::Float64 => ValueType::Float,
+            Type::Int8 => ValueType::Integer { bits: 8, signed: true },
+            Type::Int16 => ValueType::Integer { bits: 16, signed: true },
+            Type::Int32 => ValueType::Integer { bits: 32, signed: true },
+            Type::Int64 => ValueType::Int,
+            Type::UInt8 => ValueType::Integer { bits: 8, signed: false },
+            Type::UInt16 => ValueType::Integer { bits: 16, signed: false },
+            Type::UInt32 => ValueType::Integer { bits: 32, signed: false },
+            Type::UInt64 => ValueType::Integer { bits: 64, signed: false },
+            Type::Float32 => ValueType::Float32,
+            Type::Float64 => ValueType::Float,
             Type::Bool => ValueType::Bool,
             Type::Char => ValueType::Char,
             Type::String => ValueType::String,
@@ -327,28 +339,27 @@ impl ValueType {
             Type::Generic { name, args } if name == "Map" => ValueType::Map(Box::new(
                 args.get(1).map(Self::from_parser_type).unwrap_or(ValueType::Any),
             )),
+            // `Task<T>` annotation (issue #301): same representation `spawn`
+            // infers, so `const t: Task<Int64> = spawn f();` type-checks.
+            Type::Generic { name, args } if name == "Task" && args.len() == 1 => {
+                ValueType::Task(Box::new(Self::from_parser_type(&args[0])))
+            }
             Type::Generic { name, args } => ValueType::Named(
                 name.clone(),
                 args.iter().map(Self::from_parser_type).collect(),
             ),
             Type::Array(inner) => ValueType::Array(Box::new(Self::from_parser_type(inner))),
             Type::Map(_, v) => ValueType::Map(Box::new(Self::from_parser_type(v))),
-            Type::Tuple(_) => ValueType::Tuple,
-            Type::Mutable(_) => ValueType::Ref,
-            Type::Ref(_) => ValueType::Ref,
-            Type::Fn { .. } => ValueType::Fn,
+            Type::Tuple(items) => ValueType::TupleOf(items.iter().map(Self::from_parser_type).collect()),
+            Type::Mutable(inner) => ValueType::Reference { inner: Box::new(Self::from_parser_type(inner)), mutable: true },
+            Type::Ref(inner) => ValueType::Reference { inner: Box::new(Self::from_parser_type(inner)), mutable: false },
+            Type::Fn { params, ret } => ValueType::Callable { params: params.iter().map(Self::from_parser_type).collect(), ret: Box::new(Self::from_parser_type(ret)) },
             Type::Nullable(inner) => ValueType::Nullable(Box::new(ValueType::from_parser_type(inner))),
         }
     }
 
-    /// Translates a ValueType into codegen's marker language
-    /// (container_marker/elem_marker): "String", "Float", a class name,
-    /// "Array"/"Array:String"/"Array:Float"/"Array:<marker>"/"List:Class",
-    /// "Map"/"Map:<marker>". None for types with no marker semantics
-    /// (Int, Bool, Any, …).
-    /// A display for error messages — shows element/value types
-    /// ("List<String>", "Map<String, Int64>"). Don't use this for
-    /// dispatch keys, that's what to_string() is for.
+    /// Full type identity for diagnostics. Dispatch keys deliberately use
+    /// `dispatch_name`/Display instead of flattening diagnostics.
     fn display(&self) -> String {
         match self {
             ValueType::Array(e) if **e != ValueType::Any => format!("List<{}>", e.display()),
@@ -356,6 +367,7 @@ impl ValueType {
                 format!("Map<String, {}>", v.display())
             }
             ValueType::Nullable(inner) => format!("{}?", inner.display()),
+            ValueType::Named(name, args) if !args.is_empty() => format!("{}<{}>", name, args.iter().map(Self::display).collect::<Vec<_>>().join(", ")),
             other => other.to_string(),
         }
     }
@@ -368,6 +380,12 @@ impl std::fmt::Display for ValueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             ValueType::Int => "Int64".to_string(),
+            ValueType::Integer { bits, signed } => format!("{}Int{bits}", if *signed { "" } else { "U" }),
+            ValueType::Float32 => "Float32".into(),
+            ValueType::Callable { params, ret } => format!("fnc({}) -> {}", params.iter().map(Self::display).collect::<Vec<_>>().join(", "), ret.display()),
+            ValueType::Reference { inner, mutable } => format!("{}{}", if *mutable { "mutable " } else { "&" }, inner.display()),
+            ValueType::TupleOf(items) => format!("({})", items.iter().map(Self::display).collect::<Vec<_>>().join(", ")),
+            ValueType::Task(ret) => format!("Task<{}>", ret.display()),
             ValueType::Float => "Float64".to_string(),
             ValueType::Bool => "Bool".to_string(),
             ValueType::Char => "Char".to_string(),
@@ -458,6 +476,7 @@ pub struct TypeChecker {
     /// typecheck→codegen type channel (the lossy marker table
     /// expr_markers has been removed).
     expr_types: HashMap<u32, ValueType>,
+    semantic_facts: semantic::SemanticFacts,
     /// B2 step 2: a generic method's `ClassName_method` → its UNERASED
     /// param types (self prepended as `Named(Class, [T-params])` for
     /// instance methods) + the type-param names (class + method). The
@@ -1263,6 +1282,7 @@ impl TypeChecker {
             class_type_params: HashMap::new(),
             method_uses_this: HashSet::new(),
             expr_types: HashMap::new(),
+            semantic_facts: semantic::SemanticFacts::default(),
             generic_method_param_types: HashMap::new(),
             class_fields: HashMap::new(),
             generic_instance_fn_arg_hints: HashMap::new(),
@@ -2085,7 +2105,7 @@ impl TypeChecker {
                 .collect();
             self.symbols.variables.insert(
                 "self".to_string(),
-                (ValueType::Named(c.name.clone(), vec![]), false),
+                (ValueType::Named(c.name.clone(), c.type_params.iter().map(|p| ValueType::Named(p.clone(), vec![])).collect()), false),
             );
             for param in &method.params {
                 self.symbols.variables.insert(
@@ -2178,8 +2198,8 @@ impl TypeChecker {
                 }
                 let final_type = match (value, ty) {
                     (Some(v), Some(t)) => {
-                        let val_ty = self.infer_type(v);
                         let ann_ty = Self::type_to_value(t);
+                        let val_ty = self.infer_argument(v, &ann_ty);
                         if !self.types_compatible(&ann_ty, &val_ty) {
                             self.errors.push(
                                 TypeError::TypeMismatch {
@@ -2221,8 +2241,8 @@ impl TypeChecker {
                 // was present).
                 let inferred_type = match (value, ty) {
                     (Some(v), Some(t)) => {
-                        let val_ty = self.infer_type(v);
                         let ann_ty = Self::type_to_value(t);
+                        let val_ty = self.infer_argument(v, &ann_ty);
                         if !self.types_compatible(&ann_ty, &val_ty) {
                             self.errors.push(
                                 TypeError::TypeMismatch {
@@ -2339,8 +2359,9 @@ impl TypeChecker {
             }
             StmtKind::Return(opt_expr) => {
                 if let Some(expr) = opt_expr {
-                    let val_ty = self.infer_type(expr);
-                    if let Some(expected) = self.current_return_type.clone() {
+                    let expected_hint = self.current_return_type.clone();
+                    let val_ty = if let Some(expected) = &expected_hint { self.infer_argument(expr, expected) } else { self.infer_type(expr) };
+                    if let Some(expected) = expected_hint {
                         if !self.types_compatible(&expected, &val_ty) {
                             self.errors.push(TypeError::TypeMismatch {
                                 expected: expected.display(),
@@ -2482,6 +2503,7 @@ impl TypeChecker {
         }
         let ty = self.infer_type_inner(expr);
         if expr.id != 0 {
+            self.record_semantics(expr, &ty);
             self.expr_types.insert(expr.id, ty.clone());
         }
         ty
@@ -2493,8 +2515,8 @@ impl TypeChecker {
             ExprKind::Ident(name) => {
                 if let Some((ty, _)) = self.symbols.variables.get(name) {
                     ty.clone()
-                } else if self.symbols.functions.contains_key(name) {
-                    ValueType::Fn
+                } else if let Some(sig) = self.symbols.functions.get(name) {
+                    ValueType::Callable { params: sig.params.iter().map(|(_,t)| t.clone()).collect(), ret: Box::new(sig.return_type.clone()) }
                 } else if self.known_class_names.contains(name) {
                     // Class name used as a value (e.g. DB.of(User)) — treat as Any
                     ValueType::Any
@@ -2606,13 +2628,13 @@ impl TypeChecker {
                         }
                     }
                 }
-                let class_name = obj_ty.to_string();
+                let class_name = obj_ty.dispatch_name();
 
                 // Check if method is a Fn-type field (callable field) on the class
                 let field_key = format!("{}.{}", class_name, method);
-                if let Some((ValueType::Fn, _)) = self.symbols.variables.get(&field_key) {
-                    for arg in args { self.infer_type(arg); }
-                    return ValueType::Any;
+                if let Some((field_type, _)) = self.symbols.variables.get(&field_key).cloned() {
+                    let field_type = if let ValueType::Named(name, targs) = &obj_ty { self.substitute_type_params(&field_type, name, targs) } else { field_type };
+                    if let Some(result) = self.check_callable(&field_type, args, expr.span) { return result; }
                 }
 
                 let method_name = format!("{}_{}", class_name, method);
@@ -2745,7 +2767,7 @@ impl TypeChecker {
                     ValueType::Map(_) => matches!(index_ty, ValueType::String | ValueType::Any),
                     ValueType::String => true,
                     ValueType::Any => true,
-                    _ => matches!(index_ty, ValueType::Int | ValueType::Any),
+                    _ => index_ty.is_integer() || index_ty == ValueType::Any,
                 };
                 if !valid_index {
                     self.errors
@@ -2860,7 +2882,7 @@ impl TypeChecker {
                     );
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter().skip(1)) {
-                    let arg_ty = self.infer_type(arg);
+                    let arg_ty = self.infer_argument(arg, expected_ty);
                     if !self.types_compatible(expected_ty, &arg_ty) {
                         self.errors.push(
                             TypeError::TypeMismatch {
@@ -2907,10 +2929,11 @@ impl TypeChecker {
                     Some(tps)
                         if !tps.is_empty()
                             && tps.iter().all(|tp| bindings.contains_key(tp))
-                            && !bindings.values().any(|v| self.contains_scoped_type_param(v)) =>
+                            =>
                     {
                         tps.iter().map(|tp| bindings[tp].clone()).collect()
                     }
+                    Some(tps) => tps.iter().map(|tp| bindings.get(tp).cloned().unwrap_or_else(|| ValueType::Named(tp.clone(), vec![]))).collect(),
                     _ => vec![],
                 };
                 // Bug 130: a struct literal that omits a declared field left the
@@ -3087,39 +3110,29 @@ impl TypeChecker {
                 let saved_return_type =
                     std::mem::replace(&mut self.current_return_type, lambda_ret);
                 let body_ty = self.infer_type(body);
+                let body_ty = self.lambda_result_type(body).unwrap_or(body_ty);
                 self.current_return_type = saved_return_type;
                 self.symbols.exit_scope(saved_vars);
-                let _ret = ret_type
+                let ret = ret_type
                     .as_ref()
                     .map(Self::type_to_value)
                     .unwrap_or(body_ty);
-                ValueType::Fn
+                ValueType::Callable { params: params.iter().map(|p| Self::type_to_value(&p.param_type)).collect(), ret: Box::new(ret) }
             }
             ExprKind::Spawn(inner) => {
-                // `spawn f(..)` is a `Task<T>` where T is f's declared
-                // return type (issue #301). At the LLVM level the handle
-                // is still one opaque i64; the type argument exists so
-                // `await` can recover T (String/Float64/Bool/class
-                // results used to be handed back as a raw Int64).
-                let result = self.infer_type(inner);
-                ValueType::Named("Task".to_string(), vec![result])
+                ValueType::Task(Box::new(self.infer_type(inner)))
             }
             ExprKind::Await(inner) => {
                 match self.infer_type(inner) {
-                    ValueType::Named(name, args) if name == "Task" && args.len() == 1 => {
-                        args[0].clone()
-                    }
+                    ValueType::Task(result) => *result,
                     // Legacy opaque Int64 handle (e.g. a stdlib field
-                    // declared `Int64` that stores a `spawn` result):
-                    // unchanged, the result stays an Int64.
+                    // declared `Int64` that stores a `spawn` result).
                     ValueType::Int | ValueType::Any => ValueType::Int,
                     other => {
-                        self.errors.push(
-                            Error::new(
-                                expr.span,
-                                format!("`await` expects a Task<T>, found {}", other),
-                            ),
-                        );
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!("`await` expects a Task<T>, found {}", other),
+                        ));
                         ValueType::Any
                     }
                 }
@@ -3167,7 +3180,7 @@ impl TypeChecker {
             } => {
                 let start_ty = self.infer_type(start);
                 let end_ty = self.infer_type(end);
-                if !matches!(start_ty, ValueType::Int) || !matches!(end_ty, ValueType::Int) {
+                if !start_ty.is_integer() || !end_ty.is_integer() {
                     self.errors.push(
                         TypeError::InvalidRangeType(
                             format!("{}..{}", start_ty, end_ty),
@@ -3178,15 +3191,10 @@ impl TypeChecker {
                 }
                 ValueType::Range
             }
-            ExprKind::Tuple(exprs) => {
-                for e in exprs {
-                    self.infer_type(e);
-                }
-                ValueType::Tuple
-            }
-            ExprKind::TupleIndex { tuple, .. } => {
-                self.infer_type(tuple);
-                ValueType::Any
+            ExprKind::Tuple(exprs) => ValueType::TupleOf(exprs.iter().map(|e| self.infer_type(e)).collect()),
+            ExprKind::TupleIndex { tuple, index } => match self.infer_type(tuple) {
+                ValueType::TupleOf(items) => items.get(*index).cloned().unwrap_or(ValueType::Any),
+                _ => ValueType::Any,
             }
             ExprKind::EnumValue {
                 enum_name,
@@ -3321,9 +3329,6 @@ impl TypeChecker {
     ) -> Option<ValueType> {
         let static_key = format!("{}_{}", class_name, method_name);
         let sig = self.symbols.functions.get(&static_key).cloned()?;
-        for arg in args {
-            self.infer_type(arg);
-        }
         // Argument-count check (Bug 46/47). Instance methods (`fn`) carry
         // a leading synthetic "self" param and are called via one of two
         // Bug-38 styles. The receiver-as-self vs receiver-as-explicit-
@@ -3356,6 +3361,15 @@ impl TypeChecker {
                 }
                 .to_error(),
             );
+        }
+        let skip_self = usize::from(is_instance && args.len() == declared);
+        for (index, arg) in args.iter().enumerate() {
+            if let Some((_, expected)) = sig.params.get(index + skip_self) {
+                let actual = self.infer_argument(arg, expected);
+                if !self.types_compatible(expected, &actual) {
+                    self.errors.push(TypeError::TypeMismatch { expected: expected.display(), found: actual.display(), span: arg.span }.to_error());
+                }
+            } else { self.infer_type(arg); }
         }
         // B2 step 2 / #158 — type-argument inference for unannotated
         // bindings: `let bi = Box::make(42)` derives T=Int from the args
@@ -3499,7 +3513,7 @@ impl TypeChecker {
                     return sig.return_type.clone();
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
-                    let arg_ty = self.infer_type(arg);
+                    let arg_ty = self.infer_argument(arg, expected_ty);
                     if !self.types_compatible(expected_ty, &arg_ty) {
                         self.errors.push(
                             TypeError::TypeMismatch {
@@ -3514,15 +3528,8 @@ impl TypeChecker {
                 return sig.return_type.clone();
             }
 
-            // Check if it's a variable with Fn type (lambda)
-            if let Some((ty, _)) = self.symbols.variables.get(name) {
-                if *ty == ValueType::Fn {
-                    // Lambda call - just check arguments are present
-                    for arg in args {
-                        self.infer_type(arg);
-                    }
-                    return ValueType::Any; // We don't have detailed lambda type info
-                }
+            if let Some((ty, _)) = self.symbols.variables.get(name).cloned() {
+                if let Some(result) = self.check_callable(&ty, args, span) { return result; }
             }
 
             // Same-class bare `fnc` call (issue #149 stage 2): a sibling
@@ -3558,12 +3565,7 @@ impl TypeChecker {
         } else {
             // Not an identifier - could be complex expression returning Fn
             let func_ty = self.infer_type(func);
-            if func_ty == ValueType::Fn {
-                for arg in args {
-                    self.infer_type(arg);
-                }
-                return ValueType::Any;
-            }
+            if let Some(result) = self.check_callable(&func_ty, args, span) { return result; }
         }
 
         for arg in args {
@@ -3623,8 +3625,8 @@ impl TypeChecker {
         }
         let valid = match op {
             BinaryOp::Add => {
-                (matches!(lhs, ValueType::Int | ValueType::Float)
-                    && matches!(rhs, ValueType::Int | ValueType::Float))
+                ((lhs.is_integer() || lhs.is_float())
+                    && (rhs.is_integer() || rhs.is_float()))
                     || (matches!(lhs, ValueType::String) && matches!(rhs, ValueType::String))
             }
             BinaryOp::Sub
@@ -3634,26 +3636,27 @@ impl TypeChecker {
             | BinaryOp::Shl
             | BinaryOp::Shr
             | BinaryOp::ShrArith => {
-                matches!(lhs, ValueType::Int | ValueType::Float)
-                    && matches!(rhs, ValueType::Int | ValueType::Float)
+                (lhs.is_integer() || lhs.is_float())
+                    && (rhs.is_integer() || rhs.is_float())
             }
             BinaryOp::And | BinaryOp::Or => {
                 matches!(lhs, ValueType::Bool) && matches!(rhs, ValueType::Bool)
             }
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::Xor => {
-                matches!(lhs, ValueType::Int) && matches!(rhs, ValueType::Int)
+                lhs.is_integer() && rhs.is_integer()
             }
             BinaryOp::Eq | BinaryOp::Ne => {
                 // Reference types (stored as pointers) may be compared to null.
                 // Named/Any already short-circuit above; this covers Map/Array/
                 // String/Fn/Nullable == null.
                 lhs == rhs
+                    || ((lhs.is_integer() || lhs.is_float()) && (rhs.is_integer() || rhs.is_float()))
                     || (matches!(lhs, ValueType::Null) && Self::is_nullable_ref(rhs))
                     || (matches!(rhs, ValueType::Null) && Self::is_nullable_ref(lhs))
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                (matches!(lhs, ValueType::Int | ValueType::Float)
-                    && matches!(rhs, ValueType::Int | ValueType::Float))
+                ((lhs.is_integer() || lhs.is_float())
+                    && (rhs.is_integer() || rhs.is_float()))
                     || (matches!(lhs, ValueType::String) && matches!(rhs, ValueType::String))
             }
         };
@@ -3682,6 +3685,8 @@ impl TypeChecker {
                 | ValueType::Nullable(_)
                 | ValueType::Null
                 | ValueType::Fn
+                | ValueType::Callable { .. }
+                | ValueType::Reference { .. }
                 | ValueType::Ref
         )
     }
@@ -3691,9 +3696,9 @@ impl TypeChecker {
             return;
         }
         let valid = match op {
-            UnaryOp::Neg => matches!(operand, ValueType::Int | ValueType::Float),
+            UnaryOp::Neg => operand.is_integer() || operand.is_float(),
             UnaryOp::Not => matches!(operand, ValueType::Bool),
-            UnaryOp::BitNot => matches!(operand, ValueType::Int),
+            UnaryOp::BitNot => operand.is_integer(),
         };
         if !valid {
             self.errors.push(
@@ -3724,11 +3729,9 @@ impl TypeChecker {
                     || matches!(rhs, ValueType::Any | ValueType::Named(_, _))
                 {
                     ValueType::Any
-                } else if *lhs == ValueType::Float || *rhs == ValueType::Float {
-                    ValueType::Float
-                } else {
-                    ValueType::Int
-                }
+                } else if lhs.is_float() || rhs.is_float() {
+                    if *lhs == ValueType::Float32 && *rhs == ValueType::Float32 { ValueType::Float32 } else { ValueType::Float }
+                } else if lhs == rhs { lhs.clone() } else { ValueType::Int }
             }
         }
     }
@@ -3737,7 +3740,7 @@ impl TypeChecker {
         match op {
             UnaryOp::Neg => operand.clone(),
             UnaryOp::Not => ValueType::Bool,
-            UnaryOp::BitNot => ValueType::Int,
+            UnaryOp::BitNot => operand.clone(),
         }
     }
 
@@ -3771,6 +3774,7 @@ impl TypeChecker {
             return None;
         };
         let saved_vars = self.symbols.enter_scope();
+        let mut parameter_types = Vec::new();
         for (i, p) in params.iter().enumerate() {
             let declared = Self::type_to_value(&p.param_type);
             let bound = if declared == ValueType::Any {
@@ -3778,6 +3782,7 @@ impl TypeChecker {
             } else {
                 declared
             };
+            parameter_types.push(bound.clone());
             self.symbols.variables.insert(p.name.clone(), (bound, false));
         }
         // Return statements in the body belong to the lambda (same as
@@ -3785,9 +3790,12 @@ impl TypeChecker {
         let lambda_ret = ret_type.as_ref().map(Self::type_to_value);
         let saved_ret = std::mem::replace(&mut self.current_return_type, lambda_ret.clone());
         let body_ty = self.infer_type(body);
+        let body_ty = self.lambda_result_type(body).unwrap_or(body_ty);
         self.current_return_type = saved_ret;
         self.symbols.exit_scope(saved_vars);
-        Some(lambda_ret.unwrap_or(body_ty))
+        let result = lambda_ret.unwrap_or(body_ty);
+        if expr.id != 0 { self.expr_types.insert(expr.id, ValueType::Callable { params: parameter_types, ret: Box::new(result.clone()) }); }
+        Some(result)
     }
 
     /// Substitute a class's type parameters with concrete instance type args
@@ -3806,7 +3814,7 @@ impl TypeChecker {
                 if let Some(idx) = tparams.iter().position(|p| p == n) {
                     targs.get(idx).cloned().unwrap_or_else(|| ty.clone())
                 } else {
-                    ty.clone()
+                    ValueType::Named(n.clone(), match ty { ValueType::Named(_, args) => args.iter().map(|a| self.substitute_type_params(a, class_name, targs)).collect(), _ => unreachable!() })
                 }
             }
             ValueType::Array(inner) => {
@@ -3818,6 +3826,7 @@ impl TypeChecker {
             ValueType::Nullable(inner) => {
                 ValueType::Nullable(Box::new(self.substitute_type_params(inner, class_name, targs)))
             }
+            ValueType::Callable { params, ret } => ValueType::Callable { params: params.iter().map(|p| self.substitute_type_params(p, class_name, targs)).collect(), ret: Box::new(self.substitute_type_params(ret, class_name, targs)) },
             _ => ty.clone(),
         }
     }
@@ -3862,6 +3871,7 @@ impl TypeChecker {
                 Self::unify_param(p, a, tparams, bindings)
             }
             (ValueType::Nullable(p), a) => Self::unify_param(p, a, tparams, bindings),
+            (ValueType::Callable { params: ps, ret: pr }, ValueType::Callable { params: ars, ret: ar }) => { for (p,a) in ps.iter().zip(ars) { Self::unify_param(p,a,tparams,bindings); } Self::unify_param(pr,ar,tparams,bindings); }
             _ => {}
         }
     }
@@ -3887,6 +3897,7 @@ impl TypeChecker {
             ValueType::Nullable(inner) => {
                 ValueType::Nullable(Box::new(Self::substitute_bindings(inner, bindings)))
             }
+            ValueType::Callable { params, ret } => ValueType::Callable { params: params.iter().map(|p| Self::substitute_bindings(p, bindings)).collect(), ret: Box::new(Self::substitute_bindings(ret, bindings)) },
             _ => ty.clone(),
         }
     }
@@ -3900,6 +3911,7 @@ impl TypeChecker {
             ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) => {
                 Self::contains_type_param(inner, tparams)
             }
+            ValueType::Callable { params, ret } => params.iter().any(|p| Self::contains_type_param(p, tparams)) || Self::contains_type_param(ret, tparams),
             _ => false,
         }
     }
@@ -3918,6 +3930,7 @@ impl TypeChecker {
             ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) => {
                 self.contains_scoped_type_param(inner)
             }
+            ValueType::Callable { params, ret } => params.iter().any(|p| self.contains_scoped_type_param(p)) || self.contains_scoped_type_param(ret),
             _ => false,
         }
     }
@@ -3942,6 +3955,11 @@ impl TypeChecker {
             Type::Map(_, v) => {
                 ValueType::Map(Box::new(Self::type_to_value_erasing(v, type_params)))
             }
+            Type::Fn { params, ret } => ValueType::Callable { params: params.iter().map(|p| Self::type_to_value_erasing(p, type_params)).collect(), ret: Box::new(Self::type_to_value_erasing(ret, type_params)) },
+            Type::Generic { name, args } if name == "Task" && args.len() == 1 => {
+                ValueType::Task(Box::new(Self::type_to_value_erasing(&args[0], type_params)))
+            }
+            Type::Generic { name, args } => ValueType::Named(name.clone(), args.iter().map(|a| Self::type_to_value_erasing(a, type_params)).collect()),
             _ => Self::type_to_value(ty),
         }
     }
@@ -4005,6 +4023,11 @@ impl TypeChecker {
             && Self::type_references_param(ret_type, method_own_params)
         {
             return ValueType::Any;
+        }
+        // Class generic arguments are the binding pattern for call-site
+        // return inference. Erasing them here loses the receiver/factory type.
+        if matches!(ret_type, Type::Generic { name, .. } if !matches!(name.as_str(), "List" | "Array" | "Map")) {
+            return Self::type_to_value(ret_type);
         }
         Self::type_to_value_erasing(ret_type, erase_params)
     }
@@ -4070,13 +4093,18 @@ impl TypeChecker {
     }
 
     fn types_compatible(&self, a: &ValueType, b: &ValueType) -> bool {
-        if a == b {
+        if a == b || ((a.is_integer() || a.is_float()) && (b.is_integer() || b.is_float())) {
             return true;
         }
+        if matches!(a, ValueType::Named(n, args) if args.is_empty() && self.type_param_scope.contains(n)) || matches!(b, ValueType::Named(n, args) if args.is_empty() && self.type_param_scope.contains(n)) { return true; }
         match (a, b) {
             (ValueType::Int, ValueType::Float) => true,
             (ValueType::Float, ValueType::Int) => true,
             (ValueType::Any, _) | (_, ValueType::Any) => true,
+            (ValueType::Fn, ValueType::Callable { .. }) | (ValueType::Callable { .. }, ValueType::Fn) => true,
+            (ValueType::Callable { params: a, ret: ar }, ValueType::Callable { params: b, ret: br }) => a.len() == b.len() && a.iter().zip(b).all(|(a,b)| self.semantic_compatible(a,b)) && self.semantic_compatible(ar,br),
+            (ValueType::Int, ValueType::Task(_)) => true,
+
             // Containers: compatible if the element/value types are compatible
             // (Any elements stay wildcards — erased sources allow anything)
             (ValueType::Array(a), ValueType::Array(b)) => self.types_compatible(a, b),
@@ -4095,7 +4123,10 @@ impl TypeChecker {
             // accepted the same relationship, via a separate code path
             // that skips this check entirely rather than handling it
             // correctly).
-            (ValueType::Named(base_or_iface, _), ValueType::Named(class, _)) => {
+            (ValueType::Named(base_or_iface, aa), ValueType::Named(class, ba)) => {
+                if base_or_iface == class {
+                    return aa.is_empty() || ba.is_empty() || (aa.len() == ba.len() && aa.iter().zip(ba).all(|(a, b)| self.semantic_compatible(a, b)));
+                }
                 self.interface_implementations
                     .get(class)
                     .map(|ifaces| ifaces.iter().any(|i| i == base_or_iface))
@@ -4110,11 +4141,6 @@ impl TypeChecker {
             // says. Mirrors how ExprKind::Recv recovers T from the
             // declared side instead of the (always-Int) channel handle.
             (ValueType::Named(name, _), ValueType::Int) if name == "Channel" => true,
-            // A Task<T> may still be stored in a legacy `Int64` handle
-            // field/variable (the pre-#301 representation, used by
-            // published stdlib packages), but not the other way round:
-            // an arbitrary Int must not silently pass as a task.
-            (ValueType::Int, ValueType::Named(name, _)) if name == "Task" => true,
             _ => false,
         }
     }

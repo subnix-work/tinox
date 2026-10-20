@@ -102,7 +102,7 @@ class Main {
         println((mn == null).toString());
         println((await spawn Main::neg(5)).toString());
         println((await spawn Main::tiny(7)).toString());
-        println((await spawn Main::f32(1.5)).toString());
+        println(((await spawn Main::f32(1.5)) as Float64).toString());
         return 0;
     }
 }
