@@ -15524,6 +15524,14 @@ impl CodeGen {
             let t = self.temp();
             writeln!(&mut self.ir, "  {} = bitcast double {} to i64", t, val).unwrap();
             t
+        } else if ty == "float" {
+            // Float32 slots hold the value widened to double (bit pattern),
+            // the same representation the spawn wrapper/await use.
+            let d = self.temp();
+            writeln!(&mut self.ir, "  {} = fpext float {} to double", d, val).unwrap();
+            let t = self.temp();
+            writeln!(&mut self.ir, "  {} = bitcast double {} to i64", t, d).unwrap();
+            t
         } else if ty == "i1" {
             let t = self.temp();
             writeln!(&mut self.ir, "  {} = zext i1 {} to i64", t, val).unwrap();
@@ -15581,6 +15589,12 @@ impl CodeGen {
                 let t = wt!();
                 writeln!(&mut w, "  {} = bitcast i64 {} to double", t, raw).unwrap();
                 t
+            } else if param_ty == "float" {
+                let d = wt!();
+                writeln!(&mut w, "  {} = bitcast i64 {} to double", d, raw).unwrap();
+                let t = wt!();
+                writeln!(&mut w, "  {} = fptrunc double {} to float", t, d).unwrap();
+                t
             } else if param_ty == "i1" {
                 let t = wt!();
                 writeln!(&mut w, "  {} = trunc i64 {} to i1", t, raw).unwrap();
@@ -15615,6 +15629,12 @@ impl CodeGen {
             } else if ret_ty == "double" {
                 let as_i64 = wt!();
                 writeln!(&mut w, "  {} = bitcast double {} to i64", as_i64, res).unwrap();
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, as_i64).unwrap();
+            } else if ret_ty == "float" {
+                let d = wt!();
+                writeln!(&mut w, "  {} = fpext float {} to double", d, res).unwrap();
+                let as_i64 = wt!();
+                writeln!(&mut w, "  {} = bitcast double {} to i64", as_i64, d).unwrap();
                 writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, as_i64).unwrap();
             } else if ret_ty == "i1" {
                 let as_i64 = wt!();

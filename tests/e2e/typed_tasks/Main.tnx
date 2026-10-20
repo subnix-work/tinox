@@ -9,6 +9,17 @@
 // expect: 36
 // expect: list 3
 // expect: wrapped 8
+// expect: b
+// expect: 2.5
+// expect: 7
+// expect: yes
+// expect: 4
+// expect: 3
+// expect: false
+// expect: true
+// expect: -5
+// expect: 7
+// expect: 1.5
 import Point;
 
 class Main {
@@ -20,6 +31,17 @@ class Main {
     async fnc sum(a: Int64, b: Int64) -> Int64 { return a + b; }
     async fnc nothing() -> Nothing { }
     async fnc numbers() -> List<Int64> { return [1, 2, 3]; }
+
+    async fnc names() -> List<String> { return ["a", "b"]; }
+    async fnc floats() -> List<Float64> { return [1.5, 2.5]; }
+    async fnc table() -> Map<String, Int64> { var m: Map<String, Int64> = Map::new(); m.insert("k", 7); return m; }
+    async fnc maybe(b: Bool) -> String? { if (b) { return "yes"; } return null; }
+    async fnc points() -> List<Point> { return [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]; }
+    async fnc nested() -> List<List<Int64>> { return [[1, 2], [3, 4]]; }
+    async fnc maybePoint(b: Bool) -> Point? { if (b) { return Point { x: 9, y: 8 }; } return null; }
+    async fnc neg(n: Int32) -> Int32 { return 0 - n; }
+    async fnc tiny(n: Int8) -> Int8 { return n; }
+    async fnc f32(x: Float32) -> Float32 { return x; }
 
     fnc join(t: Task<Int64>) -> Int64 {
         return await t;
@@ -60,6 +82,27 @@ class Main {
 
         const w = spawn Main::sum(3, 5);
         println("wrapped " + (await w).toString());
+
+        // Pointer-shaped and narrow results.
+        const n = await spawn Main::names();
+        println(n[1]);
+        const fl = await spawn Main::floats();
+        println(fl[1].toString());
+        const tbl = await spawn Main::table();
+        println(tbl["k"].toString());
+        const m = await spawn Main::maybe(true);
+        println(m);
+        const ps = await spawn Main::points();
+        println(ps[1].y.toString());
+        const nn = await spawn Main::nested();
+        println(nn[1][0].toString());
+        const mp = await spawn Main::maybePoint(true);
+        println((mp == null).toString());
+        const mn = await spawn Main::maybePoint(false);
+        println((mn == null).toString());
+        println((await spawn Main::neg(5)).toString());
+        println((await spawn Main::tiny(7)).toString());
+        println((await spawn Main::f32(1.5)).toString());
         return 0;
     }
 }
