@@ -1756,6 +1756,12 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @memoryUsage()").unwrap();
         writeln!(&mut self.ir, "declare void @printStackTrace()").unwrap();
         writeln!(&mut self.ir, "declare i64 @now()").unwrap();
+        for name in ["taskCancel", "taskDetach", "taskSetDeadline", "taskWaitReadable"] {
+            writeln!(&mut self.ir, "declare void @{name}(i64)").unwrap();
+        }
+        for name in ["taskCheckCancellation", "taskRequestShutdown"] {
+            writeln!(&mut self.ir, "declare void @{name}()").unwrap();
+        }
         writeln!(&mut self.ir, "declare void @sleep_ms(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @randomInt(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare double @randomFloat()").unwrap();
@@ -8853,6 +8859,7 @@ impl CodeGen {
                 let fn_name = match &func.node {
                     ExprKind::Ident(name) => match name.as_str() {
                         "main" => "tinox_main".to_string(),
+                        "sleep" if !self.fn_sigs.contains_key("sleep") => "sleep_ms".to_string(),
                         "print" | "println" => {
                             if !args.is_empty() {
                                 let ty = &arg_types[0];
@@ -13355,7 +13362,8 @@ impl CodeGen {
         }
         collect(&source.decls, &mut fns);
 
-        let mut tf: HashSet<String> = HashSet::new();
+        let mut tf: HashSet<String> = ["sleep", "sleep_ms", "taskCheckCancellation", "taskSetDeadline", "taskWaitReadable"]
+            .into_iter().map(String::from).collect();
         let mut tm: HashSet<String> = HashSet::new();
         loop {
             let mut changed = false;

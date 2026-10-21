@@ -934,6 +934,23 @@ impl TypeChecker {
             params: vec![("arr".to_string(), ValueType::any_array()), ("i".to_string(), ValueType::Int)],
             return_type: ValueType::Nothing,
         });
+        // Structured task operations use Task<Any> only as an input wildcard;
+        // the actual spawn/await result retains its complete semantic type.
+        for name in ["taskCancel", "taskDetach"] {
+            symbols.functions.insert(name.into(), FunctionSignature {
+                params: vec![("task".into(), ValueType::Task(Box::new(ValueType::Any)))],
+                return_type: ValueType::Nothing,
+            });
+        }
+        for name in ["taskCheckCancellation", "taskRequestShutdown"] {
+            symbols.functions.insert(name.into(), FunctionSignature { params: vec![], return_type: ValueType::Nothing });
+        }
+        symbols.functions.insert("taskWaitReadable".into(), FunctionSignature {
+            params: vec![("fd".into(), ValueType::Int)], return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("taskSetDeadline".into(), FunctionSignature {
+            params: vec![("milliseconds".into(), ValueType::Int)], return_type: ValueType::Nothing,
+        });
         // Time
         symbols.functions.insert("now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
         symbols.functions.insert("Time_now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
@@ -4182,6 +4199,14 @@ mod tests {
     #[test]
     fn test_user_class_named_task_is_rejected() {
         err_contains("class Task { var id: Int64; }", "built-in type");
+    }
+
+    #[test]
+    fn task_control_requires_a_typed_task() {
+        ok("class C { fnc f() -> String { return \"x\"; } fnc g() -> Nothing { const t = spawn C::f(); taskCancel(t); taskDetach(t); } }");
+        err_contains("class C { fnc f() -> Nothing { taskCancel(42); } }", "Task");
+        err_contains("class C { fnc f() -> Nothing { taskDetach(42); } }", "Task");
+        err_contains("class C { fnc f() -> Nothing { taskSetDeadline(\"soon\"); } }", "Int");
     }
 
     // --- same-class bare `fnc` calls (issue #149 stage 2) ---

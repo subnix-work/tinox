@@ -72,7 +72,9 @@ class Main
     }
 
     fnc main() -> Int32 {
-        spawn runServer();
+        // This fixture intentionally ends with the TLS server still listening.
+        const serverTask = spawn runServer();
+        taskDetach(serverTask);
 
         const fd: Int64 = dialRetry(47710);
         if (fd < 0) {

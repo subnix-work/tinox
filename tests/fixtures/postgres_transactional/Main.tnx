@@ -27,6 +27,22 @@ class Main
         const newBalance: Int64 = svc.getBalanceAndTouch(1);
         println("balance after touch: " + newBalance.toString());
 
+        // Repeat against real Postgres; the Rust test verifies the final
+        // balances independently through psql after every task has joined.
+        const ready = channel;
+        var i = 0;
+        while (i < 20) {
+            scope {
+                const task = spawn BankService::cancelledChange(1, ready);
+                recv ready;
+                taskCancel(task);
+                try { await task; } catch (e: String) {
+                    println("cancelled rollback: " + e);
+                }
+            }
+            i = i + 1;
+        }
+
         return 0;
     }
 }

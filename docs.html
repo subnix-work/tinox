@@ -1022,6 +1022,65 @@
       eine Linked-List-Queue mit Mutex und Condition Variable.
     </p>
 
+
+    <h4>Task-Lebensdauer, Deadlines und Abbruch</h4>
+    <p><code>scope { ... }</code> besitzt seine lexikalischen Spawns. Ein einfacher
+      Spawn gehört zur Lebensdauer seines erzeugenden Threads; dieser wartet vor
+      seinem Ende auf übrige Kinder. Beim Prozessende werden verbleibende
+      joinbare Kinder abgebrochen und eingesammelt. Fehler werden durch
+      <code>await</code> oder unbeobachtet am Scope-Ende weitergereicht; weitere
+      Fehler erscheinen auf stderr. Der eigene Fehler des Blockrumpfs hat Vorrang.
+      Wiederholtes Await liefert innerhalb der Lebensdauer denselben Wert oder
+      Fehler. Nach Ende des besitzenden Scopes sind Handles ungültig; weitere
+      Verwendung scheitert sichtbar. Tasks bleiben beim Besitzer; nach außen
+      sollte der bereits erwartete Ergebniswert zurückgegeben werden.</p>
+    <pre><code>try {
+    scope {
+        taskSetDeadline(250); // Duration from now, in monotonic milliseconds.
+        const task: Task&lt;String&gt; = spawn Main::load();
+        println(await task);
+    }
+} catch (e: String) { println(e); }</code></pre>
+    <table>
+      <thead><tr><th>Operation</th><th>Vertrag</th></tr></thead>
+      <tbody>
+        <tr><td><code>taskCancel(task: Task&lt;T&gt;)</code></td><td>Fordert den kooperativen Abbruch eines Tasks und seiner Nachkommen an.</td></tr>
+        <tr><td><code>taskSetDeadline(ms: Int64)</code></td><td>Setzt die Deadline des aktuellen Scopes. Deadlines übergeordneter Scopes gelten weiterhin; 0 läuft sofort ab. Negative Zeitspannen scheitern sichtbar.</td></tr>
+        <tr><td><code>taskCheckCancellation()</code></td><td>Prüfpunkt für CPU-Schleifen. Wirft <code>Task cancelled</code>, <code>Task deadline exceeded</code> oder <code>Task service shutdown requested</code>.</td></tr>
+        <tr><td><code>taskWaitReadable(fd: Int64)</code></td><td>Abbrechbares Warten auf einen echten Dateideskriptor; vor accept/read mit genau einem Leser verwenden.</td></tr>
+        <tr><td><code>taskDetach(task: Task&lt;T&gt;)</code></td><td>Explizites Fire-and-forget. Nur der besitzende Thread darf einen noch nicht eingesammelten Task abkoppeln. Geerbte Abbruchanforderungen/Deadlines entfallen, Await ist unzulässig, unbehandelte Fehler beenden den Prozess sichtbar.</td></tr>
+        <tr><td><code>taskRequestShutdown()</code></td><td>Prozessweite kooperative Stoppanforderung für Service-Lebenszyklus und Steuerung. Bootstrap-Awaits verlassen ihren Wartezustand; das Herunterfahren sammelt ausstehende joinbare Tasks ein und bewahrt echte Fehler.</td></tr>
+      </tbody>
+    </table>
+    <p>Abbruch weckt auch <code>sleep</code>/<code>sleep_ms</code>, blockiertes
+      Channel-<code>recv</code> und <code>await</code> (Prüfintervall etwa 10 ms,
+      zuzüglich Scheduling). Tokens werden an Kind-Tasks und innere Scopes
+      vererbt. Scope-Fehler brechen übrige Geschwister ab; der Fehler des Rumpfs
+      bleibt vorrangig. Ein explizit abgebrochener Task meldet den Abbruch weiterhin,
+      sofern er nicht per Await abgefangen wurde. Erwarteter Abbruch beim
+      Prozessende gilt als erfolgreich.</p>
+    <p>Abbruch verwendet normales Exception-Unwinding: <code>finally</code> und
+      <code>defer</code> laufen in der üblichen Reihenfolge; eine Transaktion im
+      Kind wird vor Abschluss des Joins zurückgerollt. Transaktionen sind
+      thread-lokal und werden nicht vererbt. Ein Scope innerhalb einer
+      transaktionalen Methode wartet vor dem Commit auf Kinder. Ressourcen des
+      Elternthreads sollten außerhalb des Scopes aufgeräumt werden, damit Kinder
+      zuerst fertig werden.</p>
+    <p>Es gibt keine asynchrone Thread-Terminierung. Native blockierende I/O,
+      Datenbankaufrufe und CPU-Schleifen ohne Prüfpunkt sind nicht automatisch
+      unterbrechbar. Ressourcenspezifische Stopp-/Close-Operationen oder
+      <code>taskWaitReadable</code> verwenden. Nach fünf Sekunden ignoriertem
+      Abbruch beim Scope-Ende scheitert die Runtime sichtbar statt still zu hängen.
+      Ein explizites Await eines abgebrochenen Tasks und eine Service-Stoppanforderung
+      haben dieselbe Fünf-Sekunden-Grenze. Readiness sowie Signal-/Listener-Steuerung bleiben Aufgabe des
+      Service-Lebenszyklus (Issue #304). Abgekoppelte Worker werden ausdrücklich
+      nicht strukturiert eingesammelt.</p>
+    <p>Speichern und Await bisheriger <code>Int64</code>-Handles bleiben für
+      veröffentlichte Pakete vorübergehend kompatibel. Neuer Code und die
+      Task-Steueroperationen verwenden <code>Task&lt;T&gt;</code>. Ungültige/abgelaufene
+      Handles und zyklische Awaits scheitern mit Diagnose; Integer-Handles sind
+      veraltet.</p>
+
     <h3>HTTP-Server (Low Level)</h3>
     <p>
       Der HTTP-Server im Runtime verwendet:
