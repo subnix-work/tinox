@@ -364,6 +364,104 @@ fn spawn_over_task_budget_rejects_instead_of_growing_threads() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn limits_can_come_from_application_properties_and_env_wins() {
+    let (dir, exe, _port) = http_fixture("props");
+    std::fs::write(
+        dir.join("application.properties"),
+        "tinox.limits.max_tasks=7\ntinox.limits.max_connections=33\ntinox.limits.queue_wait_ms=250\n",
+    )
+    .unwrap();
+    let out = banner_of(&exe, &dir, &[], &[]);
+    assert!(out.contains("max connections=33, max tasks=7"), "properties ignored:\n{out}");
+    assert!(out.contains("queue wait=250 ms"), "queue wait from properties ignored:\n{out}");
+
+    // The environment variable takes precedence over the properties file.
+    let out = banner_of(&exe, &dir, &[], &[("TINOX_MAX_TASKS", "9")]);
+    assert!(out.contains("max connections=33, max tasks=9"), "env must win:\n{out}");
+
+    // A malformed properties value is as fatal as a malformed env var.
+    std::fs::write(dir.join("application.properties"), "tinox.limits.max_tasks=lots\n").unwrap();
+    let r = Command::new(&exe).current_dir(&dir).stdin(Stdio::null()).output().unwrap();
+    assert!(!r.status.success());
+    assert!(String::from_utf8_lossy(&r.stderr).contains("invalid tinox.limits.max_tasks="));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dev_ui_limits_endpoint_and_metrics_report_queue_state() {
+    let (dir, exe, port) = http_fixture("limits-endpoint");
+    // Rebuild with the introspection API enabled on its own free port.
+    let dev_port = free_port();
+    let toml = std::fs::read_to_string(dir.join("tinox.toml")).unwrap();
+    std::fs::write(dir.join("tinox.toml"), format!("{toml}\n[dev]\nenabled = true\nport = {dev_port}\n")).unwrap();
+    let exe2 = build(&dir, "budget_server_dev", Some(port));
+    let _ = exe;
+    let child = Command::new(&exe2)
+        .current_dir(&dir)
+        .env("TINOX_MAX_CONNECTIONS", "5")
+        .env("TINOX_QUEUE_WAIT_MS", "40")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn server");
+    let _guard = KillOnDrop(child);
+    std::thread::sleep(Duration::from_millis(800));
+    let (_, text) = curl_status(dev_port, "/limits");
+    assert!(text.contains("\"maxConnections\":5"), "/limits missing budgets: {text}");
+    assert!(text.contains("\"queueWaitMs\":40"), "/limits missing queue wait: {text}");
+    assert!(text.contains("\"connectionsRejected\":0"), "/limits missing counters: {text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn queued_spawn_waits_for_a_slot_within_the_deadline() {
+    let dir = workdir("task-queue");
+    std::fs::write(
+        dir.join("Main.tnx"),
+        r#"class Main {
+    async fnc hold(n: Int64) -> Int64 { sleep_ms(300); return n; }
+
+    fnc main() -> Int32 {
+        var ok = 0;
+        var rejected = 0;
+        const t1 = spawn Main::hold(1);
+        const t2 = spawn Main::hold(2);
+        const t3 = spawn Main::hold(3);
+        const t4 = spawn Main::hold(4);
+        try { await t1; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
+        try { await t2; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
+        try { await t3; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
+        try { await t4; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
+        println("ok=" + ok.toString() + " rejected=" + rejected.toString());
+        return 0;
+    }
+}
+"#,
+    )
+    .unwrap();
+    let exe = build(&dir, "task_queue", None);
+    let run = |wait: &str| {
+        let t = Instant::now();
+        let out = Command::new(&exe)
+            .current_dir(&dir)
+            .env("TINOX_MAX_TASKS", "2")
+            .env("TINOX_QUEUE_WAIT_MS", wait)
+            .output()
+            .expect("run");
+        (String::from_utf8_lossy(&out.stdout).into_owned(), t.elapsed())
+    };
+    // Generous deadline: the 3rd and 4th spawn queue until a slot frees up.
+    let (out, took) = run("5000");
+    assert!(out.contains("ok=4 rejected=0"), "queued spawns were not admitted:\n{out}");
+    assert!(took >= Duration::from_millis(550), "spawns did not actually queue: {took:?}");
+    // Deadline shorter than the running tasks: bounded wait, then rejection.
+    let (out, took) = run("100");
+    assert!(out.contains("ok=2 rejected=2"), "deadline not enforced:\n{out}");
+    assert!(took < Duration::from_millis(1500), "rejection was not bounded: {took:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- WebSocket connection budget ----
 
 fn ws_handshake(port: u16) -> TcpStream {

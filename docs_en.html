@@ -1594,7 +1594,18 @@ epoll_fd = epoll_create1(0);
       <tr><td><code>TINOX_MAX_CONNECTIONS</code></td><td>4096 (max 4096)</td><td>HTTP/1: <code>503 Service Unavailable</code> with <code>Retry-After: 1</code></td></tr>
       <tr><td><code>TINOX_MAX_TASKS</code></td><td>4096</td><td><code>spawn</code> returns a task whose <code>await</code> (or enclosing <code>scope</code>) throws a "task budget exhausted" error</td></tr>
       <tr><td><code>TINOX_MAX_WS_CONNECTIONS</code></td><td>1024</td><td>the WebSocket connection is closed immediately</td></tr>
+      <tr><td><code>TINOX_QUEUE_WAIT_MS</code></td><td>0 (no queueing)</td><td>how long <code>spawn</code> / a WebSocket accept may wait for a free slot before being rejected</td></tr>
     </table>
+    <p>
+      Every setting can also be placed in <code>application.properties</code> as
+      <code>tinox.limits.&lt;name&gt;</code> (e.g. <code>tinox.limits.max_tasks=256</code>);
+      the environment variable wins. The Dev UI API exposes the effective values and live
+      counters at <code>/limits</code>. HTTP/1 rejects immediately (the epoll workers must not block);
+      the HTTP/2, HTTP/3 and TLS accept loops are single-threaded by design, so their backlog is
+      bounded by the kernel listen queue and they never grow threads. AMQP connections use
+      <code>spawn</code> and therefore count against <code>TINOX_MAX_TASKS</code>.
+      A rejected request is never retried automatically.
+    </p>
 
     <div class="info-box green">
       <strong>Result:</strong> Up to 4,096 simultaneous connections per thread,

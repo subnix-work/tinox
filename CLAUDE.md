@@ -1813,8 +1813,29 @@ startup failure, never a silent fallback.
   since affinity/cgroup are only known then) and gauges/counters
   (`tinox_http_connections_{limit,open,peak,rejected_total}`, `tinox_tasks_*`,
   `tinox_websocket_connections_*`) appended to `/metrics`.
-- **Not covered yet**: HTTP/2, HTTP/3, AMQP consumers (still their own
-  execution models, not budgeted), queue wait/deadline limits (admission is
-  immediate reject, no queue), per-endpoint overrides via `tinox.toml`.
+- **Execution-model inventory (why nothing else needs a budget)**: HTTP/1
+  = epoll workers (+ connection cap); `spawn` = one thread per task (task
+  cap); `@WebsocketEndpoint`/`@TinoxUIApp` = detached worker per connection
+  (WS cap); HTTP/2 (`Http2Server.listen`), HTTP/3 and the TLS
+  `httpServerAcceptTls` loops handle connections inline on the caller's
+  thread -- no thread growth, backlog bounded by `listen(4096)`; AMQP
+  0-9-1/1.0 use `spawn` for dispatcher/heartbeat loops, so they already
+  count against the task cap.
+- **Queueing**: `TINOX_QUEUE_WAIT_MS` (default 0) lets `spawn` and the WS
+  accept loop wait on a condvar for a freed slot, bounded by that deadline,
+  then reject. HTTP/1 never queues (blocking an epoll worker would stall
+  every other connection on it). Waits are visible as
+  `tinox_queue_{waiting,wait_ms_total,wait_ms_max,timeouts_total}`. A task
+  that spawns children while holding the last slot can wait out the whole
+  deadline -- that's why the default is 0.
+- **Config sources**: env var > `application.properties`
+  (`tinox.limits.<name without TINOX_, lowercase>`) > default; both are
+  validated the same way. Dev UI: `/limits` (`tinox_limits_json`).
+- **Verified in real containers** (`tinox docker` + `docker run --cpus=N`):
+  0.5 -> 1, 1.5 -> 2, 4 -> 4 CPUs "(cgroup quota)". Not an automated test
+  (needs a docker build; the cgroup parsing itself is covered by the
+  fixture-tree and `taskset` tests).
+- **Not covered**: per-endpoint overrides; HTTP/1 request deadlines beyond
+  the existing 5s first-request / 500ms keep-alive guards.
 - Tests: `crates/tinox/tests/concurrency_budgets.rs` (real curl/raw-socket
   clients, `taskset`, cgroup fixture trees).

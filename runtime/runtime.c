@@ -802,6 +802,13 @@ typedef struct {
 //   TINOX_MAX_CONNECTIONS       open HTTP/1 connections, all workers (4096)
 //   TINOX_MAX_TASKS             concurrently running `spawn` threads (4096)
 //   TINOX_MAX_WS_CONNECTIONS    concurrently open WebSocket connections (1024)
+//   TINOX_QUEUE_WAIT_MS         how long `spawn` / a WebSocket accept may
+//                               wait for a free slot before the request is
+//                               rejected (default 0 = reject immediately)
+//
+// Each setting can also be given in application.properties as
+// `tinox.limits.<name>` (e.g. `tinox.limits.max_tasks=256`); the
+// environment variable wins, then the properties file, then the default.
 //
 // Detected CPUs = min(sched affinity/cpuset, cgroup CPU quota), so a
 // container started with `--cpus=1.5` or a `taskset` mask no longer sizes
@@ -815,6 +822,7 @@ typedef struct {
     int64_t max_connections;
     int64_t max_tasks;
     int64_t max_ws_connections;
+    int64_t queue_wait_ms;
 } TinoxLimits;
 
 static TinoxLimits g_limits;
@@ -822,6 +830,11 @@ static pthread_once_t g_limits_once = PTHREAD_ONCE_INIT;
 static atomic_llong g_active_tasks, g_peak_tasks, g_rejected_tasks;
 static atomic_llong g_open_conns, g_peak_conns, g_rejected_conns;
 static atomic_llong g_active_ws, g_peak_ws, g_rejected_ws;
+// Queue (wait-for-slot) accounting shared by the task and WebSocket budgets.
+static atomic_llong g_waiting, g_wait_total_ms, g_wait_max_ms, g_wait_timeouts;
+static pthread_mutex_t g_budget_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_budget_cv;
+static const char* tinox_config_lookup(const char* key);
 
 static void tinox_atomic_max(atomic_llong* peak, long long v) {
     long long cur = atomic_load(peak);
@@ -893,7 +906,17 @@ static int64_t tinox_cgroup_cpu_quota(void) {
 
 static int64_t tinox_limit_env(const char* name, int64_t dflt, int64_t min, int64_t max) {
     const char* v = getenv(name);
-    if (!v || !*v) return dflt;
+    if (!v || !*v) {
+        // application.properties: tinox.limits.<lowercased name without TINOX_>
+        char key[128] = "tinox.limits.";
+        size_t o = strlen(key);
+        for (const char* c = name + 6; *c && o < sizeof(key) - 1; c++)
+            key[o++] = (char)tolower((unsigned char)*c);
+        key[o] = '\0';
+        v = tinox_config_lookup(key);
+        if (!v || !*v) return dflt;
+        name = key;
+    }
     char* end = NULL;
     errno = 0;
     long long n = strtoll(v, &end, 10);
@@ -929,6 +952,12 @@ static void tinox_limits_init_once(void) {
     g_limits.max_connections = tinox_limit_env("TINOX_MAX_CONNECTIONS", 4096, 1, TINOX_MAX_CONNECTIONS_CEILING);
     g_limits.max_tasks = tinox_limit_env("TINOX_MAX_TASKS", 4096, 1, 1000000);
     g_limits.max_ws_connections = tinox_limit_env("TINOX_MAX_WS_CONNECTIONS", 1024, 1, 1000000);
+    g_limits.queue_wait_ms = tinox_limit_env("TINOX_QUEUE_WAIT_MS", 0, 0, 600000);
+    pthread_condattr_t ca;
+    pthread_condattr_init(&ca);
+    pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+    pthread_cond_init(&g_budget_cv, &ca);
+    pthread_condattr_destroy(&ca);
 }
 
 static const TinoxLimits* tinox_limits(void) {
@@ -948,14 +977,81 @@ static int tinox_budget_acquire(atomic_llong* active, atomic_llong* peak, int64_
     return 0;
 }
 
+// Like tinox_budget_acquire, but may queue for up to TINOX_QUEUE_WAIT_MS
+// for a slot to free up. The wait is bounded by that deadline, so a queue
+// can never grow past (callers x deadline) and a request that does not
+// get a slot in time is rejected, never retried or run late.
+static int tinox_budget_acquire_queued(atomic_llong* active, atomic_llong* peak, int64_t max) {
+    if (tinox_budget_acquire(active, peak, max)) return 1;
+    int64_t wait_ms = tinox_limits()->queue_wait_ms;
+    if (wait_ms <= 0) return 0;
+    struct timespec t0, deadline;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    deadline = t0;
+    deadline.tv_sec += wait_ms / 1000;
+    deadline.tv_nsec += (wait_ms % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }
+    atomic_fetch_add(&g_waiting, 1);
+    int got = 0;
+    pthread_mutex_lock(&g_budget_mu);
+    for (;;) {
+        if (tinox_budget_acquire(active, peak, max)) { got = 1; break; }
+        if (pthread_cond_timedwait(&g_budget_cv, &g_budget_mu, &deadline) == ETIMEDOUT) {
+            got = tinox_budget_acquire(active, peak, max);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_budget_mu);
+    atomic_fetch_sub(&g_waiting, 1);
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long long waited = (long long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    atomic_fetch_add(&g_wait_total_ms, waited);
+    tinox_atomic_max(&g_wait_max_ms, waited);
+    if (!got) atomic_fetch_add(&g_wait_timeouts, 1);
+    return got;
+}
+
+// Frees a slot and wakes any queued acquirer.
+static void tinox_budget_release(atomic_llong* active) {
+    atomic_fetch_sub(active, 1);
+    if (atomic_load(&g_waiting) > 0) {
+        pthread_mutex_lock(&g_budget_mu);
+        pthread_cond_broadcast(&g_budget_cv);
+        pthread_mutex_unlock(&g_budget_mu);
+    }
+}
+
 // Effective limits, for the startup banner / inspection output.
 void tinox_print_limits(void) {
     const TinoxLimits* l = tinox_limits();
-    printf("Limits: cpus=%lld (%s), http workers=%lld, max connections=%lld, max tasks=%lld, max websocket connections=%lld\n",
+    printf("Limits: cpus=%lld (%s), http workers=%lld, max connections=%lld, max tasks=%lld, max websocket connections=%lld, queue wait=%lld ms\n",
            (long long)l->cpus, l->cpu_source, (long long)l->http_workers,
            (long long)l->max_connections, (long long)l->max_tasks,
-           (long long)l->max_ws_connections);
+           (long long)l->max_ws_connections, (long long)l->queue_wait_ms);
     fflush(stdout);
+}
+
+// Effective limits and live saturation counters as JSON (Dev UI /limits).
+char* tinox_limits_json(void) {
+    const TinoxLimits* l = tinox_limits();
+    char* buf = (char*)GC_malloc(1024);
+    snprintf(buf, 1024,
+        "{\"cpus\":%lld,\"cpuSource\":\"%s\",\"httpWorkers\":%lld,\"maxConnections\":%lld,"
+        "\"maxTasks\":%lld,\"maxWebsocketConnections\":%lld,\"queueWaitMs\":%lld,"
+        "\"connectionsOpen\":%lld,\"connectionsRejected\":%lld,"
+        "\"tasksActive\":%lld,\"tasksRejected\":%lld,"
+        "\"websocketConnectionsActive\":%lld,\"websocketConnectionsRejected\":%lld,"
+        "\"queueWaiting\":%lld,\"queueWaitMaxMs\":%lld,\"queueTimeouts\":%lld}",
+        (long long)l->cpus, l->cpu_source, (long long)l->http_workers,
+        (long long)l->max_connections, (long long)l->max_tasks,
+        (long long)l->max_ws_connections, (long long)l->queue_wait_ms,
+        (long long)atomic_load(&g_open_conns), (long long)atomic_load(&g_rejected_conns),
+        (long long)atomic_load(&g_active_tasks), (long long)atomic_load(&g_rejected_tasks),
+        (long long)atomic_load(&g_active_ws), (long long)atomic_load(&g_rejected_ws),
+        (long long)atomic_load(&g_waiting), (long long)atomic_load(&g_wait_max_ms),
+        (long long)atomic_load(&g_wait_timeouts));
+    return buf;
 }
 
 // Limits + saturation counters as Prometheus text (appended to /metrics).
@@ -975,24 +1071,32 @@ static int tinox_limits_metrics_text(char* buf, size_t cap) {
         "# TYPE tinox_websocket_connections_limit gauge\ntinox_websocket_connections_limit %lld\n"
         "# TYPE tinox_websocket_connections_active gauge\ntinox_websocket_connections_active %lld\n"
         "# TYPE tinox_websocket_connections_peak gauge\ntinox_websocket_connections_peak %lld\n"
-        "# TYPE tinox_websocket_connections_rejected_total counter\ntinox_websocket_connections_rejected_total %lld\n",
+        "# TYPE tinox_websocket_connections_rejected_total counter\ntinox_websocket_connections_rejected_total %lld\n"
+        "# TYPE tinox_queue_wait_limit_ms gauge\ntinox_queue_wait_limit_ms %lld\n"
+        "# TYPE tinox_queue_waiting gauge\ntinox_queue_waiting %lld\n"
+        "# TYPE tinox_queue_wait_ms_total counter\ntinox_queue_wait_ms_total %lld\n"
+        "# TYPE tinox_queue_wait_ms_max gauge\ntinox_queue_wait_ms_max %lld\n"
+        "# TYPE tinox_queue_timeouts_total counter\ntinox_queue_timeouts_total %lld\n",
         (long long)l->cpus, (long long)l->http_workers,
         (long long)l->max_connections, (long long)atomic_load(&g_open_conns),
         (long long)atomic_load(&g_peak_conns), (long long)atomic_load(&g_rejected_conns),
         (long long)l->max_tasks, (long long)atomic_load(&g_active_tasks),
         (long long)atomic_load(&g_peak_tasks), (long long)atomic_load(&g_rejected_tasks),
         (long long)l->max_ws_connections, (long long)atomic_load(&g_active_ws),
-        (long long)atomic_load(&g_peak_ws), (long long)atomic_load(&g_rejected_ws));
+        (long long)atomic_load(&g_peak_ws), (long long)atomic_load(&g_rejected_ws),
+        (long long)l->queue_wait_ms, (long long)atomic_load(&g_waiting),
+        (long long)atomic_load(&g_wait_total_ms), (long long)atomic_load(&g_wait_max_ms),
+        (long long)atomic_load(&g_wait_timeouts));
 }
 
 // WebSocket admission: the accept loop asks before handing a connection to
 // a worker thread, and releases when that worker finishes.
 int64_t tinox_ws_admit(void) {
-    if (tinox_budget_acquire(&g_active_ws, &g_peak_ws, tinox_limits()->max_ws_connections)) return 1;
+    if (tinox_budget_acquire_queued(&g_active_ws, &g_peak_ws, tinox_limits()->max_ws_connections)) return 1;
     atomic_fetch_add(&g_rejected_ws, 1);
     return 0;
 }
-void tinox_ws_release(void) { atomic_fetch_sub(&g_active_ws, 1); }
+void tinox_ws_release(void) { tinox_budget_release(&g_active_ws); }
 
 typedef struct {
     void* (*fn)(void*);
@@ -1027,7 +1131,7 @@ static void* tinox_spawn_trampoline(void* raw) {
         }
     }
     tinox_gc_unregister_thread_roots();
-    if (task != NULL) atomic_fetch_sub(&g_active_tasks, 1);
+    if (task != NULL) tinox_budget_release(&g_active_tasks);
     return ret;
 }
 
@@ -1047,7 +1151,7 @@ void* tinox_task_spawn(void* (*fn)(void*), void* args) {
     // created. The handle comes back already failed, so `await` / the
     // owning `scope` re-throw the rejection instead of the process
     // growing threads without bound -- or silently dropping the work.
-    if (!tinox_budget_acquire(&g_active_tasks, &g_peak_tasks, tinox_limits()->max_tasks)) {
+    if (!tinox_budget_acquire_queued(&g_active_tasks, &g_peak_tasks, tinox_limits()->max_tasks)) {
         atomic_fetch_add(&g_rejected_tasks, 1);
         free(t);
         task->joined = 1;

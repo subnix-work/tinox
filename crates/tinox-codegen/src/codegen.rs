@@ -4082,6 +4082,7 @@ impl CodeGen {
         self.emit_devui_static_handler("__devui_info", &info_json);
         self.emit_devui_config_handler();
         self.emit_devui_components_handler();
+        self.emit_devui_limits_handler();
         self.emit_devui_tests_run_handler();
 
         writeln!(&mut self.lambda_ir, "define i64 @__tinox_run_devui() {{").unwrap();
@@ -4095,6 +4096,7 @@ impl CodeGen {
             ("/websockets", "__devui_websockets"),
             ("/info", "__devui_info"),
             ("/config", "__devui_config"),
+            ("/limits", "__devui_limits"),
             ("/components", "__devui_components"),
             ("/tests/run", "__devui_tests_run"),
         ] {
@@ -4419,6 +4421,18 @@ impl CodeGen {
         let suffix_ptr = self.emit_lambda_string_literal("}");
         writeln!(&mut self.lambda_ir,
             "  %json = call i8* @tinox_string_concat(i8* %s3, i8* {suffix_ptr})").unwrap();
+        self.emit_devui_finish_response("%json");
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+    }
+
+    /// `/limits`: effective concurrency budgets and live saturation
+    /// counters (`tinox_limits_json`, runtime.c; issue #302).
+    fn emit_devui_limits_handler(&mut self) {
+        writeln!(&mut self.lambda_ir, "declare i8* @tinox_limits_json()").unwrap();
+        writeln!(&mut self.lambda_ir, "define void @__devui_limits(i64 %ctx_i64) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %json = call i8* @tinox_limits_json()").unwrap();
         self.emit_devui_finish_response("%json");
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
