@@ -2692,6 +2692,45 @@ int64_t processResultTimedOut(int64_t handle) {
     return ((TinoxProcessResult*)(intptr_t)handle)->timed_out;
 }
 
+// DI publication is serialized across the dependency graph. Recursive entry
+// permits nested providers; dependency cycles are rejected before codegen.
+static pthread_mutex_t tinox_di_mu = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+void tinox_di_enter(void) { task_pthread_check(pthread_mutex_lock(&tinox_di_mu)); }
+void tinox_di_exit(void) { task_pthread_check(pthread_mutex_unlock(&tinox_di_mu)); }
+
+// One recursive monitor per annotated class, rooted by its generated global.
+// This protects annotated calls, not direct field access or escaped objects.
+static pthread_mutex_t tinox_monitor_init_mu = PTHREAD_MUTEX_INITIALIZER;
+int64_t tinox_monitor_enter(int64_t* slot) {
+    task_pthread_check(pthread_mutex_lock(&tinox_monitor_init_mu));
+    if (!*slot) {
+        pthread_mutex_t* mutex = GC_malloc(sizeof(*mutex));
+        pthread_mutexattr_t attr;
+        task_pthread_check(pthread_mutexattr_init(&attr));
+        task_pthread_check(pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE));
+        task_pthread_check(pthread_mutex_init(mutex, &attr));
+        task_pthread_check(pthread_mutexattr_destroy(&attr));
+        *slot = (int64_t)(intptr_t)mutex;
+    }
+    pthread_mutex_t* mutex = (pthread_mutex_t*)(intptr_t)*slot;
+    task_pthread_check(pthread_mutex_unlock(&tinox_monitor_init_mu));
+    for (;;) {
+        // Preserve an already-unwinding error when called by cleanup code.
+        if (!__tinox_err && task_cancellation(task_scope)) {
+            taskCheckCancellation();
+            return 0;
+        }
+        int rc = pthread_mutex_trylock(mutex);
+        if (!rc) return 1;
+        if (rc != EBUSY) task_pthread_check(rc);
+        struct timespec delay = { 0, 10000000 };
+        while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
+    }
+}
+void tinox_monitor_exit(int64_t* slot) {
+    task_pthread_check(pthread_mutex_unlock((pthread_mutex_t*)(intptr_t)*slot));
+}
+
 // ---- Real synchronization primitives (tinox.core.semaphore) ---------------
 //
 // Fixes a real, previously-undiscovered bug found while designing

@@ -570,6 +570,8 @@ pub struct CodeGen {
     user_main_class: bool,
     /// Set of class names defined in user/imported code
     defined_classes: HashSet<String>,
+    synchronized_classes: HashSet<String>,
+    monitored_classes: HashSet<String>,
     /// class_name -> field_name -> class_type_name (only for fields with Named/class types)
     struct_field_class_types: HashMap<String, HashMap<String, String>>,
     /// class_name -> field_name -> llvm_type (for FieldAccess type recovery)
@@ -679,6 +681,8 @@ impl CodeGen {
             dev_test_command: String::new(),
             user_main_class: false,
             defined_classes: HashSet::new(),
+            synchronized_classes: HashSet::new(),
+            monitored_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
             struct_field_llvm_types: HashMap::new(),
             fn_field_sigs: HashMap::new(),
@@ -1734,6 +1738,10 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @processResultStderr(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @processResultExitCode(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @processResultTimedOut(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_di_enter()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_di_exit()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_monitor_enter(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_monitor_exit(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @mutexNew()").unwrap();
         writeln!(&mut self.ir, "declare void @mutexLock(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @mutexUnlock(i64)").unwrap();
@@ -1852,6 +1860,17 @@ impl CodeGen {
             }
             v
         }).collect();
+
+        self.synchronized_classes = all_classes.iter()
+            .filter(|c| c.annotations.iter().any(|a| a.name == "Synchronized"))
+            .map(|c| c.name.clone()).collect();
+        for class in &all_classes {
+            if self.synchronized_classes.contains(&class.name)
+                || class.methods.iter().any(|m| m.annotations.iter().any(|a| a.name == "Synchronized")) {
+                self.monitored_classes.insert(class.name.clone());
+                writeln!(&mut self.lambda_ir, "@{}_monitor = internal global i64 0", class.name).unwrap();
+            }
+        }
 
         // Register immutable struct layouts and new() return types (top-level + namespace-scoped)
         let all_immutables: Vec<tinox_parser::ImmutableDecl> = source.decls.iter().flat_map(|d| {
@@ -4475,6 +4494,13 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "null_case_{uid}:").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i8* null").unwrap();
             writeln!(&mut self.lambda_ir, "normal_case_{uid}:").unwrap();
+            let monitored = self.monitored_classes.contains(&class_name);
+            if monitored {
+                writeln!(&mut self.lambda_ir, "  %lock_{uid} = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
+                writeln!(&mut self.lambda_ir, "  %locked_{uid} = icmp ne i64 %lock_{uid}, 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  br i1 %locked_{uid}, label %locked_case_{uid}, label %null_case_{uid}").unwrap();
+                writeln!(&mut self.lambda_ir, "locked_case_{uid}:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %self = bitcast i8* %self_i8 to i64*").unwrap();
             let builder = self.temp();
             writeln!(&mut self.lambda_ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
@@ -4543,6 +4569,9 @@ impl CodeGen {
 
             let result = self.temp();
             writeln!(&mut self.lambda_ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
+            if monitored {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_monitor_exit(i64* @{class_name}_monitor)").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i8* {result}").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
@@ -4636,8 +4665,10 @@ impl CodeGen {
                 "  %state_slot_{idx} = getelementptr [{count} x i8*], [{count} x i8*]* %states, i64 0, i64 {idx}").unwrap();
             match comp.scope {
                 DiScope::Application | DiScope::Startup => {
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_di_enter()").unwrap();
                     writeln!(&mut self.lambda_ir,
                         "  %inst_raw_{idx} = load i8*, i8** @{}_di_instance", comp.class_name).unwrap();
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_di_exit()").unwrap();
                     writeln!(&mut self.lambda_ir,
                         "  %is_set_{idx} = icmp ne i8* %inst_raw_{idx}, null").unwrap();
                     writeln!(&mut self.lambda_ir,
@@ -4860,6 +4891,7 @@ impl CodeGen {
                 DiScope::Application | DiScope::Startup => {
                     writeln!(&mut self.lambda_ir, "define i64* @{name}_di_get() {{").unwrap();
                     writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_di_enter()").unwrap();
                     writeln!(&mut self.lambda_ir, "  %inst_raw = load i8*, i8** @{name}_di_instance").unwrap();
                     writeln!(&mut self.lambda_ir, "  %is_null = icmp eq i8* %inst_raw, null").unwrap();
                     writeln!(&mut self.lambda_ir, "  br i1 %is_null, label %create, label %done").unwrap();
@@ -4899,6 +4931,7 @@ impl CodeGen {
                     writeln!(&mut self.lambda_ir, "done:").unwrap();
                     writeln!(&mut self.lambda_ir, "  %result_raw = load i8*, i8** @{name}_di_instance").unwrap();
                     writeln!(&mut self.lambda_ir, "  %result = bitcast i8* %result_raw to i64*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_di_exit()").unwrap();
                     writeln!(&mut self.lambda_ir, "  ret i64* %result").unwrap();
                     writeln!(&mut self.lambda_ir, "}}").unwrap();
                     writeln!(&mut self.lambda_ir).unwrap();
@@ -5318,8 +5351,11 @@ impl CodeGen {
         method: &Method,
     ) -> Result<(), ErrorBag> {
         let ret_type = self.type_to_llvm_inst(&method.ret_type);
-        let fn_name = format!("{}_{}", class_name, method.name);
-        self.method_ret_types.insert(fn_name.clone(), ret_type.clone());
+        let public_name = format!("{}_{}", class_name, method.name);
+        let synchronized = !method.static_ && (self.synchronized_classes.contains(class_name)
+            || method.annotations.iter().any(|a| a.name == "Synchronized"));
+        let fn_name = if synchronized { format!("__tinox_sync_body_{public_name}") } else { public_name.clone() };
+        self.method_ret_types.insert(public_name.clone(), ret_type.clone());
 
         let mut ctx = GenCtx {
             locals: HashMap::new(),
@@ -5438,6 +5474,26 @@ impl CodeGen {
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
         Self::attach_call_dbg(&mut self.ir, body_start, &call_dbg);
+        if synchronized {
+            writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
+            writeln!(&mut self.ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.ir, "  %locked = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
+            writeln!(&mut self.ir, "  %acquired = icmp ne i64 %locked, 0").unwrap();
+            writeln!(&mut self.ir, "  br i1 %acquired, label %body, label %cancelled").unwrap();
+            writeln!(&mut self.ir, "body:").unwrap();
+            let prefix = if ret_type == "void" { "" } else { "%value = " };
+            writeln!(&mut self.ir, "  {prefix}call {ret_type} @{fn_name}({params_str})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_monitor_exit(i64* @{class_name}_monitor)").unwrap();
+            if ret_type == "void" { writeln!(&mut self.ir, "  ret void").unwrap(); }
+            else { writeln!(&mut self.ir, "  ret {ret_type} %value").unwrap(); }
+            writeln!(&mut self.ir, "cancelled:").unwrap();
+            if ret_type == "void" { writeln!(&mut self.ir, "  ret void").unwrap(); }
+            else {
+                let zero = if ret_type.ends_with('*') { "null" } else if ret_type == "float" || ret_type == "double" { "0.0" } else { "0" };
+                writeln!(&mut self.ir, "  ret {ret_type} {zero}").unwrap();
+            }
+            writeln!(&mut self.ir, "}}\n").unwrap();
+        }
 
         Ok(())
     }
@@ -13364,7 +13420,22 @@ impl CodeGen {
 
         let mut tf: HashSet<String> = ["sleep", "sleep_ms", "taskCheckCancellation", "taskSetDeadline", "taskWaitReadable"]
             .into_iter().map(String::from).collect();
+        fn synchronized_names(decls: &[tinox_parser::Decl], names: &mut HashSet<String>) {
+            for decl in decls {
+                match &decl.node {
+                    DeclKind::Class(c) => for m in &c.methods {
+                        if !m.static_ && (c.annotations.iter().any(|a| a.name == "Synchronized")
+                            || m.annotations.iter().any(|a| a.name == "Synchronized")) {
+                            names.insert(m.name.clone());
+                        }
+                    },
+                    DeclKind::Namespace(ns) => synchronized_names(&ns.decls, names),
+                    _ => {}
+                }
+            }
+        }
         let mut tm: HashSet<String> = HashSet::new();
+        synchronized_names(&source.decls, &mut tm);
         loop {
             let mut changed = false;
             for (name, body, is_method) in &fns {

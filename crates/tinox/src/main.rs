@@ -1582,7 +1582,7 @@ fn check(args: &[String]) {
     let result = prepare_program(&input).and_then(|(ast, _)| {
         let ann = tinox_typecheck::annotations::process_annotations(&ast);
         validate_program_annotations(&ast, &ann, &input)?;
-        for warning in ann.deprecated_warnings { eprintln!("warning: {warning}"); }
+        for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
         Ok(())
     });
     diagnostics::finish_with_message(args, result, &format!("{input}: no errors"));
@@ -4079,7 +4079,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     drop(annotation_stage);
     validate_program_annotations(&ast, &ann_result, input_path)?;
     if progress {
-        for warning in &ann_result.deprecated_warnings {
+        for warning in ann_result.deprecated_warnings.iter().chain(&ann_result.shared_state_warnings) {
             eprintln!("warning: {}", warning);
         }
         for route in &ann_result.route_entries {
