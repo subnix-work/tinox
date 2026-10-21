@@ -579,11 +579,18 @@ pub struct CodeGen {
     /// declared return type (map: result element type, filter: i1). Taken by
     /// gen_lambda like the param hint.
     pending_lambda_ret_llvm: Option<String>,
+    /// Compilation target; drives the IR triple/datalayout and llc -march.
+    target: crate::target::Target,
 }
 
 impl CodeGen {
+    pub fn set_target(&mut self, target: crate::target::Target) {
+        self.target = target;
+    }
+
     pub fn new() -> Self {
         Self {
+            target: crate::target::Target::default(),
             ir: String::new(),
             lambda_ir: String::new(),
             strings: HashMap::new(),
@@ -1400,12 +1407,8 @@ impl CodeGen {
 
         writeln!(&mut self.ir, "; Module ID = \"tinox\"").unwrap();
         writeln!(&mut self.ir, "source_filename = \"tinox\"").unwrap();
-        writeln!(
-            &mut self.ir,
-            "target datalayout = \"e-m:e-i64:64-f80:128-n8:16:32:64-S128\""
-        )
-        .unwrap();
-        writeln!(&mut self.ir, "target triple = \"x86_64-unknown-linux-gnu\"").unwrap();
+        writeln!(&mut self.ir, "target datalayout = \"{}\"", self.target.datalayout()).unwrap();
+        writeln!(&mut self.ir, "target triple = \"{}\"", self.target.triple()).unwrap();
         writeln!(&mut self.ir).unwrap();
         // Global error slot for cross-function throw propagation:
         // throw without an enclosing try stores here and returns; statements
@@ -14089,7 +14092,7 @@ impl CodeGen {
     pub fn write_asm(&self, ir_path: &Path, asm_path: &Path) -> Result<(), Error> {
         let bc_path = self.run_opt(ir_path)?;
         let output = std::process::Command::new("llc")
-            .args(["-O3", "-march=x86-64", "-filetype=asm", "-o"])
+            .args(["-O3", format!("-march={}", self.target.llc_march()).as_str(), "-filetype=asm", "-o"])
             .arg(asm_path)
             .arg(&bc_path)
             .output()
@@ -14107,7 +14110,7 @@ impl CodeGen {
     pub fn write_obj(&self, ir_path: &Path, obj_path: &Path) -> Result<(), Error> {
         let bc_path = self.run_opt(ir_path)?;
         let output = std::process::Command::new("llc")
-            .args(["-O3", "-march=x86-64", "-filetype=obj", "-o"])
+            .args(["-O3", format!("-march={}", self.target.llc_march()).as_str(), "-filetype=obj", "-o"])
             .arg(obj_path)
             .arg(&bc_path)
             .output()
