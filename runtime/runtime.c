@@ -37,6 +37,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
+#include <sched.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <limits.h>
@@ -790,6 +791,209 @@ typedef struct {
     pthread_cond_t  cond;
 } TinoxChannel;
 
+// ---- Concurrency budgets (issue #302) ----
+// One validated set of limits per process, resolved lazily on first use:
+// an explicit TINOX_* environment override wins over the detected default,
+// and a malformed override is a hard startup failure (no silent fallback
+// to a default the operator did not ask for).
+//
+//   TINOX_CPUS                  effective CPU count (default: detected)
+//   TINOX_HTTP_WORKERS          HTTP/1 epoll worker threads (default: CPUs)
+//   TINOX_MAX_CONNECTIONS       open HTTP/1 connections, all workers (4096)
+//   TINOX_MAX_TASKS             concurrently running `spawn` threads (4096)
+//   TINOX_MAX_WS_CONNECTIONS    concurrently open WebSocket connections (1024)
+//
+// Detected CPUs = min(sched affinity/cpuset, cgroup CPU quota), so a
+// container started with `--cpus=1.5` or a `taskset` mask no longer sizes
+// its pools by the host's online core count.
+#define TINOX_MAX_CONNECTIONS_CEILING 4096 // EPOLL_MAX_CONNS slot table, see below
+
+typedef struct {
+    int64_t cpus;
+    const char* cpu_source;
+    int64_t http_workers;
+    int64_t max_connections;
+    int64_t max_tasks;
+    int64_t max_ws_connections;
+} TinoxLimits;
+
+static TinoxLimits g_limits;
+static pthread_once_t g_limits_once = PTHREAD_ONCE_INIT;
+static atomic_llong g_active_tasks, g_peak_tasks, g_rejected_tasks;
+static atomic_llong g_open_conns, g_peak_conns, g_rejected_conns;
+static atomic_llong g_active_ws, g_peak_ws, g_rejected_ws;
+
+static void tinox_atomic_max(atomic_llong* peak, long long v) {
+    long long cur = atomic_load(peak);
+    while (v > cur && !atomic_compare_exchange_weak(peak, &cur, v)) {}
+}
+
+// Reads a small text file into buf; returns 0 on success.
+static int tinox_read_small_file(const char* path, char* buf, size_t cap) {
+    FILE* f = fopen(path, "r");
+    if (!f) return -1;
+    size_t n = fread(buf, 1, cap - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    return 0;
+}
+
+// CPU quota of the enclosing cgroup as a whole number of CPUs (rounded
+// up, at least 1), or 0 when there is no quota. TINOX_CGROUP_ROOT only
+// exists so tests can point this at a fixture tree.
+static int64_t tinox_cgroup_cpu_quota(void) {
+    const char* root = getenv("TINOX_CGROUP_ROOT");
+    int fixture = root && *root;
+    if (!fixture) root = "/sys/fs/cgroup";
+    char path[1024], buf[256];
+    long long quota = 0, period = 0;
+
+    // cgroup v2: "<quota|max> <period>". The process may sit in a nested
+    // cgroup (systemd scope, k8s pod slice) whose parents carry the quota,
+    // so walk from the process's own cgroup up to the root keeping the
+    // tightest limit. Inside a container the cgroup namespace makes the
+    // own cgroup "/" already.
+    char rel[512] = "";
+    if (!fixture && tinox_read_small_file("/proc/self/cgroup", buf, sizeof(buf)) == 0) {
+        char* line = strstr(buf, "0::");
+        if (line) {
+            line += 3;
+            size_t n = strcspn(line, "\n");
+            if (n < sizeof(rel)) { memcpy(rel, line, n); rel[n] = '\0'; }
+        }
+    }
+    int64_t best = 0;
+    int found_v2 = 0;
+    for (;;) {
+        snprintf(path, sizeof(path), "%s%s/cpu.max", root, rel);
+        if (tinox_read_small_file(path, buf, sizeof(buf)) == 0) {
+            found_v2 = 1;
+            if (strncmp(buf, "max", 3) != 0 && sscanf(buf, "%lld %lld", &quota, &period) == 2
+                && quota > 0 && period > 0) {
+                int64_t cpus = (quota + period - 1) / period;
+                if (best == 0 || cpus < best) best = cpus;
+            }
+        }
+        char* slash = strrchr(rel, '/');
+        if (!slash) break;
+        *slash = '\0';
+    }
+    if (found_v2) return best;
+
+    // cgroup v1: separate quota (-1 = none) and period files
+    snprintf(path, sizeof(path), "%s/cpu/cpu.cfs_quota_us", root);
+    if (tinox_read_small_file(path, buf, sizeof(buf)) != 0) return 0;
+    quota = atoll(buf);
+    snprintf(path, sizeof(path), "%s/cpu/cpu.cfs_period_us", root);
+    if (tinox_read_small_file(path, buf, sizeof(buf)) != 0) return 0;
+    period = atoll(buf);
+    if (quota > 0 && period > 0) return (quota + period - 1) / period;
+    return 0;
+}
+
+static int64_t tinox_limit_env(const char* name, int64_t dflt, int64_t min, int64_t max) {
+    const char* v = getenv(name);
+    if (!v || !*v) return dflt;
+    char* end = NULL;
+    errno = 0;
+    long long n = strtoll(v, &end, 10);
+    if (errno != 0 || *end != '\0' || n < min || n > max) {
+        fprintf(stderr, "tinox: invalid %s=\"%s\" (expected an integer in %lld..%lld)\n",
+                name, v, (long long)min, (long long)max);
+        exit(1);
+    }
+    return (int64_t)n;
+}
+
+static void tinox_limits_init_once(void) {
+    int64_t cpus = 0;
+    const char* source = "online";
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) == 0 && CPU_COUNT(&set) > 0) {
+        cpus = CPU_COUNT(&set);
+        source = "affinity";
+    } else {
+        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        cpus = n > 0 ? n : 1;
+    }
+    int64_t quota = tinox_cgroup_cpu_quota();
+    if (quota > 0 && quota < cpus) {
+        cpus = quota;
+        source = "cgroup quota";
+    }
+    const char* ov = getenv("TINOX_CPUS");
+    if (ov && *ov) source = "TINOX_CPUS";
+    g_limits.cpus = tinox_limit_env("TINOX_CPUS", cpus, 1, 4096);
+    g_limits.cpu_source = source;
+    g_limits.http_workers = tinox_limit_env("TINOX_HTTP_WORKERS", g_limits.cpus, 1, 256);
+    g_limits.max_connections = tinox_limit_env("TINOX_MAX_CONNECTIONS", 4096, 1, TINOX_MAX_CONNECTIONS_CEILING);
+    g_limits.max_tasks = tinox_limit_env("TINOX_MAX_TASKS", 4096, 1, 1000000);
+    g_limits.max_ws_connections = tinox_limit_env("TINOX_MAX_WS_CONNECTIONS", 1024, 1, 1000000);
+}
+
+static const TinoxLimits* tinox_limits(void) {
+    pthread_once(&g_limits_once, tinox_limits_init_once);
+    return &g_limits;
+}
+
+// Reserves one slot in a counter bounded by `max`; 0 when exhausted.
+static int tinox_budget_acquire(atomic_llong* active, atomic_llong* peak, int64_t max) {
+    long long cur = atomic_load(active);
+    while (cur < max) {
+        if (atomic_compare_exchange_weak(active, &cur, cur + 1)) {
+            tinox_atomic_max(peak, cur + 1);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Effective limits, for the startup banner / inspection output.
+void tinox_print_limits(void) {
+    const TinoxLimits* l = tinox_limits();
+    printf("Limits: cpus=%lld (%s), http workers=%lld, max connections=%lld, max tasks=%lld, max websocket connections=%lld\n",
+           (long long)l->cpus, l->cpu_source, (long long)l->http_workers,
+           (long long)l->max_connections, (long long)l->max_tasks,
+           (long long)l->max_ws_connections);
+    fflush(stdout);
+}
+
+// Limits + saturation counters as Prometheus text (appended to /metrics).
+static int tinox_limits_metrics_text(char* buf, size_t cap) {
+    const TinoxLimits* l = tinox_limits();
+    return snprintf(buf, cap,
+        "# TYPE tinox_cpus gauge\ntinox_cpus %lld\n"
+        "# TYPE tinox_http_workers gauge\ntinox_http_workers %lld\n"
+        "# TYPE tinox_http_connections_limit gauge\ntinox_http_connections_limit %lld\n"
+        "# TYPE tinox_http_connections_open gauge\ntinox_http_connections_open %lld\n"
+        "# TYPE tinox_http_connections_peak gauge\ntinox_http_connections_peak %lld\n"
+        "# TYPE tinox_http_connections_rejected_total counter\ntinox_http_connections_rejected_total %lld\n"
+        "# TYPE tinox_tasks_limit gauge\ntinox_tasks_limit %lld\n"
+        "# TYPE tinox_tasks_active gauge\ntinox_tasks_active %lld\n"
+        "# TYPE tinox_tasks_peak gauge\ntinox_tasks_peak %lld\n"
+        "# TYPE tinox_tasks_rejected_total counter\ntinox_tasks_rejected_total %lld\n"
+        "# TYPE tinox_websocket_connections_limit gauge\ntinox_websocket_connections_limit %lld\n"
+        "# TYPE tinox_websocket_connections_active gauge\ntinox_websocket_connections_active %lld\n"
+        "# TYPE tinox_websocket_connections_peak gauge\ntinox_websocket_connections_peak %lld\n"
+        "# TYPE tinox_websocket_connections_rejected_total counter\ntinox_websocket_connections_rejected_total %lld\n",
+        (long long)l->cpus, (long long)l->http_workers,
+        (long long)l->max_connections, (long long)atomic_load(&g_open_conns),
+        (long long)atomic_load(&g_peak_conns), (long long)atomic_load(&g_rejected_conns),
+        (long long)l->max_tasks, (long long)atomic_load(&g_active_tasks),
+        (long long)atomic_load(&g_peak_tasks), (long long)atomic_load(&g_rejected_tasks),
+        (long long)l->max_ws_connections, (long long)atomic_load(&g_active_ws),
+        (long long)atomic_load(&g_peak_ws), (long long)atomic_load(&g_rejected_ws));
+}
+
+// WebSocket admission: the accept loop asks before handing a connection to
+// a worker thread, and releases when that worker finishes.
+int64_t tinox_ws_admit(void) {
+    if (tinox_budget_acquire(&g_active_ws, &g_peak_ws, tinox_limits()->max_ws_connections)) return 1;
+    atomic_fetch_add(&g_rejected_ws, 1);
+    return 0;
+}
+void tinox_ws_release(void) { atomic_fetch_sub(&g_active_ws, 1); }
+
 typedef struct {
     void* (*fn)(void*);
     void* args;
@@ -823,6 +1027,7 @@ static void* tinox_spawn_trampoline(void* raw) {
         }
     }
     tinox_gc_unregister_thread_roots();
+    if (task != NULL) atomic_fetch_sub(&g_active_tasks, 1);
     return ret;
 }
 
@@ -838,6 +1043,18 @@ void* tinox_task_spawn(void* (*fn)(void*), void* args) {
     task->has_error = 0;
     task->error_delivered = 0;
     task->error = 0;
+    // Admission control (#302): over the task budget the thread is never
+    // created. The handle comes back already failed, so `await` / the
+    // owning `scope` re-throw the rejection instead of the process
+    // growing threads without bound -- or silently dropping the work.
+    if (!tinox_budget_acquire(&g_active_tasks, &g_peak_tasks, tinox_limits()->max_tasks)) {
+        atomic_fetch_add(&g_rejected_tasks, 1);
+        free(t);
+        task->joined = 1;
+        task->has_error = 1;
+        task->error = (int64_t)(intptr_t)"task budget exhausted: too many concurrently running tasks (TINOX_MAX_TASKS)";
+        return task;
+    }
     int rc = pthread_create(&task->thread, NULL, tinox_spawn_trampoline, t);
     if (rc != 0) {
         // No silent garbage: a task that never started must not be
@@ -1686,8 +1903,7 @@ char* tinoxRealPath(const char* path) {
 }
 
 int64_t tinoxCpuCount(void) {
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int64_t)n : 1;
+    return tinox_limits()->cpus;
 }
 
 // Unlike printStderr, no trailing newline -- for in-place "\r" progress
@@ -6313,6 +6529,7 @@ static uint64_t epoll_now_ms(void) {
 static void epoll_slot_add(int fd, uint64_t now_ms) {
     int idx = fd % EPOLL_MAX_CONNS;
     if (g_epoll_slots[idx].fd < 0) g_epoll_nconns++;
+    else atomic_fetch_sub(&g_open_conns, 1); // slot collision: that fd is already counted
     g_epoll_slots[idx].fd = fd;
     g_epoll_slots[idx].last_ms = now_ms;
     g_epoll_slots[idx].served = 0;
@@ -6320,7 +6537,10 @@ static void epoll_slot_add(int fd, uint64_t now_ms) {
 
 static void epoll_slot_remove(int fd) {
     int idx = fd % EPOLL_MAX_CONNS;
-    if (g_epoll_slots[idx].fd >= 0) g_epoll_nconns--;
+    if (g_epoll_slots[idx].fd >= 0) {
+        g_epoll_nconns--;
+        atomic_fetch_sub(&g_open_conns, 1);
+    }
     g_epoll_slots[idx].fd = -1;
 }
 
@@ -6361,7 +6581,21 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
                 struct sockaddr_in client = {0};
                 socklen_t len = sizeof(client);
                 int cfd = accept(fd, (struct sockaddr*)&client, &len);
-                if (cfd >= 0) {
+                if (cfd >= 0 && !tinox_budget_acquire(&g_open_conns, &g_peak_conns, tinox_limits()->max_connections)) {
+                    // Over the connection budget (#302): answer with a
+                    // visible, distinguishable overload response instead of
+                    // queueing without bound or dropping silently.
+                    static const char overload[] =
+                        "HTTP/1.1 503 Service Unavailable\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Retry-After: 1\r\n"
+                        "Connection: close\r\n"
+                        "Content-Length: 51\r\n\r\n"
+                        "{\"error\":\"overloaded: connection budget exhausted\"}";
+                    atomic_fetch_add(&g_rejected_conns, 1);
+                    (void)!send(cfd, overload, sizeof(overload) - 1, MSG_NOSIGNAL | MSG_DONTWAIT);
+                    close(cfd);
+                } else if (cfd >= 0) {
                     int one = 1;
                     setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
                     struct timeval tv = { .tv_sec = 5 }; // zombie guard
@@ -6443,8 +6677,9 @@ void tinox_HttpServer_listen(int64_t* server) {
     int64_t port = srv->port;
     fprintf(stderr, "HttpServer listening on port %lld\n", (long long)port);
 
-    int ncpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
-    int nthreads = ncpus > 0 ? ncpus : 8; // one thread per CPU, each handles multiple conns via epoll
+    // One epoll thread per effective CPU (affinity/cgroup-aware) unless
+    // TINOX_HTTP_WORKERS overrides it; each handles many conns via epoll.
+    int nthreads = (int)tinox_limits()->http_workers;
 
     // Bug found while adding the dev-mode introspection server (the first
     // caller to ever run a SECOND HttpServer::listen() in one process):
@@ -7690,7 +7925,7 @@ char* tinox_metrics_prometheus(void) {
     pthread_mutex_lock(&_tinox_metrics_mu);
     // Upper bound per entry: histogram lines repeat a (up to 255-byte)
     // name 5 times plus ~200 bytes of fixed text -- comfortably under 2048.
-    size_t cap = (size_t)(_tinox_counter_n + _tinox_histogram_n + _tinox_gauge_n + 1) * 2048 + 64;
+    size_t cap = (size_t)(_tinox_counter_n + _tinox_histogram_n + _tinox_gauge_n + 1) * 2048 + 4096 + 64;
     char* buf = (char*)GC_malloc(cap);
     size_t pos = 0;
 
@@ -7723,6 +7958,7 @@ char* tinox_metrics_prometheus(void) {
             (long long)_tinox_gauges[i].value);
         tinox_metrics_append(&pos, cap, n);
     }
+    tinox_metrics_append(&pos, cap, tinox_limits_metrics_text(buf + pos, cap - pos));
     pthread_mutex_unlock(&_tinox_metrics_mu);
     return buf;
 }
