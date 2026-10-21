@@ -1804,3 +1804,33 @@ packages store `spawn` results that way), but a plain Int is not a
   Abort/join restoration is idempotent because parser-generated finally cleanup
   may follow abort. Genuine errors keep spawn-order precedence and suppressed
   errors remain visible; cancellation caused by sibling failure is secondary.
+
+
+## Shared Application State (issue #303)
+
+- Application/startup DI providers serialize construction and publication with
+  a process-wide recursive provider mutex. Nested, acyclic dependency creation
+  is safe; every caller receives the same initialized singleton. Defaults and
+  injection run before publication; generated providers do not invoke user
+  constructors. This does not protect subsequent mutations.
+- `@Synchronized` is supported on non-generic application/startup classes without
+  inheritance and their non-generic instance methods. A class annotation covers
+  all instance methods, excluding static methods. One recursive monitor is shared
+  per declaring class, even across manually-created instances; method annotations
+  share that same monitor. Wrapper-level release runs after body cleanup and
+  transaction completion, including return, throw and cooperative cancellation.
+- Waiting for a monitor is a cancellation point; acquisition failure skips the
+  body. Reentrancy is per POSIX thread, not inherited by spawned children. Avoid
+  awaiting a child that needs a held monitor, and order different class monitors
+  consistently. There is no deadlock-freedom or universal race-safety claim.
+- Keep mutable state private and protect reads too. Escaped mutable results,
+  direct field access, static methods and unannotated methods bypass locking.
+  Dev UI snapshots participate in the class monitor where present.
+- Shared-state warnings flag exposed/unguarded mutable singleton fields and
+  request-scoped dependencies captured directly or transitively by a singleton.
+  Prefer request-scoped controllers injecting application-scoped services.
+  Request-field refresh on singleton controllers does not provide request
+  isolation; warnings intentionally do not claim full race analysis.
+- For explicit critical sections, use semaphore-module locks with `defer`
+  immediately after successful acquisition. Existing low-level native lock
+  operations remain blocking and are not implicit cancellation points.

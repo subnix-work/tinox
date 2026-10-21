@@ -401,7 +401,7 @@ impl CodeGen {
         let mut notes = vec![
             "Listener binding, network connection success and readiness are runtime-dependent; inspection starts nothing.".into(),
             "Spawn order does not establish execution order between threads or readiness before Main.".into(),
-            "Application and startup singleton getters do not add synchronization; shared mutable state needs explicit coordination (#303).".into(),
+            "Application and startup singleton getters serialize initialization/publication; shared mutable state needs @Synchronized or explicit coordination. Request-scoped dependencies captured by singletons are shared and unsafe for per-request state.".into(),
             "WebSocket/UI instances are allocated per connection and AMQP instances per consumer connection; those paths do not use DI providers.".into(),
             "No generated coordinated shutdown or cancellation protocol is promised by this bootstrap (#304).".into(),
         ];
