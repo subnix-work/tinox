@@ -2,6 +2,25 @@
 
 All notable changes to Tinox are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **`tinox docker --source-build`** (#309): compiles the project inside a
+  pinned builder image (`docker/builder/Dockerfile`, tagged with the compiler
+  version) in a two-stage build, so the binary is linked against the runtime
+  base's glibc instead of the developer machine's. Minimal allowlisted build
+  context, builder/base pinned by registry digest when resolvable, and a
+  `build-info.json` + OCI labels recording compiler version, target, image
+  digests and source files. See `docs/docker.md`.
+
+### Changed
+
+- **`tinox docker` images now run as a non-root user** (default UID 10001,
+  writable `/app/data`, binary root-owned). `[docker] uid = 0` opts back into
+  root explicitly; the build verifies the image's effective UID. New
+  `[docker]` keys: `uid`, `builder`, `include`.
+
 ## [2.4.0] - 2026-09-21
 
 ### Breaking
