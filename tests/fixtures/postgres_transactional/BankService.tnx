@@ -40,4 +40,14 @@ class BankService
         DB::of(Account).save(acct);
         return acct.balance;
     }
+    // Cancellation must roll back before the owning scope finishes joining.
+    @Transactional
+    fnc cancelledChange(accountId: Int64, ready: Int64) -> Nothing
+    {
+        const acct: Account = DB::of(Account).filter(a => a.id == accountId).first();
+        acct.balance = acct.balance + 10000;
+        DB::of(Account).save(acct);
+        send ready -> 1;
+        sleep(10000);
+    }
 }

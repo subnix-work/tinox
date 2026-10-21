@@ -1779,7 +1779,28 @@ packages store `spawn` results that way), but a plain Int is not a
   Static-call argument types are not type-checked at all (pre-existing,
   e.g. `Main::take("s")` for a `Channel<Int64>` parameter passes), so
   `Task<T>` parameter misuse is only caught for assignments.
-- **Not done yet (phases 4-5 of #301):** deadlines/cancellation tokens and
-  service-shutdown integration. A joinable task that is never awaited and
-  not in a scope still loses its error silently (`spawn work();` as a bare
-  statement).
+- **Deadlines/cancellation and shutdown (phases 4-5):** `taskCancel(t)`
+  cancels a typed task and descendants; `taskSetDeadline(ms)` sets the current
+  scope's monotonic deadline; `taskCheckCancellation()` is a CPU checkpoint.
+  `sleep`/`sleep_ms`, blocked `recv`, `await`, and `taskWaitReadable(fd)` are
+  cancellation points. Cleanup uses ordinary throw/defer/finally/transaction
+  unwinding, never pthread cancellation. Native blocking operations need their
+  own stop/close handling; ignored cancellation fails visibly after five seconds
+  during joining. Service control code can call `taskRequestShutdown()`; signal,
+  readiness and listener orchestration belong to #304.
+- **Ownership:** lexical scopes still register only lexical spawns. Other tasks
+  are owned by the spawning thread's implicit frame, joined when that frame
+  finishes, and cancelled/joined at process exit. Tokens inherit the currently
+  active lexical scope even across called methods. `taskDetach(t)` explicitly
+  removes owner/cancellation ancestry (process shutdown still applies); failures
+  in detached tasks are fatal. Handles are registry IDs, not unchecked addresses,
+  and expire at owner exit. Repeat awaits are cached while the owner lives.
+  Integer handle storage remains a deprecated compatibility path for published
+  packages; new task-control APIs require `Task<T>`.
+- **Runtime details:** task completion uses a mutex/condition variable; only a
+  completed pthread is joined, so cancellation polling never blocks holding a
+  join lock. Cyclic awaits fail visibly. Active registry entries and TLS scope /
+  current-task pointers are GC roots; frame/scope exit retires registry entries.
+  Abort/join restoration is idempotent because parser-generated finally cleanup
+  may follow abort. Genuine errors keep spawn-order precedence and suppressed
+  errors remain visible; cancellation caused by sibling failure is secondary.

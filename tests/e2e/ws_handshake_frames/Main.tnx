@@ -26,15 +26,16 @@ import tinox.core.socket;
 class Main
 {
     fnc main() -> Int32 {
-        const srv = WsServer::listen(47614);
+        const srv = WsServer::listen(0);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
+        const port = httpServerBoundPort(srv);
 
         // --- Handshake (client sends first, then accept: single-threaded) ---
         const cfd = socketCreateTcp();
-        socketConnect(cfd, "127.0.0.1", 47614);
+        socketConnect(cfd, "127.0.0.1", port);
         const cconn = httpConnFromFd(cfd);
         httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
         const conn = WsServer::accept(srv);
@@ -194,7 +195,7 @@ class Main
 
         // --- Handshake rejection: wrong version -> accept == -1 ---
         const cfd2 = socketCreateTcp();
-        socketConnect(cfd2, "127.0.0.1", 47614);
+        socketConnect(cfd2, "127.0.0.1", port);
         const cconn2 = httpConnFromFd(cfd2);
         httpConnSendRaw(cconn2, "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 8\r\n\r\n");
         const rejected = WsServer::accept(srv);

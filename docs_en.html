@@ -1020,6 +1020,58 @@
       a linked-list queue with mutex and condition variable.
     </p>
 
+
+    <h4>Task lifetime, deadlines and cancellation</h4>
+    <p><code>scope { ... }</code> owns its lexical spawns. A plain spawn belongs to
+      its spawning thread's lifetime; that thread joins its remaining children
+      before finishing. On process exit, remaining joinable children are cancelled
+      and joined. Failures are rethrown by <code>await</code>, or at scope exit if
+      unobserved; additional failures are reported on stderr. A body's own error
+      wins. Repeated awaits cache the same result or error while the owner lives.
+      After the owning scope closes, handles expire and further use fails visibly.
+      Keep tasks inside their owner; return the awaited value instead of a task.</p>
+    <pre><code>try {
+    scope {
+        taskSetDeadline(250); // Duration from now, in monotonic milliseconds.
+        const task: Task&lt;String&gt; = spawn Main::load();
+        println(await task);
+    }
+} catch (e: String) { println(e); }</code></pre>
+    <table>
+      <thead><tr><th>Operation</th><th>Contract</th></tr></thead>
+      <tbody>
+        <tr><td><code>taskCancel(task: Task&lt;T&gt;)</code></td><td>Request cooperative cancellation of a task and its descendants.</td></tr>
+        <tr><td><code>taskSetDeadline(ms: Int64)</code></td><td>Set the current scope's deadline. Ancestor deadlines still apply; 0 expires immediately. Negative durations fail visibly.</td></tr>
+        <tr><td><code>taskCheckCancellation()</code></td><td>Checkpoint for CPU loops. Throws <code>Task cancelled</code>, <code>Task deadline exceeded</code>, or <code>Task service shutdown requested</code>.</td></tr>
+        <tr><td><code>taskWaitReadable(fd: Int64)</code></td><td>Cancellable readiness wait for a real file descriptor; use before a single-reader accept/read.</td></tr>
+        <tr><td><code>taskDetach(task: Task&lt;T&gt;)</code></td><td>Explicit fire-and-forget. Only the owning thread may detach an unjoined task. It loses inherited scope cancellation/deadlines, cannot be awaited, and any uncaught failure terminates the process visibly.</td></tr>
+        <tr><td><code>taskRequestShutdown()</code></td><td>Process-wide cooperative stop request for service lifecycle/control code. Bootstrap awaits stop waiting; shutdown joins outstanding joinable tasks and preserves genuine failures.</td></tr>
+      </tbody>
+    </table>
+    <p>Cancellation also wakes <code>sleep</code>/<code>sleep_ms</code>, blocked
+      channel <code>recv</code>, and <code>await</code> (check latency about 10 ms,
+      excluding scheduling). Tokens propagate to child tasks and nested scopes.
+      Scope failure cancels unfinished siblings; body errors remain primary.
+      An explicitly cancelled task still reports cancellation unless awaited and
+      caught. Expected cancellation during process shutdown is successful.</p>
+    <p>Cancellation uses normal exception unwinding: <code>finally</code> and
+      <code>defer</code> run in their usual order; a child's transaction rolls back
+      before its join completes. Transactions are thread-local and never inherited.
+      Put a scope inside a transactional method to join before commit, and put
+      parent resource cleanup outside the scope so children finish first.</p>
+    <p>No asynchronous thread termination is used. Native blocking I/O, database
+      calls and CPU loops without checkpoints are not automatically interruptible.
+      Use resource-specific stop/close operations or <code>taskWaitReadable</code>;
+      after five seconds of ignored cancellation during scope shutdown, the runtime
+      fails visibly instead of hanging silently. Explicit await of a cancelled task and
+      a service shutdown request have the same five-second watchdog. Readiness and signal/listener
+      orchestration remain the service lifecycle's responsibility (issue #304).
+      Detached workers are explicitly outside structured joining.</p>
+    <p>Legacy <code>Int64</code> handle storage/await remains temporarily compatible
+      for published packages. New code and task-control operations require
+      <code>Task&lt;T&gt;</code>. Invalid/expired handles and cyclic awaits fail with a
+      diagnostic; integer handles are deprecated.</p>
+
     <h3>HTTP Server (Low Level)</h3>
     <p>
       The HTTP server in the runtime uses:
