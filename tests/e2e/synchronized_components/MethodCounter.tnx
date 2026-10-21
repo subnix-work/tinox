@@ -1,0 +1,15 @@
+@Startup
+class MethodCounter {
+    private var value: Int64 = 0;
+    fnc new() -> MethodCounter { return MethodCounter { value: 0 }; }
+    @Synchronized
+    fn increment() -> Int64 { this.value = this.value + 1; return this.read(); }
+    @Synchronized
+    fn read() -> Int64 { return this.value; }
+    @Synchronized
+    fn text() -> String { return "method lock"; }
+    @Synchronized
+    fn flag() -> Bool { return true; }
+    @Synchronized
+    fn fraction() -> Float64 { return 1.5; }
+}

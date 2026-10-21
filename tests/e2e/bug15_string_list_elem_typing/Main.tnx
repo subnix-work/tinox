@@ -12,10 +12,10 @@ class Main
 
 
     fnc main() -> Int32 {
-        let lines = splitLines("one|two|three");
+        const lines = splitLines("one|two|three");
         println(lines.len());
         println(lines[2].len());
-        let h = bug15_string_list_elem_typing { rawLines: splitLines("abcde|x") };
+        const h = bug15_string_list_elem_typing { rawLines: splitLines("abcde|x") };
         println(h.firstLen());
         return 0;
     }

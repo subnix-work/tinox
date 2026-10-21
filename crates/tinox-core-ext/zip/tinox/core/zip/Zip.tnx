@@ -27,7 +27,7 @@ namespace tinox.core.zip
         fn listEntries(path: String) -> List<ZipEntry>
         {
             var entries: List<ZipEntry> = [];
-            let count: Int64 = zipEntryCount(path);
+            const count: Int64 = zipEntryCount(path);
             var i: Int64 = 0;
             while i < count
             {

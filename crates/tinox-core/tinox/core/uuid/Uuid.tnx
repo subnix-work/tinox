@@ -19,8 +19,8 @@ namespace tinox.core.uuid
 
         fn byteToHex(b: Int64) -> String
         {
-            let hi: Int64 = (b >> 4) & 15;
-            let lo: Int64 = b & 15;
+            const hi: Int64 = (b >> 4) & 15;
+            const lo: Int64 = b & 15;
             return Uuid::nibbleToHex(hi) + Uuid::nibbleToHex(lo);
         }
 
@@ -65,7 +65,7 @@ namespace tinox.core.uuid
             {
                 return false;
             }
-            let pattern: String = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+            const pattern: String = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
             return regexIsMatch(pattern, s);
         }
     }

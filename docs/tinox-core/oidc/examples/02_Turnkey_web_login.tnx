@@ -5,7 +5,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let client: OidcClient = OidcClient::new(
+        const client: OidcClient = OidcClient::new(
             "https://accounts.google.com",
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://oauth2.googleapis.com/token",
@@ -14,9 +14,9 @@ class Main
             "my-client-secret",
             "https://myapp.example.com/callback"
         );
-        let webApp: OidcWebApp = OidcWebApp::new(client, "a-long-random-cookie-sealing-secret");
+        const webApp: OidcWebApp = OidcWebApp::new(client, "a-long-random-cookie-sealing-secret");
 
-        let server: HttpServer = HttpServer::new(8080);
+        const server: HttpServer = HttpServer::new(8080);
         webApp.install(server); // registers /login and /callback
 
         server.get("/", ctx => {
@@ -24,7 +24,7 @@ class Main
             {
                 return; // already redirected to /login
             }
-            let user: Map<String, JsonValue> = webApp.currentUser(ctx);
+            const user: Map<String, JsonValue> = webApp.currentUser(ctx);
             ctx.response.text("Welcome, " + user["email"].getString());
         });
 

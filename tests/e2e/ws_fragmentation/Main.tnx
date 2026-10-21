@@ -15,18 +15,18 @@ import tinox.core.socket;
 class Main
 {
     fnc main() -> Int32 {
-        let srv = WsServer::listen(47632);
+        const srv = WsServer::listen(47632);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
 
-        let cfd = socketCreateTcp();
+        const cfd = socketCreateTcp();
         socketConnect(cfd, "127.0.0.1", 47632);
-        let cconn = httpConnFromFd(cfd);
+        const cconn = httpConnFromFd(cfd);
         httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
-        let conn = WsServer::accept(srv);
-        let resp = httpConnReadRequest(cconn);
+        const conn = WsServer::accept(srv);
+        const resp = httpConnReadRequest(cconn);
         if (resp.contains("101")) {
             println("ok-accept");
         }
@@ -38,7 +38,7 @@ class Main
         httpConnWriteBytes(cconn, [0, 130, 2, 2, 2, 2, 110, 110]);
         // Final continuation: FIN=1, opcode=0, masked "o!" with mask [3,3,3,3]
         httpConnWriteBytes(cconn, [128, 130, 3, 3, 3, 3, 108, 34]);
-        let f1 = Ws::readMessage(conn);
+        const f1 = Ws::readMessage(conn);
         println(f1.opcode.toString());
         println(Ws::text(f1));
 
@@ -49,8 +49,8 @@ class Main
         httpConnWriteBytes(cconn, [137, 128, 0, 0, 0, 0]);
         // Final continuation: FIN=1, opcode=0, masked [8] with mask [0,0,0,0]
         httpConnWriteBytes(cconn, [128, 129, 0, 0, 0, 0, 8]);
-        let f2 = Ws::readMessage(conn);
-        let pong = httpConnReadN(cconn, 2);
+        const f2 = Ws::readMessage(conn);
+        const pong = httpConnReadN(cconn, 2);
         if (f2.opcode == 2) {
             if (f2.payload.len() == 2) {
                 if (f2.payload[0] == 9) {
@@ -68,8 +68,8 @@ class Main
         // --- A bare continuation frame with no preceding start frame is a
         //     protocol error: Close(1002) + readMessage returns opcode -2 ---
         httpConnWriteBytes(cconn, [128, 128, 0, 0, 0, 0]);
-        let f3 = Ws::readMessage(conn);
-        let closeFrame1 = httpConnReadN(cconn, 4);
+        const f3 = Ws::readMessage(conn);
+        const closeFrame1 = httpConnReadN(cconn, 4);
         if (f3.opcode == -2) {
             if (closeFrame1[0] == 136) {
                 if (closeFrame1[2] == 3) {
@@ -84,18 +84,18 @@ class Main
 
         // --- A new Text frame arriving mid-fragmentation (before the previous
         //     message's final continuation) is also a protocol error ---
-        let cfd2 = socketCreateTcp();
+        const cfd2 = socketCreateTcp();
         socketConnect(cfd2, "127.0.0.1", 47632);
-        let cconn2 = httpConnFromFd(cfd2);
+        const cconn2 = httpConnFromFd(cfd2);
         httpConnSendRaw(cconn2, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
-        let conn2 = WsServer::accept(srv);
+        const conn2 = WsServer::accept(srv);
         httpConnReadRequest(cconn2);
         // Start frame: FIN=0, opcode=1 (text)
         httpConnWriteBytes(cconn2, [1, 129, 0, 0, 0, 0, 65]);
         // Another start frame instead of a continuation: FIN=0, opcode=1
         httpConnWriteBytes(cconn2, [1, 129, 0, 0, 0, 0, 66]);
-        let f4 = Ws::readMessage(conn2);
-        let closeFrame2 = httpConnReadN(cconn2, 4);
+        const f4 = Ws::readMessage(conn2);
+        const closeFrame2 = httpConnReadN(cconn2, 4);
         if (f4.opcode == -2) {
             if (closeFrame2[0] == 136) {
                 if (closeFrame2[2] == 3) {

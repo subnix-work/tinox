@@ -4,7 +4,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let asm: Assembler = Assembler::new();
+        const asm: Assembler = Assembler::new();
 
         // push 1, push 2, add, halt
         Assembler::emit(asm, Ops::Push());
@@ -14,7 +14,7 @@ class Main
         Assembler::emit(asm, Ops::Add());
         Assembler::emit(asm, Ops::Halt());
 
-        let bytecode: List<Int64> = Assembler::resolveLabels(asm);
+        const bytecode: List<Int64> = Assembler::resolveLabels(asm);
         println("bytecode length: " + bytecode.len().toString());
         return 0;
     }

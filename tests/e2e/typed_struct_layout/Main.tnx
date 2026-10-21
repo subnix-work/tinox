@@ -21,7 +21,7 @@ import Outer;
 class Main
 {
     fnc main() -> Int32 {
-        let o: Outer = Outer::make();
+        const o: Outer = Outer::make();
         println((o.fx + o.fy).toString());   // 7.5 — float fields (double slot)
         println(o.name);                      // hallo — string field (ptr slot)
         println(o.inner.value.toString());    // 42 — object field -> int field

@@ -5,9 +5,9 @@ class Main
 {
     fnc main() -> Int32
     {
-        let a: Int64 = 0xFF;
-        let b: Int64 = a & 0x0F;
-        let c: Int64 = 1 << 8;
+        const a: Int64 = 0xFF;
+        const b: Int64 = a & 0x0F;
+        const c: Int64 = 1 << 8;
         println(b);
         println(c);
         return 0;
