@@ -44,7 +44,9 @@ class Main
 
 
     fnc main() -> Int32 {
-        spawn runServer();
+        // This fixture intentionally ends with the TLS server still listening.
+        const serverTask = spawn runServer();
+        taskDetach(serverTask);
 
         // --- Positive path: verify=false accepts the self-signed test cert ---
         const fd: Int64 = dialRetry(47700);

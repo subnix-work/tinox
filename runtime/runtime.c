@@ -756,39 +756,278 @@ int64_t* tinox_array_remove_at(int64_t* h, int64_t idx) {
 
 // ---- Async runtime ----
 
-// A joinable task (issue #301). The struct lives on the GC heap (malloc is
-// macro-redirected to GC_malloc above) and is intentionally NOT freed by
-// tinox_task_await: the first await joins the thread and caches the
-// result, so a repeated `await t` deterministically returns the same
-// value instead of joining a freed/dangling handle. The mutex makes
-// concurrent awaits from several threads safe (one joins, the rest
-// observe the cached result).
+// Structured tasks (#301). Handles are monotonically allocated IDs, never
+// unchecked addresses. The active registry roots task data for the GC and
+// rejects forged, detached, or expired handles without dereferencing them.
 extern __thread int64_t __tinox_err;
-
-typedef struct {
+typedef struct TinoxTask TinoxTask;
+typedef struct TinoxTaskScope TinoxTaskScope;
+struct TinoxTaskScope {
+    _Atomic(TinoxTaskScope*) parent;
+    atomic_bool cancelled;
+    _Atomic int64_t deadline;
+    int closed;
+    TinoxTask* children; // modified only by the owning thread
+    TinoxTask* children_tail;
+};
+struct TinoxTask {
+    uintptr_t id;
     pthread_t thread;
+    pthread_t creator_thread;
     pthread_mutex_t mu;
-    int joined;
+    pthread_cond_t cond;
+    int done, joined, observed, detached;
+    int budgeted; // holds a slot of the TINOX_MAX_TASKS budget (#302)
     void* retval;
-    // Error a `throw` left in the child thread's own (thread-local) error
-    // slot when the task body returned. Delivered to whoever awaits the
-    // task / to the owning scope; `error_delivered` makes sure one failure
-    // is surfaced exactly once (see tinox_task_await / __scope_join).
-    int has_error;
-    int error_delivered;
     int64_t error;
-} TinoxTask;
+    TinoxTaskScope* scope;
+    TinoxTaskScope* owner;
+    TinoxTask* sibling;
+    TinoxTask* previous;
+    TinoxTask* registry_next;
+    TinoxTask* waiting_on; // protected by task_registry_mu
+};
+static __thread TinoxTaskScope* task_scope;
+static __thread TinoxTaskScope* task_frame_scope;
+static __thread TinoxTask* current_task;
+static pthread_mutex_t task_registry_mu = PTHREAD_MUTEX_INITIALIZER;
+// Bucket heads are also conservative GC roots for all active tasks.
+#define TINOX_TASK_BUCKETS 1024
+static TinoxTask* task_registry[TINOX_TASK_BUCKETS];
+static uintptr_t task_next_id = 1;
+static atomic_bool task_shutdown_requested;
+static atomic_bool task_shutdown_complete;
+static const char task_cancelled_error[] = "Task cancelled";
+static const char task_deadline_error[] = "Task deadline exceeded";
+static const char task_shutdown_error[] = "Task service shutdown requested";
+
+
+static void task_fatal(const char* message) {
+    fprintf(stderr, "tinox: %s\n", message);
+    exit(1);
+}
+static void task_pthread_check(int rc) {
+    if (rc) {
+        fprintf(stderr, "tinox: task pthread operation failed: %s\n", strerror(rc));
+        exit(1);
+    }
+}
+static void* task_shutdown_watchdog(void* unused) {
+    (void)unused;
+    struct timespec remaining = { 5, 0 };
+    while (nanosleep(&remaining, &remaining) < 0 && errno == EINTR) {}
+    if (!atomic_load(&task_shutdown_complete))
+        task_fatal("service shutdown request ignored for 5 seconds; check cancellation checkpoints and blocking operations");
+    return NULL;
+}
+void taskRequestShutdown(void) {
+    if (atomic_exchange(&task_shutdown_requested, true)) return;
+    // The owner itself may be stuck outside any cancellation point. A bounded
+    // process watchdog makes that failure visible without terminating a thread
+    // asynchronously or releasing another thread's resources.
+    pthread_t watchdog;
+    task_pthread_check(pthread_create(&watchdog, NULL, task_shutdown_watchdog, NULL));
+    task_pthread_check(pthread_detach(watchdog));
+}
+static void task_cond_init(pthread_cond_t* cond) {
+    pthread_condattr_t attr;
+    task_pthread_check(pthread_condattr_init(&attr));
+    task_pthread_check(pthread_condattr_setclock(&attr, CLOCK_MONOTONIC));
+    task_pthread_check(pthread_cond_init(cond, &attr));
+    task_pthread_check(pthread_condattr_destroy(&attr));
+}
+static int64_t task_clock_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+static TinoxTaskScope* task_new_scope(TinoxTaskScope* parent) {
+    TinoxTaskScope* scope = calloc(1, sizeof(*scope));
+    atomic_init(&scope->parent, parent);
+    atomic_init(&scope->cancelled, false);
+    atomic_init(&scope->deadline, 0);
+    return scope;
+}
+static TinoxTaskScope* task_ensure_scope(void) {
+    if (!task_scope) task_frame_scope = task_scope = task_new_scope(NULL);
+    return task_scope;
+}
+static const char* task_cancellation(TinoxTaskScope* scope) {
+    if (atomic_load(&task_shutdown_requested)) return task_shutdown_error;
+    for (; scope; scope = atomic_load(&scope->parent)) {
+        if (atomic_load(&scope->cancelled)) return task_cancelled_error;
+        int64_t deadline = atomic_load(&scope->deadline);
+        if (deadline && task_clock_ms() >= deadline) return task_deadline_error;
+    }
+    return NULL;
+}
+void taskCheckCancellation(void) {
+    const char* error = task_cancellation(task_scope);
+    if (error && !__tinox_err) __tinox_err = (int64_t)(intptr_t)error;
+}
+void taskSetDeadline(int64_t milliseconds) {
+    int64_t now_ms = task_clock_ms();
+    if (milliseconds < 0 || milliseconds > INT64_MAX - now_ms)
+        task_fatal("taskSetDeadline requires a nonnegative duration in milliseconds");
+    atomic_store(&task_ensure_scope()->deadline, now_ms + milliseconds);
+    taskCheckCancellation();
+}
+void taskWaitReadable(int64_t fd) {
+    if (fd < 0 || fd > INT_MAX) task_fatal("taskWaitReadable requires a valid file descriptor");
+    struct pollfd pfd = { .fd = (int)fd, .events = POLLIN };
+    while (1) {
+        taskCheckCancellation();
+        if (__tinox_err) return;
+        int rc = poll(&pfd, 1, 10);
+        if (rc < 0 && errno == EINTR) continue;
+        if (rc < 0 || (pfd.revents & POLLNVAL)) {
+            if (!__tinox_err) __tinox_err = (int64_t)(intptr_t)"Task I/O wait failed";
+            return;
+        }
+        if (rc > 0) return;
+    }
+}
+static void taskScopeEnter(void) {
+    task_scope = task_new_scope(task_ensure_scope());
+}
+static TinoxTask* task_lookup(uintptr_t id) {
+    pthread_mutex_lock(&task_registry_mu);
+    TinoxTask* task = task_registry[id % TINOX_TASK_BUCKETS];
+    while (task && task->id != id) task = task->registry_next;
+    pthread_mutex_unlock(&task_registry_mu);
+    if (!task) task_fatal("invalid or expired task handle (integer handles are deprecated; use Task<T>)");
+    return task;
+}
+void taskCancel(int64_t handle) {
+    TinoxTask* task = task_lookup((uintptr_t)handle);
+    atomic_store(&task->scope->cancelled, true);
+}
+static void task_unregister(TinoxTask* task) {
+    pthread_mutex_lock(&task_registry_mu);
+    TinoxTask** link = &task_registry[task->id % TINOX_TASK_BUCKETS];
+    while (*link && *link != task) link = &(*link)->registry_next;
+    if (*link) *link = task->registry_next;
+    task->registry_next = NULL;
+    pthread_mutex_unlock(&task_registry_mu);
+}
+// Called with task->mu locked. Short timed waits allow cancellation without
+// asynchronous termination, signals, or releasing resources from another thread.
+static void task_wait_tick(TinoxTask* task) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    ts.tv_nsec += 10000000;
+    if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+    int rc = pthread_cond_timedwait(&task->cond, &task->mu, &ts);
+    if (rc != ETIMEDOUT) task_pthread_check(rc);
+}
+static void task_join_locked(TinoxTask* task) {
+    if (!task->joined) {
+        task_pthread_check(pthread_join(task->thread, NULL));
+        task->joined = 1;
+    }
+}
+static int task_is_cancellation(int64_t error) {
+    return error == (int64_t)(intptr_t)task_cancelled_error
+        || error == (int64_t)(intptr_t)task_deadline_error
+        || error == (int64_t)(intptr_t)task_shutdown_error;
+}
+static void task_close_scope(TinoxTaskScope* scope, int suppress_all, int shutdown) {
+    if (scope->closed) return;
+    int64_t original_error = __tinox_err;
+    if (original_error || suppress_all || shutdown) atomic_store(&scope->cancelled, true);
+    int64_t cancel_started = 0;
+    for (TinoxTask* task = scope->children; task; task = task->sibling) {
+        pthread_mutex_lock(&task->mu);
+        while (!task->done) {
+            // Notice failures out of spawn order, but deliver them below in
+            // spawn order. Otherwise a blocked earlier sibling can hide them.
+            for (TinoxTask* other = scope->children; other; other = other->sibling) {
+                if (other == task || pthread_mutex_trylock(&other->mu) != 0) continue;
+                if (other->done && !other->observed && other->error && !task_is_cancellation(other->error))
+                    atomic_store(&scope->cancelled, true);
+                pthread_mutex_unlock(&other->mu);
+            }
+            if (task_cancellation(scope)) {
+                if (!cancel_started) cancel_started = task_clock_ms();
+                if (task_clock_ms() - cancel_started >= 5000)
+                    task_fatal("task ignored cooperative cancellation for 5 seconds during scope shutdown");
+            }
+            task_wait_tick(task);
+        }
+        task_join_locked(task);
+        pthread_mutex_unlock(&task->mu);
+    }
+    int64_t first_error = 0;
+    // A failure causing sibling cancellation takes precedence over that
+    // cancellation. An explicit cancel/deadline is still observable on its own.
+    for (int cancellation_pass = 0; cancellation_pass < 2; cancellation_pass++) {
+        for (TinoxTask* task = scope->children; task; task = task->sibling) {
+            pthread_mutex_lock(&task->mu);
+            if (!task->observed && task->error && task_is_cancellation(task->error) == cancellation_pass) {
+                task->observed = 1;
+                if (!original_error && !suppress_all && !first_error && !(shutdown && cancellation_pass))
+                    first_error = task->error;
+                else if (!cancellation_pass)
+                    fprintf(stderr, "tinox: task error suppressed: %s\n", (char*)(intptr_t)task->error);
+            }
+            pthread_mutex_unlock(&task->mu);
+        }
+    }
+    for (TinoxTask* task = scope->children; task; task = task->sibling) task_unregister(task);
+    scope->children = scope->children_tail = NULL;
+    scope->closed = 1;
+    __tinox_err = original_error ? original_error : first_error;
+}
+int64_t __scope_new(void) {
+    taskScopeEnter();
+    return (int64_t)(intptr_t)task_scope;
+}
+static void task_remove_owner(TinoxTask* task) {
+    TinoxTaskScope* owner = task->owner;
+    if (task->previous) task->previous->sibling = task->sibling;
+    else owner->children = task->sibling;
+    if (task->sibling) task->sibling->previous = task->previous;
+    else owner->children_tail = task->previous;
+    task->previous = task->sibling = NULL;
+}
+static void task_add_owner(TinoxTask* task, TinoxTaskScope* owner) {
+    task->owner = owner;
+    task->previous = owner->children_tail;
+    if (owner->children_tail) owner->children_tail->sibling = task;
+    else owner->children = task;
+    owner->children_tail = task;
+}
+void __scope_add(int64_t handle, int64_t task_handle) {
+    TinoxTaskScope* scope = (TinoxTaskScope*)(intptr_t)handle;
+    TinoxTask* task = task_lookup((uintptr_t)task_handle);
+    if (scope != task_scope || scope->closed || task->owner != task_frame_scope)
+        task_fatal("invalid task scope registration");
+    // Registration stays lexical: spawns in called methods or closures remain
+    // owned by the thread frame, exactly as the parser's scope stack specifies.
+    task_remove_owner(task);
+    task_add_owner(task, scope);
+}
+void __scope_abort(int64_t handle) {
+    TinoxTaskScope* scope = (TinoxTaskScope*)(intptr_t)handle;
+    task_close_scope(scope, 1, 0);
+    if (task_scope == scope) task_scope = atomic_load(&scope->parent);
+}
+void __scope_join(int64_t handle) {
+    TinoxTaskScope* scope = (TinoxTaskScope*)(intptr_t)handle;
+    task_close_scope(scope, 0, 0);
+    // A rethrow may bypass the generated finally; abort restores it too.
+    if (task_scope == scope) task_scope = atomic_load(&scope->parent);
+}
 
 typedef struct TinoxChannelNode {
     int64_t value;
     struct TinoxChannelNode* next;
 } TinoxChannelNode;
-
 typedef struct {
     TinoxChannelNode* head;
     TinoxChannelNode* tail;
     pthread_mutex_t mutex;
-    pthread_cond_t  cond;
+    pthread_cond_t cond;
 } TinoxChannel;
 
 // ---- Concurrency budgets (issue #302) ----
@@ -1101,195 +1340,143 @@ void tinox_ws_release(void) { tinox_budget_release(&g_active_ws); }
 typedef struct {
     void* (*fn)(void*);
     void* args;
-    TinoxTask* task;  // NULL for detached tasks (nobody can await them)
+    TinoxTask* task;
 } TinoxSpawnTrampolineArgs;
 
-// Registers this new thread's GC TLS roots (Bug 140) before running the
-// actual spawned closure body -- `fn` is compiler-generated code with no
-// opportunity to call tinox_gc_register_thread_roots() itself.
 static void* tinox_spawn_trampoline(void* raw) {
-    TinoxSpawnTrampolineArgs* t = (TinoxSpawnTrampolineArgs*)raw;
+    TinoxSpawnTrampolineArgs* t = raw;
     tinox_gc_register_thread_roots();
+    current_task = t->task;
+    task_frame_scope = task_scope = current_task->scope;
     void* (*fn)(void*) = t->fn;
     void* args = t->args;
-    TinoxTask* task = t->task;
     free(t);
     void* ret = fn(args);
-    // A `throw` in the task body parks its value in THIS thread's
-    // thread-local error slot, which dies with the thread: without this
-    // capture a failing child silently looked like a normal return (0).
-    if (__tinox_err != 0) {
-        int64_t err = __tinox_err;
-        __tinox_err = 0;
-        if (task != NULL) {
-            task->error = err;
-            task->has_error = 1;
-        } else {
-            // Detached: nobody can ever await it, so report it here.
-            const char* msg = (const char*)(intptr_t)err;
-            fprintf(stderr, "Uncaught error in detached task: %s\n", msg ? msg : "(unknown)");
-        }
-    }
-    tinox_gc_unregister_thread_roots();
-    if (task != NULL) tinox_budget_release(&g_active_tasks);
-    return ret;
-}
-
-void* tinox_task_spawn(void* (*fn)(void*), void* args) {
-    TinoxTask* task = malloc(sizeof(TinoxTask));
-    TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
-    t->fn = fn;
-    t->args = args;
-    t->task = task;
-    pthread_mutex_init(&task->mu, NULL);
-    task->joined = 0;
-    task->retval = NULL;
-    task->has_error = 0;
-    task->error_delivered = 0;
-    task->error = 0;
-    // Admission control (#302): over the task budget the thread is never
-    // created. The handle comes back already failed, so `await` / the
-    // owning `scope` re-throw the rejection instead of the process
-    // growing threads without bound -- or silently dropping the work.
-    if (!tinox_budget_acquire_queued(&g_active_tasks, &g_peak_tasks, tinox_limits()->max_tasks)) {
-        atomic_fetch_add(&g_rejected_tasks, 1);
-        free(t);
-        task->joined = 1;
-        task->has_error = 1;
-        task->error = (int64_t)(intptr_t)"task budget exhausted: too many concurrently running tasks (TINOX_MAX_TASKS)";
-        return task;
-    }
-    int rc = pthread_create(&task->thread, NULL, tinox_spawn_trampoline, t);
-    if (rc != 0) {
-        // No silent garbage: a task that never started must not be
-        // awaitable as if it had produced a result.
-        fprintf(stderr, "tinox: spawn failed: pthread_create: %s\n", strerror(rc));
-        exit(1);
-    }
-    return task;
-}
-
-// Joins the task's thread (once) and caches its result.
-static void tinox_task_join_once(TinoxTask* task) {
+    task_close_scope(task_frame_scope, 0, 0);
+    TinoxTask* task = current_task;
     pthread_mutex_lock(&task->mu);
-    if (!task->joined) {
-        void* retval = NULL;
-        int rc = pthread_join(task->thread, &retval);
-        if (rc != 0) {
-            fprintf(stderr, "tinox: await failed: pthread_join: %s\n", strerror(rc));
+    task->retval = ret;
+    task->error = __tinox_err;
+    task->done = 1;
+    if (task->detached) {
+        if (task->error && task->error != (int64_t)(intptr_t)task_shutdown_error) {
+            fprintf(stderr, "Uncaught detached task error: %s\n", (char*)(intptr_t)task->error);
             exit(1);
         }
-        task->retval = retval;
-        task->joined = 1;
+        task_unregister(task);
+    }
+    pthread_cond_broadcast(&task->cond);
+    pthread_mutex_unlock(&task->mu);
+    task_frame_scope = task_scope = NULL;
+    current_task = NULL;
+    tinox_gc_unregister_thread_roots();
+    if (task->budgeted) tinox_budget_release(&g_active_tasks);
+    return ret;
+}
+static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
+    task_ensure_scope();
+    TinoxTaskScope* owner = task_frame_scope;
+    TinoxTask* task = calloc(1, sizeof(*task));
+    task->owner = owner;
+    task->creator_thread = pthread_self();
+    task->scope = task_new_scope(task_scope);
+    task_pthread_check(pthread_mutex_init(&task->mu, NULL));
+    task_cond_init(&task->cond);
+    pthread_mutex_lock(&task_registry_mu);
+    if (!task_next_id || task_next_id > INT64_MAX) task_fatal("task handle space exhausted");
+    task->id = task_next_id++;
+    size_t bucket = task->id % TINOX_TASK_BUCKETS;
+    task->registry_next = task_registry[bucket];
+    task_registry[bucket] = task;
+    pthread_mutex_unlock(&task_registry_mu);
+    task_add_owner(task, owner);
+    TinoxSpawnTrampolineArgs* t = malloc(sizeof(*t));
+    t->fn = fn; t->args = args; t->task = task;
+    task->budgeted = budgeted;
+    // Admission control (#302): over the task budget no thread is created.
+    // The handle comes back already finished and failed, so `await` / the
+    // owning scope re-throw the rejection instead of the process growing
+    // threads without bound -- or silently dropping the work.
+    if (budgeted && !tinox_budget_acquire_queued(&g_active_tasks, &g_peak_tasks, tinox_limits()->max_tasks)) {
+        atomic_fetch_add(&g_rejected_tasks, 1);
+        free(t);
+        task->budgeted = 0;
+        pthread_mutex_lock(&task->mu);
+        task->error = (int64_t)(intptr_t)"task budget exhausted: too many concurrently running tasks (TINOX_MAX_TASKS)";
+        task->done = 1;
+        task->joined = 1; // there is no thread to join
+        pthread_cond_broadcast(&task->cond);
+        pthread_mutex_unlock(&task->mu);
+        return (void*)task->id;
+    }
+    task_pthread_check(pthread_create(&task->thread, NULL, tinox_spawn_trampoline, t));
+    return (void*)task->id;
+}
+// Joinable tasks count against TINOX_MAX_TASKS; the detached per-connection
+// workers are governed by their own (WebSocket) budget instead.
+void* tinox_task_spawn(void* (*fn)(void*), void* args) { return task_spawn_impl(fn, args, 1); }
+int64_t tinox_task_await(void* handle) {
+    TinoxTask* task = task_lookup((uintptr_t)handle);
+    for (TinoxTaskScope* scope = task_scope; scope; scope = atomic_load(&scope->parent))
+        if (scope == task->scope) task_fatal("cyclic task await of self or ancestor");
+    pthread_mutex_lock(&task_registry_mu);
+    for (TinoxTask* p = task; p; p = p->waiting_on)
+        if (p == current_task) task_fatal("cyclic task await");
+    if (current_task) current_task->waiting_on = task;
+    pthread_mutex_unlock(&task_registry_mu);
+    pthread_mutex_lock(&task->mu);
+    if (task->detached) task_fatal("cannot await a detached task");
+    int64_t cancel_started = 0;
+    while (!task->done && !task_cancellation(task_scope)) {
+        if (task_cancellation(task->scope)) {
+            if (!cancel_started) cancel_started = task_clock_ms();
+            if (task_clock_ms() - cancel_started >= 5000)
+                task_fatal("task ignored cooperative cancellation for 5 seconds during await");
+        }
+        task_wait_tick(task);
+    }
+    taskCheckCancellation();
+    int64_t result = 0;
+    if (!__tinox_err) {
+        task_join_locked(task);
+        task->observed = 1;
+        __tinox_err = task->error;
+        result = (int64_t)(uintptr_t)task->retval;
+    }
+    pthread_mutex_unlock(&task->mu);
+    pthread_mutex_lock(&task_registry_mu);
+    if (current_task) current_task->waiting_on = NULL;
+    pthread_mutex_unlock(&task_registry_mu);
+    return result;
+}
+void taskDetach(int64_t handle) {
+    TinoxTask* task = task_lookup((uintptr_t)handle);
+    if (!pthread_equal(task->creator_thread, pthread_self()))
+        task_fatal("only a task's owning thread may detach it");
+    if (task->owner != task_scope && task->owner != task_frame_scope) task_fatal("only a task's owning scope may detach it");
+    pthread_mutex_lock(&task->mu);
+    if (task->joined || task->detached) task_fatal("cannot detach an awaited or detached task");
+    task_pthread_check(pthread_detach(task->thread));
+    task->detached = 1;
+    task_remove_owner(task);
+    atomic_store(&task->scope->parent, NULL);
+    if (task->done) {
+        if (task->error && task->error != (int64_t)(intptr_t)task_shutdown_error) {
+            fprintf(stderr, "Uncaught detached task error: %s\n", (char*)(intptr_t)task->error);
+            exit(1);
+        }
+        task_unregister(task);
     }
     pthread_mutex_unlock(&task->mu);
 }
-
-// A task that failed re-throws its error in the awaiting thread (every
-// await of the same task sees the same failure) and yields 0 -- the normal
-// "thrown, return a default" convention; the caller's post-statement
-// throw check then propagates it.
-int64_t tinox_task_await(void* handle) {
-    TinoxTask* task = (TinoxTask*)handle;
-    if (task == NULL) {
-        fprintf(stderr, "tinox: await on a null task handle\n");
-        exit(1);
-    }
-    tinox_task_join_once(task);
-    if (task->has_error) {
-        task->error_delivered = 1;
-        __tinox_err = task->error;
-        return 0;
-    }
-    return (int64_t)(uintptr_t)task->retval;
-}
-
-// ---- Task scopes (issue #301, phase 3) ----
-// `scope { ... }` owns every task spawned lexically inside it. The block's
-// exit joins them all, so a child can never outlive its owner, and a child
-// failure that nobody awaited is delivered to the owner as the scope's
-// error instead of vanishing. The first undelivered failure (in spawn
-// order) is re-thrown; further ones are reported on stderr as suppressed.
-
-typedef struct {
-    TinoxTask** tasks;
-    int64_t n;
-    int64_t cap;
-} TinoxScope;
-
-int64_t __scope_new(void) {
-    TinoxScope* sc = malloc(sizeof(TinoxScope));
-    sc->tasks = NULL;
-    sc->n = 0;
-    sc->cap = 0;
-    return (int64_t)(intptr_t)sc;
-}
-
-void __scope_add(int64_t scope, int64_t task) {
-    TinoxScope* sc = (TinoxScope*)(intptr_t)scope;
-    if (sc->n == sc->cap) {
-        sc->cap = sc->cap ? sc->cap * 2 : 8;
-        sc->tasks = realloc(sc->tasks, (size_t)sc->cap * sizeof(TinoxTask*));
-    }
-    sc->tasks[sc->n++] = (TinoxTask*)(intptr_t)task;
-}
-
-static void tinox_scope_join_impl(int64_t scope, int suppress_all) {
-    TinoxScope* sc = (TinoxScope*)(intptr_t)scope;
-    for (int64_t i = 0; i < sc->n; i++) {
-        tinox_task_join_once(sc->tasks[i]);
-    }
-    for (int64_t i = 0; i < sc->n; i++) {
-        TinoxTask* task = sc->tasks[i];
-        if (!task->has_error || task->error_delivered) continue;
-        task->error_delivered = 1;
-        if (!suppress_all && __tinox_err == 0) {
-            __tinox_err = task->error;
-        } else {
-            const char* msg = (const char*)(intptr_t)task->error;
-            fprintf(stderr, "tinox: task error suppressed: %s\n", msg ? msg : "(unknown)");
-        }
-    }
-}
-
-// Normal exit / return: join, then surface the first child failure.
-void __scope_join(int64_t scope) { tinox_scope_join_impl(scope, 0); }
-// The scope body itself failed: its error wins, child failures are only
-// reported.
-void __scope_abort(int64_t scope) { tinox_scope_join_impl(scope, 1); }
-
-// Fire-and-forget variant of tinox_task_spawn -- no TinoxTask handle, no
-// tinox_task_await ever expected. Reuses the SAME tinox_spawn_trampoline
-// (still gets the GC thread-root registration a spawned thread needs --
-// Bug 140), just pthread_detach()s instead of leaving the thread joinable.
-// For @WebsocketEndpoint's per-connection worker threads (codegen.rs,
-// emit_ws_code): a real, long-running server accepts and drops many
-// connections over its lifetime, and tinox_task_spawn's own joinable
-// threads would leak one pthread's kernel resources per connection
-// forever unless something calls tinox_task_await on every single one --
-// nothing sensibly can, since the accept loop's whole point is to keep
-// accepting without waiting on any one connection. Mirrors the exact
-// pthread_create+pthread_detach pattern tinox_HttpServer_listen's own
-// epoll worker pool already uses for the same "never joined, must not
-// leak" reason.
 void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
-    TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
-    t->fn = fn;
-    t->args = args;
-    t->task = NULL;
-    pthread_t tid;
-    int rc = pthread_create(&tid, NULL, tinox_spawn_trampoline, t);
-    if (rc != 0) {
-        fprintf(stderr, "tinox: spawn failed: pthread_create: %s\n", strerror(rc));
-        exit(1);
-    }
-    pthread_detach(tid);
+    taskDetach((int64_t)(uintptr_t)task_spawn_impl(fn, args, 0));
 }
 
 void* tinox_channel_create(void) {
     TinoxChannel* ch = calloc(1, sizeof(TinoxChannel));
     pthread_mutex_init(&ch->mutex, NULL);
-    pthread_cond_init(&ch->cond, NULL);
+    task_cond_init(&ch->cond);
     return ch;
 }
 
@@ -1306,9 +1493,20 @@ void tinox_channel_send(void* handle, int64_t value) {
 }
 
 int64_t tinox_channel_recv(void* handle) {
+    taskCheckCancellation();
+    if (__tinox_err) return 0;
     TinoxChannel* ch = (TinoxChannel*)handle;
     pthread_mutex_lock(&ch->mutex);
-    while (!ch->head) pthread_cond_wait(&ch->cond, &ch->mutex);
+    while (!ch->head) {
+        taskCheckCancellation();
+        if (__tinox_err) { pthread_mutex_unlock(&ch->mutex); return 0; }
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        ts.tv_nsec += 10000000;
+        if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+        int rc = pthread_cond_timedwait(&ch->cond, &ch->mutex, &ts);
+        if (rc != ETIMEDOUT) task_pthread_check(rc);
+    }
     TinoxChannelNode* node = ch->head;
     ch->head = node->next;
     if (!ch->head) ch->tail = NULL;
@@ -8686,6 +8884,9 @@ extern __thread int64_t __tinox_err;
     X(g_req_headers_map) \
     X(g_resp_headers_map) \
     X(g_path_params_map) \
+    X(task_scope) \
+    X(task_frame_scope) \
+    X(current_task) \
     X(__tinox_err)
 
 static void tinox_gc_register_thread_roots(void) {
@@ -8763,7 +8964,12 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     _tinox_argc = argc;
     _tinox_argv = argv;
+    task_ensure_scope();
     int64_t rc = tinox_main();
+    // Process shutdown owns every remaining joinable child.
+    if (__tinox_err == (int64_t)(intptr_t)task_shutdown_error) __tinox_err = 0;
+    task_close_scope(task_frame_scope, 0, 1);
+    atomic_store(&task_shutdown_complete, true);
     if (__tinox_err != 0) {
         // throw is type-checked as String-or-Error; usually a String.
         const char* msg = (const char*)(intptr_t)__tinox_err;
@@ -8805,10 +9011,17 @@ int64_t now(void) {
 }
 
 void sleep_ms(int64_t ms) {
-    struct timespec ts;
-    ts.tv_sec = ms / 1000;
-    ts.tv_nsec = (ms % 1000) * 1000000LL;
-    nanosleep(&ts, NULL);
+    if (ms < 0 || ms > INT64_MAX - task_clock_ms()) task_fatal("sleep requires a nonnegative duration");
+    int64_t end = task_clock_ms() + ms;
+    do {
+        taskCheckCancellation();
+        if (__tinox_err) return;
+        int64_t remaining = end - task_clock_ms();
+        if (remaining <= 0) return;
+        if (remaining > 10) remaining = 10;
+        struct timespec ts = { 0, remaining * 1000000 };
+        while (nanosleep(&ts, &ts) < 0 && errno == EINTR) {}
+    } while (1);
 }
 
 char* strftimeStr(const char* fmt, int64_t t) {
