@@ -5,7 +5,7 @@
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
 
-.PHONY: check test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync
+.PHONY: check test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync workspace-ext
 
 check: clippy test dogfood grammar-sync
 
@@ -33,6 +33,13 @@ test:
 # iterating on just these suites during development, not part of `check`.
 e2e:
 	cargo test --release -p tinox --test e2e --test matrix --test boundary --test stdlib_smoke
+
+# Workspace-source lane (issue #313): consumes extended-tier modules straight
+# from this checkout via [[overrides]] -- no registry, no install. Registry/
+# artifact compatibility stays with stdlib_smoke et al., which resolve real
+# installed packages. Already part of `test`; standalone for quick iteration.
+workspace-ext:
+	cargo test --release -p tinox --test local_override
 
 # Dogfood: build examples/ + benchmarks/, build and test jgrep/ygrep
 # (jgrep checkout configurable via DOGFOOD_DIR)

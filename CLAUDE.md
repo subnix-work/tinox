@@ -1741,3 +1741,47 @@ unchanged and already existed; this adds real pooling and a
   pre-existing, not caused by this work: `docs.html`/`docs_en.html` have
   no `tinox.core.db` module section at all yet (unlike every other stdlib
   module) — filling that gap is a separate, still-open task.
+
+## Local Dependency Overrides: `[[overrides]]` (issue #313, since 2026-10-21)
+
+A project's `tinox.toml` may map a package coordinate to a local package
+root, so a build/test consumes unpublished source (typically an in-tree
+`crates/tinox-core-ext/<module>/`) instead of the installed immutable
+package:
+
+```toml
+[[overrides]]
+group = "tinox.core"
+artifactId = "crypto"
+path = "crates/tinox-core-ext/crypto"   # relative to this tinox.toml
+```
+
+- **Keyed by group+artifactId, not version**: the override replaces
+  whichever version anything in the graph requests, transitive dependencies
+  included (`pm::collect_global_dep_dir`). It also shadows a matching
+  `.tinox/deps/` (explicit-`url`) copy. Only the ROOT manifest's overrides
+  count; an installed dependency's own `[[overrides]]` are ignored.
+- **Hard errors, no silent fallback** (`pm::resolve_overrides`): missing
+  path, no `tinox.toml`/`[package]`, package name or group contradicting the
+  coordinate, duplicate coordinate, a `tinox.core` package lacking its
+  `tinox/core/<artifactId>/` subtree, and an override no dependency in the
+  graph refers to.
+- **Provenance**: every applied override prints
+  `note: <coord> resolved from local override <dir> (requested X, local Y)`
+  to stderr (once per process). A requested/local version difference is
+  reported, not rejected -- a local checkout is normally ahead of the
+  published version.
+- **Lock/publish**: `tinox install` neither downloads nor pins overridden
+  coordinates in `tinox.lock` (their own dependencies are still installed);
+  `tinox package`/`publish` refuse a manifest containing `[[overrides]]`, so
+  machine-specific paths cannot ship in an archive.
+- **LSP**: `tinox-lsp` does not resolve installed packages at all today (only
+  embedded stdlib + project-local imports), so there is no installed-package
+  resolution for an override to change there; revisit when the LSP gains
+  dependency-aware import resolution.
+- **CI lanes**: `make workspace-ext` (`crates/tinox/tests/local_override.rs`,
+  separate `workspace-source` job in check.yml) validates in-tree source via
+  overrides with no network; real published-archive behavior stays with
+  `stdlib_smoke.rs`/`transitive_deps.rs`, which resolve installed packages.
+- This session had no Rust toolchain: the change was written without being
+  compiled or run -- run `make check` before trusting it.

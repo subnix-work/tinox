@@ -94,3 +94,22 @@ jobs:
 
       - name: make check
         run: make -C tinox check
+
+  # Issue #313: workspace-source lane, separate from the registry/artifact
+  # compatibility checks in the `check` job above. Consumes in-tree
+  # extended-tier modules through [[overrides]] -- no network, no
+  # ~/.tinox/repository cache -- so a failure here means the checkout's own
+  # source is broken, independent of anything published.
+  workspace-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libgc-dev libsqlite3-dev libpq-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: workspace-source lane
+        run: make workspace-ext

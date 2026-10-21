@@ -2785,7 +2785,26 @@ fn runtime_c_path() -> Option<PathBuf> {
 fn load_dep_dirs(base_dir: &Path) -> (Vec<PathBuf>, Vec<pm::MissingDep>) {
     pm::find_project_root_from(base_dir)
         .and_then(|root| pm::read_manifest(&root).ok().map(|m| (root, m)))
-        .map(|(root, m)| pm::installed_dep_dirs(&root, &m))
+        .map(|(root, m)| match pm::installed_dep_dirs(&root, &m) {
+            Ok((dirs, missing, notes)) => {
+                // Issue #313: surface which local override was selected,
+                // once per distinct line per process (this runs several
+                // times per build/test invocation).
+                static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+                    std::sync::OnceLock::new();
+                let seen = SEEN.get_or_init(Default::default);
+                for note in notes {
+                    if seen.lock().unwrap().insert(note.clone()) {
+                        eprintln!("note: {}", note);
+                    }
+                }
+                (dirs, missing)
+            }
+            Err(e) => {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        })
         .unwrap_or_default()
 }
 
