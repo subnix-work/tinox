@@ -36,6 +36,9 @@ pub struct ConfigFieldInfo {
     pub class_name: String,
     pub field_name: String,
     pub config_key: String,
+    pub policy: String,
+    pub default_value: Option<String>,
+    pub value_type: String,
     /// LLVM type: "i8*" for String, "i64" for Int*, "i1" for Bool
     pub field_llvm_type: String,
 }
@@ -2269,6 +2272,7 @@ impl CodeGen {
         // Emit SQL-constant functions and row-mapping helpers for @Entity classes
         self.emit_entity_code();
         self.emit_global_initializers();
+        self.emit_config_validation();
 
         for (name, s) in &self.strings {
             let escaped = Self::escape_llvm_string(s);
@@ -2283,6 +2287,20 @@ impl CodeGen {
         }
 
         Ok(())
+    }
+
+    /// Runtime resolves and validates every declaration before any application code.
+    fn emit_config_validation(&mut self) {
+        writeln!(&mut self.ir, "declare void @tinox_config_declare(i8*, i8*, i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "define void @tinox_config_init() {{").unwrap();
+        for field in self.config_fields.clone() {
+            let key = self.make_string_const(&field.config_key);
+            let ty = self.make_string_const(&field.value_type);
+            let policy = self.make_string_const(&field.policy);
+            let fallback = field.default_value.as_deref().map(|s| self.make_string_const(s)).unwrap_or_else(|| "null".to_string());
+            writeln!(&mut self.ir, "  call void @tinox_config_declare(i8* {key}, i8* {ty}, i8* {policy}, i8* {fallback})").unwrap();
+        }
+        writeln!(&mut self.ir, "  ret void\n}}").unwrap();
     }
 
     /// Generates route handler shims, `__tinox_register_routes`, and (if needed) a `main`
@@ -3238,15 +3256,42 @@ impl CodeGen {
             .filter(|(_, name)| !declared_names.contains(name.as_str()))
             .map(|(i, _)| i)
             .collect();
-        if string_fields.is_empty() {
-            return;
+        if !string_fields.is_empty() {
+            let empty_str_ptr = self.emit_lambda_string_literal("");
+            for idx in string_fields {
+                let field_ptr = self.temp();
+                writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  store i8* {empty_str_ptr}, i8** {field_ptr}").unwrap();
+            }
         }
-        let empty_str_ptr = self.emit_lambda_string_literal("");
-        for idx in string_fields {
+        self.emit_config_injection(class_name, inst_reg, true);
+    }
+
+    fn emit_config_injection(&mut self, class_name: &str, instance: &str, lambda: bool) {
+        let layout = self.struct_layouts.get(class_name).cloned().unwrap_or_default();
+        let mut body = String::new();
+        for field in self.config_fields.clone().iter().filter(|f| f.class_name == class_name) {
+            let Some(idx) = layout.iter().position(|f| f == &field.field_name) else { continue };
+            let key = self.make_string_const(&field.config_key);
+            let value = self.temp();
+            let getter = match field.field_llvm_type.as_str() {
+                "i8*" => "tinox_config_get",
+                "i1" => "tinox_config_get_bool",
+                _ => "tinox_config_get_int",
+            };
+            let ty = if field.field_llvm_type == "i8*" { "i8*" } else { "i64" };
+            writeln!(&mut body, "  {value} = call {ty} @{getter}(i8* {key})").unwrap();
             let field_ptr = self.temp();
-            writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
-            writeln!(&mut self.lambda_ir, "  store i8* {empty_str_ptr}, i8** {field_ptr}").unwrap();
+            writeln!(&mut body, "  {field_ptr} = getelementptr i64, ptr {instance}, i64 {idx}").unwrap();
+            if ty == "i8*" {
+                let bits = self.temp();
+                writeln!(&mut body, "  {bits} = ptrtoint i8* {value} to i64").unwrap();
+                writeln!(&mut body, "  store i64 {bits}, i64* {field_ptr}").unwrap();
+            } else {
+                writeln!(&mut body, "  store i64 {value}, i64* {field_ptr}").unwrap();
+            }
         }
+        if lambda { self.lambda_ir.push_str(&body); } else { self.ir.push_str(&body); }
     }
 
     fn emit_ws_code(&mut self) {
@@ -10938,51 +10983,7 @@ impl CodeGen {
                     let store_val = self.coerce_to_i64(&val, &val_ty);
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
                 }
-                // @Config: inject values from application.properties for annotated fields
-                let cfg_fields: Vec<ConfigFieldInfo> = self.config_fields.iter()
-                    .filter(|f| &f.class_name == name)
-                    .cloned()
-                    .collect();
-                for cf in &cfg_fields {
-                    if let Some(field_idx) = layout.iter().position(|f| f == &cf.field_name) {
-                        let key_label = format!("str{}", self.strings.len());
-                        self.strings.insert(key_label.clone(), cf.config_key.clone());
-                        let key_len = cf.config_key.len() + 1;
-                        let key_ptr = self.temp();
-                        writeln!(&mut self.ir,
-                            "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0",
-                            key_ptr, key_len, key_len, key_label).unwrap();
-                        let field_ptr = self.temp();
-                        writeln!(&mut self.ir,
-                            "{} = getelementptr i64, ptr {}, i64 {}",
-                            field_ptr, typed_ptr, field_idx).unwrap();
-                        match cf.field_llvm_type.as_str() {
-                            "i8*" => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir,
-                                    "{} = call i8* @tinox_config_get(i8* {})",
-                                    raw, key_ptr).unwrap();
-                                let as_i64 = self.temp();
-                                writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", as_i64, raw).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", as_i64, field_ptr).unwrap();
-                            }
-                            "i1" => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir,
-                                    "{} = call i64 @tinox_config_get_bool(i8* {})",
-                                    raw, key_ptr).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
-                            }
-                            _ => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir,
-                                    "{} = call i64 @tinox_config_get_int(i8* {})",
-                                    raw, key_ptr).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
-                            }
-                        }
-                    }
-                }
+                self.emit_config_injection(name, &typed_ptr, false);
 
                 // @Log: auto-initialize the synthetic 'log' field with Logger::new(ClassName)
                 if self.log_classes.contains(name) {
@@ -11378,6 +11379,7 @@ impl CodeGen {
                         }
                     }
                 }
+                self.emit_config_injection(&effective_class, &typed_ptr, false);
                 Ok((typed_ptr, "i64*".to_string()))
             }
             ExprKind::Lambda {
