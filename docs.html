@@ -1081,6 +1081,59 @@
       Handles und zyklische Awaits scheitern mit Diagnose; Integer-Handles sind
       veraltet.</p>
 
+    <h4>Gemeinsamer Anwendungszustand</h4>
+    <p><code>@ApplicationComponent</code> erzeugt pro Komponentenklasse einen lazy
+      Singleton; <code>@Startup</code> erzeugt denselben Singleton-Typ vor main.
+      Generierte Provider synchronisieren Erzeugung, Feld-Defaults, rekursive
+      Dependency Injection und Veröffentlichung. Gleichzeitige Provider-Aufrufe
+      erhalten dieselbe vollständig initialisierte Instanz. Benutzerkonstruktoren
+      werden dabei nicht aufgerufen. Spätere Änderungen werden dadurch nicht gesperrt.</p>
+    <p>HTTP-Worker sowie unabhängig gestartete REST-, WebSocket- und AMQP-Komponenten
+      können gleichzeitig laufen. Request-Daten gehören in
+      <code>@HttpRequestScoped</code>-Besitzer, in die Anwendungsservices injiziert
+      werden. Eine Request-Abhängigkeit in einem Singleton wird geteilt; das Erneuern
+      eines injizierten Feldes im Singleton-Controller beim Dispatch bietet keine sichere
+      Request-Isolation. Der Compiler warnt vor solchen Abhängigkeiten sowie öffentlichen
+      oder ungeschützten veränderlichen Singleton-Feldern.</p>
+    <pre><code>@ApplicationComponent
+@Synchronized
+class Counter {
+    private var value: Int64 = 0;
+    fn increment() -&gt; Int64 {
+        this.value = this.value + 1;
+        return this.value;
+    }
+}
+
+@HttpRequestScoped
+class Api {
+    @Inject var counter: Counter;
+    @GET @Path("/count")
+    fn count() -&gt; Int64 { return this.counter.increment(); }
+}</code></pre>
+    <p><code>@Synchronized</code> an einer nicht-generischen Application-/Startup-Klasse
+      schützt alle Instanzmethoden; an einer Instanzmethode nur diese Methode. Es gibt
+      einen rekursiven Monitor <em>pro deklarierender Klasse</em>, den alle markierten
+      Aufrufe und Instanzen dieser Klasse teilen. Verschachtelte Aufrufe desselben
+      Threads sind erlaubt. Statische Methoden sind bei der Klassenannotation ausgenommen;
+      explizit markierte statische/generische Methoden, Klassen ohne Singleton-Scope,
+      Interface-/Trait-Methoden und Klassen mit Vererbung werden zurückgewiesen.</p>
+    <p>Der Monitor bleibt während defer/finally und Transaktions-Commit/Rollback gehalten
+      und wird vor Rückgabe eines Werts oder Fehlers freigegeben. Abbruch beim Warten auf
+      den Monitor wirft ohne Ausführung des Rumpfs. Abbruch im Rumpf führt das normale
+      Unwinding und die Freigabe aus. Bereits aktive Fehler bleiben beim Aufräumen erhalten.
+      Dev-UI-Zustandssnapshots nutzen den Klassenmonitor, sofern vorhanden.</p>
+    <p>Zustand privat halten und sowohl Lesen als auch Schreiben schützen. Zurückgegebene
+      veränderliche Objekte, direkte Feldzugriffe sowie statische und unmarkierte Methoden
+      umgehen den Monitor. Snapshots innerhalb einer geschützten Methode erstellen, statt
+      interne Collections zurückzugeben. Unter gehaltenem Monitor kein Kind awaiten, das
+      denselben Monitor benötigt; verschiedene Klassenmonitore in einheitlicher Reihenfolge
+      betreten. Rekursion gilt für einen Thread, nicht für gespawnte Kinder. Für kleinere
+      explizite kritische Abschnitte können Locks aus <code>tinox.core.semaphore</code>
+      mit unmittelbar nach erfolgreicher Sperre registriertem <code>defer</code> dienen;
+      diese nativen blockierenden Locks werden nicht abbrechbar. Annotationen und Diagnosen
+      sind kein allgemeiner Beweis für Race-Freiheit.</p>
+
     <h3>HTTP-Server (Low Level)</h3>
     <p>
       Der HTTP-Server im Runtime verwendet:
@@ -1318,6 +1371,7 @@
         <tr><td><code>@Log</code></td><td>Klasse</td><td>Automatisches log-Feld injizieren</td></tr>
         <tr><td><code>@Inject</code></td><td>Feld</td><td>Dependency-Injection-Feld</td></tr>
         <tr><td><code>@Config("key")</code></td><td>Feld</td><td>Wert aus application.properties</td></tr>
+        <tr><td><code>@Synchronized</code></td><td>Klasse/Methode</td><td>Rekursiver Klassenmonitor für Singleton-Instanzmethoden</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Klasse</td><td>Singleton-Scope für DI</td></tr>
         <tr><td><code>@HttpRequestScoped</code></td><td>Klasse</td><td>Neues Objekt pro HTTP-Request</td></tr>
         <tr><td><code>@Test("desc")</code></td><td>Methode</td><td>Unit-Test (tinox test)</td></tr>

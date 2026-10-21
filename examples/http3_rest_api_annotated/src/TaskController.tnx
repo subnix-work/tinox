@@ -12,7 +12,9 @@
 // @ApplicationComponent makes the compiler reuse ONE TaskController
 // instance across every request (via a generated _di_get() singleton
 // getter) instead of allocating a fresh, zeroed instance per call --
-// required here since `tasks` needs to persist between requests. That
+// required here since `tasks` needs to persist between requests.
+// @Synchronized serializes all instance methods with one recursive class
+// monitor, protecting lazy list initialization and subsequent mutations. That
 // getter zero-allocates the instance (it does not call any constructor),
 // so `tasks`/`initialized` start out as null/false; ensureInit() lazily
 // seeds `tasks` on first use rather than relying on a constructor that
@@ -22,11 +24,12 @@ import tinox.core.json;
 import TodoItem;
 
 @ApplicationComponent
+@Synchronized
 @Http3RestController(8843, "cert.pem", "key.pem")
 class TaskController
 {
-    var tasks: List<TodoItem>;
-    var initialized: Bool;
+    private var tasks: List<TodoItem>;
+    private var initialized: Bool;
 
     // Issue #149 stage 2: these three were free top-level functions;
     // now static `fnc` siblings, called bare from the instance methods
@@ -89,7 +92,13 @@ class TaskController
     fn listTasks() -> List<TodoItem>
     {
         this.ensureInit();
-        return this.tasks;
+        // Response serialization happens after this method releases its lock.
+        // Copy both the list and its mutable items while still protected.
+        var result: List<TodoItem> = [];
+        for item in this.tasks {
+            result.push(TodoItem { id: item.id, title: item.title, done: item.done });
+        }
+        return result;
     }
 
     @GET
@@ -115,7 +124,7 @@ class TaskController
         this.ensureInit();
         task.id = nextTaskId(this.tasks);
         this.tasks.push(task);
-        return task;
+        return TodoItem { id: task.id, title: task.title, done: task.done };
     }
 
     @PUT

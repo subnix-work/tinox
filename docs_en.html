@@ -1072,6 +1072,58 @@
       <code>Task&lt;T&gt;</code>. Invalid/expired handles and cyclic awaits fail with a
       diagnostic; integer handles are deprecated.</p>
 
+    <h4>Shared application state</h4>
+    <p><code>@ApplicationComponent</code> creates one lazy singleton per component class;
+      <code>@Startup</code> eagerly creates that same kind of singleton before main.
+      Generated providers serialize construction, field defaults, recursive dependency
+      injection and publication. Every concurrent provider caller sees the same fully
+      initialized instance. Providers do not invoke user constructors. This initialization
+      guarantee does not serialize later mutation.</p>
+    <p>HTTP workers and independently spawned REST, WebSocket and AMQP components can
+      execute concurrently. Put request data in <code>@HttpRequestScoped</code> owners,
+      and inject application services into them. Capturing a request-scoped dependency
+      in a singleton shares that object; refreshing a singleton controller's injected
+      field during dispatch is unsafe for per-request isolation. The compiler warns
+      about captive request state and exposed or unguarded mutable singleton fields.</p>
+    <pre><code>@ApplicationComponent
+@Synchronized
+class Counter {
+    private var value: Int64 = 0;
+    fn increment() -&gt; Int64 {
+        this.value = this.value + 1;
+        return this.value;
+    }
+}
+
+@HttpRequestScoped
+class Api {
+    @Inject var counter: Counter;
+    @GET @Path("/count")
+    fn count() -&gt; Int64 { return this.counter.increment(); }
+}</code></pre>
+    <p><code>@Synchronized</code> on a non-generic application/startup class protects
+      all instance methods; on an instance method it protects only that method. There
+      is one recursive monitor <em>per declaring class</em>, shared by every annotated
+      call and every instance of that class. Nested calls on the same thread are safe.
+      Static methods are excluded from class-level synchronization; explicitly annotating
+      a static method, generic method, unscoped class, interface/trait method or class
+      with inheritance is rejected. This deliberately limited contract prevents silent
+      gaps in generated locking.</p>
+    <p>The monitor is held across the method's defer/finally cleanup and transactional
+      commit or rollback, and released before returning a result or error. Cancellation
+      while waiting for a monitor throws without executing the body; cancellation inside
+      it unwinds the body and releases the monitor. Existing errors are preserved during
+      cleanup. Dev UI state snapshots use the class monitor when one is present.</p>
+    <p>Keep state private and protect reads as well as writes. Returned mutable objects,
+      direct field access, static methods and unannotated methods bypass the monitor.
+      Take snapshots inside a protected method instead of returning internal collections.
+      Do not await a child that needs the monitor while holding it, and acquire different
+      class monitors in a consistent order. Reentrancy applies to one thread, not spawned
+      children. For smaller explicit critical sections, use
+      <code>tinox.core.semaphore</code> locks with <code>defer</code> immediately after a
+      successful acquisition; these native blocking locks do not become cancellable.
+      Annotations and diagnostics do not prove universal race freedom.</p>
+
     <h3>HTTP Server (Low Level)</h3>
     <p>
       The HTTP server in the runtime uses:
@@ -1310,6 +1362,7 @@
         <tr><td><code>@Log</code></td><td>Class</td><td>Automatically inject log field</td></tr>
         <tr><td><code>@Inject</code></td><td>Field</td><td>Dependency injection field</td></tr>
         <tr><td><code>@Config("key")</code></td><td>Field</td><td>Value from application.properties</td></tr>
+        <tr><td><code>@Synchronized</code></td><td>Class/method</td><td>Recursive class monitor for singleton instance methods</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Class</td><td>Singleton scope for DI</td></tr>
         <tr><td><code>@HttpRequestScoped</code></td><td>Class</td><td>New object per HTTP request</td></tr>
         <tr><td><code>@Test("desc")</code></td><td>Method</td><td>Unit test (tinox test)</td></tr>

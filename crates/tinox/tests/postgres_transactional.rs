@@ -277,6 +277,8 @@ version = "1.0.0"
 
     assert_eq!(stdout.matches("cancelled rollback: Task cancelled").count(), 20, "stdout: {stdout}");
 
+    assert_eq!(stdout.matches("guard released: 501").count(), 20, "stdout: {stdout}");
+
     // All twenty cancelled tasks must have rolled back before their joins
     // completed; otherwise these independent balances include +10000 changes.
     // Independent verification against real Postgres state, not just the

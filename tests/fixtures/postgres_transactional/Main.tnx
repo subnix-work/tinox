@@ -4,6 +4,9 @@ import BankService;
 
 class Main
 {
+    fnc cancelledChange(svc: BankService, ready: Int64) -> Nothing {
+        svc.cancelledChange(1, ready);
+    }
     fnc main() -> Int32
     {
         const svc = new BankService();
@@ -33,13 +36,15 @@ class Main
         var i = 0;
         while (i < 20) {
             scope {
-                const task = spawn BankService::cancelledChange(1, ready);
+                const task = spawn Main::cancelledChange(svc, ready);
                 recv ready;
                 taskCancel(task);
                 try { await task; } catch (e: String) {
                     println("cancelled rollback: " + e);
                 }
             }
+            // This protected call must succeed only after rollback and unlock.
+            println("guard released: " + svc.readBalance(1).toString());
             i = i + 1;
         }
 
