@@ -754,6 +754,323 @@ int64_t* tinox_array_remove_at(int64_t* h, int64_t idx) {
     return h;
 }
 
+// ---- Observability (#305): W3C Trace Context and OTLP/HTTP JSON ----
+// Fixed-size, value-only contexts can cross threads without sharing GC roots.
+// No headers, bodies, URLs, exception text, or application fields are captured.
+#include <sys/random.h>
+static const char* tinox_config_lookup(const char* key);
+void tinox_counter_inc(const char* name);
+void tinox_histogram_record(const char* name, int64_t duration_ns);
+
+typedef struct {
+    char trace[33], span[17], parent[17], request[65], name[65];
+    int sampled, kind;
+    int64_t start, monotonic;
+} TinoxTelemetryContext;
+static __thread TinoxTelemetryContext telemetry_context;
+static __thread TinoxTelemetryContext telemetry_stack[32];
+static __thread int telemetry_depth;
+static int telemetry_enabled, telemetry_sample = 10000;
+static char telemetry_service[65] = "tinox";
+static struct sockaddr_in telemetry_collector;
+static int telemetry_export_enabled;
+static pthread_once_t telemetry_once = PTHREAD_ONCE_INIT;
+#define TINOX_TELEMETRY_QUEUE 128
+static TinoxTelemetryContext telemetry_queue[TINOX_TELEMETRY_QUEUE];
+static size_t telemetry_head, telemetry_count;
+static int telemetry_busy;
+static pthread_mutex_t telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t telemetry_cv = PTHREAD_COND_INITIALIZER;
+
+static int64_t telemetry_clock(clockid_t clock) {
+    struct timespec ts;
+    clock_gettime(clock, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+static void telemetry_random(char* out, size_t bytes) {
+    unsigned char data[16];
+    size_t off = 0;
+    while (off < bytes) {
+        ssize_t n = getrandom(data + off, bytes - off, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { fprintf(stderr, "tinox: cannot generate telemetry ID\n"); exit(1); }
+        off += (size_t)n;
+    }
+    // IDs must be nonzero, including in the astronomically unlikely all-zero draw.
+    int nonzero = 0;
+    for (size_t i = 0; i < bytes; i++) nonzero |= data[i];
+    if (!nonzero) data[0] = 1;
+    for (size_t i = 0; i < bytes; i++) {
+        out[i*2] = "0123456789abcdef"[data[i] >> 4];
+        out[i*2+1] = "0123456789abcdef"[data[i] & 15];
+    }
+    out[bytes*2] = 0;
+}
+static int telemetry_hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+static int telemetry_parent(const char* p, TinoxTelemetryContext* ctx) {
+    if (!p) return 0;
+    size_t n = strnlen(p, 513);
+    if (n < 55 || n > 512 || p[2] != '-' || p[35] != '-' || p[52] != '-') return 0;
+    if (telemetry_hex(p[0]) < 0 || telemetry_hex(p[1]) < 0 || !strncmp(p, "ff", 2)) return 0;
+    if (!strncmp(p, "00", 2) ? n != 55 : (n > 55 && (n < 57 || p[55] != '-'))) return 0;
+    int trace_nonzero = 0, span_nonzero = 0;
+    for (int i = 3; i < 55; i++) {
+        if (i == 35 || i == 52) continue;
+        int h = telemetry_hex(p[i]);
+        if (h < 0) return 0;
+        if (i < 35) trace_nonzero |= h;
+        else if (i < 52) span_nonzero |= h;
+    }
+    if (!trace_nonzero || !span_nonzero) return 0;
+    memcpy(ctx->trace, p + 3, 32); ctx->trace[32] = 0;
+    memcpy(ctx->parent, p + 36, 16); ctx->parent[16] = 0;
+    ctx->sampled = telemetry_hex(p[54]) & 1;
+    return 1;
+}
+// Only ASCII tokens enter correlation fields/resource names. Invalid incoming
+// request IDs are replaced, never truncated into colliding identifiers.
+static int telemetry_token(const char* s) {
+    if (!s || !*s || strnlen(s, 65) > 64) return 0;
+    for (const unsigned char* p = (const unsigned char*)s; *p; p++)
+        if (!( (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+               (*p >= '0' && *p <= '9') || *p == '-' || *p == '_' || *p == '.')) return 0;
+    return 1;
+}
+static const char* telemetry_setting(const char* env, const char* key, const char* dflt) {
+    const char* v = getenv(env);
+    if (!v) v = tinox_config_lookup(key);
+    return v && *v ? v : dflt;
+}
+static void telemetry_config_error(const char* key) {
+    fprintf(stderr, "tinox: invalid telemetry configuration: %s\n", key);
+    exit(1);
+}
+// All exporter I/O uses a single absolute 200ms deadline. Numeric IPv4 avoids
+// unbounded DNS resolution. Deploy a local collector for TLS/auth/retry routing.
+static int telemetry_wait(int fd, short events, int64_t deadline) {
+    for (;;) {
+        int64_t remaining = deadline - telemetry_clock(CLOCK_MONOTONIC);
+        if (remaining <= 0) return 0;
+        struct pollfd p = { fd, events, 0 };
+        int rc = poll(&p, 1, (int)((remaining + 999999) / 1000000));
+        if (rc < 0 && errno == EINTR) continue;
+        return rc > 0 && (p.revents & events);
+    }
+}
+static int telemetry_export(const TinoxTelemetryContext* c) {
+    char body[1536], req[2048];
+    int64_t end = c->start + c->monotonic; // queued monotonic stores elapsed ns
+    int n = snprintf(body, sizeof(body),
+        "{\"resourceSpans\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\","
+        "\"value\":{\"stringValue\":\"%s\"}}]},\"scopeSpans\":[{\"scope\":{\"name\":\"tinox\"},"
+        "\"spans\":[{\"traceId\":\"%s\",\"spanId\":\"%s\",\"parentSpanId\":\"%s\","
+        "\"name\":\"%s\",\"kind\":%d,\"flags\":%d,\"startTimeUnixNano\":\"%lld\",\"endTimeUnixNano\":\"%lld\"}]}]}]}",
+        telemetry_service, c->trace, c->span, c->parent, c->name, c->kind, c->sampled,
+        (long long)c->start, (long long)end);
+    int len = snprintf(req, sizeof(req),
+        "POST /v1/traces HTTP/1.1\r\nHost: %s:%u\r\nContent-Type: application/json\r\n"
+        "Connection: close\r\nContent-Length: %d\r\n\r\n%s",
+        inet_ntoa(telemetry_collector.sin_addr), ntohs(telemetry_collector.sin_port), n, body);
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (fd < 0) return 0;
+    int64_t deadline = telemetry_clock(CLOCK_MONOTONIC) + 200000000;
+    int ok = 0;
+    if (connect(fd, (struct sockaddr*)&telemetry_collector, sizeof(telemetry_collector)) < 0 && errno != EINPROGRESS) goto done;
+    if (!telemetry_wait(fd, POLLOUT, deadline)) goto done;
+    int error = 0; socklen_t error_len = sizeof(error);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_len) || error) goto done;
+    size_t off = 0;
+    while (off < (size_t)len) {
+        if (!telemetry_wait(fd, POLLOUT, deadline)) goto done;
+        ssize_t sent = send(fd, req + off, (size_t)len - off, MSG_NOSIGNAL);
+        if (sent < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        if (sent <= 0) goto done;
+        off += (size_t)sent;
+    }
+    char response[256]; off = 0;
+    while (off < sizeof(response) - 1) {
+        if (!telemetry_wait(fd, POLLIN, deadline)) goto done;
+        ssize_t got = recv(fd, response + off, sizeof(response) - 1 - off, 0);
+        if (got < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        if (got <= 0) goto done;
+        off += (size_t)got; response[off] = 0;
+        if (strstr(response, "\r\n")) {
+            // OTLP success is 200. No retries: collector owns durable delivery.
+            ok = !strncmp(response, "HTTP/1.1 200 ", 13) || !strncmp(response, "HTTP/1.0 200 ", 13);
+            break;
+        }
+    }
+ done:
+    close(fd);
+    return ok;
+}
+static void* telemetry_worker(void* unused) {
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&telemetry_mu);
+        while (!telemetry_count) pthread_cond_wait(&telemetry_cv, &telemetry_mu);
+        TinoxTelemetryContext c = telemetry_queue[telemetry_head];
+        telemetry_head = (telemetry_head + 1) % TINOX_TELEMETRY_QUEUE;
+        telemetry_count--; telemetry_busy = 1;
+        pthread_mutex_unlock(&telemetry_mu);
+        tinox_counter_inc(telemetry_export(&c) ? "tinox_telemetry_exported_total" : "tinox_telemetry_export_failed_total");
+        pthread_mutex_lock(&telemetry_mu);
+        telemetry_busy = 0;
+        pthread_mutex_unlock(&telemetry_mu);
+    }
+    return NULL;
+}
+static void telemetry_init_once(void) {
+    const char* enabled = telemetry_setting("TINOX_TELEMETRY_ENABLED", "tinox.telemetry.enabled", "false");
+    if (strcmp(enabled, "true") && strcmp(enabled, "false")) telemetry_config_error("enabled (true/false)");
+    telemetry_enabled = !strcmp(enabled, "true");
+    const char* sample = telemetry_setting("TINOX_TELEMETRY_SAMPLE", "tinox.telemetry.sample", "10000");
+    char* end; errno = 0;
+    long rate = strtol(sample, &end, 10);
+    if (errno || end == sample || *end || rate < 0 || rate > 10000) telemetry_config_error("sample (0..10000)");
+    telemetry_sample = (int)rate;
+    const char* service = telemetry_setting("TINOX_TELEMETRY_SERVICE", "tinox.telemetry.service", "tinox");
+    if (!telemetry_token(service)) telemetry_config_error("service (1..64 ASCII token bytes)");
+    strcpy(telemetry_service, service);
+    const char* endpoint = telemetry_setting("TINOX_TELEMETRY_ENDPOINT", "tinox.telemetry.endpoint", "");
+    if (*endpoint) {
+        char ip[16]; unsigned port; int consumed = 0;
+        if (sscanf(endpoint, "http://%15[0-9.]:%u/v1/traces%n", ip, &port, &consumed) != 2 ||
+            !consumed || endpoint[consumed] || !port || port > 65535 ||
+            inet_pton(AF_INET, ip, &telemetry_collector.sin_addr) != 1) telemetry_config_error("endpoint (http://IPv4:port/v1/traces)");
+        telemetry_collector.sin_family = AF_INET;
+        telemetry_collector.sin_port = htons((uint16_t)port);
+        if (telemetry_enabled) {
+            pthread_t worker;
+            if (pthread_create(&worker, NULL, telemetry_worker, NULL)) telemetry_config_error("exporter thread");
+            pthread_detach(worker);
+            telemetry_export_enabled = 1;
+        }
+    }
+}
+void telemetryInit(void) { pthread_once(&telemetry_once, telemetry_init_once); }
+int64_t telemetryEnabled(void) { return telemetry_enabled; }
+
+static int64_t telemetry_enter(const char* name, const char* parent, const char* request, int kind) {
+    if (!telemetry_enabled) return 0;
+    if (telemetry_depth == 32) { tinox_counter_inc("tinox_telemetry_scope_rejected_total"); return 0; }
+    telemetry_stack[telemetry_depth++] = telemetry_context;
+    TinoxTelemetryContext old = telemetry_context;
+    memset(&telemetry_context, 0, sizeof(telemetry_context));
+    if (parent ? !telemetry_parent(parent, &telemetry_context) : !old.trace[0]) {
+        telemetry_random(telemetry_context.trace, 16);
+        unsigned draw = 0;
+        for (int i = 28; i < 32; i++) draw = draw * 16 + (unsigned)telemetry_hex(telemetry_context.trace[i]);
+        telemetry_context.sampled = draw < (unsigned)((65536ULL * telemetry_sample) / 10000);
+    } else if (!parent) {
+        strcpy(telemetry_context.trace, old.trace);
+        strcpy(telemetry_context.parent, old.span);
+        telemetry_context.sampled = old.sampled;
+    }
+    telemetry_random(telemetry_context.span, 8);
+    const char* id = request && *request ? request : parent ? NULL : old.request;
+    strcpy(telemetry_context.request, telemetry_token(id) ? id : telemetry_context.trace);
+    strcpy(telemetry_context.name, telemetry_token(name) ? name : "operation");
+    telemetry_context.kind = kind;
+    telemetry_context.start = telemetry_clock(CLOCK_REALTIME);
+    telemetry_context.monotonic = telemetry_clock(CLOCK_MONOTONIC);
+    return telemetry_depth;
+}
+int64_t telemetryBegin(const char* name, const char* parent, const char* request) {
+    // Empty parent continues the current operation; incoming adapters pass a
+    // non-NULL parent directly to telemetry_enter to force a fresh boundary.
+    return telemetry_enter(name, parent && *parent ? parent : NULL, request, 1);
+}
+int64_t telemetryEnd(int64_t token) {
+    if (!token) return 1;
+    if (token != telemetry_depth) return 0;
+    TinoxTelemetryContext c = telemetry_context;
+    c.monotonic = telemetry_clock(CLOCK_MONOTONIC) - c.monotonic;
+    const char* metric = c.kind == 2 ? "tinox_http_server_duration_ns" :
+                         c.kind == 3 ? "tinox_http_client_duration_ns" : "tinox_operation_duration_ns";
+    tinox_histogram_record(metric, c.monotonic);
+    if (c.sampled && telemetry_export_enabled) {
+        // Producers never wait behind network I/O. Full queues drop newest.
+        pthread_mutex_lock(&telemetry_mu);
+        if (telemetry_count < TINOX_TELEMETRY_QUEUE) {
+            telemetry_queue[(telemetry_head + telemetry_count) % TINOX_TELEMETRY_QUEUE] = c;
+            telemetry_count++;
+            pthread_cond_signal(&telemetry_cv);
+        } else tinox_counter_inc("tinox_telemetry_dropped_total");
+        pthread_mutex_unlock(&telemetry_mu);
+    }
+    telemetry_context = telemetry_stack[--telemetry_depth];
+    return 1;
+}
+// Automatic boundaries also close application scopes abandoned by an error
+// path, so a reused worker cannot leak context into the next request.
+static void telemetry_leave(int64_t token) {
+    if (!token) return;
+    while (telemetry_depth >= token) telemetryEnd(telemetry_depth);
+}
+char* telemetryTraceparent(void) {
+    char p[56] = "";
+    if (telemetry_context.trace[0]) snprintf(p, sizeof(p), "00-%s-%s-%02x", telemetry_context.trace, telemetry_context.span, telemetry_context.sampled);
+    return GC_strdup(p);
+}
+char* telemetryRequestId(void) { return GC_strdup(telemetry_context.request); }
+// An explicit bounded best-effort drain for short-lived apps; never called by
+// a handler. Pending spans may be lost on process exit or exporter failure.
+int64_t telemetryFlush(void) {
+    if (!telemetry_export_enabled) return 1;
+    int64_t deadline = telemetry_clock(CLOCK_MONOTONIC) + 250000000;
+    do {
+        pthread_mutex_lock(&telemetry_mu);
+        int pending = telemetry_count || telemetry_busy;
+        pthread_mutex_unlock(&telemetry_mu);
+        if (!pending) return 1;
+        struct timespec pause = {0, 1000000}; nanosleep(&pause, NULL);
+    } while (telemetry_clock(CLOCK_MONOTONIC) < deadline);
+    return 0;
+}
+// Bounded JSON string escaping, including every control byte. Preserve UTF-8
+// boundaries when truncating. The caller's existing @Sensitive/@Masked
+// toString conversion happens before logging, exactly as for text output.
+static void telemetry_quote(char** out, const char* s, size_t limit) {
+    *(*out)++ = '"';
+    if (!s) s = "";
+    size_t n = strnlen(s, limit + 1);
+    if (n > limit) { n = limit; while (n && ((unsigned char)s[n] & 0xc0) == 0x80) n--; }
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') { *(*out)++ = '\\'; *(*out)++ = (char)c; }
+        else if (c < 32) { int len = sprintf(*out, "\\u%04x", c); *out += len; }
+        else *(*out)++ = (char)c;
+    }
+    *(*out)++ = '"'; **out = 0;
+}
+char* telemetryLogJson(const char* timestamp, const char* level, const char* logger, const char* message) {
+    char buf[32768], *out = buf;
+    const char* keys[] = {"timestamp", "level", "logger", "message", "request_id", "trace_id", "span_id"};
+    const char* vals[] = {timestamp, level, logger, message, telemetry_context.request, telemetry_context.trace, telemetry_context.span};
+    const size_t limits[] = {64, 16, 128, 4096, 64, 32, 16};
+    *out++ = '{';
+    for (int i = 0; i < 7; i++) {
+        if (i) *out++ = ',';
+        telemetry_quote(&out, keys[i], 32); *out++ = ':';
+        telemetry_quote(&out, vals[i], limits[i]);
+    }
+    *out++ = '}'; *out = 0;
+    return GC_strdup(buf);
+}
+void telemetryWriteLogJson(const char* timestamp, const char* level, const char* logger, const char* message) {
+    // One stdio operation keeps concurrent structured records on separate lines.
+    puts(telemetryLogJson(timestamp, level, logger, message));
+}
+static void telemetry_event(const char* event) {
+    char stamp[32]; snprintf(stamp, sizeof(stamp), "%lld", (long long)telemetry_clock(CLOCK_REALTIME));
+    puts(telemetryLogJson(stamp, "INFO", "tinox", event));
+}
+
 // ---- Async runtime ----
 
 // Structured tasks (#301). Handles are monotonically allocated IDs, never
@@ -1341,11 +1658,16 @@ typedef struct {
     void* (*fn)(void*);
     void* args;
     TinoxTask* task;
+    TinoxTelemetryContext telemetry;
+    int64_t queued_at;
 } TinoxSpawnTrampolineArgs;
 
 static void* tinox_spawn_trampoline(void* raw) {
     TinoxSpawnTrampolineArgs* t = raw;
     tinox_gc_register_thread_roots();
+    if (telemetry_enabled) telemetry_context = t->telemetry;
+    int64_t span_token = telemetry_enter("task", NULL, NULL, 1);
+    if (span_token) tinox_histogram_record("tinox_task_queue_duration_ns", telemetry_clock(CLOCK_MONOTONIC) - t->queued_at);
     current_task = t->task;
     task_frame_scope = task_scope = current_task->scope;
     void* (*fn)(void*) = t->fn;
@@ -1353,6 +1675,7 @@ static void* tinox_spawn_trampoline(void* raw) {
     free(t);
     void* ret = fn(args);
     task_close_scope(task_frame_scope, 0, 0);
+    telemetry_leave(span_token);
     TinoxTask* task = current_task;
     pthread_mutex_lock(&task->mu);
     task->retval = ret;
@@ -1392,6 +1715,10 @@ static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
     task_add_owner(task, owner);
     TinoxSpawnTrampolineArgs* t = malloc(sizeof(*t));
     t->fn = fn; t->args = args; t->task = task;
+    if (telemetry_enabled) {
+        t->telemetry = telemetry_context;
+        t->queued_at = telemetry_clock(CLOCK_MONOTONIC);
+    }
     task->budgeted = budgeted;
     // Admission control (#302): over the task budget no thread is created.
     // The handle comes back already finished and failed, so `await` / the
@@ -2359,6 +2686,8 @@ typedef struct {
 static __thread char* _tinox_http_req_headers = NULL; // "Name: Value\r\n" chain
 
 void httpSetHeader(const char* name, const char* value) {
+    // The active context owns these headers; prevent duplicate wire values.
+    if (telemetry_enabled && (!strcasecmp(name, "traceparent") || !strcasecmp(name, "x-request-id") || !strcasecmp(name, "tracestate"))) return;
     size_t old_len = _tinox_http_req_headers ? strlen(_tinox_http_req_headers) : 0;
     size_t add = strlen(name) + strlen(value) + 4; // ": " + "\r\n"
     char* buf = (char*)malloc(old_len + add + 1);
@@ -4890,12 +5219,17 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
 
     size_t body_len = body ? strlen(body) : 0;
     const char* extra = _tinox_http_req_headers ? _tinox_http_req_headers : "";
-    size_t req_cap = strlen(method) + strlen(path) + strlen(host) + strlen(extra) + body_len + 256;
+    char correlation[256] = "";
+    if (telemetry_enabled && telemetry_context.trace[0]) {
+        snprintf(correlation, sizeof(correlation), "traceparent: 00-%s-%s-%02x\r\nx-request-id: %s\r\n",
+                 telemetry_context.trace, telemetry_context.span, telemetry_context.sampled, telemetry_context.request);
+    }
+    size_t req_cap = strlen(method) + strlen(path) + strlen(host) + strlen(extra) + strlen(correlation) + body_len + 256;
     char* req = (char*)malloc(req_cap);
     int req_len = snprintf(req, req_cap,
-        "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s"
+        "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s%s"
         "Content-Length: %zu\r\n\r\n",
-        method, path, host, extra, body_len);
+        method, path, host, extra, correlation, body_len);
     if (body_len) {
         memcpy(req + req_len, body, body_len);
         req_len += (int)body_len;
@@ -5028,11 +5362,17 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
     return resp;
 }
 
-int64_t* httpGet(const char* url)                    { return (int64_t*)http_request("GET", url, NULL); }
-int64_t* httpPost(const char* url, const char* body) { return (int64_t*)http_request("POST", url, body); }
-int64_t* httpPut(const char* url, const char* body)  { return (int64_t*)http_request("PUT", url, body); }
-int64_t* httpDelete(const char* url)                 { return (int64_t*)http_request("DELETE", url, NULL); }
-int64_t* httpPatch(const char* url, const char* body){ return (int64_t*)http_request("PATCH", url, body); }
+static int64_t* telemetry_http_request(const char* method, const char* url, const char* body) {
+    int64_t token = telemetry_enter("http.client", NULL, NULL, 3);
+    TinoxHttpResponse* response = http_request(method, url, body);
+    telemetry_leave(token);
+    return (int64_t*)response;
+}
+int64_t* httpGet(const char* url) { return telemetry_http_request("GET", url, NULL); }
+int64_t* httpPost(const char* url, const char* body) { return telemetry_http_request("POST", url, body); }
+int64_t* httpPut(const char* url, const char* body) { return telemetry_http_request("PUT", url, body); }
+int64_t* httpDelete(const char* url) { return telemetry_http_request("DELETE", url, NULL); }
+int64_t* httpPatch(const char* url, const char* body) { return telemetry_http_request("PATCH", url, body); }
 
 // ---- Binary-safe conn primitives (WebSocket frames etc.) ----
 // httpConnReadRequest/httpConnSendRaw are C-string-based and cut off at
@@ -6687,6 +7027,7 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
 
     // Parse HTTP headers — normalize keys to Title-Case, track Connection header
     tinox_map_reset(&g_req_headers_map);
+    int trace_headers = 0, request_headers = 0;
     int req_close = 0; // HTTP/1.1 default: keep-alive
     char* hdr_line = strchr(raw_req, '\n');
     while (hdr_line) {
@@ -6704,6 +7045,10 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
             while (vlen > 0 && (vstart[vlen-1] == '\r' || vstart[vlen-1] == ' ')) vlen--;
             vstart[vlen] = '\0';
             if (strcmp(hkey, "Connection") == 0 && strcmp(vstart, "close") == 0) req_close = 1;
+            if (telemetry_enabled) {
+                if (!strcmp(hkey, "Traceparent")) trace_headers++;
+                if (!strcmp(hkey, "X-Request-Id")) request_headers++;
+            }
             tinox_map_set_borrow(&g_req_headers_map, hkey, (int64_t)vstart);
         }
         hdr_line = eol;
@@ -6730,7 +7075,23 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     g_ctx[0] = (int64_t)g_request;
     g_ctx[1] = (int64_t)g_response;
 
+    int64_t span_token = 0;
+    if (telemetry_enabled) {
+        const char* incoming_parent = (const char*)(uintptr_t)tinox_map_get(&g_req_headers_map, "Traceparent");
+        const char* incoming_request = (const char*)(uintptr_t)tinox_map_get(&g_req_headers_map, "X-Request-Id");
+        span_token = telemetry_enter("http.server", trace_headers == 1 && incoming_parent ? incoming_parent : "",
+                                    request_headers == 1 && incoming_request ? incoming_request : "", 2);
+        if (span_token) {
+            telemetry_event("request.start");
+            tinox_map_set(&g_resp_headers_map, "X-Request-Id", (int64_t)(uintptr_t)telemetryRequestId());
+        }
+    }
     if (handler) handler((int64_t)g_ctx);
+    if (span_token) {
+        while (telemetry_depth > span_token) telemetryEnd(telemetry_depth);
+        telemetry_event("request.end");
+    }
+    telemetry_leave(span_token);
 
     char* body = (char*)g_response[2];
     if (!body) body = "";
@@ -9003,12 +9364,22 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     _tinox_argc = argc;
     _tinox_argv = argv;
+    telemetryInit();
+    if (telemetry_enabled) {
+        telemetry_event("service.start");
+        tinox_counter_inc("tinox_service_starts_total");
+    }
     task_ensure_scope();
     int64_t rc = tinox_main();
     // Process shutdown owns every remaining joinable child.
     if (__tinox_err == (int64_t)(intptr_t)task_shutdown_error) __tinox_err = 0;
     task_close_scope(task_frame_scope, 0, 1);
     atomic_store(&task_shutdown_complete, true);
+    if (telemetry_enabled) {
+        telemetry_event("service.stop");
+        tinox_counter_inc("tinox_service_stops_total");
+    }
+    telemetryFlush();
     if (__tinox_err != 0) {
         // throw is type-checked as String-or-Error; usually a String.
         const char* msg = (const char*)(intptr_t)__tinox_err;
