@@ -1805,6 +1805,62 @@ packages store `spawn` results that way), but a plain Int is not a
   may follow abort. Genuine errors keep spawn-order precedence and suppressed
   errors remain visible; cancellation caused by sibling failure is secondary.
 
+## Concurrency Budgets + Overload Handling (issue #302, since 2026-10-21)
+
+Runtime limits are resolved once per process (`tinox_limits()`, runtime.c) from
+detected defaults plus `TINOX_*` overrides; a malformed override is a hard
+startup failure, never a silent fallback.
+
+- **Effective CPUs** = min(`sched_getaffinity`, cgroup CPU quota rounded up).
+  cgroup v2 walks from the process's own cgroup (`/proc/self/cgroup`) up to
+  the root keeping the tightest `cpu.max` (a systemd scope / k8s pod slice
+  carries the quota on a parent, not on `/sys/fs/cgroup/cpu.max`); v1 reads
+  `cpu/cpu.cfs_quota_us`/`cpu.cfs_period_us`. `TINOX_CGROUP_ROOT` is a test
+  hook pointing detection at a fixture tree. Verified against a real
+  `systemd-run --user --scope -p CPUQuota=150%` (-> cpus=2).
+- **Limits**: `TINOX_CPUS`, `TINOX_HTTP_WORKERS` (default CPUs),
+  `TINOX_MAX_CONNECTIONS` (4096, hard ceiling = the per-worker `EPOLL_MAX_CONNS`
+  slot table), `TINOX_MAX_TASKS` (4096), `TINOX_MAX_WS_CONNECTIONS` (1024).
+- **Overload behaviour is protocol-visible**: HTTP/1 over the connection budget
+  gets `503` + `Retry-After: 1` + a JSON body naming the budget; a `spawn` over
+  the task budget returns a task that is already failed (no thread created), so
+  `await` / the owning `scope` re-throws "task budget exhausted"; a WebSocket
+  over budget is closed right after the upgrade (`tinox_ws_admit`/`_release`
+  in both `@WebsocketEndpoint` and `@TinoxUIApp` accept loops). Only joinable
+  `spawn` counts against the task budget; the per-connection detached WS
+  workers are governed by the WS budget instead. Nothing is retried
+  automatically.
+- **Visibility**: `Limits: ...` line in the startup banner (printed at run time
+  since affinity/cgroup are only known then) and gauges/counters
+  (`tinox_http_connections_{limit,open,peak,rejected_total}`, `tinox_tasks_*`,
+  `tinox_websocket_connections_*`) appended to `/metrics`.
+- **Execution-model inventory (why nothing else needs a budget)**: HTTP/1
+  = epoll workers (+ connection cap); `spawn` = one thread per task (task
+  cap); `@WebsocketEndpoint`/`@TinoxUIApp` = detached worker per connection
+  (WS cap); HTTP/2 (`Http2Server.listen`), HTTP/3 and the TLS
+  `httpServerAcceptTls` loops handle connections inline on the caller's
+  thread -- no thread growth, backlog bounded by `listen(4096)`; AMQP
+  0-9-1/1.0 use `spawn` for dispatcher/heartbeat loops, so they already
+  count against the task cap.
+- **Queueing**: `TINOX_QUEUE_WAIT_MS` (default 0) lets `spawn` and the WS
+  accept loop wait on a condvar for a freed slot, bounded by that deadline,
+  then reject. HTTP/1 never queues (blocking an epoll worker would stall
+  every other connection on it). Waits are visible as
+  `tinox_queue_{waiting,wait_ms_total,wait_ms_max,timeouts_total}`. A task
+  that spawns children while holding the last slot can wait out the whole
+  deadline -- that's why the default is 0.
+- **Config sources**: env var > `application.properties`
+  (`tinox.limits.<name without TINOX_, lowercase>`) > default; both are
+  validated the same way. Dev UI: `/limits` (`tinox_limits_json`).
+- **Verified in real containers** (`tinox docker` + `docker run --cpus=N`):
+  0.5 -> 1, 1.5 -> 2, 4 -> 4 CPUs "(cgroup quota)". Not an automated test
+  (needs a docker build; the cgroup parsing itself is covered by the
+  fixture-tree and `taskset` tests).
+- **Not covered**: per-endpoint overrides; HTTP/1 request deadlines beyond
+  the existing 5s first-request / 500ms keep-alive guards.
+- Tests: `crates/tinox/tests/concurrency_budgets.rs` (real curl/raw-socket
+  clients, `taskset`, cgroup fixture trees).
+
 
 ## Shared Application State (issue #303)
 

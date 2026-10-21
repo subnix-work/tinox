@@ -1693,6 +1693,36 @@ epoll_fd = epoll_create1(0);
       wiederverwendet – das eliminiert malloc/free im kritischen Request-Pfad vollständig.
     </p>
 
+    <h3>Nebenl&auml;ufigkeits-Budgets &amp; Overload-Behandlung</h3>
+    <p>
+      Worker- und Verbindungszahlen sind begrenzt und Container-bewusst. Die effektive
+      CPU-Anzahl ist das Minimum aus CPU-Affinit&auml;t (<code>taskset</code>, cpuset) und
+      cgroup-CPU-Quota (v1 und v2, z.&nbsp;B. ergibt <code>docker run --cpus=1.5</code> 2),
+      nicht die Kernzahl des Hosts. Jedes Limit l&auml;sst sich per Umgebungsvariable
+      &uuml;berschreiben; ein ung&uuml;ltiger Wert bricht den Start ab. Die effektiven Werte stehen im
+      Startup-Banner (<code>Limits: ...</code>) und werden zusammen mit Open/Peak/Rejected-Z&auml;hlern
+      auf <code>/metrics</code> ausgegeben.
+    </p>
+    <table>
+      <tr><th>Variable</th><th>Default</th><th>Verhalten bei Ersch&ouml;pfung</th></tr>
+      <tr><td><code>TINOX_CPUS</code></td><td>erkannt</td><td>&ndash;</td></tr>
+      <tr><td><code>TINOX_HTTP_WORKERS</code></td><td>CPUs</td><td>&ndash;</td></tr>
+      <tr><td><code>TINOX_MAX_CONNECTIONS</code></td><td>4096 (max. 4096)</td><td>HTTP/1: <code>503 Service Unavailable</code> mit <code>Retry-After: 1</code></td></tr>
+      <tr><td><code>TINOX_MAX_TASKS</code></td><td>4096</td><td><code>spawn</code> liefert einen Task, dessen <code>await</code> (bzw. umgebender <code>scope</code>) "task budget exhausted" wirft</td></tr>
+      <tr><td><code>TINOX_MAX_WS_CONNECTIONS</code></td><td>1024</td><td>die WebSocket-Verbindung wird sofort geschlossen</td></tr>
+      <tr><td><code>TINOX_QUEUE_WAIT_MS</code></td><td>0 (keine Warteschlange)</td><td>wie lange <code>spawn</code> / ein WebSocket-Accept auf einen freien Slot warten darf, bevor abgewiesen wird</td></tr>
+    </table>
+    <p>
+      Jede Einstellung kann auch in <code>application.properties</code> als
+      <code>tinox.limits.&lt;name&gt;</code> stehen (z.&nbsp;B. <code>tinox.limits.max_tasks=256</code>);
+      die Umgebungsvariable hat Vorrang. Die Dev-UI-API liefert die effektiven Werte und Live-Z&auml;hler
+      unter <code>/limits</code>. HTTP/1 weist sofort ab (die epoll-Worker d&uuml;rfen nicht blockieren);
+      die Accept-Schleifen von HTTP/2, HTTP/3 und TLS sind bewusst einthreadig, ihr Backlog ist durch die
+      Kernel-Listen-Queue begrenzt und sie erzeugen keine Threads. AMQP-Verbindungen nutzen
+      <code>spawn</code> und z&auml;hlen daher gegen <code>TINOX_MAX_TASKS</code>.
+      Abgewiesene Anfragen werden nie automatisch wiederholt.
+    </p>
+
     <div class="info-box green">
       <strong>Ergebnis:</strong> Bis zu 4.096 gleichzeitige Verbindungen pro Thread,
       lineares Skalieren über CPU-Kerne durch SO_REUSEPORT.

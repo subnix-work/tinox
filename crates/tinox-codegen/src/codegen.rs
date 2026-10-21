@@ -1514,6 +1514,11 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_task_spawn(i8* (i8*)*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_task_spawn_detached(i8* (i8*)*, i8*)").unwrap();
+        // WebSocket connection budget (#302): the accept loops ask before
+        // spawning a worker and the worker releases when it ends.
+        writeln!(&mut self.ir, "declare i64 @tinox_ws_admit()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_ws_release()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_print_limits()").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_task_await(i8*)").unwrap();
         // Monotonic milliseconds -- used only by emit_tinox_main_bootstrap's
         // startup banner to measure/print bootstrap time.
@@ -3300,7 +3305,18 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %dispatch").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %admit").unwrap();
+
+            // Over the connection budget: close the already-upgraded
+            // connection right away instead of growing one thread per
+            // client without bound (the client sees an immediate close).
+            writeln!(&mut self.lambda_ir, "admit:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %admitted = call i64 @tinox_ws_admit()").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_admitted = icmp ne i64 %admitted, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_admitted, label %dispatch, label %reject").unwrap();
+            writeln!(&mut self.lambda_ir, "reject:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
 
             // 2-slot args array [worker_fn_ptr, conn] -- same convention
             // emit_spawn_wrapper's own caller (ExprKind::Spawn) already uses
@@ -3355,6 +3371,7 @@ impl CodeGen {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_close).unwrap();
             }
             writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_ws_release()").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
@@ -3626,7 +3643,14 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %tui_dispatch").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %tui_admit").unwrap();
+            writeln!(&mut self.lambda_ir, "tui_admit:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %admitted = call i64 @tinox_ws_admit()").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_admitted = icmp ne i64 %admitted, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_admitted, label %tui_dispatch, label %tui_reject").unwrap();
+            writeln!(&mut self.lambda_ir, "tui_reject:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "tui_dispatch:").unwrap();
             writeln!(&mut self.lambda_ir, "  %args_raw = call i8* @tinox_alloc(i64 16)").unwrap();
@@ -3774,6 +3798,7 @@ impl CodeGen {
 
             writeln!(&mut self.lambda_ir, "tui_conn_end:").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_ws_release()").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
@@ -4082,6 +4107,7 @@ impl CodeGen {
         self.emit_devui_static_handler("__devui_info", &info_json);
         self.emit_devui_config_handler();
         self.emit_devui_components_handler();
+        self.emit_devui_limits_handler();
         self.emit_devui_tests_run_handler();
 
         writeln!(&mut self.lambda_ir, "define i64 @__tinox_run_devui() {{").unwrap();
@@ -4095,6 +4121,7 @@ impl CodeGen {
             ("/websockets", "__devui_websockets"),
             ("/info", "__devui_info"),
             ("/config", "__devui_config"),
+            ("/limits", "__devui_limits"),
             ("/components", "__devui_components"),
             ("/tests/run", "__devui_tests_run"),
         ] {
@@ -4419,6 +4446,18 @@ impl CodeGen {
         let suffix_ptr = self.emit_lambda_string_literal("}");
         writeln!(&mut self.lambda_ir,
             "  %json = call i8* @tinox_string_concat(i8* %s3, i8* {suffix_ptr})").unwrap();
+        self.emit_devui_finish_response("%json");
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+    }
+
+    /// `/limits`: effective concurrency budgets and live saturation
+    /// counters (`tinox_limits_json`, runtime.c; issue #302).
+    fn emit_devui_limits_handler(&mut self) {
+        writeln!(&mut self.lambda_ir, "declare i8* @tinox_limits_json()").unwrap();
+        writeln!(&mut self.lambda_ir, "define void @__devui_limits(i64 %ctx_i64) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %json = call i8* @tinox_limits_json()").unwrap();
         self.emit_devui_finish_response("%json");
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
@@ -4815,6 +4854,9 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  {t} = call i64 @tinox_now_ms()").unwrap();
             let banner_ptr = self.emit_lambda_string_literal(&banner);
             writeln!(&mut self.lambda_ir, "  call void @tinox_print_string(i8* {banner_ptr})").unwrap();
+            // Effective concurrency budgets are only known at run time
+            // (CPU affinity / cgroup quota / TINOX_* overrides).
+            writeln!(&mut self.lambda_ir, "  call void @tinox_print_limits()").unwrap();
             Some(t)
         } else {
             None

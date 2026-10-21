@@ -159,7 +159,7 @@ class Main
     // The /metrics endpoint itself is actually wired up (200, not the
     // 404/connection-refused it would give if the shim never got
     // registered) -- no @Counter/@Histogram/@Gauge is declared in this
-    // fixture, so an empty body is the correct real output, not a masked
+    // fixture, so the body is only the runtime's own budget metrics, not a masked
     // failure.
     let curl_status = |url: &str| -> String {
         for attempt in 0..5 {
@@ -176,7 +176,11 @@ class Main
         unreachable!()
     };
     assert_eq!(curl_status(&format!("{base}/metrics")), "200");
-    assert_eq!(curl_body(&format!("{base}/metrics")), "");
+    // No user-declared metrics, so the body is exactly the runtime's own
+    // concurrency-budget gauges/counters (issue #302).
+    let metrics = curl_body(&format!("{base}/metrics"));
+    assert!(metrics.contains("tinox_http_connections_limit 4096"), "budget metrics missing: {metrics}");
+    assert!(metrics.contains("tinox_http_connections_rejected_total 0"), "budget metrics missing: {metrics}");
 
     let _ = std::fs::remove_dir_all(&workdir);
 }
