@@ -92,6 +92,10 @@ jobs:
           path: ~/.tinox/repository
           key: tinox-pkg-cache-v1
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: make check
         run: make -C tinox check
 

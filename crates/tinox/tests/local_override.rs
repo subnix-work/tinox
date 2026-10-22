@@ -28,14 +28,14 @@ fn fresh_dir(name: &str) -> PathBuf {
     d
 }
 
-/// A tinox.core-style package `localdemo` whose `Greeter::greet()` returns `greeting`.
+/// A tinox.core-style package `localdemo` whose `Greeter.greet()` returns `greeting`.
 fn write_localdemo(dir: &Path, greeting: &str) {
     let src = dir.join("tinox/core/localdemo");
     std::fs::create_dir_all(&src).expect("mkdir pkg");
     std::fs::write(dir.join("tinox.toml"), "[package]\nname = \"localdemo\"\nversion = \"9.9.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n").expect("pkg toml");
     std::fs::write(
         src.join("Greeter.tnx"),
-        format!("class Greeter {{\n    fnc greet() -> String {{ return \"{greeting}\"; }}\n}}\n"),
+        format!("class Greeter {{\n    fn greet() -> String {{ return \"{greeting}\"; }}\n}}\n"),
     )
     .expect("Greeter.tnx");
 }

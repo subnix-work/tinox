@@ -1,0 +1,9 @@
+class Main
+{
+    fnc main() -> Int32
+    {
+        let name: String = "Tinox";
+        println("Hello, " + name + "!");
+        return 0;
+    }
+}

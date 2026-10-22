@@ -1268,6 +1268,18 @@ impl TypeChecker {
         }
     }
 
+    /// Deterministic projection of the same signatures used by diagnostics.
+    /// Builtins intentionally erase some types; source APIs retain their types
+    /// in the parser-backed documentation model instead.
+    pub fn reference_signatures(&self) -> std::collections::BTreeMap<String, String> {
+        self.symbols.functions.iter().map(|(name, sig)| {
+            let params = sig.params.iter()
+                .map(|(name, ty)| format!("{}: {}", name, ty.display()))
+                .collect::<Vec<_>>().join(", ");
+            (name.clone(), format!("({}) -> {}", params, sig.return_type.display()))
+        }).collect()
+    }
+
     /// Rich per-expression type export (type-system unification): the full
     /// `ValueType` per node id, including generic type args — unlike
     /// `expr_markers`, which flattens to a lossy string. The codegen migrates its

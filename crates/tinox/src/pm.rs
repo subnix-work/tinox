@@ -644,6 +644,8 @@ pub fn resolve_overrides(root: &Path, manifest: &TinoxManifest) -> Result<Vec<Re
     Ok(out)
 }
 
+type InstalledDepDirs = (Vec<PathBuf>, Vec<MissingDep>, Vec<String>);
+
 /// Every installed dependency directory reachable for import resolution —
 /// not just the ones this project's own tinox.toml lists directly. Merges
 /// two trees: the project-local `.tinox/deps/**` glob (explicit-`url`
@@ -662,7 +664,7 @@ pub fn resolve_overrides(root: &Path, manifest: &TinoxManifest) -> Result<Vec<Re
 pub fn installed_dep_dirs(
     root: &Path,
     manifest: &TinoxManifest,
-) -> Result<(Vec<PathBuf>, Vec<MissingDep>, Vec<String>), String> {
+) -> Result<InstalledDepDirs, String> {
     let overrides = resolve_overrides(root, manifest)?;
     let deps_root = root.join(".tinox").join("deps");
     let mut dirs = Vec::new();
@@ -718,6 +720,7 @@ struct DepWalk<'a> {
 /// whatever manifest each resolved dependency itself ships) actually
 /// declares — mirrors `install_dep_transitively`'s walk, but read-only (no
 /// network, no installation), with the same cycle-guard.
+#[cfg(test)]
 pub fn global_dep_dirs(manifest: &TinoxManifest) -> (Vec<PathBuf>, Vec<MissingDep>) {
     let mut walk = DepWalk { overrides: &[], notes: Vec::new(), used: HashSet::new() };
     global_dep_dirs_walk(manifest, &mut walk)
@@ -1869,7 +1872,14 @@ pub fn cmd_add(args: &[String]) {
     };
     let mut lock_changed = false;
     let mut visited: HashSet<(String, String, String)> = HashSet::new();
-    install_dep_transitively(&root, &dep, &manifest, &mut lock, false, &mut visited, &mut lock_changed);
+    let overrides = match resolve_overrides(&root, &manifest) {
+        Ok(overrides) => overrides,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return;
+        }
+    };
+    install_dep_transitively(&root, &dep, &manifest, &mut lock, false, &mut visited, &mut lock_changed, &overrides);
     if lock_changed {
         if let Err(e) = write_lock(&root, &lock) {
             eprintln!("warning: failed to update tinox.lock: {}", e);

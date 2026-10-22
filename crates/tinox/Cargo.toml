@@ -12,6 +12,7 @@ tinox_common = { package = "tinox-common", path = "../tinox-common" }
 notify = "6"
 ctrlc = "3"
 serde = { workspace = true }
+serde_json = "1"
 serde_yaml = { workspace = true }
 ureq = { workspace = true }
 flate2 = { workspace = true }

@@ -902,3 +902,14 @@ See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 ## License
 
 MIT OR Apache-2.0
+
+## Checked references for tools and AI
+
+Start with the versioned [compact AI guide](docs/AI_GUIDE.md). Compiler-owned
+annotation/builtin metadata and the exact current package inventory live in
+[docs/current](docs/current/). `tinox reference [source-file-or-directory]`
+exports JSON using the compiler's annotation registry, type checker and parser
+API model. `make docs-check` verifies snapshots, executable canonical examples,
+bilingual module inventories and current package documentation links; it is
+part of `make check`. See the [documentation workflow](docs/REFERENCE_WORKFLOW.md)
+for regeneration and immutable release-doc staging.

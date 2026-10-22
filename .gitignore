@@ -79,3 +79,7 @@ fuzz/*/leak-*
 fuzz/*/timeout-*
 fuzz/*/oom-*
 fuzz/*/slow-unit-*
+
+# Python documentation tooling
+__pycache__/
+*.pyc

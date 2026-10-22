@@ -7,7 +7,7 @@ export DOGFOOD_DIR
 
 .PHONY: check test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync workspace-ext
 
-check: clippy test dogfood grammar-sync
+check: clippy test dogfood grammar-sync docs-check
 
 # Lint gate: 0 warnings across the whole workspace (bins + tests).
 # Deliberate exceptions are #[allow(...)] with a justification in the code.
@@ -182,3 +182,22 @@ grammar-sync:
 install-hooks:
 	git config core.hooksPath .githooks
 	@echo "core.hooksPath = .githooks set (pre-push: make check)"
+
+# Current metadata/guide are reproducible; translated prose and version pages
+# remain deliberate publications. Python 3.11+ supplies tomllib.
+.PHONY: docs-generate docs-check docs-stage docs-release-check
+docs-generate:
+	cargo build --release -p tinox
+	python3 scripts/reference.py generate
+
+docs-check:
+	cargo build --release -p tinox
+	python3 -m unittest discover -s tests -p 'reference_test.py'
+	python3 scripts/reference.py check
+
+docs-stage:
+	cargo build --release -p tinox
+	python3 scripts/reference.py stage
+
+docs-release-check:
+	python3 scripts/reference.py verify-release
