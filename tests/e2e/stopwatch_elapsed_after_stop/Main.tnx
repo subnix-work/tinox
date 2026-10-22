@@ -14,21 +14,21 @@ class Main
 {
     fnc main() -> Int32
     {
-        let fresh = Time::newStopwatch();
+        const fresh = Time::newStopwatch();
         println("not-running-before-start=${fresh.elapsed()}");
 
-        let sw = Time::newStopwatch();
+        const sw = Time::newStopwatch();
         sw.start();
         Time::sleep(20);
         sw.stop();
 
-        let firstRead: Int64 = sw.elapsed();
+        const firstRead: Int64 = sw.elapsed();
         println("elapsed-after-stop-nonzero=${firstRead > 0}");
 
         // elapsed() must keep returning the same frozen value on repeated
         // calls after stop(), not silently reset to 0 or keep advancing.
         Time::sleep(20);
-        let secondRead: Int64 = sw.elapsed();
+        const secondRead: Int64 = sw.elapsed();
         println("elapsed-frozen-after-second-check=${secondRead == firstRead}");
 
         return 0;

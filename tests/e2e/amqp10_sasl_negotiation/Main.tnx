@@ -17,19 +17,19 @@ class Main
 {
 
     async fnc fakeBrokerAccept(srv: Int64, outcomeCode: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn, 8); // SASL protocol header, already tested in Phase 1
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]); // header echo
 
         // sasl-mechanisms: offers ANONYMOUS + PLAIN (a list instead of a real
         // array format code -- decodes identically as ListVal, see amqp10.tnx).
         var mechs: List<Amqp10Value> = [Amqp10Value::SymbolVal("ANONYMOUS"), Amqp10Value::SymbolVal("PLAIN")];
-        let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal(mechs)]);
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal(mechs)]);
         Amqp10::writeFrame(sconn, 1, 0, mechBody);
 
         // Receive sasl-init and check that PLAIN was chosen
-        let f1 = Amqp10::readFrame(sconn);
-        let p1 = Amqp10::decodePerformative(f1.body);
+        const f1 = Amqp10::readFrame(sconn);
+        const p1 = Amqp10::decodePerformative(f1.body);
         var sawPlain: Int64 = 0;
         if (p1.descriptor == 0x41) {
             match p1.fields[0] {
@@ -39,7 +39,7 @@ class Main
         }
 
         // sasl-outcome
-        let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(outcomeCode)]);
+        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(outcomeCode)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
         httpConnClose(sconn);
@@ -49,19 +49,19 @@ class Main
 
     fnc main() -> Int32 {
         // --- Success path ---
-        let srv1 = httpServerCreate(0);
-        let port1 = httpServerBoundPort(srv1);
+        const srv1 = httpServerCreate(0);
+        const port1 = httpServerBoundPort(srv1);
         if (srv1 < 0) {
             println("bind failed");
             return 1;
         }
-        let handle1 = spawn fakeBrokerAccept(srv1, 0);
+        const handle1 = spawn fakeBrokerAccept(srv1, 0);
 
-        let conn1 = Amqp10::dial("127.0.0.1", port1);
+        const conn1 = Amqp10::dial("127.0.0.1", port1);
         Amqp10::sendSaslProtocolHeader(conn1);
-        let echoOk1 = Amqp10::checkProtocolHeaderEcho(conn1, [65, 77, 81, 80, 3, 1, 0, 0]);
-        let result1 = Amqp10::negotiateSasl(conn1, "guest", "guest");
-        let sawPlain1 = await handle1;
+        const echoOk1 = Amqp10::checkProtocolHeaderEcho(conn1, [65, 77, 81, 80, 3, 1, 0, 0]);
+        const result1 = Amqp10::negotiateSasl(conn1, "guest", "guest");
+        const sawPlain1 = await handle1;
 
         if (echoOk1) {
             if (result1.ok) {
@@ -75,18 +75,18 @@ class Main
         httpServerClose(srv1);
 
         // --- Rejected auth (sasl-outcome code = 1) ---
-        let srv2 = httpServerCreate(0);
-        let port2 = httpServerBoundPort(srv2);
+        const srv2 = httpServerCreate(0);
+        const port2 = httpServerBoundPort(srv2);
         if (srv2 < 0) {
             println("bind failed");
             return 1;
         }
-        let handle2 = spawn fakeBrokerAccept(srv2, 1);
+        const handle2 = spawn fakeBrokerAccept(srv2, 1);
 
-        let conn2 = Amqp10::dial("127.0.0.1", port2);
+        const conn2 = Amqp10::dial("127.0.0.1", port2);
         Amqp10::sendSaslProtocolHeader(conn2);
         Amqp10::checkProtocolHeaderEcho(conn2, [65, 77, 81, 80, 3, 1, 0, 0]);
-        let result2 = Amqp10::negotiateSasl(conn2, "guest", "wrong-password");
+        const result2 = Amqp10::negotiateSasl(conn2, "guest", "wrong-password");
         await handle2;
 
         if (!result2.ok) {

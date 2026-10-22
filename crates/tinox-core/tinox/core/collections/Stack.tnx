@@ -21,19 +21,19 @@ namespace tinox.core.collections
 
         fn pop() -> T
         {
-            let len: Int64 = this.data.len();
+            const len: Int64 = this.data.len();
             if (len == 0)
             {
                 throw "Stack is empty";
             }
-            let value: T = this.data[len - 1];
+            const value: T = this.data[len - 1];
             this.data.pop();
             return value;
         }
 
         fn peek() -> T
         {
-            let len: Int64 = this.data.len();
+            const len: Int64 = this.data.len();
             if (len == 0)
             {
                 throw "Stack is empty";

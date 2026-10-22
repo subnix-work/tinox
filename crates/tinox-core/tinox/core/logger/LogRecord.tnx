@@ -2,16 +2,8 @@ module tinox.core.logger;
 
 namespace tinox.core.logger
 {
-    // Structured representation of a single log line, used by Logger::log
-    // when JSON output is enabled (see Logger.tnx / TINOX_LOG_JSON).
-    //
-    // Serialized by hand in Logger::log (a small, fixed 4-string-field
-    // shape) rather than via @JsonSerializable/tinox.core.json -- logger
-    // is a core-tier module (always available, no dependency declaration
-    // needed) and json is extended-tier (must be declared+installed), so
-    // pulling it in here would make every program using Logger with JSON
-    // output transitively need an undeclared extended dependency. See
-    // CLAUDE.md's core/extended stdlib split notes.
+    // Source-compatible log payload. Logger::toJson serializes bounded fields
+    // and appends request_id, trace_id and span_id from the current context.
     class LogRecord
     {
         var timestamp: String;

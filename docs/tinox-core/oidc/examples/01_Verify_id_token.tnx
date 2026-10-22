@@ -4,7 +4,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let client: OidcClient = OidcClient::new(
+        const client: OidcClient = OidcClient::new(
             "https://accounts.google.com",
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://oauth2.googleapis.com/token",
@@ -14,11 +14,11 @@ class Main
             "https://myapp.example.com/callback"
         );
 
-        let req: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
+        const req: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
         println("redirect user to: " + req.url);
 
         // Callback handler, after the provider redirects back with ?code=...
-        let tokens: OidcTokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier);
+        const tokens: OidcTokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier);
         if (tokens.ok)
         {
             // id_token signature + iss/aud/exp/nbf already verified here

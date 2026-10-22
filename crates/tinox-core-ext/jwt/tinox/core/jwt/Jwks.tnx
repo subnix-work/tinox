@@ -29,7 +29,7 @@ namespace tinox.core.jwt
          */
         fn fetchRsaKey(jwksUri: String, kid: String) -> Map<String, String>
         {
-            let resp = Http::get(jwksUri);
+            const resp = Http::get(jwksUri);
             if (resp.statusCode() == 0)
             {
                 throw "network error fetching JWKS from " + jwksUri + " (connection failed or TLS/certificate error)";
@@ -39,12 +39,12 @@ namespace tinox.core.jwt
                 throw "JWKS endpoint " + jwksUri + " returned HTTP " + resp.statusCode().toString();
             }
 
-            let doc: Map<String, JsonValue> = Json::parse(resp.body()).asTable();
+            const doc: Map<String, JsonValue> = Json::parse(resp.body()).asTable();
             if (!doc.contains("keys"))
             {
                 throw "JWKS document from " + jwksUri + " has no 'keys' field";
             }
-            let keys: List<JsonValue> = doc["keys"].asList();
+            const keys: List<JsonValue> = doc["keys"].asList();
 
             var foundN: String = "";
             var foundE: String = "";
@@ -52,7 +52,7 @@ namespace tinox.core.jwt
             var i: Int64 = 0;
             while i < keys.len()
             {
-                let entry: Map<String, JsonValue> = keys[i].asTable();
+                const entry: Map<String, JsonValue> = keys[i].asTable();
                 if (entry.contains("kty") && entry["kty"].getString() == "RSA" && entry.contains("n") && entry.contains("e"))
                 {
                     var entryKid: String = "";

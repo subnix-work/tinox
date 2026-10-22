@@ -40,7 +40,7 @@ fn write_localdemo(dir: &Path, greeting: &str) {
     .expect("Greeter.tnx");
 }
 
-const MAIN: &str = "import tinox.core.localdemo;\nclass Main {\n    fnc main() -> Int32 {\n        let g = new Greeter();\n        println(g.greet());\n        return 0;\n    }\n}\n";
+const MAIN: &str = "import tinox.core.localdemo;\nclass Main {\n    fnc main() -> Int32 {\n        println(Greeter::greet());\n        return 0;\n    }\n}\n";
 
 fn project(name: &str, extra_toml: &str) -> PathBuf {
     let p = fresh_dir(name);
@@ -180,5 +180,31 @@ fn workspace_crypto_resolves_from_the_checkout() {
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert!(String::from_utf8_lossy(&out.stdout).contains("900150983cd24fb0d6963f7d28e17f72"));
     assert!(stderr(&out).contains(crypto.to_str().unwrap()), "provenance should name the workspace path: {}", stderr(&out));
+    std::fs::remove_dir_all(&proj).ok();
+}
+
+#[test]
+fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
+    let pkg = fresh_dir("pkg-add");
+    write_localdemo(&pkg, "added locally");
+    let proj = fresh_dir("add");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    std::fs::write(proj.join("src/Main.tnx"), MAIN).unwrap();
+    std::fs::write(
+        proj.join("tinox.toml"),
+        format!("[package]\nname = \"overridetest\"\nversion = \"0.1.0\"\n{}", override_toml(pkg.to_str().unwrap())),
+    ).unwrap();
+    let output = Command::new(tinox()).args(["add", "tinox.core", "localdemo", "1.0.0", "http://127.0.0.1:1/unreachable"])
+        .current_dir(&proj).env("TINOX_HOME", proj.join("empty-home"))
+        .output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("local override"), "{:?}", output);
+    if let Ok(lock) = std::fs::read_to_string(proj.join("tinox.lock")) {
+        assert!(!lock.contains("localdemo"), "local coordinate was pinned: {lock}");
+    }
+    let output = run(&proj);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("added locally"));
+    std::fs::remove_dir_all(&pkg).ok();
     std::fs::remove_dir_all(&proj).ok();
 }

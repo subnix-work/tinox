@@ -5,7 +5,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let s: String = "Hello, World!";
+        const s: String = "Hello, World!";
         println(s.len());
         println(s.substring(7, 12));
         return 0;

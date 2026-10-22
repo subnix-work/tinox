@@ -1,0 +1,16 @@
+// expect: 3
+// expect: 30
+class Main {
+    async fnc work(n: Int64) -> Int64 { return n; }
+    fnc main() -> Int32 {
+        const a = spawn Main::work(1);
+        const b = spawn Main::work(2);
+        const t = await a + await b;
+        println(t.toString());
+        const c = spawn Main::work(10);
+        const d = spawn Main::work(5);
+        const e = spawn Main::work(3);
+        println((await c * await d - await e * 0 - 20).toString());
+        return 0;
+    }
+}

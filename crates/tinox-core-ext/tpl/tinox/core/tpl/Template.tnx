@@ -7,13 +7,13 @@ namespace tinox.core.tpl
         fn render(template: String, data: Map<String, JsonValue>) -> String
         {
             var result: String = template;
-            let keys: List<String> = data.keys();
+            const keys: List<String> = data.keys();
             var i: Int64 = 0;
             while i < keys.len()
             {
-                let key: String = keys[i];
-                let placeholder: String = "{{" + key + "}}";
-                let value: String = Json::stringify(data[key]);
+                const key: String = keys[i];
+                const placeholder: String = "{{" + key + "}}";
+                const value: String = Json::stringify(data[key]);
                 result = result.replace(placeholder, value);
                 i = i + 1;
             }
@@ -38,7 +38,7 @@ namespace tinox.core.tpl
             var current: Int64 = 0;
             while current < template.len()
             {
-                let tagStart: Int64 = template.indexOf("{{", current);
+                const tagStart: Int64 = template.indexOf("{{", current);
                 if (tagStart == -1)
                 {
                     if (current < template.len())
@@ -51,12 +51,12 @@ namespace tinox.core.tpl
                 {
                     sections.push(TemplateSection { kind: "text", content: template.substring(current, tagStart) });
                 }
-                let tagEnd: Int64 = template.indexOf("}}", tagStart);
+                const tagEnd: Int64 = template.indexOf("}}", tagStart);
                 if (tagEnd == -1)
                 {
                     break;
                 }
-                let tagContent: String = template.substring(tagStart + 2, tagEnd);
+                const tagContent: String = template.substring(tagStart + 2, tagEnd);
                 if (tagContent.startsWith("#"))
                 {
                     sections.push(TemplateSection { kind: "section", content: tagContent.substring(1, tagContent.len()) });
@@ -80,7 +80,7 @@ namespace tinox.core.tpl
             var i: Int64 = 0;
             while i < tpl.sections.len()
             {
-                let section: TemplateSection = tpl.sections[i];
+                const section: TemplateSection = tpl.sections[i];
                 if (section.kind == "text")
                 {
                     result = result + section.content;

@@ -14,7 +14,7 @@ namespace tinox.core.cron
 
         fn addJob(scheduler: CronScheduler, expr: String, callback: fnc() -> Nothing) -> Nothing
         {
-            let cronExpr: CronExpr = Cron::parse(expr);
+            const cronExpr: CronExpr = Cron::parse(expr);
             scheduler.jobs.push(CronJob { expr: cronExpr, callback: callback, lastRun: 0 });
         }
 
@@ -34,11 +34,11 @@ namespace tinox.core.cron
             {
                 return;
             }
-            let now: Int64 = Time::now();
+            const now: Int64 = Time::now();
             var i: Int64 = 0;
             while i < scheduler.jobs.len()
             {
-                let job: CronJob = scheduler.jobs[i];
+                const job: CronJob = scheduler.jobs[i];
                 if (Cron::matches(job.expr, now))
                 {
                     job.callback();

@@ -4,7 +4,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let s: String = "foo" + "bar" + "baz";
+        const s: String = "foo" + "bar" + "baz";
         println(s);
         return 0;
     }

@@ -1,0 +1,68 @@
+// expect: 400
+// expect: 400
+// expect: guarded failure
+// expect: 401
+// expect: Task cancelled
+// expect: holder cleanup
+// expect: 401
+// expect: cancel finally
+// expect: cancel cleanup
+// expect: Task cancelled
+// expect: 402
+// expect: 1
+// expect: method lock
+// expect: true
+// expect: 1.5
+import Counter;
+import MethodCounter;
+class Main {
+    fnc addMany(counter: Counter) -> Nothing {
+        for i in 0..100 { counter.add(); }
+    }
+    fnc hold(counter: Counter, ready: Int64, release: Int64) -> Nothing {
+        counter.hold(ready, release);
+    }
+    fnc cancel(counter: Counter, ready: Int64) -> Nothing { counter.cancel(ready); }
+    fnc addOnce(counter: Counter, started: Int64) -> Int64 {
+        send started -> 1;
+        return counter.add();
+    }
+    fnc main() -> Int32 {
+        const counter = Counter::new();
+        scope {
+            spawn Main::addMany(counter);
+            spawn Main::addMany(counter);
+            spawn Main::addMany(counter);
+            spawn Main::addMany(counter);
+        }
+        println(counter.read());
+        println(counter.size());
+        try { counter.fail(); } catch (e: String) { println(e); }
+        const afterError = spawn Main::addOnce(counter, channel);
+        println(await afterError);
+        const ready = channel;
+        const release = channel;
+        const holder = spawn Main::hold(counter, ready, release);
+        recv ready;
+        const started = channel;
+        const waiter = spawn Main::addOnce(counter, started);
+        recv started;
+        taskCancel(waiter);
+        try { await waiter; } catch (e: String) { println(e); }
+        send release -> 1;
+        await holder;
+        println(counter.read());
+        const cancelled = spawn Main::cancel(counter, ready);
+        recv ready;
+        taskCancel(cancelled);
+        try { await cancelled; } catch (e: String) { println(e); }
+        const afterCancel = spawn Main::addOnce(counter, channel);
+        println(await afterCancel);
+        const methodCounter = MethodCounter::new();
+        println(methodCounter.increment());
+        println(methodCounter.text());
+        println(methodCounter.flag());
+        println(methodCounter.fraction());
+        return 0;
+    }
+}

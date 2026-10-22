@@ -17,7 +17,8 @@ fn media_type_arg_to_mime(arg: &AnnotationArg) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AnnotationTarget {
     Function,
     Method,
@@ -30,7 +31,7 @@ pub enum AnnotationTarget {
     Param,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AnnotationInfo {
     pub name: String,
     pub valid_targets: Vec<AnnotationTarget>,
@@ -93,6 +94,15 @@ pub struct RouteInfo {
     pub return_type: Type,
 }
 
+/// The payload type remains in route metadata even though the transport
+/// receives only a serialized body. Shared by validation and API contracts.
+pub fn response_body_type(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Generic { name, args } if name == "Response" && args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiScope {
     Application,
@@ -118,6 +128,9 @@ pub struct ConfigFieldInfo {
     pub class_name: String,
     pub field_name: String,
     pub config_key: String,
+    pub policy: String,
+    pub default_value: Option<String>,
+    pub value_type: String,
     /// LLVM type of the field: "i8*" for String, "i64" for Int*, "i1" for Bool
     pub field_llvm_type: String,
 }
@@ -318,6 +331,7 @@ pub struct AnnotationProcessingResult {
     /// override — unlike @Auth's "bearer"/"basic" choice).
     pub transactional_methods: HashSet<(String, String)>,
     pub deprecated_warnings: Vec<String>,
+    pub shared_state_warnings: Vec<String>,
     pub custom_annotation_names: Vec<String>,
     pub di_components: Vec<DiComponentInfo>,
     pub log_classes: HashSet<String>,
@@ -342,6 +356,13 @@ pub struct AnnotationProcessor {
 }
 
 impl AnnotationProcessor {
+    /// Expose the exact metadata used by annotation validation to API consumers.
+    pub fn info(&self, name: &str) -> Option<&AnnotationInfo> { self.registry.get(name) }
+
+    pub fn register_source(&mut self, source: &tinox_parser::SourceFile) {
+        for decl in &source.decls { collect_custom_annotation_classes(&decl.node, self); }
+    }
+
     pub fn new() -> Self {
         let mut registry: HashMap<String, AnnotationInfo> = HashMap::new();
 
@@ -643,8 +664,8 @@ impl AnnotationProcessor {
                 name: "Config".to_string(),
                 valid_targets: vec![AnnotationTarget::Field],
                 min_args: 1,
-                max_args: 1,
-                description: "Injects a value from application.properties into the field".to_string(),
+                max_args: 3,
+                description: "Runtime configuration: key, required/optional/default policy, optional default string".to_string(),
             },
         );
 
@@ -660,6 +681,26 @@ impl AnnotationProcessor {
             },
         );
 
+        registry.insert("Service".into(), AnnotationInfo {
+            name: "Service".into(), valid_targets: vec![AnnotationTarget::Class],
+            min_args: 0, max_args: 2,
+            description: "Enable coordinated lifecycle on Main; optional startup and shutdown deadlines in milliseconds (30000, 5000)".into(),
+        });
+        for (name, description) in [
+            ("OnStart", "Run a singleton initialization hook before starting required services"),
+            ("OnStop", "Run a singleton disposal hook after draining, in reverse dependency/method order"),
+            ("Readiness", "Contribute a synchronous Bool to readiness after required listeners/consumers are usable"),
+            ("Liveness", "Contribute a synchronous Bool to liveness"),
+        ] {
+            registry.insert(name.into(), AnnotationInfo { name: name.into(), valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0, max_args: 0, description: description.into() });
+        }
+        registry.insert("Synchronized".into(), AnnotationInfo {
+            name: "Synchronized".into(),
+            valid_targets: vec![AnnotationTarget::Class, AnnotationTarget::Method],
+            min_args: 0, max_args: 0,
+            description: "Serialize annotated singleton instance methods with one recursive class monitor; release on return, error and cancellation".into(),
+        });
         // DI scope annotations
         registry.insert(
             "ApplicationComponent".to_string(),
@@ -1049,6 +1090,24 @@ impl AnnotationProcessor {
             }
         }
 
+        for component in &result.di_components {
+            if !matches!(component.scope, DiScope::Application | DiScope::Startup) { continue; }
+            fn request_path(name: &str, components: &[DiComponentInfo], seen: &mut HashSet<String>) -> Option<String> {
+                if !seen.insert(name.into()) { return None; }
+                let component = components.iter().find(|c| c.class_name == name)?;
+                if component.scope == DiScope::HttpRequest { return Some(name.into()); }
+                for field in &component.inject_fields {
+                    if let Some(path) = request_path(&field.field_type, components, seen) {
+                        return Some(format!("{name}.{} -> {path}", field.field_name));
+                    }
+                }
+                None
+            }
+            if let Some(path) = request_path(&component.class_name, &result.di_components, &mut HashSet::new()) {
+                result.shared_state_warnings.push(format!(
+                    "shared-state: singleton captures request-scoped state ({path}); use @HttpRequestScoped for the request owner and inject application services instead"));
+            }
+        }
         result
     }
 
@@ -1061,6 +1120,18 @@ impl AnnotationProcessor {
         let mut class_auth: Option<String> = None;
         let mut class_transactional = false;
         let mut di_scope: Option<DiScope> = None;
+        let singleton = class.annotations.iter().any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"));
+        let synchronized = class.annotations.iter().any(|a| a.name == "Synchronized");
+        let state: Vec<_> = class.fields.iter().filter(|f| f.mutable
+            && !f.annotations.iter().any(|a| matches!(a.name.as_str(), "Inject" | "Config"))).collect();
+        let unguarded = !synchronized && class.methods.iter().any(|m| !m.static_
+            && !m.annotations.iter().any(|a| a.name == "Synchronized"));
+        let exposed = state.iter().any(|f| !matches!(f.visibility, tinox_parser::Visibility::Private));
+        if singleton && !state.is_empty() && (unguarded || exposed) {
+            result.shared_state_warnings.push(format!(
+                "shared-state: singleton '{}' has mutable shared fields; protect every access (for example @Synchronized with private fields). Public field access and escaped collections bypass method locks; this diagnostic does not prove race freedom", class.name));
+        }
+
         let mut ws_endpoint_path: Option<String> = None;
         let mut ws_endpoint_port: Option<i64> = None;
         let mut amqp10_consumer_args: Option<(String, i64, String, String, String)> = None;
@@ -1232,6 +1303,11 @@ impl AnnotationProcessor {
         result.sensitive_fields.extend(collect_log_mask_fields("Sensitive", &class.name, &class.fields));
         result.masked_fields.extend(collect_log_mask_fields("Masked", &class.name, &class.fields));
         result.do_not_serialize_fields.extend(collect_log_mask_fields("DoNotSerialize", &class.name, &class.fields));
+        for field in &class.fields {
+            if field.annotations.iter().any(|a| a.name == "Config") && field.annotations.iter().any(|a| a.name == "Sensitive") {
+                result.do_not_serialize_fields.push(LogMaskFieldInfo { class_name: class.name.clone(), field_name: field.name.clone() });
+            }
+        }
         if class.annotations.iter().any(|a| a.name == "JsonSerializable") {
             result.json_serializable_classes.push(class.name.clone());
         }
@@ -1622,6 +1698,36 @@ fn field_type_to_llvm(ty: &Type) -> String {
     }
 }
 
+fn config_string(arg: &tinox_parser::AnnotationArg) -> Option<&str> {
+    match arg {
+        tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s)) => Some(s),
+        _ => None,
+    }
+}
+
+fn validate_config_field(field: &FieldDef, errors: &mut Vec<Error>) {
+    for ann in field.annotations.iter().filter(|a| a.name == "Config") {
+        let args: Vec<_> = ann.args.iter().filter_map(config_string).collect();
+        let valid_key = args.first().is_some_and(|key| !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)));
+        let policy = args.get(1).copied().unwrap_or("legacy");
+        let valid_policy = match policy {
+            "legacy" => ann.args.len() == 1,
+            "required" | "optional" => ann.args.len() == 2,
+            "default" => ann.args.len() == 3,
+            _ => false,
+        };
+        if args.len() != ann.args.len() || !valid_key || !valid_policy || args.iter().any(|s| s.contains('\0')) {
+            errors.push(Error::new(ann.span, "@Config expects an ASCII key and optional policy: required, optional, or default with a fallback string"));
+        }
+        if !matches!(field.field_type, Type::String | Type::Bool | Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::UInt8 | Type::UInt16 | Type::UInt32 | Type::UInt64) {
+            errors.push(Error::new(ann.span, "@Config supports String, Bool and integer fields only"));
+        }
+        if (policy == "default" || field.default.is_some()) && field.annotations.iter().any(|a| a.name == "Sensitive") {
+            errors.push(Error::new(ann.span, "secret configuration must be supplied at runtime; defaults are forbidden"));
+        }
+    }
+}
+
 fn collect_config_fields(class_name: &str, fields: &[FieldDef]) -> Vec<ConfigFieldInfo> {
     fields
         .iter()
@@ -1636,6 +1742,9 @@ fn collect_config_fields(class_name: &str, fields: &[FieldDef]) -> Vec<ConfigFie
                 class_name: class_name.to_string(),
                 field_name: f.name.clone(),
                 config_key: key,
+                policy: ann.args.get(1).and_then(config_string).unwrap_or("legacy").to_string(),
+                default_value: ann.args.get(2).and_then(config_string).map(str::to_string),
+                value_type: format!("{:?}", f.field_type),
                 field_llvm_type: field_type_to_llvm(&f.field_type),
             })
         })
@@ -1686,8 +1795,9 @@ fn collect_custom_annotation_classes(decl: &DeclKind, processor: &mut Annotation
     }
 }
 
-fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
-    match decl {
+fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
+    let first_error = errors.len();
+    match &decl.node {
         DeclKind::Function(f) => {
             errors.extend(processor.validate(&f.annotations, AnnotationTarget::Function));
             for param in &f.params {
@@ -1696,8 +1806,71 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializ
         }
         DeclKind::Class(c) => {
             errors.extend(processor.validate(&c.annotations, AnnotationTarget::Class));
+            if let Some(service) = c.annotations.iter().find(|a| a.name == "Service") {
+                if c.name != "Main" || !c.type_params.is_empty() || c.extends.is_some() {
+                    errors.push(Error::new(
+                        service.span,
+                        "@Service belongs on a non-generic class Main without inheritance",
+                    ));
+                }
+                for arg in &service.args {
+                    if !matches!(arg, AnnotationArg::Literal(Literal::Integer(ms)) if *ms > 0 && *ms <= 3600000)
+                    {
+                        errors.push(Error::new(
+                            service.span,
+                            "@Service deadlines must be integer milliseconds in 1..=3600000",
+                        ));
+                    }
+                }
+            }
+            for method in &c.methods {
+                for hook in method.annotations.iter().filter(|a| {
+                    matches!(
+                        a.name.as_str(),
+                        "OnStart" | "OnStop" | "Readiness" | "Liveness"
+                    )
+                }) {
+                    let health = matches!(hook.name.as_str(), "Readiness" | "Liveness");
+                    let return_ok = if health {
+                        matches!(method.ret_type, Type::Bool)
+                    } else {
+                        matches!(method.ret_type, Type::Nothing)
+                    };
+                    if method.static_
+                        || method.is_async
+                        || !method.type_params.is_empty()
+                        || !method.params.is_empty()
+                        || !return_ok
+                        || !c.type_params.is_empty()
+                        || c.extends.is_some()
+                        || !c
+                            .annotations
+                            .iter()
+                            .any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"))
+                    {
+                        errors.push(Error::new(hook.span, format!("@{} requires a synchronous, non-generic singleton instance method with no parameters returning {} (no class inheritance)", hook.name, if health { "Bool" } else { "Nothing" })));
+                    }
+                }
+            }
+            let synchronized_class = c.annotations.iter().any(|a| a.name == "Synchronized");
+            let has_synchronized = synchronized_class || c.methods.iter().any(|m| m.annotations.iter().any(|a| a.name == "Synchronized"));
+            if has_synchronized && (!c.annotations.iter().any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"))
+                || !c.type_params.is_empty() || c.extends.is_some()) {
+                errors.push(Error::new(c.span, "@Synchronized requires a non-generic @ApplicationComponent or @Startup class without inheritance"));
+            }
+            for m in &c.methods {
+                let explicit = m.annotations.iter().any(|a| a.name == "Synchronized");
+                if (explicit && m.static_) || ((explicit || synchronized_class) && !m.static_ && !m.type_params.is_empty()) {
+                    errors.push(Error::new(m.span, "@Synchronized supports non-generic instance methods only; class-level synchronization excludes static methods"));
+                }
+            }
+
             for field in &c.fields {
                 errors.extend(processor.validate(&field.annotations, AnnotationTarget::Field));
+                validate_config_field(field, errors);
+                if (!c.type_params.is_empty() || c.extends.is_some()) && field.annotations.iter().any(|a| a.name == "Config") {
+                    errors.push(Error::new(field.span, "@Config requires a non-generic class without inheritance"));
+                }
             }
             for method in &c.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
@@ -1711,6 +1884,9 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializ
             errors.extend(processor.validate(&i.annotations, AnnotationTarget::Interface));
             for method in &i.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+                if method.annotations.iter().any(|a| a.name == "Synchronized") {
+                    errors.push(Error::new(method.span, "@Synchronized requires a concrete singleton class method"));
+                }
                 for param in &method.params {
                     errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
                 }
@@ -1723,6 +1899,9 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializ
             errors.extend(processor.validate(&t.annotations, AnnotationTarget::Trait));
             for method in &t.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+                if method.annotations.iter().any(|a| a.name == "Synchronized") {
+                    errors.push(Error::new(method.span, "@Synchronized requires a concrete singleton class method"));
+                }
                 for param in &method.params {
                     errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
                 }
@@ -1731,10 +1910,13 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializ
         DeclKind::Namespace(ns) => {
             errors.extend(processor.validate(&ns.annotations, AnnotationTarget::Namespace));
             for inner in &ns.decls {
-                validate_decl(processor, &inner.node, json_serializable, errors);
+                validate_decl(processor, inner, json_serializable, errors);
             }
         }
         _ => {}
+    }
+    for error in &mut errors[first_error..] {
+        if error.file.is_none() { error.file = decl.file.as_deref().map(Into::into); }
     }
 }
 
@@ -1834,7 +2016,37 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
         }
     }
 
-    let return_ok = is_http_context_type(&method.ret_type)
+    let serializable = |ty: &Type| {
+        is_json_serializable_class_type(ty, json_serializable)
+            || is_json_serializable_list_type(ty, json_serializable)
+            || matches!(ty, Type::String | Type::Int64 | Type::Int32 | Type::Bool)
+    };
+    let typed_response = matches!(&method.ret_type, Type::Generic { name, .. } if name == "Response");
+    if typed_response {
+        if !response_body_type(&method.ret_type).is_some_and(serializable) {
+            errors.push(Error::new(method.span, format!(
+                "REST handler '{}' requires Response<T> with one JSON-serializable body type; use a \
+                 @JsonSerializable class, List of such classes, String, Int64, Int32 or Bool",
+                method.name
+            )));
+        }
+        for ann in &method.annotations {
+            if ann.name == "Produces" && ann.args.first().and_then(media_type_arg_to_mime).as_deref() != Some("application/json") {
+                errors.push(Error::new(ann.span, "Response<T> serializes JSON: use @Produces(\"application/json\") or remove @Produces"));
+            }
+            if ann.name == "StatusCode" {
+                let valid = matches!(ann.args.first(), Some(AnnotationArg::Literal(Literal::Integer(n)))
+                    if (200..=299).contains(n) && *n != 204 && *n != 205);
+                if !valid {
+                    errors.push(Error::new(ann.span, "Response<T> @StatusCode must be a body-bearing success status (200-299 except 204/205); use Response<T>::error or ::noContent for other outcomes"));
+                }
+            }
+        }
+        if method.params.iter().any(|p| p.annotations.iter().any(|a| a.name == "HttpContext")) {
+            errors.push(Error::new(method.span, "Response<T> cannot be combined with @HttpContext; return HttpContext for manual response handling"));
+        }
+    }
+    let return_ok = typed_response || is_http_context_type(&method.ret_type)
         || is_json_serializable_class_type(&method.ret_type, json_serializable)
         || is_json_serializable_list_type(&method.ret_type, json_serializable)
         || matches!(&method.ret_type, Type::String | Type::Int64 | Type::Int32 | Type::Bool);
@@ -1881,10 +2093,28 @@ pub fn validate_annotations(
     collect_json_serializable_classes(&source.decls, &mut json_serializable);
     collect_json_serializable_classes(extra_decls, &mut json_serializable);
 
-    let mut errors = Vec::new();
-    for decl in &source.decls {
-        validate_decl(&processor, &decl.node, &json_serializable, &mut errors);
+    fn check_config_inheritance(decls: &[tinox_parser::Decl], classes: &mut Vec<(String, Option<String>, bool, Span)>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Class(c) => classes.push((c.name.clone(), c.extends.clone(), c.fields.iter().any(|f| f.annotations.iter().any(|a| a.name == "Config")), c.span)),
+                DeclKind::Namespace(ns) => check_config_inheritance(&ns.decls, classes),
+                _ => {}
+            }
+        }
     }
+    let mut config_classes = Vec::new();
+    check_config_inheritance(&source.decls, &mut config_classes);
+    check_config_inheritance(extra_decls, &mut config_classes);
+    let mut errors = Vec::new();
+    for (_, parent, _, span) in &config_classes {
+        if parent.as_ref().is_some_and(|p| config_classes.iter().any(|(name, _, config, _)| name == p && *config)) {
+            errors.push(Error::new(*span, "classes with @Config fields cannot be inherited; inject a configuration component instead"));
+        }
+    }
+    for decl in &source.decls {
+        validate_decl(&processor, decl, &json_serializable, &mut errors);
+    }
+    for error in &mut errors { error.code = Some("TINOX-ANNOTATION".into()); }
     errors
 }
 
@@ -1919,6 +2149,50 @@ mod tests {
 
     fn valid(src: &str) -> Vec<Error> {
         validate_annotations(&parse(src), &[])
+    }
+
+    #[test]
+    fn service_hooks_require_explicit_singleton_instance_contracts() {
+        for source in [
+            "@Service(0) class Main {}",
+            "@Service(3600001) class Main {}",
+            "@Service class Other {}",
+            "class Plain { @OnStart fn start() -> Nothing {} }",
+            "@Startup class State { @OnStop fnc stop() -> Nothing {} }",
+            "@Startup class State { @Readiness fn ready() -> Int64 { return 1; } }",
+            "@Startup class State { @Liveness fn live(value: Bool) -> Bool { return value; } }",
+        ] {
+            assert!(!valid(source).is_empty(), "unexpectedly accepted: {source}");
+        }
+        assert!(valid("@Service(1000, 2000) class Main {} @Startup class State { @OnStart fn start() -> Nothing {} @OnStop fn stop() -> Nothing {} @Readiness fn ready() -> Bool { return true; } @Liveness fn live() -> Bool { return true; } }").is_empty());
+    }
+
+    #[test]
+    fn synchronized_requires_concrete_singleton_instance_methods() {
+        assert!(valid("@ApplicationComponent @Synchronized class Counter { fn read() -> Int64 { return 0; } }").is_empty());
+        assert!(valid("@Startup class Counter { @Synchronized fn read() -> Int64 { return 0; } }").is_empty());
+        for source in [
+            "@Synchronized class Counter {}",
+            "@HttpRequestScoped @Synchronized class Counter {}",
+            "@ApplicationComponent class Counter { @Synchronized fnc read() -> Int64 { return 0; } }",
+            "@ApplicationComponent class Counter { @Synchronized fn read<T>(x: T) -> T { return x; } }",
+            "@ApplicationComponent @Synchronized class Counter<T> {}",
+            "class Base {} @ApplicationComponent @Synchronized class Counter extends Base {}",
+        ] {
+            assert!(valid(source).iter().any(|error| error.message.contains("@Synchronized")), "{source}");
+        }
+    }
+
+    #[test]
+    fn shared_state_diagnostics_are_narrow_and_cover_captive_request_state() {
+        let unsafe_state = proc("@ApplicationComponent class Counter { var value: Int64; fn read() -> Int64 { return 0; } }");
+        assert!(unsafe_state.shared_state_warnings.iter().any(|w| w.contains("mutable shared fields")));
+        let guarded = proc("@ApplicationComponent @Synchronized class Counter { private var value: Int64; fn read() -> Int64 { return 0; } }");
+        assert!(guarded.shared_state_warnings.is_empty());
+        let exposed = proc("@ApplicationComponent @Synchronized class Counter { var value: Int64; }");
+        assert!(exposed.shared_state_warnings.iter().any(|w| w.contains("bypass method locks")));
+        let captive = proc("@HttpRequestScoped class Request {} @ApplicationComponent class Middle { @Inject var request: Request; } @Startup class Service { @Inject var middle: Middle; }");
+        assert!(captive.shared_state_warnings.iter().any(|w| w.contains("Service.middle -> Middle.request -> Request")));
     }
 
     // --- validate: unknown annotation ---
@@ -1997,6 +2271,28 @@ mod tests {
         let errors = valid("class Ctrl { @GET\nfn list() -> Ctx { return Ctx::new(); } }");
         assert!(!errors.is_empty());
         assert!(errors.iter().any(|e| e.message.contains("cannot auto-serialize return type")));
+    }
+
+    #[test]
+    fn typed_response_annotation_contract() {
+        for ty in ["String", "Int64", "Int32", "Bool", "Person", "List<Person>"] {
+            let src = format!("@annotation class JsonSerializable {{}}\n@JsonSerializable class Person {{ var name: String; }}\nclass Ctrl {{ @GET @Produces(\"application/json\") @StatusCode(201) fn get() -> Response<{ty}> {{}} }}");
+            assert!(valid(&src).is_empty(), "{ty}: {:?}", valid(&src));
+            let routes = proc(&src).route_entries;
+            assert!(response_body_type(&routes[0].return_type).is_some());
+        }
+        for (annotations, params, ty, diagnostic) in [
+            ("", "", "Response<Unknown>", "one JSON-serializable body type"),
+            ("", "", "Response<Response<String>>", "one JSON-serializable body type"),
+            ("@Produces(\"text/plain\")", "", "Response<String>", "serializes JSON"),
+            ("@StatusCode(204)", "", "Response<String>", "body-bearing success status"),
+            ("@StatusCode(205)", "", "Response<String>", "body-bearing success status"),
+            ("@StatusCode(404)", "", "Response<String>", "body-bearing success status"),
+            ("", "@HttpContext ctx: HttpContext", "Response<String>", "cannot be combined with @HttpContext"),
+        ] {
+            let errors = valid(&format!("class Ctrl {{ @GET {annotations} fn get({params}) -> {ty} {{}} }}"));
+            assert!(errors.iter().any(|e| e.message.contains(diagnostic)), "{errors:?}");
+        }
     }
 
     #[test]
@@ -2526,6 +2822,35 @@ class App {
         assert_eq!(result.config_fields.len(), 1);
         assert_eq!(result.config_fields[0].field_name, "port");
         assert_eq!(result.config_fields[0].config_key, "server.port");
+    }
+
+    #[test]
+    fn config_policies_and_secret_metadata() {
+        let source = r#"class Settings {
+            @Config("port", "default", "8080") var port: UInt16;
+            @Sensitive @Config("token", "required") var token: String;
+            @Config("enabled", "optional") var enabled: Bool;
+        }"#;
+        assert!(valid(source).is_empty());
+        let result = proc(source);
+        assert_eq!(result.config_fields[0].value_type, "UInt16");
+        assert_eq!(result.config_fields[0].default_value.as_deref(), Some("8080"));
+        assert_eq!(result.config_fields[1].policy, "required");
+        assert!(!valid(r#"class Base { @Config("x", "required") var x: String; } class Child extends Base {}"#).is_empty());
+        assert!(!valid(r#"class Settings<T> { @Config("x", "required") var x: String; }"#).is_empty());
+        assert!(result.do_not_serialize_fields.iter().any(|f| f.field_name == "token"));
+        for field in [
+            r#"@Config("", "required") var x: String;"#,
+            r#"@Config("x", "typo") var x: String;"#,
+            r#"@Config("x", "default") var x: String;"#,
+            r#"@Config("x", "required", "fallback") var x: String;"#,
+            r#"@Config("x", true) var x: String;"#,
+            r#"@Config("x", "required") var x: Float64;"#,
+            r#"@Sensitive @Config("x", "default", "hidden") var x: String;"#,
+            r#"@Sensitive @Config("x", "required") var x: String = "hidden";"#,
+        ] {
+            assert!(!valid(&format!("class Settings {{ {field} }}")).is_empty(), "{field}");
+        }
     }
 
     // --- process: @Test ---

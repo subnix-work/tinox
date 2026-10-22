@@ -158,7 +158,7 @@ pub fn read_lock(root: &Path) -> Result<TinoxLock, String> {
     if !lock_path.exists() {
         return Ok(TinoxLock::default());
     }
-    let content = fs::read_to_string(&lock_path)
+    let content = crate::build_cache::read_to_string(&lock_path)
         .map_err(|e| format!("Cannot read tinox.lock: {}", e))?;
     serde_yaml::from_str(&content).map_err(|e| format!("Invalid tinox.lock: {}", e))
 }
@@ -363,7 +363,7 @@ pub fn read_manifest(root: &Path) -> Result<TinoxManifest, String> {
     if !toml_path.exists() {
         return Ok(TinoxManifest::default());
     }
-    let content = fs::read_to_string(&toml_path)
+    let content = crate::build_cache::read_to_string(&toml_path)
         .map_err(|e| format!("Cannot read tinox.toml: {}", e))?;
     Ok(parse_manifest(&content))
 }
@@ -400,7 +400,7 @@ fn format_repository(repo: &Repository) -> String {
 pub fn write_manifest(root: &Path, manifest: &TinoxManifest) -> Result<(), String> {
     let toml_path = root.join("tinox.toml");
     let existing = if toml_path.exists() {
-        fs::read_to_string(&toml_path).map_err(|e| format!("Cannot read tinox.toml: {}", e))?
+        crate::build_cache::read_to_string(&toml_path).map_err(|e| format!("Cannot read tinox.toml: {}", e))?
     } else {
         String::new()
     };
@@ -659,10 +659,12 @@ pub fn resolve_overrides(root: &Path, manifest: &TinoxManifest) -> Result<Vec<Re
 /// one provenance line per override actually applied, for the caller to
 /// surface. An override no dependency in the graph refers to is a hard
 /// error rather than a silent no-op.
+pub type InstalledDepResolution = (Vec<PathBuf>, Vec<MissingDep>, Vec<String>);
+
 pub fn installed_dep_dirs(
     root: &Path,
     manifest: &TinoxManifest,
-) -> Result<(Vec<PathBuf>, Vec<MissingDep>, Vec<String>), String> {
+) -> Result<InstalledDepResolution, String> {
     let overrides = resolve_overrides(root, manifest)?;
     let deps_root = root.join(".tinox").join("deps");
     let mut dirs = Vec::new();
@@ -718,6 +720,7 @@ struct DepWalk<'a> {
 /// whatever manifest each resolved dependency itself ships) actually
 /// declares — mirrors `install_dep_transitively`'s walk, but read-only (no
 /// network, no installation), with the same cycle-guard.
+#[cfg(test)]
 pub fn global_dep_dirs(manifest: &TinoxManifest) -> (Vec<PathBuf>, Vec<MissingDep>) {
     let mut walk = DepWalk { overrides: &[], notes: Vec::new(), used: HashSet::new() };
     global_dep_dirs_walk(manifest, &mut walk)
@@ -1869,7 +1872,14 @@ pub fn cmd_add(args: &[String]) {
     };
     let mut lock_changed = false;
     let mut visited: HashSet<(String, String, String)> = HashSet::new();
-    install_dep_transitively(&root, &dep, &manifest, &mut lock, false, &mut visited, &mut lock_changed);
+    let overrides = match resolve_overrides(&root, &manifest) {
+        Ok(overrides) => overrides,
+        Err(error) => {
+            eprintln!("error: {}", error);
+            return;
+        }
+    };
+    install_dep_transitively(&root, &dep, &manifest, &mut lock, false, &mut visited, &mut lock_changed, &overrides);
     if lock_changed {
         if let Err(e) = write_lock(&root, &lock) {
             eprintln!("warning: failed to update tinox.lock: {}", e);

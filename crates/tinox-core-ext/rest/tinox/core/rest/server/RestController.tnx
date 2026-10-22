@@ -46,7 +46,7 @@ namespace tinox.core.rest.server
          */
         fn route(method: String, path: String, handler: fnc(HttpContext) -> Nothing) -> RouteEntry
         {
-            let routeEntry: RouteEntry = RouteEntry::new(method, UrlBuilder::join(this.basePath, path), handler);
+            const routeEntry: RouteEntry = RouteEntry::new(method, UrlBuilder::join(this.basePath, path), handler);
             this.routes.push(routeEntry);
             return routeEntry;
         }

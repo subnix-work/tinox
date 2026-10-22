@@ -207,6 +207,13 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "bytes",
+        imports: &["tinox.core.bytes"],
+        body: "let b: Bytes = Bytes::new(3);\n    b.set(1, 200);\n    println(b.get(1));",
+        expects: &["200"],
+        contains: &[],
+    },
+    Smoke {
         key: "hex",
         imports: &["tinox.core.hex"],
         body: r#"println(Hex::encode("A"));"#,
