@@ -15659,6 +15659,18 @@ fn collect_free_vars_stmt(stmt: &tinox_parser::Stmt, param_names: &HashSet<Strin
             collect_free_vars_inner(cond, param_names, vars);
             collect_free_vars_stmt(body, param_names, vars);
         }
+        StmtKind::Throw(expr) => collect_free_vars_inner(expr, param_names, vars),
+        StmtKind::Try { body, catches, finally } => {
+            collect_free_vars_stmt(body, param_names, vars);
+            for catch in catches {
+                let mut catch_params = param_names.clone();
+                catch_params.insert(catch.param.clone());
+                collect_free_vars_stmt(&catch.body, &catch_params, vars);
+            }
+            if let Some(finally) = finally {
+                collect_free_vars_stmt(finally, param_names, vars);
+            }
+        }
         StmtKind::Block(stmts) => {
             for s in stmts { collect_free_vars_stmt(s, param_names, vars); }
         }
@@ -15740,28 +15752,7 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
         }
         ExprKind::Block(stmts) => {
             for stmt in stmts {
-                match &stmt.node {
-                    StmtKind::Expr(e) => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Return(Some(e)) => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Let { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Var { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Assignment { target, value } => {
-                        collect_free_vars_inner(target, param_names, vars);
-                        collect_free_vars_inner(value, param_names, vars);
-                    }
-                    StmtKind::If { cond, then_branch, else_branch } => {
-                        collect_free_vars_inner(cond, param_names, vars);
-                        collect_free_vars_stmt(then_branch, param_names, vars);
-                        if let Some(eb) = else_branch {
-                            collect_free_vars_stmt(eb, param_names, vars);
-                        }
-                    }
-                    StmtKind::While { cond, body } => {
-                        collect_free_vars_inner(cond, param_names, vars);
-                        collect_free_vars_stmt(body, param_names, vars);
-                    }
-                    _ => {}
-                }
+                collect_free_vars_stmt(stmt, param_names, vars);
             }
         }
         ExprKind::Range {
@@ -17593,6 +17584,52 @@ mod tests {
     // ================================================================
     // Try/catch
     // ================================================================
+
+    #[test]
+    fn test_lambda_try_capture_scopes() {
+        // Issue #357: catch parameters are local to their own handler,
+        // while references in try/finally and nested closures remain free.
+        for (body, expected) in [
+            (
+                r#"
+                    try { throw failure; }
+                    catch e: String { println(prefix + e); }
+                    finally { println(cleanup); }
+                "#,
+                vec!["failure", "println", "prefix", "cleanup"],
+            ),
+            (
+                r#"
+                    try { println(e); }
+                    catch e: String { println(e); }
+                    finally { println(e); }
+                "#,
+                vec!["println", "e"],
+            ),
+            (
+                r#"
+                    try { throw failure; }
+                    catch e: String {
+                        const nested = fn() { println(e + greeting + value); };
+                    }
+                "#,
+                vec!["failure", "println", "greeting"],
+            ),
+        ] {
+            let src = format!(
+                "fn main() -> Nothing {{ const callback = fn(value: String) {{ {body} }}; }}"
+            );
+            let tokens = Lexer::new(&src).tokenize().expect("lex failed");
+            let ast = Parser::new(tokens).parse().expect("parse failed");
+            let DeclKind::Function(function) = &ast.decls[0].node else {
+                panic!("expected function");
+            };
+            let mut actual = HashSet::new();
+            collect_free_vars_stmt(&function.body, &HashSet::new(), &mut actual);
+            let expected = expected.into_iter().map(String::from).collect::<HashSet<_>>();
+            assert_eq!(actual, expected, "incorrect captures for {body}");
+        }
+    }
 
     #[test]
     fn test_try_catch_ir() {
