@@ -5,9 +5,9 @@ namespace tinox.core.process
      * Process::run() (blocks until exit, returns the full captured
      * output), this spawns and returns immediately; the caller drives it
      * for the duration of an interactive session (e.g. `kubectl exec -i`
-     * bridged to a terminal) via writeStdin/readOutput. stdout and stderr
-     * are merged into one stream (a real terminal has no separate
-     * channels either).
+     * bridged to a terminal) via writeStdin/readOutput. start() uses a PTY
+     * with merged stdout/stderr; startPiped() uses separate pipes for tools
+     * speaking line protocols such as JSON over stdio.
      */
     class InteractiveProcess
     {
@@ -19,13 +19,60 @@ namespace tinox.core.process
             return InteractiveProcess { handle: processSpawnInteractive(argv) };
         }
 
+        /**
+         * Starts a child with pipes: stdin is not a TTY, input is not echoed,
+         * and stderr is separate. cwd/env follow Process::runWithOptions.
+         * Call kill() to release resources, including after normal exit.
+         * Serialize reads and lifecycle operations on each handle. Writes
+         * block; use a concurrent reader when sending large input payloads.
+         */
+        fn startPiped(argv: List<String>, cwd: String, env: List<String>) -> InteractiveProcess
+        {
+            return InteractiveProcess { handle: processSpawnPiped(argv, cwd, env) };
+        }
+
+        /** Closes pipe stdin to deliver EOF. Idempotent; no effect on PTYs. */
+        fn closeStdin(proc: InteractiveProcess) -> Nothing
+        {
+            processCloseStdin(proc.handle);
+        }
+
+        /**
+         * Reads a stdout line, including its newline, or the final unterminated
+         * line at EOF. Returns "" on timeout/EOF. Partial lines are retained
+         * across timeouts. timeoutMs < 0 waits indefinitely; 0 polls.
+         * Pipe mode only. Reads also buffer stderr to avoid pipe deadlocks;
+         * drain both streams regularly to bound memory use.
+         */
+        fn readLine(proc: InteractiveProcess, timeoutMs: Int64) -> String
+        {
+            return processReadLine(proc.handle, timeoutMs);
+        }
+
+        /** Reads available pipe stderr; timeout/EOF returns "". */
+        fn readStderr(proc: InteractiveProcess, timeoutMs: Int64) -> String
+        {
+            return processReadStderr(proc.handle, timeoutMs);
+        }
+
+        /** Exit status, -signal if killed, or -9223372036854775808 while running. */
+        fn exitCode(proc: InteractiveProcess) -> Int64
+        {
+            return processExitCode(proc.handle);
+        }
+
         /** Writes to the process's stdin. Best-effort: silently stops writing if the process has already exited -- check isAlive() to detect that. */
         fn writeStdin(proc: InteractiveProcess, data: String) -> Nothing
         {
             processWriteStdin(proc.handle, data);
         }
 
-        /** Blocks up to timeoutMs waiting for output; returns "" on timeout, EOF, or if the process exited. */
+        /**
+         * Reads available output (possibly a partial line). Pipe mode reads
+         * stdout only and also buffers stderr. Output remains readable after
+         * child exit. Returns "" on timeout/EOF; timeoutMs < 0 waits
+         * indefinitely and 0 polls.
+         */
         fn readOutput(proc: InteractiveProcess, timeoutMs: Int64) -> String
         {
             return processReadOutput(proc.handle, timeoutMs);
