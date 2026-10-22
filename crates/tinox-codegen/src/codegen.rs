@@ -1709,6 +1709,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64  @tinox_db_getval_int(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i1  @tinox_db_is_null(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_db_free(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i1 @tinox_db_result_failed(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_orm_save_failed(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_error(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8** @tinox_params_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_params_set(i8**, i64, i8*)").unwrap();
@@ -7027,6 +7029,7 @@ impl CodeGen {
             "  {ins_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {ins_sql}, i8** {ins_params}, i64 {n_ins})"
         )
         .unwrap();
+        self.emit_orm_save_check(&ins_result, &entity.table_name);
         let new_id = self.temp();
         writeln!(&mut self.ir, "  {new_id} = call i64 @tinox_db_getval_int(i8* {ins_result}, i64 0, i64 0)").unwrap();
         writeln!(&mut self.ir, "  store i64 {new_id}, i64* {id_ptr}").unwrap();
@@ -7049,6 +7052,7 @@ impl CodeGen {
             "  {upd_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {upd_sql}, i8** {upd_params}, i64 {n_upd})"
         )
         .unwrap();
+        self.emit_orm_save_check(&upd_result, &entity.table_name);
         writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {upd_result})").unwrap();
         writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
 
@@ -7057,6 +7061,24 @@ impl CodeGen {
         let as_i64 = self.temp();
         writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
         Ok((as_i64, "i64".to_string()))
+    }
+
+    /// Abort with a visible error if an ORM save's INSERT/UPDATE failed.
+    fn emit_orm_save_check(&mut self, result_reg: &str, table: &str) {
+        let failed = self.temp();
+        writeln!(&mut self.ir, "  {failed} = call i1 @tinox_db_result_failed(i8* {result_reg})").unwrap();
+        let fail_bb = self.new_bb("orm_save_failed");
+        let ok_bb = self.new_bb("orm_save_ok");
+        writeln!(&mut self.ir, "  br i1 {failed}, label %{fail_bb}, label %{ok_bb}").unwrap();
+        writeln!(&mut self.ir, "{fail_bb}:").unwrap();
+        let label = format!("__orm_tbl_{}", self.strings.len());
+        self.strings.insert(label.clone(), table.to_string());
+        let len = table.len() + 1;
+        let p = self.temp();
+        writeln!(&mut self.ir, "  {p} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_orm_save_failed(i8* {p})").unwrap();
+        writeln!(&mut self.ir, "  unreachable").unwrap();
+        writeln!(&mut self.ir, "{ok_bb}:").unwrap();
     }
 
     /// Emit SQL-constant getter functions and row-mapping helpers for all @Entity classes.
