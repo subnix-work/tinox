@@ -19,7 +19,7 @@ namespace tinox.core.cache
         {
             if (cache.data.contains(key))
             {
-                let value: V = cache.data[key];
+                const value: V = cache.data[key];
                 Cache::touch(cache, key);
                 return Option::some(value);
             }
@@ -36,7 +36,7 @@ namespace tinox.core.cache
             }
             if (cache.data.len() >= cache.maxSize)
             {
-                let oldestKey: K = cache.accessOrder[0];
+                const oldestKey: K = cache.accessOrder[0];
                 cache.data.remove(oldestKey);
                 cache.accessOrder.removeAt(0);
             }

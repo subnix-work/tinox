@@ -47,7 +47,7 @@ namespace tinox.core.socket
 
         fn accept(socket: Socket) -> Socket
         {
-            let newHandle: Int64 = socketAccept(socket.handle);
+            const newHandle: Int64 = socketAccept(socket.handle);
             return Socket { handle: newHandle, mode: socket.mode };
         }
 

@@ -51,7 +51,7 @@ class SignupApp
         // See issue #217 -- `this` can't be captured by a nested lambda
         // directly, so it's aliased to a local first (`self` is a
         // reserved keyword).
-        let app: SignupApp = this;
+        const app: SignupApp = this;
 
         var children: List<Component> = [];
         children.push(Component::label("Sign up"));

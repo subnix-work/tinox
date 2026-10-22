@@ -36,7 +36,7 @@ class CounterDemoApp
     @View
     fn render() -> Component
     {
-        let app: CounterDemoApp = this;
+        const app: CounterDemoApp = this;
         var widgetProps: Map<String, String> = Map::new();
         widgetProps.insert("label", "server clicks: " + this.serverClicks.toString());
         return Component::vbox([

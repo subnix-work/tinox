@@ -1,10 +1,13 @@
-// Issue #357: captures used only in exception-handling bodies must enter
-// the closure environment, including nested blocks and throw operands.
+// Issue #357: capture variables used only in exception-handling statements.
 // expect: hello
-// expect: caught: boom
-// expect: 42
+// expect: caught: failure
+// expect: finally after catch
+// expect: normal try
+// expect: finally without catch
+// expect: nested try
 // expect: nested
 // expect: outer
+
 class Main
 {
     fnc call(f: fnc() -> Nothing) -> Nothing
@@ -16,27 +19,69 @@ class Main
     {
         const greeting: String = "hello";
         Main::call(fn() {
-            try {
+            try
+            {
                 println(greeting);
-            } catch e: String {
+            }
+            catch e: String
+            {
                 println("error " + e);
             }
         });
 
+        const failure: String = "failure";
         const prefix: String = "caught: ";
-        const failure: String = "boom";
-        const answer: Int64 = 42;
+        const cleanup: String = "finally after catch";
         Main::call(fn() {
-            try {
+            try
+            {
                 throw failure;
-            } catch e: String {
+            }
+            catch e: String
+            {
                 println(prefix + e);
-            } finally {
-                println(answer);
+            }
+            finally
+            {
+                println(cleanup);
             }
         });
 
-        const nested: String = "nested";
+        const normal: String = "normal try";
+        const finallyOnly: String = "finally without catch";
+        Main::call(fn() {
+            try
+            {
+                println(normal);
+            }
+            finally
+            {
+                println(finallyOnly);
+            }
+        });
+
+        const nested: String = "nested try";
+        Main::call(fn() {
+            if (true)
+            {
+                try
+                {
+                    try
+                    {
+                        throw "inner";
+                    }
+                    catch inner: String
+                    {
+                        println(nested);
+                    }
+                }
+                catch outer: String
+                {
+                    println("unexpected " + outer);
+                }
+            }
+        });
+        const shadowNested: String = "nested";
         const e: String = "outer";
         Main::call(fn() {
             if true {
@@ -45,7 +90,7 @@ class Main
                         try {
                             throw "inner";
                         } catch e: String {
-                            println(nested);
+                            println(shadowNested);
                         }
                     } finally {
                         // A catch parameter must not hide captures in finally.

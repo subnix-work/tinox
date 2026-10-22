@@ -1,0 +1,33 @@
+// Issue #360: capture variables used only in a ternary condition or branch.
+// expect: x!
+// expect: x
+// expect: then
+// expect: else
+// expect: nested
+
+class Main
+{
+    fnc call(f: fnc(String) -> String) -> String
+    {
+        return f("x");
+    }
+
+    fnc main() -> Int32
+    {
+        const flag: Bool = true;
+        println(Main::call(fn(v: String) { return flag ? v + "!" : v; }));
+
+        const disabled: Bool = false;
+        println(Main::call(fn(v: String) { return disabled ? v + "!" : v; }));
+
+        const thenValue: String = "then";
+        println(Main::call(fn(v: String) { return true ? thenValue : v; }));
+
+        const elseValue: String = "else";
+        println(Main::call(fn(v: String) { return false ? v : elseValue; }));
+
+        const nestedValue: String = "nested";
+        println(Main::call(fn(v: String) { return disabled ? v : flag ? nestedValue : v; }));
+        return 0;
+    }
+}

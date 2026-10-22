@@ -21,7 +21,7 @@ namespace tinox.core.random
 
         fn pickOne<T>(list: List<T>) -> T
         {
-            let index: Int64 = Random::nextInt(list.len());
+            const index: Int64 = Random::nextInt(list.len());
             return list[index];
         }
 
@@ -31,8 +31,8 @@ namespace tinox.core.random
             var i: Int64 = result.len() - 1;
             while i > 0
             {
-                let j: Int64 = Random::nextInt(i + 1);
-                let temp: T = result[i];
+                const j: Int64 = Random::nextInt(i + 1);
+                const temp: T = result[i];
                 result[i] = result[j];
                 result[j] = temp;
                 i = i - 1;
@@ -43,7 +43,7 @@ namespace tinox.core.random
         fn sample<T>(list: List<T>, count: Int64) -> List<T>
         {
             var result: List<T> = [];
-            let shuffled: List<T> = Random::shuffle(list);
+            const shuffled: List<T> = Random::shuffle(list);
             var i: Int64 = 0;
             while i < count && i < shuffled.len()
             {
@@ -55,12 +55,12 @@ namespace tinox.core.random
 
         fn generateString(length: Int64) -> String
         {
-            let chars: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            const chars: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
             var result: String = "";
             var i: Int64 = 0;
             while i < length
             {
-                let index: Int64 = Random::nextInt(chars.len());
+                const index: Int64 = Random::nextInt(chars.len());
                 result = result + chars.substring(index, index + 1);
                 i = i + 1;
             }

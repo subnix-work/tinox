@@ -12,8 +12,8 @@
  * model (which has no incremental/chunked-write API to hold a
  * connection open and write to it over time).
  *
- *   let srv: Int64 = SseServer::listen(8080);
- *   let conn: Int64 = SseServer::accept(srv);
+ *   const srv: Int64 = SseServer::listen(8080);
+ *   const conn: Int64 = SseServer::accept(srv);
  *   if conn > 0 {
  *       Sse::sendEvent(conn, "message", "hello");
  *       Sse::sendComment(conn); // keepalive
@@ -43,11 +43,11 @@ namespace tinox.core.sse
          */
         fn handshake(conn: Int64) -> Bool
         {
-            let req = httpConnReadRequest(conn);
+            const req = httpConnReadRequest(conn);
             if (req.len() == 0) {
                 return false;
             }
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+            const response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
             httpConnSendRaw(conn, response);
             return true;
         }
@@ -62,7 +62,7 @@ namespace tinox.core.sse
         fn sendEvent(conn: Int64, event: String, data: String) -> Nothing
         {
             var out: String = "event: " + event + "\n";
-            let lines = data.split("\n");
+            const lines = data.split("\n");
             for i in 0..lines.len() {
                 var line = lines[i];
                 if (line.endsWith("\r")) {
