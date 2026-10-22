@@ -1,0 +1,3 @@
+{
+  "prompt": "Implement an annotation-driven HTTP JSON service in UserController.tnx. GET /users/{id}: id 1 returns status 200 and JSON {\"id\":1,\"name\":\"Alice\"}; other positive ids return 404 with {\"error\":\"not found\"}; zero/negative ids return 400 with {\"error\":\"invalid id\"}. All responses have application/json content type. Preserve Main entry point. Use TINOX_PORT selected by the build environment. No external services or packages beyond tinox.core.http_server 1.0.3."
+}

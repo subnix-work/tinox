@@ -5,9 +5,9 @@
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
 
-.PHONY: check test-and-dogfood test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync
+.PHONY: check test-and-dogfood test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync workspace-ext
 
-check: clippy test-and-dogfood grammar-sync workspace-stdlib
+check: clippy test-and-dogfood grammar-sync workspace-stdlib docs-check ai-eval-test
 
 # Runs `test` and `dogfood` concurrently (CI's `test` job runs this alone).
 # The recursive make gives -j2 its own job server regardless of how `check`
@@ -55,6 +55,13 @@ test:
 # iterating on just these suites during development, not part of `check`.
 e2e:
 	cargo test --release -p tinox --test e2e --test matrix --test boundary --test stdlib_smoke
+
+# Workspace-source lane (issue #313): consumes extended-tier modules straight
+# from this checkout via [[overrides]] -- no registry, no install. Registry/
+# artifact compatibility stays with stdlib_smoke et al., which resolve real
+# installed packages. Already part of `test`; standalone for quick iteration.
+workspace-ext:
+	cargo test --release -p tinox --test local_override
 
 # Dogfood: build examples/ + benchmarks/, build and test jgrep/ygrep
 # (jgrep checkout configurable via DOGFOOD_DIR)
@@ -197,6 +204,30 @@ grammar-sync:
 install-hooks:
 	git config core.hooksPath .githooks
 	@echo "core.hooksPath = .githooks set (pre-push: make check)"
+
+# Local evaluation protocol regressions: no model/provider calls.
+.PHONY: ai-eval-test
+ai-eval-test:
+	python3 -m unittest discover -s benchmarks/ai -p '*_test.py'
+
+# Current metadata/guide are reproducible; translated prose and version pages
+# remain deliberate publications. Python 3.11+ supplies tomllib.
+.PHONY: docs-generate docs-check docs-stage docs-release-check
+docs-generate:
+	cargo build --release -p tinox
+	python3 scripts/reference.py generate
+
+docs-check:
+	cargo build --release -p tinox
+	python3 -m unittest discover -s tests -p 'reference_test.py'
+	python3 scripts/reference.py check
+
+docs-stage:
+	cargo build --release -p tinox
+	python3 scripts/reference.py stage
+
+docs-release-check:
+	python3 scripts/reference.py verify-release
 
 # Exercise unpublished extended modules separately from registry/archive tests.
 .PHONY: workspace-stdlib

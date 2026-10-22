@@ -1,0 +1,105 @@
+import tinox.core.http_server;
+import tinox.core.json;
+import tinox.core.debug;
+import Item;
+import Report;
+
+// Four workload profiles behind one annotation-driven controller:
+//   W1 stateless small JSON      GET  /small
+//   W2 allocation-heavy payload  GET  /report/:n     (n Items built + serialized per request)
+//   W3 long-lived state          POST /cache/fill/:n (once, single-threaded, before load)
+//                                GET  /cache/:id     (read)
+//                                POST /cache/:id/churn (replace one slot: live set stays
+//                                                       large, garbage is produced)
+//   W4 concurrency               any of the above driven with many connections
+// GET /stats reports the in-process Boehm heap size (Debug::memoryUsage).
+//
+// The cache is deliberately filled by ONE request before the load phase:
+// the server handles requests on several real threads and a List has no
+// internal locking, so concurrent growth would be a data race in the
+// benchmark itself. Churn only overwrites existing slots.
+@ApplicationComponent
+class BenchController
+{
+    var cache: List<Item>;
+
+    fnc makeItem(id: Int64) -> Item
+    {
+        return Item {
+            id: id,
+            name: "item-" + id.toString(),
+            tags: "alpha,beta,gamma-" + (id % 17).toString(),
+            score: 0.5 + (id as Float64) / 1000.0
+        };
+    }
+
+    @GET
+    @Path("/small")
+    fn small() -> Item
+    {
+        return makeItem(42);
+    }
+
+    @GET
+    @Path("/report/:n")
+    fn report(@PathParam n: Int64) -> Report
+    {
+        var items: List<Item> = [];
+        var i: Int64 = 0;
+        while i < n
+        {
+            items.push(makeItem(i));
+            i = i + 1;
+        }
+        return Report { count: n, items: items };
+    }
+
+    @POST
+    @Path("/cache/fill/:n")
+    fn fill(@PathParam n: Int64) -> Item
+    {
+        var c: List<Item> = [];
+        var i: Int64 = 0;
+        while i < n
+        {
+            c.push(makeItem(i));
+            i = i + 1;
+        }
+        this.cache = c;
+        return makeItem(n);
+    }
+
+    @GET
+    @Path("/cache/:id")
+    fn read(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
+    {
+        if (this.cache == null || id < 0 || id >= this.cache.len())
+        {
+            ctx.response.status(404).json("{\"error\":\"not found\"}");
+            return ctx;
+        }
+        ctx.response.json(Json::serialize(this.cache[id]));
+        return ctx;
+    }
+
+    @POST
+    @Path("/cache/:id/churn")
+    fn churn(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
+    {
+        if (this.cache == null || id < 0 || id >= this.cache.len())
+        {
+            ctx.response.status(404).json("{\"error\":\"not found\"}");
+            return ctx;
+        }
+        this.cache[id] = makeItem(id + 1000000);
+        ctx.response.json("{\"ok\":true}");
+        return ctx;
+    }
+
+    @GET
+    @Path("/stats")
+    fn stats() -> Item
+    {
+        return Item { id: Debug::memoryUsage(), name: "boehm_heap_bytes", tags: "", score: 0.0 };
+    }
+}

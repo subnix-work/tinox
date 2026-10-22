@@ -5356,8 +5356,8 @@ static void conn_close(TinoxConn* c) {
 }
 #endif
 
-// bind_addr NULL means the existing INADDR_ANY (0.0.0.0) behavior every
-// current caller relies on; a non-NULL dotted-quad (e.g. "127.0.0.1", used
+// bind_addr NULL means INADDR_ANY (0.0.0.0) unless TINOX_BIND_ADDRESS is set
+// (see below), the behavior every current caller relies on; a non-NULL dotted-quad (e.g. "127.0.0.1", used
 // by the dev-mode introspection server -- see tinox_HttpServer_new_bind)
 // restricts the listening socket to that interface only.
 void tinox_service_close_connection(int64_t handle) {
@@ -5375,6 +5375,20 @@ int64_t httpServerCreateOn(int64_t port, const char* bind_addr) {
     setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
+    // Process-wide default for every listener (HttpServer, @TinoxUIApp, WS,
+    // HTTP/2, SSE) that didn't ask for a specific address. A malformed value
+    // is a hard startup failure, never a silent fallback to 0.0.0.0.
+    if (!bind_addr) {
+        const char* env_bind = getenv("TINOX_BIND_ADDRESS");
+        if (env_bind && *env_bind) {
+            struct in_addr probe;
+            if (inet_pton(AF_INET, env_bind, &probe) != 1) {
+                fprintf(stderr, "tinox: invalid TINOX_BIND_ADDRESS '%s' (expected an IPv4 address such as 127.0.0.1)\n", env_bind);
+                exit(1);
+            }
+            bind_addr = env_bind;
+        }
+    }
     if (bind_addr) {
         if (inet_pton(AF_INET, bind_addr, &addr.sin_addr) != 1) { close(fd); return -1; }
     } else {
