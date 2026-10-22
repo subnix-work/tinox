@@ -1,0 +1,9 @@
+@Entity
+@Table("items")
+class Item
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    var name: String;
+    var note: String;
+}
