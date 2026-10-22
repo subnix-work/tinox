@@ -1,0 +1,4 @@
+[
+  {"source": "basic/Main.tnx", "stdout": "Hello, Tinox!\n", "tests": false},
+  {"source": "accessors/Main.tnx", "stdout": "42\n", "tests": true}
+]

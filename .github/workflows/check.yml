@@ -59,7 +59,7 @@ jobs:
           - name: lint
             make: clippy grammar-sync
           - name: test
-            make: test-and-dogfood
+            make: test-and-dogfood docs-check
           - name: workspace-stdlib
             make: workspace-stdlib
     steps:
@@ -116,6 +116,11 @@ jobs:
           path: ~/.tinox/repository
           key: tinox-pkg-cache-v1
 
+      - if: matrix.name == 'test'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       # `make test` uses cargo-nextest when present (parallel across all
       # cores) and falls back to plain `cargo test` otherwise.
       - if: matrix.name == 'test'
@@ -143,3 +148,22 @@ jobs:
           uname -m
           cargo test --release -p tinox-codegen target
           cargo test --release -p tinox --test target_selection --test codegen --test e2e
+
+  # Issue #313: workspace-source lane, separate from the registry/artifact
+  # compatibility checks in the `check` job above. Consumes in-tree
+  # extended-tier modules through [[overrides]] -- no network, no
+  # ~/.tinox/repository cache -- so a failure here means the checkout's own
+  # source is broken, independent of anything published.
+  workspace-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libgc-dev libsqlite3-dev libpq-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: workspace-source lane
+        run: make workspace-ext

@@ -121,3 +121,12 @@ a bug report, please include:
 
 By contributing, you agree that your contributions will be licensed under
 the same dual MIT/Apache-2.0 license as the rest of the project.
+
+## Reference documentation
+
+Run `make docs-generate` after changing compiler annotation/signature metadata,
+canonical guide examples, or package versions; commit the generated outputs.
+`make check` includes `make docs-check`. Python 3.11+ is required. Before a
+package release, use `make docs-stage` to create missing immutable version docs,
+then regenerate the current inventory. Existing version directories are never
+overwritten. See [the documentation workflow](docs/REFERENCE_WORKFLOW.md).
