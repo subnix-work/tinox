@@ -33,25 +33,12 @@ class Main
 {
     async fnc runServer(server: Int64) -> Int64 {
         const conn: Int64 = httpServerAcceptTls(server);
+        socketClose(server);
         if (conn > 0) {
             httpConnReadRequest(conn);
             httpConnClose(conn);
         }
         return 1;
-    }
-
-    fnc dialRetry(port: Int64) -> Int64 {
-        var attempt: Int64 = 0;
-        // Keep a generous connection budget under a fully parallel test run.
-        while attempt < 500 {
-            const fd: Int64 = socketCreateTcp();
-            if (socketConnect(fd, "127.0.0.1", port)) {
-                return fd;
-            }
-            sleep_ms(20);
-            attempt = attempt + 1;
-        }
-        return -1;
     }
 
     // The reader half of the race: never sends a request, so the server
@@ -74,11 +61,23 @@ class Main
             return 1;
         }
         const port: Int64 = httpServerBoundPort(server);
+        if (port <= 0) {
+            socketClose(server);
+            println("TLS server bound port lookup failed");
+            return 1;
+        }
         const serverTask = spawn runServer(server);
         taskDetach(serverTask);
 
-        const fd: Int64 = dialRetry(port);
+        // CreateTls has already called listen(): TCP connect can queue before
+        // the spawned thread reaches accept. No startup sleep/retry is needed.
+        const fd: Int64 = socketCreateTcp();
         if (fd < 0) {
+            println("socket creation failed");
+            return 1;
+        }
+        if (!socketConnect(fd, "127.0.0.1", port)) {
+            socketClose(fd);
             println("connect failed");
             return 1;
         }
