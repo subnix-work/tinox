@@ -12,7 +12,7 @@ namespace tinox.core.amqp091
          */
         fn dial(host: String, port: Int64) -> Int64
         {
-            let fd = socketCreateTcp();
+            const fd = socketCreateTcp();
             if (!socketConnect(fd, host, port)) {
                 // Bug 90: used to leak `fd` on every failed connect — a
                 // reconnect loop against an unreachable/refusing broker
@@ -34,7 +34,7 @@ namespace tinox.core.amqp091
          */
         fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
         {
-            let fd = socketCreateTcp();
+            const fd = socketCreateTcp();
             if (!socketConnect(fd, host, port)) {
                 // Bug 90: same fd leak as dial() above.
                 socketClose(fd);
@@ -49,7 +49,7 @@ namespace tinox.core.amqp091
          */
         fn sendProtocolHeader(conn: Int64) -> Nothing
         {
-            let header: List<Int64> = [65, 77, 81, 80, 0, 0, 9, 1];
+            const header: List<Int64> = [65, 77, 81, 80, 0, 0, 9, 1];
             httpConnWriteBytes(conn, header);
         }
 
@@ -64,7 +64,7 @@ namespace tinox.core.amqp091
          */
         fn checkHandshakeResponse(conn: Int64) -> Bool
         {
-            let resp = httpConnReadN(conn, 1);
+            const resp = httpConnReadN(conn, 1);
             if (resp.len() < 1) {
                 return false;
             }
@@ -79,26 +79,26 @@ namespace tinox.core.amqp091
          */
         fn readFrame(conn: Int64) -> AmqpFrame091
         {
-            let bad = AmqpFrame091 { frameType: -1, chanId: 0, payload: [] };
-            let hdr = httpConnReadN(conn, 7);
+            const bad = AmqpFrame091 { frameType: -1, chanId: 0, payload: [] };
+            const hdr = httpConnReadN(conn, 7);
             if (hdr.len() < 7) {
                 return bad;
             }
-            let frameType = hdr[0];
-            let chanId = (hdr[1] << 8) | hdr[2];
-            let size = (hdr[3] << 24) | (hdr[4] << 16) | (hdr[5] << 8) | hdr[6];
+            const frameType = hdr[0];
+            const chanId = (hdr[1] << 8) | hdr[2];
+            const size = (hdr[3] << 24) | (hdr[4] << 16) | (hdr[5] << 8) | hdr[6];
             if (size < 0 || size > 16777216) {
                 return AmqpFrame091 { frameType: -2, chanId: chanId, payload: [] };
             }
             var payload: List<Int64> = [];
             if (size > 0) {
-                let raw = httpConnReadN(conn, size);
+                const raw = httpConnReadN(conn, size);
                 if (raw.len() < size) {
                     return bad;
                 }
                 payload = raw;
             }
-            let end = httpConnReadN(conn, 1);
+            const end = httpConnReadN(conn, 1);
             if (end.len() < 1) {
                 return bad;
             }
@@ -113,7 +113,7 @@ namespace tinox.core.amqp091
          */
         fn writeFrame(conn: Int64, frameType: Int64, chanId: Int64, payload: List<Int64>) -> Nothing
         {
-            let w = AmqpWriter091::new();
+            const w = AmqpWriter091::new();
             w.octet(frameType);
             w.short(chanId);
             w.long(payload.len());
@@ -129,7 +129,7 @@ namespace tinox.core.amqp091
          */
         fn encodeMethodPayload(classId: Int64, methodId: Int64, args: List<Int64>) -> List<Int64>
         {
-            let w = AmqpWriter091::new();
+            const w = AmqpWriter091::new();
             w.short(classId);
             w.short(methodId);
             w.rawBytes(args);
@@ -143,9 +143,9 @@ namespace tinox.core.amqp091
          */
         fn decodeMethodPayload(payload: List<Int64>) -> AmqpMethodFrame091
         {
-            let r = AmqpReader091::new(payload);
-            let classId = r.short();
-            let methodId = r.short();
+            const r = AmqpReader091::new(payload);
+            const classId = r.short();
+            const methodId = r.short();
             var args: List<Int64> = [];
             while r.remaining() > 0 {
                 args.push(r.octet());
@@ -182,10 +182,10 @@ namespace tinox.core.amqp091
          */
         fn describeAndAckClose(conn: Int64, chanId: Int64, mf: AmqpMethodFrame091, closeOkMethodId: Int64) -> String
         {
-            let r = AmqpReader091::new(mf.args);
-            let replyCode = r.short();
-            let replyText = r.shortstr();
-            let closeOkPayload = Amqp091::encodeMethodPayload(mf.classId, closeOkMethodId, []);
+            const r = AmqpReader091::new(mf.args);
+            const replyCode = r.short();
+            const replyText = r.shortstr();
+            const closeOkPayload = Amqp091::encodeMethodPayload(mf.classId, closeOkMethodId, []);
             Amqp091::writeFrame(conn, 1, chanId, closeOkPayload);
             return "broker closed with code " + replyCode.toString() + ": " + replyText;
         }

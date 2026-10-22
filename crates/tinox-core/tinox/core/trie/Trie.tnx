@@ -17,7 +17,7 @@ namespace tinox.core.trie
             var i: Int64 = 0;
             while i < word.len()
             {
-                let c: String = word.substring(i, i + 1);
+                const c: String = word.substring(i, i + 1);
                 if (current.children.contains(c) == false)
                 {
                     current.children[c] = TrieNode::new();
@@ -34,7 +34,7 @@ namespace tinox.core.trie
             var i: Int64 = 0;
             while i < word.len()
             {
-                let c: String = word.substring(i, i + 1);
+                const c: String = word.substring(i, i + 1);
                 if (current.children.contains(c) == false)
                 {
                     return false;
@@ -51,7 +51,7 @@ namespace tinox.core.trie
             var i: Int64 = 0;
             while i < prefix.len()
             {
-                let c: String = prefix.substring(i, i + 1);
+                const c: String = prefix.substring(i, i + 1);
                 if (current.children.contains(c) == false)
                 {
                     return false;
@@ -68,7 +68,7 @@ namespace tinox.core.trie
             var i: Int64 = 0;
             while i < prefix.len()
             {
-                let c: String = prefix.substring(i, i + 1);
+                const c: String = prefix.substring(i, i + 1);
                 if (current.children.contains(c) == false)
                 {
                     return [];
@@ -86,11 +86,11 @@ namespace tinox.core.trie
             {
                 results.push(prefix);
             }
-            let keys: List<String> = node.children.keys();
+            const keys: List<String> = node.children.keys();
             var j: Int64 = 0;
             while j < keys.len()
             {
-                let childWords: List<String> = Trie::collectWords(node.children[keys[j]], prefix + keys[j]);
+                const childWords: List<String> = Trie::collectWords(node.children[keys[j]], prefix + keys[j]);
                 var k: Int64 = 0;
                 while k < childWords.len()
                 {

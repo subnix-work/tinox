@@ -13,14 +13,14 @@ import fromcharcode_side_effect;
 class Main
 {
     fnc main() -> Int32 {
-        let c1 = fromcharcode_side_effect::new([65, 66]);
-        let ch = fromCharCode(c1.next());
+        const c1 = fromcharcode_side_effect::new([65, 66]);
+        const ch = fromCharCode(c1.next());
         println(ch);
         println(c1.pos.toString());
 
         // Loop: read two characters and concatenate them — covers the
         // original discovery site (string concatenation in a loop).
-        let c2 = fromcharcode_side_effect::new([65, 66]);
+        const c2 = fromcharcode_side_effect::new([65, 66]);
         var s: String = "";
         for i in 0..2 {
             s = s + fromCharCode(c2.next());

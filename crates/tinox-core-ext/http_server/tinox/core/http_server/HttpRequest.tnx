@@ -68,9 +68,9 @@ namespace tinox.core.http_server
             {
                 return this.headers[name];
             }
-            let lower: String = name.toLowerCase();
+            const lower: String = name.toLowerCase();
             var key: Int64 = 0;
-            let keys: List<String> = this.headers.keys();
+            const keys: List<String> = this.headers.keys();
             while key < keys.len()
             {
                 if (keys[key].toLowerCase() == lower)
@@ -123,7 +123,7 @@ namespace tinox.core.http_server
          * T must be annotated with @JsonSerializable.
          *
          * Usage:
-         *   let user: CreateUserRequest = ctx.request.bodyAs<CreateUserRequest>();
+         *   const user: CreateUserRequest = ctx.request.bodyAs<CreateUserRequest>();
          *
          * @return the deserialized object
          */
@@ -160,7 +160,7 @@ namespace tinox.core.http_server
          */
         fn isContentType(contentType: String) -> Bool
         {
-            let ct: String = this.getHeader("Content-Type");
+            const ct: String = this.getHeader("Content-Type");
             return ct.startsWith(contentType);
         }
     }

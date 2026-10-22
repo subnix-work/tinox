@@ -12,7 +12,7 @@ pub type Ident = String;
 /// programs).
 pub const UNKNOWN_FILE: &str = "<unknown>";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Type {
     Int8,
     Int16,
@@ -49,14 +49,14 @@ impl Type {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Field {
     pub name: Ident,
     pub field_type: Type,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Pattern {
     Wildcard(Span),
     Ident(Ident, Option<Box<Pattern>>, Span),
@@ -70,7 +70,7 @@ pub enum Pattern {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Literal {
     Integer(i64),
     Float(f64),
@@ -95,7 +95,7 @@ impl Literal {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ExprKind {
     Literal(Literal),
     ArrayLiteral(Vec<Expr>),
@@ -223,7 +223,7 @@ pub enum ExprKind {
 
 pub type Expr = Spanned<ExprKind>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -246,7 +246,7 @@ pub enum BinaryOp {
     Ge,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum CompoundOp {
     Add,
     Sub,
@@ -261,14 +261,14 @@ pub enum CompoundOp {
     ShrArith,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum UnaryOp {
     Neg,
     Not,
     BitNot,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MatchCase {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
@@ -276,7 +276,7 @@ pub struct MatchCase {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CatchClause {
     pub param: Ident,
     pub ty: Type,
@@ -284,7 +284,7 @@ pub struct CatchClause {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum StmtKind {
     Expr(Expr),
     Let {
@@ -343,7 +343,7 @@ pub enum StmtKind {
     Empty,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SelectArm {
     pub channel: Expr,
     pub var: Ident,
@@ -353,7 +353,7 @@ pub struct SelectArm {
 
 pub type Stmt = Spanned<StmtKind>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Param {
     pub name: Ident,
     pub param_type: Type,
@@ -366,7 +366,7 @@ pub struct Param {
     pub annotations: Vec<Annotation>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Function {
     pub name: Ident,
     pub type_params: Vec<String>,
@@ -386,7 +386,7 @@ pub struct Function {
     pub file: Arc<str>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Method {
     pub name: Ident,
     pub type_params: Vec<String>,
@@ -403,7 +403,7 @@ pub struct Method {
     pub file: Arc<str>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[derive(Default)]
 pub enum Visibility {
     #[default]
@@ -414,7 +414,7 @@ pub enum Visibility {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FieldDef {
     pub name: Ident,
     pub field_type: Type,
@@ -442,7 +442,7 @@ pub struct FieldDef {
     pub default: Option<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Class {
     pub name: Ident,
     pub type_params: Vec<String>,
@@ -455,7 +455,7 @@ pub struct Class {
     pub annotations: Vec<Annotation>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Interface {
     pub name: Ident,
     pub extends: Vec<Ident>,
@@ -465,7 +465,7 @@ pub struct Interface {
     pub annotations: Vec<Annotation>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EnumVariant {
     pub name: Ident,
     pub args: Vec<Type>,
@@ -473,7 +473,7 @@ pub struct EnumVariant {
     pub doc: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Enum {
     pub name: Ident,
     pub variants: Vec<EnumVariant>,
@@ -482,7 +482,7 @@ pub struct Enum {
     pub annotations: Vec<Annotation>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Trait {
     pub name: Ident,
     pub methods: Vec<Function>,
@@ -491,7 +491,7 @@ pub struct Trait {
     pub annotations: Vec<Annotation>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Namespace {
     pub name: Vec<Ident>,
     pub decls: Vec<Decl>,
@@ -502,21 +502,21 @@ pub struct Namespace {
 /// An argument in an annotation — a literal value, a qualified enum member
 /// (Type.Variant), or a bracketed list of arguments (e.g.
 /// `@OIDCRolesAllowed(["admin", "api-user"])`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum AnnotationArg {
     Literal(Literal),
     EnumValue(String, String), // TypeName, VariantName — e.g. MediaType.APPLICATION_JSON
     Array(Vec<AnnotationArg>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Annotation {
     pub name: Ident,
     pub args: Vec<AnnotationArg>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImmutableDecl {
     pub name: Ident,
     pub fields: Vec<Param>,
@@ -525,7 +525,7 @@ pub struct ImmutableDecl {
     pub annotations: Vec<Annotation>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 // Function is by far the most common (~180 construction/match sites
 // across the whole workspace) — boxing would force an indirection there
 // everywhere, for a pure stack-size benefit on the rarer variants. Not
@@ -545,14 +545,14 @@ pub enum DeclKind {
 
 pub type Decl = Spanned<DeclKind>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Import {
     pub path: Vec<Ident>,
     pub alias: Option<Ident>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SourceFile {
     pub decls: Vec<Decl>,
     pub span: Span,

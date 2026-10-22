@@ -4,5 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+serde = { workspace = true }
 tinox-common = { path = "../tinox-common" }
 tinox-lexer = { path = "../tinox-lexer" }

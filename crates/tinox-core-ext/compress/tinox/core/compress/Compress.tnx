@@ -4,8 +4,8 @@
  * HTTP response bodies, message-queue payload compression, ...) — unlike
  * tinox.core.zip's Zip, which is STORED-only (no compression).
  *
- *   let packed: List<Int64> = Compress::gzip(bytes);
- *   let restored: List<Int64> = Compress::gunzip(packed);
+ *   const packed: List<Int64> = Compress::gzip(bytes);
+ *   const restored: List<Int64> = Compress::gunzip(packed);
  *   if !Compress::lastGunzipOk() { throw "corrupt gzip stream"; }
  *
  * Two formats:

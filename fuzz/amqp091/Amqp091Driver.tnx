@@ -5,7 +5,7 @@ class Amqp091Driver
 {
     fnc tinoxAmqp091ReadFrame(conn: Int64) -> Int64
     {
-        let f = Amqp091::readFrame(conn);
+        const f = Amqp091::readFrame(conn);
         return f.frameType;
     }
 }

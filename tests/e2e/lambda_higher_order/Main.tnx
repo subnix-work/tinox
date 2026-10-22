@@ -9,7 +9,7 @@ class Main
 
     fnc main() -> Int32
     {
-        let double: fnc(Int64) -> Int64 = x => x * 2;
+        const double: fnc(Int64) -> Int64 = x => x * 2;
         println(apply(double, 21));
         return 0;
     }

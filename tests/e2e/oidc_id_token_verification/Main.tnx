@@ -31,71 +31,71 @@ class Main
 {
 
     async fnc fakeProvider(srv: Int64) -> Int64 {
-        let idToken = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImtleTEiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJ1c2VyNDIiLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlLmNvbSIsImF1ZCI6Im15LWNsaWVudC1pZCIsImV4cCI6OTk5OTk5OTk5OX0.ma9YXz5xRw5CnZ6jQzFXKLJ0zJTj1WBh5ATmGZucYtb0FDm_I2QZ2-sOD1x1wbyc3IQtwMG4STdhqx7TdvEf6QwNVatz5sSCG7Pwn9jLrUo8q4G91L0UZRZVPM9vR5H540t7Obgrw7QG2-p5-83hJOsQ-CFzdldXdE0Ts37DM-aZriKwq-t2sB5BbvqV2Gp5nWROxNstbxRG9IIJzxIUCztvw4-9sUZsb4rU11R56riYFF4a9bxiAbPAd23ssBNm1Du10xjkKv7roDEKIcijCS0o74SmY7WZlgbjJ71DEkgBFozZXGkVSmXclICwH7dcjJE_SWLTZFCgBOajgkhVew";
-        let malformedIdToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleTEifQ.eyJzdWIiOiJ1c2VyMSJ9.fakesig";
-        let jwksBody = "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"key1\",\"n\":\"paFXzTfxN6cVjtAJBMIYyj87nt-HmTvS8rGP2oTh6gTK1rx__9qh77HX28NdoEpXXIhRmYK9-1XCFA-ZhHDZn9TsWVLqBLn1mgPFhrJLdgNn47LokHi1WM8ESMee7S-6_rvyFQZQedR70057WzyE1hUgrN3UiemDDk_EQpabibG-kiFYD7rFj9AEQ0s3_C1QmFoz_bPA3ntvAI5IZ6Sz0Z1Y3LBidm_Cio1HcXYsvp-yASqaawysYBSukCb5geatLY3MHlYIAm7F1mjxmEGntm05c4lMpwBchl47oSh78xUcDt2VH7rcUimDgG63MBz0JpywcmrFGU6265V2EJy9wQ\",\"e\":\"AQAB\"}]}";
+        const idToken = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImtleTEiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJ1c2VyNDIiLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlLmNvbSIsImF1ZCI6Im15LWNsaWVudC1pZCIsImV4cCI6OTk5OTk5OTk5OX0.ma9YXz5xRw5CnZ6jQzFXKLJ0zJTj1WBh5ATmGZucYtb0FDm_I2QZ2-sOD1x1wbyc3IQtwMG4STdhqx7TdvEf6QwNVatz5sSCG7Pwn9jLrUo8q4G91L0UZRZVPM9vR5H540t7Obgrw7QG2-p5-83hJOsQ-CFzdldXdE0Ts37DM-aZriKwq-t2sB5BbvqV2Gp5nWROxNstbxRG9IIJzxIUCztvw4-9sUZsb4rU11R56riYFF4a9bxiAbPAd23ssBNm1Du10xjkKv7roDEKIcijCS0o74SmY7WZlgbjJ71DEkgBFozZXGkVSmXclICwH7dcjJE_SWLTZFCgBOajgkhVew";
+        const malformedIdToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleTEifQ.eyJzdWIiOiJ1c2VyMSJ9.fakesig";
+        const jwksBody = "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"key1\",\"n\":\"paFXzTfxN6cVjtAJBMIYyj87nt-HmTvS8rGP2oTh6gTK1rx__9qh77HX28NdoEpXXIhRmYK9-1XCFA-ZhHDZn9TsWVLqBLn1mgPFhrJLdgNn47LokHi1WM8ESMee7S-6_rvyFQZQedR70057WzyE1hUgrN3UiemDDk_EQpabibG-kiFYD7rFj9AEQ0s3_C1QmFoz_bPA3ntvAI5IZ6Sz0Z1Y3LBidm_Cio1HcXYsvp-yASqaawysYBSukCb5geatLY3MHlYIAm7F1mjxmEGntm05c4lMpwBchl47oSh78xUcDt2VH7rcUimDgG63MBz0JpywcmrFGU6265V2EJy9wQ\",\"e\":\"AQAB\"}]}";
 
         var allOk: Int64 = 1;
 
         // 1. exchangeCode() happy path -- POST /token, then GET /jwks.json.
-        let c1 = httpServerAcceptConnHandle(srv);
-        let r1 = httpConnReadRequest(c1);
+        const c1 = httpServerAcceptConnHandle(srv);
+        const r1 = httpConnReadRequest(c1);
         if (!(r1.contains("POST /token") && r1.contains("grant_type=authorization_code") && r1.contains("client_id=my-client-id"))) {
             allOk = 0;
         }
-        let b1 = "{\"access_token\":\"access-abc123\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"id_token\":\"" + idToken + "\"}";
-        let resp1 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + b1.len().toString() + "\r\nConnection: close\r\n\r\n" + b1;
+        const b1 = "{\"access_token\":\"access-abc123\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"id_token\":\"" + idToken + "\"}";
+        const resp1 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + b1.len().toString() + "\r\nConnection: close\r\n\r\n" + b1;
         httpConnSendRaw(c1, resp1);
         httpConnClose(c1);
 
-        let c2 = httpServerAcceptConnHandle(srv);
-        let r2 = httpConnReadRequest(c2);
+        const c2 = httpServerAcceptConnHandle(srv);
+        const r2 = httpConnReadRequest(c2);
         if (!r2.contains("GET /jwks.json")) {
             allOk = 0;
         }
-        let resp2 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + jwksBody.len().toString() + "\r\nConnection: close\r\n\r\n" + jwksBody;
+        const resp2 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + jwksBody.len().toString() + "\r\nConnection: close\r\n\r\n" + jwksBody;
         httpConnSendRaw(c2, resp2);
         httpConnClose(c2);
 
         // 2. refresh() without a reissued id_token -- POST /token only, no JWKS fetch.
-        let c3 = httpServerAcceptConnHandle(srv);
-        let r3 = httpConnReadRequest(c3);
+        const c3 = httpServerAcceptConnHandle(srv);
+        const r3 = httpConnReadRequest(c3);
         if (!(r3.contains("POST /token") && r3.contains("grant_type=refresh_token"))) {
             allOk = 0;
         }
-        let b3 = "{\"access_token\":\"access-refreshed\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
-        let resp3 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + b3.len().toString() + "\r\nConnection: close\r\n\r\n" + b3;
+        const b3 = "{\"access_token\":\"access-refreshed\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
+        const resp3 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + b3.len().toString() + "\r\nConnection: close\r\n\r\n" + b3;
         httpConnSendRaw(c3, resp3);
         httpConnClose(c3);
 
         // 3. exchangeCode() with a client whose client_id doesn't match the
         //    id_token's aud claim -- POST /token, then GET /jwks.json (the
         //    aud mismatch is only detectable after verifying the signature).
-        let c4 = httpServerAcceptConnHandle(srv);
-        let r4 = httpConnReadRequest(c4);
+        const c4 = httpServerAcceptConnHandle(srv);
+        const r4 = httpConnReadRequest(c4);
         if (!(r4.contains("POST /token") && r4.contains("client_id=someone-elses-client-id"))) {
             allOk = 0;
         }
-        let b4 = "{\"access_token\":\"access-abc123\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"id_token\":\"" + idToken + "\"}";
-        let resp4 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + b4.len().toString() + "\r\nConnection: close\r\n\r\n" + b4;
+        const b4 = "{\"access_token\":\"access-abc123\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"id_token\":\"" + idToken + "\"}";
+        const resp4 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + b4.len().toString() + "\r\nConnection: close\r\n\r\n" + b4;
         httpConnSendRaw(c4, resp4);
         httpConnClose(c4);
 
-        let c5 = httpServerAcceptConnHandle(srv);
-        let r5 = httpConnReadRequest(c5);
+        const c5 = httpServerAcceptConnHandle(srv);
+        const r5 = httpConnReadRequest(c5);
         if (!r5.contains("GET /jwks.json")) {
             allOk = 0;
         }
-        let resp5 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + jwksBody.len().toString() + "\r\nConnection: close\r\n\r\n" + jwksBody;
+        const resp5 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + jwksBody.len().toString() + "\r\nConnection: close\r\n\r\n" + jwksBody;
         httpConnSendRaw(c5, resp5);
         httpConnClose(c5);
 
         // 4. exchangeCode() where the provider returns a malformed-alg
         //    id_token -- rejected on the alg check alone, no JWKS fetch at all.
-        let c6 = httpServerAcceptConnHandle(srv);
+        const c6 = httpServerAcceptConnHandle(srv);
         httpConnReadRequest(c6);
-        let b6 = "{\"access_token\":\"access-abc123\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"id_token\":\"" + malformedIdToken + "\"}";
-        let resp6 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + b6.len().toString() + "\r\nConnection: close\r\n\r\n" + b6;
+        const b6 = "{\"access_token\":\"access-abc123\",\"refresh_token\":\"refresh-xyz789\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"id_token\":\"" + malformedIdToken + "\"}";
+        const resp6 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + b6.len().toString() + "\r\nConnection: close\r\n\r\n" + b6;
         httpConnSendRaw(c6, resp6);
         httpConnClose(c6);
 
@@ -104,15 +104,15 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeProvider(srv);
+        const handle = spawn fakeProvider(srv);
 
-        let client = OidcClient::new(
+        const client = OidcClient::new(
             "https://issuer.example.com",
             "http://127.0.0.1:" + port.toString() + "/authorize",
             "http://127.0.0.1:" + port.toString() + "/token",
@@ -132,9 +132,9 @@ class Main
             println("ok-no-openid-throws");
         }
 
-        let authReq = client.buildAuthorizeUrl("openid email");
+        const authReq = client.buildAuthorizeUrl("openid email");
 
-        let tr1 = client.exchangeCode("abc123", authReq.codeVerifier);
+        const tr1 = client.exchangeCode("abc123", authReq.codeVerifier);
         if (tr1.ok) {
             if (tr1.accessToken == "access-abc123") {
                 if (tr1.claims["sub"].getString() == "user42") {
@@ -145,7 +145,7 @@ class Main
             }
         }
 
-        let tr2 = client.refresh("refresh-xyz789");
+        const tr2 = client.refresh("refresh-xyz789");
         if (tr2.ok) {
             if (tr2.accessToken == "access-refreshed") {
                 if (tr2.idToken == "") {
@@ -154,7 +154,7 @@ class Main
             }
         }
 
-        let wrongClient = OidcClient::new(
+        const wrongClient = OidcClient::new(
             "https://issuer.example.com",
             "http://127.0.0.1:" + port.toString() + "/authorize",
             "http://127.0.0.1:" + port.toString() + "/token",
@@ -163,22 +163,22 @@ class Main
             "some-secret",
             "http://localhost/callback"
         );
-        let authReq2 = wrongClient.buildAuthorizeUrl("openid");
-        let tr3 = wrongClient.exchangeCode("abc123", authReq2.codeVerifier);
+        const authReq2 = wrongClient.buildAuthorizeUrl("openid");
+        const tr3 = wrongClient.exchangeCode("abc123", authReq2.codeVerifier);
         if (!tr3.ok) {
             if (tr3.errorMessage.contains("aud")) {
                 println("ok-wrong-aud-rejected");
             }
         }
 
-        let tr4 = client.exchangeCode("abc123", authReq.codeVerifier);
+        const tr4 = client.exchangeCode("abc123", authReq.codeVerifier);
         if (!tr4.ok) {
             if (tr4.errorMessage.contains("alg")) {
                 println("ok-malformed-alg-rejected");
             }
         }
 
-        let brokerOk = await handle;
+        const brokerOk = await handle;
         if (brokerOk == 1) {
             println("ok-broker-saw-correct-requests");
         }
