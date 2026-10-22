@@ -9,6 +9,15 @@ class Main
     }
     fnc main() -> Int32
     {
+        // Issue #358: empty ORM queries must not read row zero in libpq.
+        const missing: Account = DB::of(Account).filter(a => a.name == "does-not-exist").first();
+        println("missing id: " + missing.id.toString());
+        println("missing name: [" + missing.name + "]");
+        println("missing balance: " + missing.balance.toString());
+        const empty: List<Account> = DB::of(Account).filter(a => a.name == "does-not-exist").list();
+        println("empty list: " + empty.len().toString());
+        println("empty count: " + DB::of(Account).filter(a => a.name == "does-not-exist").count().toString());
+
         const svc = new BankService();
 
         // Succeeds -- commits, real balance change expected in Postgres.

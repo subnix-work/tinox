@@ -10,6 +10,8 @@ use tinox_parser::{DeclKind, Formatter, Parser};
 
 mod callgraph;
 mod contract;
+mod dockerfile;
+use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
 mod runtime_cache;
 mod build_cache;
@@ -85,6 +87,7 @@ fn print_help() {
     println!("  tinox build [file]         Compile to an executable (uses tinox.toml if no file)");
     println!("  tinox docker               Build a minimal Docker image (needs [docker] in tinox.toml)");
     println!("  tinox docker --tag n:t     Build the image under an explicit name:tag");
+    println!("  tinox docker --source-build  Compile inside the pinned builder image (multi-stage, no host libc dependency)");
     println!("  tinox run   [file]         Compile and run (uses tinox.toml if no file)");
     println!("  tinox dev   [file]         Dev mode: hot-reload on file changes");
     println!("  tinox test  [file]         Run all @Test-annotated methods");
@@ -589,6 +592,15 @@ struct DockerConfig {
     image: Option<String>,
     base: Option<String>,
     extra_packages: Vec<String>,
+    /// Builder image for `--source-build` (default: the pinned
+    /// `dockerfile::default_builder_image()` for this compiler version).
+    builder: Option<String>,
+    /// UID the container process runs as (default `DEFAULT_CONTAINER_UID`;
+    /// `0` is an explicit opt-in to running as root).
+    uid: Option<u32>,
+    /// Extra project-relative paths copied into the `--source-build` context
+    /// on top of the allowlist (tinox.toml, tinox.lock, src/, ...).
+    include: Vec<String>,
 }
 
 /// Parse a TOML-ish inline array (`[8080, 9090]` or `["a", "b"]`) into its
@@ -629,6 +641,22 @@ fn read_docker_config() -> Option<DockerConfig> {
                 } else if let Some(rest) = line.strip_prefix("extra_packages") {
                     let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
                     cfg.extra_packages = parse_toml_array(rest);
+                } else if let Some(rest) = line.strip_prefix("include") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    cfg.include = parse_toml_array(rest);
+                } else if let Some(rest) = line.strip_prefix("uid") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    match rest.parse::<u32>() {
+                        Ok(u) => cfg.uid = Some(u),
+                        Err(_) => {
+                            eprintln!("error: [docker] uid must be a non-negative integer, got `{rest}`");
+                            std::process::exit(1);
+                        }
+                    }
+                } else if let Some(rest) = line.strip_prefix("builder") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    let v = rest.trim_matches('"').to_string();
+                    if !v.is_empty() { cfg.builder = Some(v); }
                 } else if let Some(rest) = line.strip_prefix("image") {
                     let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
                     let v = rest.trim_matches('"').to_string();
@@ -840,34 +868,6 @@ fn docker_runtime_packages(extra: &[String]) -> Vec<String> {
     compute_runtime_packages(tls_enabled, db_driver.as_ref().map(|d| d.driver.as_str()), extra)
 }
 
-/// Renders the (minimal, single-stage) Dockerfile: install just the
-/// runtime shared libraries the binary needs, copy it in, EXPOSE the
-/// configured ports, run it directly as the container's entrypoint.
-fn generate_dockerfile(base: &str, packages: &[String], binary_name: &str, ports: &[u16]) -> String {
-    let mut s = String::new();
-    s.push_str(&format!("FROM {base}\n\n"));
-    if !packages.is_empty() {
-        s.push_str("RUN apt-get update && apt-get install -y --no-install-recommends \\\n");
-        for pkg in packages {
-            // Every package line continues (there's always a trailing
-            // `&& rm -rf ...` line after the loop), unlike a plain
-            // comma/newline-joined list where only the interior separators
-            // need it.
-            s.push_str(&format!("    {pkg} \\\n"));
-        }
-        s.push_str("    && rm -rf /var/lib/apt/lists/*\n\n");
-    }
-    s.push_str("WORKDIR /app\n");
-    s.push_str(&format!("COPY {binary_name} /app/{binary_name}\n"));
-    s.push_str(&format!("RUN chmod +x /app/{binary_name}\n\n"));
-    if !ports.is_empty() {
-        let port_list = ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
-        s.push_str(&format!("EXPOSE {port_list}\n\n"));
-    }
-    s.push_str(&format!("ENTRYPOINT [\"/app/{binary_name}\"]\n"));
-    s
-}
-
 fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
     let mut i = 0;
     while i < args.len() {
@@ -877,6 +877,137 @@ fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
         i += 1;
     }
     None
+}
+
+/// `--source-build` staging: allowlisted source context + pinned two-stage
+/// Dockerfile + `build-info.json` provenance. Returns `(Dockerfile path,
+/// build context dir)`. Hard-exits on any failure.
+fn stage_source_build(
+    cfg: &DockerConfig,
+    input_file: &str,
+    binary_name: &str,
+    base_image: &str,
+    packages: &[String],
+    uid: u32,
+    build_dir: &Path,
+) -> (PathBuf, PathBuf) {
+    let root = find_project_root().unwrap_or_else(|| {
+        eprintln!("error: no tinox.toml found");
+        std::process::exit(1);
+    });
+    let root = root.canonicalize().unwrap_or(root);
+    let entry_abs = Path::new(input_file).canonicalize().unwrap_or_else(|_| PathBuf::from(input_file));
+    let entry_rel = entry_abs
+        .strip_prefix(&root)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| {
+            eprintln!("error: entry file {} is outside the project root {}", entry_abs.display(), root.display());
+            std::process::exit(1);
+        });
+
+    let tls = std::env::var("TINOX_TLS").map(|v| v != "0" && v != "false").unwrap_or(true);
+    let http3 = tls && std::env::var("TINOX_HTTP3").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let db_driver = read_database_config().map(|d| d.driver);
+
+    let ctx_dir = build_dir.join("ctx");
+    let files = dockerfile::stage_source_context(&root, &ctx_dir.join("project"), &entry_rel, &cfg.include)
+        .unwrap_or_else(|e| {
+            eprintln!("error: cannot stage build context: {e}");
+            std::process::exit(1);
+        });
+    println!("Build context ({} files):", files.len());
+    for f in &files {
+        println!("  {f}");
+    }
+
+    let toml_text = fs::read_to_string(root.join("tinox.toml")).unwrap_or_default();
+    let has_dependencies = toml_text.lines().any(|l| l.trim() == "[[dependencies]]");
+    let locked = root.join("tinox.lock").is_file();
+    if has_dependencies && !locked {
+        eprintln!(
+            "warning: tinox.toml declares dependencies but there is no tinox.lock -- the build \
+             will resolve them from the registry unpinned (run `tinox install` first and commit tinox.lock)"
+        );
+    }
+
+    // Pin both images by content digest when the daemon can resolve them;
+    // otherwise fall back to the tag and record that honestly.
+    let builder_tag = cfg.builder.clone().unwrap_or_else(dockerfile::default_builder_image);
+    let builder_digest = resolve_image_digest(&builder_tag);
+    let base_digest = resolve_image_digest(base_image);
+    for (role, tag, d) in [("builder", &builder_tag, &builder_digest), ("base", &base_image.to_string(), &base_digest)] {
+        if d.is_none() {
+            eprintln!("warning: could not resolve a registry digest for {role} image {tag}; using the mutable tag");
+        }
+    }
+    let builder_ref = builder_digest.clone().unwrap_or_else(|| builder_tag.clone());
+    let base_ref = base_digest.clone().unwrap_or_else(|| base_image.to_string());
+
+    let version = env!("CARGO_PKG_VERSION");
+    let images = [
+        ("builder", builder_digest.unwrap_or_else(|| format!("unresolved ({builder_tag})"))),
+        ("base", base_digest.unwrap_or_else(|| format!("unresolved ({base_image})"))),
+    ];
+    let info = dockerfile::render_build_info(&dockerfile::BuildInfo {
+        compiler_version: version,
+        target: "linux/amd64",
+        images: &images,
+        tls,
+        http3,
+        db_driver: db_driver.as_deref(),
+        locked,
+        files: &files,
+    });
+    let write = |path: PathBuf, content: &str| {
+        if let Err(e) = fs::write(&path, content) {
+            eprintln!("error: cannot write {}: {}", path.display(), e);
+            std::process::exit(1);
+        }
+    };
+    write(ctx_dir.join("build-info.json"), &info);
+
+    let labels = vec![
+        ("org.opencontainers.image.title".to_string(), binary_name.to_string()),
+        ("tinox.compiler.version".to_string(), version.to_string()),
+        ("tinox.builder.image".to_string(), images[0].1.clone()),
+        ("tinox.base.image".to_string(), images[1].1.clone()),
+    ];
+    let dockerfile_text = dockerfile::generate_source_build_dockerfile(&dockerfile::SourceBuildSpec {
+        builder: &builder_ref,
+        base: &base_ref,
+        packages,
+        binary_name,
+        ports: &cfg.ports,
+        uid,
+        tls,
+        http3,
+        has_dependencies,
+        labels: &labels,
+    });
+    let dockerfile_path = ctx_dir.join("Dockerfile");
+    write(dockerfile_path.clone(), &dockerfile_text);
+    (dockerfile_path, ctx_dir)
+}
+
+/// Pulls `image` (best effort: a locally built builder has no registry copy)
+/// and returns its content-digest reference `name@sha256:...`, or `None` if
+/// the image isn't available / has no repo digest.
+fn resolve_image_digest(image: &str) -> Option<String> {
+    let _ = Command::new("docker")
+        .args(["pull", "--quiet", image])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let out = Command::new("docker")
+        .args(["image", "inspect", "--format", "{{index .RepoDigests 0}}", image])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let d = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if d.contains("@sha256:") { Some(d) } else { None }
 }
 
 /// `tinox docker [--tag name:tag] [--debug]` -- compiles the project (same
@@ -907,6 +1038,7 @@ fn docker_build(args: &[String]) {
     let debug = args.iter().any(|a| a == "--debug");
     let opt = if debug { OptLevel::Debug } else { OptLevel::Release };
     let tag_override = parse_flag_value(args, "--tag");
+    let source_build = args.iter().any(|a| a == "--source-build");
 
     // Project mode only -- the [docker] section this command reads only
     // exists in a tinox.toml, so (unlike `build`/`run`) there's no bare-file
@@ -937,37 +1069,45 @@ fn docker_build(args: &[String]) {
     // overridable via `[docker] base`.
     let base_image = cfg.base.clone().unwrap_or_else(|| "debian:trixie-slim".to_string());
 
-    println!("Compiling {binary_name} ({opt:?})...");
-    if let Err(e) = compile_file(&input_file, &binary_name, opt) {
-        eprintln!("Compilation failed: {}", e);
-        std::process::exit(1);
+    let uid = cfg.uid.unwrap_or(DEFAULT_CONTAINER_UID);
+    if uid == 0 {
+        eprintln!("warning: [docker] uid = 0 -- the container process will run as root");
     }
-
+    let packages = docker_runtime_packages(&cfg.extra_packages);
     let build_dir = Path::new(".tinox").join("docker");
     if let Err(e) = fs::create_dir_all(&build_dir) {
         eprintln!("error: cannot create {}: {}", build_dir.display(), e);
         std::process::exit(1);
     }
-    let staged_binary = build_dir.join(&binary_name);
-    if let Err(e) = fs::copy(&binary_name, &staged_binary) {
-        eprintln!("error: cannot stage compiled binary into {}: {}", build_dir.display(), e);
-        std::process::exit(1);
-    }
 
-    let packages = docker_runtime_packages(&cfg.extra_packages);
-    let dockerfile = generate_dockerfile(&base_image, &packages, &binary_name, &cfg.ports);
-    let dockerfile_path = build_dir.join("Dockerfile");
-    if let Err(e) = fs::write(&dockerfile_path, &dockerfile) {
-        eprintln!("error: cannot write {}: {}", dockerfile_path.display(), e);
-        std::process::exit(1);
-    }
+    let (dockerfile_path, context_dir) = if source_build {
+        stage_source_build(&cfg, &input_file, &binary_name, &base_image, &packages, uid, &build_dir)
+    } else {
+        println!("Compiling {binary_name} ({opt:?})...");
+        if let Err(e) = compile_file(&input_file, &binary_name, opt) {
+            eprintln!("Compilation failed: {}", e);
+            std::process::exit(1);
+        }
+        let staged_binary = build_dir.join(&binary_name);
+        if let Err(e) = fs::copy(&binary_name, &staged_binary) {
+            eprintln!("error: cannot stage compiled binary into {}: {}", build_dir.display(), e);
+            std::process::exit(1);
+        }
+        let dockerfile = generate_dockerfile(&base_image, &packages, &binary_name, &cfg.ports, uid);
+        let dockerfile_path = build_dir.join("Dockerfile");
+        if let Err(e) = fs::write(&dockerfile_path, &dockerfile) {
+            eprintln!("error: cannot write {}: {}", dockerfile_path.display(), e);
+            std::process::exit(1);
+        }
+        (dockerfile_path, build_dir.clone())
+    };
 
     println!("Building image {image_ref} from {base_image}...");
     let build_status = Command::new("docker")
         .arg("build")
         .arg("-t").arg(&image_ref)
         .arg("-f").arg(&dockerfile_path)
-        .arg(&build_dir)
+        .arg(&context_dir)
         .status();
     match build_status {
         Ok(s) if s.success() => {}
@@ -1010,6 +1150,25 @@ fn docker_build(args: &[String]) {
         Err(e) => {
             println!("skipped ({e})");
         }
+    }
+
+    // The image must really default to the configured unprivileged user --
+    // checked against the built image, not just the Dockerfile text.
+    let id_out = Command::new("docker")
+        .args(["run", "--rm", "--entrypoint", "id"])
+        .arg(&image_ref)
+        .arg("-u")
+        .output();
+    match id_out {
+        Ok(out) if out.status.success() => {
+            let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if got != uid.to_string() {
+                eprintln!("error: image {image_ref} runs as uid {got}, expected {uid}");
+                std::process::exit(1);
+            }
+            println!("Container user: uid {got}{}", if uid == 0 { " (root, by explicit [docker] uid = 0)" } else { "" });
+        }
+        _ => eprintln!("warning: could not verify the image's default user"),
     }
 
     println!("Built {image_ref}");
@@ -5113,7 +5272,7 @@ mod docker_tests {
 
     #[test]
     fn dockerfile_includes_expose_and_entrypoint() {
-        let out = generate_dockerfile("debian:bookworm-slim", &["libgc1".to_string()], "myapp", &[8080, 9090]);
+        let out = generate_dockerfile("debian:bookworm-slim", &["libgc1".to_string()], "myapp", &[8080, 9090], 10001);
         assert!(out.starts_with("FROM debian:bookworm-slim\n"));
         assert!(out.contains("RUN apt-get update"));
         // Every package line (including the last, single one here) must
@@ -5135,6 +5294,7 @@ mod docker_tests {
             &["libgc1".to_string(), "zlib1g".to_string(), "libssl3".to_string()],
             "myapp",
             &[],
+            10001,
         );
         for pkg in ["libgc1", "zlib1g", "libssl3"] {
             assert!(out.contains(&format!("    {pkg} \\\n")), "{pkg} line must continue with backslash:\n{out}");
@@ -5143,7 +5303,7 @@ mod docker_tests {
 
     #[test]
     fn dockerfile_no_ports_omits_expose() {
-        let out = generate_dockerfile("debian:bookworm-slim", &[], "myapp", &[]);
+        let out = generate_dockerfile("debian:bookworm-slim", &[], "myapp", &[], 10001);
         assert!(!out.contains("EXPOSE"));
         assert!(!out.contains("apt-get"));
     }
