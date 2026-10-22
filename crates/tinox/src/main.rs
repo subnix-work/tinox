@@ -2838,6 +2838,9 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
         })
         .collect();
     cg.set_entity_entries(entity_entries_test);
+    let db_cfg_test = read_database_config();
+    cg.set_db_url(db_cfg_test.as_ref().map(|c| c.url.clone()));
+    cg.set_db_pool_size(db_cfg_test.as_ref().map(|c| c.pool as i64).unwrap_or(5));
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
 
