@@ -11,7 +11,7 @@ class Main
     {
         // Issue #358: empty ORM queries must return defaults without
         // libpq warnings, including repeated polling of the same query.
-        for i in 0..3 {
+        for pollIndex in 0..3 {
             const none: Account = DB::of(Account).filter(a => a.name == "does-not-exist").first();
             println("missing: " + none.id.toString() + ":" + none.name + ":" + none.balance.toString());
             const rows: List<Account> = DB::of(Account).filter(a => a.name == "does-not-exist").list();
