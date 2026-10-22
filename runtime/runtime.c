@@ -8067,7 +8067,8 @@ static void tinox_config_load(void) {
         tinox_config_entries[index].value = strdup(value); // Last duplicate wins.
     }
     if (ferror(f)) tinox_config_error("file", "cannot read configuration file");
-    free(line);
+    // getline() allocated `line` with libc malloc, not the GC: the parenthesized call bypasses the free() -> GC_free macro.
+    (free)(line);
     fclose(f);
 }
 

@@ -25,6 +25,8 @@ fn one_artifact_validates_before_main_and_resolves_runtime_overrides() {
     let directory = std::env::temp_dir().join(format!("tinox-runtime-config-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     fs::write(directory.join("Main.tnx"), r#"
+import tinox.core.json;
+
 @JsonSerializable
 class Main {
     @Config("service.port", "required") var port: Int32;
@@ -42,6 +44,14 @@ class Main {
     }
 }
 "#).unwrap();
+    // @JsonSerializable comes from the extended-tier json module, which a project has to declare.
+    let manifest = fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core-ext/json/tinox.toml")).unwrap();
+    let version = manifest.lines().find_map(|l| l.trim().strip_prefix("version")).and_then(|r| r.trim_start().strip_prefix('='))
+        .map(|r| r.trim().trim_matches('"').to_string()).unwrap();
+    fs::write(directory.join("tinox.toml"), format!(
+        "[package]\nname = \"runtime-config\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"{version}\"\n"
+    )).unwrap();
+    success(Command::new(env!("CARGO_BIN_EXE_tinox")).current_dir(&directory).arg("install"));
     success(Command::new(env!("CARGO_BIN_EXE_tinox")).current_dir(&directory)
         .args(["build", "Main.tnx", "-o", "program"]));
     let secret = "runtime-only-secret-308";
@@ -104,6 +114,8 @@ fn native_client_checks_integer_boundaries_conflicts_and_redacted_introspection(
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+// The runtime expects the error slot that generated code normally provides.
+__thread int64_t __tinox_err;
 extern void tinox_config_declare(const char*, const char*, const char*, const char*);
 extern char* tinox_config_dump_json(void);
 extern int64_t tinox_config_get_int(const char*);
