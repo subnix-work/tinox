@@ -15,7 +15,7 @@ namespace tinox.core.bytes
         fn open(path: String) -> ByteWriter
         {
             const fd: Int64 = tinoxFileOpenBytes(path, "wb");
-            if fd == 0
+            if (fd == 0)
             {
                 println("runtime error: cannot open file for writing: " + path);
                 exit(1);

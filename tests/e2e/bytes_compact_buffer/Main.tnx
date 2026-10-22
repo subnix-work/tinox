@@ -14,17 +14,16 @@
 
 import tinox.core.bytes;
 
+// httpConnFromFd and httpConnClose are compiler built-ins; declaring them again is a redefinition.
 extern fn socketCreateTcp() -> Int64;
 extern fn socketConnect(fd: Int64, host: String, port: Int64) -> Bool;
-extern fn httpConnFromFd(fd: Int64) -> Int64;
-extern fn httpConnClose(conn: Int64);
 
 class Main
 {
     fnc pattern(n: Int64) -> Bytes {
         const b: Bytes = Bytes::new(n);
         var i: Int64 = 0;
-        while i < n
+        while (i < n)
         {
             b.set(i, (i * 7 + i / 256) % 256);
             i = i + 1;
@@ -97,9 +96,9 @@ class Main
         println("stream-sent=" + sent.toString());
         var nuls: Bool = false;
         var i: Int64 = 0;
-        while i < got.len()
+        while (i < got.len())
         {
-            if got.get(i) == 0
+            if (got.get(i) == 0)
             {
                 nuls = true;
             }
