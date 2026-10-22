@@ -7,7 +7,7 @@ export DOGFOOD_DIR
 
 .PHONY: check test-and-dogfood test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync workspace-ext
 
-check: clippy test-and-dogfood grammar-sync workspace-stdlib docs-check
+check: clippy test-and-dogfood grammar-sync workspace-stdlib docs-check ai-eval-test
 
 # Runs `test` and `dogfood` concurrently (CI's `test` job runs this alone).
 # The recursive make gives -j2 its own job server regardless of how `check`
@@ -204,6 +204,11 @@ grammar-sync:
 install-hooks:
 	git config core.hooksPath .githooks
 	@echo "core.hooksPath = .githooks set (pre-push: make check)"
+
+# Local evaluation protocol regressions: no model/provider calls.
+.PHONY: ai-eval-test
+ai-eval-test:
+	python3 -m unittest discover -s benchmarks/ai -p '*_test.py'
 
 # Current metadata/guide are reproducible; translated prose and version pages
 # remain deliberate publications. Python 3.11+ supplies tomllib.

@@ -1,0 +1,27 @@
+{
+  "provider": "ollama-local",
+  "model": "REPLACE_WITH_INSTALLED_MODEL_TAG",
+  "model_revision": "REPLACE_WITH_SHA256_FROM_API_TAGS",
+  "adapter_version": "ollama_adapter.py-v1; record your Ollama server version here",
+  "condition": "baseline",
+  "command": [
+    "python3",
+    "/ABSOLUTE/PATH/TO/benchmarks/ai/ollama_adapter.py"
+  ],
+  "settings": {
+    "temperature": 0,
+    "seed": 315
+  },
+  "context": {},
+  "runs": 5,
+  "max_turns": 40,
+  "context_tokens": 16384,
+  "max_output_tokens": 2048,
+  "token_budget": 400000,
+  "max_cost_usd": 0,
+  "input_usd_per_million": 0,
+  "output_usd_per_million": 0,
+  "wall_seconds": 900,
+  "call_seconds": 120,
+  "billing": "local"
+}

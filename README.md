@@ -1040,6 +1040,13 @@ tuning knobs are currently exposed beyond
 `tinox.core.debug.Debug::gcCollect()`/`::memoryUsage()`; if a workload's
 live set is large enough for this to matter, that's the number to watch.
 
+## AI coding evaluations
+
+The [local task evaluation suite](benchmarks/ai/README.md) measures independently
+checked correctness, total model tokens, tool calls, failures and repeated-run
+variability. Model execution requires explicit configuration and opt-in. No AI
+efficiency improvement is claimed without measured results.
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.

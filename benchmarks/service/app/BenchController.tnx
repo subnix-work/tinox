@@ -1,0 +1,87 @@
+import tinox.core.http_server;
+import tinox.core.json;
+import tinox.core.debug;
+import Item;
+
+// Workload endpoints for benchmarks/service (#312). One process serves all
+// profiles so the load harness can drive each of them against a fresh
+// process (see benchmarks/service/README.md). Everything is annotation
+// driven, no manual route wiring.
+//
+//   GET /hello          stateless_json: tiny fixed response
+//   GET /items/:n       serialize_heavy: allocates and serializes n Items
+//   GET /fill/:n        long_lived_state: appends n strings to a live cache
+//   GET /cache/size     long_lived_state: current cache length
+//   GET /stats          Debug::memoryUsage() (Boehm heap size, bytes)
+//
+// @ApplicationComponent: one controller instance, so `cache` really is
+// long-lived across requests. It is shared by every worker thread and is
+// NOT synchronized -- the benchmark treats this as a rough live-set
+// generator, not a correct concurrent cache; fill requests are therefore
+// driven with a single connection by the harness.
+@ApplicationComponent
+class BenchController
+{
+    var cache: List<String>;
+    var initialized: Bool;
+
+    @GET
+    @Path("/hello")
+    @Produces("application/json")
+    @StatusCode(200)
+    fn hello() -> Item
+    {
+        return Item { id: 1, name: "hello", score: 1.5, active: true };
+    }
+
+    @GET
+    @Path("/items/:n")
+    @Produces("application/json")
+    fn items(@PathParam n: Int64) -> List<Item>
+    {
+        var out: List<Item> = [];
+        var i: Int64 = 0;
+        while i < n
+        {
+            out.push(Item { id: i, name: "item-" + i.toString(), score: 0.5, active: true });
+            i = i + 1;
+        }
+        return out;
+    }
+
+    @GET
+    @Path("/fill/:n")
+    fn fill(@PathParam n: Int64) -> Int64
+    {
+        if (this.initialized == false)
+        {
+            this.cache = [];
+            this.initialized = true;
+        }
+        var i: Int64 = 0;
+        while i < n
+        {
+            this.cache.push("cache-entry-" + this.cache.len().toString() + "-payload-0000000000");
+            i = i + 1;
+        }
+        return this.cache.len();
+    }
+
+    @GET
+    @Path("/cache/size")
+    fn cacheSize() -> Int64
+    {
+        if (this.initialized == false)
+        {
+            return 0;
+        }
+        return this.cache.len();
+    }
+
+    @GET
+    @Path("/stats")
+    fn stats() -> Int64
+    {
+        return Debug::memoryUsage();
+    }
+}

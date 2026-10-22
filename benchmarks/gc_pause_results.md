@@ -18,6 +18,10 @@ behaviour under a container memory limit — see
 `benchmarks/service_latency/` (#312) for the service-level workloads and
 results, which also exercise Boehm's env-var tuning knobs.
 
+**Scope:** this measures *forced full-collection pause time only*, with no
+request load. For request p50/p95/p99, RSS and container-limit behavior
+see `benchmarks/service/README.md` (#312).
+
 ## Results
 
 Measured on the repo's dev machine (AMD Ryzen 9 9950X3D, 32 logical
