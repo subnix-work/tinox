@@ -4798,7 +4798,6 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
 
 fn compile_ll_to_exe_configured(ir_path: &str, output_name: &str, opt: OptLevel,
     options: &RuntimeOptions, trace: Option<&mut Option<Vec<PathBuf>>>) -> Result<(), Failure> {
-    let target = resolve_target()?;
     let toolchain_result = (|| -> Result<(), Failure> {
         let obj_path = format!("{}.o", output_name);
 
