@@ -1630,6 +1630,20 @@ impl TypeChecker {
                         self.symbols.functions.insert(key.clone(), sig);
                         self.method_visibility.insert(key, method.visibility.clone());
                     }
+                    // @Sensitive / @Masked fields: codegen generates toString() (masking those fields)
+                    // unless the class defines its own, so calls on it must resolve here too.
+                    let to_string_key = format!("{}_toString", c.name);
+                    if !self.symbols.functions.contains_key(&to_string_key)
+                        && c.fields.iter().any(|f| f.annotations.iter().any(|a| a.name == "Sensitive" || a.name == "Masked"))
+                    {
+                        self.symbols.functions.insert(
+                            to_string_key,
+                            FunctionSignature {
+                                params: vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))],
+                                return_type: ValueType::String,
+                            },
+                        );
+                    }
                     // @JsonSerializable: register compiler-generated toJson() and fromJson()
                     if c.annotations.iter().any(|a| a.name == "JsonSerializable") {
                         self.symbols.functions.insert(
@@ -5629,6 +5643,24 @@ class Jogger implements Runner {
             "enum Color { Red, Green, Blue }\n",
             "fn f(c: Color) -> Nothing { match c { Color::Red => return; _ => return; } }"
         ));
+    }
+
+    #[test]
+    fn test_sensitive_class_has_generated_to_string() {
+        ok(concat!(
+            "class User {\n",
+            "    @Sensitive var password: String;\n",
+            "}\n",
+            "fn f(u: User) -> String { return u.toString(); }"
+        ));
+    }
+
+    #[test]
+    fn test_class_without_masked_fields_has_no_generated_to_string() {
+        err_contains(
+            concat!("class Plain { var name: String; }\n", "fn f(p: Plain) -> String { return p.toString(); }"),
+            "undefined function: Plain_toString",
+        );
     }
 
     #[test]
