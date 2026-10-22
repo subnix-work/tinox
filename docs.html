@@ -739,8 +739,8 @@
     <span class="ann">@Produces</span>(<span class="type">MediaType</span>.APPLICATION_JSON)
     <span class="kw">fn</span> <span class="fn">sort</span>(ctx: <span class="type">HttpContext</span>) -> <span class="type">Nothing</span>
     {
-        <span class="kw">let</span> root: <span class="type">JsonValue</span> = <span class="type">Json</span>.<span class="fn">parse</span>(ctx.request.body);
-        <span class="kw">let</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = <span class="type">Json</span>.<span class="fn">intArrayFromJson</span>(root.<span class="fn">getField</span>(<span class="str">"numbers"</span>));
+        <span class="kw">const</span> root: <span class="type">JsonValue</span> = <span class="type">Json</span>.<span class="fn">parse</span>(ctx.request.body);
+        <span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = <span class="type">Json</span>.<span class="fn">intArrayFromJson</span>(root.<span class="fn">getField</span>(<span class="str">"numbers"</span>));
         ctx.response.body = <span class="type">Json</span>.<span class="fn">intArrayWrap</span>(<span class="str">"sorted"</span>, numbers.<span class="fn">sort</span>());
     }
 }</code></pre>
@@ -1022,6 +1022,187 @@
       eine Linked-List-Queue mit Mutex und Condition Variable.
     </p>
 
+
+    <h4>Task-Lebensdauer, Deadlines und Abbruch</h4>
+    <p><code>scope { ... }</code> besitzt seine lexikalischen Spawns. Ein einfacher
+      Spawn gehört zur Lebensdauer seines erzeugenden Threads; dieser wartet vor
+      seinem Ende auf übrige Kinder. Beim Prozessende werden verbleibende
+      joinbare Kinder abgebrochen und eingesammelt. Fehler werden durch
+      <code>await</code> oder unbeobachtet am Scope-Ende weitergereicht; weitere
+      Fehler erscheinen auf stderr. Der eigene Fehler des Blockrumpfs hat Vorrang.
+      Wiederholtes Await liefert innerhalb der Lebensdauer denselben Wert oder
+      Fehler. Nach Ende des besitzenden Scopes sind Handles ungültig; weitere
+      Verwendung scheitert sichtbar. Tasks bleiben beim Besitzer; nach außen
+      sollte der bereits erwartete Ergebniswert zurückgegeben werden.</p>
+    <pre><code>try {
+    scope {
+        taskSetDeadline(250); // Duration from now, in monotonic milliseconds.
+        const task: Task&lt;String&gt; = spawn Main::load();
+        println(await task);
+    }
+} catch (e: String) { println(e); }</code></pre>
+    <table>
+      <thead><tr><th>Operation</th><th>Vertrag</th></tr></thead>
+      <tbody>
+        <tr><td><code>taskCancel(task: Task&lt;T&gt;)</code></td><td>Fordert den kooperativen Abbruch eines Tasks und seiner Nachkommen an.</td></tr>
+        <tr><td><code>taskSetDeadline(ms: Int64)</code></td><td>Setzt die Deadline des aktuellen Scopes. Deadlines übergeordneter Scopes gelten weiterhin; 0 läuft sofort ab. Negative Zeitspannen scheitern sichtbar.</td></tr>
+        <tr><td><code>taskCheckCancellation()</code></td><td>Prüfpunkt für CPU-Schleifen. Wirft <code>Task cancelled</code>, <code>Task deadline exceeded</code> oder <code>Task service shutdown requested</code>.</td></tr>
+        <tr><td><code>taskWaitReadable(fd: Int64)</code></td><td>Abbrechbares Warten auf einen echten Dateideskriptor; vor accept/read mit genau einem Leser verwenden.</td></tr>
+        <tr><td><code>taskDetach(task: Task&lt;T&gt;)</code></td><td>Explizites Fire-and-forget. Nur der besitzende Thread darf einen noch nicht eingesammelten Task abkoppeln. Geerbte Abbruchanforderungen/Deadlines entfallen, Await ist unzulässig, unbehandelte Fehler beenden den Prozess sichtbar.</td></tr>
+        <tr><td><code>taskRequestShutdown()</code></td><td>Prozessweite kooperative Stoppanforderung für Service-Lebenszyklus und Steuerung. Bootstrap-Awaits verlassen ihren Wartezustand; das Herunterfahren sammelt ausstehende joinbare Tasks ein und bewahrt echte Fehler.</td></tr>
+      </tbody>
+    </table>
+    <p>Abbruch weckt auch <code>sleep</code>/<code>sleep_ms</code>, blockiertes
+      Channel-<code>recv</code> und <code>await</code> (Prüfintervall etwa 10 ms,
+      zuzüglich Scheduling). Tokens werden an Kind-Tasks und innere Scopes
+      vererbt. Scope-Fehler brechen übrige Geschwister ab; der Fehler des Rumpfs
+      bleibt vorrangig. Ein explizit abgebrochener Task meldet den Abbruch weiterhin,
+      sofern er nicht per Await abgefangen wurde. Erwarteter Abbruch beim
+      Prozessende gilt als erfolgreich.</p>
+    <p>Abbruch verwendet normales Exception-Unwinding: <code>finally</code> und
+      <code>defer</code> laufen in der üblichen Reihenfolge; eine Transaktion im
+      Kind wird vor Abschluss des Joins zurückgerollt. Transaktionen sind
+      thread-lokal und werden nicht vererbt. Ein Scope innerhalb einer
+      transaktionalen Methode wartet vor dem Commit auf Kinder. Ressourcen des
+      Elternthreads sollten außerhalb des Scopes aufgeräumt werden, damit Kinder
+      zuerst fertig werden.</p>
+    <p>Es gibt keine asynchrone Thread-Terminierung. Native blockierende I/O,
+      Datenbankaufrufe und CPU-Schleifen ohne Prüfpunkt sind nicht automatisch
+      unterbrechbar. Ressourcenspezifische Stopp-/Close-Operationen oder
+      <code>taskWaitReadable</code> verwenden. Nach fünf Sekunden ignoriertem
+      Abbruch beim Scope-Ende scheitert die Runtime sichtbar statt still zu hängen.
+      Ein explizites Await eines abgebrochenen Tasks und eine Service-Stoppanforderung
+      haben dieselbe Fünf-Sekunden-Grenze. Mit <code>@Service</code> gilt stattdessen
+      das gemeinsame konfigurierte Shutdown-Budget; siehe den Service-Lebenszyklus unten. Abgekoppelte Worker werden ausdrücklich
+      nicht strukturiert eingesammelt.</p>
+    <p>Speichern und Await bisheriger <code>Int64</code>-Handles bleiben für
+      veröffentlichte Pakete vorübergehend kompatibel. Neuer Code und die
+      Task-Steueroperationen verwenden <code>Task&lt;T&gt;</code>. Ungültige/abgelaufene
+      Handles und zyklische Awaits scheitern mit Diagnose; Integer-Handles sind
+      veraltet.</p>
+
+    <h4>Koordinierter Service-Lebenszyklus</h4>
+    <p><code>@Service(startupMs, shutdownMs)</code> auf <code>class Main</code> aktiviert
+      koordinierten Start, Health-Status und geordnetes Herunterfahren. Beide Angaben
+      sind optionale positive Millisekunden (Standard: 30000 und 5000; Maximum: 3600000).
+      Der Koordinator startet vor Datenbankinitialisierung und eager DI.</p>
+    <pre><code>@ApplicationComponent
+@Synchronized
+class Resources {
+    @OnStart
+    fn start() -&gt; Nothing { /* Initialize resources before listeners start. */ }
+    @Readiness
+    fn ready() -&gt; Bool { return true; }
+    @Liveness
+    fn live() -&gt; Bool { return true; }
+    @OnStop
+    fn stop() -&gt; Nothing { /* Dispose resources after callbacks and tasks finish. */ }
+}
+
+@Service(30000, 5000)
+class Main {
+    fnc main() -&gt; Int32 { return 0; }
+}</code></pre>
+    <p>Komponente und annotierte Controller/Endpoints aus der Einstiegsdatei importieren.
+      Hooks sind synchrone Instanzmethoden ohne Parameter auf nichtgenerischen
+      <code>@ApplicationComponent</code>/<code>@Startup</code>-Klassen ohne Vererbung.
+      Start-Hooks folgen den injizierten Abhängigkeiten, danach Klassen-/Methodennamen;
+      Stop-Hooks laufen umgekehrt. Jeder Hook joint seine gestarteten Kinder vor dem
+      nächsten Schritt. Auch nach Startfehlern erhalten initialisierte Besitzer ihre
+      Stop-Hooks. Cleanup läuft trotz Fehlern weiter; der erste Fehler bleibt erhalten,
+      der Prozess endet mit Fehlerstatus. Gemeinsamen veränderlichen Zustand mit
+      <code>@Synchronized</code> schützen.</p>
+    <p>Zustände: <code>initializing → starting → ready</code>, bei negativem Health-Beitrag
+      <code>unready</code>, anschließend <code>draining → stopping → stopped</code> oder
+      <code>failed</code>. Readiness verlangt abgeschlossene Initialisierung/Start-Hooks,
+      gebundene Listener, Consumer-Handshakes und positive Readiness-/Liveness-Beiträge.
+      Main ist keine Readiness-Barriere: Mit Listenern läuft der Dienst nach seiner
+      Rückkehr weiter; ohne Listener fordert die Rückkehr das Herunterfahren an.</p>
+    <p>Generierte HTTP-/HTTP/3-Server reservieren <code>GET /health/live</code> und
+      <code>GET /health/ready</code>: Status 200 oder 503 mit JSON für Zustand, Readiness,
+      Liveness und monotone Zeitstempel <code>startedMs</code>, <code>readyMs</code>,
+      <code>shutdownMs</code>. Start meint den Eintritt in den verwalteten Bootstrap,
+      Ready den ersten erfolgreichen Health-Durchlauf, nicht Prozessstart oder Banner.
+      Health-Methoden laufen regelmäßig im Koordinator und sollten kurz bleiben.
+      Überschrittenes Startbudget beendet den Prozess sichtbar; spätere negative
+      Health-Ergebnisse ändern den Status, starten den Prozess aber nicht neu.</p>
+    <p><code>serviceState()</code>, <code>serviceStatusJson()</code>,
+      <code>serviceIsReady()</code>, <code>serviceIsLive()</code>, <code>serviceIsStopping()</code>
+      und <code>serviceStartedMs()</code>/<code>serviceReadyMs()</code>/<code>serviceShutdownMs()</code>
+      liefern denselben Status. <code>serviceAwaitReady(ms)</code> liefert Bool;
+      <code>serviceBoundPort(index)</code> den tatsächlichen Port eines Auto-Run-Tasks
+      in Bootstrap-Plan-Reihenfolge (-1 vor Bind oder bei Brokern).
+      <code>tinox explain --bootstrap Main.tnx --json</code> zeigt Budgets, Hook-Reihenfolge,
+      Tasks und Shutdown-Vertrag.</p>
+    <p>SIGTERM, SIGINT, <code>serviceRequestShutdown()</code> und <code>taskRequestShutdown()</code>
+      setzen den Dienst auf unready und stoppen neue Arbeit. Angenommene HTTP-Antworten
+      und Broker-Bestätigungen werden beendet; WebSockets senden Close-Code 1001 und
+      rufen OnClose auf. Listener und Worker werden gejoint, danach übrige strukturierte
+      Kinder abgebrochen/gejoint, Stop-Hooks umgekehrt ausgeführt und Datenbank-Pools
+      geschlossen. <code>serviceAwaitShutdown()</code> lässt Main auf die Stop-Anforderung
+      warten. Ein gemeinsames Shutdown-Budget umfasst alle Schritte; bei Ablauf endet
+      der Prozess mit Status 1, auch bei blockierendem nativen I/O oder Hooks.
+      Keine asynchrone Thread-Terminierung; explizit detached gestartete Benutzer-Tasks
+      bleiben außerhalb des strukturierten Join-Vertrags.</p>
+    <p>Container mit Exec-Entrypoint starten, damit Signale tinox erreichen.
+      Startup-, Readiness- und Liveness-Probes auf die Health-Pfade richten; die
+      Termination-Grace-Period muss länger als das Shutdown-Budget sein.
+      <code>@Command</code> und <code>@TinoxUIApp</code> lassen sich derzeit nicht mit
+      <code>@Service</code> kombinieren; der Compiler meldet dies als Fehler.</p>
+
+    <h4>Gemeinsamer Anwendungszustand</h4>
+    <p><code>@ApplicationComponent</code> erzeugt pro Komponentenklasse einen lazy
+      Singleton; <code>@Startup</code> erzeugt denselben Singleton-Typ vor main.
+      Generierte Provider synchronisieren Erzeugung, Feld-Defaults, rekursive
+      Dependency Injection und Veröffentlichung. Gleichzeitige Provider-Aufrufe
+      erhalten dieselbe vollständig initialisierte Instanz. Benutzerkonstruktoren
+      werden dabei nicht aufgerufen. Spätere Änderungen werden dadurch nicht gesperrt.</p>
+    <p>HTTP-Worker sowie unabhängig gestartete REST-, WebSocket- und AMQP-Komponenten
+      können gleichzeitig laufen. Request-Daten gehören in
+      <code>@HttpRequestScoped</code>-Besitzer, in die Anwendungsservices injiziert
+      werden. Eine Request-Abhängigkeit in einem Singleton wird geteilt; das Erneuern
+      eines injizierten Feldes im Singleton-Controller beim Dispatch bietet keine sichere
+      Request-Isolation. Der Compiler warnt vor solchen Abhängigkeiten sowie öffentlichen
+      oder ungeschützten veränderlichen Singleton-Feldern.</p>
+    <pre><code>@ApplicationComponent
+@Synchronized
+class Counter {
+    private var value: Int64 = 0;
+    fn increment() -&gt; Int64 {
+        this.value = this.value + 1;
+        return this.value;
+    }
+}
+
+@HttpRequestScoped
+class Api {
+    @Inject var counter: Counter;
+    @GET @Path("/count")
+    fn count() -&gt; Int64 { return this.counter.increment(); }
+}</code></pre>
+    <p><code>@Synchronized</code> an einer nicht-generischen Application-/Startup-Klasse
+      schützt alle Instanzmethoden; an einer Instanzmethode nur diese Methode. Es gibt
+      einen rekursiven Monitor <em>pro deklarierender Klasse</em>, den alle markierten
+      Aufrufe und Instanzen dieser Klasse teilen. Verschachtelte Aufrufe desselben
+      Threads sind erlaubt. Statische Methoden sind bei der Klassenannotation ausgenommen;
+      explizit markierte statische/generische Methoden, Klassen ohne Singleton-Scope,
+      Interface-/Trait-Methoden und Klassen mit Vererbung werden zurückgewiesen.</p>
+    <p>Der Monitor bleibt während defer/finally und Transaktions-Commit/Rollback gehalten
+      und wird vor Rückgabe eines Werts oder Fehlers freigegeben. Abbruch beim Warten auf
+      den Monitor wirft ohne Ausführung des Rumpfs. Abbruch im Rumpf führt das normale
+      Unwinding und die Freigabe aus. Bereits aktive Fehler bleiben beim Aufräumen erhalten.
+      Dev-UI-Zustandssnapshots nutzen den Klassenmonitor, sofern vorhanden.</p>
+    <p>Zustand privat halten und sowohl Lesen als auch Schreiben schützen. Zurückgegebene
+      veränderliche Objekte, direkte Feldzugriffe sowie statische und unmarkierte Methoden
+      umgehen den Monitor. Snapshots innerhalb einer geschützten Methode erstellen, statt
+      interne Collections zurückzugeben. Unter gehaltenem Monitor kein Kind awaiten, das
+      denselben Monitor benötigt; verschiedene Klassenmonitore in einheitlicher Reihenfolge
+      betreten. Rekursion gilt für einen Thread, nicht für gespawnte Kinder. Für kleinere
+      explizite kritische Abschnitte können Locks aus <code>tinox.core.semaphore</code>
+      mit unmittelbar nach erfolgreicher Sperre registriertem <code>defer</code> dienen;
+      diese nativen blockierenden Locks werden nicht abbrechbar. Annotationen und Diagnosen
+      sind kein allgemeiner Beweis für Race-Freiheit.</p>
+
     <h3>HTTP-Server (Low Level)</h3>
     <p>
       Der HTTP-Server im Runtime verwendet:
@@ -1054,11 +1235,11 @@
     </table>
 
     <h3>Zusammengesetzte Typen</h3>
-    <pre><code><span class="kw">let</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>];                 <span class="cmt">// Array</span>
-<span class="kw">let</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>};  <span class="cmt">// Map/Dictionary</span>
-<span class="kw">let</span> pair: (<span class="type">Int32</span>, <span class="type">String</span>) = (<span class="num">42</span>, <span class="str">"hello"</span>);           <span class="cmt">// Tuple</span>
-<span class="kw">let</span> name: <span class="type">String</span>? = <span class="kw">null</span>;                             <span class="cmt">// Nullable</span>
-<span class="kw">let</span> fn add: <span class="kw">fn</span>(<span class="type">Int32</span>, <span class="type">Int32</span>) -> <span class="type">Int32</span> = |a, b| a + b; <span class="cmt">// Funktionstyp</span></code></pre>
+    <pre><code><span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>];                 <span class="cmt">// Array</span>
+<span class="kw">const</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>};  <span class="cmt">// Map/Dictionary</span>
+<span class="kw">const</span> pair: (<span class="type">Int32</span>, <span class="type">String</span>) = (<span class="num">42</span>, <span class="str">"hello"</span>);           <span class="cmt">// Tuple</span>
+<span class="kw">const</span> name: <span class="type">String</span>? = <span class="kw">null</span>;                             <span class="cmt">// Nullable</span>
+<span class="kw">const</span> fn add: <span class="kw">fn</span>(<span class="type">Int32</span>, <span class="type">Int32</span>) -> <span class="type">Int32</span> = |a, b| a + b; <span class="cmt">// Funktionstyp</span></code></pre>
 
     <h3>Generics</h3>
     <p>
@@ -1133,21 +1314,54 @@
       einen Zeiger auf eine Tabelle von Funktionszeigern.
     </p>
 
+    <h3>Abwesenheit und behandelbare Fehler</h3>
+    <p>Neue Bibliotheks-APIs verwenden <code>Option&lt;T&gt;</code> für fehlende
+      Werte und <code>Result&lt;T&gt;</code> für erwartete Fehler. Die Imports
+      sind <code>tinox.core.option</code> und <code>tinox.core.result</code>.
+      <code>Some("")</code> bedeutet vorhanden, aber leer; <code>None</code>
+      bedeutet nicht vorhanden. Mit <code>isSome()</code>/<code>isNone()</code>
+      prüfen oder mit <code>unwrapOr()</code> einen Ersatzwert wählen. Keine
+      zusätzliche nullable <code>T?</code>-Variante derselben Suche einführen.</p>
+    <p><code>Result&lt;T&gt;</code> behält seinen String-Fehler. Status mit
+      <code>isOk()</code>/<code>isErr()</code> prüfen und Details über
+      <code>getError()</code> lesen. Operation, Ziel und Ursache ohne geheime
+      Daten erhalten; den Status nicht aus dem Meldungstext ableiten.
+      Stabile Fehlerkategorien gehören in dokumentierte Ergebnisfelder.
+      Ein generisches Result mit Fehlertyp und Änderungen der Speicherbelegung
+      bleiben separater Arbeit vorbehalten.</p>
+    <p>Exceptions bleiben für dokumentierte Vorbedingungen, Programmier- und
+      Einrichtungsfehler geeignet. <code>Option.unwrap()</code> wirft bei None
+      <code>"Option is None"</code>; <code>Result.unwrap()</code> wirft bei Err
+      den ursprünglichen Fehler. Exceptions aus Callbacks werden weitergereicht.
+      <code>finally</code> dient der Bereinigung bei normalem und fehlerhaftem
+      Verlassen eines Blocks.</p>
+    <p>Die ergänzenden HTTP-Methoden <code>findHeader</code>, <code>findParam</code>,
+      <code>findQuery</code> und <code>QueryString::find</code> liefern
+      <code>Option&lt;String&gt;</code>. Header ignorieren Groß-/Kleinschreibung,
+      Pfad- und Query-Namen unterscheiden sie. Query-Werte bleiben roh;
+      der letzte doppelte Parameter gewinnt, ein Schlüssel ohne Wert ist
+      vorhanden und leer. Bestehende String-Getter behalten ihren leeren
+      Ersatzwert ohne Deprecation-Warnungen. Die neuen Quellcode-APIs benötigen
+      eine zukünftige HTTP-Paketversion; veröffentlichte Versionen enthalten
+      sie noch nicht. Beispiele und bestehende I/O-Grenzen stehen im
+      <a href="docs/api-contracts.md">API-Inventar und Migrationsleitfaden</a>.</p>
+
     <h3>Schlüsselwort-Übersicht</h3>
     <table>
       <thead><tr><th>Keyword</th><th>Bedeutung</th></tr></thead>
       <tbody>
         <tr><td><code>fn</code></td><td>Instanzmethode (hat implizites <code>this</code>)</td></tr>
         <tr><td><code>fnc</code></td><td>Statische Methode (kein <code>this</code>, Aufruf über Klassenname)</td></tr>
-        <tr><td><code>let</code></td><td>Unveränderliche lokale Variable</td></tr>
+        <tr><td><code>const</code></td><td>Unveränderliche lokale Variable (<code>let</code> wird als veralteter Alias weiterhin akzeptiert)</td></tr>
         <tr><td><code>var</code></td><td>Veränderliche lokale Variable oder Feld</td></tr>
         <tr><td><code>class</code></td><td>Klassendeklaration</td></tr>
         <tr><td><code>interface</code></td><td>Interface-Deklaration (wie Java interface)</td></tr>
         <tr><td><code>enum</code></td><td>Aufzählungstyp</td></tr>
         <tr><td><code>extends</code></td><td>Einfachvererbung</td></tr>
         <tr><td><code>implements</code></td><td>Interface-Implementierung</td></tr>
-        <tr><td><code>spawn</code></td><td>Neuen Thread starten</td></tr>
-        <tr><td><code>await</code></td><td>Auf Thread-Ergebnis warten</td></tr>
+        <tr><td><code>spawn</code></td><td>Neuen Thread starten; der Ausdruck hat den Typ <code>Task&lt;T&gt;</code> (<code>T</code> = Rückgabetyp der Funktion)</td></tr>
+                <tr><td><code>scope { ... }</code></td><td>Strukturierte Nebenläufigkeit: jeder <code>spawn</code> lexikalisch im Block gehört dazu, und beim Verlassen des Blocks (normal, per <code>return</code>/<code>break</code> oder <code>throw</code>) werden alle gejoint. Ein Kind-Fehler, den niemand awaitet hat, wird am Blockende erneut geworfen; hat der Block selbst geworfen, gewinnt dessen Fehler und Kind-Fehler werden auf stderr gemeldet. Ein <code>throw</code> in einer gespawnten Funktion wirft <code>await</code> erneut. <code>scope</code> ist kontextuell, kein reserviertes Wort. Ein <code>spawn</code> in einer Closure im Block gehört nicht dazu</td></tr>
+        <tr><td><code>await</code></td><td>Auf einen <code>Task&lt;T&gt;</code> warten und dessen <code>T</code> liefern (String, Float64, Bool, Klassen, ... nicht nur Int64); erneutes <code>await</code> auf denselben Task liefert dasselbe Ergebnis. <code>Task</code> ist ein eingebauter Typname und kann nicht mehr für eigene Klassen verwendet werden</td></tr>
         <tr><td><code>defer</code></td><td>Code beim Verlassen des Scopes ausführen</td></tr>
         <tr><td><code>match</code></td><td>Pattern-Matching-Ausdruck</td></tr>
       </tbody>
@@ -1204,11 +1418,11 @@
       <thead><tr><th>Vorher</th><th>Nachher</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>fn getUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;let id: Int64 = ctx.request.getParam("id").toInt();<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(user));<br>}</code></td>
+          <td><code>fn getUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;const id: Int64 = ctx.request.getParam("id").toInt();<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(user));<br>}</code></td>
           <td><code>fn getUser(@PathParam id: Int64) -> User<br>{<br>&nbsp;&nbsp;return user;<br>}</code></td>
         </tr>
         <tr>
-          <td><code>fn createUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;let u: User = Json::deserialize&lt;User&gt;(ctx.request.body);<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(u));<br>}</code></td>
+          <td><code>fn createUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;const u: User = Json::deserialize&lt;User&gt;(ctx.request.body);<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(u));<br>}</code></td>
           <td><code>fn createUser(@PostParam u: User) -> User<br>{<br>&nbsp;&nbsp;return u;<br>}</code></td>
         </tr>
         <tr>
@@ -1257,7 +1471,8 @@
         <tr><td><code>@DoNotSerialize</code></td><td>Feld</td><td>Feld von JSON ausschließen</td></tr>
         <tr><td><code>@Log</code></td><td>Klasse</td><td>Automatisches log-Feld injizieren</td></tr>
         <tr><td><code>@Inject</code></td><td>Feld</td><td>Dependency-Injection-Feld</td></tr>
-        <tr><td><code>@Config("key")</code></td><td>Feld</td><td>Wert aus application.properties</td></tr>
+        <tr><td><code>@Config("key")</code></td><td>Feld</td><td>Runtime configuration; <code>@Config("key", "required"|"optional")</code> or <code>@Config("key", "default", "value")</code>. Environment overrides files; <a href="examples/runtime_config/README.md">policies, parsing, precedence and secret handling</a>.</td></tr>
+        <tr><td><code>@Synchronized</code></td><td>Klasse/Methode</td><td>Rekursiver Klassenmonitor für Singleton-Instanzmethoden</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Klasse</td><td>Singleton-Scope für DI</td></tr>
         <tr><td><code>@HttpRequestScoped</code></td><td>Klasse</td><td>Neues Objekt pro HTTP-Request</td></tr>
         <tr><td><code>@Test("desc")</code></td><td>Methode</td><td>Unit-Test (tinox test)</td></tr>
@@ -1579,6 +1794,36 @@ epoll_fd = epoll_create1(0);
       wiederverwendet – das eliminiert malloc/free im kritischen Request-Pfad vollständig.
     </p>
 
+    <h3>Nebenl&auml;ufigkeits-Budgets &amp; Overload-Behandlung</h3>
+    <p>
+      Worker- und Verbindungszahlen sind begrenzt und Container-bewusst. Die effektive
+      CPU-Anzahl ist das Minimum aus CPU-Affinit&auml;t (<code>taskset</code>, cpuset) und
+      cgroup-CPU-Quota (v1 und v2, z.&nbsp;B. ergibt <code>docker run --cpus=1.5</code> 2),
+      nicht die Kernzahl des Hosts. Jedes Limit l&auml;sst sich per Umgebungsvariable
+      &uuml;berschreiben; ein ung&uuml;ltiger Wert bricht den Start ab. Die effektiven Werte stehen im
+      Startup-Banner (<code>Limits: ...</code>) und werden zusammen mit Open/Peak/Rejected-Z&auml;hlern
+      auf <code>/metrics</code> ausgegeben.
+    </p>
+    <table>
+      <tr><th>Variable</th><th>Default</th><th>Verhalten bei Ersch&ouml;pfung</th></tr>
+      <tr><td><code>TINOX_CPUS</code></td><td>erkannt</td><td>&ndash;</td></tr>
+      <tr><td><code>TINOX_HTTP_WORKERS</code></td><td>CPUs</td><td>&ndash;</td></tr>
+      <tr><td><code>TINOX_MAX_CONNECTIONS</code></td><td>4096 (max. 4096)</td><td>HTTP/1: <code>503 Service Unavailable</code> mit <code>Retry-After: 1</code></td></tr>
+      <tr><td><code>TINOX_MAX_TASKS</code></td><td>4096</td><td><code>spawn</code> liefert einen Task, dessen <code>await</code> (bzw. umgebender <code>scope</code>) "task budget exhausted" wirft</td></tr>
+      <tr><td><code>TINOX_MAX_WS_CONNECTIONS</code></td><td>1024</td><td>die WebSocket-Verbindung wird sofort geschlossen</td></tr>
+      <tr><td><code>TINOX_QUEUE_WAIT_MS</code></td><td>0 (keine Warteschlange)</td><td>wie lange <code>spawn</code> / ein WebSocket-Accept auf einen freien Slot warten darf, bevor abgewiesen wird</td></tr>
+    </table>
+    <p>
+      Jede Einstellung kann auch in <code>application.properties</code> als
+      <code>tinox.limits.&lt;name&gt;</code> stehen (z.&nbsp;B. <code>tinox.limits.max_tasks=256</code>);
+      die Umgebungsvariable hat Vorrang. Die Dev-UI-API liefert die effektiven Werte und Live-Z&auml;hler
+      unter <code>/limits</code>. HTTP/1 weist sofort ab (die epoll-Worker d&uuml;rfen nicht blockieren);
+      die Accept-Schleifen von HTTP/2, HTTP/3 und TLS sind bewusst einthreadig, ihr Backlog ist durch die
+      Kernel-Listen-Queue begrenzt und sie erzeugen keine Threads. AMQP-Verbindungen nutzen
+      <code>spawn</code> und z&auml;hlen daher gegen <code>TINOX_MAX_TASKS</code>.
+      Abgewiesene Anfragen werden nie automatisch wiederholt.
+    </p>
+
     <div class="info-box green">
       <strong>Ergebnis:</strong> Bis zu 4.096 gleichzeitige Verbindungen pro Thread,
       lineares Skalieren über CPU-Kerne durch SO_REUSEPORT.
@@ -1868,6 +2113,7 @@ epoll_fd = epoll_create1(0);
     <div class="mod-section" id="mod-http_server">
 
   <h2>http_server</h2>
+  <p>Typisierte JSON-Antworten mit dynamischen Statuscodes sind als <code>Response&lt;T&gt;</code> verfügbar. Die <a href="docs/typed-rest-responses.md">Anleitung zu typisierten Antworten und OpenAPI-Verträgen (Englisch)</a> beschreibt die Einrichtung aus dem Checkout und das annotationsbasierte CRUD-Beispiel.</p>
   <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/http_server/1-0-4/docs.html" target="_blank" rel="noopener">docs/tinox-core/http_server/1-0-4/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/http_server/1-0-4/docs.html" loading="lazy" title="tinox.core:http_server Dokumentation"></iframe>
   <p class="mod-ref-note">Obergrenze für den Request-Body: 4&nbsp;MiB (<code>TINOX_MAX_BODY</code> in <code>runtime.c</code>). Überschreitet der <code>Content-Length</code>-Header diese Grenze, wird die Anfrage sofort mit <code>413 Payload Too Large</code> abgelehnt und die Verbindung geschlossen &mdash; der Handler wird nicht aufgerufen, und der Body wird nie stillschweigend abgeschnitten und trotzdem als vollständig verarbeitet (Issue #174).</p>
@@ -2431,19 +2677,19 @@ url    = "sqlite:///path/to/database.db"</code></pre></div>
 
   <h3>Lambda-Query-DSL</h3>
   <div class="card"><pre><code>// Alle Nutzer über 18, alphabetisch, max. 10 Ergebnisse
-let adults: List&lt;User&gt; = DB::of(User)
+const adults: List&lt;User&gt; = DB::of(User)
     .filter(u -&gt; u.age &gt; 18)
     .orderBy(u -&gt; u.name)
     .limit(10)
     .list();
 
 // Einzelnen Nutzer lesen
-let alice: User = DB::of(User)
+const alice: User = DB::of(User)
     .filter(u -&gt; u.name == "Alice")
     .first();
 
 // Anzahl aktiver Nutzer
-let n: Int64 = DB::of(User)
+const n: Int64 = DB::of(User)
     .filter(u -&gt; u.active == true)
     .count();</code></pre></div>
 
@@ -2465,16 +2711,16 @@ let n: Int64 = DB::of(User)
 
   <h3>Speichern, Ändern, Löschen</h3>
   <div class="card"><pre><code>// INSERT (ID wird von der DB gesetzt)
-let user: User = User {};
+const user: User = User {};
 user.name = "Alice";
 user.age  = 30;
-let saved: User = DB::of(User).save(user);
+const saved: User = DB::of(User).save(user);
 
 // DELETE
 DB::of(User).delete(saved);
 
 // Mehrere auf einmal speichern
-let list: List&lt;User&gt; = List::new();
+const list: List&lt;User&gt; = List::new();
 list.add(user1);
 list.add(user2);
 DB::of(User).saveAll(list);</code></pre></div>

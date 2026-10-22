@@ -28,9 +28,14 @@
 
 name: check
 
+# `develop` is listed so merges into it populate the Rust build cache:
+# GitHub caches are scoped to the branch that wrote them, and a PR can
+# only restore caches of its base branch (develop) or the default branch.
+# Without a push run on develop, every PR started from a cold build
+# (208 crates, ~6 min).
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
 
 # Bug 108: least-privilege default. This workflow only checks out code and
@@ -39,10 +44,23 @@ on:
 permissions:
   contents: read
 
+# Two independent jobs on separate runners instead of one serial
+# `make check`: `lint` (clippy + grammar-sync) and `test` (nextest +
+# dogfood, which `make check` already runs concurrently). Together they
+# are exactly `make check`; the pre-push hook still runs it as one.
 jobs:
   check:
+    name: check (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lint
+            make: clippy grammar-sync
+          - name: test
+            make: test-and-dogfood
     steps:
       - uses: actions/checkout@v5
         with:
@@ -57,7 +75,8 @@ jobs:
       # `permissions:` block above). Bump this SHA deliberately when
       # jgrep-tinox needs to move forward (e.g. after reviewing its diff),
       # not automatically.
-      - uses: actions/checkout@v5
+      - if: matrix.name == 'test'
+        uses: actions/checkout@v5
         with:
           repository: subnix-work/jgrep-tinox
           ref: af467ba41271009defdab46a17973ecc6270c9f5 # main, as of 2026-09-11 (v1.0.6)
@@ -78,6 +97,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tinox
+          # clippy and test builds produce different artifacts; keep
+          # their caches apart so neither evicts the other.
+          shared-key: ${{ matrix.name }}
 
       # Global tinox package-manager cache (~/.tinox/repository/, see
       # pm.rs's global_dep_install_dir) -- coordinate-resolved extended-
@@ -87,13 +109,20 @@ jobs:
       # lockfile spans every case's independently-synthesized tinox.toml,
       # so there's no natural hash to key on the way Cargo.lock keys the
       # rust-cache step above.
-      - uses: actions/cache@v4
+      - if: matrix.name == 'test'
+        uses: actions/cache@v4
         with:
           path: ~/.tinox/repository
           key: tinox-pkg-cache-v1
 
-      - name: make check
-        run: make -C tinox check
+      # `make test` uses cargo-nextest when present (parallel across all
+      # cores) and falls back to plain `cargo test` otherwise.
+      - if: matrix.name == 'test'
+        name: install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+      - name: make ${{ matrix.make }}
+        run: make -C tinox ${{ matrix.make }}
 
   # Issue #310: native Linux ARM64 verification (a real ARM64 runner, not
   # emulation). Narrower than the x86-64 job above: builds the compiler,

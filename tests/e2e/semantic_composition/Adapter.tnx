@@ -1,0 +1,4 @@
+import Reader;
+class Adapter implements Reader {
+    fn read(value: Float64) -> Float64 { return value + 1.0; }
+}

@@ -6,12 +6,12 @@ namespace tinox.core.csv
     {
         fn parse(content: String) -> List<List<String>>
         {
-            let lines: List<String> = content.split("\n");
+            const lines: List<String> = content.split("\n");
             var result: List<List<String>> = [];
             var i: Int64 = 0;
             while i < lines.len()
             {
-                let line: String = lines[i];
+                const line: String = lines[i];
                 if (line.len() > 0)
                 {
                     result.push(Csv::parseRow(line));
@@ -29,7 +29,7 @@ namespace tinox.core.csv
             var i: Int64 = 0;
             while i < line.len()
             {
-                let c: String = line.substring(i, i + 1);
+                const c: String = line.substring(i, i + 1);
                 if (c == "\"")
                 {
                     inQuotes = !inQuotes;

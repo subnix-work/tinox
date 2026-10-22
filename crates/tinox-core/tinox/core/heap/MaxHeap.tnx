@@ -8,7 +8,7 @@ namespace tinox.core.heap
 
         fn new() -> MaxHeap<T>
         {
-            let comp: fnc(T, T) -> Bool = fnc(a: T, b: T) -> Bool { return a > b; };
+            const comp: fnc(T, T) -> Bool = fnc(a: T, b: T) -> Bool { return a > b; };
             return MaxHeap<T> { heap: Heap::newWithCompare(comp) };
         }
 

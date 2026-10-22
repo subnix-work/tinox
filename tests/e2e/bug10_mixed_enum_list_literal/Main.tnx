@@ -17,7 +17,7 @@ class Main
 
 
     fnc main() -> Int32 {
-        let args: List<bug10_mixed_enum_list_literal> = [
+        const args: List<bug10_mixed_enum_list_literal> = [
             bug10_mixed_enum_list_literal::Identity,
             bug10_mixed_enum_list_literal::LiteralStr("x"),
             bug10_mixed_enum_list_literal::FieldAccess("foo"),

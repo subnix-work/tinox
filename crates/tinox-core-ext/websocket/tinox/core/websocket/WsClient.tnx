@@ -19,10 +19,10 @@ namespace tinox.core.websocket
      * reused unchanged.
      *
      * Usage (echo client):
-     *   let conn = WsClient::connect("example.org", 8080, "/chat");
+     *   const conn = WsClient::connect("example.org", 8080, "/chat");
      *   if conn < 0 { ... connection/handshake failed ... }
      *   WsClient::sendText(conn, "hello");
-     *   let f = WsClient::readMessage(conn);
+     *   const f = WsClient::readMessage(conn);
      *   println(WsClient::text(f));
      *   WsClient::close(conn);
      */
@@ -40,30 +40,30 @@ namespace tinox.core.websocket
          */
         fn connect(host: String, port: Int64, path: String) -> Int64
         {
-            let fd = socketCreateTcp();
+            const fd = socketCreateTcp();
             if (!socketConnect(fd, host, port)) {
                 return -1;
             }
-            let conn = httpConnFromFd(fd);
+            const conn = httpConnFromFd(fd);
 
             var keyBytes: List<Int64> = [];
             for i in 0..16 {
                 keyBytes.push(randomInt(0, 256));
             }
-            let key = Base64::encodeBytes(keyBytes);
-            let expectedAccept = wsAcceptKey(key);
+            const key = Base64::encodeBytes(keyBytes);
+            const expectedAccept = wsAcceptKey(key);
 
             httpConnSendRaw(conn, "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n");
 
-            let resp = httpConnReadRequest(conn);
+            const resp = httpConnReadRequest(conn);
             if (resp.len() == 0 || !resp.contains("101")) {
                 httpConnClose(conn);
                 return -1;
             }
             var actualAccept: String = "";
-            let lines = resp.split("\r\n");
+            const lines = resp.split("\r\n");
             for i in 0..lines.len() {
-                let line = lines[i];
+                const line = lines[i];
                 if (line.toLowerCase().startsWith("sec-websocket-accept:")) {
                     actualAccept = line.substring(21, line.len()).trim();
                 }

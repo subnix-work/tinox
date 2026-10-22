@@ -24,3 +24,5 @@ pub use codegen::Amqp10ConsumerEntry;
 pub use codegen::Amqp091ConsumerEntry;
 pub use codegen::Http3RestControllerEntry;
 pub use codegen::TinoxUIAppEntry;
+
+pub use codegen::bootstrap::BootstrapPlan;

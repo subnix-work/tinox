@@ -14,21 +14,21 @@
 class Main
 {
     fnc main() -> Int32 {
-        let n = 1;
-        let xs = match n { 1 => ["aa", "bbb"], _ => ["z"] };
+        const n = 1;
+        const xs = match n { 1 => ["aa", "bbb"], _ => ["z"] };
         println(xs[1].len());
         for s in xs { println(s.len()); }
-        let m = @{"k" => "hello"};
+        const m = @{"k" => "hello"};
         println(m.get("k").len());
         // let-bound m.get on a map with a container value (marker via the table,
         // annotation wins against type-erased Map::new)
         var lm: Map<String, List<String>> = Map::new();
         lm.insert("k", ["aa", "bbb"]);
-        let vals = lm.get("k");
+        const vals = lm.get("k");
         println(vals.len());
         for s in vals { println(s); }
         // split/keys/first without a codegen allowlist (marker from signatures/override)
-        let parts = "ab,cd".split(",");
+        const parts = "ab,cd".split(",");
         println(parts[0].len() + parts.first().len());
         println(parts.last());
         println(lm.keys()[0]);

@@ -25,7 +25,7 @@ class Main
     fnc main() -> Int32
     {
         println(square(4));
-        let m = Main {};
+        const m = Main {};
         println(m.instanceSquarePlusOne(4));
         return 0;
     }

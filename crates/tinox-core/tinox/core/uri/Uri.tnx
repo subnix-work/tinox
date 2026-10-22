@@ -39,14 +39,14 @@ namespace tinox.core.uri
 
         fn percentEncodeByte(code: Int64) -> String
         {
-            let hi: Int64 = (code >> 4) & 15;
-            let lo: Int64 = code & 15;
+            const hi: Int64 = (code >> 4) & 15;
+            const lo: Int64 = code & 15;
             return "%" + Uri::hexDigit(hi) + Uri::hexDigit(lo);
         }
 
         fn hexValue(c: String) -> Int64
         {
-            let code: Int64 = c.charCodeAt(0);
+            const code: Int64 = c.charCodeAt(0);
             if (code >= 48 && code <= 57) { return code - 48; }
             if (code >= 65 && code <= 70) { return code - 55; }
             if (code >= 97 && code <= 102) { return code - 87; }
@@ -57,10 +57,10 @@ namespace tinox.core.uri
         {
             var result: String = "";
             var i: Int64 = 0;
-            let len: Int64 = s.len();
+            const len: Int64 = s.len();
             while i < len
             {
-                let code: Int64 = s.charCodeAt(i);
+                const code: Int64 = s.charCodeAt(i);
                 if (Uri::isUnreserved(code))
                 {
                     result = result + s.substring(i, i + 1);
@@ -78,10 +78,10 @@ namespace tinox.core.uri
         {
             var result: String = "";
             var i: Int64 = 0;
-            let len: Int64 = s.len();
+            const len: Int64 = s.len();
             while i < len
             {
-                let code: Int64 = s.charCodeAt(i);
+                const code: Int64 = s.charCodeAt(i);
                 if (Uri::isUnreserved(code) || Uri::isReserved(code))
                 {
                     result = result + s.substring(i, i + 1);
@@ -102,14 +102,14 @@ namespace tinox.core.uri
             // the loop, which is O(n^2) over the decoded length (issue #167).
             var bytes: List<Int64> = [];
             var i: Int64 = 0;
-            let len: Int64 = s.len();
+            const len: Int64 = s.len();
             while i < len
             {
-                let c: String = s.substring(i, i + 1);
+                const c: String = s.substring(i, i + 1);
                 if (c == "%" && i + 2 < len)
                 {
-                    let hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2));
-                    let lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3));
+                    const hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2));
+                    const lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3));
                     bytes.push((hi << 4) | lo);
                     i = i + 3;
                 }
@@ -129,14 +129,14 @@ namespace tinox.core.uri
             // the loop, which is O(n^2) over the decoded length (issue #167).
             var bytes: List<Int64> = [];
             var i: Int64 = 0;
-            let len: Int64 = s.len();
+            const len: Int64 = s.len();
             while i < len
             {
-                let c: String = s.substring(i, i + 1);
+                const c: String = s.substring(i, i + 1);
                 if (c == "%" && i + 2 < len)
                 {
-                    let hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2));
-                    let lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3));
+                    const hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2));
+                    const lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3));
                     bytes.push((hi << 4) | lo);
                     i = i + 3;
                 }
@@ -151,16 +151,16 @@ namespace tinox.core.uri
 
         fn parse(url: String) -> UriParts
         {
-            let schemeEnd: Int64 = url.indexOf("://");
+            const schemeEnd: Int64 = url.indexOf("://");
             if (schemeEnd == -1)
             {
                 return UriParts { scheme: "", host: "", path: "", query: "", fragment: "" };
             }
-            let scheme: String = url.substring(0, schemeEnd);
+            const scheme: String = url.substring(0, schemeEnd);
             var remaining: String = url.substring(schemeEnd + 3, url.len());
-            let pathStart: Int64 = remaining.indexOf("/");
-            let queryStart: Int64 = remaining.indexOf("?");
-            let fragmentStart: Int64 = remaining.indexOf("#");
+            const pathStart: Int64 = remaining.indexOf("/");
+            const queryStart: Int64 = remaining.indexOf("?");
+            const fragmentStart: Int64 = remaining.indexOf("#");
             var host: String = "";
             var path: String = "";
             var query: String = "";
@@ -174,7 +174,7 @@ namespace tinox.core.uri
                 if (pathStart != -1 && (queryStart == -1 || pathStart < queryStart) && (fragmentStart == -1 || pathStart < fragmentStart))
                 {
                     host = remaining.substring(0, pathStart);
-                    let remainingPath: String = remaining.substring(pathStart, remaining.len());
+                    const remainingPath: String = remaining.substring(pathStart, remaining.len());
                     if (fragmentStart != -1 && queryStart != -1 && fragmentStart < queryStart)
                     {
                         path = remainingPath.substring(0, fragmentStart - pathStart);

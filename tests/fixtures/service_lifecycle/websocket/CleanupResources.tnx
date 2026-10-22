@@ -1,0 +1,5 @@
+@ApplicationComponent
+class CleanupResources {
+    @OnStop
+    fn stop() -> Nothing { println("stop"); }
+}

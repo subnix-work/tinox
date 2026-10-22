@@ -8,7 +8,7 @@ import bug09_nested_enum_payloads;
 class Main
 {
     fnc main() -> Int32 {
-        let f = bug09_nested_enum_payloads::Reduce(bug09_nested_enum_payloads::Identity, "acc", bug09_nested_enum_payloads::Identity,
+        const f = bug09_nested_enum_payloads::Reduce(bug09_nested_enum_payloads::Identity, "acc", bug09_nested_enum_payloads::Identity,
             bug09_nested_enum_payloads::Pipe(bug09_nested_enum_payloads::FieldAccess("a"), bug09_nested_enum_payloads::FieldAccess("b")));
         match f {
             Reduce(gen, v, init, body) => {

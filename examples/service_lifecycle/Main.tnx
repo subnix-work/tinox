@@ -1,0 +1,10 @@
+import Api;
+
+@Service(30000, 5000)
+class Main {
+    fnc main() -> Int32 {
+        if (!serviceAwaitReady(29000)) { return 1; }
+        println(serviceStatusJson());
+        return 0;
+    }
+}

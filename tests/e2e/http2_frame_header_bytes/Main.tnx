@@ -16,7 +16,7 @@ class Main
 {
     fnc encodeFrameHeader(length: Int64, frameType: Int64, flags: Int64, streamId: Int64) -> List<Int64>
     {
-        let out: List<Int64> = [];
+        const out: List<Int64> = [];
         out.push((length >> 16) & 255);
         out.push((length >> 8) & 255);
         out.push(length & 255);
@@ -32,12 +32,12 @@ class Main
     fnc main() -> Int32
     {
         // SETTINGS frame: length=12, type=0x04, flags=0, stream=0
-        let h1: List<Int64> = encodeFrameHeader(12, 4, 0, 0);
+        const h1: List<Int64> = encodeFrameHeader(12, 4, 0, 0);
         println(h1.len());
         println(h1[2]);
         println(h1[3]);
         // HEADERS frame: length=256, type=0x01, flags=0x05 (END_HEADERS|END_STREAM), stream=1
-        let h2: List<Int64> = encodeFrameHeader(256, 1, 5, 1);
+        const h2: List<Int64> = encodeFrameHeader(256, 1, 5, 1);
         println(h2[0]);
         println(h2[1]);
         println(h2[2]);
@@ -45,7 +45,7 @@ class Main
         println(h2[4]);
         println(h2[8]);
         // Large stream ID: stream=0x00ABCDEF
-        let h3: List<Int64> = encodeFrameHeader(0, 0, 0, 11259375);
+        const h3: List<Int64> = encodeFrameHeader(0, 0, 0, 11259375);
         println(h3[5]);
         println(h3[6]);
         println(h3[7]);

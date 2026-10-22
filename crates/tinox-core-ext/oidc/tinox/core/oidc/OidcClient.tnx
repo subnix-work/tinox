@@ -34,13 +34,13 @@ namespace tinox.core.oidc
 
         fn new(issuer: String, authorizeUrl: String, tokenUrl: String, jwksUri: String, clientId: String, clientSecret: String, redirectUri: String) -> OidcClient
         {
-            let oauth: OAuth2Client = OAuth2Client::new(authorizeUrl, tokenUrl, clientId, clientSecret, redirectUri);
+            const oauth: OAuth2Client = OAuth2Client::new(authorizeUrl, tokenUrl, clientId, clientSecret, redirectUri);
             return OidcClient { issuer: issuer, jwksUri: jwksUri, clientId: clientId, oauth: oauth };
         }
 
         fn buildAuthorizeUrl(scope: String) -> OAuth2AuthorizeRequest
         {
-            let parts: List<String> = scope.split(" ");
+            const parts: List<String> = scope.split(" ");
             var hasOpenid: Bool = false;
             var i: Int64 = 0;
             while i < parts.len()
@@ -60,7 +60,7 @@ namespace tinox.core.oidc
 
         fn exchangeCode(code: String, codeVerifier: String) -> OidcTokenResponse
         {
-            let tr: OAuth2TokenResponse = this.oauth.exchangeCode(code, codeVerifier);
+            const tr: OAuth2TokenResponse = this.oauth.exchangeCode(code, codeVerifier);
             if (!tr.ok)
             {
                 return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: tr.errorMessage };
@@ -79,7 +79,7 @@ namespace tinox.core.oidc
          */
         fn refresh(refreshToken: String) -> OidcTokenResponse
         {
-            let tr: OAuth2TokenResponse = this.oauth.refresh(refreshToken);
+            const tr: OAuth2TokenResponse = this.oauth.refresh(refreshToken);
             if (!tr.ok)
             {
                 return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: tr.errorMessage };
@@ -120,7 +120,7 @@ namespace tinox.core.oidc
          */
         fn verifyIdToken(idToken: String) -> Map<String, JsonValue>
         {
-            let header: Map<String, JsonValue> = Jwt::extractHeader(idToken);
+            const header: Map<String, JsonValue> = Jwt::extractHeader(idToken);
             if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
                 throw "unsupported id_token alg (expected RS256)";
@@ -131,8 +131,8 @@ namespace tinox.core.oidc
                 kid = header["kid"].getString();
             }
 
-            let key: Map<String, String> = Jwks::fetchRsaKey(this.jwksUri, kid);
-            let claims: Map<String, JsonValue> = Jwt::decodeRs256(idToken, key["n"], key["e"]);
+            const key: Map<String, String> = Jwks::fetchRsaKey(this.jwksUri, kid);
+            const claims: Map<String, JsonValue> = Jwt::decodeRs256(idToken, key["n"], key["e"]);
 
             if (!claims.contains("iss") || claims["iss"].getString() != this.issuer)
             {
@@ -150,7 +150,7 @@ namespace tinox.core.oidc
             }
             else if (claims["aud"].isArray())
             {
-                let auds: List<JsonValue> = claims["aud"].asList();
+                const auds: List<JsonValue> = claims["aud"].asList();
                 var i: Int64 = 0;
                 while i < auds.len()
                 {
