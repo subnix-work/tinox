@@ -403,18 +403,13 @@ the one-type-per-file rule (`check_namespace_path_matches`,
   `tinox install`, then `tinox test`). Backfilling this convention across
   every stdlib module is a separate, larger test-coverage initiative, not
   part of this layout migration.
-- **Extended-tier test files can't be run directly with `tinox test
-  <path>` from inside this repo, and that's pre-existing, not something
-  this migration introduced.** Unlike core-tier (always resolves via
-  `stdlib_dir()`), an extended-tier module's own `tinox.toml` declares no
-  dependency on itself, so `import tinox.core.<module>;` inside its own
-  `tests/` file has nothing to resolve against locally — exactly the same
-  gap `stdlib_smoke.rs`'s own doc comment already describes for its SMOKES
-  cases ("no longer resolve via `stdlib_dir()`/`TINOX_PATH` at build
-  time"). Verifying an extended-tier test's actual logic therefore always
-  goes through an installed (published) version of the module, the same
-  way `stdlib_smoke.rs` and `amqp10_consumer_annotation.rs` already do it
-  — not against the workspace's own uncommitted edits to that module.
+- **Extended-tier workspace testing (issue #313):** use an isolated consumer
+  with `tinox.overrides.yaml` to exercise unpublished modules, or run
+  `make workspace-stdlib` for the dedicated source smoke lane. Ordinary
+  e2e/dogfood tests still use installed published packages. The source lane
+  stages manifests with workspace dependency versions; it does not prove
+  compatibility of the original published pins. See
+  [local dependency workflows](docs/local-dependencies.md).
 - `crates/tinox/tests/stdlib_smoke.rs`'s `scan_module_dir` (the
   per-module inventory scan behind `stdlib_smoke_completeness`) needed a
   matching update: it transparently unwraps each extended-tier module's

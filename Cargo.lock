@@ -1387,6 +1387,7 @@ version = "2.4.0"
 dependencies = [
  "dashmap 6.1.0",
  "serde_json",
+ "tinox",
  "tinox-common",
  "tinox-lexer",
  "tinox-parser",
