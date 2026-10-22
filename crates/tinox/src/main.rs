@@ -4589,6 +4589,9 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
     let _stage = tinox_common::frontend::Stage::new("total-build");
     let mut build = build_cache::Build::begin(output_name)?;
     let input_guard = build_cache::InputGuard::begin();
+    // Fail on an unsupported/non-native target before any work is done (#310).
+    tinox_codegen::target::Target::resolve()
+        .map_err(|e| Failure::new("toolchain", Some(input_path), None, e))?;
     let codegen = generate_program(input_path, opt, true)?;
     let ir = codegen.into_ir();
     let options = runtime_options().map_err(|e| Failure::new("toolchain", Some(input_path), None, e))?;
@@ -4649,12 +4652,15 @@ fn verify_ir(ir_path: &str) -> Result<(), Failure> {
 }
 
 struct RuntimeOptions {
+    target: tinox_codegen::target::Target,
     source: String,
     flags: Vec<String>,
     link_flags: Vec<String>,
 }
 
 fn runtime_options() -> Result<RuntimeOptions, String> {
+    // Reject unknown/non-native targets before any artifact is produced (#310).
+    let target = tinox_codegen::target::Target::resolve()?;
     let runtime_src = runtime_c_path().ok_or_else(|| {
         "Cannot find runtime.c (checked the dev checkout path and /usr/share/tinox/runtime.c)".to_string()
     })?;
@@ -4747,6 +4753,7 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
     }
     link_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     Ok(RuntimeOptions {
+        target,
         source: runtime_src,
         flags: runtime_flags.into_iter().map(String::from).collect(),
         link_flags: link_args.into_iter().map(String::from).collect(),
@@ -4799,7 +4806,7 @@ fn compile_ll_to_exe_configured(ir_path: &str, output_name: &str, opt: OptLevel,
         let llc_status = Command::new("llc")
             .args([
                 llc_opt_flag,
-                "-march=x86-64",
+                &format!("-march={}", options.target.llc_arch()),
                 "-filetype=obj",
                 "-o",
                 &obj_path,
