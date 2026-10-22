@@ -1055,6 +1055,3 @@ See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 ## License
 
 MIT OR Apache-2.0
-
-Runtime application configuration supports required, optional and default policies,
-environment overrides and startup validation. See the [annotation-driven runtime configuration example](examples/runtime_config/README.md).

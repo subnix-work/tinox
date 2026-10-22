@@ -8481,173 +8481,86 @@ int64_t* tinox_json_list_deserialize(int64_t* arr_val, int64_t* (*from_json)(int
     return (int64_t*)out;
 }
 
-// ---- Runtime application configuration (separate from tinox.toml) ----
+// ---- Config (@Config annotation) ----
+// Reads key=value pairs from application.properties in the current directory.
+
 #define TINOX_CONFIG_MAX_ENTRIES 256
+#define TINOX_CONFIG_MAX_LINE    1024
 
 typedef struct { char* key; char* value; } TinoxConfigEntry;
+
 static TinoxConfigEntry tinox_config_entries[TINOX_CONFIG_MAX_ENTRIES];
-static int tinox_config_count = -1;
-static int tinox_config_errors;
-
-typedef struct {
-    const char *key, *type, *policy, *fallback, *value;
-    char *env_name;
-} TinoxConfigDeclaration;
-static TinoxConfigDeclaration tinox_config_declarations[TINOX_CONFIG_MAX_ENTRIES];
-static int tinox_config_decl_count;
-
-static void tinox_config_error(const char *key, const char *reason) {
-    // Never print raw input, defaults, paths or environment values.
-    fprintf(stderr, "configuration '%s': %s\n", key, reason);
-    tinox_config_errors++;
-}
+static int              tinox_config_count = -1; // -1 = not loaded
 
 static void tinox_config_load(void) {
     tinox_config_count = 0;
-    const char *path = getenv("TINOX_CONFIG_FILE");
-    FILE *f = fopen(path ? path : "application.properties", "r");
-    if (!f) {
-        if (path) tinox_config_error("file", "cannot open explicit configuration file");
-        else if (errno != ENOENT) tinox_config_error("file", "cannot open configuration file");
-        return;
-    }
-    char *line = NULL;
-    size_t capacity = 0;
-    ssize_t length;
-    while ((length = getline(&line, &capacity, f)) >= 0) {
-        if (memchr(line, 0, (size_t)length)) {
-            tinox_config_error("file", "embedded NUL in properties file");
-            continue;
-        }
-        while (length && (line[length-1] == '\n' || line[length-1] == '\r')) line[--length] = 0;
-        char *key = line;
-        while (*key == ' ' || *key == '\t') key++;
-        if (!*key || *key == '#' || *key == '!') continue;
-        char *eq = strchr(key, '=');
-        if (!eq) { tinox_config_error("file", "expected key=value"); continue; }
-        char *end = eq;
-        while (end > key && (end[-1] == ' ' || end[-1] == '\t')) end--;
-        *end = 0;
-        char *value = eq + 1;
-        while (*value == ' ' || *value == '\t') value++;
-        int index = 0;
-        for (; index < tinox_config_count; index++) {
-            if (!strcmp(tinox_config_entries[index].key, key)) break;
-        }
-        if (index == TINOX_CONFIG_MAX_ENTRIES) { tinox_config_error("file", "too many properties"); continue; }
-        if (index == tinox_config_count) {
-            tinox_config_entries[index].key = strdup(key);
+    FILE* f = fopen("application.properties", "r");
+    if (!f) return;
+    char line[TINOX_CONFIG_MAX_LINE];
+    while (fgets(line, sizeof(line), f)) {
+        // strip newline
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+        // skip empty lines and comments
+        if (len == 0 || line[0] == '#' || line[0] == '!') continue;
+        char* eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char* key = line;
+        char* val = eq + 1;
+        // trim trailing whitespace from key
+        char* kend = eq - 1;
+        while (kend >= key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
+        // trim leading whitespace from value
+        while (*val == ' ' || *val == '\t') val++;
+        if (tinox_config_count < TINOX_CONFIG_MAX_ENTRIES) {
+            tinox_config_entries[tinox_config_count].key   = strdup(key);
+            tinox_config_entries[tinox_config_count].value = strdup(val);
             tinox_config_count++;
-        } else {
-            free(tinox_config_entries[index].value);
         }
-        tinox_config_entries[index].value = strdup(value); // Last duplicate wins.
     }
-    if (ferror(f)) tinox_config_error("file", "cannot read configuration file");
-    free(line);
     fclose(f);
 }
 
-static const char *tinox_config_file_value(const char *key) {
-    if (tinox_config_count < 0) tinox_config_load();
-    for (int i = 0; i < tinox_config_count; i++)
-        if (!strcmp(tinox_config_entries[i].key, key)) return tinox_config_entries[i].value;
-    return NULL;
-}
-
 static const char* tinox_config_lookup(const char* key) {
-    for (int i = 0; i < tinox_config_decl_count; i++)
-        if (!strcmp(tinox_config_declarations[i].key, key)) return tinox_config_declarations[i].value;
-    const char *value = tinox_config_file_value(key);
-    return value ? value : "";
+    if (tinox_config_count < 0) tinox_config_load();
+    for (int i = 0; i < tinox_config_count; i++) {
+        if (strcmp(tinox_config_entries[i].key, key) == 0)
+            return tinox_config_entries[i].value;
+    }
+    return "";
 }
 
-static int tinox_config_valid_integer(const char *value, const char *type) {
-    int is_unsigned = !strncmp(type, "UInt", 4);
-    int bits = atoi(type + (is_unsigned ? 4 : 3));
-    const char *digit = value;
-    if (*digit == '-' || *digit == '+') digit++;
-    if (!*digit || (is_unsigned && *value == '-')) return 0;
-    for (; *digit; digit++) if (*digit < '0' || *digit > '9') return 0;
-    errno = 0;
-    if (is_unsigned) {
-        unsigned long long n = strtoull(value, NULL, 10);
-        return errno != ERANGE && (bits == 64 || n <= ((1ULL << bits) - 1));
-    }
-    long long n = strtoll(value, NULL, 10);
-    return errno != ERANGE && (bits == 64 || (n >= -(1LL << (bits-1)) && n <= (1LL << (bits-1))-1));
+char* tinox_config_get(const char* key) {
+    return (char*)tinox_config_lookup(key);
 }
 
-void tinox_config_declare(const char *key, const char *type, const char *policy, const char *fallback) {
-    char *env_name = malloc(strlen(key) + sizeof("TINOX_CONFIG_"));
-    strcpy(env_name, "TINOX_CONFIG_");
-    char *out = env_name + strlen(env_name);
-    for (const unsigned char *p = (const unsigned char*)key; *p; p++)
-        *out++ = (*p == '.' || *p == '-') ? '_' : (char)toupper(*p);
-    *out = 0;
-    if (!strcmp(env_name, "TINOX_CONFIG_FILE")) tinox_config_error(key, "environment name is reserved for the configuration file selector");
-    for (int i = 0; i < tinox_config_decl_count; i++) {
-        TinoxConfigDeclaration *d = &tinox_config_declarations[i];
-        if (!strcmp(d->key, key)) {
-            if (strcmp(d->type, type) || strcmp(d->policy, policy) ||
-                (d->fallback == NULL) != (fallback == NULL) ||
-                (fallback && strcmp(d->fallback, fallback)))
-                tinox_config_error(key, "conflicting declarations");
-            free(env_name);
-            return;
-        }
-        if (!strcmp(d->env_name, env_name)) tinox_config_error(key, "environment name collides with another declaration");
-    }
-    if (tinox_config_decl_count == TINOX_CONFIG_MAX_ENTRIES) {
-        tinox_config_error(key, "too many declarations"); free(env_name); return;
-    }
-    const char *value = getenv(env_name);
-    if (!value) value = tinox_config_file_value(key);
-    if (!value) value = fallback;
-    int missing = value == NULL;
-    if (missing) value = "";
-    // Snapshot before any application threads start. Legacy getters retain their parsing.
-    tinox_config_declarations[tinox_config_decl_count++] = (TinoxConfigDeclaration){key, type, policy, fallback, strdup(value), env_name};
-    if (!strcmp(policy, "legacy")) return;
-    if (!strcmp(policy, "required") && !*value) {
-        tinox_config_error(key, missing ? "required value is missing" : "required value is empty");
-    } else if (!missing && strcmp(type, "String")) {
-        if (!*value) {
-            tinox_config_error(key, "value is empty");
-        } else if (!strcmp(type, "Bool")) {
-            if (strcmp(value, "true") && strcmp(value, "false")) tinox_config_error(key, "expected true or false");
-        } else if (!tinox_config_valid_integer(value, type)) {
-            tinox_config_error(key, "expected decimal integer within declared type range");
-        }
-    }
-}
-
-char* tinox_config_get(const char* key) { return (char*)tinox_config_lookup(key); }
 int64_t tinox_config_get_int(const char* key) {
-    const char *v = tinox_config_lookup(key);
-    if (!v || !*v) return 0;
-    // Strict unsigned fields use the same 64-bit representation as Tinox slots.
-    for (int i = 0; i < tinox_config_decl_count; i++) {
-        TinoxConfigDeclaration *d = &tinox_config_declarations[i];
-        if (!strcmp(d->key, key) && strcmp(d->policy, "legacy") && !strncmp(d->type, "UInt", 4))
-            return (int64_t)strtoull(v, NULL, 10);
-    }
-    return (int64_t)atoll(v); // Preserve the legacy getter, including overflow behavior.
-}
-int64_t tinox_config_get_bool(const char* key) {
-    const char *v = tinox_config_lookup(key);
-    return v && (!strcmp(v, "true") || !strcmp(v, "1") || !strcmp(v, "yes"));
+    const char* v = tinox_config_lookup(key);
+    if (!v || *v == '\0') return 0;
+    return (int64_t)atoll(v);
 }
 
-// Introspection intentionally redacts even undeclared properties: they may be secrets.
+int64_t tinox_config_get_bool(const char* key) {
+    const char* v = tinox_config_lookup(key);
+    if (!v || *v == '\0') return 0;
+    return (strcmp(v, "true") == 0 || strcmp(v, "1") == 0 || strcmp(v, "yes") == 0) ? 1 : 0;
+}
+
+// Dumps every application.properties key/value as a flat JSON object --
+// unlike tinox_config_get*, which only ever looks up a single key a
+// @Config field already declared, this backs the dev-mode introspection
+// API's /config endpoint (it needs to show what's actually loaded, not
+// just what the program happens to read). Values are always emitted as
+// JSON strings (application.properties has no type info of its own --
+// tinox_config_get_int/_bool parse on demand per @Config field, not at
+// load time).
 char* tinox_config_dump_json(void) {
     if (tinox_config_count < 0) tinox_config_load();
-    char *b = jsonBuilderCreate();
-    for (int i = 0; i < tinox_config_count; i++)
-        jsonBuilderAddString(b, tinox_config_entries[i].key, "[redacted]");
-    for (int i = 0; i < tinox_config_decl_count; i++)
-        if (!tinox_config_file_value(tinox_config_declarations[i].key))
-            jsonBuilderAddString(b, tinox_config_declarations[i].key, "[redacted]");
+    char* b = jsonBuilderCreate();
+    for (int i = 0; i < tinox_config_count; i++) {
+        jsonBuilderAddString(b, tinox_config_entries[i].key, tinox_config_entries[i].value);
+    }
     return jsonBuilderFinish(b);
 }
 
@@ -9460,14 +9373,6 @@ char*   tinox_db_error(void* c)                                                {
 
 #endif /* DB driver */
 
-// ORM save() hit a failed INSERT/UPDATE (the driver already logged the
-// SQL error). Never continue with a half-saved entity.
-void tinox_orm_save_failed(const char* table) {
-    fprintf(stderr, "ORM save failed for table '%s' (see database error above); "
-                    "unassigned String fields are bound as NULL\n", table);
-    exit(1);
-}
-
 static void service_close_database(void) {
 #ifdef TINOX_DB_POSTGRES
     for (int i = 0; i < TINOX_DB_POOL_MAX; i++) {
@@ -9488,6 +9393,14 @@ static void service_close_database(void) {
 #endif
 }
 
+// ORM save() hit a failed INSERT/UPDATE (the driver already logged the
+// SQL error). Never continue with a half-saved entity.
+void tinox_orm_save_failed(const char* table) {
+    fprintf(stderr, "ORM save failed for table '%s' (see database error above); "
+                    "unassigned String fields are bound as NULL\n", table);
+    exit(1);
+}
+
 // Param helpers (always available)
 char** tinox_params_alloc(int64_t n) {
     return (char**)GC_malloc(sizeof(char*) * (size_t)n);
@@ -9506,7 +9419,6 @@ char* tinox_int_to_param(int64_t val) {
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);
-extern void tinox_config_init(void) __attribute__((weak));
 
 // Error slot from the generated IR (@__tinox_err = thread_local global i64
 // 0, since bug 101 -- previously a plain global that HTTP worker threads
@@ -9620,9 +9532,6 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     _tinox_argc = argc;
     _tinox_argv = argv;
-    tinox_config_load();
-    if (tinox_config_init) tinox_config_init();
-    if (tinox_config_errors) return 78;
     task_ensure_scope();
     int64_t rc = tinox_main();
     // Process shutdown owns every remaining joinable child.
