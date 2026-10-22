@@ -1,0 +1,4 @@
+[package]
+name = "typed_rest"
+version = "0.1.0"
+description = "Typed annotation-driven REST responses from checkout sources"

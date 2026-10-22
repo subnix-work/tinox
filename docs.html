@@ -2081,6 +2081,7 @@ epoll_fd = epoll_create1(0);
     <div class="mod-section" id="mod-http_server">
 
   <h2>http_server</h2>
+  <p>Typisierte JSON-Antworten mit dynamischen Statuscodes sind als <code>Response&lt;T&gt;</code> verfügbar. Die <a href="docs/typed-rest-responses.md">Anleitung zu typisierten Antworten und OpenAPI-Verträgen (Englisch)</a> beschreibt die Einrichtung aus dem Checkout und das annotationsbasierte CRUD-Beispiel.</p>
   <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/http_server/1-0-4/docs.html" target="_blank" rel="noopener">docs/tinox-core/http_server/1-0-4/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/http_server/1-0-4/docs.html" loading="lazy" title="tinox.core:http_server Dokumentation"></iframe>
   <p class="mod-ref-note">Obergrenze für den Request-Body: 4&nbsp;MiB (<code>TINOX_MAX_BODY</code> in <code>runtime.c</code>). Überschreitet der <code>Content-Length</code>-Header diese Grenze, wird die Anfrage sofort mit <code>413 Payload Too Large</code> abgelehnt und die Verbindung geschlossen &mdash; der Handler wird nicht aufgerufen, und der Body wird nie stillschweigend abgeschnitten und trotzdem als vollständig verarbeitet (Issue #174).</p>
