@@ -13605,6 +13605,11 @@ impl CodeGen {
 
             for (i, catch) in catches.iter().enumerate() {
                 let llvm_ty = Self::type_to_llvm(&catch.ty);
+                // The catch parameter shadows an outer variable of the same name
+                // only inside its own clause; restored below so a later `finally`
+                // (or code after the try) sees the outer binding again.
+                let shadowed_local = ctx.locals.get(&catch.param).cloned();
+                let shadowed_slot = ctx.local_slots.get(&catch.param).cloned();
                 let param_slot = ctx.locals.len();
                 ctx.locals
                     .insert(catch.param.clone(), (llvm_ty.clone(), param_slot));
@@ -13644,6 +13649,15 @@ impl CodeGen {
                 )
                 .unwrap();
                 self.gen_stmt_body(&catch.body, ctx)?;
+                if let Some(prev) = shadowed_local {
+                    ctx.locals.insert(catch.param.clone(), prev);
+                }
+                // No entry before means the outer variable lives in the plain `%name`
+                // slot (e.g. a captured variable inside a lambda): drop the clause's slot.
+                match shadowed_slot {
+                    Some(prev) => { ctx.local_slots.insert(catch.param.clone(), prev); }
+                    None => { ctx.local_slots.remove(&catch.param); }
+                }
 
                 let next = if i + 1 < clause_bbs.len() {
                     clause_bbs[i + 1].clone()

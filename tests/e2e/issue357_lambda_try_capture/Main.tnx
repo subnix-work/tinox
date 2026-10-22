@@ -39,7 +39,7 @@ class Main
         const nested: String = "nested";
         const e: String = "outer";
         Main::call(fn() {
-            if true {
+            if (true) {
                 {
                     try {
                         try {
