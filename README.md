@@ -1066,3 +1066,5 @@ API model. `make docs-check` verifies snapshots, executable canonical examples,
 bilingual module inventories and current package documentation links; it is
 part of `make check`. See the [documentation workflow](docs/REFERENCE_WORKFLOW.md)
 for regeneration and immutable release-doc staging.
+
+For unpublished package development, see [local dependency overrides and stdlib test lanes](docs/local-dependencies.md).

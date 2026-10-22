@@ -25,7 +25,7 @@ const CORE_MODULES: &[&str] = &[
     "io", "fs", "env", "process", "debug", "socket",
     "semaphore", "time", "cron", "events",
     "logger", "validation", "regex", "random", "hash", "uuid",
-    "base64", "hex", "uri",
+    "base64", "hex", "uri", "bytes",
 ];
 
 pub struct Case {
@@ -367,6 +367,21 @@ pub fn run_case(case: &Case) -> Result<(), String> {
                     "\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{v}\"\n"
                 ));
             }
+        }
+        if let Some(workspace) = std::env::var_os("TINOX_TEST_WORKSPACE_STDLIB") {
+            let workspace = PathBuf::from(workspace);
+            let mut overrides = String::from("overrides:\n");
+            for module in fs::read_dir(&workspace).map_err(|e| e.to_string())? {
+                let module = module.map_err(|e| e.to_string())?.path();
+                if !module.join("tinox.toml").is_file() { continue; }
+                let name = module.file_name().unwrap().to_string_lossy();
+                let version = extended_module_version(&name);
+                // JSON strings are also valid YAML quoted scalars.
+                overrides.push_str(&format!("  \"tinox.core:{name}:{version}\": {}\n",
+                    serde_json::to_string(&module.to_string_lossy()).unwrap()));
+            }
+            fs::write(workdir.join("tinox.overrides.yaml"), overrides)
+                .map_err(|e| format!("write workspace overrides: {e}"))?;
         }
         fs::write(workdir.join("tinox.toml"), toml).map_err(|e| format!("write tinox.toml: {e}"))?;
     }
