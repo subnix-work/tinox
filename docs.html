@@ -1439,7 +1439,7 @@ class Api {
         <tr><td><code>@DoNotSerialize</code></td><td>Feld</td><td>Feld von JSON ausschließen</td></tr>
         <tr><td><code>@Log</code></td><td>Klasse</td><td>Automatisches log-Feld injizieren</td></tr>
         <tr><td><code>@Inject</code></td><td>Feld</td><td>Dependency-Injection-Feld</td></tr>
-        <tr><td><code>@Config("key")</code></td><td>Feld</td><td>Wert aus application.properties</td></tr>
+        <tr><td><code>@Config("key")</code></td><td>Feld</td><td>Runtime configuration; <code>@Config("key", "required"|"optional")</code> or <code>@Config("key", "default", "value")</code>. Environment overrides files; <a href="examples/runtime_config/README.md">policies, parsing, precedence and secret handling</a>.</td></tr>
         <tr><td><code>@Synchronized</code></td><td>Klasse/Methode</td><td>Rekursiver Klassenmonitor für Singleton-Instanzmethoden</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Klasse</td><td>Singleton-Scope für DI</td></tr>
         <tr><td><code>@HttpRequestScoped</code></td><td>Klasse</td><td>Neues Objekt pro HTTP-Request</td></tr>

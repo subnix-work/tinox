@@ -2614,6 +2614,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let config_fields = ann.config_fields.iter().map(|f| tinox_codegen::ConfigFieldInfo {
         class_name: f.class_name.clone(), field_name: f.field_name.clone(),
         config_key: f.config_key.clone(), field_llvm_type: f.field_llvm_type.clone(),
+        policy: f.policy.clone(), default_value: f.default_value.clone(), value_type: f.value_type.clone(),
     }).collect();
     let cli_commands = ann.cli_commands.iter().map(|c| tinox_codegen::CliCommandInfo {
         class_name: c.class_name.clone(), cmd_name: c.cmd_name.clone(),
@@ -4290,6 +4291,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             class_name: f.class_name.clone(),
             field_name: f.field_name.clone(),
             config_key: f.config_key.clone(),
+            policy: f.policy.clone(), default_value: f.default_value.clone(), value_type: f.value_type.clone(),
             field_llvm_type: f.field_llvm_type.clone(),
         })
         .collect();
