@@ -5795,6 +5795,24 @@ class Jogger implements Runner {
     }
 
     #[test]
+    fn test_sensitive_class_has_generated_to_string() {
+        ok(concat!(
+            "class User {\n",
+            "    @Sensitive var password: String;\n",
+            "}\n",
+            "fn f(u: User) -> String { return u.toString(); }"
+        ));
+    }
+
+    #[test]
+    fn test_class_without_masked_fields_has_no_generated_to_string() {
+        err_contains(
+            concat!("class Plain { var name: String; }\n", "fn f(p: Plain) -> String { return p.toString(); }"),
+            "undefined function: Plain_toString",
+        );
+    }
+
+    #[test]
     fn test_enum_variant_with_payload_ok() {
         ok(concat!(
             "enum Shape { Circle(Float64), Square(Float64) }\n",

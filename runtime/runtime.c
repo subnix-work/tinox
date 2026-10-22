@@ -6788,6 +6788,11 @@ static int http3_nghttp3_recv_header(nghttp3_conn* h3conn, int64_t stream_id, in
     } else if (strcmp(nameStr, ":path") == 0) {
         slot->path = valStr;
     } else if (nameStr[0] != ':') {
+        // HTTP/3 field names are lowercase on the wire; the handlers look headers up in their
+        // canonical HTTP/1 spelling ("Content-Type", "Authorization"), so store them that way.
+        for (size_t i = 0; nameStr[i]; i++) {
+            nameStr[i] = (char)((i == 0 || nameStr[i - 1] == '-') ? toupper((unsigned char)nameStr[i]) : tolower((unsigned char)nameStr[i]));
+        }
         tinox_map_set(slot->headersMap, nameStr, (int64_t)(intptr_t)valStr);
     }
     return 0;

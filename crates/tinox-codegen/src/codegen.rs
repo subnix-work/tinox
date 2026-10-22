@@ -811,7 +811,7 @@ impl CodeGen {
         let label = format!("__metric_str_{}", self.strings.len());
         self.strings.insert(label.clone(), s.to_string());
         let len = s.len() + 1;
-        format!("getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0")
+        format!("getelementptr ([{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0)")
     }
 
     /// Emit a tinox_clock_nanos() call, subtract start_reg, and call tinox_histogram_record.
