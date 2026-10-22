@@ -6933,6 +6933,31 @@ impl CodeGen {
         let ptr = self.temp();
         writeln!(&mut self.ir, "  {raw} = call i8* @tinox_alloc(i64 {alloc_size})").unwrap();
         writeln!(&mut self.ir, "  {ptr} = bitcast i8* {raw} to i64*").unwrap();
+        // first() on an empty result returns a default entity. Never ask
+        // the driver to read a missing row (libpq prints a warning for it).
+        let nrows = self.temp();
+        let in_range = self.temp();
+        writeln!(&mut self.ir, "  {nrows} = call i64 @tinox_db_nrows(i8* %result)").unwrap();
+        writeln!(&mut self.ir, "  {in_range} = icmp ult i64 %row_idx, {nrows}").unwrap();
+        writeln!(&mut self.ir, "  br i1 {in_range}, label %read_row, label %empty_row").unwrap();
+        writeln!(&mut self.ir, "empty_row:").unwrap();
+        for (col_idx, field) in fields.iter().enumerate() {
+            let fptr = self.temp();
+            writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {ptr}, i64 {col_idx}").unwrap();
+            if field.field_llvm_type == "i8*" {
+                let label = format!("__orm_empty_{}", self.strings.len());
+                self.strings.insert(label.clone(), String::new());
+                let empty = self.temp();
+                let as_int = self.temp();
+                writeln!(&mut self.ir, "  {empty} = getelementptr [1 x i8], [1 x i8]* @{label}, i64 0, i64 0").unwrap();
+                writeln!(&mut self.ir, "  {as_int} = ptrtoint i8* {empty} to i64").unwrap();
+                writeln!(&mut self.ir, "  store i64 {as_int}, i64* {fptr}").unwrap();
+            } else {
+                writeln!(&mut self.ir, "  store i64 0, i64* {fptr}").unwrap();
+            }
+        }
+        writeln!(&mut self.ir, "  ret i8* {raw}").unwrap();
+        writeln!(&mut self.ir, "read_row:").unwrap();
         for (col_idx, field) in fields.iter().enumerate() {
             let fptr = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {ptr}, i64 {col_idx}").unwrap();
