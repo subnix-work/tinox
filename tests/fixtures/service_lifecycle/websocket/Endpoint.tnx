@@ -1,0 +1,13 @@
+import tinox.core.websocket;
+@WebsocketEndpoint("/echo", 0)
+class Endpoint {
+    @OnMessage
+    fn message(conn: Int64, message: String) -> Nothing {
+        println("handling");
+        sleep(100);
+        Ws::sendText(conn, message);
+    }
+    fnc cleanup() -> Nothing { sleep(100); println("closed"); }
+    @OnClose
+    fn close(conn: Int64) -> Nothing { spawn Endpoint::cleanup(); }
+}

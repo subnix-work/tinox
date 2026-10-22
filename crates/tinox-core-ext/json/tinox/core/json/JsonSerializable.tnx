@@ -18,8 +18,8 @@ namespace tinox.core.json
      *       var name: String;
      *   }
      *
-     *   let json: String = Json::serialize(user);
-     *   let user: User = Json::deserialize<User>(json);
+     *   const json: String = Json::serialize(user);
+     *   const user: User = Json::deserialize<User>(json);
      */
     @annotation
     class JsonSerializable {}

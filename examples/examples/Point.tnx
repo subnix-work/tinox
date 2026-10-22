@@ -10,8 +10,8 @@ class Point
 
     fn distanceTo(other: Point) -> Float64
     {
-        let dx: Float64 = this.x - other.x;
-        let dy: Float64 = this.y - other.y;
+        const dx: Float64 = this.x - other.x;
+        const dy: Float64 = this.y - other.y;
         return ((dx * dx) + (dy * dy)).sqrt();
     }
 

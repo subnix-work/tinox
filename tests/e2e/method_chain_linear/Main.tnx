@@ -11,9 +11,9 @@ import method_chain_linear;
 class Main
 {
     fnc main() -> Int32 {
-        let c: method_chain_linear = method_chain_linear::make(42);
+        const c: method_chain_linear = method_chain_linear::make(42);
         // 60-deep method chain — previously exponential in the typecheck
-        let r: Int64 = c.self_().self_().self_().self_().self_().self_().self_().self_()
+        const r: Int64 = c.self_().self_().self_().self_().self_().self_().self_().self_()
                         .self_().self_().self_().self_().self_().self_().self_().self_()
                         .self_().self_().self_().self_().self_().self_().self_().self_()
                         .self_().self_().self_().self_().self_().self_().self_().self_()

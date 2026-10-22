@@ -1,3 +1,8 @@
+#[path = "bootstrap.rs"]
+pub mod bootstrap;
+#[path = "lifecycle.rs"]
+pub mod lifecycle;
+use bootstrap::{BackgroundTask, Endpoint};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::Path;
@@ -388,7 +393,7 @@ pub struct CodeGen {
     /// which is wrong for a node like `Option<U>::none()` where U differs
     /// from T (see #153). Working from the pristine method and combining
     /// T+U into one subst avoids that double-rename.
-    generic_instance_methods: HashMap<String, (String, HashMap<String, String>, tinox_parser::Method)>,
+    generic_instance_methods: HashMap<String, (String, HashMap<String, tinox_parser::Type>, tinox_parser::Method)>,
     /// #158: a specific own-type-param instance-method CALL NODE's result
     /// class marker (`Box<Int64>.transform(f)` → e.g. "Box__string"),
     /// keyed by that call expression's own `expr.id` — NOT by
@@ -404,6 +409,8 @@ pub struct CodeGen {
     /// Active type-parameter bindings while emitting a specialization:
     /// "T" -> "User" (resolves T::fromJson).
     type_param_aliases: HashMap<String, String>,
+    semantic_bindings: HashMap<String, tinox_parser::Type>,
+    specialization_types: HashMap<String, tinox_parser::Type>,
     /// Generic class AST nodes (not directly compiled, monomorphized on demand)
     generic_classes: HashMap<String, tinox_parser::Class>,
     /// Already-generated specializations (mangled_name already emitted)
@@ -488,6 +495,9 @@ pub struct CodeGen {
     /// gone); consumed via `rich_marker`. ID 0 (synthetic nodes) never has an
     /// entry.
     expr_value_types: HashMap<u32, tinox_typecheck::ValueType>,
+    semantics: tinox_typecheck::semantic::SemanticFacts,
+    checked_semantics: bool,
+    argument_targets: HashMap<u32, tinox_typecheck::ValueType>,
     /// DB connection URL from tinox.toml [database] — emitted as compile-time constant
     db_url: Option<String>,
     /// [database] pool size from tinox.toml, default 5 when omitted (see
@@ -506,7 +516,8 @@ pub struct CodeGen {
     /// each one claiming @tinox_main directly, so emit_tinox_main_bootstrap
     /// can spawn all of them (plus call Main_main if present) from one
     /// unified entry point.
-    background_run_fns: Vec<String>,
+    background_tasks: Vec<BackgroundTask>,
+    bootstrap_emitted: bool,
     /// `(protocol, detail)` pairs -- one per background auto-run kind
     /// registered above, in the same order -- consumed by
     /// emit_tinox_main_bootstrap to print the startup "Endpoints:" block.
@@ -557,10 +568,14 @@ pub struct CodeGen {
     /// by emit_class_main_entry_point -- consumed by
     /// emit_tinox_main_bootstrap, which calls @Main_main from the
     /// synthesized @tinox_main instead of emit_class_main_entry_point
-    /// wiring it directly (so it can coexist with background_run_fns).
+    /// wiring it directly (so it can coexist with background_tasks).
     user_main_class: bool,
     /// Set of class names defined in user/imported code
     defined_classes: HashSet<String>,
+    service_options: Option<lifecycle::ServiceOptions>,
+    lifecycle_hooks: Vec<lifecycle::Hook>,
+    synchronized_classes: HashSet<String>,
+    monitored_classes: HashSet<String>,
     /// class_name -> field_name -> class_type_name (only for fields with Named/class types)
     struct_field_class_types: HashMap<String, HashMap<String, String>>,
     /// class_name -> field_name -> llvm_type (for FieldAccess type recovery)
@@ -617,6 +632,8 @@ impl CodeGen {
             generic_fns: HashMap::new(),
             generic_methods: HashMap::new(),
             generic_instance_methods: HashMap::new(),
+            semantic_bindings: HashMap::new(),
+            specialization_types: HashMap::new(),
             methodcall_result_markers: HashMap::new(),
             type_param_aliases: HashMap::new(),
             generic_classes: HashMap::new(),
@@ -646,12 +663,16 @@ impl CodeGen {
             amqp091_consumers: Vec::new(),
             http3_rest_controller: None,
             expr_value_types: HashMap::new(),
+            semantics: tinox_typecheck::semantic::SemanticFacts::default(),
+            checked_semantics: false,
+            argument_targets: HashMap::new(),
             db_url: None,
             db_pool_size: 5,
             metrics_path: None,
             test_entry: None,
             has_main: false,
-            background_run_fns: Vec::new(),
+            background_tasks: Vec::new(),
+            bootstrap_emitted: false,
             startup_endpoints: Vec::new(),
             loaded_modules: Vec::new(),
             banner_enabled: true,
@@ -664,6 +685,10 @@ impl CodeGen {
             dev_test_command: String::new(),
             user_main_class: false,
             defined_classes: HashSet::new(),
+            service_options: None,
+            lifecycle_hooks: Vec::new(),
+            synchronized_classes: HashSet::new(),
+            monitored_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
             struct_field_llvm_types: HashMap::new(),
             fn_field_sigs: HashMap::new(),
@@ -731,6 +756,8 @@ impl CodeGen {
     pub fn set_metrics_config(&mut self, path: Option<String>) {
         self.metrics_path = path;
     }
+
+    pub fn set_semantic_facts(&mut self, facts: tinox_typecheck::semantic::SemanticFacts) { self.semantics = facts; self.checked_semantics = true; }
 
     pub fn set_expr_value_types(&mut self, types: HashMap<u32, tinox_typecheck::ValueType>) {
         self.expr_value_types = types;
@@ -1175,9 +1202,21 @@ impl CodeGen {
         arg_name: &str,
         arg_val: &str,
     ) {
+        if let Some(semantic) = self.semantics.enum_payloads.get(disc_name).and_then(|payloads| payloads.get(arg_index)).cloned() {
+            let semantic = self.specialize_semantic_type(&semantic);
+            let (value, ty) = self.decode_semantic_word(arg_val.to_string(), &semantic);
+            let slot = format!("{}_{}", arg_name, self.temp_count);
+            self.temp_count += 1;
+            ctx.locals.insert(arg_name.into(), (ty.clone(), ctx.locals.len()));
+            ctx.local_slots.insert(arg_name.into(), slot.clone());
+            if let Some(marker) = self.valuetype_to_marker(&semantic) { ctx.local_types.insert(arg_name.into(), marker); }
+            writeln!(&mut self.ir, "%{} = alloca {}", slot, ty).unwrap();
+            writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, value, ty, slot).unwrap();
+            return;
+        }
         let kind = self
             .enum_variant_payloads
-            .get(disc_name)
+            .get(disc_name.rsplit("::").next().unwrap_or(disc_name))
             .and_then(|ks| ks.get(arg_index))
             .cloned()
             .unwrap_or_else(|| "Other".to_string());
@@ -1241,44 +1280,87 @@ impl CodeGen {
         }
     }
 
+    fn semantic_type(&self, id: u32) -> Option<tinox_typecheck::ValueType> {
+        self.expr_value_types.get(&id).map(|ty| self.specialize_semantic_type(ty))
+    }
+
+    fn specialize_semantic_type(&self, ty: &tinox_typecheck::ValueType) -> tinox_typecheck::ValueType {
+        let bindings = self.semantic_bindings.iter().map(|(name, ty)| (name.clone(), tinox_typecheck::ValueType::from_parser_type(ty))).collect();
+        ty.with_bindings(&bindings)
+    }
+
+    fn semantic_field_type(&self, class: &str, field: &str) -> Option<tinox_typecheck::ValueType> {
+        if let Some(tinox_parser::Type::Generic { name, args }) = self.specialization_types.get(class) {
+            let bindings = self.generic_classes.get(name)?.type_params.iter().cloned().zip(args.iter().map(tinox_typecheck::ValueType::from_parser_type)).collect();
+            return self.semantics.field_types.get(name)?.get(field).map(|ty| ty.with_bindings(&bindings));
+        }
+        self.semantics.field_types.get(class)?.get(field).map(|ty| self.specialize_semantic_type(ty))
+    }
+
+    /// Decode the runtime's uniform word without guessing an integer result.
+    fn decode_semantic_word(&mut self, raw: String, semantic: &tinox_typecheck::ValueType) -> (String, String) {
+        self.decode_word(raw, Self::valuetype_to_llvm(semantic))
+    }
+
+    fn decode_word(&mut self, raw: String, target: String) -> (String, String) {
+        if target == "i64" { return (raw, target); }
+        let decoded = self.temp();
+        if target == "float" {
+            let bits = self.temp(); writeln!(&mut self.ir, "{} = trunc i64 {} to i32", bits, raw).unwrap();
+            writeln!(&mut self.ir, "{} = bitcast i32 {} to float", decoded, bits).unwrap();
+        } else {
+            let op = if target == "double" { "bitcast" } else if target.ends_with('*') { "inttoptr" } else { "trunc" };
+            writeln!(&mut self.ir, "{} = {} i64 {} to {}", decoded, op, raw, target).unwrap();
+        }
+        (decoded, target)
+    }
+
+    /// A numeric value conversion at a checked closure-call boundary. Signature
+    /// compatibility itself is invariant: no implicit adapter changes a closure.
+    fn convert_semantic_argument(&mut self, value: String, actual: String, expected: &tinox_typecheck::ValueType, expr: &Expr) -> Result<(String, String), ErrorBag> {
+        let source_unsigned = self.semantic_type(expr.id).is_some_and(|ty| ty.is_unsigned());
+        Ok(self.convert_semantic_value(value, actual, expected, source_unsigned))
+    }
+
+    fn convert_semantic_value(&mut self, value: String, actual: String, expected: &tinox_typecheck::ValueType, source_unsigned: bool) -> (String, String) {
+        use tinox_typecheck::ValueType as VT;
+        if matches!(expected, VT::Any | VT::Named(_, _)) { return (value, actual); }
+        let target = Self::valuetype_to_llvm(expected);
+        if actual == target { return (value, actual); }
+        let from_float = Self::is_float(&actual);
+        let to_float = Self::is_float(&target);
+        let op = if from_float && to_float { if actual == "float" { "fpext" } else { "fptrunc" } }
+            else if from_float && expected.is_integer() { if expected.is_unsigned() { "fptoui" } else { "fptosi" } }
+            else if to_float && actual.starts_with('i') && !actual.ends_with('*') { if source_unsigned { "uitofp" } else { "sitofp" } }
+            else if expected.is_integer() && actual.starts_with('i') && !actual.ends_with('*') {
+                let from: u32 = actual[1..].parse().unwrap_or(64);
+                let to: u32 = target[1..].parse().unwrap_or(64);
+                if from > to { "trunc" } else if source_unsigned || actual == "i1" { "zext" } else { "sext" }
+            } else { return (value, actual); };
+        let converted = self.temp();
+        writeln!(&mut self.ir, "{} = {} {} {} to {}", converted, op, actual, value, target).unwrap();
+        (converted, target)
+    }
+
     /// Infer the struct/class type name for an expression (for nested field access).
     fn infer_struct_type(&self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
         use tinox_parser::ExprKind;
-        // Type-system unification phase 2: for migrated expr kinds the rich typed
-        // export (full ValueType → marker, incl. generic specialization
-        // Box<Int> → Box__i64) is the PRIMARY source; the local heuristic only
-        // fills in where the checker has no type for the node.
-        //
-        // Deliberately NOT rich-first: This — ctx.current_struct is emission
-        // context (which specialization is being emitted, e.g. Box__i64), not an
-        // inference; the checker only ever sees the generic view (Box<T>) there,
-        // and bridging it would mangle T into a nonexistent specialization.
-        let rich_first = matches!(
-            &expr.node,
-            ExprKind::EnumValue { .. }
-                | ExprKind::MethodCall { .. }
-                | ExprKind::Call { .. }
-                | ExprKind::FieldAccess { .. }
-                | ExprKind::Index { .. }
-                | ExprKind::ArrayLiteral(_)
-                | ExprKind::MapLiteral(_)
-                | ExprKind::Ident(_)
-        );
-        if rich_first {
-            if let Some(m) = self.rich_marker(expr) {
-                return Some(m);
+        // Checked expression types are authoritative. `this` additionally
+        // carries the concrete layout currently being emitted; explicit Any
+        // and synthetic ASTs retain their documented dynamic emission context.
+        if matches!(expr.node, ExprKind::This) { return ctx.current_struct.clone(); }
+        if let Some(ty) = self.semantic_type(expr.id) {
+            if ty != tinox_typecheck::ValueType::Any {
+                return self.valuetype_to_marker(&ty);
             }
         }
         self.infer_struct_type_local(expr, ctx)
-            .or_else(|| self.rich_marker(expr))
     }
 
     /// Marker from the rich typed export, if the checker recorded a type for
     /// this node. The non-local half of `infer_struct_type`.
     fn rich_marker(&self, expr: &tinox_parser::Expr) -> Option<String> {
-        self.expr_value_types
-            .get(&expr.id)
-            .and_then(|vt| self.valuetype_to_marker(vt))
+        self.semantic_type(expr.id).and_then(|vt| self.valuetype_to_marker(&vt))
     }
 
     fn infer_struct_type_local(&self, expr: &tinox_parser::Expr, ctx: &GenCtx) -> Option<String> {
@@ -1392,6 +1474,12 @@ impl CodeGen {
     }
 
     pub fn gen(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
+        if !self.semantics.ambiguous_declarations.is_empty() {
+            let mut symbols: Vec<_> = self.semantics.ambiguous_declarations.iter().collect();
+            symbols.sort_by_key(|(symbol, _)| *symbol);
+            return Err(ErrorBag { errors: symbols.into_iter().map(|(symbol, identities)| Error::new(Span::dummy(), format!("Ambiguous declaration '{symbol}' has multiple qualified source identities ({}); native linkage must identify one declaration", identities.iter().map(|identity| format!("{} ({})", identity.namespace.join("."), identity.file)).collect::<Vec<_>>().join(", ")))).collect() });
+        }
+
         // Must run before ANY method body codegen — interface-dispatch call
         // sites inside those bodies consult this table (the "second pass:
         // generate code" loop below, generating e.g. Main's own body, is
@@ -1432,6 +1520,11 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_task_spawn(i8* (i8*)*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_task_spawn_detached(i8* (i8*)*, i8*)").unwrap();
+        // WebSocket connection budget (#302): the accept loops ask before
+        // spawning a worker and the worker releases when it ends.
+        writeln!(&mut self.ir, "declare i64 @tinox_ws_admit()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_ws_release()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_print_limits()").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_task_await(i8*)").unwrap();
         // Monotonic milliseconds -- used only by emit_tinox_main_bootstrap's
         // startup banner to measure/print bootstrap time.
@@ -1569,6 +1662,11 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @tinox_array_insert(i64*, i64, i64)").unwrap();
         // HTTP server C runtime (low-level)
         writeln!(&mut self.ir, "declare i64 @httpServerCreate(i64)").unwrap();
+        // Task scopes (issue #301): runtime side of the parser's `scope { }` desugaring.
+        writeln!(&mut self.ir, "declare i64 @__scope_new()").unwrap();
+        writeln!(&mut self.ir, "declare void @__scope_add(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @__scope_join(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @__scope_abort(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerBoundPort(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConn(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @httpServerReadRequest(i64)").unwrap();
@@ -1614,6 +1712,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64  @tinox_db_getval_int(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i1  @tinox_db_is_null(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_db_free(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i1 @tinox_db_result_failed(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_orm_save_failed(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_error(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8** @tinox_params_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_params_set(i8**, i64, i8*)").unwrap();
@@ -1654,6 +1754,11 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @processResultStderr(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @processResultExitCode(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @processResultTimedOut(i64)").unwrap();
+        self.emit_service_declarations();
+        writeln!(&mut self.ir, "declare void @tinox_di_enter()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_di_exit()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_monitor_enter(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_monitor_exit(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @mutexNew()").unwrap();
         writeln!(&mut self.ir, "declare void @mutexLock(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @mutexUnlock(i64)").unwrap();
@@ -1676,6 +1781,12 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @memoryUsage()").unwrap();
         writeln!(&mut self.ir, "declare void @printStackTrace()").unwrap();
         writeln!(&mut self.ir, "declare i64 @now()").unwrap();
+        for name in ["taskCancel", "taskDetach", "taskSetDeadline", "taskWaitReadable"] {
+            writeln!(&mut self.ir, "declare void @{name}(i64)").unwrap();
+        }
+        for name in ["taskCheckCancellation", "taskRequestShutdown"] {
+            writeln!(&mut self.ir, "declare void @{name}()").unwrap();
+        }
         writeln!(&mut self.ir, "declare void @sleep_ms(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @randomInt(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare double @randomFloat()").unwrap();
@@ -1766,6 +1877,19 @@ impl CodeGen {
             }
             v
         }).collect();
+
+        self.configure_lifecycle(&all_classes);
+
+        self.synchronized_classes = all_classes.iter()
+            .filter(|c| c.annotations.iter().any(|a| a.name == "Synchronized"))
+            .map(|c| c.name.clone()).collect();
+        for class in &all_classes {
+            if self.synchronized_classes.contains(&class.name)
+                || class.methods.iter().any(|m| m.annotations.iter().any(|a| a.name == "Synchronized")) {
+                self.monitored_classes.insert(class.name.clone());
+                writeln!(&mut self.lambda_ir, "@{}_monitor = internal global i64 0", class.name).unwrap();
+            }
+        }
 
         // Register immutable struct layouts and new() return types (top-level + namespace-scoped)
         let all_immutables: Vec<tinox_parser::ImmutableDecl> = source.decls.iter().flat_map(|d| {
@@ -2109,11 +2233,13 @@ impl CodeGen {
         // (Issue #149 stage 1) — validates the shape and (if valid) records
         // user_main_class; emit_tinox_main_bootstrap below wires it into
         // @tinox_main once every auto-run kind has had a chance to register
-        // into background_run_fns, so class Main can coexist with them.
+        // into background_tasks, so class Main can coexist with them.
         self.emit_class_main_entry_point(source)?;
 
         // Emit vtable globals for classes that implement interfaces
         self.emit_vtable_globals(source);
+
+        self.emit_lifecycle_hooks();
 
         // Emit REST route shims and registration function
         self.emit_route_code();
@@ -2137,7 +2263,7 @@ impl CodeGen {
         // Emit the dev-mode introspection API (no-op unless [dev] enabled)
         self.emit_devui_code(&class_ast_map);
 
-        // Unify user_main_class + background_run_fns into @tinox_main
+        // Unify user_main_class + background_tasks into @tinox_main
         self.emit_tinox_main_bootstrap();
 
         // Emit DI globals, getters, factories, and startup initializer
@@ -2158,6 +2284,7 @@ impl CodeGen {
 
         // Emit SQL-constant functions and row-mapping helpers for @Entity classes
         self.emit_entity_code();
+        self.emit_global_initializers();
 
         for (name, s) in &self.strings {
             let escaped = Self::escape_llvm_string(s);
@@ -2209,13 +2336,19 @@ impl CodeGen {
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__route_{}_{}", route.class_name, route.method_name);
 
-            writeln!(&mut self.lambda_ir, "define void @{shim}(i64 %ctx_i64) {{").unwrap();
+            let body_shim = if self.service_enabled() {
+                format!("{shim}__body")
+            } else {
+                shim.clone()
+            };
+            writeln!(&mut self.lambda_ir, "define void @{body_shim}(i64 %ctx_i64) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
             self.emit_route_shim_body(idx, route);
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
+            self.emit_managed_route_wrapper(&shim, false);
         }
 
         // ── Metrics endpoint shim (if enabled) ──────────────────────────────────
@@ -2310,7 +2443,7 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir).unwrap();
 
         // ── Auto-run listen loop (only when no legacy bare-fn-main exists) ──────
-        // Registered into background_run_fns instead of claiming @tinox_main
+        // Registered into background_tasks instead of claiming @tinox_main
         // directly, so emit_tinox_main_bootstrap can spawn it (and call
         // Main_main, and any other registered kind) from one unified entry
         // point.
@@ -2328,7 +2461,7 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
 
-            self.background_run_fns.push("__tinox_run_http".to_string());
+            self.register_background_task(BackgroundTask::new("rest", None, "__tinox_run_http", "route-specific", "HTTP request dispatch", Endpoint::listen("HTTP", port as i64, bootstrap::environment_port_source(port as i64), None)));
             self.startup_endpoints.push(("HTTP".to_string(), format!(":{port}")));
         }
     }
@@ -2512,12 +2645,8 @@ impl CodeGen {
                 writeln!(&mut self.lambda_ir, "  %req_fct_{idx} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
                 writeln!(&mut self.lambda_ir, "  %req_ict_{idx} = load i64, i64* %req_fct_{idx}").unwrap();
                 writeln!(&mut self.lambda_ir, "  %req_pct_{idx} = inttoptr i64 %req_ict_{idx} to i64*").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_hf_ct_{idx} = getelementptr i64, i64* %req_pct_{idx}, i64 3").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_hi_ct_{idx} = load i64, i64* %req_hf_ct_{idx}").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_hm_ct_{idx} = inttoptr i64 %req_hi_ct_{idx} to i8*").unwrap();
                 writeln!(&mut self.lambda_ir, "  %ct_key_{idx} = getelementptr [13 x i8], [13 x i8]* @__hdr_content_type, i64 0, i64 0").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_ct_val_{idx} = call i64 @tinox_map_get(i8* %req_hm_ct_{idx}, i8* %ct_key_{idx})").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_ct_str_{idx} = inttoptr i64 %req_ct_val_{idx} to i8*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_ct_str_{idx} = call i8* @HttpRequest_getHeader(i64* %req_pct_{idx}, i8* %ct_key_{idx})").unwrap();
                 writeln!(&mut self.lambda_ir, "  %expected_ct_{idx} = getelementptr [{ct_len} x i8], [{ct_len} x i8]* @__route_consumes_{idx}, i64 0, i64 0").unwrap();
                 writeln!(&mut self.lambda_ir, "  %ct_match_{idx} = call i64 @tinox_string_starts_with(i8* %req_ct_str_{idx}, i8* %expected_ct_{idx})").unwrap();
                 writeln!(&mut self.lambda_ir, "  %ct_ok_{idx} = icmp eq i64 %ct_match_{idx}, 1").unwrap();
@@ -3066,13 +3195,19 @@ tr_done_{idx}:"#).unwrap();
         // ── Per-route shims (closure-callable: trailing i64* %env) ──────────────
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__h3route_{}_{}", route.class_name, route.method_name);
-            writeln!(&mut self.lambda_ir, "define void @{shim}(i64 %ctx_i64, i64* %env) {{").unwrap();
+            let body_shim = if self.service_enabled() {
+                format!("{shim}__body")
+            } else {
+                shim.clone()
+            };
+            writeln!(&mut self.lambda_ir, "define void @{body_shim}(i64 %ctx_i64, i64* %env) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
             self.emit_route_shim_body(idx, route);
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
+            self.emit_managed_route_wrapper(&shim, true);
         }
 
         // ── Auto-main: build the Http3Server, register every route as a
@@ -3089,6 +3224,13 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.lambda_ir,
             "  %h3_server = call i64* @Http3Server_new(i64* null, i64 {}, i8* %h3_certp, i8* %h3_keyp)",
             controller.port).unwrap();
+
+        if self.service_enabled() {
+            for name in ["live", "ready"] {
+                let len = name.len() + 9;
+                writeln!(&mut self.lambda_ir, "  %health_{name}_raw = call i8* @tinox_alloc(i64 16)\n  %health_{name}_block = bitcast i8* %health_{name}_raw to i64*\n  %health_{name}_fn = ptrtoint void (i64, i64*)* @__tinox_service_{name}_route to i64\n  store i64 %health_{name}_fn, i64* %health_{name}_block\n  %health_{name}_env = getelementptr i64, i64* %health_{name}_block, i64 1\n  store i64 0, i64* %health_{name}_env\n  %health_{name}_path = getelementptr [{len} x i8], [{len} x i8]* @__service_{name}_path, i64 0, i64 0\n  %health_{name}_registered = call i64* @Http3Server_get(i64* %h3_server, i8* %health_{name}_path, i64* %health_{name}_block)").unwrap();
+            }
+        }
 
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__h3route_{}_{}", route.class_name, route.method_name);
@@ -3119,7 +3261,7 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
-        self.background_run_fns.push("__tinox_run_http3".to_string());
+        self.register_background_task(BackgroundTask::new("http3_rest", Some(&controller.class_name), "__tinox_run_http3", "route-specific", "HTTP/3 request dispatch", Endpoint::listen("HTTP/3", controller.port, "annotation", None)));
         self.startup_endpoints.push(("HTTP/3 (QUIC)".to_string(), format!(":{}", controller.port)));
     }
 
@@ -3305,21 +3447,47 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %srv = call i64 @WsServer_listen(i64* null, i64 {port})").unwrap();
             writeln!(&mut self.lambda_ir, "  %srv_bad = icmp slt i64 %srv, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %srv_bad, label %bind_fail, label %accept_loop").unwrap();
+            let listen_ok = if self.service_enabled() {
+                "listener_ready"
+            } else {
+                "accept_loop"
+            };
+            writeln!(&mut self.lambda_ir, "  br i1 %srv_bad, label %bind_fail, label %{listen_ok}").unwrap();
 
             writeln!(&mut self.lambda_ir, "bind_fail:").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
 
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "listener_ready:\n  %port = call i64 @httpServerBoundPort(i64 %srv)\n  call void @tinox_service_listener_ready(i64 %port)\n  br label %accept_loop").unwrap();
+
+            }
             writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
+            if self.service_enabled() {
+            writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %service_done, label %accept_next\naccept_next:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %dispatch").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %admit").unwrap();
+
+            // Over the connection budget: close the already-upgraded
+            // connection right away instead of growing one thread per
+            // client without bound (the client sees an immediate close).
+            writeln!(&mut self.lambda_ir, "admit:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %admitted = call i64 @tinox_ws_admit()").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_admitted = icmp ne i64 %admitted, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_admitted, label %dispatch, label %reject").unwrap();
+            writeln!(&mut self.lambda_ir, "reject:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
 
             // 2-slot args array [worker_fn_ptr, conn] -- same convention
             // emit_spawn_wrapper's own caller (ExprKind::Spawn) already uses
             // for passing arguments through tinox_task_spawn's fixed
             // i8*(i8*) trampoline signature.
             writeln!(&mut self.lambda_ir, "dispatch:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %worker_admitted = call i64 @tinox_service_worker_start()\n  %worker_ok = icmp ne i64 %worker_admitted, 0\n  br i1 %worker_ok, label %worker_spawn, label %worker_rejected\nworker_rejected:\n  call void @tinox_ws_release()\n  call void @tinox_service_close_connection(i64 %conn)\n  br label %accept_loop\nworker_spawn:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %args_raw = call i8* @tinox_alloc(i64 16)").unwrap();
             writeln!(&mut self.lambda_ir, "  %args_ap = bitcast i8* %args_raw to [2 x i64]*").unwrap();
             writeln!(&mut self.lambda_ir, "  %fp_i64 = ptrtoint i64 (i64)* @{worker_fn} to i64").unwrap();
@@ -3329,6 +3497,13 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  store i64 %conn, i64* %conn_slot").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @tinox_task_spawn_detached(i8* (i8*)* @{worker_wrapper}, i8* %args_raw)").unwrap();
             writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "service_done:\n  call void @httpServerClose(i64 %srv)\n  ret i64 0"
+                )
+                .unwrap();
+            }
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
@@ -3341,15 +3516,28 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
             self.emit_field_defaults(&ep.class_name, "%inst");
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_existing_work_enter()"
+                )
+                .unwrap();
+            }
             if let Some(ref on_open) = ep.on_open {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_open).unwrap();
             }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("WebSocket callback failed");
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()\n  %open_ok = call i64 @tinox_service_check_error(i8* {label})\n  %opened = icmp ne i64 %open_ok, 0\n  br i1 %opened, label %msg_loop, label %conn_end").unwrap();
+            } else {
             writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
+            }
 
             // opcode 1 (text) → @OnMessage; anything else (binary, close, EOF,
             // protocol error — Ping/Pong are already auto-handled inside
             // Ws::readMessage and never reach here) ends the connection.
             writeln!(&mut self.lambda_ir, "msg_loop:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %closing = call i1 @serviceIsStopping()\n  br i1 %closing, label %conn_end, label %read_next\nread_next:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
             writeln!(&mut self.lambda_ir, "  %opcode_ptr = getelementptr %class.WsFrame, ptr %f, i32 0, i32 1").unwrap();
             writeln!(&mut self.lambda_ir, "  %opcode = load i64, i64* %opcode_ptr").unwrap();
@@ -3357,17 +3545,40 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br i1 %is_text, label %handle_text, label %conn_end").unwrap();
 
             writeln!(&mut self.lambda_ir, "handle_text:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %handle_admitted, label %conn_end\nhandle_admitted:").unwrap();
+            }
             if let Some(ref on_message) = ep.on_message {
                 writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn, i8* %msg)", ep.class_name, on_message).unwrap();
             }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("WebSocket callback failed");
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()\n  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %msg_loop, label %conn_end").unwrap();
+            } else {
             writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
+            }
 
             writeln!(&mut self.lambda_ir, "conn_end:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_cleanup_enter()\n  call void @tinox_service_existing_work_enter()\n  %shutdown_close = call i1 @serviceIsStopping()\n  br i1 %shutdown_close, label %send_shutdown_close, label %close_callback\nsend_shutdown_close:\n  call void @Ws_sendClose(i64* null, i64 %conn, i64 1001)\n  br label %close_callback\nclose_callback:").unwrap();
+            }
             if let Some(ref on_close) = ep.on_close {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_close).unwrap();
             }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("WebSocket OnClose failed");
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_cleanup_error(i8* {label})\n  call void @tinox_service_work_exit()").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_ws_release()").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_worker_end()"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
@@ -3375,7 +3586,7 @@ tr_done_{idx}:"#).unwrap();
 
             self.emit_spawn_wrapper(&worker_wrapper, 2, "i64", &["i64".to_string()]);
 
-            self.background_run_fns.push(run_fn);
+            self.register_background_task(BackgroundTask::new("websocket", Some(&ep.class_name), &run_fn, "per_connection", "detached worker thread per accepted connection", Endpoint::listen("WebSocket", port, if ep.port.is_some() { "annotation" } else { bootstrap::environment_port_source(port) }, Some(&ep.path))));
             self.startup_endpoints.push(("WebSocket".to_string(), format!(":{port}")));
         }
     }
@@ -3617,7 +3828,7 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
 
-            self.background_run_fns.push(run_http_fn);
+            self.register_background_task(BackgroundTask::new("ui_http", Some(&app.class_name), &run_http_fn, "static shell", "HTTP shell and client-JS requests", Endpoint::listen("HTTP", app.http_port, "annotation_or_ui_default", None)));
             self.startup_endpoints.push(("HTTP".to_string(), format!(":{}", app.http_port)));
 
             // ── WebSocket accept loop -- identical shape to emit_ws_code's
@@ -3639,7 +3850,14 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %tui_dispatch").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %tui_admit").unwrap();
+            writeln!(&mut self.lambda_ir, "tui_admit:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %admitted = call i64 @tinox_ws_admit()").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_admitted = icmp ne i64 %admitted, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_admitted, label %tui_dispatch, label %tui_reject").unwrap();
+            writeln!(&mut self.lambda_ir, "tui_reject:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "tui_dispatch:").unwrap();
             writeln!(&mut self.lambda_ir, "  %args_raw = call i8* @tinox_alloc(i64 16)").unwrap();
@@ -3787,6 +4005,7 @@ tr_done_{idx}:"#).unwrap();
 
             writeln!(&mut self.lambda_ir, "tui_conn_end:").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_ws_release()").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
@@ -3794,7 +4013,7 @@ tr_done_{idx}:"#).unwrap();
 
             self.emit_spawn_wrapper(&worker_wrapper, 2, "i64", &["i64".to_string()]);
 
-            self.background_run_fns.push(run_ws_fn);
+            self.register_background_task(BackgroundTask::new("ui_websocket", Some(&app.class_name), &run_ws_fn, "per_connection", "detached UI session worker per connection", Endpoint::listen("WebSocket", app.ws_port, "annotation_or_ui_default", None)));
             self.startup_endpoints.push(("WebSocket".to_string(), format!(":{}", app.ws_port)));
         }
     }
@@ -3874,6 +4093,13 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %begin_fail, label %do_attach").unwrap();
 
             writeln!(&mut self.lambda_ir, "begin_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
 
             writeln!(&mut self.lambda_ir, "do_attach:").unwrap();
@@ -3884,6 +4110,13 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br i1 %handle_bad, label %attach_fail, label %consumer_ready").unwrap();
 
             writeln!(&mut self.lambda_ir, "attach_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
 
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
@@ -3893,7 +4126,17 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %service_close, label %recv_next\nrecv_next:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_grantCredit(i64* %link_obj, i64 1)").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_listener_ready(i64 -1)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @Amqp10Link_nextMessage(i64* %link_obj)").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 3").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
@@ -3901,18 +4144,36 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %message_next, label %service_close\nmessage_next:").unwrap();
+            }
             if let Some(ref on_message) = c.on_message {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+            }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("AMQP handler failed");
+                writeln!(&mut self.lambda_ir, "  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %ack_message, label %handler_failed\nhandler_failed:\n  call void @tinox_service_work_exit()\n  br label %service_close\nack_message:").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  %delivery_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 2").unwrap();
             writeln!(&mut self.lambda_ir, "  %delivery_val = load i64, i64* %delivery_field").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_ack(i64* %link_obj, i64 %delivery_val)").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_work_exit()"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "service_close:\n  call void @tinox_service_cleanup_enter()\n  call void @Amqp10Connection_close(i64* %conn_obj)\n  call void @tinox_service_close_connection(i64 %conn_val)\n  ret i64 0").unwrap();
+            }
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
 
-            self.background_run_fns.push(run_fn);
+            self.register_background_task(BackgroundTask::new("amqp10", Some(&c.class_name), &run_fn, "per_consumer_connection", "sequential receive/handler/credit loop", Endpoint::connect("AMQP 1.0", c.port, &c.host, &c.address)));
             self.startup_endpoints.push((
                 "AMQP 1.0 (consumer)".to_string(),
                 format!("{}:{} ({})", c.host, c.port, c.address),
@@ -3983,6 +4244,13 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %open_fail, label %do_qos").unwrap();
 
             writeln!(&mut self.lambda_ir, "open_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
 
             writeln!(&mut self.lambda_ir, "do_qos:").unwrap();
@@ -3990,6 +4258,13 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br i1 %qos_ok, label %do_consume, label %qos_fail").unwrap();
 
             writeln!(&mut self.lambda_ir, "qos_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
 
             writeln!(&mut self.lambda_ir, "do_consume:").unwrap();
@@ -3999,6 +4274,13 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br i1 %tag_bad, label %consume_fail, label %consumer_ready").unwrap();
 
             writeln!(&mut self.lambda_ir, "consume_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 4").unwrap();
 
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
@@ -4008,6 +4290,16 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %service_close, label %recv_next\nrecv_next:").unwrap();
+            }
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_listener_ready(i64 -1)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @AmqpChannel091_nextMessage(i64* %chan_obj)").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 5").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
@@ -4015,18 +4307,36 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %message_next, label %service_close\nmessage_next:").unwrap();
+            }
             if let Some(ref on_message) = c.on_message {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+            }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("AMQP handler failed");
+                writeln!(&mut self.lambda_ir, "  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %ack_message, label %handler_failed\nhandler_failed:\n  call void @tinox_service_work_exit()\n  br label %service_close\nack_message:").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  %tag_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 0").unwrap();
             writeln!(&mut self.lambda_ir, "  %tag_val = load i64, i64* %tag_field").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @AmqpChannel091_ack(i64* %chan_obj, i64 %tag_val)").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_work_exit()"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "service_close:\n  call void @tinox_service_cleanup_enter()\n  call void @AmqpConnection091_close(i64* %conn_obj)\n  call void @tinox_service_close_connection(i64 %conn_val)\n  ret i64 0").unwrap();
+            }
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
 
-            self.background_run_fns.push(run_fn);
+            self.register_background_task(BackgroundTask::new("amqp091", Some(&c.class_name), &run_fn, "per_consumer_connection", "sequential receive/handler/ack loop", Endpoint::connect("AMQP 0-9-1", c.port, &c.host, &c.queue)));
             self.startup_endpoints.push((
                 "AMQP 0-9-1 (consumer)".to_string(),
                 format!("{}:{} (queue: {})", c.host, c.port, c.queue),
@@ -4044,7 +4354,7 @@ tr_done_{idx}:"#).unwrap();
     /// `startup_endpoints` entry are registered in time to be spawned/
     /// reported by it -- LLVM itself doesn't care about declaration order
     /// for the `@{Class}_di_instance` globals this references (`/components`
-    /// below), only `background_run_fns` registration is order-sensitive.
+    /// below), only `background_tasks` registration is order-sensitive.
     fn emit_devui_code(&mut self, class_ast_map: &HashMap<String, tinox_parser::Class>) {
         if !self.dev_enabled {
             return;
@@ -4095,6 +4405,7 @@ tr_done_{idx}:"#).unwrap();
         self.emit_devui_static_handler("__devui_info", &info_json);
         self.emit_devui_config_handler();
         self.emit_devui_components_handler();
+        self.emit_devui_limits_handler();
         self.emit_devui_tests_run_handler();
 
         writeln!(&mut self.lambda_ir, "define i64 @__tinox_run_devui() {{").unwrap();
@@ -4108,6 +4419,7 @@ tr_done_{idx}:"#).unwrap();
             ("/websockets", "__devui_websockets"),
             ("/info", "__devui_info"),
             ("/config", "__devui_config"),
+            ("/limits", "__devui_limits"),
             ("/components", "__devui_components"),
             ("/tests/run", "__devui_tests_run"),
         ] {
@@ -4122,7 +4434,7 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
-        self.background_run_fns.push("__tinox_run_devui".to_string());
+        self.register_background_task(BackgroundTask::new("dev_ui", None, "__tinox_run_devui", "introspection server", "HTTP introspection requests", Endpoint::listen("Dev UI", port as i64, "project_configuration", None).with_host("127.0.0.1")));
         self.startup_endpoints.push(("Dev UI".to_string(), format!(":{port}")));
     }
 
@@ -4448,6 +4760,18 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
     }
 
+    /// `/limits`: effective concurrency budgets and live saturation
+    /// counters (`tinox_limits_json`, runtime.c; issue #302).
+    fn emit_devui_limits_handler(&mut self) {
+        writeln!(&mut self.lambda_ir, "declare i8* @tinox_limits_json()").unwrap();
+        writeln!(&mut self.lambda_ir, "define void @__devui_limits(i64 %ctx_i64) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %json = call i8* @tinox_limits_json()").unwrap();
+        self.emit_devui_finish_response("%json");
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+    }
+
     /// Emits `@{class}_devui_state_json(i8* %self_i8) -> i8*` for every
     /// Application/Startup-scoped DI component -- a full field-value dump
     /// backing `/components`' "state". Null-safe by design (returns a
@@ -4518,6 +4842,13 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "null_case_{uid}:").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i8* null").unwrap();
             writeln!(&mut self.lambda_ir, "normal_case_{uid}:").unwrap();
+            let monitored = self.monitored_classes.contains(&class_name);
+            if monitored {
+                writeln!(&mut self.lambda_ir, "  %lock_{uid} = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
+                writeln!(&mut self.lambda_ir, "  %locked_{uid} = icmp ne i64 %lock_{uid}, 0").unwrap();
+                writeln!(&mut self.lambda_ir, "  br i1 %locked_{uid}, label %locked_case_{uid}, label %null_case_{uid}").unwrap();
+                writeln!(&mut self.lambda_ir, "locked_case_{uid}:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %self = bitcast i8* %self_i8 to i64*").unwrap();
             let builder = self.temp();
             writeln!(&mut self.lambda_ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
@@ -4586,6 +4917,9 @@ tr_done_{idx}:"#).unwrap();
 
             let result = self.temp();
             writeln!(&mut self.lambda_ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
+            if monitored {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_monitor_exit(i64* @{class_name}_monitor)").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i8* {result}").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
@@ -4679,8 +5013,10 @@ tr_done_{idx}:"#).unwrap();
                 "  %state_slot_{idx} = getelementptr [{count} x i8*], [{count} x i8*]* %states, i64 0, i64 {idx}").unwrap();
             match comp.scope {
                 DiScope::Application | DiScope::Startup => {
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_di_enter()").unwrap();
                     writeln!(&mut self.lambda_ir,
                         "  %inst_raw_{idx} = load i8*, i8** @{}_di_instance", comp.class_name).unwrap();
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_di_exit()").unwrap();
                     writeln!(&mut self.lambda_ir,
                         "  %is_set_{idx} = icmp ne i8* %inst_raw_{idx}, null").unwrap();
                     writeln!(&mut self.lambda_ir,
@@ -4712,7 +5048,7 @@ tr_done_{idx}:"#).unwrap();
     }
 
     /// Unifies `class Main { fnc main() }` (user_main_class) and the
-    /// auto-run kinds registered in background_run_fns (REST/HTTP3/WS/AMQP)
+    /// auto-run kinds registered in background_tasks (REST/HTTP3/WS/AMQP)
     /// into one @tinox_main, instead of each claiming it directly and
     /// silently pre-empting the others via has_main. Each background kind
     /// runs on its own real thread (tinox_task_spawn) so e.g. a REST
@@ -4732,7 +5068,7 @@ tr_done_{idx}:"#).unwrap();
     /// Also owns the startup banner: ASCII art, the `tinox.core` modules
     /// from `[[dependencies]]` (via `set_loaded_modules`), the auto-run
     /// endpoints registered in `startup_endpoints` (protocol + port/detail,
-    /// pushed alongside each `background_run_fns` entry above), and the
+    /// pushed alongside each `background_tasks` entry above), and the
     /// bootstrap's own elapsed time. Printed by default -- no `import
     /// tinox.core.logger;`/annotation needed -- since this is the one
     /// place in the generated program that already knows about every
@@ -4746,7 +5082,7 @@ tr_done_{idx}:"#).unwrap();
         // test file importing a class with its own auto-run annotations
         // (e.g. testing a helper method on an @GET/@ApplicationComponent
         // REST controller, a completely ordinary thing to want to test)
-        // populates `background_run_fns` from THAT class's routes, same
+        // populates `background_tasks` from THAT class's routes, same
         // as any real program would. Found live: without this guard, this
         // function runs BEFORE `emit_test_code` (which only defines
         // `@tinox_main` when `!self.has_main`) and unconditionally claims
@@ -4758,7 +5094,7 @@ tr_done_{idx}:"#).unwrap();
         // hangs, which is arguably worse. `test_entry.is_some()` means
         // `emit_test_code` is going to define `@tinox_main` itself
         // (guarded on `!has_main`, so it MUST see this function skip);
-        // background_run_fns/route_entries etc. still get populated and
+        // background_tasks/route_entries etc. still get populated and
         // their functions still get emitted as harmless unused IR -- only
         // this bootstrap step (deciding what `@tinox_main` becomes) needs
         // to defer to the test runner.
@@ -4768,17 +5104,33 @@ tr_done_{idx}:"#).unwrap();
         if self.has_main {
             return;
         }
-        if !self.user_main_class && self.background_run_fns.is_empty() {
+        if !self.user_main_class && self.background_tasks.is_empty() {
             return;
         }
 
-        let run_fns = self.background_run_fns.clone();
+        self.bootstrap_emitted = true;
+        let plan = self.bootstrap_plan();
+        let run_fns: Vec<_> = plan.background_tasks.iter().map(|task| task.function.clone()).collect();
         let mut handles = Vec::new();
         for (idx, run_fn) in run_fns.iter().enumerate() {
             let tramp = format!("__tinox_trampoline_{idx}");
             writeln!(&mut self.lambda_ir, "define i8* @{tramp}(i8* %_unused) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_task_enter(i64 {idx})"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %r = call i64 @{run_fn}()").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_task_exit(i64 %r)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %rp = inttoptr i64 %r to i8*").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i8* %rp").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
@@ -4796,7 +5148,7 @@ tr_done_{idx}:"#).unwrap();
         // serving on port X" moment for a one-shot script. `banner_enabled`
         // is the separate, explicit `[startup] banner = false` opt-out for
         // programs that DO have an endpoint but still want clean stdout.
-        let show_banner = self.banner_enabled && !self.background_run_fns.is_empty();
+        let show_banner = self.banner_enabled && !self.background_tasks.is_empty();
 
         // figlet -f standard "Tinox" -- generated once, hardcoded here since
         // it's fixed text with no dynamic content.
@@ -4817,6 +5169,8 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.lambda_ir, "define i32 @tinox_main() {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
 
+        self.emit_service_bootstrap_start(handles.len());
+
         // t0: captured before anything else runs, so the elapsed time
         // printed below covers the banner print itself too (negligible,
         // but simpler than threading a "skip this call" flag through).
@@ -4825,6 +5179,9 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  {t} = call i64 @tinox_now_ms()").unwrap();
             let banner_ptr = self.emit_lambda_string_literal(&banner);
             writeln!(&mut self.lambda_ir, "  call void @tinox_print_string(i8* {banner_ptr})").unwrap();
+            // Effective concurrency budgets are only known at run time
+            // (CPU affinity / cgroup quota / TINOX_* overrides).
+            writeln!(&mut self.lambda_ir, "  call void @tinox_print_limits()").unwrap();
             Some(t)
         } else {
             None
@@ -4845,7 +5202,10 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  {t1} = call i64 @tinox_now_ms()").unwrap();
             let elapsed = self.temp();
             writeln!(&mut self.lambda_ir, "  {elapsed} = sub i64 {t1}, {t0}").unwrap();
-            let started_pfx_ptr = self.emit_lambda_string_literal("Started in ");
+            let started_pfx_ptr = self.emit_lambda_string_literal(if self.service_enabled() {
+                "Bootstrap spawned in "
+            } else {"Started in "
+            });
             writeln!(&mut self.lambda_ir, "  call void @tinox_print_string(i8* {started_pfx_ptr})").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @tinox_print_int(i64 {elapsed})").unwrap();
             let started_sfx_ptr = self.emit_lambda_string_literal(" ms\n");
@@ -4854,6 +5214,13 @@ tr_done_{idx}:"#).unwrap();
 
         if self.user_main_class {
             writeln!(&mut self.lambda_ir, "  %rc = call i32 @Main_main()").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %main_result = sext i32 %rc to i64\n  call void @tinox_service_main_returned(i64 %main_result)").unwrap();
+            }
+        }
+
+        if self.service_enabled() {
+            writeln!(&mut self.lambda_ir, "  call void @tinox_service_cleanup_enter()").unwrap();
         }
 
         for (idx, _) in &handles {
@@ -4861,7 +5228,11 @@ tr_done_{idx}:"#).unwrap();
         }
 
         if self.user_main_class {
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %service_result = call i64 @tinox_service_finish(i64 %main_result)\n  %service_rc = trunc i64 %service_result to i32\n  ret i32 %service_rc").unwrap();
+            } else {
             writeln!(&mut self.lambda_ir, "  ret i32 %rc").unwrap();
+            }
         } else {
             // No class Main: the first background kind's own join result is
             // the process's exit code (matches the pre-bootstrap behavior
@@ -4901,6 +5272,7 @@ tr_done_{idx}:"#).unwrap();
                 DiScope::Application | DiScope::Startup => {
                     writeln!(&mut self.lambda_ir, "define i64* @{name}_di_get() {{").unwrap();
                     writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_di_enter()").unwrap();
                     writeln!(&mut self.lambda_ir, "  %inst_raw = load i8*, i8** @{name}_di_instance").unwrap();
                     writeln!(&mut self.lambda_ir, "  %is_null = icmp eq i8* %inst_raw, null").unwrap();
                     writeln!(&mut self.lambda_ir, "  br i1 %is_null, label %create, label %done").unwrap();
@@ -4940,6 +5312,7 @@ tr_done_{idx}:"#).unwrap();
                     writeln!(&mut self.lambda_ir, "done:").unwrap();
                     writeln!(&mut self.lambda_ir, "  %result_raw = load i8*, i8** @{name}_di_instance").unwrap();
                     writeln!(&mut self.lambda_ir, "  %result = bitcast i8* %result_raw to i64*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_di_exit()").unwrap();
                     writeln!(&mut self.lambda_ir, "  ret i64* %result").unwrap();
                     writeln!(&mut self.lambda_ir, "}}").unwrap();
                     writeln!(&mut self.lambda_ir).unwrap();
@@ -4981,17 +5354,11 @@ tr_done_{idx}:"#).unwrap();
         if has_startup {
             writeln!(&mut self.lambda_ir, "define void @tinox_di_startup() {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
-            for comp in components.iter().filter(|c| matches!(c.scope, DiScope::Startup)) {
-                writeln!(&mut self.lambda_ir, "  call i64* @{}_di_get()", comp.class_name).unwrap();
+            for class_name in self.startup_component_names() {
+                writeln!(&mut self.lambda_ir, "  call i64* @{class_name}_di_get()").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
-            writeln!(&mut self.lambda_ir).unwrap();
-
-            // Register tinox_di_startup as a global constructor so it runs before main
-            writeln!(&mut self.lambda_ir,
-                "@llvm.global_ctors = appending global [1 x {{ i32, void ()*, i8* }}] \
-                [{{ i32, void ()*, i8* }} {{ i32 65535, void ()* @tinox_di_startup, i8* null }}]").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
         }
     }
@@ -5249,6 +5616,7 @@ tr_done_{idx}:"#).unwrap();
         let mut ctx = GenCtx {
             locals: HashMap::new(),
             local_slots: HashMap::new(),
+            callable_types: f.params.iter().filter(|p| matches!(p.param_type, Type::Fn { .. })).map(|p| (p.name.clone(), tinox_typecheck::ValueType::from_parser_type(&p.param_type))).collect(),
             range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
@@ -5260,6 +5628,7 @@ tr_done_{idx}:"#).unwrap();
             defer_stack: Vec::new(),
             in_defer_exec: false,
             ret_type: ret_type.clone(),
+            ret_unsigned: tinox_typecheck::ValueType::from_parser_type(&f.ret_type).is_unsigned(),
             timed_metric: None,
             transactional_commit: None,
             finally_targets: Vec::new(),
@@ -5363,12 +5732,16 @@ tr_done_{idx}:"#).unwrap();
         method: &Method,
     ) -> Result<(), ErrorBag> {
         let ret_type = self.type_to_llvm_inst(&method.ret_type);
-        let fn_name = format!("{}_{}", class_name, method.name);
-        self.method_ret_types.insert(fn_name.clone(), ret_type.clone());
+        let public_name = format!("{}_{}", class_name, method.name);
+        let synchronized = !method.static_ && (self.synchronized_classes.contains(class_name)
+            || method.annotations.iter().any(|a| a.name == "Synchronized"));
+        let fn_name = if synchronized { format!("__tinox_sync_body_{public_name}") } else { public_name.clone() };
+        self.method_ret_types.insert(public_name.clone(), ret_type.clone());
 
         let mut ctx = GenCtx {
             locals: HashMap::new(),
             local_slots: HashMap::new(),
+            callable_types: method.params.iter().filter(|p| matches!(p.param_type, Type::Fn { .. })).map(|p| (p.name.clone(), tinox_typecheck::ValueType::from_parser_type(&p.param_type))).collect(),
             range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
@@ -5380,6 +5753,7 @@ tr_done_{idx}:"#).unwrap();
             defer_stack: Vec::new(),
             in_defer_exec: false,
             ret_type: ret_type.clone(),
+            ret_unsigned: tinox_typecheck::ValueType::from_parser_type(&method.ret_type).is_unsigned(),
             timed_metric: None,
             transactional_commit: None,
             finally_targets: Vec::new(),
@@ -5481,6 +5855,26 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
         Self::attach_call_dbg(&mut self.ir, body_start, &call_dbg);
+        if synchronized {
+            writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
+            writeln!(&mut self.ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.ir, "  %locked = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
+            writeln!(&mut self.ir, "  %acquired = icmp ne i64 %locked, 0").unwrap();
+            writeln!(&mut self.ir, "  br i1 %acquired, label %body, label %cancelled").unwrap();
+            writeln!(&mut self.ir, "body:").unwrap();
+            let prefix = if ret_type == "void" { "" } else { "%value = " };
+            writeln!(&mut self.ir, "  {prefix}call {ret_type} @{fn_name}({params_str})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_monitor_exit(i64* @{class_name}_monitor)").unwrap();
+            if ret_type == "void" { writeln!(&mut self.ir, "  ret void").unwrap(); }
+            else { writeln!(&mut self.ir, "  ret {ret_type} %value").unwrap(); }
+            writeln!(&mut self.ir, "cancelled:").unwrap();
+            if ret_type == "void" { writeln!(&mut self.ir, "  ret void").unwrap(); }
+            else {
+                let zero = if ret_type.ends_with('*') { "null" } else if ret_type == "float" || ret_type == "double" { "0.0" } else { "0" };
+                writeln!(&mut self.ir, "  ret {ret_type} {zero}").unwrap();
+            }
+            writeln!(&mut self.ir, "}}\n").unwrap();
+        }
 
         Ok(())
     }
@@ -6764,6 +7158,7 @@ tr_done_{idx}:"#).unwrap();
             "  {ins_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {ins_sql}, i8** {ins_params}, i64 {n_ins})"
         )
         .unwrap();
+        self.emit_orm_save_check(&ins_result, &entity.table_name);
         let new_id = self.temp();
         writeln!(&mut self.ir, "  {new_id} = call i64 @tinox_db_getval_int(i8* {ins_result}, i64 0, i64 0)").unwrap();
         writeln!(&mut self.ir, "  store i64 {new_id}, i64* {id_ptr}").unwrap();
@@ -6786,6 +7181,7 @@ tr_done_{idx}:"#).unwrap();
             "  {upd_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {upd_sql}, i8** {upd_params}, i64 {n_upd})"
         )
         .unwrap();
+        self.emit_orm_save_check(&upd_result, &entity.table_name);
         writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {upd_result})").unwrap();
         writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
 
@@ -6794,6 +7190,24 @@ tr_done_{idx}:"#).unwrap();
         let as_i64 = self.temp();
         writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
         Ok((as_i64, "i64".to_string()))
+    }
+
+    /// Abort with a visible error if an ORM save's INSERT/UPDATE failed.
+    fn emit_orm_save_check(&mut self, result_reg: &str, table: &str) {
+        let failed = self.temp();
+        writeln!(&mut self.ir, "  {failed} = call i1 @tinox_db_result_failed(i8* {result_reg})").unwrap();
+        let fail_bb = self.new_bb("orm_save_failed");
+        let ok_bb = self.new_bb("orm_save_ok");
+        writeln!(&mut self.ir, "  br i1 {failed}, label %{fail_bb}, label %{ok_bb}").unwrap();
+        writeln!(&mut self.ir, "{fail_bb}:").unwrap();
+        let label = format!("__orm_tbl_{}", self.strings.len());
+        self.strings.insert(label.clone(), table.to_string());
+        let len = table.len() + 1;
+        let p = self.temp();
+        writeln!(&mut self.ir, "  {p} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_orm_save_failed(i8* {p})").unwrap();
+        writeln!(&mut self.ir, "  unreachable").unwrap();
+        writeln!(&mut self.ir, "{ok_bb}:").unwrap();
     }
 
     /// Emit SQL-constant getter functions and row-mapping helpers for all @Entity classes.
@@ -6809,7 +7223,6 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_pool_init(i8* %url, i64 {})", self.db_pool_size).unwrap();
             writeln!(&mut self.ir, "  ret void").unwrap();
             writeln!(&mut self.ir, "}}").unwrap();
-            writeln!(&mut self.ir, "@llvm.global_ctors = appending global [1 x {{ i32, void ()*, i8* }}] [{{ i32, void ()*, i8* }} {{ i32 10, void ()* @__tinox_db_init, i8* null }}]").unwrap();
             writeln!(&mut self.ir).unwrap();
         }
 
@@ -7100,7 +7513,7 @@ tr_done_{idx}:"#).unwrap();
         }
 
         // The actual @tinox_main wiring (call Main_main, plus spawning any
-        // background_run_fns registered by the REST/HTTP3/WS/AMQP
+        // background_tasks registered by the REST/HTTP3/WS/AMQP
         // annotation processors) happens later in
         // emit_tinox_main_bootstrap, once all of those have had a chance to
         // run -- letting class Main coexist with them instead of one
@@ -7340,11 +7753,14 @@ tr_done_{idx}:"#).unwrap();
                 }
                 let (final_val, final_ty) = if !expected.is_empty() && &ty != expected {
                     let cast_op = match (ty.as_str(), expected.as_str()) {
+                        (from, to) if Self::is_float(from) && Self::is_float(to) => if from == "float" { "fpext" } else { "fptrunc" },
+                        (from, to) if Self::is_float(to) && from.starts_with('i') && !from.ends_with('*') => if self.semantic_type(expr.id).is_some_and(|ty| ty.is_unsigned()) { "uitofp" } else { "sitofp" },
+                        (from, to) if Self::is_float(from) && to.starts_with('i') && !to.ends_with('*') => if ctx.ret_unsigned { "fptoui" } else { "fptosi" },
                         (from, to) if from.ends_with('*') && to.ends_with('*') => "bitcast",
                         (from, to) if from.starts_with('i') && to.starts_with('i') && !from.contains('*') && !to.contains('*') => {
                             let from_bits: u32 = from[1..].parse().unwrap_or(64);
                             let to_bits: u32 = to[1..].parse().unwrap_or(64);
-                            if from_bits > to_bits { "trunc" } else { "zext" }
+                            if from_bits > to_bits { "trunc" } else if self.semantic_type(expr.id).as_ref().is_some_and(|t| t.is_unsigned() || *t == tinox_typecheck::ValueType::Bool) { "zext" } else { "sext" }
                         }
                         (from, to) if !from.ends_with('*') && to.ends_with('*') => "inttoptr",
                         (from, to) if from.ends_with('*') && !to.ends_with('*') => "ptrtoint",
@@ -7403,11 +7819,11 @@ tr_done_{idx}:"#).unwrap();
                 let mut generic_let_alias: Option<String> = None;
                 if let Some(Type::Generic { name: ann_name, args: ann_targs }) = ty.as_ref() {
                     if let Some(gc) = self.generic_classes.get(ann_name.as_str()).cloned() {
-                        let bindings: HashMap<String, String> = gc
+                        let bindings: HashMap<String, tinox_parser::Type> = gc
                             .type_params
                             .iter()
                             .zip(ann_targs.iter())
-                            .map(|(tp, ta)| (tp.clone(), Self::type_to_llvm(ta)))
+                            .map(|(tp, ta)| (tp.clone(), ta.clone()))
                             .collect();
                         let mangled = self
                             .ensure_generic_class_specialization_with_bindings(ann_name, &bindings)?;
@@ -8372,24 +8788,11 @@ tr_done_{idx}:"#).unwrap();
                         .and_then(|fields| fields.iter().position(|f| f == field))
                         .unwrap_or(0) as i64;
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
+                    let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val, val_ty, &expected, value)? } else { (val, val_ty) };
                     // B1 phase 3: typed field store for named-type classes; else i64.
                     if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, target.span, &val, &val_ty)? {
                         // Uniform i64 field storage: floats → bitcast, i1 → zext, pointers → ptrtoint
-                        let store_val = if val_ty == "i1" {
-                            let cast = self.temp();
-                            writeln!(&mut self.ir, "{} = zext i1 {} to i64", cast, val).unwrap();
-                            cast
-                        } else if val_ty == "double" || val_ty == "float" {
-                            let cast = self.temp();
-                            writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
-                            cast
-                        } else if val_ty != "i64" && !val_ty.is_empty() {
-                            let cast = self.temp();
-                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                            cast
-                        } else {
-                            val
-                        };
+                        let store_val = self.coerce_to_i64(&val, &val_ty);
                         let field_ptr = self.temp();
                         writeln!(
                             &mut self.ir,
@@ -8403,6 +8806,7 @@ tr_done_{idx}:"#).unwrap();
                 } else if let ExprKind::Index { obj, index } = &target.node {
                     let idx_target = self.gen_index_target(obj, index, ctx)?;
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
+                    let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val, val_ty, &expected, value)? } else { (val, val_ty) };
                     self.gen_index_store(&idx_target, &val, &val_ty);
                 }
             }
@@ -8449,11 +8853,35 @@ tr_done_{idx}:"#).unwrap();
         expr: &tinox_parser::Expr,
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
-        let result = self.gen_expr_inner(expr, ctx)?;
+        if self.checked_semantics && expr.id != 0 && matches!(expr.node, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) && !self.semantics.calls.contains_key(&expr.id) {
+            return Err(ErrorBag { errors: vec![Error::new(expr.span, "Missing resolved call semantics during lowering; report this compiler invariant failure")] });
+        }
+        if let Some(call) = self.semantics.calls.get(&expr.id) {
+            if let Some(declaration) = &call.declaration {
+                if call.symbol.as_ref().and_then(|symbol| self.semantics.declarations.get(symbol)) != Some(declaration) {
+                    return Err(ErrorBag { errors: vec![Error::new(expr.span, "Resolved declaration identity does not match the checked symbol table during lowering")] });
+                }
+            }
+        }
+        let expected = self.argument_targets.get(&expr.id).cloned();
+        let call_expr = if let ExprKind::Spawn(inner) = &expr.node { inner.as_ref() } else { expr };
+        let args = match &call_expr.node {
+            ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } | ExprKind::EnumValue { args, .. } => Some(args),
+            _ => None,
+        };
+        let saved_targets = args.and_then(|args| self.semantics.calls.get(&call_expr.id).cloned().map(|call| {
+            let targets: Vec<_> = args.iter().zip(&call.params).filter(|(arg, _)| arg.id != 0).map(|(arg, ty)| (arg.id, self.specialize_semantic_type(ty))).collect();
+            let saved = self.argument_targets.clone();
+            self.argument_targets.extend(targets);
+            saved
+        }));
+        let result = self.gen_expr_inner(expr, ctx);
+        if let Some(saved) = saved_targets { self.argument_targets = saved; }
+        let result = result?;
         if Self::expr_directly_may_throw(&expr.node, &self.throwing_free_fns, &self.throwing_method_basenames) {
             self.emit_post_stmt_throw_check(ctx)?;
         }
-        Ok(result)
+        if let Some(expected) = expected { self.convert_semantic_argument(result.0, result.1, &expected, expr) } else { Ok(result) }
     }
 
     fn gen_expr_inner(
@@ -8541,34 +8969,16 @@ tr_done_{idx}:"#).unwrap();
                         (s, "i8*".to_string())
                     } else { (r, rt) }
                 } else { (r, rt) };
-                // Unify mixed integer widths (e.g. Int32 var + Int64 loop
-                // index): extend the narrower operand, so every integer op
-                // arm below sees matching types.
-                fn int_width(t: &str) -> Option<u32> {
-                    match t {
-                        "i1" => Some(1),
-                        "i8" => Some(8),
-                        "i16" => Some(16),
-                        "i32" => Some(32),
-                        "i64" => Some(64),
-                        _ => None,
-                    }
-                }
-                let (l, lt, r, rt) = match (int_width(&lt), int_width(&rt)) {
-                    (Some(a), Some(b)) if a < b => {
-                        let c = self.temp();
-                        let instr = if lt == "i1" { "zext" } else { "sext" };
-                        writeln!(&mut self.ir, "{} = {} {} {} to {}", c, instr, lt, l, rt).unwrap();
-                        (c, rt.clone(), r, rt)
-                    }
-                    (Some(a), Some(b)) if a > b => {
-                        let c = self.temp();
-                        let instr = if rt == "i1" { "zext" } else { "sext" };
-                        writeln!(&mut self.ir, "{} = {} {} {} to {}", c, instr, rt, r, lt).unwrap();
-                        (l, lt.clone(), c, lt)
-                    }
-                    _ => (l, lt, r, rt),
-                };
+                // The frontend determines value promotion and signedness. For
+                // a symbolic generic body, specialize the operand types first.
+                let promotion = self.semantics.numeric_operations.get(&expr.id).map(|plan| self.specialize_semantic_type(&plan.operand))
+                    .or_else(|| self.semantic_type(lhs.id).zip(self.semantic_type(rhs.id)).and_then(|(a,b)| tinox_typecheck::ValueType::numeric_promotion(&a,&b)));
+                let unsigned = promotion.as_ref().is_some_and(tinox_typecheck::ValueType::is_unsigned);
+                let (l, lt, r, rt) = if let Some(expected) = promotion {
+                    let (l, lt) = self.convert_semantic_argument(l, lt, &expected, lhs)?;
+                    let (r, rt) = self.convert_semantic_argument(r, rt, &expected, rhs)?;
+                    (l, lt, r, rt)
+                } else { (l, lt, r, rt) };
                 match op {
                     tinox_parser::BinaryOp::Add => {
                         if lt == "i8*" || rt == "i8*" || lt == "i64*" || rt == "i64*" {
@@ -8637,7 +9047,7 @@ tr_done_{idx}:"#).unwrap();
                             return Ok((result, float_ty.to_string()));
                         } else {
                             // Checked: hard error on divide-by-zero (was LLVM UB → garbage).
-                            self.emit_checked_idiv(&result, &lt, &l, &r, false);
+                            self.emit_semantic_idiv(&result, &lt, &l, &r, false, unsigned);
                         }
                     }
                     tinox_parser::BinaryOp::Mod => {
@@ -8648,7 +9058,7 @@ tr_done_{idx}:"#).unwrap();
                             writeln!(&mut self.ir, "{} = frem {} {}, {}", result, float_ty, lf, rf).unwrap();
                             return Ok((result, float_ty.to_string()));
                         } else {
-                            self.emit_checked_idiv(&result, &lt, &l, &r, true);
+                            self.emit_semantic_idiv(&result, &lt, &l, &r, true, unsigned);
                         }
                     }
                     tinox_parser::BinaryOp::Eq => {
@@ -8723,7 +9133,7 @@ tr_done_{idx}:"#).unwrap();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_string_compare(i8* {}, i8* {})", c, l, r).unwrap();
                             writeln!(&mut self.ir, "{} = icmp slt i64 {}, 0", result, c).unwrap()
                         } else {
-                            writeln!(&mut self.ir, "{} = icmp slt {} {}, {}", result, lt, l, r).unwrap()
+                            writeln!(&mut self.ir, "{} = icmp {} {} {}, {}", result, if unsigned { "ult" } else { "slt" }, lt, l, r).unwrap()
                         }
                         return Ok((result, "i1".to_string()));
                     }
@@ -8738,7 +9148,7 @@ tr_done_{idx}:"#).unwrap();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_string_compare(i8* {}, i8* {})", c, l, r).unwrap();
                             writeln!(&mut self.ir, "{} = icmp sle i64 {}, 0", result, c).unwrap()
                         } else {
-                            writeln!(&mut self.ir, "{} = icmp sle {} {}, {}", result, lt, l, r).unwrap()
+                            writeln!(&mut self.ir, "{} = icmp {} {} {}, {}", result, if unsigned { "ule" } else { "sle" }, lt, l, r).unwrap()
                         }
                         return Ok((result, "i1".to_string()));
                     }
@@ -8753,7 +9163,7 @@ tr_done_{idx}:"#).unwrap();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_string_compare(i8* {}, i8* {})", c, l, r).unwrap();
                             writeln!(&mut self.ir, "{} = icmp sgt i64 {}, 0", result, c).unwrap()
                         } else {
-                            writeln!(&mut self.ir, "{} = icmp sgt {} {}, {}", result, lt, l, r).unwrap()
+                            writeln!(&mut self.ir, "{} = icmp {} {} {}, {}", result, if unsigned { "ugt" } else { "sgt" }, lt, l, r).unwrap()
                         }
                         return Ok((result, "i1".to_string()));
                     }
@@ -8768,7 +9178,7 @@ tr_done_{idx}:"#).unwrap();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_string_compare(i8* {}, i8* {})", c, l, r).unwrap();
                             writeln!(&mut self.ir, "{} = icmp sge i64 {}, 0", result, c).unwrap()
                         } else {
-                            writeln!(&mut self.ir, "{} = icmp sge {} {}, {}", result, lt, l, r).unwrap()
+                            writeln!(&mut self.ir, "{} = icmp {} {} {}, {}", result, if unsigned { "uge" } else { "sge" }, lt, l, r).unwrap()
                         }
                         return Ok((result, "i1".to_string()));
                     }
@@ -8844,6 +9254,19 @@ tr_done_{idx}:"#).unwrap();
                 Ok((result, ty))
             }
             ExprKind::Call { func, args } => {
+                // `__scope_register(scope, spawn ...)` (parser desugaring of
+                // `scope { }`, issue #301): spawn, hand the task to the
+                // scope, and yield the task handle unchanged.
+                if let ExprKind::Ident(name) = &func.node {
+                    if name == "__scope_register" && args.len() == 2 {
+                        let (scope, scope_ty) = self.gen_expr(&args[0], ctx)?;
+                        let scope = self.coerce_to_i64(&scope, &scope_ty);
+                        let (task, task_ty) = self.gen_expr(&args[1], ctx)?;
+                        let task_i64 = self.coerce_to_i64(&task, &task_ty);
+                        writeln!(&mut self.ir, "  call void @__scope_add(i64 {}, i64 {})", scope, task_i64).unwrap();
+                        return Ok((task_i64, "i64".to_string()));
+                    }
+                }
                 // Same-class bare `fnc` call (issue #149 stage 2): a
                 // sibling STATIC method of the class this method body
                 // belongs to, called without a `ClassName::` qualifier.
@@ -8872,6 +9295,9 @@ tr_done_{idx}:"#).unwrap();
                         }
                     }
                 }
+                let resolved_call = self.semantics.calls.get(&expr.id).cloned().map(|mut call| { call.params = call.params.iter().map(|ty| self.specialize_semantic_type(ty)).collect(); call.result = self.specialize_semantic_type(&call.result); call });
+                let specialized_callable = if let ExprKind::Ident(name) = &func.node { ctx.callable_types.get(name).cloned() } else { None };
+                let closure_params = if let Some(tinox_typecheck::ValueType::Callable { params, .. }) = &specialized_callable { Some(params.clone()) } else { resolved_call.as_ref().map(|call| call.params.clone()) };
                 let mut args_str = String::new();
                 let mut arg_types = Vec::new();
                 let mut arg_vals = Vec::new();
@@ -8880,6 +9306,9 @@ tr_done_{idx}:"#).unwrap();
                         args_str.push_str(", ");
                     }
                     let (val, ty) = self.gen_expr(arg, ctx)?;
+                    let (val, ty) = if let Some(expected) = closure_params.as_ref().and_then(|types| types.get(i)) {
+                        self.convert_semantic_argument(val, ty, expected, arg)?
+                    } else { (val, ty) };
                     args_str.push_str(&format!("{} {}", ty, val));
                     arg_types.push(ty);
                     arg_vals.push(val);
@@ -8887,6 +9316,7 @@ tr_done_{idx}:"#).unwrap();
                 let fn_name = match &func.node {
                     ExprKind::Ident(name) => match name.as_str() {
                         "main" => "tinox_main".to_string(),
+                        "sleep" if !self.fn_sigs.contains_key("sleep") => "sleep_ms".to_string(),
                         "print" | "println" => {
                             if !args.is_empty() {
                                 let ty = &arg_types[0];
@@ -8899,11 +9329,18 @@ tr_done_{idx}:"#).unwrap();
                                 let llvm_fn = match ty.as_str() {
                                     "i8*" => "tinox_print_string",
                                     "double" => "tinox_print_float",
+                                    "float" => {
+                                        let wide = self.temp();
+                                        writeln!(&mut self.ir, "{} = fpext float {} to double", wide, arg_vals[0]).unwrap();
+                                        args_str = format!("double {}", wide);
+                                        "tinox_print_float"
+                                    },
                                     "i1" => "tinox_print_bool",
                                     "i32" if is_char_lit => "tinox_print_char",
                                     t if t.starts_with('i') && t != "i64" && !t.ends_with('*') => {
                                         let c = self.temp();
-                                        writeln!(&mut self.ir, "{} = sext {} {} to i64", c, t, arg_vals[0]).unwrap();
+                                        let extension = if self.semantic_type(args[0].id).is_some_and(|ty| ty.is_unsigned()) { "zext" } else { "sext" };
+                                        writeln!(&mut self.ir, "{} = {} {} {} to i64", c, extension, t, arg_vals[0]).unwrap();
                                         args_str = format!("i64 {}", c);
                                         "tinox_print_int"
                                     }
@@ -8945,6 +9382,14 @@ tr_done_{idx}:"#).unwrap();
                             let push_val = if val_ty.ends_with('*') || val_ty == "ptr" {
                                 let casted = self.temp();
                                 writeln!(&mut self.ir, "{} = ptrtoint {}* {} to i64", casted, val_ty.trim_end_matches('*'), val).unwrap();
+                                casted
+                            } else if val_ty == "double" || val_ty == "float" {
+                                let casted = self.temp();
+                                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", casted, val_ty, val).unwrap();
+                                casted
+                            } else if val_ty == "i1" {
+                                let casted = self.temp();
+                                writeln!(&mut self.ir, "{} = zext i1 {} to i64", casted, val).unwrap();
                                 casted
                             } else {
                                 val
@@ -9436,15 +9881,7 @@ tr_done_{idx}:"#).unwrap();
                 // Check if this is a call to a generic function — monomorphize if so
                 if let ExprKind::Ident(callee_name) = &func.node {
                     if let Some(gf) = self.generic_fns.get(callee_name).cloned() {
-                        // Infer type bindings from argument types
-                        let bindings: HashMap<String, String> = gf
-                            .type_params
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, tp)| {
-                                arg_types.get(i).map(|at| (tp.clone(), at.clone()))
-                            })
-                            .collect();
+                        let bindings = self.infer_type_bindings(&gf.type_params, &gf.params, args, expr.id, ctx)?;
                         let mangled = Self::mangle_generic_name(&gf.name, &gf.type_params, &bindings);
                         // Generate specialization if not already done
                         if !self.generated_specializations.contains(&mangled) {
@@ -9454,14 +9891,18 @@ tr_done_{idx}:"#).unwrap();
                             let saved_ir = std::mem::take(&mut self.ir);
                             let saved_temp = self.temp_count;
                             self.temp_count = 0;
+                            let saved_targets = std::mem::take(&mut self.argument_targets);
+                            let saved_bindings = std::mem::replace(&mut self.semantic_bindings, bindings.clone());
                             self.gen_fn(&specialized)?;
+                            self.semantic_bindings = saved_bindings;
+                            self.argument_targets = saved_targets;
                             let spec_ir = std::mem::take(&mut self.ir);
                             self.ir = saved_ir;
                             self.temp_count = saved_temp;
                             self.lambda_ir.push_str(&spec_ir);
                         }
                         // Emit the call to the mangled name
-                        let ret_ty = Self::type_to_llvm_with_bindings(&gf.ret_type, &bindings);
+                        let ret_ty = Self::type_to_llvm(&Self::substitute_type(&gf.ret_type, &bindings));
                         let result = self.temp();
                         writeln!(&mut self.ir, "  {} = call {} @{}({})", result, ret_ty, mangled, args_str).unwrap();
                         return Ok((result, ret_ty));
@@ -9484,11 +9925,13 @@ tr_done_{idx}:"#).unwrap();
                 // underlying `casted_fn` signature fix below (using this
                 // `ret_ty`, not a hardcoded "i64", for the function-pointer
                 // cast) applies to both call shapes identically.
-                let closure_ret_ty = self
-                    .expr_value_types
-                    .get(&expr.id)
-                    .map(Self::valuetype_to_llvm)
-                    .unwrap_or_else(|| "i64".to_string());
+                let closure_ret_ty = if let Some(tinox_typecheck::ValueType::Callable { ret, .. }) = &specialized_callable { Self::valuetype_to_llvm(ret) }
+                else if let Some(call) = &resolved_call {
+                    Self::valuetype_to_llvm(&call.result)
+                } else if let Some(ty) = self.semantic_type(expr.id).as_ref() { Self::valuetype_to_llvm(ty) }
+                else if expr.id != 0 && !self.semantics.calls.is_empty() {
+                    return Err(ErrorBag { errors: vec![Error::new(expr.span, "Missing resolved call semantics during lowering; report this compiler invariant failure")] });
+                } else { "i64".into() };
                 let ret_ty = if let ExprKind::Ident(callee) = &func.node {
                     if ctx.locals.contains_key(callee) {
                         // `callee` is a local variable holding a closure
@@ -9505,7 +9948,7 @@ tr_done_{idx}:"#).unwrap();
                     } else {
                         self.fn_sigs.get(callee)
                             .map(|(r, _)| r.clone())
-                            .unwrap_or_else(|| arg_types.first().cloned().unwrap_or_else(|| "i64".to_string()))
+                            .unwrap_or_else(|| resolved_call.as_ref().map(|call| if call.result == tinox_typecheck::ValueType::Nothing { "void".into() } else { Self::valuetype_to_llvm(&call.result) }).unwrap_or_else(|| "i64".into()))
                     }
                 } else {
                     // Indirect call through a fn value (e.g. handlers[i](ctx),
@@ -9784,16 +10227,9 @@ tr_done_{idx}:"#).unwrap();
                         }
                         "push" => {
                             let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
-                            let store_val = if val_ty.ends_with('*') || val_ty == "ptr" {
-                                let c = self.temp();
-                                let base_ty = val_ty.trim_end_matches('*');
-                                writeln!(&mut self.ir, "{} = ptrtoint {}* {} to i64", c, base_ty, val).unwrap();
-                                c
-                            } else if val_ty == "double" || val_ty == "float" {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
-                                c
-                            } else { val };
+                            let expected = self.semantic_type(obj.id).and_then(|ty| if let tinox_typecheck::ValueType::Array(elem) = ty { Some(*elem) } else { None });
+                            let (val, val_ty) = if let Some(expected) = expected { self.convert_semantic_argument(val, val_ty, &expected, &args[args.len()-1])? } else { (val, val_ty) };
+                            let store_val = self.coerce_to_i64(&val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_push(i64* {}, i64 {})", result, obj_ptr, store_val).unwrap();
                             // Arrays are stable handles — push mutates in place,
@@ -9809,6 +10245,7 @@ tr_done_{idx}:"#).unwrap();
                             // Bounds-checked: empty array → hard error.
                             let raw = self.temp();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_array_get(i64* {}, i64 0)", raw, obj_ptr).unwrap();
+                            if let Some(ty) = self.semantic_type(expr.id).filter(|ty| *ty != tinox_typecheck::ValueType::Any) { return Ok(self.decode_semantic_word(raw, &ty)); }
                             if is_str {
                                 let s = self.temp();
                                 writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", s, raw).unwrap();
@@ -9823,6 +10260,7 @@ tr_done_{idx}:"#).unwrap();
                             writeln!(&mut self.ir, "{} = sub i64 {}, 1", last_idx, len_val).unwrap();
                             let raw = self.temp();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_array_get(i64* {}, i64 {})", raw, obj_ptr, last_idx).unwrap();
+                            if let Some(ty) = self.semantic_type(expr.id).filter(|ty| *ty != tinox_typecheck::ValueType::Any) { return Ok(self.decode_semantic_word(raw, &ty)); }
                             if is_str {
                                 let s = self.temp();
                                 writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", s, raw).unwrap();
@@ -9877,19 +10315,9 @@ tr_done_{idx}:"#).unwrap();
                         "insert" => {
                             let (idx, _) = self.gen_expr(&args[0], ctx)?;
                             let (val, val_ty) = self.gen_expr(&args[1], ctx)?;
-                            let store_val = if val_ty.ends_with('*') || val_ty == "ptr" {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
-                                c
-                            } else if val_ty == "double" || val_ty == "float" {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
-                                c
-                            } else if val_ty == "i1" {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
-                                c
-                            } else { val };
+                            let expected = self.semantic_type(obj.id).and_then(|ty| if let tinox_typecheck::ValueType::Array(elem) = ty { Some(*elem) } else { None });
+                            let (val, val_ty) = if let Some(expected) = expected { self.convert_semantic_argument(val, val_ty, &expected, &args[args.len()-1])? } else { (val, val_ty) };
+                            let store_val = self.coerce_to_i64(&val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64* @tinox_array_insert(i64* {}, i64 {}, i64 {})", result, obj_ptr, idx, store_val).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
@@ -9952,28 +10380,15 @@ tr_done_{idx}:"#).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, map_obj_ptr, key_i8).unwrap();
                             // Type the value by the map's value marker
-                            return Ok(self.coerce_map_value(result, declared_type.as_deref()));
+                            return Ok(if let Some(ty) = self.semantic_type(expr.id).filter(|ty| *ty != tinox_typecheck::ValueType::Any) { self.decode_semantic_word(result, &ty) } else { self.coerce_map_value(result, declared_type.as_deref()) });
                         }
                         "insert" => {
                             let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
                             let key_i8 = self.emit_map_key(&key, &key_ty);
                             let (val, val_ty) = self.gen_expr(&args[1], ctx)?;
-                            let val_i64 = if val_ty == "i64" || val_ty.is_empty() {
-                                val.clone()
-                            } else if val_ty == "i1" {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
-                                c
-                            } else if val_ty == "double" || val_ty == "float" {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
-                                c
-                            } else {
-                                // pointer type — ptrtoint
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
-                                c
-                            };
+                            let expected = self.semantic_type(obj.id).and_then(|ty| if let tinox_typecheck::ValueType::Map(value) = ty { Some(*value) } else { None });
+                            let (val, val_ty) = if let Some(expected) = expected { self.convert_semantic_argument(val, val_ty, &expected, &args[1])? } else { (val, val_ty) };
+                            let val_i64 = self.coerce_to_i64(&val, &val_ty);
                             writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_obj_ptr, key_i8, val_i64).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
                         }
@@ -10331,6 +10746,9 @@ tr_done_{idx}:"#).unwrap();
                     }
                     let (val, ty) = self.gen_expr(arg, ctx)?;
                     self.pending_lambda_param_types.clear();
+                    let expected = method_expected_params.as_ref().and_then(|params| params.get(i)).map(tinox_typecheck::ValueType::from_parser_type)
+                        .or_else(|| self.semantics.calls.get(&expr.id).and_then(|call| call.params.get(i)).map(|ty| self.specialize_semantic_type(ty)));
+                    let (val, ty) = if let Some(expected) = expected { self.convert_semantic_argument(val, ty, &expected, arg)? } else { (val, ty) };
                     extra_args.push((val, ty));
                 }
 
@@ -10580,6 +10998,7 @@ tr_done_{idx}:"#).unwrap();
                 let is_map = declared_elem_type.as_deref().map(Self::is_map_marker).unwrap_or(false);
 
                 let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
+                let (idx_val, idx_ty) = if !is_map && self.semantic_type(index.id).is_some_and(|ty| ty.is_integer()) { self.convert_semantic_argument(idx_val, idx_ty, &tinox_typecheck::ValueType::Int, index)? } else { (idx_val, idx_ty) };
                 let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
                     if ctx.params.contains(name) {
                         self.gen_expr(obj, ctx)?
@@ -10606,7 +11025,8 @@ tr_done_{idx}:"#).unwrap();
                     let key_i8 = self.emit_map_key(&idx_val, &idx_ty);
                     let result = self.temp();
                     writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", result, map_i8, key_i8).unwrap();
-                    Ok(self.coerce_map_value(result, declared_elem_type.as_deref()))
+                    if let Some(ty) = self.semantic_type(expr.id).filter(|ty| *ty != tinox_typecheck::ValueType::Any) { Ok(self.decode_semantic_word(result, &ty)) }
+                    else { Ok(self.coerce_map_value(result, declared_elem_type.as_deref())) }
                 } else if base_ty == "i8*" {
                     // String indexing → byte as i64, bounds-checked (-1 out of range)
                     // instead of an unchecked inline load past the string end.
@@ -10626,7 +11046,9 @@ tr_done_{idx}:"#).unwrap();
                     // an unchecked inline load past the array data.
                     let raw = self.temp();
                     writeln!(&mut self.ir, "{} = call i64 @tinox_array_get(i64* {}, i64 {})", raw, base_as_ptr, idx_val).unwrap();
-                    if is_str_arr {
+                    if let Some(ty) = self.semantic_type(expr.id).filter(|ty| *ty != tinox_typecheck::ValueType::Any) {
+                        Ok(self.decode_semantic_word(raw, &ty))
+                    } else if is_str_arr {
                         let str_ptr = self.temp();
                         writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", str_ptr, raw).unwrap();
                         Ok((str_ptr, "i8*".to_string()))
@@ -10647,25 +11069,9 @@ tr_done_{idx}:"#).unwrap();
                 let data_ptr = self.emit_array_data(&handle);
                 for (i, elem) in elements.iter().enumerate() {
                     let (val, val_ty) = self.gen_expr(elem, ctx)?;
-                    let store_val = if val_ty == "i1" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = zext i1 {} to i64", cast, val).unwrap();
-                        cast
-                    } else if val_ty == "double" || val_ty == "float" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else if val_ty != "i64" && !val_ty.is_empty() && val_ty != "void" {
-                        let cast = self.temp();
-                        if val_ty == "ptr" {
-                            writeln!(&mut self.ir, "{} = ptrtoint ptr {} to i64", cast, val).unwrap();
-                        } else {
-                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                        }
-                        cast
-                    } else {
-                        val
-                    };
+                    let expected = self.semantic_type(expr.id).and_then(|ty| if let tinox_typecheck::ValueType::Array(elem) = ty { Some(*elem) } else { None });
+                    let (val, val_ty) = if let Some(expected) = expected { self.convert_semantic_argument(val, val_ty, &expected, elem)? } else { (val, val_ty) };
+                    let store_val = self.coerce_to_i64(&val, &val_ty);
                     let elem_ptr = self.temp();
                     writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", elem_ptr, data_ptr, i).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, elem_ptr).unwrap();
@@ -10683,15 +11089,9 @@ tr_done_{idx}:"#).unwrap();
                         c
                     };
                     let (val_val, val_ty) = self.gen_expr(val_expr, ctx)?;
-                    let val_i64 = if val_ty == "i64" || val_ty.is_empty() {
-                        val_val.clone()
-                    } else if val_ty == "i1" {
-                        let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val_val).unwrap(); c
-                    } else if val_ty == "double" || val_ty == "float" {
-                        let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val_val).unwrap(); c
-                    } else {
-                        let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val_val).unwrap(); c
-                    };
+                    let expected = self.semantic_type(expr.id).and_then(|ty| if let tinox_typecheck::ValueType::Map(value) = ty { Some(*value) } else { None });
+                    let (val_val, val_ty) = if let Some(expected) = expected { self.convert_semantic_argument(val_val, val_ty, &expected, val_expr)? } else { (val_val, val_ty) };
+                    let val_i64 = self.coerce_to_i64(&val_val, &val_ty);
                     writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_ptr, key_i8, val_i64).unwrap();
                 }
                 Ok((map_ptr, "i8*".to_string()))
@@ -10750,6 +11150,9 @@ tr_done_{idx}:"#).unwrap();
                     ).unwrap();
                     let loaded = self.temp();
                     writeln!(&mut self.ir, "{} = load {}, {}* {}", loaded, slot, slot, field_ptr).unwrap();
+                    if slot == "i64" && self.semantics.fields.contains_key(&expr.id) && matches!(field_llvm_ty.as_str(), "float" | "i1" | "i8" | "i16" | "i32") {
+                        return Ok(self.decode_word(loaded, field_llvm_ty.clone()));
+                    }
                     return Ok((loaded, slot));
                 }
 
@@ -10766,6 +11169,7 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{} = load i64, i64* {}", loaded, field_ptr).unwrap();
 
                 // Restore the value from its uniform i64 storage representation
+                if let Some(semantic) = self.semantic_type(expr.id).filter(|ty| *ty != tinox_typecheck::ValueType::Any) { return Ok(self.decode_semantic_word(loaded, &semantic)); }
                 if field_llvm_ty == "double" || field_llvm_ty == "float" {
                     let cast = self.temp();
                     writeln!(&mut self.ir, "{} = bitcast i64 {} to {}", cast, loaded, field_llvm_ty).unwrap();
@@ -10791,7 +11195,7 @@ tr_done_{idx}:"#).unwrap();
                     if let Some(alias) = self.type_param_aliases.get(name.as_str()) {
                         alias.clone()
                     } else if let Some(tinox_typecheck::ValueType::Named(_, targs)) =
-                        self.expr_value_types.get(&expr.id).cloned()
+                        self.semantic_type(expr.id)
                     {
                         if targs.is_empty() {
                             name.clone()
@@ -10799,11 +11203,11 @@ tr_done_{idx}:"#).unwrap();
                             let gc = self.generic_classes.get(name.as_str()).cloned();
                             match gc {
                                 Some(gc) => {
-                                    let bindings: HashMap<String, String> = gc
+                                    let bindings: HashMap<String, tinox_parser::Type> = gc
                                         .type_params
                                         .iter()
                                         .zip(targs.iter())
-                                        .map(|(tp, a)| (tp.clone(), Self::valuetype_to_llvm(a)))
+                                        .map(|(tp, a)| (tp.clone(), a.to_parser_type().unwrap_or(tinox_parser::Type::Any)))
                                         .collect();
                                     self.ensure_generic_class_specialization_with_bindings(
                                         name, &bindings,
@@ -10863,6 +11267,7 @@ tr_done_{idx}:"#).unwrap();
                 let use_typed = self.class_named_types.contains(name.as_str());
                 for (fname, value) in fields.iter() {
                     let (val, val_ty) = self.gen_expr(value, ctx)?;
+                    let (val, val_ty) = if let Some(expected) = self.semantic_field_type(name, fname) { self.convert_semantic_argument(val, val_ty, &expected, value)? } else { (val, val_ty) };
                     // Look up field position in layout (which includes __vtable__ at 0 if vtable class)
                     let field_idx = layout.iter().position(|f| f == fname).unwrap_or(0);
                     if use_typed {
@@ -10889,25 +11294,7 @@ tr_done_{idx}:"#).unwrap();
                     )
                     .unwrap();
                     // Uniform i64 field storage: pointers → ptrtoint, floats → bitcast, i1 → zext, i64 → direct
-                    let store_val = if val_ty == "i1" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = zext i1 {} to i64", cast, val).unwrap();
-                        cast
-                    } else if val_ty == "double" || val_ty == "float" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else if val_ty != "i64" && !val_ty.is_empty() {
-                        let cast = self.temp();
-                        if val_ty == "ptr" {
-                            writeln!(&mut self.ir, "{} = ptrtoint ptr {} to i64", cast, val).unwrap();
-                        } else {
-                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                        }
-                        cast
-                    } else {
-                        val
-                    };
+                    let store_val = self.coerce_to_i64(&val, &val_ty);
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
                 }
                 // @Config: inject values from application.properties for annotated fields
@@ -10995,9 +11382,11 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, ptr, index).unwrap();
                 let val = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* {}", val, field_ptr).unwrap();
-                Ok((val, "i64".to_string()))
+                let semantic = self.semantic_type(expr.id);
+                Ok(if let Some(semantic) = semantic { self.decode_semantic_word(val, &semantic) } else { (val, "i64".into()) })
             }
             ExprKind::Tuple(exprs) => {
+                let tuple_id = expr.id;
                 let ptr = self.temp();
                 let size = exprs.len() * 8;
                 writeln!(&mut self.ir, "{} = call i8* @tinox_alloc(i64 {})", ptr, size).unwrap();
@@ -11005,14 +11394,9 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{} = bitcast i8* {} to i64*", typed_ptr, ptr).unwrap();
                 for (i, expr) in exprs.iter().enumerate() {
                     let (val, val_ty) = self.gen_expr(expr, ctx)?;
-                    // Pointer elements must be ptrtoint'd to i64 for uniform storage
-                    let store_val = if val_ty != "i64" && val_ty != "i1" && val_ty != "double" && val_ty != "float" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                        cast
-                    } else {
-                        val
-                    };
+                    let expected = self.semantic_type(tuple_id).and_then(|ty| if let tinox_typecheck::ValueType::TupleOf(items) = ty { items.get(i).cloned() } else { None });
+                    let (val, val_ty) = if let Some(expected) = expected { self.convert_semantic_argument(val, val_ty, &expected, expr)? } else { (val, val_ty) };
+                    let store_val = self.coerce_to_i64(&val, &val_ty);
                     let field_ptr = self.temp();
                     writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, typed_ptr, i).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
@@ -11044,7 +11428,7 @@ tr_done_{idx}:"#).unwrap();
                 // Generische statische Methode: am Call-Site monomorphisieren
                 let static_key = format!("{}_{}", enum_name, variant);
                 if let Some(gm) = self.generic_methods.get(&static_key).cloned() {
-                    return self.gen_generic_method_call(&static_key, &gm, type_args, args, ctx);
+                    return self.gen_generic_method_call(&static_key, &gm, type_args, expr, ctx);
                 }
                 if let Some(ret_ty) = self.method_ret_types.get(&static_key).cloned() {
                     return self.emit_static_dispatch_call(&static_key, &ret_ty, args, ctx);
@@ -11066,70 +11450,21 @@ tr_done_{idx}:"#).unwrap();
                         for arg in args.iter() {
                             arg_vals.push(self.gen_expr(arg, ctx)?);
                         }
-                        let mut bindings: HashMap<String, String> = HashMap::new();
+                        let arg_offset = usize::from(args.len() == method.params.len() + 1);
+                        let mut bindings = if let Some(call) = self.semantics.calls.get(&expr.id) {
+                            call.bindings.iter().filter_map(|(name, ty)| self.specialize_semantic_type(ty).to_parser_type().map(|ty| (name.clone(),ty))).collect()
+                        } else { self.collect_type_bindings(&gc.type_params, &method.params, &args[arg_offset..], ctx) };
                         for (tp, ta) in gc.type_params.iter().zip(type_args.iter()) {
-                            bindings.insert(tp.clone(), Self::type_to_llvm(ta));
+                            bindings.insert(tp.clone(), ta.clone());
                         }
-                        // For `Class::method(obj, args…)` (this-style, Bug
-                        // 38), the first arg is the receiver object, NOT
-                        // the first declared param. Binding inference
-                        // must look at the args offset accordingly
-                        // relative to the params, otherwise a T param
-                        // would get bound against the object (a pointer
-                        // type, e.g. i64*) instead of its real argument →
-                        // wrong specialization (i64P).
-                        let arg_offset = if arg_vals.len() == method.params.len() + 1 { 1 } else { 0 };
-                        // A this-style call (`Box::get(bs)`, arg_offset==1):
-                        // the implicit receiver args[0] carries the class
-                        // bindings in its marker (`Box__i8P` → T=i8*). For
-                        // a method WITHOUT a T param (`fn get() -> T`),
-                        // this is the ONLY binding source — otherwise T
-                        // falls back to the i64 default and the wrong
-                        // specialization (Box__i64) gets picked (Bug 52).
-                        if arg_offset == 1 {
-                            if let Some(recv) = args.first() {
-                                if let Some(marker) = self.infer_struct_type(recv, ctx) {
-                                    if let Some(rest) = marker.strip_prefix(&format!("{}__", enum_name)) {
-                                        for (itp, part) in gc.type_params.iter().zip(rest.split("__")) {
-                                            bindings.entry(itp.clone()).or_insert_with(|| part.replace('P', "*"));
-                                        }
-                                    }
+                        for candidate in args.first().filter(|_| arg_offset == 1).into_iter().chain(std::iter::once(expr)) {
+                            if let Some(Type::Generic { name, args }) = self.expression_type(candidate, ctx) {
+                                if name == *enum_name {
+                                    for (tp, ty) in gc.type_params.iter().zip(args) { bindings.entry(tp.clone()).or_insert(ty); }
                                 }
                             }
                         }
-                        for tp in &gc.type_params {
-                            if bindings.contains_key(tp) {
-                                continue;
-                            }
-                            for (pi, param) in method.params.iter().enumerate() {
-                                let Some((_, arg_llvm)) = arg_vals.get(pi + arg_offset) else { continue };
-                                match &param.param_type {
-                                    // A param directly typed as T (Option::some(value: T))
-                                    Type::Named(n) if n == tp => {
-                                        bindings.insert(tp.clone(), arg_llvm.clone());
-                                        break;
-                                    }
-                                    // A receiver-style param of the same class
-                                    // (Cache::set(cache: Cache<K,V>, …)) — decompose
-                                    // the argument's marker (mangled class name)
-                                    // back into bindings.
-                                    Type::Generic { name: pname, .. } if pname == enum_name.as_str() => {
-                                        if let Some(arg_expr) = args.get(pi + arg_offset) {
-                                            if let Some(marker) = self.infer_struct_type(arg_expr, ctx) {
-                                                if let Some(rest) = marker.strip_prefix(&format!("{}__", enum_name)) {
-                                                    for (itp, part) in gc.type_params.iter().zip(rest.split("__")) {
-                                                        bindings.entry(itp.clone()).or_insert_with(|| part.replace('P', "*"));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        break;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            bindings.entry(tp.clone()).or_insert_with(|| "i64".to_string());
-                        }
+                        self.require_bindings(&gc.type_params, &mut bindings, expr.span)?;
                         let mangled = self.ensure_generic_class_specialization_with_bindings(enum_name, &bindings)?;
                         let mangled_key = format!("{}_{}", mangled, variant);
                         if let Some(ret_ty) = self.method_ret_types.get(&mangled_key).cloned() {
@@ -11208,25 +11543,9 @@ tr_done_{idx}:"#).unwrap();
                     // Store arguments starting at index 1
                     for (i, arg) in args.iter().enumerate() {
                         let (val, val_ty) = self.gen_expr(arg, ctx)?;
-                        let store_val = if val_ty == "i1" {
-                            let c = self.temp();
-                            writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
-                            c
-                        } else if val_ty == "double" || val_ty == "float" {
-                            let c = self.temp();
-                            writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
-                            c
-                        } else if val_ty != "i64" && !val_ty.is_empty() && val_ty != "void" {
-                            let c = self.temp();
-                            if val_ty == "ptr" {
-                                writeln!(&mut self.ir, "{} = ptrtoint ptr {} to i64", c, val).unwrap();
-                            } else {
-                                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
-                            }
-                            c
-                        } else {
-                            val
-                        };
+                        let payload_type = self.semantics.enum_payloads.get(&disc_key).and_then(|types| types.get(i)).map(|ty| self.specialize_semantic_type(ty));
+                        let (val, val_ty) = if let Some(expected) = payload_type { self.convert_semantic_argument(val, val_ty, &expected, arg)? } else { (val, val_ty) };
+                        let store_val = self.coerce_to_i64(&val, &val_ty);
                         let arg_ptr = self.temp();
                         writeln!(
                             &mut self.ir,
@@ -11242,55 +11561,8 @@ tr_done_{idx}:"#).unwrap();
                 }
             }
             ExprKind::Return(value) => {
-                let stmts_to_run: Vec<_> = ctx
-                    .defer_stack
-                    .last()
-                    .cloned()
-                    .unwrap_or_default();
-                for stmt in stmts_to_run.into_iter().rev() {
-                    self.gen_stmt_body(&Box::new(stmt), ctx)?;
-                }
-                if let Some(scope) = ctx.defer_stack.last_mut() {
-                    scope.clear();
-                }
-                if let Some(val_expr) = value {
-                    let (val, ty) = self.gen_expr(val_expr, ctx)?;
-                    let expected = ctx.ret_type.clone();
-                    let (final_val, final_ty) = if !expected.is_empty() && ty != expected {
-                        let is_from_float = Self::is_float(&ty);
-                        let is_to_float = Self::is_float(&expected);
-                        let cast_op = match (ty.as_str(), expected.as_str()) {
-                            _ if is_from_float && is_to_float => "fptrunc",
-                            (from, _) if is_to_float && from.starts_with('i') => "bitcast",
-                            (_, to) if is_from_float && to.starts_with('i') => "bitcast",
-                            (from, to) if from.ends_with('*') && to.ends_with('*') => "bitcast",
-                            (from, to) if from.starts_with('i') && to.starts_with('i')
-                                && !from.contains('*') && !to.contains('*') =>
-                            {
-                                let from_bits: u32 = from[1..].parse().unwrap_or(64);
-                                let to_bits: u32 = to[1..].parse().unwrap_or(64);
-                                if from_bits > to_bits { "trunc" } else { "zext" }
-                            }
-                            (from, to) if !from.ends_with('*') && to.ends_with('*') => "inttoptr",
-                            (from, to) if from.ends_with('*') && !to.ends_with('*') => "ptrtoint",
-                            _ => "",
-                        };
-                        if !cast_op.is_empty() {
-                            let tmp = self.temp();
-                            writeln!(&mut self.ir, "{} = {} {} {} to {}", tmp, cast_op, ty, val, expected).unwrap();
-                            (tmp, expected.clone())
-                        } else {
-                            (val, ty)
-                        }
-                    } else {
-                        (val, ty)
-                    };
-                    let llvm_ty = Self::llvm_type_str(&final_ty);
-                    writeln!(&mut self.ir, "ret {} {}", llvm_ty, final_val).unwrap();
-                } else {
-                    writeln!(&mut self.ir, "ret void").unwrap();
-                }
-                // Dead-code block so subsequent IR remains in a valid block.
+                let statement = tinox_common::Spanned::new(StmtKind::Return(value.as_ref().map(|value| (**value).clone())), expr.span);
+                self.gen_stmt_body(&statement, ctx)?;
                 let dead_bb = self.new_bb("ret_dead");
                 writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
                 Ok(("0".to_string(), "i64".to_string()))
@@ -11311,8 +11583,12 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
                 Ok(("0".to_string(), "i64".to_string()))
             }
-            ExprKind::Cast { expr, ty } => {
+            ExprKind::Cast { expr: source, ty } => {
+                let conversion = self.semantics.conversions.get(&expr.id).cloned();
+                let expr = source;
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
+                let source_unsigned = conversion.as_ref().map(|c| self.specialize_semantic_type(&c.source)).or_else(|| self.semantic_type(expr.id)).is_some_and(|t| t.is_unsigned());
+                let target_unsigned = conversion.as_ref().map(|c| c.target.is_unsigned()).unwrap_or_else(|| tinox_typecheck::ValueType::from_parser_type(ty).is_unsigned());
                 let llvm_ty = Self::type_to_llvm(ty);
                 if llvm_ty == val_ty {
                     return Ok((val, llvm_ty));
@@ -11348,16 +11624,16 @@ tr_done_{idx}:"#).unwrap();
                     writeln!(&mut self.ir, "{} = {} {} {} to {}", result, op, val_ty, val, llvm_ty).unwrap();
                 } else if src_float {
                     // float → int: fptosi
-                    writeln!(&mut self.ir, "{} = fptosi {} {} to {}", result, val_ty, val, llvm_ty).unwrap();
+                    writeln!(&mut self.ir, "{} = {} {} {} to {}", result, if target_unsigned { "fptoui" } else { "fptosi" }, val_ty, val, llvm_ty).unwrap();
                 } else if dst_float {
                     // int → float: sitofp
-                    writeln!(&mut self.ir, "{} = sitofp {} {} to {}", result, val_ty, val, llvm_ty).unwrap();
+                    writeln!(&mut self.ir, "{} = {} {} {} to {}", result, if source_unsigned { "uitofp" } else { "sitofp" }, val_ty, val, llvm_ty).unwrap();
                 } else if val_ty == "i1" {
                     writeln!(&mut self.ir, "{} = zext i1 {} to {}", result, val, llvm_ty).unwrap();
                 } else if val_ty.starts_with('i') && llvm_ty.starts_with('i') {
                     let val_bits: u32 = val_ty[1..].parse().unwrap_or(64);
                     let tgt_bits: u32 = llvm_ty[1..].parse().unwrap_or(64);
-                    let op = if val_bits < tgt_bits { "sext" } else { "trunc" };
+                    let op = if val_bits < tgt_bits { if source_unsigned { "zext" } else { "sext" } } else { "trunc" };
                     writeln!(&mut self.ir, "{} = {} {} {} to {}", result, op, val_ty, val, llvm_ty).unwrap();
                 } else {
                     writeln!(&mut self.ir, "{} = bitcast {} {} to {}", result, val_ty, val, llvm_ty).unwrap();
@@ -11467,7 +11743,14 @@ tr_done_{idx}:"#).unwrap();
                 params,
                 ret_type,
                 body,
-            } => self.gen_lambda(params, ret_type.as_ref(), body, ctx),
+            } => {
+                if let Some(tinox_typecheck::ValueType::Callable { params: types, ret }) = self.semantic_type(expr.id).as_ref() {
+                    if self.pending_lambda_param_llvm.is_empty() { self.pending_lambda_param_llvm = types.iter().map(|t| if matches!(t, tinox_typecheck::ValueType::Any | tinox_typecheck::ValueType::Named(_, _)) { None } else { Some(Self::valuetype_to_llvm(t)) }).collect(); }
+                    if self.pending_lambda_ret_llvm.is_none() && !matches!(ret.as_ref(), tinox_typecheck::ValueType::Any | tinox_typecheck::ValueType::Named(_, _)) { self.pending_lambda_ret_llvm = Some(Self::valuetype_to_llvm(ret)); }
+                }
+                let checked_ret = self.semantic_type(expr.id).and_then(|ty| if let tinox_typecheck::ValueType::Callable { ret, .. } = ty { ret.to_parser_type() } else { None });
+                self.gen_lambda(params, ret_type.as_ref().or(checked_ret.as_ref()), body, ctx)
+            },
             ExprKind::Range {
                 start,
                 end,
@@ -11504,19 +11787,20 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "store i64 {}, i64* {}", end_stored, end_ptr).unwrap();
                 Ok((typed_ptr, "i64*".to_string()))
             }
-            ExprKind::Match { expr, cases } => {
-                let (val, val_ty) = self.gen_expr(expr, ctx)?;
+            ExprKind::Match { expr: scrutinee, cases } => {
+                let (val, val_ty) = self.gen_expr(scrutinee, ctx)?;
                 // Statically known enum type of the scrutinee, if the checker could
                 // resolve it (see `variant_discriminator_key`) — lets unqualified
                 // variant patterns (`Variant(x)`, bare `North`) scope their
                 // discriminator to the right enum even for an ambiguous variant name.
-                let scrutinee_enum: Option<String> = self.expr_value_types.get(&expr.id).and_then(|vt| {
+                let scrutinee_enum: Option<String> = self.semantic_type(scrutinee.id).as_ref().and_then(|vt| {
                     if let tinox_typecheck::ValueType::Named(n, _) = vt {
                         Some(n.clone())
                     } else {
                         None
                     }
                 });
+                let result_semantic = self.semantic_type(expr.id);
                 let merge_bb = self.new_bb("match_end");
                 // Pre-allocate a result slot so each arm can store its value into it.
                 // This ensures the result dominates the merge block regardless of which arm ran.
@@ -11529,12 +11813,9 @@ tr_done_{idx}:"#).unwrap();
                     match &case.pattern {
                         Pattern::Wildcard(_) => {
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
+                            let (body_val, body_ty) = if let Some(expected) = &result_semantic { self.convert_semantic_argument(body_val, body_ty, expected, &case.body)? } else { (body_val, body_ty) };
                             last_result_ty = body_ty.clone();
-                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
-                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
-                                else { "0".to_string() };
+                            let store_val = if body_ty == "void" { "0".into() } else { self.coerce_to_i64(&body_val, &body_ty) };
                             writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                         }
@@ -11557,12 +11838,9 @@ tr_done_{idx}:"#).unwrap();
                             .unwrap();
                             writeln!(&mut self.ir, "{}:", case_bb).unwrap();
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
+                            let (body_val, body_ty) = if let Some(expected) = &result_semantic { self.convert_semantic_argument(body_val, body_ty, expected, &case.body)? } else { (body_val, body_ty) };
                             last_result_ty = body_ty.clone();
-                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
-                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
-                                else { "0".to_string() };
+                            let store_val = if body_ty == "void" { "0".into() } else { self.coerce_to_i64(&body_val, &body_ty) };
                             writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                             writeln!(&mut self.ir, "{}:", next_bb).unwrap();
@@ -11597,12 +11875,9 @@ tr_done_{idx}:"#).unwrap();
                             .unwrap();
                             writeln!(&mut self.ir, "{}:", case_bb).unwrap();
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
+                            let (body_val, body_ty) = if let Some(expected) = &result_semantic { self.convert_semantic_argument(body_val, body_ty, expected, &case.body)? } else { (body_val, body_ty) };
                             last_result_ty = body_ty.clone();
-                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
-                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
-                                else { "0".to_string() };
+                            let store_val = if body_ty == "void" { "0".into() } else { self.coerce_to_i64(&body_val, &body_ty) };
                             writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                             writeln!(&mut self.ir, "{}:", next_bb).unwrap();
@@ -11622,12 +11897,9 @@ tr_done_{idx}:"#).unwrap();
                             )
                             .unwrap();
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
+                            let (body_val, body_ty) = if let Some(expected) = &result_semantic { self.convert_semantic_argument(body_val, body_ty, expected, &case.body)? } else { (body_val, body_ty) };
                             last_result_ty = body_ty.clone();
-                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
-                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
-                                else { "0".to_string() };
+                            let store_val = if body_ty == "void" { "0".into() } else { self.coerce_to_i64(&body_val, &body_ty) };
                             writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                             ctx.locals.remove(name);
@@ -11746,7 +12018,7 @@ tr_done_{idx}:"#).unwrap();
                                             arg_val, arg_ptr
                                         )
                                         .unwrap();
-                                        self.bind_match_payload(ctx, disc_name, i, arg_name, &arg_val);
+                                        self.bind_match_payload(ctx, &disc_key, i, arg_name, &arg_val);
                                     }
                                 }
                             } else {
@@ -11767,12 +12039,9 @@ tr_done_{idx}:"#).unwrap();
                                 writeln!(&mut self.ir, "{}:", case_bb).unwrap();
                             }
                             let (body_val, body_ty) = self.gen_expr(&case.body, ctx)?;
+                            let (body_val, body_ty) = if let Some(expected) = &result_semantic { self.convert_semantic_argument(body_val, body_ty, expected, &case.body)? } else { (body_val, body_ty) };
                             last_result_ty = body_ty.clone();
-                            let store_val = if body_ty == "i64" || body_ty.is_empty() { body_val.clone() }
-                                else if body_ty == "i1" { let c = self.temp(); writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty == "double" { let c = self.temp(); writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, body_val).unwrap(); c }
-                                else if body_ty != "void" { let c = self.temp(); writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, body_ty, body_val).unwrap(); c }
-                                else { "0".to_string() };
+                            let store_val = if body_ty == "void" { "0".into() } else { self.coerce_to_i64(&body_val, &body_ty) };
                             writeln!(&mut self.ir, "store i64 {}, i64* %{}", store_val, result_slot).unwrap();
                             writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
                             writeln!(&mut self.ir, "{}:", next_bb).unwrap();
@@ -11786,6 +12055,7 @@ tr_done_{idx}:"#).unwrap();
                 // This value is valid regardless of which arm ran (dominates all uses).
                 let result_val = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* %{}", result_val, result_slot).unwrap();
+                if let Some(semantic) = result_semantic { return Ok(self.decode_semantic_word(result_val, &semantic)); }
                 // Restore the original type if the result is a pointer type
                 let final_ty = if last_result_ty == "i64" || last_result_ty == "void" || last_result_ty.is_empty() {
                     last_result_ty.clone()
@@ -11878,6 +12148,7 @@ tr_done_{idx}:"#).unwrap();
                 then_branch,
                 else_branch,
             } => {
+                let result_semantic = self.semantic_type(expr.id);
                 let result_slot = self.temp();
                 writeln!(&mut self.ir, "{} = alloca i64", result_slot).unwrap();
 
@@ -11910,6 +12181,7 @@ tr_done_{idx}:"#).unwrap();
                 // store them in uniform i64 form and recover the type at merge.
                 writeln!(&mut self.ir, "{}:", then_bb).unwrap();
                 let (then_val, then_ty) = self.gen_expr(then_branch, ctx)?;
+                let (then_val, then_ty) = if let Some(expected) = &result_semantic { self.convert_semantic_argument(then_val, then_ty, expected, then_branch)? } else { (then_val, then_ty) };
                 let then_i64 = self.coerce_to_i64(&then_val, &then_ty);
                 writeln!(&mut self.ir, "store i64 {}, i64* {}", then_i64, result_slot).unwrap();
                 writeln!(&mut self.ir, "br label %{}", merge_bb).unwrap();
@@ -11918,6 +12190,7 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{}:", else_bb).unwrap();
                 if let Some(else_expr) = else_branch {
                     let (else_val, else_ty) = self.gen_expr(else_expr, ctx)?;
+                    let (else_val, else_ty) = if let Some(expected) = &result_semantic { self.convert_semantic_argument(else_val, else_ty, expected, else_expr)? } else { (else_val, else_ty) };
                     let else_i64 = self.coerce_to_i64(&else_val, &else_ty);
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", else_i64, result_slot)
                         .unwrap();
@@ -11935,6 +12208,7 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{}:", merge_bb).unwrap();
                 let loaded = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* {}", loaded, result_slot).unwrap();
+                if let Some(semantic) = result_semantic { return Ok(self.decode_semantic_word(loaded, &semantic)); }
                 // Recover the branch type from uniform i64 storage.
                 if result_ty == "double" || result_ty == "float" {
                     let t = self.temp();
@@ -12194,6 +12468,25 @@ tr_done_{idx}:"#).unwrap();
                 // Store each arg coerced to i64
                 let arg_vals_clone = arg_vals.clone();
                 for (i, (val, ty)) in arg_vals_clone.iter().enumerate() {
+                    // The wrapper decodes each slot as the callee's declared
+                    // parameter type, so a Float64 argument for a Float32
+                    // parameter (a plain `1.5` literal) must be narrowed
+                    // here; the raw double bits would otherwise be read as
+                    // a float and silently become garbage.
+                    let (val, ty) = match (param_tys.get(i).map(String::as_str), ty.as_str()) {
+                        (Some("float"), "double") => {
+                            let t = self.temp();
+                            writeln!(&mut self.ir, "  {} = fptrunc double {} to float", t, val).unwrap();
+                            (t, "float".to_string())
+                        }
+                        (Some("double"), "float") => {
+                            let t = self.temp();
+                            writeln!(&mut self.ir, "  {} = fpext float {} to double", t, val).unwrap();
+                            (t, "double".to_string())
+                        }
+                        _ => (val.clone(), ty.clone()),
+                    };
+                    let (val, ty) = (&val, &ty);
                     let slot = self.temp();
                     writeln!(&mut self.ir, "  {} = getelementptr [{} x i64], [{} x i64]* {}, i64 0, i64 {}", slot, n_slots, n_slots, ap, i + 1).unwrap();
                     let i64_val = self.coerce_to_i64(val, ty);
@@ -12217,7 +12510,8 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", handle_ptr, handle_i64).unwrap();
                 let result = self.temp();
                 writeln!(&mut self.ir, "  {} = call i64 @tinox_task_await(i8* {})", result, handle_ptr).unwrap();
-                Ok((result, "i64".to_string()))
+                let semantic = self.semantic_type(expr.id);
+                Ok(if let Some(semantic) = semantic { self.decode_semantic_word(result, &semantic) } else { (result, "i64".into()) })
             }
             ExprKind::Channel => {
                 let ch_ptr = self.temp();
@@ -12231,6 +12525,8 @@ tr_done_{idx}:"#).unwrap();
                 let (val_raw, val_ty) = self.gen_expr(value, ctx)?;
                 let ch_ptr = self.temp();
                 writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", ch_ptr, ch_i64).unwrap();
+                let expected = self.semantic_type(channel.id).and_then(|ty| if let tinox_typecheck::ValueType::Named(name, args) = ty { if name == "Channel" { args.first().cloned() } else { None } } else { None });
+                let (val_raw, val_ty) = if let Some(expected) = expected { self.convert_semantic_argument(val_raw, val_ty, &expected, value)? } else { (val_raw, val_ty) };
                 let val_i64 = self.coerce_to_i64(&val_raw, &val_ty);
                 writeln!(&mut self.ir, "  call void @tinox_channel_send(i8* {}, i64 {})", ch_ptr, val_i64).unwrap();
                 Ok(("0".to_string(), "void".to_string()))
@@ -12241,38 +12537,14 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "  {} = inttoptr i64 {} to i8*", ch_ptr, ch_i64).unwrap();
                 let raw = self.temp();
                 writeln!(&mut self.ir, "  {} = call i64 @tinox_channel_recv(i8* {})", raw, ch_ptr).unwrap();
-                // tinox_channel_recv always returns the stored value as a
-                // raw i64 (the runtime channel is an opaque handle with no
-                // notion of element type — see ExprKind::Channel above).
-                // For a `Channel<SomeClass>` (issue #123 needed this for
-                // `Channel<AmqpFrame091>`, not just `Channel<Int64>` which
-                // happened to already work since i64 was the right answer
-                // by coincidence), the typechecker resolves this
-                // expression's static type to the class via `inner`'s
-                // declared `Channel<T>` — recover that here the same way
-                // and inttoptr back to a real pointer, or every downstream
-                // field access on the received value would misinterpret
-                // it as a plain integer.
-                use tinox_typecheck::ValueType as VT;
-                let elem_llvm = match self.expr_value_types.get(&inner.id) {
-                    Some(VT::Named(name, args)) if name == "Channel" && args.len() == 1 => {
-                        Self::valuetype_to_llvm(&args[0])
-                    }
-                    _ => "i64".to_string(),
-                };
-                if elem_llvm.ends_with('*') {
-                    let result = self.temp();
-                    writeln!(&mut self.ir, "  {} = inttoptr i64 {} to {}", result, raw, elem_llvm).unwrap();
-                    Ok((result, elem_llvm))
-                } else {
-                    Ok((raw, elem_llvm))
-                }
+                Ok(if let Some(semantic) = self.semantic_type(expr.id) { self.decode_semantic_word(raw, &semantic) } else { (raw, "i64".into()) })
             }
             ExprKind::CompoundAssign { op, target, value } => {
                 self.gen_compound_assign(op, target, value, ctx)
             }
             ExprKind::Assign { target, value } => {
                 let (val, val_ty) = self.gen_expr(value, ctx)?;
+                let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val, val_ty, &expected, value)? } else { (val, val_ty) };
                 if let ExprKind::FieldAccess { obj, field } = &target.node {
                     let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
                     let obj_ptr = if obj_ty == "i64" {
@@ -12288,19 +12560,10 @@ tr_done_{idx}:"#).unwrap();
                         .and_then(|sn| self.struct_layouts.get(sn))
                         .and_then(|fields| fields.iter().position(|f| f == field.as_str()))
                         .unwrap_or(0) as i64;
+                    let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val.clone(), val_ty.clone(), &expected, value)? } else { (val.clone(), val_ty.clone()) };
                     // B1 phase 3: typed field-assignment store for named-type classes.
                     if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, target.span, &val, &val_ty)? {
-                        let store_val = if val_ty == "double" || val_ty == "float" {
-                            let cast = self.temp();
-                            writeln!(&mut self.ir, "{} = bitcast {} {} to i64", cast, val_ty, val).unwrap();
-                            cast
-                        } else if val_ty != "i64" && val_ty != "i1" && !val_ty.is_empty() {
-                            let cast = self.temp();
-                            writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                            cast
-                        } else {
-                            val.clone()
-                        };
+                        let store_val = self.coerce_to_i64(&val, &val_ty);
                         let field_ptr = self.temp();
                         writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, obj_ptr, offset).unwrap();
                         writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
@@ -12339,7 +12602,8 @@ tr_done_{idx}:"#).unwrap();
                     // doc comment for the full story (issue #143: this
                     // silently no-op'd before this Index case existed here).
                     let idx_target = self.gen_index_target(obj, index, ctx)?;
-                    self.gen_index_store(&idx_target, &val, &val_ty);
+                    let (store_val, store_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val.clone(), val_ty.clone(), &expected, value)? } else { (val.clone(), val_ty.clone()) };
+                    self.gen_index_store(&idx_target, &store_val, &store_ty);
                 }
                 Ok((val, val_ty))
             }
@@ -12383,6 +12647,7 @@ tr_done_{idx}:"#).unwrap();
         let is_map = obj_declared_type.as_deref().map(Self::is_map_marker).unwrap_or(false);
 
         let (idx_val, idx_ty) = self.gen_expr(index, ctx)?;
+        let (idx_val, idx_ty) = if !is_map && self.semantic_type(index.id).is_some_and(|ty| ty.is_integer()) { self.convert_semantic_argument(idx_val, idx_ty, &tinox_typecheck::ValueType::Int, index)? } else { (idx_val, idx_ty) };
         let (base_ptr, base_ty) = if let ExprKind::Ident(name) = &obj.node {
             if ctx.params.contains(name) {
                 self.gen_expr(obj, ctx)?
@@ -12432,21 +12697,7 @@ tr_done_{idx}:"#).unwrap();
                 c
             };
             let key_i8 = self.emit_map_key(idx_val, idx_ty);
-            let store_val = if val_ty == "i64" || val_ty.is_empty() {
-                val.to_string()
-            } else if val_ty == "i1" {
-                let c = self.temp();
-                writeln!(&mut self.ir, "{} = zext i1 {} to i64", c, val).unwrap();
-                c
-            } else if val_ty == "double" || val_ty == "float" {
-                let c = self.temp();
-                writeln!(&mut self.ir, "{} = bitcast {} {} to i64", c, val_ty, val).unwrap();
-                c
-            } else {
-                let c = self.temp();
-                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", c, val_ty, val).unwrap();
-                c
-            };
+            let store_val = self.coerce_to_i64(val, val_ty);
             writeln!(&mut self.ir, "call void @tinox_map_set(i8* {}, i8* {}, i64 {})", map_i8, key_i8, store_val).unwrap();
         } else {
             // Coerce base_ptr to i64* if it's encoded as i64
@@ -12466,17 +12717,7 @@ tr_done_{idx}:"#).unwrap();
             )
             .unwrap();
             // Strings stored as i64 (ptrtoint); bools need zext; others direct
-            let store_val = if val_ty == "i8*" || val_ty == "i64*" {
-                let cast = self.temp();
-                writeln!(&mut self.ir, "{} = ptrtoint {} {} to i64", cast, val_ty, val).unwrap();
-                cast
-            } else if val_ty == "i1" {
-                let cast = self.temp();
-                writeln!(&mut self.ir, "{} = zext i1 {} to i64", cast, val).unwrap();
-                cast
-            } else {
-                val.to_string()
-            };
+            let store_val = self.coerce_to_i64(val, val_ty);
             writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, ptr_name).unwrap();
         }
     }
@@ -12484,190 +12725,66 @@ tr_done_{idx}:"#).unwrap();
     fn gen_compound_assign(
         &mut self,
         op: &tinox_parser::CompoundOp,
-        target: &tinox_parser::Expr,
-        value: &tinox_parser::Expr,
+        target: &Expr,
+        value: &Expr,
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
-        match &target.node {
-            ExprKind::Ident(name) => {
-                if let Some((ty, _)) = ctx.locals.get(name) {
-                    let ty = ty.clone();
-                    let slot = ctx.local_slots.get(name.as_str()).cloned().unwrap_or_else(|| name.clone());
-                    let loaded = self.temp();
-                    writeln!(
-                        &mut self.ir,
-                        "{} = load {}, {}* %{}",
-                        loaded.as_str(),
-                        ty,
-                        ty,
-                        slot.as_str()
-                    )
-                    .unwrap();
-                    let (rhs_raw, rhs_ty) = self.gen_expr(value, ctx)?;
-                    let rhs = if (ty == "i8*" && matches!(op, tinox_parser::CompoundOp::Add))
-                        || rhs_ty == ty || rhs_ty.is_empty() {
-                        rhs_raw
-                    } else if rhs_ty == "i64" && ty == "double" {
-                        let c = self.temp();
-                        writeln!(&mut self.ir, "{} = sitofp i64 {} to double", c, rhs_raw).unwrap();
-                        c
-                    } else if rhs_ty == "double" && ty == "i64" {
-                        let c = self.temp();
-                        writeln!(&mut self.ir, "{} = bitcast double {} to i64", c, rhs_raw).unwrap();
-                        c
-                    } else {
-                        rhs_raw
-                    };
-                    if ty == "i8*" && matches!(op, tinox_parser::CompoundOp::Add) {
-                        // String += String → Konkatenation
-                        let result = self.temp();
-                        writeln!(&mut self.ir, "{} = call i8* @tinox_string_concat(i8* {}, i8* {})", result, loaded, rhs).unwrap();
-                        writeln!(&mut self.ir, "store i8* {}, i8** %{}", result, slot).unwrap();
-                        return Ok((result, ty));
-                    }
-                    let is_float = ty == "double" || ty == "float";
-                    let result = self.temp();
-                    match op {
-                        tinox_parser::CompoundOp::Add => {
-                            let instr = if is_float { "fadd" } else { "add" };
-                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
-                                .unwrap();
-                        }
-                        tinox_parser::CompoundOp::Sub => {
-                            let instr = if is_float { "fsub" } else { "sub" };
-                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
-                                .unwrap();
-                        }
-                        tinox_parser::CompoundOp::Mul => {
-                            let instr = if is_float { "fmul" } else { "mul" };
-                            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instr, ty, loaded, rhs)
-                                .unwrap();
-                        }
-                        tinox_parser::CompoundOp::Div => {
-                            if is_float {
-                                writeln!(&mut self.ir, "{} = fdiv {} {}, {}", result, ty, loaded, rhs).unwrap();
-                            } else {
-                                self.emit_checked_idiv(&result, &ty, &loaded, &rhs, false);
-                            }
-                        }
-                        tinox_parser::CompoundOp::Mod => {
-                            if is_float {
-                                writeln!(&mut self.ir, "{} = frem {} {}, {}", result, ty, loaded, rhs).unwrap();
-                            } else {
-                                self.emit_checked_idiv(&result, &ty, &loaded, &rhs, true);
-                            }
-                        }
-                        tinox_parser::CompoundOp::BitAnd => {
-                            writeln!(&mut self.ir, "{} = and {} {}, {}", result, ty, loaded, rhs)
-                                .unwrap();
-                        }
-                        tinox_parser::CompoundOp::BitOr => {
-                            writeln!(&mut self.ir, "{} = or {} {}, {}", result, ty, loaded, rhs)
-                                .unwrap();
-                        }
-                        tinox_parser::CompoundOp::BitXor => {
-                            writeln!(&mut self.ir, "{} = xor {} {}, {}", result, ty, loaded, rhs)
-                                .unwrap();
-                        }
-                        tinox_parser::CompoundOp::Shl => {
-                            writeln!(&mut self.ir, "{} = shl {} {}, {}", result, ty, loaded, rhs)
-                                .unwrap();
-                        }
-                        tinox_parser::CompoundOp::Shr => {
-                            writeln!(&mut self.ir, "{} = lshr {} {}, {}", result, ty, loaded, rhs)
-                                .unwrap();
-                        }
-                        tinox_parser::CompoundOp::ShrArith => {
-                            writeln!(&mut self.ir, "{} = ashr {} {}, {}", result, ty, loaded, rhs)
-                                .unwrap();
-                        }
-                    }
-                    writeln!(&mut self.ir, "store {} {}, {}* %{}", ty, result, ty, slot).unwrap();
-                    return Ok((result, ty));
-                }
+        use tinox_parser::CompoundOp as Op;
+        use tinox_typecheck::ValueType as VT;
+        let semantic = self.semantic_type(target.id);
+        let mut index_target = None;
+        let (loaded, actual, slot) = match &target.node {
+            ExprKind::Ident(name) if ctx.locals.contains_key(name) => {
+                let ty = ctx.locals[name].0.clone();
+                let slot = format!("%{}", ctx.local_slots.get(name).unwrap_or(name));
+                let loaded = self.temp();
+                writeln!(&mut self.ir, "{} = load {}, {}* {}", loaded, ty, ty, slot).unwrap();
+                (loaded, ty.clone(), Some((slot, ty)))
             }
             ExprKind::Index { obj, index } => {
-                let (idx_val, _) = self.gen_expr(index, ctx)?;
-                let (base_ptr, _var_ty) = if let ExprKind::Ident(name) = &obj.node {
-                    if ctx.locals.contains_key(name) {
-                        let (vty, _) = ctx.locals.get(name).unwrap();
-                        let slot = ctx.local_slots.get(name).cloned().unwrap_or_else(|| name.clone());
-                        let loaded_ptr = self.temp();
-                        writeln!(
-                            &mut self.ir,
-                            "{} = load {}, {}* %{}",
-                            loaded_ptr, vty, vty, slot
-                        )
-                        .unwrap();
-                        (loaded_ptr, vty.clone())
-                    } else {
-                        return self.gen_expr(obj, ctx);
-                    }
+                let resolved = self.gen_index_target(obj, index, ctx)?;
+                let raw = self.temp();
+                if resolved.is_map || resolved.idx_ty == "i8*" {
+                    let key = self.emit_map_key(&resolved.idx_val, &resolved.idx_ty);
+                    writeln!(&mut self.ir, "{} = call i64 @tinox_map_get(i8* {}, i8* {})", raw, resolved.base_ptr, key).unwrap();
                 } else {
-                    return self.gen_expr(obj, ctx);
-                };
-                let data_ptr = self.emit_array_data(&base_ptr);
-                let ptr_name = self.temp();
-                writeln!(
-                    &mut self.ir,
-                    "{} = getelementptr i64, ptr {}, i64 {}",
-                    ptr_name, data_ptr, idx_val
-                )
-                .unwrap();
-                let loaded = self.temp();
-                writeln!(&mut self.ir, "{} = load i64, i64* {}", loaded, ptr_name).unwrap();
-                let (rhs, _) = self.gen_expr(value, ctx)?;
-                let result = self.temp();
-                match op {
-                    tinox_parser::CompoundOp::Add => {
-                        writeln!(&mut self.ir, "{} = add i64 {}, {}", result, loaded, rhs).unwrap();
-                    }
-                    tinox_parser::CompoundOp::Sub => {
-                        writeln!(&mut self.ir, "{} = sub i64 {}, {}", result, loaded, rhs).unwrap();
-                    }
-                    tinox_parser::CompoundOp::Mul => {
-                        writeln!(&mut self.ir, "{} = mul i64 {}, {}", result, loaded, rhs).unwrap();
-                    }
-                    tinox_parser::CompoundOp::Div => {
-                        self.emit_checked_idiv(&result, "i64", &loaded, &rhs, false);
-                    }
-                    tinox_parser::CompoundOp::Mod => {
-                        self.emit_checked_idiv(&result, "i64", &loaded, &rhs, true);
-                    }
-                    tinox_parser::CompoundOp::BitAnd => {
-                        writeln!(&mut self.ir, "{} = and i64 {}, {}", result, loaded, rhs).unwrap();
-                    }
-                    tinox_parser::CompoundOp::BitOr => {
-                        writeln!(&mut self.ir, "{} = or i64 {}, {}", result, loaded, rhs).unwrap();
-                    }
-                    tinox_parser::CompoundOp::BitXor => {
-                        writeln!(&mut self.ir, "{} = xor i64 {}, {}", result, loaded, rhs).unwrap();
-                    }
-                    tinox_parser::CompoundOp::Shl => {
-                        writeln!(&mut self.ir, "{} = shl i64 {}, {}", result, loaded, rhs).unwrap();
-                    }
-                    tinox_parser::CompoundOp::Shr => {
-                        writeln!(&mut self.ir, "{} = lshr i64 {}, {}", result, loaded, rhs)
-                            .unwrap();
-                    }
-                    tinox_parser::CompoundOp::ShrArith => {
-                        writeln!(&mut self.ir, "{} = ashr i64 {}, {}", result, loaded, rhs)
-                            .unwrap();
-                    }
+                    writeln!(&mut self.ir, "{} = call i64 @tinox_array_get(i64* {}, i64 {})", raw, resolved.base_ptr, resolved.idx_val).unwrap();
                 }
-                writeln!(&mut self.ir, "store i64 {}, i64* {}", result, ptr_name).unwrap();
-                return Ok((result, "i64".to_string()));
+                index_target = Some(resolved);
+                let (loaded, ty) = if let Some(semantic) = &semantic { self.decode_semantic_word(raw, semantic) } else { (raw, "i64".into()) };
+                (loaded, ty, None)
             }
-            _ => {
-                let mut bag = ErrorBag::new();
-                bag.push(Error::new(
-                    target.span,
-                    "codegen: unsupported compound-assignment target",
-                ));
-                return Err(bag);
-            }
+            _ => return Err(ErrorBag { errors: vec![Error::new(target.span, "codegen: unsupported compound-assignment target")] }),
+        };
+        let (rhs, rhs_ty) = self.gen_expr(value, ctx)?;
+        let promotion = semantic.as_ref().zip(self.semantic_type(value.id).as_ref()).and_then(|(left, right)| VT::numeric_promotion(left, right));
+        let (left, ty, right) = if let Some(promoted) = &promotion {
+            let (left, ty) = self.convert_semantic_value(loaded, actual.clone(), promoted, semantic.as_ref().is_some_and(VT::is_unsigned));
+            let (right, _) = self.convert_semantic_argument(rhs, rhs_ty, promoted, value)?;
+            (left, ty, right)
+        } else { (loaded, actual.clone(), rhs) };
+        let result = self.temp();
+        let float = Self::is_float(&ty);
+        let unsigned = promotion.as_ref().is_some_and(VT::is_unsigned);
+        if ty == "i8*" && matches!(op, Op::Add) {
+            writeln!(&mut self.ir, "{} = call i8* @tinox_string_concat(i8* {}, i8* {})", result, left, right).unwrap();
+        } else if !float && matches!(op, Op::Div | Op::Mod) {
+            self.emit_semantic_idiv(&result, &ty, &left, &right, matches!(op, Op::Mod), unsigned);
+        } else {
+            let instruction = match op {
+                Op::Add => if float { "fadd" } else { "add" },
+                Op::Sub => if float { "fsub" } else { "sub" },
+                Op::Mul => if float { "fmul" } else { "mul" },
+                Op::Div => "fdiv", Op::Mod => "frem",
+                Op::BitAnd => "and", Op::BitOr => "or", Op::BitXor => "xor",
+                Op::Shl => "shl", Op::Shr => "lshr", Op::ShrArith => "ashr",
+            };
+            writeln!(&mut self.ir, "{} = {} {} {}, {}", result, instruction, ty, left, right).unwrap();
         }
-        Ok(("0".to_string(), "i64".to_string()))
+        let (result, result_ty) = if let Some(expected) = &semantic { self.convert_semantic_value(result, ty, expected, unsigned) } else { (result, actual) };
+        if let Some(target) = index_target { self.gen_index_store(&target, &result, &result_ty); }
+        if let Some((slot, slot_ty)) = slot { writeln!(&mut self.ir, "store {} {}, {}* {}", result_ty, result, slot_ty, slot).unwrap(); }
+        Ok((result, result_ty))
     }
 
     fn gen_literal(&mut self, lit: &Literal) -> Result<(String, String), ErrorBag> {
@@ -12720,7 +12837,7 @@ tr_done_{idx}:"#).unwrap();
     ) -> Result<(String, String), ErrorBag> {
         use tinox_typecheck::ValueType as VT;
         // --- Receiver's element type: declared marker before rich export ---
-        let elem_vt: Option<VT> = self.expr_value_types.get(&obj.id).and_then(|vt| match vt {
+        let elem_vt: Option<VT> = self.semantic_type(obj.id).as_ref().and_then(|vt| match vt {
             VT::Array(e) => Some((**e).clone()),
             _ => None,
         });
@@ -12785,7 +12902,7 @@ tr_done_{idx}:"#).unwrap();
                     r = Some(Self::type_to_llvm(rt));
                 }
                 if r.is_none() {
-                    if let Some(VT::Array(e)) = self.expr_value_types.get(&call_id) {
+                    if let Some(VT::Array(e)) = self.semantic_type(call_id).as_ref() {
                         if **e != VT::Any {
                             r = Some(Self::valuetype_to_llvm(e));
                         }
@@ -12793,7 +12910,7 @@ tr_done_{idx}:"#).unwrap();
                 }
                 if r.is_none() {
                     if let ExprKind::Lambda { body, .. } = &lam.node {
-                        if let Some(vt) = self.expr_value_types.get(&body.id) {
+                        if let Some(vt) = self.semantic_type(body.id).as_ref() {
                             if *vt != VT::Any && *vt != VT::Nothing {
                                 r = Some(Self::valuetype_to_llvm(vt));
                             }
@@ -13103,6 +13220,7 @@ tr_done_{idx}:"#).unwrap();
         let mut lambda_ctx = GenCtx {
             locals: HashMap::new(),
             local_slots: HashMap::new(),
+            callable_types: ctx.callable_types.clone(),
             range_vars: HashSet::new(),
             params: HashSet::new(),
             struct_fields: Vec::new(),
@@ -13122,11 +13240,14 @@ tr_done_{idx}:"#).unwrap();
             defer_stack: Vec::new(),
             in_defer_exec: false,
             ret_type: ret_ty.clone(),
+            ret_unsigned: ret_type.is_some_and(|ty| tinox_typecheck::ValueType::from_parser_type(ty).is_unsigned()),
             timed_metric: None,
             transactional_commit: None,
             finally_targets: Vec::new(),
         };
         for (i, p) in params.iter().enumerate() {
+            lambda_ctx.callable_types.remove(&p.name);
+            if matches!(p.param_type, Type::Fn { .. }) { lambda_ctx.callable_types.insert(p.name.clone(), tinox_typecheck::ValueType::from_parser_type(&p.param_type)); }
             if i > 0 {
                 params_str.push_str(", ");
                 fn_type_str.push_str(", ");
@@ -13203,7 +13324,8 @@ tr_done_{idx}:"#).unwrap();
                         writeln!(&mut self.ir, "{} = load {}, {}* %{}", v, ty, ty, slot).unwrap();
                         v
                     };
-                    writeln!(&mut self.ir, "store {} {}, {}* {}", ty, val, ty, field_ptr).unwrap();
+                    let word = self.coerce_to_i64(&val, ty);
+                    writeln!(&mut self.ir, "store i64 {}, i64* {}", word, field_ptr).unwrap();
                 }
             }
             Some(env_typed)
@@ -13242,7 +13364,8 @@ tr_done_{idx}:"#).unwrap();
                 .unwrap();
                 let loaded = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* {}", loaded, env_field).unwrap();
-                writeln!(&mut self.ir, "store i64 {}, i64* %{}", loaded, name).unwrap();
+                let (decoded, decoded_type) = self.decode_word(loaded, ty.clone());
+                writeln!(&mut self.ir, "store {} {}, {}* %{}", decoded_type, decoded, decoded_type, name).unwrap();
                 lambda_ctx
                     .locals
                     .insert(name.clone(), (ty.clone(), lambda_ctx.locals.len()));
@@ -13359,12 +13482,9 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
-    fn llvm_type_str(ty: &str) -> String {
-        ty.to_string()
-    }
-
     fn type_to_llvm(ty: &Type) -> String {
         match ty {
+            Type::Named(name) if name == "Channel" => "i64".to_string(),
             Type::Int8 => "i8".to_string(),
             Type::Int16 => "i16".to_string(),
             Type::Int32 => "i32".to_string(),
@@ -13393,7 +13513,7 @@ tr_done_{idx}:"#).unwrap();
             // #123 hit this the first time this language feature was
             // used with a real T beyond the parser-only test coverage it
             // had before).
-            Type::Generic { name, .. } if name == "Channel" => "i64".to_string(),
+            Type::Generic { name, .. } if name == "Channel" || name == "Task" => "i64".to_string(),
             Type::Generic { .. } => "i64*".to_string(),
             Type::Ref(inner) => format!("{}*", Self::type_to_llvm(inner)),
             Type::Mutable(inner) => Self::type_to_llvm(inner),
@@ -13615,6 +13735,8 @@ tr_done_{idx}:"#).unwrap();
                     // to be something else entirely (lambda var, etc.).
                     tf.contains(name.as_str())
                         || tm.contains(name.as_str())
+                        // Joining a task scope re-throws a child's failure.
+                        || name == "__scope_join"
                         || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
                 } else {
                     true // dynamic/lambda call — cannot prove non-throwing
@@ -13697,8 +13819,24 @@ tr_done_{idx}:"#).unwrap();
         }
         collect(&source.decls, &mut fns);
 
-        let mut tf: HashSet<String> = HashSet::new();
+        let mut tf: HashSet<String> = ["sleep", "sleep_ms", "taskCheckCancellation", "taskSetDeadline", "taskWaitReadable"]
+            .into_iter().map(String::from).collect();
+        fn synchronized_names(decls: &[tinox_parser::Decl], names: &mut HashSet<String>) {
+            for decl in decls {
+                match &decl.node {
+                    DeclKind::Class(c) => for m in &c.methods {
+                        if !m.static_ && (c.annotations.iter().any(|a| a.name == "Synchronized")
+                            || m.annotations.iter().any(|a| a.name == "Synchronized")) {
+                            names.insert(m.name.clone());
+                        }
+                    },
+                    DeclKind::Namespace(ns) => synchronized_names(&ns.decls, names),
+                    _ => {}
+                }
+            }
+        }
         let mut tm: HashSet<String> = HashSet::new();
+        synchronized_names(&source.decls, &mut tm);
         loop {
             let mut changed = false;
             for (name, body, is_method) in &fns {
@@ -14282,23 +14420,24 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
-    /// Mangling suffix from a parser type (keeps class names, unlike
-    /// mangle_generic_name, which goes via LLVM types and loses classes).
+    /// Injective specialization suffix from the complete semantic type.
     fn type_suffix(ty: &tinox_parser::Type) -> String {
-        use tinox_parser::Type;
+        // Scalars keep readable ABI spellings, with unsigned types distinct.
+        // Other types use an injective encoding of their complete structure.
         match ty {
-            Type::Named(n) => n.clone(),
-            Type::String => "String".into(),
-            Type::Int64 => "Int64".into(),
-            Type::Float64 => "Float64".into(),
-            Type::Bool => "Bool".into(),
-            Type::Generic { name, args } => {
-                let inner: Vec<String> = args.iter().map(Self::type_suffix).collect();
-                format!("{}_{}", name, inner.join("_"))
-            }
-            Type::Array(inner) => format!("List_{}", Self::type_suffix(inner)),
-            Type::Map(_, _) => "Map".into(),
-            _ => "T".into(),
+            tinox_parser::Type::Int64 => "i64".into(),
+            tinox_parser::Type::Int32 => "i32".into(),
+            tinox_parser::Type::Int16 => "i16".into(),
+            tinox_parser::Type::Int8 => "i8".into(),
+            tinox_parser::Type::UInt64 => "u64".into(),
+            tinox_parser::Type::UInt32 => "u32".into(),
+            tinox_parser::Type::UInt16 => "u16".into(),
+            tinox_parser::Type::UInt8 => "u8".into(),
+            tinox_parser::Type::Float64 => "double".into(),
+            tinox_parser::Type::Float32 => "float".into(),
+            tinox_parser::Type::String => "i8P".into(),
+            tinox_parser::Type::Bool => "i1".into(),
+            other => format!("t{}", format!("{other:?}").bytes().map(|byte| format!("{byte:02x}")).collect::<String>()),
         }
     }
 
@@ -14327,7 +14466,7 @@ tr_done_{idx}:"#).unwrap();
         type_args: &[tinox_parser::Type],
     ) -> Result<(String, String), ErrorBag> {
         use tinox_parser::Type;
-        let mut subst: HashMap<String, Type> = HashMap::new();
+        let mut subst: HashMap<String, tinox_parser::Type> = HashMap::new();
         for (tp, ty) in gm.type_params.iter().zip(type_args.iter()) {
             subst.insert(tp.clone(), ty.clone());
         }
@@ -14358,7 +14497,7 @@ tr_done_{idx}:"#).unwrap();
                     })
                     .collect(),
                 ret_type: ret_type.clone(),
-                body: gm.body.clone(),
+                body: Self::substitute_stmt(&gm.body, &subst, ("", "")),
                 span: gm.span,
                 is_async: gm.is_async,
                 doc: None,
@@ -14390,7 +14529,11 @@ tr_done_{idx}:"#).unwrap();
             let saved_ir = std::mem::take(&mut self.ir);
             let saved_temp = self.temp_count;
             self.temp_count = 0;
+            let saved_targets = std::mem::take(&mut self.argument_targets);
+            let saved_bindings = std::mem::replace(&mut self.semantic_bindings, subst.clone());
             self.gen_fn(&specialized)?;
+            self.semantic_bindings = saved_bindings;
+            self.argument_targets = saved_targets;
             let spec_ir = std::mem::take(&mut self.ir);
             self.ir = saved_ir;
             self.temp_count = saved_temp;
@@ -14410,42 +14553,17 @@ tr_done_{idx}:"#).unwrap();
         static_key: &str,
         gm: &tinox_parser::Method,
         type_args: &[tinox_parser::Type],
-        args: &[tinox_parser::Expr],
+        call: &tinox_parser::Expr,
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
         use tinox_parser::Type;
-        // Bindungen: Typparameter -> konkreter Parser-Typ
-        let mut subst: HashMap<String, Type> = HashMap::new();
-        for (i, tp) in gm.type_params.iter().enumerate() {
-            let bound = if let Some(t) = type_args.get(i) {
-                t.clone()
-            } else {
-                // Inference: the first argument whose declared type is
-                // exactly the type parameter supplies the marker
-                let mut inferred = None;
-                for (pi, param) in gm.params.iter().enumerate() {
-                    if matches!(&param.param_type, Type::Named(n) if n == tp) {
-                        if let Some(arg) = args.get(pi) {
-                            // Raw marker: infer_struct_type's Ident arm
-                            // strips "List:" (legacy) — here we need the
-                            // container type itself, not the element type.
-                            let marker = if let ExprKind::Ident(n) = &arg.node {
-                                ctx.local_types.get(n.as_str()).cloned()
-                            } else {
-                                None
-                            }
-                            .or_else(|| self.infer_struct_type(arg, ctx));
-                            if let Some(marker) = marker {
-                                inferred = Some(Self::marker_to_type(&marker));
-                            }
-                        }
-                        break;
-                    }
-                }
-                inferred.unwrap_or(Type::Int64)
-            };
-            subst.insert(tp.clone(), bound);
-        }
+        let ExprKind::EnumValue { args, .. } = &call.node else { unreachable!("static generic call expression") };
+        let call_id = call.id;
+        let mut subst = if let Some(call) = self.semantics.calls.get(&call_id) {
+            call.bindings.iter().filter_map(|(name, ty)| self.specialize_semantic_type(ty).to_parser_type().map(|ty| (name.clone(),ty))).collect()
+        } else { self.collect_type_bindings(&gm.type_params, &gm.params, args, ctx) };
+        for (tp, ty) in gm.type_params.iter().zip(type_args) { subst.insert(tp.clone(), ty.clone()); }
+        self.require_bindings(&gm.type_params, &mut subst, gm.span)?;
         let resolved_type_args: Vec<Type> = gm.type_params.iter()
             .map(|tp| subst.get(tp).unwrap().clone())
             .collect();
@@ -14459,8 +14577,10 @@ tr_done_{idx}:"#).unwrap();
         // `Class::method` call; instance calls of generic methods run
         // elsewhere.
         let mut args_parts: Vec<String> = Vec::new();
-        for arg in args.iter() {
+        for (i, arg) in args.iter().enumerate() {
             let (v, t) = self.gen_expr(arg, ctx)?;
+            let expected = tinox_typecheck::ValueType::from_parser_type(&Self::substitute_type(&gm.params[i].param_type, &subst));
+            let (v, t) = self.convert_semantic_argument(v, t, &expected, arg)?;
             args_parts.push(format!("{} {}", t, v));
         }
         let result = self.temp();
@@ -14470,64 +14590,6 @@ tr_done_{idx}:"#).unwrap();
         } else {
             writeln!(&mut self.ir, "{} = call {} @{}({})", result, ret_llvm, mangled, args_parts.join(", ")).unwrap();
             Ok((result, ret_llvm))
-        }
-    }
-
-    /// Issue #165: finds the expression whose tinox-typecheck-inferred value
-    /// carries an arrow-sugar lambda body's effective return type, so
-    /// `infer_own_type_params` can consult `expr_value_types` for it (arrow
-    /// lambdas have no annotated return type for it to read directly).
-    ///
-    /// - Non-block body (`n => expr`): the body IS the return value; typecheck
-    ///   already cached its type at `body.id` (see `infer_type`'s Lambda arm).
-    /// - Block body (`n => { ...; return expr; }`): the block's OWN cached
-    ///   type is useless here (`ExprKind::Block`'s typecheck only uses a
-    ///   trailing `StmtKind::Expr`, never `StmtKind::Return`), so walk the
-    ///   block for the first `return expr;` and use ITS id instead. Only
-    ///   recurses into nested `Block`/`If` statements (the common shapes for
-    ///   a single, structurally findable return value) — a return buried in
-    ///   a loop body falls through to the existing `Int64` default, same as
-    ///   before this fix, not a regression.
-    fn lambda_body_value_expr(body: &tinox_parser::Expr) -> Option<&tinox_parser::Expr> {
-        use tinox_parser::{ExprKind, StmtKind};
-        fn find_in_stmt(stmt: &tinox_parser::Stmt) -> Option<&tinox_parser::Expr> {
-            match &stmt.node {
-                StmtKind::Return(Some(e)) => Some(e),
-                StmtKind::Block(stmts) => stmts.iter().find_map(find_in_stmt),
-                StmtKind::If { then_branch, else_branch, .. } => {
-                    find_in_stmt(then_branch).or_else(|| else_branch.as_deref().and_then(find_in_stmt))
-                }
-                _ => None,
-            }
-        }
-        match &body.node {
-            ExprKind::Block(stmts) => stmts.iter().find_map(|s| find_in_stmt(s)),
-            _ => Some(body),
-        }
-    }
-
-    /// Issue #165 counterpart to `marker_to_type`: converts a
-    /// tinox-typecheck-inferred `ValueType` (from `expr_value_types`) into the
-    /// parser `Type` shape `unify_type_param` operates on. Only covers the
-    /// cases that can plausibly appear as a lambda's inferred return type;
-    /// anything else (Tuple, Range, Nullable, ...) isn't needed here and
-    /// falls through to the existing `Int64` fallback, unchanged from before
-    /// this fix.
-    fn value_type_to_parser_type(vt: &tinox_typecheck::ValueType) -> Option<tinox_parser::Type> {
-        use tinox_parser::Type;
-        use tinox_typecheck::ValueType as VT;
-        match vt {
-            VT::Int => Some(Type::Int64),
-            VT::Float => Some(Type::Float64),
-            VT::Bool => Some(Type::Bool),
-            VT::String => Some(Type::String),
-            VT::Named(name, args) if args.is_empty() => Some(Type::Named(name.clone())),
-            VT::Named(name, args) => {
-                let arg_types: Option<Vec<Type>> = args.iter().map(Self::value_type_to_parser_type).collect();
-                arg_types.map(|a| Type::Generic { name: name.clone(), args: a })
-            }
-            VT::Array(inner) => Self::value_type_to_parser_type(inner).map(|t| Type::Array(Box::new(t))),
-            _ => None,
         }
     }
 
@@ -14561,6 +14623,18 @@ tr_done_{idx}:"#).unwrap();
                 Type::Array(cinner) => Self::unify_type_param(pinner, cinner, tp),
                 _ => None,
             },
+            Type::Nullable(p) | Type::Ref(p) | Type::Mutable(p) => match concrete {
+                Type::Nullable(c) | Type::Ref(c) | Type::Mutable(c) => Self::unify_type_param(p, c, tp),
+                _ => None,
+            },
+            Type::Map(pk, pv) => match concrete {
+                Type::Map(ck, cv) => Self::unify_type_param(pk, ck, tp).or_else(|| Self::unify_type_param(pv, cv, tp)),
+                _ => None,
+            },
+            Type::Tuple(ps) => match concrete {
+                Type::Tuple(cs) => ps.iter().zip(cs).find_map(|(p,c)| Self::unify_type_param(p,c,tp)),
+                _ => None,
+            },
             Type::Fn { params: pparams, ret: pret } => match concrete {
                 Type::Fn { params: cparams, ret: cret } => {
                     for (pp, cp) in pparams.iter().zip(cparams.iter()) {
@@ -14576,95 +14650,52 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
-    /// Infer concrete bindings for a method's OWN type params (e.g. `U` in
-    /// `fn map<U>(transform: fnc(T) -> U)`) from the actual call-site
-    /// arguments — needed for #153's instance-call monomorphization since,
-    /// unlike explicit `Class::method<U>(...)` static calls, instance-call
-    /// syntax (`option.map(...)`) has no syntactic slot for an explicit type
-    /// argument at all.
-    ///
-    /// For a lambda argument, unifies the param's declared `fnc(...)->R`
-    /// shape against the lambda's own annotated param/return types where the
-    /// lambda has them (Tinox's explicit `fnc(...)->R {...}` form always
-    /// does). Arrow-sugar lambdas (`n => ...`, issue #165) have none of that
-    /// to unify against, so as a fallback consults tinox-typecheck's own
-    /// already-inferred type for the lambda's return value via
-    /// `lambda_body_value_expr`/`expr_value_types`. For a non-lambda
-    /// argument, falls back to the existing marker-based struct-type
-    /// inference. Unresolved params default to `Int64`, matching the same
-    /// fallback `gen_generic_method_call` already uses for the static-call
-    /// path.
-    fn infer_own_type_params(
-        &self,
-        method: &tinox_parser::Method,
-        raw_args: &[tinox_parser::Expr],
-        ctx: &GenCtx,
-    ) -> HashMap<String, tinox_parser::Type> {
-        use tinox_parser::{ExprKind, Type};
-        let mut subst: HashMap<String, Type> = HashMap::new();
-        for tp in &method.type_params {
-            let mut inferred: Option<Type> = None;
-            for (pi, param) in method.params.iter().enumerate() {
-                let Some(arg) = raw_args.get(pi) else { continue };
-                match &param.param_type {
-                    Type::Named(n) if n == tp => {
-                        let marker = if let ExprKind::Ident(name) = &arg.node {
-                            ctx.local_types.get(name.as_str()).cloned()
-                        } else {
-                            None
-                        }
-                        .or_else(|| self.infer_struct_type(arg, ctx));
-                        if let Some(m) = marker {
-                            inferred = Some(Self::marker_to_type(&m));
+    /// Checked type recovery for specialization; marker recovery is restricted
+    /// to synthetic and unchecked ASTs that do not have semantic exports.
+    fn expression_type(&self, expr: &Expr, ctx: &GenCtx) -> Option<tinox_parser::Type> {
+        if let Some(ty) = self.semantic_type(expr.id).and_then(|ty| ty.to_parser_type()) {
+            if !matches!(&ty, tinox_parser::Type::Named(n) if self.semantic_bindings.contains_key(n)) {
+                return Some(ty);
+            }
+        }
+        // Unchecked/synthetic ASTs and concrete `this` carry emission context.
+        self.infer_struct_type_local(expr, ctx).map(|marker| {
+            self.specialization_types.get(&marker).cloned().unwrap_or_else(|| Self::marker_to_type(&marker))
+        })
+    }
+
+    fn collect_type_bindings(&self, params: &[String], formals: &[tinox_parser::Param], args: &[Expr], ctx: &GenCtx) -> HashMap<String, tinox_parser::Type> {
+        let mut bindings = HashMap::new();
+        for tp in params {
+            for (formal, actual) in formals.iter().zip(args) {
+                if let Some(concrete) = self.expression_type(actual, ctx) {
+                    if let Some(bound) = Self::unify_type_param(&formal.param_type, &concrete, tp) {
+                        if !matches!(&bound, tinox_parser::Type::Infer) {
+                            bindings.insert(tp.clone(), bound);
+                            break;
                         }
                     }
-                    Type::Fn { params: fn_params, ret } => {
-                        if let ExprKind::Lambda { params: lam_params, ret_type: lam_ret, body } = &arg.node {
-                            if let Some(lr) = lam_ret {
-                                inferred = Self::unify_type_param(ret, lr, tp);
-                            }
-                            if inferred.is_none() {
-                                for (fp, lp) in fn_params.iter().zip(lam_params.iter()) {
-                                    if let Some(t) = Self::unify_type_param(fp, &lp.param_type, tp) {
-                                        inferred = Some(t);
-                                        break;
-                                    }
-                                }
-                            }
-                            // Issue #165: arrow-sugar lambdas (`n => ...`) have no
-                            // annotated param/return types at all (parser gives
-                            // them `Type::Infer`/`ret_type: None`), so both
-                            // attempts above find nothing and this used to fall
-                            // straight through to the `unwrap_or(Type::Int64)`
-                            // default below, silently mis-specializing `tp`
-                            // whenever the real type wasn't Int64. Recover the
-                            // return type tinox-typecheck already inferred for
-                            // the lambda body (keyed by node id in
-                            // expr_value_types) and unify that against `ret`.
-                            if inferred.is_none() {
-                                if let Some(ret_expr) = Self::lambda_body_value_expr(body) {
-                                    if let Some(vt) = self.expr_value_types.get(&ret_expr.id) {
-                                        if let Some(t) = Self::value_type_to_parser_type(vt) {
-                                            inferred = Self::unify_type_param(ret, &t, tp);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    other => {
-                        if let Some(marker) = self.infer_struct_type(arg, ctx) {
-                            inferred = Self::unify_type_param(other, &Self::marker_to_type(&marker), tp);
-                        }
-                    }
-                }
-                if inferred.is_some() {
-                    break;
                 }
             }
-            subst.insert(tp.clone(), inferred.unwrap_or(Type::Int64));
         }
-        subst
+        bindings
+    }
+
+    fn require_bindings(&self, params: &[String], bindings: &mut HashMap<String, tinox_parser::Type>, span: Span) -> Result<(), ErrorBag> {
+        for tp in params {
+            if !bindings.contains_key(tp) {
+                return Err(ErrorBag { errors: vec![Error::new(span, format!("Missing resolved generic binding for '{tp}'; provide a concrete type argument or receiving annotation"))] });
+            }
+        }
+        Ok(())
+    }
+
+    fn infer_type_bindings(&self, params: &[String], formals: &[tinox_parser::Param], args: &[Expr], call_id: u32, ctx: &GenCtx) -> Result<HashMap<String, tinox_parser::Type>, ErrorBag> {
+        let mut bindings = if let Some(call) = self.semantics.calls.get(&call_id) {
+            call.bindings.iter().filter_map(|(name, ty)| self.specialize_semantic_type(ty).to_parser_type().map(|ty| (name.clone(),ty))).collect()
+        } else { self.collect_type_bindings(params, formals, args, ctx) };
+        self.require_bindings(params, &mut bindings, args.first().map(|arg| arg.span).unwrap_or_else(Span::dummy))?;
+        Ok(bindings)
     }
 
     /// #153: monomorphize + call an own-type-param instance method of a
@@ -14697,11 +14728,8 @@ tr_done_{idx}:"#).unwrap();
             .cloned()
             .expect("gen_generic_instance_method_call called for an unregistered fn_name");
 
-        let own_subst = self.infer_own_type_params(&pristine, raw_args, ctx);
-        let mut subst: HashMap<String, Type> = class_bindings
-            .iter()
-            .map(|(tp, llvm)| (tp.clone(), Self::llvm_ty_to_parser_type(llvm)))
-            .collect();
+        let own_subst = self.infer_type_bindings(&pristine.type_params, &pristine.params, raw_args, call_node_id, ctx)?;
+        let mut subst = class_bindings.clone();
         subst.extend(own_subst);
 
         let suffix: Vec<String> = pristine
@@ -14742,7 +14770,11 @@ tr_done_{idx}:"#).unwrap();
             let saved_ir = std::mem::take(&mut self.ir);
             let saved_temp = self.temp_count;
             self.temp_count = 0;
+            let saved_targets = std::mem::take(&mut self.argument_targets);
+            let saved_bindings = std::mem::replace(&mut self.semantic_bindings, subst.clone());
             self.gen_class_method(mangled_class, &specialized)?;
+            self.semantic_bindings = saved_bindings;
+            self.argument_targets = saved_targets;
             let spec_ir = std::mem::take(&mut self.ir);
             self.ir = saved_ir;
             self.temp_count = saved_temp;
@@ -14773,7 +14805,7 @@ tr_done_{idx}:"#).unwrap();
                 // layout + its own methods) — not just its mangled name —
                 // so a chained call finding this marker can look up methods
                 // on it immediately.
-                let ret_bindings: HashMap<String, String> = self
+                let ret_bindings: HashMap<String, tinox_parser::Type> = self
                     .generic_classes
                     .get(name.as_str())
                     .cloned()
@@ -14781,7 +14813,7 @@ tr_done_{idx}:"#).unwrap();
                         rgc.type_params
                             .iter()
                             .zip(args.iter())
-                            .map(|(tp, ta)| (tp.clone(), Self::type_to_llvm(ta)))
+                            .map(|(tp, ta)| (tp.clone(), ta.clone()))
                             .collect()
                     })
                     .unwrap_or_default();
@@ -14817,14 +14849,14 @@ tr_done_{idx}:"#).unwrap();
         use tinox_typecheck::ValueType as VT;
         match vt {
             VT::String => Some("String".to_string()),
-            VT::Float => Some("Float".to_string()),
+            VT::Float | VT::Float32 => Some("Float".to_string()),
             VT::Named(name, args) if args.is_empty() => Some(name.clone()),
             VT::Named(name, args) => {
                 // Generic instance → mangled specialization, if the class is known.
                 if let Some(gc) = self.generic_classes.get(name) {
                     let tps = gc.type_params.clone();
-                    let bindings: HashMap<String, String> = tps.iter().zip(args.iter())
-                        .map(|(tp, a)| (tp.clone(), Self::valuetype_to_llvm(a)))
+                    let bindings: HashMap<String, tinox_parser::Type> = tps.iter().zip(args.iter())
+                        .map(|(tp, a)| (tp.clone(), a.to_parser_type().unwrap_or(tinox_parser::Type::Any)))
                         .collect();
                     Some(Self::mangle_generic_name(name, &tps, &bindings))
                 } else {
@@ -14833,8 +14865,8 @@ tr_done_{idx}:"#).unwrap();
             }
             VT::Array(e) => Some(match e.as_ref() {
                 VT::String => "Array:String".to_string(),
-                VT::Float => "Array:Float".to_string(),
-                VT::Named(c, _) => format!("List:{}", c),
+                VT::Float | VT::Float32 => "Array:Float".to_string(),
+                VT::Named(_, _) => format!("List:{}", self.valuetype_to_marker(e).unwrap()),
                 inner => match self.valuetype_to_marker(inner) {
                     Some(m) => format!("Array:{}", m),
                     None => "Array".to_string(),
@@ -14854,43 +14886,30 @@ tr_done_{idx}:"#).unwrap();
     fn valuetype_to_llvm(vt: &tinox_typecheck::ValueType) -> String {
         use tinox_typecheck::ValueType as VT;
         match vt {
-            VT::Int => "i64".to_string(),
+            VT::Int | VT::Task(_) => "i64".to_string(),
+            VT::Integer { bits, .. } => format!("i{bits}"),
+            VT::Float32 => "float".to_string(),
+            VT::Nothing => "i64".to_string(),
             VT::Float => "double".to_string(),
             VT::Bool => "i1".to_string(),
             VT::Char => "i32".to_string(),
             VT::String => "i8*".to_string(),
+            VT::Named(name, _) if name == "Channel" => "i64".to_string(),
             VT::Named(_, _) => "i64*".to_string(),
-            VT::Array(_) | VT::Map(_) => "i64*".to_string(),
+            VT::Array(_) | VT::TupleOf(_) => "i64*".to_string(),
+            // Map words use the runtime's byte-pointer ABI, including task results.
+            VT::Map(_) => "i8*".to_string(),
+            VT::Reference { inner, .. } => format!("{}*", Self::valuetype_to_llvm(inner)),
             VT::Nullable(inner) => Self::valuetype_to_llvm(inner),
             _ => "i64".to_string(),
         }
     }
 
-    fn mangle_generic_name(name: &str, type_params: &[String], bindings: &HashMap<String, String>) -> String {
-        let suffix: Vec<String> = type_params
-            .iter()
-            .map(|tp| {
-                bindings.get(tp).cloned().unwrap_or_else(|| "i64".to_string())
-                    .replace('*', "P")
-                    .replace(' ', "_")
-            })
-            .collect();
+    fn mangle_generic_name(name: &str, type_params: &[String], bindings: &HashMap<String, tinox_parser::Type>) -> String {
+        let suffix: Vec<String> = type_params.iter().map(|tp| {
+            Self::type_suffix(bindings.get(tp).expect("validated specialization binding"))
+        }).collect();
         if suffix.is_empty() { name.to_string() } else { format!("{}__{}", name, suffix.join("__")) }
-    }
-
-    /// Resolve a parser Type using concrete LLVM type bindings for type parameters.
-    fn type_to_llvm_with_bindings(ty: &tinox_parser::Type, bindings: &HashMap<String, String>) -> String {
-        match ty {
-            tinox_parser::Type::Named(n) => {
-                if let Some(llvm) = bindings.get(n) { llvm.clone() }
-                else { Self::type_to_llvm(ty) }
-            }
-            tinox_parser::Type::Generic { name, .. } => {
-                if let Some(llvm) = bindings.get(name) { llvm.clone() }
-                else { Self::type_to_llvm(ty) }
-            }
-            _ => Self::type_to_llvm(ty),
-        }
     }
 
     /// Substitute type parameter names in a `Type` with concrete parser `Type`s.
@@ -14916,6 +14935,9 @@ tr_done_{idx}:"#).unwrap();
                 params: params.iter().map(|p| Self::substitute_type(p, subst)).collect(),
                 ret: Box::new(Self::substitute_type(ret, subst)),
             },
+            tinox_parser::Type::Nullable(inner) => tinox_parser::Type::Nullable(Box::new(Self::substitute_type(inner, subst))),
+            tinox_parser::Type::Map(k, v) => tinox_parser::Type::Map(Box::new(Self::substitute_type(k, subst)), Box::new(Self::substitute_type(v, subst))),
+            tinox_parser::Type::Tuple(items) => tinox_parser::Type::Tuple(items.iter().map(|t| Self::substitute_type(t, subst)).collect()),
             other => other.clone(),
         }
     }
@@ -14959,7 +14981,7 @@ tr_done_{idx}:"#).unwrap();
     /// no registered struct_layout (generic classes are skipped from the
     /// normal pre-pass) and silently allocates a 0-byte struct (Bug 20.2:
     /// Result::ok returned a corrupted value from exactly this).
-    fn substitute_stmt(stmt: &Stmt, subst: &HashMap<String, Type>, self_rename: (&str, &str)) -> Stmt {
+    fn substitute_stmt(stmt: &Stmt, subst: &HashMap<String, tinox_parser::Type>, self_rename: (&str, &str)) -> Stmt {
         let node = match &stmt.node {
             StmtKind::Expr(e) => StmtKind::Expr(Self::substitute_expr(e, subst, self_rename)),
             StmtKind::Let { name, ty, value } => StmtKind::Let {
@@ -15033,11 +15055,11 @@ tr_done_{idx}:"#).unwrap();
             },
             StmtKind::Empty => StmtKind::Empty,
         };
-        Spanned { node, span: stmt.span, id: stmt.id }
+        Spanned { node, span: stmt.span, id: stmt.id, file: stmt.file.clone() }
     }
 
     /// Counterpart to `substitute_stmt` for expr nodes (see there for `self_rename`).
-    fn substitute_expr(expr: &Expr, subst: &HashMap<String, Type>, self_rename: (&str, &str)) -> Expr {
+    fn substitute_expr(expr: &Expr, subst: &HashMap<String, tinox_parser::Type>, self_rename: (&str, &str)) -> Expr {
         let rename = |n: &String| -> String {
             if n == self_rename.0 { self_rename.1.to_string() } else { n.clone() }
         };
@@ -15198,16 +15220,12 @@ tr_done_{idx}:"#).unwrap();
                 args: args.iter().map(|a| Self::substitute_expr(a, subst, self_rename)).collect(),
             },
         };
-        Spanned { node, span: expr.span, id: expr.id }
+        Spanned { node, span: expr.span, id: expr.id, file: expr.file.clone() }
     }
 
     /// Create a monomorphic copy of a generic function with substituted types and a mangled name.
-    fn substitute_fn(f: &tinox_parser::Function, mangled_name: &str, bindings: &HashMap<String, String>) -> tinox_parser::Function {
-        // Build a Type substitution map: "T" -> Type::Int64 etc.
-        let subst: HashMap<String, tinox_parser::Type> = bindings.iter().map(|(tp, llvm_ty)| {
-            let concrete_type = Self::llvm_ty_to_parser_type(llvm_ty);
-            (tp.clone(), concrete_type)
-        }).collect();
+    fn substitute_fn(f: &tinox_parser::Function, mangled_name: &str, bindings: &HashMap<String, tinox_parser::Type>) -> tinox_parser::Function {
+        let subst = bindings.clone();
         tinox_parser::Function {
             name: mangled_name.to_string(),
             type_params: vec![],
@@ -15218,7 +15236,7 @@ tr_done_{idx}:"#).unwrap();
                 annotations: p.annotations.clone(),
             }).collect(),
             ret_type: Self::substitute_type(&f.ret_type, &subst),
-            body: f.body.clone(),
+            body: Self::substitute_stmt(&f.body, &subst, ("", "")),
             span: f.span,
             is_async: f.is_async,
             doc: f.doc.clone(),
@@ -15233,9 +15251,9 @@ tr_done_{idx}:"#).unwrap();
             return class.to_string();
         }
         if let Some(gc) = self.generic_classes.get(class) {
-            let bindings: HashMap<String, String> = gc.type_params.iter()
+            let bindings: HashMap<String, tinox_parser::Type> = gc.type_params.iter()
                 .zip(type_args.iter())
-                .map(|(tp, ta)| (tp.clone(), Self::type_to_llvm(ta)))
+                .map(|(tp, ta)| (tp.clone(), ta.clone()))
                 .collect();
             Self::mangle_generic_name(class, &gc.type_params, &bindings)
         } else {
@@ -15280,8 +15298,13 @@ tr_done_{idx}:"#).unwrap();
                 }
             }
         }
-        for arg in args.iter() {
+        let expected = self.method_param_types.get(key).cloned().unwrap_or_default();
+        let offset = usize::from(!is_static && args.len() == expected.len() + 1);
+        for (i, arg) in args.iter().enumerate() {
             let (v, t) = self.gen_expr(arg, ctx)?;
+            let (v, t) = if let Some(ty) = i.checked_sub(offset).and_then(|i| expected.get(i)) {
+                self.convert_semantic_argument(v, t, &tinox_typecheck::ValueType::from_parser_type(ty), arg)?
+            } else { (v, t) };
             args_parts.push(format!("{} {}", t, v));
         }
         let args_str = args_parts.join(", ");
@@ -15306,16 +15329,15 @@ tr_done_{idx}:"#).unwrap();
             return Ok(class.to_string());
         }
         let gc = self.generic_classes.get(class).unwrap().clone();
-        let bindings: HashMap<String, String> = gc.type_params.iter()
+        let bindings: HashMap<String, tinox_parser::Type> = gc.type_params.iter()
             .zip(type_args.iter())
-            .map(|(tp, ta)| (tp.clone(), Self::type_to_llvm(ta)))
+            .map(|(tp, ta)| (tp.clone(), ta.clone()))
             .collect();
         self.ensure_generic_class_specialization_with_bindings(class, &bindings)
     }
 
     /// Core of `ensure_generic_class_specialization`, but with
-    /// already-resolved type-parameter bindings (LLVM type strings
-    /// instead of parser `Type`s) — callers are `New`/explicit type
+    /// already-resolved structural type-parameter bindings — callers are `New`/explicit type
     /// arguments (via the public variant above) and static instance
     /// calls of generic classes (`Cache::set(cache, …)`,
     /// `Option::some(5)`), which derive bindings from call-site
@@ -15325,12 +15347,14 @@ tr_done_{idx}:"#).unwrap();
     fn ensure_generic_class_specialization_with_bindings(
         &mut self,
         class: &str,
-        bindings: &HashMap<String, String>,
+        bindings: &HashMap<String, tinox_parser::Type>,
     ) -> Result<String, ErrorBag> {
         let Some(gc) = self.generic_classes.get(class).cloned() else {
             return Ok(class.to_string());
         };
+        self.require_bindings(&gc.type_params, &mut bindings.clone(), gc.span)?;
         let mangled = Self::mangle_generic_name(class, &gc.type_params, bindings);
+        self.specialization_types.insert(mangled.clone(), tinox_parser::Type::Generic { name: class.into(), args: gc.type_params.iter().map(|tp| bindings[tp].clone()).collect() });
         if !self.generated_specializations.contains(&mangled) {
             self.generated_specializations.insert(mangled.clone());
             let specialized = Self::substitute_class(&gc, &mangled, bindings);
@@ -15412,9 +15436,13 @@ tr_done_{idx}:"#).unwrap();
             let saved_ir = std::mem::take(&mut self.ir);
             let saved_temp = self.temp_count;
             self.temp_count = 0;
+            let saved_targets = std::mem::take(&mut self.argument_targets);
+            let saved_bindings = std::mem::replace(&mut self.semantic_bindings, bindings.clone());
             for method in &emit_now {
                 self.gen_class_method(&mangled, method)?;
             }
+            self.semantic_bindings = saved_bindings;
+            self.argument_targets = saved_targets;
             let spec_ir = std::mem::take(&mut self.ir);
             self.ir = saved_ir;
             self.temp_count = saved_temp;
@@ -15427,11 +15455,9 @@ tr_done_{idx}:"#).unwrap();
     fn substitute_class(
         c: &tinox_parser::Class,
         mangled_name: &str,
-        bindings: &HashMap<String, String>,
+        bindings: &HashMap<String, tinox_parser::Type>,
     ) -> tinox_parser::Class {
-        let subst: HashMap<String, tinox_parser::Type> = bindings.iter()
-            .map(|(tp, llvm_ty)| (tp.clone(), Self::llvm_ty_to_parser_type(llvm_ty)))
-            .collect();
+        let subst = bindings.clone();
         // (class name, mangled name) — param/field/return types that
         // name the class's own generic name (`cache: Cache<K,V>`, e.g.
         // the instance counterpart to `this`) are collapsed onto the
@@ -15484,26 +15510,6 @@ tr_done_{idx}:"#).unwrap();
             span: c.span,
             doc: c.doc.clone(),
             annotations: vec![],
-        }
-    }
-
-    /// Best-effort mapping from an LLVM type string back to a parser Type (for substitution).
-    fn llvm_ty_to_parser_type(llvm_ty: &str) -> tinox_parser::Type {
-        match llvm_ty {
-            "i64" => tinox_parser::Type::Int64,
-            "i32" => tinox_parser::Type::Int32,
-            "i16" => tinox_parser::Type::Int16,
-            "i8" => tinox_parser::Type::Int8,
-            "double" => tinox_parser::Type::Float64,
-            "float" => tinox_parser::Type::Float32,
-            "i1" => tinox_parser::Type::Bool,
-            "i8*" => tinox_parser::Type::String,
-            "void" => tinox_parser::Type::Nothing,
-            other if other.ends_with('*') => {
-                let inner = &other[..other.len() - 1];
-                tinox_parser::Type::Ref(Box::new(Self::llvm_ty_to_parser_type(inner)))
-            }
-            other => tinox_parser::Type::Named(other.to_string()),
         }
     }
 
@@ -15586,6 +15592,20 @@ tr_done_{idx}:"#).unwrap();
     /// for any int width: divide-by-zero and INT_MIN/-1 overflow become a hard
     /// error instead of LLVM UB (garbage). i64 calls the checked runtime fn
     /// directly; i8/i16/i32 widen → check → narrow; other types fall back to raw.
+    fn emit_semantic_idiv(&mut self, result: &str, ty: &str, l: &str, r: &str, remainder: bool, unsigned: bool) {
+        if !unsigned { self.emit_checked_idiv(result, ty, l, r, remainder); return; }
+        let zero = self.temp();
+        writeln!(&mut self.ir, "{} = icmp eq {} {}, 0", zero, ty, r).unwrap();
+        let fail = self.new_bb("unsigned_div_zero");
+        let valid = self.new_bb("unsigned_div_valid");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", zero, fail, valid).unwrap();
+        writeln!(&mut self.ir, "{}:", fail).unwrap();
+        let trap = if remainder { "tinox_checked_srem" } else { "tinox_checked_sdiv" };
+        writeln!(&mut self.ir, "call i64 @{}(i64 0, i64 0)\nunreachable", trap).unwrap();
+        writeln!(&mut self.ir, "{}:", valid).unwrap();
+        writeln!(&mut self.ir, "{} = {} {} {}, {}", result, if remainder { "urem" } else { "udiv" }, ty, l, r).unwrap();
+    }
+
     fn emit_checked_idiv(&mut self, result: &str, ty: &str, l: &str, r: &str, is_rem: bool) {
         let func = if is_rem { "tinox_checked_srem" } else { "tinox_checked_sdiv" };
         if ty == "i64" {
@@ -15608,6 +15628,9 @@ tr_done_{idx}:"#).unwrap();
             let t = self.temp();
             writeln!(&mut self.ir, "  {} = bitcast double {} to i64", t, val).unwrap();
             t
+        } else if ty == "float" {
+            let bits = self.temp(); writeln!(&mut self.ir, "  {} = bitcast float {} to i32", bits, val).unwrap();
+            let wide = self.temp(); writeln!(&mut self.ir, "  {} = zext i32 {} to i64", wide, bits).unwrap(); wide
         } else if ty == "i1" {
             let t = self.temp();
             writeln!(&mut self.ir, "  {} = zext i1 {} to i64", t, val).unwrap();
@@ -15669,6 +15692,11 @@ tr_done_{idx}:"#).unwrap();
                 let t = wt!();
                 writeln!(&mut w, "  {} = trunc i64 {} to i1", t, raw).unwrap();
                 t
+            } else if param_ty == "float" {
+                let bits = wt!(); writeln!(&mut w, "  {} = trunc i64 {} to i32", bits, raw).unwrap();
+                let value = wt!(); writeln!(&mut w, "  {} = bitcast i32 {} to float", value, bits).unwrap(); value
+            } else if matches!(param_ty.as_str(), "i8" | "i16" | "i32") {
+                let value = wt!(); writeln!(&mut w, "  {} = trunc i64 {} to {}", value, raw, param_ty).unwrap(); value
             } else if param_ty.ends_with('*') {
                 let t = wt!();
                 writeln!(&mut w, "  {} = inttoptr i64 {} to {}", t, raw, param_ty).unwrap();
@@ -15698,6 +15726,13 @@ tr_done_{idx}:"#).unwrap();
                 let as_i64 = wt!();
                 writeln!(&mut w, "  {} = zext i1 {} to i64", as_i64, res).unwrap();
                 writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, as_i64).unwrap();
+            } else if ret_ty == "float" {
+                let bits = wt!(); writeln!(&mut w, "  {} = bitcast float {} to i32", bits, res).unwrap();
+                let wide = wt!(); writeln!(&mut w, "  {} = zext i32 {} to i64", wide, bits).unwrap();
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, wide).unwrap();
+            } else if matches!(ret_ty, "i8" | "i16" | "i32") {
+                let wide = wt!(); writeln!(&mut w, "  {} = zext {} {} to i64", wide, ret_ty, res).unwrap();
+                writeln!(&mut w, "  {} = inttoptr i64 {} to i8*", ret_ptr, wide).unwrap();
             } else if ret_ty.ends_with('*') {
                 writeln!(&mut w, "  {} = bitcast {} {} to i8*", ret_ptr, ret_ty, res).unwrap();
             } else {
@@ -15775,6 +15810,18 @@ fn collect_free_vars_stmt(stmt: &tinox_parser::Stmt, param_names: &HashSet<Strin
             collect_free_vars_inner(cond, param_names, vars);
             collect_free_vars_stmt(body, param_names, vars);
         }
+        StmtKind::Throw(expr) => collect_free_vars_inner(expr, param_names, vars),
+        StmtKind::Try { body, catches, finally } => {
+            collect_free_vars_stmt(body, param_names, vars);
+            for catch in catches {
+                let mut catch_params = param_names.clone();
+                catch_params.insert(catch.param.clone());
+                collect_free_vars_stmt(&catch.body, &catch_params, vars);
+            }
+            if let Some(finally) = finally {
+                collect_free_vars_stmt(finally, param_names, vars);
+            }
+        }
         StmtKind::Block(stmts) => {
             for s in stmts { collect_free_vars_stmt(s, param_names, vars); }
         }
@@ -15801,6 +15848,14 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
         }
         ExprKind::Unary { op: _, operand } => {
             collect_free_vars_inner(operand, param_names, vars);
+        }
+        // Ternary expressions share the If node with expression-form conditionals.
+        ExprKind::If { cond, then_branch, else_branch } => {
+            collect_free_vars_inner(cond, param_names, vars);
+            collect_free_vars_inner(then_branch, param_names, vars);
+            if let Some(else_branch) = else_branch {
+                collect_free_vars_inner(else_branch, param_names, vars);
+            }
         }
         ExprKind::Call { func, args } => {
             collect_free_vars_inner(func, param_names, vars);
@@ -15848,28 +15903,7 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
         }
         ExprKind::Block(stmts) => {
             for stmt in stmts {
-                match &stmt.node {
-                    StmtKind::Expr(e) => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Return(Some(e)) => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Let { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Var { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Assignment { target, value } => {
-                        collect_free_vars_inner(target, param_names, vars);
-                        collect_free_vars_inner(value, param_names, vars);
-                    }
-                    StmtKind::If { cond, then_branch, else_branch } => {
-                        collect_free_vars_inner(cond, param_names, vars);
-                        collect_free_vars_stmt(then_branch, param_names, vars);
-                        if let Some(eb) = else_branch {
-                            collect_free_vars_stmt(eb, param_names, vars);
-                        }
-                    }
-                    StmtKind::While { cond, body } => {
-                        collect_free_vars_inner(cond, param_names, vars);
-                        collect_free_vars_stmt(body, param_names, vars);
-                    }
-                    _ => {}
-                }
+                collect_free_vars_stmt(stmt, param_names, vars);
             }
         }
         ExprKind::Range {
@@ -15952,6 +15986,8 @@ pub struct GenCtx {
     locals: HashMap<String, (String, usize)>,
     /// Maps user variable name → unique LLVM alloca slot name (without %)
     local_slots: HashMap<String, String>,
+    /// Declared signatures after monomorphization, including captured callbacks.
+    callable_types: HashMap<String, tinox_typecheck::ValueType>,
     /// Variables that hold a range value (i64* with start/end, not an array)
     range_vars: HashSet<String>,
     params: HashSet<String>,
@@ -15970,6 +16006,7 @@ pub struct GenCtx {
     in_defer_exec: bool,
     /// LLVM return type of the current function (for casting return values)
     ret_type: String,
+    ret_unsigned: bool,
     /// If set, emit histogram_record before every return. (metric_name, start_reg)
     timed_metric: Option<(String, String)>,
     /// Set for the duration of an @Transactional method's body (issue
@@ -17698,6 +17735,52 @@ mod tests {
     // ================================================================
     // Try/catch
     // ================================================================
+
+    #[test]
+    fn test_lambda_try_capture_scopes() {
+        // Issue #357: catch parameters are local to their own handler,
+        // while references in try/finally and nested closures remain free.
+        for (body, expected) in [
+            (
+                r#"
+                    try { throw failure; }
+                    catch e: String { println(prefix + e); }
+                    finally { println(cleanup); }
+                "#,
+                vec!["failure", "println", "prefix", "cleanup"],
+            ),
+            (
+                r#"
+                    try { println(e); }
+                    catch e: String { println(e); }
+                    finally { println(e); }
+                "#,
+                vec!["println", "e"],
+            ),
+            (
+                r#"
+                    try { throw failure; }
+                    catch e: String {
+                        const nested = fn() { println(e + greeting + value); };
+                    }
+                "#,
+                vec!["failure", "println", "greeting"],
+            ),
+        ] {
+            let src = format!(
+                "fn main() -> Nothing {{ const callback = fn(value: String) {{ {body} }}; }}"
+            );
+            let tokens = Lexer::new(&src).tokenize().expect("lex failed");
+            let ast = Parser::new(tokens).parse().expect("parse failed");
+            let DeclKind::Function(function) = &ast.decls[0].node else {
+                panic!("expected function");
+            };
+            let mut actual = HashSet::new();
+            collect_free_vars_stmt(&function.body, &HashSet::new(), &mut actual);
+            let expected = expected.into_iter().map(String::from).collect::<HashSet<_>>();
+            assert_eq!(actual, expected, "incorrect captures for {body}");
+        }
+    }
 
     #[test]
     fn test_try_catch_ir() {

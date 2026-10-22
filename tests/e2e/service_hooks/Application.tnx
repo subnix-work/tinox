@@ -1,0 +1,18 @@
+import Dependency;
+@ApplicationComponent
+@Synchronized
+class Application {
+    @Inject private var dependency: Dependency;
+    fnc cleanup(dependency: Dependency) -> Nothing {
+        sleep(10);
+        if (!dependency.ready()) { throw "dependency disposed before owner"; }
+        println("application cleanup");
+    }
+    @OnStart
+    fn start() -> Nothing {
+        if (!this.dependency.ready()) { throw "dependency not initialized"; }
+        println("application start");
+    }
+    @OnStop
+    fn stop() -> Nothing { println("application stop"); spawn Application::cleanup(this.dependency); }
+}

@@ -11,9 +11,9 @@ class Main
     fnc main() -> Int32
     {
         try { Fs::writeFile("/tmp/tinox_bug353/nope/file.txt", "x"); println("no error"); }
-        catch (e) { println("write failed"); }
+        catch (e: String) { println("write failed"); }
         try { Fs::createDirectory("/tmp/tinox_bug353/a/b/c"); println("no error"); }
-        catch (e) { println("mkdir failed"); }
+        catch (e: String) { println("mkdir failed"); }
         Fs::createDirectories("/tmp/tinox_bug353/a/b/c");
         println(File::exists("/tmp/tinox_bug353/a/b/c").toString());
         Fs::writeFile("/tmp/tinox_bug353/a/b/c/f.txt", "hello");

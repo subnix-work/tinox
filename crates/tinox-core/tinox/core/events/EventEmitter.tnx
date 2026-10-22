@@ -17,13 +17,13 @@ namespace tinox.core.events
             {
                 emitter.listeners[event] = [];
             }
-            let handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
+            const handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
             handlers.push(handler);
         }
 
         fn once(emitter: EventEmitter, event: String, handler: fnc(JsonValue) -> Nothing) -> Nothing
         {
-            let wrapper: fnc(JsonValue) -> Nothing = ev => {
+            const wrapper: fnc(JsonValue) -> Nothing = ev => {
                 handler(ev);
             };
             EventEmitter::on(emitter, event, wrapper);
@@ -35,7 +35,7 @@ namespace tinox.core.events
             {
                 return;
             }
-            let handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
+            const handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
             var i: Int64 = 0;
             while i < handlers.len()
             {
@@ -50,7 +50,7 @@ namespace tinox.core.events
             {
                 return;
             }
-            let handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
+            const handlers: List<fnc(JsonValue) -> Nothing> = emitter.listeners[event];
             var i: Int64 = 0;
             while i < handlers.len()
             {

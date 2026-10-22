@@ -11,7 +11,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let xs: List<String> = ["a", "b", "c"];
+        const xs: List<String> = ["a", "b", "c"];
         println(xs.join(", "));
         println(join(xs, "-"));
         return 0;

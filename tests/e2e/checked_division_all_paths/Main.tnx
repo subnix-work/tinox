@@ -14,7 +14,7 @@ class Main
 {
     fnc main() -> Int32 {
         // Binary op, i32
-        let a: Int32 = 100;
+        const a: Int32 = 100;
         println((a / 7).toString());        // 14
         println((a % 7).toString());        // 2
 

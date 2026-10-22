@@ -6,12 +6,12 @@ namespace tinox.core.format
     {
         fn padLeft(s: String, width: Int64, char: String) -> String
         {
-            let len: Int64 = s.len();
+            const len: Int64 = s.len();
             if (width <= len)
             {
                 return s;
             }
-            let padLen: Int64 = width - len;
+            const padLen: Int64 = width - len;
             var padding: String = "";
             var i: Int64 = 0;
             while i < padLen
@@ -24,12 +24,12 @@ namespace tinox.core.format
 
         fn padRight(s: String, width: Int64, char: String) -> String
         {
-            let len: Int64 = s.len();
+            const len: Int64 = s.len();
             if (width <= len)
             {
                 return s;
             }
-            let padLen: Int64 = width - len;
+            const padLen: Int64 = width - len;
             var padding: String = "";
             var i: Int64 = 0;
             while i < padLen
@@ -71,10 +71,10 @@ namespace tinox.core.format
             }
             var result: String = "";
             var value: Int64 = n;
-            let digits: String = "0123456789abcdef";
+            const digits: String = "0123456789abcdef";
             while value > 0
             {
-                let digit: Int64 = value & 15;
+                const digit: Int64 = value & 15;
                 result = digits.substring(digit, digit + 1) + result;
                 value = value >> 4;
             }

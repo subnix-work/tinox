@@ -60,7 +60,7 @@ namespace tinox.core.set
 
         fn union(a: Set<T>, b: Set<T>) -> Set<T>
         {
-            let result: Set<T> = Set::new();
+            const result: Set<T> = Set::new();
             var i: Int64 = 0;
             while i < a.items.len()
             {
@@ -78,7 +78,7 @@ namespace tinox.core.set
 
         fn intersection(a: Set<T>, b: Set<T>) -> Set<T>
         {
-            let result: Set<T> = Set::new();
+            const result: Set<T> = Set::new();
             var i: Int64 = 0;
             while i < a.items.len()
             {
@@ -93,7 +93,7 @@ namespace tinox.core.set
 
         fn difference(a: Set<T>, b: Set<T>) -> Set<T>
         {
-            let result: Set<T> = Set::new();
+            const result: Set<T> = Set::new();
             var i: Int64 = 0;
             while i < a.items.len()
             {

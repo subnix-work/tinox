@@ -1,0 +1,5 @@
+import tinox.core.http3_server;
+@Http3RestController(0, "cert.pem", "key.pem")
+class Api {
+ @GET @Path("/slow") fn slow() -> String { println("handling"); sleep(100); return "complete"; }
+}
