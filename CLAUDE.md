@@ -403,18 +403,13 @@ the one-type-per-file rule (`check_namespace_path_matches`,
   `tinox install`, then `tinox test`). Backfilling this convention across
   every stdlib module is a separate, larger test-coverage initiative, not
   part of this layout migration.
-- **Extended-tier test files can't be run directly with `tinox test
-  <path>` from inside this repo, and that's pre-existing, not something
-  this migration introduced.** Unlike core-tier (always resolves via
-  `stdlib_dir()`), an extended-tier module's own `tinox.toml` declares no
-  dependency on itself, so `import tinox.core.<module>;` inside its own
-  `tests/` file has nothing to resolve against locally — exactly the same
-  gap `stdlib_smoke.rs`'s own doc comment already describes for its SMOKES
-  cases ("no longer resolve via `stdlib_dir()`/`TINOX_PATH` at build
-  time"). Verifying an extended-tier test's actual logic therefore always
-  goes through an installed (published) version of the module, the same
-  way `stdlib_smoke.rs` and `amqp10_consumer_annotation.rs` already do it
-  — not against the workspace's own uncommitted edits to that module.
+- **Extended-tier workspace testing (issue #313):** use an isolated consumer
+  with `tinox.overrides.yaml` to exercise unpublished modules, or run
+  `make workspace-stdlib` for the dedicated source smoke lane. Ordinary
+  e2e/dogfood tests still use installed published packages. The source lane
+  stages manifests with workspace dependency versions; it does not prove
+  compatibility of the original published pins. See
+  [local dependency workflows](docs/local-dependencies.md).
 - `crates/tinox/tests/stdlib_smoke.rs`'s `scan_module_dir` (the
   per-module inventory scan behind `stdlib_smoke_completeness`) needed a
   matching update: it transparently unwraps each extended-tier module's
@@ -1742,6 +1737,50 @@ unchanged and already existed; this adds real pooling and a
   no `tinox.core.db` module section at all yet (unlike every other stdlib
   module) — filling that gap is a separate, still-open task.
 
+## Local Dependency Overrides: `[[overrides]]` (issue #313, since 2026-10-21)
+
+A project's `tinox.toml` may map a package coordinate to a local package
+root, so a build/test consumes unpublished source (typically an in-tree
+`crates/tinox-core-ext/<module>/`) instead of the installed immutable
+package:
+
+```toml
+[[overrides]]
+group = "tinox.core"
+artifactId = "crypto"
+path = "crates/tinox-core-ext/crypto"   # relative to this tinox.toml
+```
+
+- **Keyed by group+artifactId, not version**: the override replaces
+  whichever version anything in the graph requests, transitive dependencies
+  included (`pm::collect_global_dep_dir`). It also shadows a matching
+  `.tinox/deps/` (explicit-`url`) copy. Only the ROOT manifest's overrides
+  count; an installed dependency's own `[[overrides]]` are ignored.
+- **Hard errors, no silent fallback** (`pm::resolve_overrides`): missing
+  path, no `tinox.toml`/`[package]`, package name or group contradicting the
+  coordinate, duplicate coordinate, a `tinox.core` package lacking its
+  `tinox/core/<artifactId>/` subtree, and an override no dependency in the
+  graph refers to.
+- **Provenance**: every applied override prints
+  `note: <coord> resolved from local override <dir> (requested X, local Y)`
+  to stderr (once per process). A requested/local version difference is
+  reported, not rejected -- a local checkout is normally ahead of the
+  published version.
+- **Lock/publish**: `tinox install` neither downloads nor pins overridden
+  coordinates in `tinox.lock` (their own dependencies are still installed);
+  `tinox package`/`publish` refuse a manifest containing `[[overrides]]`, so
+  machine-specific paths cannot ship in an archive.
+- **LSP**: `tinox-lsp` does not resolve installed packages at all today (only
+  embedded stdlib + project-local imports), so there is no installed-package
+  resolution for an override to change there; revisit when the LSP gains
+  dependency-aware import resolution.
+- **CI lanes**: `make workspace-ext` (`crates/tinox/tests/local_override.rs`,
+  separate `workspace-source` job in check.yml) validates in-tree source via
+  overrides with no network; real published-archive behavior stays with
+  `stdlib_smoke.rs`/`transitive_deps.rs`, which resolve installed packages.
+- This session had no Rust toolchain: the change was written without being
+  compiled or run -- run `make check` before trusting it.
+
 ## Typed Tasks + `scope { }` Structured Concurrency (issue #301, since 2026-10-20)
 
 `spawn f()` is a `Task<T>` (T = `f`'s return type) and `await` yields `T`;
@@ -1890,48 +1929,3 @@ startup failure, never a silent fallback.
 - For explicit critical sections, use semaphore-module locks with `defer`
   immediately after successful acquisition. Existing low-level native lock
   operations remain blocking and are not implicit cancellation points.
-
-## Local Dependency Overrides: `[[overrides]]` (issue #313, since 2026-10-21)
-
-A project's `tinox.toml` may map a package coordinate to a local package
-root, so a build/test consumes unpublished source (typically an in-tree
-`crates/tinox-core-ext/<module>/`) instead of the installed immutable
-package:
-
-```toml
-[[overrides]]
-group = "tinox.core"
-artifactId = "crypto"
-path = "crates/tinox-core-ext/crypto"   # relative to this tinox.toml
-```
-
-- **Keyed by group+artifactId, not version**: the override replaces
-  whichever version anything in the graph requests, transitive dependencies
-  included (`pm::collect_global_dep_dir`). It also shadows a matching
-  `.tinox/deps/` (explicit-`url`) copy. Only the ROOT manifest's overrides
-  count; an installed dependency's own `[[overrides]]` are ignored.
-- **Hard errors, no silent fallback** (`pm::resolve_overrides`): missing
-  path, no `tinox.toml`/`[package]`, package name or group contradicting the
-  coordinate, duplicate coordinate, a `tinox.core` package lacking its
-  `tinox/core/<artifactId>/` subtree, and an override no dependency in the
-  graph refers to.
-- **Provenance**: every applied override prints
-  `note: <coord> resolved from local override <dir> (requested X, local Y)`
-  to stderr (once per process). A requested/local version difference is
-  reported, not rejected -- a local checkout is normally ahead of the
-  published version.
-- **Lock/publish**: `tinox install` neither downloads nor pins overridden
-  coordinates in `tinox.lock` (their own dependencies are still installed);
-  `tinox package`/`publish` refuse a manifest containing `[[overrides]]`, so
-  machine-specific paths cannot ship in an archive.
-- **LSP**: `tinox-lsp` does not resolve installed packages at all today (only
-  embedded stdlib + project-local imports), so there is no installed-package
-  resolution for an override to change there; revisit when the LSP gains
-  dependency-aware import resolution.
-- **CI lanes**: `make workspace-ext` (`crates/tinox/tests/local_override.rs`,
-  separate `workspace-source` job in check.yml) validates in-tree source via
-  overrides with no network; real published-archive behavior stays with
-  `stdlib_smoke.rs`/`transitive_deps.rs`, which resolve installed packages.
-- Validation: `make check` and the real-compiler `local_override` integration
-  tests cover local edits, install/add behavior, manifest errors, package
-  refusal, and the in-tree crypto module.

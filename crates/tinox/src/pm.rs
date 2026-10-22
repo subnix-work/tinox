@@ -137,6 +137,141 @@ pub struct LocalOverride {
     pub path: String,
 }
 
+/// Consumer-only configuration. Paths are relative to this project's root;
+/// dependency manifests cannot introduce overrides into the consumer's graph.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalOverrides {
+    #[serde(default, deserialize_with = "unique_overrides")]
+    pub overrides: std::collections::BTreeMap<String, PathBuf>,
+}
+
+fn unique_overrides<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<std::collections::BTreeMap<String, PathBuf>, D::Error> {
+    struct Entries;
+    impl<'de> serde::de::Visitor<'de> for Entries {
+        type Value = std::collections::BTreeMap<String, PathBuf>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a mapping of unique package coordinates to paths")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+            let mut entries = std::collections::BTreeMap::new();
+            while let Some((key, value)) = map.next_entry::<String, PathBuf>()? {
+                if entries.insert(key.clone(), value).is_some() {
+                    return Err(serde::de::Error::custom(format!("duplicate override coordinate: {key}")));
+                }
+            }
+            Ok(entries)
+        }
+    }
+    deserializer.deserialize_map(Entries)
+}
+
+pub const OVERRIDES_FILE: &str = "tinox.overrides.yaml";
+
+impl LocalOverrides {
+    pub fn read(root: &Path) -> Result<Self, String> {
+        let path = root.join(OVERRIDES_FILE);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = crate::build_cache::read_to_string(&path)
+            .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+        let config: Self = serde_yaml::from_str(&content)
+            .map_err(|e| format!("Invalid {}: {e}", path.display()))?;
+        for (coordinate, path) in &config.overrides {
+            let parts: Vec<_> = coordinate.split(':').collect();
+            if parts.len() != 3 {
+                return Err(format!("invalid override coordinate {coordinate:?}; expected group:artifactId:version"));
+            }
+            for (value, field) in parts.iter().zip(["group", "artifactId", "version"]) {
+                sanitize_path_component(value, field)?;
+            }
+            if parts[0].split('.').any(|s| s.is_empty() || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+                return Err(format!("invalid override group in {coordinate}"));
+            }
+            if path.as_os_str().is_empty() {
+                return Err(format!("empty local path for {coordinate}"));
+            }
+            let package_root = root.join(path);
+            if !package_root.join("tinox.toml").is_file() {
+                return Err(format!("local override {coordinate}: missing {}/tinox.toml", package_root.display()));
+            }
+            let manifest = read_manifest(&package_root)?;
+            let package = manifest.package.ok_or_else(|| format!("local override {coordinate}: missing [package]"))?;
+            if package.name != parts[1] || package.version != parts[2]
+                || package.group.as_deref().is_some_and(|g| g != parts[0]) {
+                return Err(format!("local override {coordinate}: package name/group/version does not match {}", package_root.display()));
+            }
+            let source = local_source_dir(&package_root);
+            let namespace = source.join(parts[0].replace('.', "/")).join(parts[1]);
+            if !namespace.is_dir() && !namespace.with_extension("tnx").is_file() {
+                return Err(format!("local override {coordinate}: namespace layout missing {}", namespace.display()));
+            }
+        }
+        Ok(config)
+    }
+
+    pub fn selected(&self, root: &Path, dep: &Dependency) -> Result<Option<PathBuf>, String> {
+        let coordinate = format!("{}:{}:{}", dep.group, dep.artifact_id, dep.version);
+        if let Some(path) = self.overrides.get(&coordinate) {
+            return root.join(path).canonicalize().map(Some)
+                .map_err(|e| format!("local override {coordinate}: {e}"));
+        }
+        let prefix = format!("{}:{}:", dep.group, dep.artifact_id);
+        if self.overrides.keys().any(|k| k.starts_with(&prefix)) {
+            return Err(format!("local override version conflict: dependency requests {coordinate}"));
+        }
+        Ok(None)
+    }
+}
+
+fn local_source_dir(root: &Path) -> PathBuf {
+    if root.join("src").is_dir() { root.join("src") } else { root.to_path_buf() }
+}
+
+/// Resolve the declared graph when local sources are enabled. Installed copies
+/// of overridden coordinates are excluded, including stale project-local copies.
+/// The root consumer's overrides also apply to every transitive dependency.
+pub fn dependency_dirs(root: &Path, manifest: &TinoxManifest) -> Result<(Vec<PathBuf>, Vec<MissingDep>), String> {
+    let overrides = LocalOverrides::read(root)?;
+    if overrides.overrides.is_empty() {
+        let (dirs, missing, notes) = installed_dep_dirs(root, manifest)?;
+        // Both CLI and LSP use this resolver. Report each applied TOML
+        // override once per process, retaining its provenance diagnostics.
+        static SEEN: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+        let seen = SEEN.get_or_init(Default::default);
+        for note in notes {
+            if seen.lock().unwrap().insert(note.clone()) {
+                eprintln!("note: {note}");
+            }
+        }
+        return Ok((dirs, missing));
+    }
+    let mut dirs = Vec::new();
+    let mut missing = Vec::new();
+    let mut visited = HashSet::new();
+    let mut queue = manifest.dependencies.clone();
+    while let Some(dep) = queue.pop() {
+        let coordinate = format!("{}:{}:{}", dep.group, dep.artifact_id, dep.version);
+        if !visited.insert(coordinate) { continue; }
+        let local = overrides.selected(root, &dep)?;
+        let package_root = match &local {
+            Some(path) => path.clone(),
+            None => resolved_install_dir(root, &dep)?,
+        };
+        if !package_root.is_dir() {
+            missing.push(MissingDep { group: dep.group, artifact_id: dep.artifact_id, version: dep.version });
+            continue;
+        }
+        let sub = read_manifest(&package_root)?;
+        queue.extend(sub.dependencies);
+        dirs.push(if local.is_some() { local_source_dir(&package_root) } else { package_root });
+    }
+    dirs.sort();
+    dirs.dedup();
+    Ok((dirs, missing))
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LockEntry {
     pub group: String,
@@ -149,6 +284,9 @@ pub struct LockEntry {
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct TinoxLock {
+    /// Mutable workspace sources have no artifact checksum or machine path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_sources: Vec<String>,
     #[serde(default)]
     pub dependencies: Vec<LockEntry>,
 }
@@ -644,6 +782,8 @@ pub fn resolve_overrides(root: &Path, manifest: &TinoxManifest) -> Result<Vec<Re
     Ok(out)
 }
 
+type InstalledDepDirs = (Vec<PathBuf>, Vec<MissingDep>, Vec<String>);
+
 /// Every installed dependency directory reachable for import resolution —
 /// not just the ones this project's own tinox.toml lists directly. Merges
 /// two trees: the project-local `.tinox/deps/**` glob (explicit-`url`
@@ -659,12 +799,10 @@ pub fn resolve_overrides(root: &Path, manifest: &TinoxManifest) -> Result<Vec<Re
 /// one provenance line per override actually applied, for the caller to
 /// surface. An override no dependency in the graph refers to is a hard
 /// error rather than a silent no-op.
-pub type InstalledDepResolution = (Vec<PathBuf>, Vec<MissingDep>, Vec<String>);
-
 pub fn installed_dep_dirs(
     root: &Path,
     manifest: &TinoxManifest,
-) -> Result<InstalledDepResolution, String> {
+) -> Result<InstalledDepDirs, String> {
     let overrides = resolve_overrides(root, manifest)?;
     let deps_root = root.join(".tinox").join("deps");
     let mut dirs = Vec::new();
@@ -1297,6 +1435,33 @@ fn install_dep_transitively(
         return (0, 0);
     }
 
+    let local_overrides = match LocalOverrides::read(root) {
+        Ok(config) => config,
+        Err(e) => { eprintln!("  error: {e}"); return (0, 1); }
+    };
+    match local_overrides.selected(root, dep) {
+        Ok(Some(path)) => {
+            let coordinate = format!("{}:{}:{}", dep.group, dep.artifact_id, dep.version);
+            println!("  local override: {coordinate} -> {} (mutable workspace source)", path.display());
+            if !lock.local_sources.contains(&coordinate) {
+                lock.local_sources.push(coordinate);
+                *lock_changed = true;
+            }
+            let sub = match read_manifest(&path) {
+                Ok(sub) => sub,
+                Err(e) => { eprintln!("  error: {e}"); return (0, 1); }
+            };
+            let (mut ok, mut fail) = (1, 0);
+            for child in &sub.dependencies {
+                let (child_ok, child_fail) = install_dep_transitively(root, child, &sub, lock, update, visited, lock_changed, overrides);
+                ok += child_ok;
+                fail += child_fail;
+            }
+            return (ok, fail);
+        }
+        Ok(None) => {},
+        Err(e) => { eprintln!("  error: {e}"); return (0, 1); }
+    }
     let mut ok = 0usize;
     let mut fail = 0usize;
     // Issue #313: a locally overridden coordinate is never downloaded and
@@ -1363,6 +1528,30 @@ fn install_dep_transitively(
     (ok, fail)
 }
 
+/// Human-readable provenance shared with the LSP's informational diagnostics.
+pub fn source_provenance(root: &Path, dirs: &[PathBuf]) -> Result<Vec<String>, String> {
+    let config = LocalOverrides::read(root)?;
+    let mut out = Vec::new();
+    for (coordinate, path) in config.overrides {
+        let source = local_source_dir(&root.join(path).canonicalize().map_err(|e| e.to_string())?);
+        if dirs.contains(&source) {
+            out.push(format!("local override: {coordinate} -> {} (mutable workspace source)", source.display()));
+        }
+    }
+    Ok(out)
+}
+
+pub fn cmd_sources() -> Result<(), String> {
+    let root = find_project_root().ok_or("no tinox.toml found")?;
+    let (dirs, missing) = dependency_dirs(&root, &read_manifest(&root)?)?;
+    for message in source_provenance(&root, &dirs)? { println!("{message}"); }
+    for dir in dirs { println!("source directory: {}", dir.display()); }
+    if !missing.is_empty() {
+        return Err(format!("{} dependencies are missing; run tinox install", missing.len()));
+    }
+    Ok(())
+}
+
 /// `tinox install [--update]`. Without `--update`, a dependency already
 /// pinned in tinox.lock must download to the exact same sha256 or the
 /// install fails (catches a dependency URL's content silently changing
@@ -1394,9 +1583,9 @@ pub fn cmd_install(args: &[String]) -> bool {
             return false;
         }
     };
-    if manifest.dependencies.is_empty() {
-        println!("No dependencies to install.");
-        return true;
+    if let Err(e) = LocalOverrides::read(&root) {
+        eprintln!("error: {e}");
+        return false;
     }
     let mut lock = match read_lock(&root) {
         Ok(l) => l,
@@ -1423,7 +1612,8 @@ pub fn cmd_install(args: &[String]) -> bool {
     };
     let mut ok = 0usize;
     let mut fail = 0usize;
-    let mut lock_changed = false;
+    let mut lock_changed = !lock.local_sources.is_empty();
+    lock.local_sources.clear();
     let mut visited: HashSet<(String, String, String)> = HashSet::new();
     for dep in &manifest.dependencies {
         let (dep_ok, dep_fail) = install_dep_transitively(
@@ -1434,7 +1624,8 @@ pub fn cmd_install(args: &[String]) -> bool {
     }
     if lock_changed {
         if let Err(e) = write_lock(&root, &lock) {
-            eprintln!("warning: failed to update tinox.lock: {}", e);
+            eprintln!("error: failed to update tinox.lock: {}", e);
+            return false;
         }
     }
     println!("{} installed, {} failed", ok, fail);
@@ -1539,7 +1730,15 @@ fn check_stdlib_ext_layout(src_dir: &Path, pkg: &Package, tnx_files: &[PathBuf])
     Ok(())
 }
 
+pub fn check_publishable(root: &Path) -> Result<(), String> {
+    if !LocalOverrides::read(root)?.overrides.is_empty() {
+        return Err(format!("remove {OVERRIDES_FILE} and verify installed dependencies before packaging or publishing local overrides"));
+    }
+    Ok(())
+}
+
 fn build_package_archive(root: &Path, pkg: &Package) -> Result<PathBuf, String> {
+    check_publishable(root)?;
     let src_dir = root.join("src");
     if !src_dir.exists() {
         return Err("src/ directory not found".to_string());
@@ -1870,12 +2069,13 @@ pub fn cmd_add(args: &[String]) {
             TinoxLock::default()
         }
     };
-    let mut lock_changed = false;
+    let mut lock_changed = !lock.local_sources.is_empty();
+    lock.local_sources.clear();
     let mut visited: HashSet<(String, String, String)> = HashSet::new();
     let overrides = match resolve_overrides(&root, &manifest) {
         Ok(overrides) => overrides,
-        Err(error) => {
-            eprintln!("error: {}", error);
+        Err(e) => {
+            eprintln!("error: {}", e);
             return;
         }
     };

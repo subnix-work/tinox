@@ -1459,7 +1459,7 @@ class Api {
         <tr><td><code>@DoNotSerialize</code></td><td>Field</td><td>Exclude field from JSON</td></tr>
         <tr><td><code>@Log</code></td><td>Class</td><td>Automatically inject log field</td></tr>
         <tr><td><code>@Inject</code></td><td>Field</td><td>Dependency injection field</td></tr>
-        <tr><td><code>@Config("key")</code></td><td>Field</td><td>Runtime configuration; <code>@Config("key", "required"|"optional")</code> or <code>@Config("key", "default", "value")</code>. Environment overrides files; <a href="examples/runtime_config/README.md">policies, parsing, precedence and secret handling</a>.</td></tr>
+        <tr><td><code>@Config("key")</code></td><td>Field</td><td>Value from application.properties</td></tr>
         <tr><td><code>@Synchronized</code></td><td>Class/method</td><td>Recursive class monitor for singleton instance methods</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Class</td><td>Singleton scope for DI</td></tr>
         <tr><td><code>@HttpRequestScoped</code></td><td>Class</td><td>New object per HTTP request</td></tr>
@@ -1808,6 +1808,7 @@ epoll_fd = epoll_create1(0);
       bounded by the kernel listen queue and they never grow threads. AMQP connections use
       <code>spawn</code> and therefore count against <code>TINOX_MAX_TASKS</code>.
       A rejected request is never retried automatically.
+      <strong>Bind address:</strong> by default every listener (<code>HttpServer</code>, <code>@TinoxUIApp</code>, WebSocket, HTTP/2, SSE) binds <code>0.0.0.0</code>. <code>TINOX_BIND_ADDRESS=127.0.0.1</code> restricts them to one IPv4 address (e.g. loopback-only for local dashboards); an invalid value aborts startup.
     </p>
 
     <div class="info-box green">

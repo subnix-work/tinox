@@ -724,6 +724,7 @@ impl<'a> Lexer<'a> {
             '\\' => Ok('\\'),
             '"' => Ok('"'),
             '\'' => Ok('\''),
+            '$' => Ok('$'),
             '0' => Ok('\0'),
             'x' => {
                 let d1 = self.read_hex_digit()?;
@@ -1484,6 +1485,12 @@ mod tests {
     }
 
     // --- Interpolated strings ---
+
+    #[test]
+    fn test_escaped_dollar_is_literal() {
+        let toks = lex_kinds(r#""echo \${HOME}""#);
+        assert!(matches!(&toks[0], TokenKind::String(s) if s == "echo ${HOME}"));
+    }
 
     #[test]
     fn test_interp_string_simple() {

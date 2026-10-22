@@ -1,0 +1,107 @@
+// Issue #357: capture variables used only in exception-handling statements.
+// expect: hello
+// expect: caught: failure
+// expect: finally after catch
+// expect: 42
+// expect: normal try
+// expect: finally without catch
+// expect: nested try
+// expect: nested
+// expect: outer
+
+class Main
+{
+    fnc call(f: fnc() -> Nothing) -> Nothing
+    {
+        f();
+    }
+
+    fnc main() -> Int32
+    {
+        const greeting: String = "hello";
+        Main::call(fn() {
+            try
+            {
+                println(greeting);
+            }
+            catch e: String
+            {
+                println("error " + e);
+            }
+        });
+
+        const failure: String = "failure";
+        const prefix: String = "caught: ";
+        const cleanup: String = "finally after catch";
+        const answer: Int64 = 42;
+        Main::call(fn() {
+            try
+            {
+                throw failure;
+            }
+            catch e: String
+            {
+                println(prefix + e);
+            }
+            finally
+            {
+                println(cleanup);
+                println(answer);
+            }
+        });
+
+        const normal: String = "normal try";
+        const finallyOnly: String = "finally without catch";
+        Main::call(fn() {
+            try
+            {
+                println(normal);
+            }
+            finally
+            {
+                println(finallyOnly);
+            }
+        });
+
+        const nested: String = "nested try";
+        Main::call(fn() {
+            if (true)
+            {
+                try
+                {
+                    try
+                    {
+                        throw "inner";
+                    }
+                    catch inner: String
+                    {
+                        println(nested);
+                    }
+                }
+                catch outer: String
+                {
+                    println("unexpected " + outer);
+                }
+            }
+        });
+        const shadowNested: String = "nested";
+        const e: String = "outer";
+        Main::call(fn() {
+            if (true) {
+                {
+                    try {
+                        try {
+                            throw "inner";
+                        } catch inner: String {
+                            println(shadowNested);
+                        }
+                    } finally {
+                        // Capture an outer variable used only in finally.
+                        println(e);
+                    }
+                }
+            }
+        });
+        return 0;
+    }
+}

@@ -38,9 +38,6 @@ pub struct ConfigFieldInfo {
     pub class_name: String,
     pub field_name: String,
     pub config_key: String,
-    pub policy: String,
-    pub default_value: Option<String>,
-    pub value_type: String,
     /// LLVM type: "i8*" for String, "i64" for Int*, "i1" for Bool
     pub field_llvm_type: String,
 }
@@ -597,18 +594,22 @@ pub struct CodeGen {
     /// declared return type (map: result element type, filter: i1). Taken by
     /// gen_lambda like the param hint.
     pending_lambda_ret_llvm: Option<String>,
-    /// Compilation target; drives the IR triple/datalayout and llc -march.
+    /// Compilation target (issue #310): drives the IR header and `llc -march`.
     target: crate::target::Target,
 }
 
 impl CodeGen {
+    /// Override the compilation target (default: `Target::resolve()`, falling
+    /// back to the host; the driver validates `TINOX_TARGET` before this runs).
     pub fn set_target(&mut self, target: crate::target::Target) {
         self.target = target;
     }
 
     pub fn new() -> Self {
         Self {
-            target: crate::target::Target::default(),
+            target: crate::target::Target::resolve()
+                .or_else(|_| crate::target::Target::host())
+                .unwrap_or(crate::target::Target::X86_64),
             ir: String::new(),
             lambda_ir: String::new(),
             strings: HashMap::new(),
@@ -1498,7 +1499,12 @@ impl CodeGen {
 
         writeln!(&mut self.ir, "; Module ID = \"tinox\"").unwrap();
         writeln!(&mut self.ir, "source_filename = \"tinox\"").unwrap();
-        writeln!(&mut self.ir, "target datalayout = \"{}\"", self.target.datalayout()).unwrap();
+        writeln!(
+            &mut self.ir,
+            "target datalayout = \"{}\"",
+            self.target.data_layout()
+        )
+        .unwrap();
         writeln!(&mut self.ir, "target triple = \"{}\"", self.target.triple()).unwrap();
         writeln!(&mut self.ir).unwrap();
         // Global error slot for cross-function throw propagation:
@@ -1622,6 +1628,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @tinox_array_reverse(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_array_contains(i64*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_array_index_of(i64*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_array_contains_str(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_array_index_of_str(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_map_create()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_map_set(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_get(i8*, i8*)").unwrap();
@@ -1650,6 +1658,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @fileReadAllText(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @fileWriteAllText(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @fileAppendText(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @fileWriteAllTextChecked(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @dirCreateChecked(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @dirCreateAllChecked(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @fileClose(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @processArgs()").unwrap();
         writeln!(&mut self.ir, "declare i1 @fileExists(i8*)").unwrap();
@@ -1715,6 +1726,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64  @tinox_db_getval_int(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i1  @tinox_db_is_null(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_db_free(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i1 @tinox_db_result_failed(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_orm_save_failed(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_orm_query_failed(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_error(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8** @tinox_params_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_params_set(i8**, i64, i8*)").unwrap();
@@ -1750,6 +1764,12 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @isStdinTty()").unwrap();
         writeln!(&mut self.ir, "declare i64 @isStdoutTty()").unwrap();
         writeln!(&mut self.ir, "declare i64 @processId()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processRunWithOptions(i64*, i64, i8*, i8*, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processSpawnPiped(i64*, i8*, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processReadLine(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processReadStderr(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @processCloseStdin(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processExitCode(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @processRun(i64*, i64, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @processResultStdout(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @processResultStderr(i64)").unwrap();
@@ -2286,7 +2306,6 @@ impl CodeGen {
         // Emit SQL-constant functions and row-mapping helpers for @Entity classes
         self.emit_entity_code();
         self.emit_global_initializers();
-        self.emit_config_validation();
 
         for (name, s) in &self.strings {
             let escaped = Self::escape_llvm_string(s);
@@ -2301,20 +2320,6 @@ impl CodeGen {
         }
 
         Ok(())
-    }
-
-    /// Runtime resolves and validates every declaration before any application code.
-    fn emit_config_validation(&mut self) {
-        writeln!(&mut self.ir, "declare void @tinox_config_declare(i8*, i8*, i8*, i8*)").unwrap();
-        writeln!(&mut self.ir, "define void @tinox_config_init() {{").unwrap();
-        for field in self.config_fields.clone() {
-            let key = self.make_string_const(&field.config_key);
-            let ty = self.make_string_const(&field.value_type);
-            let policy = self.make_string_const(&field.policy);
-            let fallback = field.default_value.as_deref().map(|s| self.make_string_const(s)).unwrap_or_else(|| "null".to_string());
-            writeln!(&mut self.ir, "  call void @tinox_config_declare(i8* {key}, i8* {ty}, i8* {policy}, i8* {fallback})").unwrap();
-        }
-        writeln!(&mut self.ir, "  ret void\n}}").unwrap();
     }
 
     /// Generates route handler shims, `__tinox_register_routes`, and (if needed) a `main`
@@ -2661,12 +2666,8 @@ impl CodeGen {
                 writeln!(&mut self.lambda_ir, "  %req_fct_{idx} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
                 writeln!(&mut self.lambda_ir, "  %req_ict_{idx} = load i64, i64* %req_fct_{idx}").unwrap();
                 writeln!(&mut self.lambda_ir, "  %req_pct_{idx} = inttoptr i64 %req_ict_{idx} to i64*").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_hf_ct_{idx} = getelementptr i64, i64* %req_pct_{idx}, i64 3").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_hi_ct_{idx} = load i64, i64* %req_hf_ct_{idx}").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_hm_ct_{idx} = inttoptr i64 %req_hi_ct_{idx} to i8*").unwrap();
                 writeln!(&mut self.lambda_ir, "  %ct_key_{idx} = getelementptr [13 x i8], [13 x i8]* @__hdr_content_type, i64 0, i64 0").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_ct_val_{idx} = call i64 @tinox_map_get(i8* %req_hm_ct_{idx}, i8* %ct_key_{idx})").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_ct_str_{idx} = inttoptr i64 %req_ct_val_{idx} to i8*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_ct_str_{idx} = call i8* @HttpRequest_getHeader(i64* %req_pct_{idx}, i8* %ct_key_{idx})").unwrap();
                 writeln!(&mut self.lambda_ir, "  %expected_ct_{idx} = getelementptr [{ct_len} x i8], [{ct_len} x i8]* @__route_consumes_{idx}, i64 0, i64 0").unwrap();
                 writeln!(&mut self.lambda_ir, "  %ct_match_{idx} = call i64 @tinox_string_starts_with(i8* %req_ct_str_{idx}, i8* %expected_ct_{idx})").unwrap();
                 writeln!(&mut self.lambda_ir, "  %ct_ok_{idx} = icmp eq i64 %ct_match_{idx}, 1").unwrap();
@@ -3408,42 +3409,15 @@ tr_done_{idx}:"#).unwrap();
             .filter(|(_, name)| !declared_names.contains(name.as_str()))
             .map(|(i, _)| i)
             .collect();
-        if !string_fields.is_empty() {
-            let empty_str_ptr = self.emit_lambda_string_literal("");
-            for idx in string_fields {
-                let field_ptr = self.temp();
-                writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
-                writeln!(&mut self.lambda_ir, "  store i8* {empty_str_ptr}, i8** {field_ptr}").unwrap();
-            }
+        if string_fields.is_empty() {
+            return;
         }
-        self.emit_config_injection(class_name, inst_reg, true);
-    }
-
-    fn emit_config_injection(&mut self, class_name: &str, instance: &str, lambda: bool) {
-        let layout = self.struct_layouts.get(class_name).cloned().unwrap_or_default();
-        let mut body = String::new();
-        for field in self.config_fields.clone().iter().filter(|f| f.class_name == class_name) {
-            let Some(idx) = layout.iter().position(|f| f == &field.field_name) else { continue };
-            let key = self.make_string_const(&field.config_key);
-            let value = self.temp();
-            let getter = match field.field_llvm_type.as_str() {
-                "i8*" => "tinox_config_get",
-                "i1" => "tinox_config_get_bool",
-                _ => "tinox_config_get_int",
-            };
-            let ty = if field.field_llvm_type == "i8*" { "i8*" } else { "i64" };
-            writeln!(&mut body, "  {value} = call {ty} @{getter}(i8* {key})").unwrap();
+        let empty_str_ptr = self.emit_lambda_string_literal("");
+        for idx in string_fields {
             let field_ptr = self.temp();
-            writeln!(&mut body, "  {field_ptr} = getelementptr i64, ptr {instance}, i64 {idx}").unwrap();
-            if ty == "i8*" {
-                let bits = self.temp();
-                writeln!(&mut body, "  {bits} = ptrtoint i8* {value} to i64").unwrap();
-                writeln!(&mut body, "  store i64 {bits}, i64* {field_ptr}").unwrap();
-            } else {
-                writeln!(&mut body, "  store i64 {value}, i64* {field_ptr}").unwrap();
-            }
+            writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
+            writeln!(&mut self.lambda_ir, "  store i8* {empty_str_ptr}, i8** {field_ptr}").unwrap();
         }
-        if lambda { self.lambda_ir.push_str(&body); } else { self.ir.push_str(&body); }
     }
 
     fn emit_ws_code(&mut self) {
@@ -7052,6 +7026,8 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
         writeln!(&mut self.ir, "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {params_arr}, i64 {n_params})").unwrap();
         writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
+        // A failed query must not look like an empty result set.
+        self.emit_orm_failure_check(&result_reg, &entity.table_name, "tinox_orm_query_failed");
 
         match chain.terminal.as_str() {
             "count" => {
@@ -7205,6 +7181,7 @@ tr_done_{idx}:"#).unwrap();
             "  {ins_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {ins_sql}, i8** {ins_params}, i64 {n_ins})"
         )
         .unwrap();
+        self.emit_orm_save_check(&ins_result, &entity.table_name);
         let new_id = self.temp();
         writeln!(&mut self.ir, "  {new_id} = call i64 @tinox_db_getval_int(i8* {ins_result}, i64 0, i64 0)").unwrap();
         writeln!(&mut self.ir, "  store i64 {new_id}, i64* {id_ptr}").unwrap();
@@ -7227,6 +7204,7 @@ tr_done_{idx}:"#).unwrap();
             "  {upd_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {upd_sql}, i8** {upd_params}, i64 {n_upd})"
         )
         .unwrap();
+        self.emit_orm_save_check(&upd_result, &entity.table_name);
         writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {upd_result})").unwrap();
         writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
 
@@ -7235,6 +7213,29 @@ tr_done_{idx}:"#).unwrap();
         let as_i64 = self.temp();
         writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
         Ok((as_i64, "i64".to_string()))
+    }
+
+    /// Abort with a visible error if an ORM save's INSERT/UPDATE failed.
+    fn emit_orm_save_check(&mut self, result_reg: &str, table: &str) {
+        self.emit_orm_failure_check(result_reg, table, "tinox_orm_save_failed");
+    }
+
+    /// Abort via `fail_fn(table)` if a DB result signals failure.
+    fn emit_orm_failure_check(&mut self, result_reg: &str, table: &str, fail_fn: &str) {
+        let failed = self.temp();
+        writeln!(&mut self.ir, "  {failed} = call i1 @tinox_db_result_failed(i8* {result_reg})").unwrap();
+        let fail_bb = self.new_bb("orm_save_failed");
+        let ok_bb = self.new_bb("orm_save_ok");
+        writeln!(&mut self.ir, "  br i1 {failed}, label %{fail_bb}, label %{ok_bb}").unwrap();
+        writeln!(&mut self.ir, "{fail_bb}:").unwrap();
+        let label = format!("__orm_tbl_{}", self.strings.len());
+        self.strings.insert(label.clone(), table.to_string());
+        let len = table.len() + 1;
+        let p = self.temp();
+        writeln!(&mut self.ir, "  {p} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
+        writeln!(&mut self.ir, "  call void @{fail_fn}(i8* {p})").unwrap();
+        writeln!(&mut self.ir, "  unreachable").unwrap();
+        writeln!(&mut self.ir, "{ok_bb}:").unwrap();
     }
 
     /// Emit SQL-constant getter functions and row-mapping helpers for all @Entity classes.
@@ -7319,6 +7320,31 @@ tr_done_{idx}:"#).unwrap();
         let ptr = self.temp();
         writeln!(&mut self.ir, "  {raw} = call i8* @tinox_alloc(i64 {alloc_size})").unwrap();
         writeln!(&mut self.ir, "  {ptr} = bitcast i8* {raw} to i64*").unwrap();
+        // first() on an empty result returns a default entity. Never ask
+        // the driver to read a missing row (libpq prints a warning for it).
+        let nrows = self.temp();
+        let in_range = self.temp();
+        writeln!(&mut self.ir, "  {nrows} = call i64 @tinox_db_nrows(i8* %result)").unwrap();
+        writeln!(&mut self.ir, "  {in_range} = icmp ult i64 %row_idx, {nrows}").unwrap();
+        writeln!(&mut self.ir, "  br i1 {in_range}, label %read_row, label %empty_row").unwrap();
+        writeln!(&mut self.ir, "empty_row:").unwrap();
+        for (col_idx, field) in fields.iter().enumerate() {
+            let fptr = self.temp();
+            writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {ptr}, i64 {col_idx}").unwrap();
+            if field.field_llvm_type == "i8*" {
+                let label = format!("__orm_empty_{}", self.strings.len());
+                self.strings.insert(label.clone(), String::new());
+                let empty = self.temp();
+                let as_int = self.temp();
+                writeln!(&mut self.ir, "  {empty} = getelementptr [1 x i8], [1 x i8]* @{label}, i64 0, i64 0").unwrap();
+                writeln!(&mut self.ir, "  {as_int} = ptrtoint i8* {empty} to i64").unwrap();
+                writeln!(&mut self.ir, "  store i64 {as_int}, i64* {fptr}").unwrap();
+            } else {
+                writeln!(&mut self.ir, "  store i64 0, i64* {fptr}").unwrap();
+            }
+        }
+        writeln!(&mut self.ir, "  ret i8* {raw}").unwrap();
+        writeln!(&mut self.ir, "read_row:").unwrap();
         for (col_idx, field) in fields.iter().enumerate() {
             let fptr = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {ptr}, i64 {col_idx}").unwrap();
@@ -9647,8 +9673,9 @@ tr_done_{idx}:"#).unwrap();
                                 writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
                                 return Ok((bool_val, "i1".to_string()));
                             } else {
-                                let (val, _) = self.gen_expr(&args[1], ctx)?;
-                                writeln!(&mut self.ir, "{} = call i64 @tinox_array_contains(i64* {}, i64 {})", result, haystack, val).unwrap();
+                                let (val, vty) = self.gen_expr(&args[1], ctx)?;
+                                let callee = if vty == "i8*" { "tinox_array_contains_str" } else { "tinox_array_contains" };
+                                writeln!(&mut self.ir, "{} = call i64 @{}(i64* {}, {} {})", result, callee, haystack, if vty == "i8*" { "i8*" } else { "i64" }, val).unwrap();
                                 let bool_val = self.temp();
                                 writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
                                 return Ok((bool_val, "i1".to_string()));
@@ -9661,8 +9688,9 @@ tr_done_{idx}:"#).unwrap();
                                 let (needle, _) = self.gen_expr(&args[1], ctx)?;
                                 writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, haystack, needle).unwrap();
                             } else {
-                                let (val, _) = self.gen_expr(&args[1], ctx)?;
-                                writeln!(&mut self.ir, "{} = call i64 @tinox_array_index_of(i64* {}, i64 {})", result, haystack, val).unwrap();
+                                let (val, vty) = self.gen_expr(&args[1], ctx)?;
+                                let callee = if vty == "i8*" { "tinox_array_index_of_str" } else { "tinox_array_index_of" };
+                                writeln!(&mut self.ir, "{} = call i64 @{}(i64* {}, {} {})", result, callee, haystack, if vty == "i8*" { "i8*" } else { "i64" }, val).unwrap();
                             }
                             return Ok((result, "i64".to_string()));
                         }
@@ -10296,17 +10324,19 @@ tr_done_{idx}:"#).unwrap();
                             return Ok((raw, "i64".to_string()));
                         }
                         "contains" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, vty) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_array_contains(i64* {}, i64 {})", result, obj_ptr, val).unwrap();
+                            let callee = if vty == "i8*" { "tinox_array_contains_str" } else { "tinox_array_contains" };
+                            writeln!(&mut self.ir, "{} = call i64 @{}(i64* {}, {} {})", result, callee, obj_ptr, if vty == "i8*" { "i8*" } else { "i64" }, val).unwrap();
                             let b = self.temp();
                             writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", b, result).unwrap();
                             return Ok((b, "i1".to_string()));
                         }
                         "indexOf" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, vty) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_array_index_of(i64* {}, i64 {})", result, obj_ptr, val).unwrap();
+                            let callee = if vty == "i8*" { "tinox_array_index_of_str" } else { "tinox_array_index_of" };
+                            writeln!(&mut self.ir, "{} = call i64 @{}(i64* {}, {} {})", result, callee, obj_ptr, if vty == "i8*" { "i8*" } else { "i64" }, val).unwrap();
                             return Ok((result, "i64".to_string()));
                         }
                         "sort" => {
@@ -10390,7 +10420,7 @@ tr_done_{idx}:"#).unwrap();
                 let is_map_dispatch = match declared_type.as_deref() {
                     Some(t) => Self::is_map_marker(t),
                     None => obj_ty == "i64"
-                        && matches!(method.as_str(), "get" | "insert" | "contains" | "keys" | "values" | "remove" | "len"),
+                        && matches!(method.as_str(), "get" | "insert" | "set" | "contains" | "keys" | "values" | "remove" | "len"),
                 };
                 if is_map_dispatch {
                     let map_obj_ptr = if obj_ty == "i64" {
@@ -10409,7 +10439,7 @@ tr_done_{idx}:"#).unwrap();
                             // Type the value by the map's value marker
                             return Ok(if let Some(ty) = self.semantic_type(expr.id).filter(|ty| *ty != tinox_typecheck::ValueType::Any) { self.decode_semantic_word(result, &ty) } else { self.coerce_map_value(result, declared_type.as_deref()) });
                         }
-                        "insert" => {
+                        "insert" | "set" => {
                             let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
                             let key_i8 = self.emit_map_key(&key, &key_ty);
                             let (val, val_ty) = self.gen_expr(&args[1], ctx)?;
@@ -11324,7 +11354,51 @@ tr_done_{idx}:"#).unwrap();
                     let store_val = self.coerce_to_i64(&val, &val_ty);
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
                 }
-                self.emit_config_injection(name, &typed_ptr, false);
+                // @Config: inject values from application.properties for annotated fields
+                let cfg_fields: Vec<ConfigFieldInfo> = self.config_fields.iter()
+                    .filter(|f| &f.class_name == name)
+                    .cloned()
+                    .collect();
+                for cf in &cfg_fields {
+                    if let Some(field_idx) = layout.iter().position(|f| f == &cf.field_name) {
+                        let key_label = format!("str{}", self.strings.len());
+                        self.strings.insert(key_label.clone(), cf.config_key.clone());
+                        let key_len = cf.config_key.len() + 1;
+                        let key_ptr = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0",
+                            key_ptr, key_len, key_len, key_label).unwrap();
+                        let field_ptr = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = getelementptr i64, ptr {}, i64 {}",
+                            field_ptr, typed_ptr, field_idx).unwrap();
+                        match cf.field_llvm_type.as_str() {
+                            "i8*" => {
+                                let raw = self.temp();
+                                writeln!(&mut self.ir,
+                                    "{} = call i8* @tinox_config_get(i8* {})",
+                                    raw, key_ptr).unwrap();
+                                let as_i64 = self.temp();
+                                writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", as_i64, raw).unwrap();
+                                writeln!(&mut self.ir, "store i64 {}, i64* {}", as_i64, field_ptr).unwrap();
+                            }
+                            "i1" => {
+                                let raw = self.temp();
+                                writeln!(&mut self.ir,
+                                    "{} = call i64 @tinox_config_get_bool(i8* {})",
+                                    raw, key_ptr).unwrap();
+                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
+                            }
+                            _ => {
+                                let raw = self.temp();
+                                writeln!(&mut self.ir,
+                                    "{} = call i64 @tinox_config_get_int(i8* {})",
+                                    raw, key_ptr).unwrap();
+                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
+                            }
+                        }
+                    }
+                }
 
                 // @Log: auto-initialize the synthetic 'log' field with Logger::new(ClassName)
                 if self.log_classes.contains(name) {
@@ -11720,7 +11794,6 @@ tr_done_{idx}:"#).unwrap();
                         }
                     }
                 }
-                self.emit_config_injection(&effective_class, &typed_ptr, false);
                 Ok((typed_ptr, "i64*".to_string()))
             }
             ExprKind::Lambda {
@@ -14344,7 +14417,7 @@ tr_done_{idx}:"#).unwrap();
     pub fn write_asm(&self, ir_path: &Path, asm_path: &Path) -> Result<(), Error> {
         let bc_path = self.run_opt(ir_path)?;
         let output = std::process::Command::new("llc")
-            .args(["-O3", format!("-march={}", self.target.llc_march()).as_str(), "-filetype=asm", "-o"])
+            .args(["-O3", &format!("-march={}", self.target.llc_arch()), "-filetype=asm", "-o"])
             .arg(asm_path)
             .arg(&bc_path)
             .output()
@@ -14362,7 +14435,7 @@ tr_done_{idx}:"#).unwrap();
     pub fn write_obj(&self, ir_path: &Path, obj_path: &Path) -> Result<(), Error> {
         let bc_path = self.run_opt(ir_path)?;
         let output = std::process::Command::new("llc")
-            .args(["-O3", format!("-march={}", self.target.llc_march()).as_str(), "-filetype=obj", "-o"])
+            .args(["-O3", &format!("-march={}", self.target.llc_arch()), "-filetype=obj", "-o"])
             .arg(obj_path)
             .arg(&bc_path)
             .output()
@@ -15794,6 +15867,18 @@ fn collect_free_vars_stmt(stmt: &tinox_parser::Stmt, param_names: &HashSet<Strin
             collect_free_vars_inner(cond, param_names, vars);
             collect_free_vars_stmt(body, param_names, vars);
         }
+        StmtKind::Throw(expr) => collect_free_vars_inner(expr, param_names, vars),
+        StmtKind::Try { body, catches, finally } => {
+            collect_free_vars_stmt(body, param_names, vars);
+            for catch in catches {
+                let mut catch_params = param_names.clone();
+                catch_params.insert(catch.param.clone());
+                collect_free_vars_stmt(&catch.body, &catch_params, vars);
+            }
+            if let Some(finally) = finally {
+                collect_free_vars_stmt(finally, param_names, vars);
+            }
+        }
         StmtKind::Block(stmts) => {
             for s in stmts { collect_free_vars_stmt(s, param_names, vars); }
         }
@@ -15820,6 +15905,14 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
         }
         ExprKind::Unary { op: _, operand } => {
             collect_free_vars_inner(operand, param_names, vars);
+        }
+        // Ternary expressions share the If node with expression-form conditionals.
+        ExprKind::If { cond, then_branch, else_branch } => {
+            collect_free_vars_inner(cond, param_names, vars);
+            collect_free_vars_inner(then_branch, param_names, vars);
+            if let Some(else_branch) = else_branch {
+                collect_free_vars_inner(else_branch, param_names, vars);
+            }
         }
         ExprKind::Call { func, args } => {
             collect_free_vars_inner(func, param_names, vars);
@@ -15867,28 +15960,19 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
         }
         ExprKind::Block(stmts) => {
             for stmt in stmts {
-                match &stmt.node {
-                    StmtKind::Expr(e) => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Return(Some(e)) => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Let { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Var { value: Some(e), .. } => collect_free_vars_inner(e, param_names, vars),
-                    StmtKind::Assignment { target, value } => {
-                        collect_free_vars_inner(target, param_names, vars);
-                        collect_free_vars_inner(value, param_names, vars);
-                    }
-                    StmtKind::If { cond, then_branch, else_branch } => {
-                        collect_free_vars_inner(cond, param_names, vars);
-                        collect_free_vars_stmt(then_branch, param_names, vars);
-                        if let Some(eb) = else_branch {
-                            collect_free_vars_stmt(eb, param_names, vars);
-                        }
-                    }
-                    StmtKind::While { cond, body } => {
-                        collect_free_vars_inner(cond, param_names, vars);
-                        collect_free_vars_stmt(body, param_names, vars);
-                    }
-                    _ => {}
-                }
+                collect_free_vars_stmt(stmt, param_names, vars);
+            }
+        }
+        ExprKind::Throw(expr) => collect_free_vars_inner(expr, param_names, vars),
+        ExprKind::Try { body, catches, finally } => {
+            collect_free_vars_inner(body, param_names, vars);
+            for catch in catches {
+                let mut catch_params = param_names.clone();
+                catch_params.insert(catch.param.clone());
+                collect_free_vars_stmt(&catch.body, &catch_params, vars);
+            }
+            if let Some(finally) = finally {
+                collect_free_vars_inner(finally, param_names, vars);
             }
         }
         ExprKind::Range {
@@ -17720,6 +17804,52 @@ mod tests {
     // ================================================================
     // Try/catch
     // ================================================================
+
+    #[test]
+    fn test_lambda_try_capture_scopes() {
+        // Issue #357: catch parameters are local to their own handler,
+        // while references in try/finally and nested closures remain free.
+        for (body, expected) in [
+            (
+                r#"
+                    try { throw failure; }
+                    catch e: String { println(prefix + e); }
+                    finally { println(cleanup); }
+                "#,
+                vec!["failure", "println", "prefix", "cleanup"],
+            ),
+            (
+                r#"
+                    try { println(e); }
+                    catch e: String { println(e); }
+                    finally { println(e); }
+                "#,
+                vec!["println", "e"],
+            ),
+            (
+                r#"
+                    try { throw failure; }
+                    catch e: String {
+                        const nested = fn() { println(e + greeting + value); };
+                    }
+                "#,
+                vec!["failure", "println", "greeting"],
+            ),
+        ] {
+            let src = format!(
+                "fn main() -> Nothing {{ const callback = fn(value: String) {{ {body} }}; }}"
+            );
+            let tokens = Lexer::new(&src).tokenize().expect("lex failed");
+            let ast = Parser::new(tokens).parse().expect("parse failed");
+            let DeclKind::Function(function) = &ast.decls[0].node else {
+                panic!("expected function");
+            };
+            let mut actual = HashSet::new();
+            collect_free_vars_stmt(&function.body, &HashSet::new(), &mut actual);
+            let expected = expected.into_iter().map(String::from).collect::<HashSet<_>>();
+            assert_eq!(actual, expected, "incorrect captures for {body}");
+        }
+    }
 
     #[test]
     fn test_try_catch_ir() {

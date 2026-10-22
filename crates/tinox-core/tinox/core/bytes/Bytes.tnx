@@ -16,6 +16,8 @@ namespace tinox.core.bytes
     extern fn tinoxBufReadFile(path: String) -> Int64;
     extern fn tinoxBufWriteFile(path: String, h: Int64);
     extern fn tinoxBufStdinReadAll() -> Int64;
+    extern fn tinoxBufFromRequestBody(body: String) -> Int64;
+    extern fn tinoxBufAsResponseBody(h: Int64) -> String;
     extern fn httpConnReadBuf(conn: Int64, n: Int64) -> Int64;
     extern fn httpConnWriteBuf(conn: Int64, h: Int64) -> Int64;
 
@@ -72,6 +74,26 @@ namespace tinox.core.bytes
         fn readFromConn(conn: Int64, n: Int64) -> Bytes
         {
             return Bytes { handle: httpConnReadBuf(conn, n) };
+        }
+
+        /**
+         * Copies the exact payload of the HTTP request currently being handled
+         * (pass ctx.request.body). Embedded NUL bytes survive. Hard error when
+         * the argument is not the live request body or outside a handler.
+         */
+        fn fromRequestBody(body: String) -> Bytes
+        {
+            return Bytes { handle: tinoxBufFromRequestBody(body) };
+        }
+
+        /**
+         * A response body (assign to ctx.response.body) carrying exactly this
+         * buffer, embedded NUL bytes included. Supported by the plain HTTP/1.1
+         * server; the buffer must stay unmodified until the handler returns.
+         */
+        fn asResponseBody() -> String
+        {
+            return tinoxBufAsResponseBody(this.handle);
         }
 
         /** Number of bytes */

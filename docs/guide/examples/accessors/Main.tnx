@@ -1,0 +1,21 @@
+@Getter
+@Setter
+class Main
+{
+    var count: Int64 = 0;
+
+    fnc main() -> Int32
+    {
+        const counter = new Main();
+        counter.setCount(42);
+        println(counter.getCount());
+        return 0;
+    }
+
+    @Test("generated accessors preserve values")
+    fn testAccessors() -> Bool
+    {
+        this.setCount(42);
+        return this.getCount() == 42;
+    }
+}

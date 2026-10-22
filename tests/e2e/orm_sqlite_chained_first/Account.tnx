@@ -1,0 +1,9 @@
+@Entity
+@Table("accounts")
+class Account
+{
+    @Id
+    var id: Int64;
+    var name: String;
+    var balance: Int64;
+}

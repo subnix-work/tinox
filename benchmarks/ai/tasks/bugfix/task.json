@@ -1,0 +1,3 @@
+{
+  "prompt": "Fix Main.total(price: Int64, quantity: Int64, discount: Int64) in Main.tnx. Return price * quantity less discount percent, rounding down to whole cents. Return -1 for negative price/quantity, or discount outside 0..100 inclusive. Keep the public signature. Inputs and intermediate products fit Int64. Main is only a smoke example; acceptance uses other values."
+}

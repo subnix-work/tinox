@@ -39,7 +39,10 @@ fn curl(work: &Path, url: &str, http3: bool, args: &[&str]) -> Option<(u16, Stri
         .args(["--write-out", "%{http_code}"]);
     if http3 { cmd.args(["--http3-only", "--insecure"]); }
     let out = cmd.args(args).arg(url).output().expect("curl must be installed");
-    if !out.status.success() { eprintln!("curl {url}: {}", String::from_utf8_lossy(&out.stderr)); return None; }
+    if !out.status.success() {
+        eprintln!("curl {url}: {}", String::from_utf8_lossy(&out.stderr));
+        return None;
+    }
     Some((
         String::from_utf8(out.stdout).unwrap().parse().unwrap(),
         std::fs::read_to_string(work.join("headers.txt")).unwrap().to_lowercase(),
@@ -63,8 +66,7 @@ fn verify(http3: bool) {
     let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = if http3 { udp.local_addr().unwrap().port() } else { tcp.local_addr().unwrap().port() };
     let annotation = if http3 { format!("@Http3RestController({port}, \"cert.pem\", \"key.pem\")") } else { String::new() };
-    // The TCP build has no HTTP/3 runtime to link, so it must not pull the HTTP/3 module in.
-    let source = (if http3 { "import tinox.core.http3_server;\n" } else { "" }).to_string() + r#"
+    let source = if http3 { "import tinox.core.http3_server;\n" } else { "" }.to_string() + r#"
 import tinox.core.http_server;
 import User;
 class Ctrl {
@@ -116,8 +118,8 @@ class Ctrl {
     let base = format!("{}://127.0.0.1:{port}", if http3 { "https" } else { "http" });
     // Repeat startup/readiness and all wire outcomes to cover timing-sensitive
     // behavior. Build once, restart the real server on every repetition.
-    for _ in 0..15 {
-        let mut server = Server(Command::new(&exe).current_dir(&work.0).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+    for iteration in 0..15 {
+        let mut server = Server(Command::new(&exe).current_dir(&work.0).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().unwrap());
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if let Some((status, _, _)) = curl(&work.0, &format!("{base}/scalar"), http3, &[]) {
@@ -162,8 +164,13 @@ class Ctrl {
             assert_eq!(status, expected, "{path}");
             assert_eq!(observed, body, "{path}");
         }
+        let content_type = match iteration % 3 {
+            0 => "Content-Type: application/json",
+            1 => "content-type: application/json",
+            _ => "cOnTeNt-TyPe: application/json",
+        };
         let (status, _, body) = curl(&work.0, &format!("{base}/users"), http3,
-            &["--header", "Content-Type: application/json", "--data", r#"{"name":""}"#]).unwrap();
+            &["--header", content_type, "--data", r#"{"name":""}"#]).unwrap();
         assert_eq!(status, 422);
         assert_eq!(body, r#"{"error":"name required"}"#);
         let (status, _, _) = curl(&work.0, &format!("{base}/users"), http3, &["--data", "bad"]).unwrap();

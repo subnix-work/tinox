@@ -2,6 +2,9 @@
 // db: INSERT INTO users (name, age) VALUES ('Alice', 30), ('Bob', 25), ('Carol', 35);
 // expect: Carol
 // expect: 35
+// expect: missing: 0::0
+// expect: 0
+// expect: 0
 
 import tinox.core.db;
 
@@ -16,6 +19,13 @@ class Main
             .first();
         println(u.name);
         println(u.age);
+        let none: orm_sqlite_first = DB::of(orm_sqlite_first)
+            .filter(u => u.name == "does-not-exist").first();
+        println("missing: " + none.id.toString() + ":" + none.name + ":" + none.age.toString());
+        let rows: List<orm_sqlite_first> = DB::of(orm_sqlite_first)
+            .filter(u => u.name == "does-not-exist").list();
+        println(rows.len());
+        println(DB::of(orm_sqlite_first).filter(u => u.name == "does-not-exist").count());
         return 0;
     }
 }

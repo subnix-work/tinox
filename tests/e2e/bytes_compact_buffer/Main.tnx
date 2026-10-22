@@ -18,6 +18,7 @@ import tinox.core.bytes;
 extern fn socketCreateTcp() -> Int64;
 extern fn socketConnect(fd: Int64, host: String, port: Int64) -> Bool;
 
+
 class Main
 {
     fnc pattern(n: Int64) -> Bytes {
