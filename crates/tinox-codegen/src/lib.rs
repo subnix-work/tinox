@@ -1,4 +1,5 @@
 pub mod codegen;
+pub mod target;
 
 pub use codegen::CodeGen;
 pub use codegen::DiComponentInfo;
