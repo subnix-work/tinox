@@ -738,8 +738,8 @@
     <span class="ann">@Produces</span>(<span class="type">MediaType</span>.APPLICATION_JSON)
     <span class="kw">fn</span> <span class="fn">sort</span>(ctx: <span class="type">HttpContext</span>) -> <span class="type">Nothing</span>
     {
-        <span class="kw">let</span> root: <span class="type">JsonValue</span> = <span class="type">Json</span>.<span class="fn">parse</span>(ctx.request.body);
-        <span class="kw">let</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = <span class="type">Json</span>.<span class="fn">intArrayFromJson</span>(root.<span class="fn">getField</span>(<span class="str">"numbers"</span>));
+        <span class="kw">const</span> root: <span class="type">JsonValue</span> = <span class="type">Json</span>.<span class="fn">parse</span>(ctx.request.body);
+        <span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = <span class="type">Json</span>.<span class="fn">intArrayFromJson</span>(root.<span class="fn">getField</span>(<span class="str">"numbers"</span>));
         ctx.response.body = <span class="type">Json</span>.<span class="fn">intArrayWrap</span>(<span class="str">"sorted"</span>, numbers.<span class="fn">sort</span>());
     }
 }</code></pre>
@@ -1020,6 +1020,110 @@
       a linked-list queue with mutex and condition variable.
     </p>
 
+
+    <h4>Task lifetime, deadlines and cancellation</h4>
+    <p><code>scope { ... }</code> owns its lexical spawns. A plain spawn belongs to
+      its spawning thread's lifetime; that thread joins its remaining children
+      before finishing. On process exit, remaining joinable children are cancelled
+      and joined. Failures are rethrown by <code>await</code>, or at scope exit if
+      unobserved; additional failures are reported on stderr. A body's own error
+      wins. Repeated awaits cache the same result or error while the owner lives.
+      After the owning scope closes, handles expire and further use fails visibly.
+      Keep tasks inside their owner; return the awaited value instead of a task.</p>
+    <pre><code>try {
+    scope {
+        taskSetDeadline(250); // Duration from now, in monotonic milliseconds.
+        const task: Task&lt;String&gt; = spawn Main::load();
+        println(await task);
+    }
+} catch (e: String) { println(e); }</code></pre>
+    <table>
+      <thead><tr><th>Operation</th><th>Contract</th></tr></thead>
+      <tbody>
+        <tr><td><code>taskCancel(task: Task&lt;T&gt;)</code></td><td>Request cooperative cancellation of a task and its descendants.</td></tr>
+        <tr><td><code>taskSetDeadline(ms: Int64)</code></td><td>Set the current scope's deadline. Ancestor deadlines still apply; 0 expires immediately. Negative durations fail visibly.</td></tr>
+        <tr><td><code>taskCheckCancellation()</code></td><td>Checkpoint for CPU loops. Throws <code>Task cancelled</code>, <code>Task deadline exceeded</code>, or <code>Task service shutdown requested</code>.</td></tr>
+        <tr><td><code>taskWaitReadable(fd: Int64)</code></td><td>Cancellable readiness wait for a real file descriptor; use before a single-reader accept/read.</td></tr>
+        <tr><td><code>taskDetach(task: Task&lt;T&gt;)</code></td><td>Explicit fire-and-forget. Only the owning thread may detach an unjoined task. It loses inherited scope cancellation/deadlines, cannot be awaited, and any uncaught failure terminates the process visibly.</td></tr>
+        <tr><td><code>taskRequestShutdown()</code></td><td>Process-wide cooperative stop request for service lifecycle/control code. Bootstrap awaits stop waiting; shutdown joins outstanding joinable tasks and preserves genuine failures.</td></tr>
+      </tbody>
+    </table>
+    <p>Cancellation also wakes <code>sleep</code>/<code>sleep_ms</code>, blocked
+      channel <code>recv</code>, and <code>await</code> (check latency about 10 ms,
+      excluding scheduling). Tokens propagate to child tasks and nested scopes.
+      Scope failure cancels unfinished siblings; body errors remain primary.
+      An explicitly cancelled task still reports cancellation unless awaited and
+      caught. Expected cancellation during process shutdown is successful.</p>
+    <p>Cancellation uses normal exception unwinding: <code>finally</code> and
+      <code>defer</code> run in their usual order; a child's transaction rolls back
+      before its join completes. Transactions are thread-local and never inherited.
+      Put a scope inside a transactional method to join before commit, and put
+      parent resource cleanup outside the scope so children finish first.</p>
+    <p>No asynchronous thread termination is used. Native blocking I/O, database
+      calls and CPU loops without checkpoints are not automatically interruptible.
+      Use resource-specific stop/close operations or <code>taskWaitReadable</code>;
+      after five seconds of ignored cancellation during scope shutdown, the runtime
+      fails visibly instead of hanging silently. Explicit await of a cancelled task and
+      a service shutdown request have the same five-second watchdog. Readiness and signal/listener
+      orchestration remain the service lifecycle's responsibility (issue #304).
+      Detached workers are explicitly outside structured joining.</p>
+    <p>Legacy <code>Int64</code> handle storage/await remains temporarily compatible
+      for published packages. New code and task-control operations require
+      <code>Task&lt;T&gt;</code>. Invalid/expired handles and cyclic awaits fail with a
+      diagnostic; integer handles are deprecated.</p>
+
+    <h4>Shared application state</h4>
+    <p><code>@ApplicationComponent</code> creates one lazy singleton per component class;
+      <code>@Startup</code> eagerly creates that same kind of singleton before main.
+      Generated providers serialize construction, field defaults, recursive dependency
+      injection and publication. Every concurrent provider caller sees the same fully
+      initialized instance. Providers do not invoke user constructors. This initialization
+      guarantee does not serialize later mutation.</p>
+    <p>HTTP workers and independently spawned REST, WebSocket and AMQP components can
+      execute concurrently. Put request data in <code>@HttpRequestScoped</code> owners,
+      and inject application services into them. Capturing a request-scoped dependency
+      in a singleton shares that object; refreshing a singleton controller's injected
+      field during dispatch is unsafe for per-request isolation. The compiler warns
+      about captive request state and exposed or unguarded mutable singleton fields.</p>
+    <pre><code>@ApplicationComponent
+@Synchronized
+class Counter {
+    private var value: Int64 = 0;
+    fn increment() -&gt; Int64 {
+        this.value = this.value + 1;
+        return this.value;
+    }
+}
+
+@HttpRequestScoped
+class Api {
+    @Inject var counter: Counter;
+    @GET @Path("/count")
+    fn count() -&gt; Int64 { return this.counter.increment(); }
+}</code></pre>
+    <p><code>@Synchronized</code> on a non-generic application/startup class protects
+      all instance methods; on an instance method it protects only that method. There
+      is one recursive monitor <em>per declaring class</em>, shared by every annotated
+      call and every instance of that class. Nested calls on the same thread are safe.
+      Static methods are excluded from class-level synchronization; explicitly annotating
+      a static method, generic method, unscoped class, interface/trait method or class
+      with inheritance is rejected. This deliberately limited contract prevents silent
+      gaps in generated locking.</p>
+    <p>The monitor is held across the method's defer/finally cleanup and transactional
+      commit or rollback, and released before returning a result or error. Cancellation
+      while waiting for a monitor throws without executing the body; cancellation inside
+      it unwinds the body and releases the monitor. Existing errors are preserved during
+      cleanup. Dev UI state snapshots use the class monitor when one is present.</p>
+    <p>Keep state private and protect reads as well as writes. Returned mutable objects,
+      direct field access, static methods and unannotated methods bypass the monitor.
+      Take snapshots inside a protected method instead of returning internal collections.
+      Do not await a child that needs the monitor while holding it, and acquire different
+      class monitors in a consistent order. Reentrancy applies to one thread, not spawned
+      children. For smaller explicit critical sections, use
+      <code>tinox.core.semaphore</code> locks with <code>defer</code> immediately after a
+      successful acquisition; these native blocking locks do not become cancellable.
+      Annotations and diagnostics do not prove universal race freedom.</p>
+
     <h3>HTTP Server (Low Level)</h3>
     <p>
       The HTTP server in the runtime uses:
@@ -1052,11 +1156,11 @@
     </table>
 
     <h3>Composite Types</h3>
-    <pre><code><span class="kw">let</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>];                 <span class="cmt">// Array</span>
-<span class="kw">let</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>};  <span class="cmt">// Map/Dictionary</span>
-<span class="kw">let</span> pair: (<span class="type">Int32</span>, <span class="type">String</span>) = (<span class="num">42</span>, <span class="str">"hello"</span>);           <span class="cmt">// Tuple</span>
-<span class="kw">let</span> name: <span class="type">String</span>? = <span class="kw">null</span>;                             <span class="cmt">// Nullable</span>
-<span class="kw">let</span> fn add: <span class="kw">fn</span>(<span class="type">Int32</span>, <span class="type">Int32</span>) -> <span class="type">Int32</span> = |a, b| a + b; <span class="cmt">// Function type</span></code></pre>
+    <pre><code><span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>];                 <span class="cmt">// Array</span>
+<span class="kw">const</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>};  <span class="cmt">// Map/Dictionary</span>
+<span class="kw">const</span> pair: (<span class="type">Int32</span>, <span class="type">String</span>) = (<span class="num">42</span>, <span class="str">"hello"</span>);           <span class="cmt">// Tuple</span>
+<span class="kw">const</span> name: <span class="type">String</span>? = <span class="kw">null</span>;                             <span class="cmt">// Nullable</span>
+<span class="kw">const</span> fn add: <span class="kw">fn</span>(<span class="type">Int32</span>, <span class="type">Int32</span>) -> <span class="type">Int32</span> = |a, b| a + b; <span class="cmt">// Function type</span></code></pre>
 
     <h3>Generics</h3>
     <p>
@@ -1137,15 +1241,16 @@
       <tbody>
         <tr><td><code>fn</code></td><td>Instance method (has implicit <code>this</code>)</td></tr>
         <tr><td><code>fnc</code></td><td>Static method (no <code>this</code>, called via class name)</td></tr>
-        <tr><td><code>let</code></td><td>Immutable local variable</td></tr>
+        <tr><td><code>const</code></td><td>Immutable local variable (<code>let</code> is still accepted as a deprecated alias)</td></tr>
         <tr><td><code>var</code></td><td>Mutable local variable or field</td></tr>
         <tr><td><code>class</code></td><td>Class declaration</td></tr>
         <tr><td><code>interface</code></td><td>Interface declaration (like Java interface)</td></tr>
         <tr><td><code>enum</code></td><td>Enumeration type</td></tr>
         <tr><td><code>extends</code></td><td>Single inheritance</td></tr>
         <tr><td><code>implements</code></td><td>Interface implementation</td></tr>
-        <tr><td><code>spawn</code></td><td>Start a new thread</td></tr>
-        <tr><td><code>await</code></td><td>Wait for thread result</td></tr>
+        <tr><td><code>spawn</code></td><td>Start a new thread; the expression has type <code>Task&lt;T&gt;</code> (<code>T</code> = the function's return type)</td></tr>
+        <tr><td><code>await</code></td><td>Wait for a <code>Task&lt;T&gt;</code> and yield its <code>T</code> (String, Float64, Bool, classes, ... not just Int64); awaiting the same task again returns the same result. <code>Task</code> is a built-in type name and can no longer be used for your own classes</td></tr>
+        <tr><td><code>scope { ... }</code></td><td>Structured concurrency: every <code>spawn</code> lexically inside the block belongs to it, and leaving the block (normally, via <code>return</code>/<code>break</code> or <code>throw</code>) joins them all. A child failure nobody awaited is re-thrown at the block's end; if the block itself threw, its error wins and child failures are reported on stderr. A <code>throw</code> inside a spawned function is re-thrown by <code>await</code>. <code>scope</code> is contextual, not a reserved word. A <code>spawn</code> in a closure inside the block is not owned by it</td></tr>
         <tr><td><code>defer</code></td><td>Execute code when leaving the scope</td></tr>
         <tr><td><code>match</code></td><td>Pattern matching expression</td></tr>
       </tbody>
@@ -1202,11 +1307,11 @@
       <thead><tr><th>Before</th><th>After</th></tr></thead>
       <tbody>
         <tr>
-          <td><code>fn getUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;let id: Int64 = ctx.request.getParam("id").toInt();<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(user));<br>}</code></td>
+          <td><code>fn getUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;const id: Int64 = ctx.request.getParam("id").toInt();<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(user));<br>}</code></td>
           <td><code>fn getUser(@PathParam id: Int64) -> User<br>{<br>&nbsp;&nbsp;return user;<br>}</code></td>
         </tr>
         <tr>
-          <td><code>fn createUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;let u: User = Json::deserialize&lt;User&gt;(ctx.request.body);<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(u));<br>}</code></td>
+          <td><code>fn createUser(ctx: HttpContext) -> Nothing<br>{<br>&nbsp;&nbsp;const u: User = Json::deserialize&lt;User&gt;(ctx.request.body);<br>&nbsp;&nbsp;ctx.response.json(Json::serialize(u));<br>}</code></td>
           <td><code>fn createUser(@PostParam u: User) -> User<br>{<br>&nbsp;&nbsp;return u;<br>}</code></td>
         </tr>
         <tr>
@@ -1257,6 +1362,7 @@
         <tr><td><code>@Log</code></td><td>Class</td><td>Automatically inject log field</td></tr>
         <tr><td><code>@Inject</code></td><td>Field</td><td>Dependency injection field</td></tr>
         <tr><td><code>@Config("key")</code></td><td>Field</td><td>Value from application.properties</td></tr>
+        <tr><td><code>@Synchronized</code></td><td>Class/method</td><td>Recursive class monitor for singleton instance methods</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Class</td><td>Singleton scope for DI</td></tr>
         <tr><td><code>@HttpRequestScoped</code></td><td>Class</td><td>New object per HTTP request</td></tr>
         <tr><td><code>@Test("desc")</code></td><td>Method</td><td>Unit test (tinox test)</td></tr>
@@ -1574,6 +1680,36 @@ epoll_fd = epoll_create1(0);
       Each HTTP worker thread has its own static buffer for request data,
       response data, and JSON parsing. These buffers are never freed and
       are reused – this completely eliminates malloc/free in the critical request path.
+    </p>
+
+    <h3>Concurrency Budgets &amp; Overload Handling</h3>
+    <p>
+      Worker and connection counts are bounded and container-aware. The effective
+      CPU count is the smaller of the process's CPU affinity (<code>taskset</code>,
+      cpuset) and the cgroup CPU quota (v1 and v2, e.g. <code>docker run --cpus=1.5</code>
+      gives 2), not the host's core count. Each limit can be overridden with an
+      environment variable; a malformed value aborts startup. The effective values
+      are printed in the startup banner (<code>Limits: ...</code>) and exported on
+      <code>/metrics</code> together with open/peak/rejected counters.
+    </p>
+    <table>
+      <tr><th>Variable</th><th>Default</th><th>Effect when exhausted</th></tr>
+      <tr><td><code>TINOX_CPUS</code></td><td>detected</td><td>&ndash;</td></tr>
+      <tr><td><code>TINOX_HTTP_WORKERS</code></td><td>CPUs</td><td>&ndash;</td></tr>
+      <tr><td><code>TINOX_MAX_CONNECTIONS</code></td><td>4096 (max 4096)</td><td>HTTP/1: <code>503 Service Unavailable</code> with <code>Retry-After: 1</code></td></tr>
+      <tr><td><code>TINOX_MAX_TASKS</code></td><td>4096</td><td><code>spawn</code> returns a task whose <code>await</code> (or enclosing <code>scope</code>) throws a "task budget exhausted" error</td></tr>
+      <tr><td><code>TINOX_MAX_WS_CONNECTIONS</code></td><td>1024</td><td>the WebSocket connection is closed immediately</td></tr>
+      <tr><td><code>TINOX_QUEUE_WAIT_MS</code></td><td>0 (no queueing)</td><td>how long <code>spawn</code> / a WebSocket accept may wait for a free slot before being rejected</td></tr>
+    </table>
+    <p>
+      Every setting can also be placed in <code>application.properties</code> as
+      <code>tinox.limits.&lt;name&gt;</code> (e.g. <code>tinox.limits.max_tasks=256</code>);
+      the environment variable wins. The Dev UI API exposes the effective values and live
+      counters at <code>/limits</code>. HTTP/1 rejects immediately (the epoll workers must not block);
+      the HTTP/2, HTTP/3 and TLS accept loops are single-threaded by design, so their backlog is
+      bounded by the kernel listen queue and they never grow threads. AMQP connections use
+      <code>spawn</code> and therefore count against <code>TINOX_MAX_TASKS</code>.
+      A rejected request is never retried automatically.
     </p>
 
     <div class="info-box green">
@@ -2428,19 +2564,19 @@ url    = "sqlite:///path/to/database.db"</code></pre></div>
 
   <h3>Lambda Query DSL</h3>
   <div class="card"><pre><code>// All users over 18, sorted alphabetically, max 10 results
-let adults: List&lt;User&gt; = DB::of(User)
+const adults: List&lt;User&gt; = DB::of(User)
     .filter(u -&gt; u.age &gt; 18)
     .orderBy(u -&gt; u.name)
     .limit(10)
     .list();
 
 // Read a single user
-let alice: User = DB::of(User)
+const alice: User = DB::of(User)
     .filter(u -&gt; u.name == "Alice")
     .first();
 
 // Count active users
-let n: Int64 = DB::of(User)
+const n: Int64 = DB::of(User)
     .filter(u -&gt; u.active == true)
     .count();</code></pre></div>
 
@@ -2462,16 +2598,16 @@ let n: Int64 = DB::of(User)
 
   <h3>Save, Update, Delete</h3>
   <div class="card"><pre><code>// INSERT (ID assigned by the DB)
-let user: User = User {};
+const user: User = User {};
 user.name = "Alice";
 user.age  = 30;
-let saved: User = DB::of(User).save(user);
+const saved: User = DB::of(User).save(user);
 
 // DELETE
 DB::of(User).delete(saved);
 
 // Save multiple entities
-let list: List&lt;User&gt; = List::new();
+const list: List&lt;User&gt; = List::new();
 list.add(user1);
 list.add(user2);
 DB::of(User).saveAll(list);</code></pre></div>

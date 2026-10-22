@@ -12,10 +12,10 @@ class Main
 {
     fnc main() -> Int32
     {
-        let d: Dog = Dog { name: "Rex" };
-        let z: Zoo = Zoo { count: 0 };
+        const d: Dog = Dog { name: "Rex" };
+        const z: Zoo = Zoo { count: 0 };
         z.addAnimal(d);
-        let a: Animal = d;
+        const a: Animal = d;
         print("count=" + z.count.toString());
         return 0;
     }

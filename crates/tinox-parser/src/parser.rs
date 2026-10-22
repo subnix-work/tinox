@@ -12,6 +12,14 @@ pub struct Parser {
     /// Current recursion / nesting depth, guarded against stack overflow on
     /// pathologically deep input (e.g. `(((…`, `[[[…`, `a.a.a.…`, nested blocks).
     depth: usize,
+    /// Names of the synthesized scope variables of the `scope { ... }`
+    /// blocks currently being parsed in the CURRENT function body
+    /// (innermost last). A `spawn` parsed while this is non-empty is
+    /// registered with the innermost scope. Cleared at every function /
+    /// method / lambda boundary: ownership is lexical, so a spawn inside a
+    /// nested closure does not belong to the enclosing scope.
+    scope_stack: Vec<String>,
+    scope_counter: usize,
 }
 
 /// Maximum expression/statement nesting the parser accepts before returning a
@@ -27,6 +35,8 @@ impl Parser {
             pos: 0,
             errors: Vec::new(),
             depth: 0,
+            scope_stack: Vec::new(),
+            scope_counter: 0,
         }
     }
 
@@ -195,6 +205,13 @@ impl Parser {
     }
 
     fn parse_fn(&mut self) -> Result<Function, Error> {
+        let saved = std::mem::take(&mut self.scope_stack);
+        let r = self.parse_fn_inner();
+        self.scope_stack = saved;
+        r
+    }
+
+    fn parse_fn_inner(&mut self) -> Result<Function, Error> {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Fn)?;
         let name = self.parse_ident()?;
@@ -291,8 +308,9 @@ impl Parser {
             let member_annotations = self.parse_annotations();
             let doc = self.take_doc();
             let vis = self.parse_visibility();
-            // `var` = mutable field, `let` = immutable field; consume both
+            // `var` = mutable field, `const` (or legacy `let`) = immutable field; consume all
             let mutable = self.consume_keyword(Keyword::Var)
+                || self.consume_keyword(Keyword::Const)
                 || self.consume_keyword(Keyword::Let)
                 || self.consume_keyword(Keyword::Mut);
             let is_async = self.consume_keyword(Keyword::Async);
@@ -362,6 +380,13 @@ impl Parser {
     }
 
     fn parse_method(&mut self, visibility: Visibility, static_: bool) -> Result<Method, Error> {
+        let saved = std::mem::take(&mut self.scope_stack);
+        let r = self.parse_method_inner(visibility, static_);
+        self.scope_stack = saved;
+        r
+    }
+
+    fn parse_method_inner(&mut self, visibility: Visibility, static_: bool) -> Result<Method, Error> {
         let span = self.mk_span();
         if static_ {
             self.expect_keyword(Keyword::Fnc)?;
@@ -851,8 +876,19 @@ impl Parser {
     fn parse_stmt_inner(&mut self) -> Result<Stmt, Error> {
         let span = self.mk_span();
 
+        // `scope { ... }` is contextual (not a reserved word): `scope`
+        // directly followed by `{` can't start any other statement.
+        if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "scope")
+            && matches!(self.peek_ahead(1).map(|t| t.kind), Some(TokenKind::LBrace))
+        {
+            let kind = self.parse_scope_stmt()?;
+            return Ok(Spanned::new(kind, span));
+        }
+
         let stmt = match self.peek().kind {
-            TokenKind::Keyword(Keyword::Let) => self.parse_let_stmt()?,
+            TokenKind::Keyword(Keyword::Const) | TokenKind::Keyword(Keyword::Let) => {
+                self.parse_let_stmt()?
+            }
             TokenKind::Keyword(Keyword::Var) => self.parse_var_stmt()?,
             TokenKind::Keyword(Keyword::If) => self.parse_if_stmt()?,
             TokenKind::Keyword(Keyword::While) => self.parse_while_stmt()?,
@@ -1198,8 +1234,12 @@ impl Parser {
         Ok(Spanned::new(stmt, span))
     }
 
+    /// Immutable binding: `const name = ...;`. `let` is still accepted as a
+    /// legacy alias so already-published packages keep compiling.
     fn parse_let_stmt(&mut self) -> Result<StmtKind, Error> {
-        self.expect_keyword(Keyword::Let)?;
+        if !self.consume_keyword(Keyword::Const) {
+            self.expect_keyword(Keyword::Let)?;
+        }
         let name = self.parse_ident()?;
         let ty = if self.consume(TokenKind::Colon) {
             Some(self.parse_type()?)
@@ -1307,7 +1347,7 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
 
         let init = if !self.check(TokenKind::Semicolon) {
-            let stmt = if self.check_keyword(Keyword::Let) {
+            let stmt = if self.check_keyword(Keyword::Const) || self.check_keyword(Keyword::Let) {
                 self.parse_let_stmt()?
             } else if self.check_keyword(Keyword::Var) {
                 self.parse_var_stmt()?
@@ -2720,13 +2760,96 @@ impl Parser {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Spawn)?;
         let expr = Box::new(self.parse_expr()?);
-        Ok(Spanned::new(ExprKind::Spawn(expr), span))
+        let spawn = Spanned::new(ExprKind::Spawn(expr), span);
+        // Inside `scope { ... }`: register the new task with the owning
+        // scope (`__scope_register(scope, spawn ...)` yields the task
+        // unchanged, so the surrounding code still sees a Task<T>).
+        if let Some(scope_var) = self.scope_stack.last().cloned() {
+            return Ok(Self::synth_call(
+                "__scope_register",
+                vec![Spanned::new(ExprKind::Ident(scope_var), span), spawn],
+                span,
+            ));
+        }
+        Ok(spawn)
+    }
+
+    fn synth_call(name: &str, args: Vec<Expr>, span: Span) -> Expr {
+        Spanned::new(
+            ExprKind::Call {
+                func: Box::new(Spanned::new(ExprKind::Ident(name.to_string()), span)),
+                args,
+            },
+            span,
+        )
+    }
+
+    /// `scope { body }` -- structured concurrency (issue #301, phase 3).
+    /// Desugars to plain AST so no later stage needs a new node kind:
+    ///
+    /// ```text
+    /// {
+    ///   const __scope_N = __scope_new();
+    ///   try { body }
+    ///   catch (__scope_err_N: String) { __scope_abort(__scope_N); throw __scope_err_N; }
+    ///   finally { __scope_join(__scope_N); }
+    /// }
+    /// ```
+    ///
+    /// Every `spawn` lexically inside `body` is registered with the scope
+    /// (see parse_spawn_expr). `finally` joins all children on every exit
+    /// path (normal, `return`, `break`) and re-throws the first child
+    /// failure nobody awaited; if the body itself threw, the catch clause
+    /// joins first so the body's error wins and child failures are only
+    /// reported as suppressed.
+    fn parse_scope_stmt(&mut self) -> Result<StmtKind, Error> {
+        let span = self.mk_span();
+        self.bump(); // `scope`
+        let n = self.scope_counter;
+        self.scope_counter += 1;
+        let var = format!("__scope_{}", n);
+        let err = format!("__scope_err_{}", n);
+
+        self.scope_stack.push(var.clone());
+        let body = self.parse_block();
+        self.scope_stack.pop();
+        let body = body?;
+
+        let ident = |name: &str| Spanned::new(ExprKind::Ident(name.to_string()), span);
+        let stmt = |kind: StmtKind| Spanned::new(kind, span);
+        let call_stmt = |name: &str| {
+            stmt(StmtKind::Expr(Self::synth_call(name, vec![ident(&var)], span)))
+        };
+
+        let catch_body = stmt(StmtKind::Block(vec![
+            call_stmt("__scope_abort"),
+            stmt(StmtKind::Throw(ident(&err))),
+        ]));
+        Ok(StmtKind::Block(vec![
+            stmt(StmtKind::Let {
+                name: var.clone(),
+                ty: None,
+                value: Some(Self::synth_call("__scope_new", vec![], span)),
+            }),
+            stmt(StmtKind::Try {
+                body: Box::new(body),
+                catches: vec![CatchClause {
+                    param: err.clone(),
+                    ty: Type::String,
+                    body: catch_body,
+                    span,
+                }],
+                finally: Some(Box::new(stmt(StmtKind::Block(vec![call_stmt("__scope_join")])))),
+            }),
+        ]))
     }
 
     fn parse_await_expr(&mut self) -> Result<Expr, Error> {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Await)?;
-        let expr = Box::new(self.parse_expr()?);
+        // Operand binds at unary precedence, so `await a + await b` is
+        // `(await a) + (await b)`, not `await (a + await b)` (issue #289).
+        let expr = Box::new(self.parse_unary_expr()?);
         Ok(Spanned::new(ExprKind::Await(expr), span))
     }
 
@@ -2793,6 +2916,13 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> Result<Expr, Error> {
+        let saved = std::mem::take(&mut self.scope_stack);
+        let r = self.parse_lambda_inner();
+        self.scope_stack = saved;
+        r
+    }
+
+    fn parse_lambda_inner(&mut self) -> Result<Expr, Error> {
         let span = self.mk_span();
         self.expect(TokenKind::Backslash)?; // \
 
@@ -2819,6 +2949,13 @@ impl Parser {
     }
 
     fn parse_typed_lambda(&mut self) -> Result<Expr, Error> {
+        let saved = std::mem::take(&mut self.scope_stack);
+        let r = self.parse_typed_lambda_inner();
+        self.scope_stack = saved;
+        r
+    }
+
+    fn parse_typed_lambda_inner(&mut self) -> Result<Expr, Error> {
         let span = self.mk_span();
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
@@ -2836,6 +2973,13 @@ impl Parser {
     }
 
     fn parse_fn_lambda(&mut self) -> Result<Expr, Error> {
+        let saved = std::mem::take(&mut self.scope_stack);
+        let r = self.parse_fn_lambda_inner();
+        self.scope_stack = saved;
+        r
+    }
+
+    fn parse_fn_lambda_inner(&mut self) -> Result<Expr, Error> {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Fn)?;
         self.expect(TokenKind::LParen)?;
@@ -2865,6 +3009,13 @@ impl Parser {
     }
 
     fn parse_fnc_lambda(&mut self) -> Result<Expr, Error> {
+        let saved = std::mem::take(&mut self.scope_stack);
+        let r = self.parse_fnc_lambda_inner();
+        self.scope_stack = saved;
+        r
+    }
+
+    fn parse_fnc_lambda_inner(&mut self) -> Result<Expr, Error> {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Fnc)?;
         self.expect(TokenKind::LParen)?;
@@ -3471,7 +3622,26 @@ mod tests {
         assert_eq!(name, "myapp");
     }
 
-    // --- Statements: let / var ---
+    // --- Statements: const (legacy alias: let) / var ---
+
+    #[test]
+    fn test_const_stmt() {
+        let d = first_decl("fn f() { const x: Int32 = 5; const y = 1; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { name, ty, .. } = &stmts[0].node else { panic!() };
+        assert_eq!(name, "x");
+        assert!(matches!(ty, Some(Type::Int32)));
+        let StmtKind::Let { name, ty, .. } = &stmts[1].node else { panic!() };
+        assert_eq!(name, "y");
+        assert!(ty.is_none());
+    }
+
+    #[test]
+    fn test_const_in_c_style_for_init() {
+        let d = first_decl("fn f() { for (const i = 0; i < 3; i = i + 1) { } }");
+        let DeclKind::Function(_) = d else { panic!() };
+    }
 
     #[test]
     fn test_let_with_type() {
@@ -4110,6 +4280,48 @@ mod tests {
         let StmtKind::Block(stmts) = &c.methods[0].body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
         assert!(matches!(e.node, ExprKind::This));
+    }
+
+    #[test]
+    fn test_expr_await_binds_tighter_than_binary_op() {
+        // Issue #289: `await a + await b` must be `(await a) + (await b)`.
+        let d = first_decl("fn f() { let x = await a + await b; }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Binary { lhs: left, rhs: right, .. } = &e.node else { panic!("expected Binary, got {:?}", e.node) };
+        assert!(matches!(&left.node, ExprKind::Await(_)));
+        assert!(matches!(&right.node, ExprKind::Await(_)));
+    }
+
+    #[test]
+    fn test_scope_desugars_to_try_finally_and_registers_spawns() {
+        // Issue #301 phase 3: `scope { }` is plain AST (no new node kind) and
+        // only spawns lexically inside it are registered with the scope.
+        let d = first_decl("fn f() { scope { let a = spawn g(); let h = fn() { let b = spawn g(); }; } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(outer) = &f.body.node else { panic!() };
+        let StmtKind::Block(desugared) = &outer[0].node else { panic!("scope should desugar to a block") };
+        assert!(matches!(&desugared[0].node, StmtKind::Let { name, .. } if name == "__scope_0"));
+        let StmtKind::Try { body, catches, finally } = &desugared[1].node else { panic!() };
+        assert_eq!(catches.len(), 1);
+        assert!(finally.is_some());
+        let StmtKind::Block(body_stmts) = &body.node else { panic!() };
+        let StmtKind::Let { value: Some(first), .. } = &body_stmts[0].node else { panic!() };
+        let ExprKind::Call { func, .. } = &first.node else { panic!("spawn in scope should be registered") };
+        assert!(matches!(&func.node, ExprKind::Ident(n) if n == "__scope_register"));
+        // The spawn inside the nested closure belongs to no scope.
+        let StmtKind::Let { value: Some(lambda), .. } = &body_stmts[1].node else { panic!() };
+        let ExprKind::Lambda { body: lbody, .. } = &lambda.node else { panic!() };
+        let rendered = format!("{:?}", lbody.node);
+        assert!(!rendered.contains("__scope_register"), "closure spawn must not be registered: {rendered}");
+    }
+
+    #[test]
+    fn test_scope_is_contextual_not_reserved() {
+        // `scope` stays usable as an ordinary identifier.
+        let d = first_decl("fn f() { let scope = 1; let y = scope + 1; }");
+        let DeclKind::Function(_) = d else { panic!() };
     }
 
     #[test]

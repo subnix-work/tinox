@@ -196,8 +196,8 @@ Fn(P1, P2) -> R       Function type
 ### Variable Declarations
 
 ```tinox
-// Immutable variable
-let x: Int32 = 42;
+// Immutable variable (`let` is still accepted as a deprecated alias for `const`)
+const x: Int32 = 42;
 val y: Int64 = 100;
 
 // Mutable variable
@@ -282,8 +282,8 @@ class Point
 
     fn distanceTo(other: Point) -> Float64
     {
-        let dx: Float64 = this.x - other.x;
-        let dy: Float64 = this.y - other.y;
+        const dx: Float64 = this.x - other.x;
+        const dy: Float64 = this.y - other.y;
         return (dx * dx + dy * dy).sqrt();
     }
 }
@@ -295,8 +295,8 @@ Objects are built with **struct-literal syntax** — field name/value pairs
 in braces, not a positional `new ClassName(args)` constructor call:
 
 ```tinox
-let p: Point = Point { x: 1.0, y: 2.0 };
-let user: User = User { id: 1, name: "Alice" };
+const p: Point = Point { x: 1.0, y: 2.0 };
+const user: User = User { id: 1, name: "Alice" };
 ```
 
 ### Entry Point (`class Main`)
@@ -552,9 +552,9 @@ parallelism, not a cooperative/green-thread scheduler. `spawn` is a
 `spawn(...)` function, and returns a handle used with `await`:
 
 ```tinox
-let handle: Int64 = spawn fetchData(url);
+const handle: Int64 = spawn fetchData(url);
 // ... do other work ...
-let result: Data = await handle;
+const result: Data = await handle;
 ```
 
 `async fnc` marks a function as spawnable this way:

@@ -5,8 +5,8 @@
 class Main
 {
     fnc main() -> Int32 {
-        let s = "# top\na: 1";
-        let lines = s.split("\n");
+        const s = "# top\na: 1";
+        const lines = s.split("\n");
         println(lines.len());
         println(lines[0]);
         println(lines[1]);

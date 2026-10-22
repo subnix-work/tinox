@@ -20,23 +20,23 @@ class Main
 {
     fnc main() -> Int32 {
         // --- dial() against a port with no listener: fast, hard failure ---
-        let refused = Amqp10::dial("127.0.0.1", 39219);
+        const refused = Amqp10::dial("127.0.0.1", 39219);
         if (refused == -1) {
             println("ok-dial-refused");
         }
 
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
 
         // --- Check the AMQP header bytes ---
-        let conn1 = Amqp10::dial("127.0.0.1", port);
+        const conn1 = Amqp10::dial("127.0.0.1", port);
         Amqp10::sendAmqpProtocolHeader(conn1);
-        let sconn1 = httpServerAcceptConnHandle(srv);
-        let hdr1 = httpConnReadN(sconn1, 8);
+        const sconn1 = httpServerAcceptConnHandle(srv);
+        const hdr1 = httpConnReadN(sconn1, 8);
         if (hdr1.len() == 8) {
             if (hdr1[0] == 65) {
                 if (hdr1[1] == 77) {
@@ -65,10 +65,10 @@ class Main
         httpConnClose(sconn1);
 
         // --- Check the SASL header bytes ---
-        let conn2 = Amqp10::dial("127.0.0.1", port);
+        const conn2 = Amqp10::dial("127.0.0.1", port);
         Amqp10::sendSaslProtocolHeader(conn2);
-        let sconn2 = httpServerAcceptConnHandle(srv);
-        let hdr2 = httpConnReadN(sconn2, 8);
+        const sconn2 = httpServerAcceptConnHandle(srv);
+        const hdr2 = httpConnReadN(sconn2, 8);
         if (hdr2.len() == 8) {
             if (hdr2[4] == 3) {
                 if (hdr2[5] == 1) {
@@ -90,9 +90,9 @@ class Main
         httpConnClose(sconn2);
 
         // --- EOF path: the fake broker closes immediately without answering ---
-        let conn3 = Amqp10::dial("127.0.0.1", port);
+        const conn3 = Amqp10::dial("127.0.0.1", port);
         Amqp10::sendAmqpProtocolHeader(conn3);
-        let sconn3 = httpServerAcceptConnHandle(srv);
+        const sconn3 = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn3, 8);
         httpConnClose(sconn3);
         if (!Amqp10::checkProtocolHeaderEcho(conn3, [65, 77, 81, 80, 0, 1, 0, 0])) {

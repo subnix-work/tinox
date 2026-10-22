@@ -17,7 +17,8 @@ fn media_type_arg_to_mime(arg: &AnnotationArg) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AnnotationTarget {
     Function,
     Method,
@@ -30,7 +31,7 @@ pub enum AnnotationTarget {
     Param,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AnnotationInfo {
     pub name: String,
     pub valid_targets: Vec<AnnotationTarget>,
@@ -327,6 +328,7 @@ pub struct AnnotationProcessingResult {
     /// override — unlike @Auth's "bearer"/"basic" choice).
     pub transactional_methods: HashSet<(String, String)>,
     pub deprecated_warnings: Vec<String>,
+    pub shared_state_warnings: Vec<String>,
     pub custom_annotation_names: Vec<String>,
     pub di_components: Vec<DiComponentInfo>,
     pub log_classes: HashSet<String>,
@@ -351,6 +353,13 @@ pub struct AnnotationProcessor {
 }
 
 impl AnnotationProcessor {
+    /// Expose the exact metadata used by annotation validation to API consumers.
+    pub fn info(&self, name: &str) -> Option<&AnnotationInfo> { self.registry.get(name) }
+
+    pub fn register_source(&mut self, source: &tinox_parser::SourceFile) {
+        for decl in &source.decls { collect_custom_annotation_classes(&decl.node, self); }
+    }
+
     pub fn new() -> Self {
         let mut registry: HashMap<String, AnnotationInfo> = HashMap::new();
 
@@ -669,6 +678,12 @@ impl AnnotationProcessor {
             },
         );
 
+        registry.insert("Synchronized".into(), AnnotationInfo {
+            name: "Synchronized".into(),
+            valid_targets: vec![AnnotationTarget::Class, AnnotationTarget::Method],
+            min_args: 0, max_args: 0,
+            description: "Serialize annotated singleton instance methods with one recursive class monitor; release on return, error and cancellation".into(),
+        });
         // DI scope annotations
         registry.insert(
             "ApplicationComponent".to_string(),
@@ -1058,6 +1073,24 @@ impl AnnotationProcessor {
             }
         }
 
+        for component in &result.di_components {
+            if !matches!(component.scope, DiScope::Application | DiScope::Startup) { continue; }
+            fn request_path(name: &str, components: &[DiComponentInfo], seen: &mut HashSet<String>) -> Option<String> {
+                if !seen.insert(name.into()) { return None; }
+                let component = components.iter().find(|c| c.class_name == name)?;
+                if component.scope == DiScope::HttpRequest { return Some(name.into()); }
+                for field in &component.inject_fields {
+                    if let Some(path) = request_path(&field.field_type, components, seen) {
+                        return Some(format!("{name}.{} -> {path}", field.field_name));
+                    }
+                }
+                None
+            }
+            if let Some(path) = request_path(&component.class_name, &result.di_components, &mut HashSet::new()) {
+                result.shared_state_warnings.push(format!(
+                    "shared-state: singleton captures request-scoped state ({path}); use @HttpRequestScoped for the request owner and inject application services instead"));
+            }
+        }
         result
     }
 
@@ -1070,6 +1103,18 @@ impl AnnotationProcessor {
         let mut class_auth: Option<String> = None;
         let mut class_transactional = false;
         let mut di_scope: Option<DiScope> = None;
+        let singleton = class.annotations.iter().any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"));
+        let synchronized = class.annotations.iter().any(|a| a.name == "Synchronized");
+        let state: Vec<_> = class.fields.iter().filter(|f| f.mutable
+            && !f.annotations.iter().any(|a| matches!(a.name.as_str(), "Inject" | "Config"))).collect();
+        let unguarded = !synchronized && class.methods.iter().any(|m| !m.static_
+            && !m.annotations.iter().any(|a| a.name == "Synchronized"));
+        let exposed = state.iter().any(|f| !matches!(f.visibility, tinox_parser::Visibility::Private));
+        if singleton && !state.is_empty() && (unguarded || exposed) {
+            result.shared_state_warnings.push(format!(
+                "shared-state: singleton '{}' has mutable shared fields; protect every access (for example @Synchronized with private fields). Public field access and escaped collections bypass method locks; this diagnostic does not prove race freedom", class.name));
+        }
+
         let mut ws_endpoint_path: Option<String> = None;
         let mut ws_endpoint_port: Option<i64> = None;
         let mut amqp10_consumer_args: Option<(String, i64, String, String, String)> = None;
@@ -1695,8 +1740,9 @@ fn collect_custom_annotation_classes(decl: &DeclKind, processor: &mut Annotation
     }
 }
 
-fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
-    match decl {
+fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
+    let first_error = errors.len();
+    match &decl.node {
         DeclKind::Function(f) => {
             errors.extend(processor.validate(&f.annotations, AnnotationTarget::Function));
             for param in &f.params {
@@ -1705,6 +1751,19 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializ
         }
         DeclKind::Class(c) => {
             errors.extend(processor.validate(&c.annotations, AnnotationTarget::Class));
+            let synchronized_class = c.annotations.iter().any(|a| a.name == "Synchronized");
+            let has_synchronized = synchronized_class || c.methods.iter().any(|m| m.annotations.iter().any(|a| a.name == "Synchronized"));
+            if has_synchronized && (!c.annotations.iter().any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"))
+                || !c.type_params.is_empty() || c.extends.is_some()) {
+                errors.push(Error::new(c.span, "@Synchronized requires a non-generic @ApplicationComponent or @Startup class without inheritance"));
+            }
+            for m in &c.methods {
+                let explicit = m.annotations.iter().any(|a| a.name == "Synchronized");
+                if (explicit && m.static_) || ((explicit || synchronized_class) && !m.static_ && !m.type_params.is_empty()) {
+                    errors.push(Error::new(m.span, "@Synchronized supports non-generic instance methods only; class-level synchronization excludes static methods"));
+                }
+            }
+
             for field in &c.fields {
                 errors.extend(processor.validate(&field.annotations, AnnotationTarget::Field));
             }
@@ -1720,6 +1779,9 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializ
             errors.extend(processor.validate(&i.annotations, AnnotationTarget::Interface));
             for method in &i.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+                if method.annotations.iter().any(|a| a.name == "Synchronized") {
+                    errors.push(Error::new(method.span, "@Synchronized requires a concrete singleton class method"));
+                }
                 for param in &method.params {
                     errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
                 }
@@ -1732,6 +1794,9 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializ
             errors.extend(processor.validate(&t.annotations, AnnotationTarget::Trait));
             for method in &t.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
+                if method.annotations.iter().any(|a| a.name == "Synchronized") {
+                    errors.push(Error::new(method.span, "@Synchronized requires a concrete singleton class method"));
+                }
                 for param in &method.params {
                     errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
                 }
@@ -1740,10 +1805,13 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &DeclKind, json_serializ
         DeclKind::Namespace(ns) => {
             errors.extend(processor.validate(&ns.annotations, AnnotationTarget::Namespace));
             for inner in &ns.decls {
-                validate_decl(processor, &inner.node, json_serializable, errors);
+                validate_decl(processor, inner, json_serializable, errors);
             }
         }
         _ => {}
+    }
+    for error in &mut errors[first_error..] {
+        if error.file.is_none() { error.file = decl.file.as_deref().map(Into::into); }
     }
 }
 
@@ -1922,8 +1990,9 @@ pub fn validate_annotations(
 
     let mut errors = Vec::new();
     for decl in &source.decls {
-        validate_decl(&processor, &decl.node, &json_serializable, &mut errors);
+        validate_decl(&processor, decl, &json_serializable, &mut errors);
     }
+    for error in &mut errors { error.code = Some("TINOX-ANNOTATION".into()); }
     errors
 }
 
@@ -1958,6 +2027,34 @@ mod tests {
 
     fn valid(src: &str) -> Vec<Error> {
         validate_annotations(&parse(src), &[])
+    }
+
+    #[test]
+    fn synchronized_requires_concrete_singleton_instance_methods() {
+        assert!(valid("@ApplicationComponent @Synchronized class Counter { fn read() -> Int64 { return 0; } }").is_empty());
+        assert!(valid("@Startup class Counter { @Synchronized fn read() -> Int64 { return 0; } }").is_empty());
+        for source in [
+            "@Synchronized class Counter {}",
+            "@HttpRequestScoped @Synchronized class Counter {}",
+            "@ApplicationComponent class Counter { @Synchronized fnc read() -> Int64 { return 0; } }",
+            "@ApplicationComponent class Counter { @Synchronized fn read<T>(x: T) -> T { return x; } }",
+            "@ApplicationComponent @Synchronized class Counter<T> {}",
+            "class Base {} @ApplicationComponent @Synchronized class Counter extends Base {}",
+        ] {
+            assert!(valid(source).iter().any(|error| error.message.contains("@Synchronized")), "{source}");
+        }
+    }
+
+    #[test]
+    fn shared_state_diagnostics_are_narrow_and_cover_captive_request_state() {
+        let unsafe_state = proc("@ApplicationComponent class Counter { var value: Int64; fn read() -> Int64 { return 0; } }");
+        assert!(unsafe_state.shared_state_warnings.iter().any(|w| w.contains("mutable shared fields")));
+        let guarded = proc("@ApplicationComponent @Synchronized class Counter { private var value: Int64; fn read() -> Int64 { return 0; } }");
+        assert!(guarded.shared_state_warnings.is_empty());
+        let exposed = proc("@ApplicationComponent @Synchronized class Counter { var value: Int64; }");
+        assert!(exposed.shared_state_warnings.iter().any(|w| w.contains("bypass method locks")));
+        let captive = proc("@HttpRequestScoped class Request {} @ApplicationComponent class Middle { @Inject var request: Request; } @Startup class Service { @Inject var middle: Middle; }");
+        assert!(captive.shared_state_warnings.iter().any(|w| w.contains("Service.middle -> Middle.request -> Request")));
     }
 
     // --- validate: unknown annotation ---

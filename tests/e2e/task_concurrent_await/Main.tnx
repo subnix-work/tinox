@@ -1,0 +1,35 @@
+// expect: 126
+// expect: 42
+// expect: detached
+// expect: 192
+class Main {
+    fnc text() -> String { return "cached"; }
+    fnc value() -> Int64 { sleep(10); return 42; }
+    fnc waitFor(t: Task<Int64>) -> Int64 { return await t; }
+    fnc detached(ready: Int64) -> Nothing { println("detached"); send ready -> 1; }
+    fnc main() -> Int32 {
+        const result = spawn Main::value();
+        const a = spawn Main::waitFor(result);
+        const b = spawn Main::waitFor(result);
+        const c = spawn Main::waitFor(result);
+        println(await a + await b + await c);
+        println(await result);
+        const ready = channel;
+        const background = spawn Main::detached(ready);
+        taskDetach(background);
+        recv ready;
+        var i = 0;
+        var total = 0;
+        while (i < 32) {
+            scope {
+                const task = spawn Main::text();
+                await task;
+                gcCollect();
+                total = total + (await task).len();
+            }
+            i = i + 1;
+        }
+        println(total);
+        return 0;
+    }
+}

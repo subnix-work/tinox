@@ -1,0 +1,13 @@
+// expect-exit: 1
+// expect-contains: task ignored cooperative cancellation for 5 seconds during await
+class Main {
+    fnc worker(ready: Int64) -> Nothing { send ready -> 1; loop {} }
+    fnc main() -> Int32 {
+        const ready = channel;
+        const task = spawn Main::worker(ready);
+        recv ready;
+        taskCancel(task);
+        await task;
+        return 0;
+    }
+}

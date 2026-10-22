@@ -4,12 +4,12 @@ class Main
 {
     fnc main() -> Int32
     {
-        let server: HttpServer = HttpServer::new(8080);
+        const server: HttpServer = HttpServer::new(8080);
         server.get("/hello", ctx => {
             ctx.response.text("Hello, World!");
         });
         server.get("/users/:id", ctx => {
-            let id: String = ctx.request.getParam("id");
+            const id: String = ctx.request.getParam("id");
             ctx.response.json("{\"id\": \"" + id + "\"}");
         });
         server.listen();

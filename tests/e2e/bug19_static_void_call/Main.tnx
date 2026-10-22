@@ -9,7 +9,7 @@ import bug19_static_void_call;
 class Main
 {
     fnc main() -> Int32 {
-        let c: bug19_static_void_call = bug19_static_void_call::mk();
+        const c: bug19_static_void_call = bug19_static_void_call::mk();
         bug19_static_void_call::voidy(c, 5);
         println("ok");
         return 0;

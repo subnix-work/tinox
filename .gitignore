@@ -1,5 +1,6 @@
 # Build artifacts
 /target
+*.tinox-build/
 **/*.rlib
 **/*.pdb
 
@@ -79,3 +80,6 @@ fuzz/*/leak-*
 fuzz/*/timeout-*
 fuzz/*/oom-*
 fuzz/*/slow-unit-*
+
+# Compiler query schema fingerprint build script
+!/crates/tinox-common/build.rs

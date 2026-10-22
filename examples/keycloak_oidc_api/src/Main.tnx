@@ -34,7 +34,7 @@ class Main
     // main's `server.get(...)` route-closure lambdas) exactly as before.
     fnc requiredEnv(name: String) -> String
     {
-        let value: String = Env::getVar(name);
+        const value: String = Env::getVar(name);
         if (value == "")
         {
             println("Missing required environment variable: " + name);
@@ -49,12 +49,12 @@ class Main
         {
             return false;
         }
-        let realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable();
+        const realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable();
         if (!realmAccess.contains("roles"))
         {
             return false;
         }
-        let roles: List<JsonValue> = realmAccess["roles"].asList();
+        const roles: List<JsonValue> = realmAccess["roles"].asList();
         var i: Int64 = 0;
         while i < roles.len()
         {
@@ -69,34 +69,34 @@ class Main
 
     fnc main() -> Int32
     {
-        let issuer: String = requiredEnv("OIDC_ISSUER");
-        let authorizeUrl: String = requiredEnv("OIDC_AUTHORIZE_URL");
-        let tokenUrl: String = requiredEnv("OIDC_TOKEN_URL");
-        let jwksUri: String = requiredEnv("OIDC_JWKS_URI");
-        let clientId: String = requiredEnv("OIDC_CLIENT_ID");
-        let redirectUri: String = requiredEnv("OIDC_REDIRECT_URI");
-        let requiredRole: String = requiredEnv("OIDC_REQUIRED_ROLE");
+        const issuer: String = requiredEnv("OIDC_ISSUER");
+        const authorizeUrl: String = requiredEnv("OIDC_AUTHORIZE_URL");
+        const tokenUrl: String = requiredEnv("OIDC_TOKEN_URL");
+        const jwksUri: String = requiredEnv("OIDC_JWKS_URI");
+        const clientId: String = requiredEnv("OIDC_CLIENT_ID");
+        const redirectUri: String = requiredEnv("OIDC_REDIRECT_URI");
+        const requiredRole: String = requiredEnv("OIDC_REQUIRED_ROLE");
         // Seals the session/pending-login cookies (AES-256-GCM) -- a real
         // deployment must keep this stable across restarts (or every
         // existing session/in-flight login breaks) and secret (whoever holds
         // it can forge sessions).
-        let cookieSecret: String = requiredEnv("OIDC_COOKIE_SECRET");
+        const cookieSecret: String = requiredEnv("OIDC_COOKIE_SECRET");
         // Public client (no client secret) -- OidcClient still needs a value
         // to pass through to OAuth2Client, Keycloak just ignores it for a
         // client whose authentication method is "none".
-        let clientSecret: String = Env::getVar("OIDC_CLIENT_SECRET");
+        const clientSecret: String = Env::getVar("OIDC_CLIENT_SECRET");
 
         var port: Int64 = 8096;
-        let portEnv: String = Env::getVar("PORT");
+        const portEnv: String = Env::getVar("PORT");
         if (portEnv != "")
         {
             port = portEnv.toInt();
         }
 
-        let client: OidcClient = OidcClient::new(issuer, authorizeUrl, tokenUrl, jwksUri, clientId, clientSecret, redirectUri);
-        let app: OidcWebApp = OidcWebApp::new(client, cookieSecret);
+        const client: OidcClient = OidcClient::new(issuer, authorizeUrl, tokenUrl, jwksUri, clientId, clientSecret, redirectUri);
+        const app: OidcWebApp = OidcWebApp::new(client, cookieSecret);
 
-        let server: HttpServer = HttpServer::new(port);
+        const server: HttpServer = HttpServer::new(port);
         app.install(server);
 
         server.get("/", ctx => {
@@ -104,7 +104,7 @@ class Main
             {
                 return;
             }
-            let claims: Map<String, JsonValue> = app.currentUser(ctx);
+            const claims: Map<String, JsonValue> = app.currentUser(ctx);
             if (!hasRole(claims, requiredRole))
             {
                 ctx.response.status(403).html("<p>Logged in as <b>" + claims["sub"].getString() + "</b>, but missing required role \"" + requiredRole + "\". <a href=\"/logout\">Log out</a></p>");

@@ -39,22 +39,22 @@ namespace tinox.core.rest.server
          */
         fnc checkRoles(ctx: HttpContext, rolesCsv: String) -> Bool
         {
-            let issuer: String = Env::getVar("OIDC_ISSUER");
-            let jwksUri: String = Env::getVar("OIDC_JWKS_URI");
-            let audience: String = Env::getVar("OIDC_AUDIENCE");
+            const issuer: String = Env::getVar("OIDC_ISSUER");
+            const jwksUri: String = Env::getVar("OIDC_JWKS_URI");
+            const audience: String = Env::getVar("OIDC_AUDIENCE");
             if (issuer == "" || jwksUri == "" || audience == "")
             {
                 println("@OIDCRolesAllowed: missing required environment variable(s) -- OIDC_ISSUER, OIDC_JWKS_URI and OIDC_AUDIENCE must all be set");
                 Process::exit(1);
             }
 
-            let auth: String = ctx.request.getHeader("Authorization");
+            const auth: String = ctx.request.getHeader("Authorization");
             if (!auth.startsWith("Bearer "))
             {
                 ctx.response.status(401).json("{\"error\":\"missing bearer token\"}");
                 return false;
             }
-            let token: String = auth.substring(7, auth.len());
+            const token: String = auth.substring(7, auth.len());
 
             var claims: Map<String, JsonValue> = Map::new();
             var verifyError: String = "";
@@ -73,14 +73,14 @@ namespace tinox.core.rest.server
                 return false;
             }
 
-            let allowedRoles: List<String> = rolesCsv.split("|");
+            const allowedRoles: List<String> = rolesCsv.split("|");
             var hasRole: Bool = false;
             if (claims.contains("realm_access"))
             {
-                let realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable();
+                const realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable();
                 if (realmAccess.contains("roles"))
                 {
-                    let tokenRoles: List<JsonValue> = realmAccess["roles"].asList();
+                    const tokenRoles: List<JsonValue> = realmAccess["roles"].asList();
                     var i: Int64 = 0;
                     while i < tokenRoles.len()
                     {
@@ -114,7 +114,7 @@ namespace tinox.core.rest.server
          */
         fnc verifyToken(token: String, issuer: String, jwksUri: String, audience: String) -> Map<String, JsonValue>
         {
-            let header: Map<String, JsonValue> = Jwt::extractHeader(token);
+            const header: Map<String, JsonValue> = Jwt::extractHeader(token);
             if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
                 throw "unsupported token alg (expected RS256)";
@@ -125,8 +125,8 @@ namespace tinox.core.rest.server
                 kid = header["kid"].getString();
             }
 
-            let key: Map<String, String> = Jwks::fetchRsaKey(jwksUri, kid);
-            let claims: Map<String, JsonValue> = Jwt::decodeRs256(token, key["n"], key["e"]);
+            const key: Map<String, String> = Jwks::fetchRsaKey(jwksUri, kid);
+            const claims: Map<String, JsonValue> = Jwt::decodeRs256(token, key["n"], key["e"]);
 
             if (!claims.contains("iss") || claims["iss"].getString() != issuer)
             {
@@ -142,7 +142,7 @@ namespace tinox.core.rest.server
                 }
                 else if (claims["aud"].isArray())
                 {
-                    let auds: List<JsonValue> = claims["aud"].asList();
+                    const auds: List<JsonValue> = claims["aud"].asList();
                     var i: Int64 = 0;
                     while i < auds.len()
                     {

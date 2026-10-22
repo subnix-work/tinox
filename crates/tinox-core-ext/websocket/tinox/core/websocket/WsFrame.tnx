@@ -15,10 +15,10 @@ module tinox.core.websocket;
  * covered by WsClient::connect (issue #121).
  *
  * Usage (echo server):
- *   let srv = WsServer::listen(8080);
- *   let conn = WsServer::accept(srv);        // includes the handshake, -1 on error
+ *   const srv = WsServer::listen(8080);
+ *   const conn = WsServer::accept(srv);        // includes the handshake, -1 on error
  *   while true {
- *       let f = Ws::readMessage(conn);        // ping/pong+close handled automatically
+ *       const f = Ws::readMessage(conn);        // ping/pong+close handled automatically
  *       if f.opcode != 1 { break; }           // 1 = text
  *       Ws::sendText(conn, Ws::text(f));
  *   }

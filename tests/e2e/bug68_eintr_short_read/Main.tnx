@@ -30,10 +30,10 @@ class Main
 
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn, 8);
 
-        let w1 = AmqpWriter091::new();
+        const w1 = AmqpWriter091::new();
         w1.octet(0);
         w1.octet(9);
         var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
@@ -43,7 +43,7 @@ class Main
         Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes));
         Amqp091::readFrame(sconn);
 
-        let w2 = AmqpWriter091::new();
+        const w2 = AmqpWriter091::new();
         w2.short(2047);
         w2.long(131072);
         w2.short(60);
@@ -51,35 +51,35 @@ class Main
         Amqp091::readFrame(sconn);
 
         Amqp091::readFrame(sconn); // connection.open
-        let w3 = AmqpWriter091::new();
+        const w3 = AmqpWriter091::new();
         w3.shortstr("");
         Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes));
 
         Amqp091::readFrame(sconn); // channel.open
-        let w4 = AmqpWriter091::new();
+        const w4 = AmqpWriter091::new();
         w4.longstr("");
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
 
         // queue.declare (240-byte name) -> declare-ok
-        let fDecl = Amqp091::readFrame(sconn);
-        let mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
+        const fDecl = Amqp091::readFrame(sconn);
+        const mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
         var ok1: Bool = mDecl.classId == 50 && mDecl.methodId == 10;
-        let rDecl = AmqpReader091::new(mDecl.args);
+        const rDecl = AmqpReader091::new(mDecl.args);
         rDecl.short();
-        let seenName = rDecl.shortstr();
+        const seenName = rDecl.shortstr();
 
-        let w5 = AmqpWriter091::new();
+        const w5 = AmqpWriter091::new();
         w5.shortstr(seenName);
         w5.long(0);
         w5.long(0);
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 11, w5.bytes));
 
         // queue.bind -> bind-ok (the call that crashed in the original finding)
-        let fBind = Amqp091::readFrame(sconn);
-        let mBind = Amqp091::decodeMethodPayload(fBind.payload);
+        const fBind = Amqp091::readFrame(sconn);
+        const mBind = Amqp091::decodeMethodPayload(fBind.payload);
         var ok2: Bool = mBind.classId == 50 && mBind.methodId == 20;
 
-        let w6 = AmqpWriter091::new();
+        const w6 = AmqpWriter091::new();
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 21, w6.bytes));
 
         httpConnClose(sconn);
@@ -101,21 +101,21 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv);
 
-        let c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
+        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
         if (c.conn > 0) {
             println("ok-connect");
         }
-        let ch = AmqpChannel091::open(c);
+        const ch = AmqpChannel091::open(c);
 
-        let queueName = ch.declareQueue(makeName(240), true, false, false);
+        const queueName = ch.declareQueue(makeName(240), true, false, false);
         if (queueName.len() == 240) {
             println("ok-declare1");
         }
@@ -123,19 +123,19 @@ class Main
         // Rejected without network I/O (>255 bytes) -- the additional
         // allocation pressure (300 single-character concatenations) is part
         // of the original reproduction.
-        let skipped = ch.declareQueue(makeName(300), true, false, false);
+        const skipped = ch.declareQueue(makeName(300), true, false, false);
         if (skipped.len() == 0) {
             if (ch.errorMessage.len() > 0) {
                 println("ok-declare2-rejected");
             }
         }
 
-        let bound = ch.bindQueue(queueName, "amq.direct", queueName);
+        const bound = ch.bindQueue(queueName, "amq.direct", queueName);
         if (bound) {
             println("ok-bind");
         }
 
-        let brokerOk = await handle;
+        const brokerOk = await handle;
         if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }

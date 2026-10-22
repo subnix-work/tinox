@@ -27,7 +27,7 @@ namespace tinox.core.metrics
 
         fn recordTo(sw: MetricsStopwatch, metricName: String) -> Nothing
         {
-            let elapsed: Int64 = tinox_clock_nanos() - sw.startNs;
+            const elapsed: Int64 = tinox_clock_nanos() - sw.startNs;
             tinox_histogram_record(metricName, elapsed);
         }
     }

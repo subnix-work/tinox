@@ -29,8 +29,8 @@ class Main
 
     async fnc fakeTokenEndpoint(srv: Int64) -> Int64 {
         // --- exchangeCode() request ---
-        let sconn1 = httpServerAcceptConnHandle(srv);
-        let req1 = httpConnReadRequest(sconn1);
+        const sconn1 = httpServerAcceptConnHandle(srv);
+        const req1 = httpConnReadRequest(sconn1);
         var exchangeOk: Int64 = 0;
         if (req1.contains("POST /token")) {
             if (req1.contains("Content-Type: application/x-www-form-urlencoded")) {
@@ -49,14 +49,14 @@ class Main
                 }
             }
         }
-        let body1 = "{\"access_token\":\"at-12345\",\"refresh_token\":\"rt-67890\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
-        let resp1 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body1.len().toString() + "\r\nConnection: close\r\n\r\n" + body1;
+        const body1 = "{\"access_token\":\"at-12345\",\"refresh_token\":\"rt-67890\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
+        const resp1 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body1.len().toString() + "\r\nConnection: close\r\n\r\n" + body1;
         httpConnSendRaw(sconn1, resp1);
         httpConnClose(sconn1);
 
         // --- refresh() request ---
-        let sconn2 = httpServerAcceptConnHandle(srv);
-        let req2 = httpConnReadRequest(sconn2);
+        const sconn2 = httpServerAcceptConnHandle(srv);
+        const req2 = httpConnReadRequest(sconn2);
         var refreshOk: Int64 = 0;
         if (req2.contains("POST /token")) {
             if (req2.contains("grant_type=refresh_token")) {
@@ -67,16 +67,16 @@ class Main
                 }
             }
         }
-        let body2 = "{\"access_token\":\"at-new-99999\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
-        let resp2 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body2.len().toString() + "\r\nConnection: close\r\n\r\n" + body2;
+        const body2 = "{\"access_token\":\"at-new-99999\",\"token_type\":\"Bearer\",\"expires_in\":3600}";
+        const resp2 = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body2.len().toString() + "\r\nConnection: close\r\n\r\n" + body2;
         httpConnSendRaw(sconn2, resp2);
         httpConnClose(sconn2);
 
         // --- error response (RFC 6749 §5.2) for the error-path assertion ---
-        let sconn3 = httpServerAcceptConnHandle(srv);
+        const sconn3 = httpServerAcceptConnHandle(srv);
         httpConnReadRequest(sconn3);
-        let body3 = "{\"error\":\"invalid_grant\",\"error_description\":\"code expired\"}";
-        let resp3 = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + body3.len().toString() + "\r\nConnection: close\r\n\r\n" + body3;
+        const body3 = "{\"error\":\"invalid_grant\",\"error_description\":\"code expired\"}";
+        const resp3 = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: " + body3.len().toString() + "\r\nConnection: close\r\n\r\n" + body3;
         httpConnSendRaw(sconn3, resp3);
         httpConnClose(sconn3);
 
@@ -91,15 +91,15 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeTokenEndpoint(srv);
+        const handle = spawn fakeTokenEndpoint(srv);
 
-        let client = OAuth2Client::new(
+        const client = OAuth2Client::new(
             "https://example.com/authorize",
             "http://127.0.0.1:" + port.toString() + "/token",
             "my-client-id",
@@ -107,7 +107,7 @@ class Main
             "https://myapp.example.com/callback"
         );
 
-        let authReq = client.buildAuthorizeUrl("openid email");
+        const authReq = client.buildAuthorizeUrl("openid email");
         if (authReq.url.contains("response_type=code")) {
             if (authReq.url.contains("code_challenge=")) {
                 if (authReq.url.contains("code_challenge_method=S256")) {
@@ -125,7 +125,7 @@ class Main
             }
         }
 
-        let tokens1 = client.exchangeCode("abc123", authReq.codeVerifier);
+        const tokens1 = client.exchangeCode("abc123", authReq.codeVerifier);
         if (tokens1.ok) {
             if (tokens1.accessToken == "at-12345") {
                 if (tokens1.refreshToken == "rt-67890") {
@@ -138,14 +138,14 @@ class Main
             }
         }
 
-        let tokens2 = client.refresh(tokens1.refreshToken);
+        const tokens2 = client.refresh(tokens1.refreshToken);
         if (tokens2.ok) {
             if (tokens2.accessToken == "at-new-99999") {
                 println("ok-refresh-response");
             }
         }
 
-        let tokens3 = client.exchangeCode("expired-code", authReq.codeVerifier);
+        const tokens3 = client.exchangeCode("expired-code", authReq.codeVerifier);
         if (!tokens3.ok) {
             if (tokens3.errorMessage.contains("invalid_grant")) {
                 if (tokens3.errorMessage.contains("code expired")) {
@@ -154,7 +154,7 @@ class Main
             }
         }
 
-        let brokerOk = await handle;
+        const brokerOk = await handle;
         if (brokerOk == 1) {
             println("ok-broker-saw-correct-fields");
         }
