@@ -4,6 +4,13 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Consumer-local `tinox.overrides.yaml` package overrides with transitive
+  resolution, mutable-source lock records, CLI/LSP provenance and publication
+  guards (#313). `make workspace-stdlib` and its separate CI lane exercise
+  unpublished extended modules alongside existing registry compatibility tests.
+
 ### Changed
 
 - **`const` replaces `let` for immutable bindings** (`const x = 1;`,

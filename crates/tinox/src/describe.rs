@@ -270,7 +270,7 @@ fn describe(options: &Options) -> Result<Description, DescribeError> {
         .and_then(|file| file.parent())
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or(&cwd);
-    let (dependencies, missing) = load_dep_dirs(base);
+    let (dependencies, missing) = load_dep_dirs(base)?;
     let mut resolved = if let Some(entry) = &entry {
         graph(
             std::slice::from_ref(entry),

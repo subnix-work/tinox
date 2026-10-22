@@ -16,8 +16,7 @@ import tinox.core.bytes;
 
 extern fn socketCreateTcp() -> Int64;
 extern fn socketConnect(fd: Int64, host: String, port: Int64) -> Bool;
-extern fn httpConnFromFd(fd: Int64) -> Int64;
-extern fn httpConnClose(conn: Int64);
+
 
 class Main
 {
@@ -99,7 +98,7 @@ class Main
         var i: Int64 = 0;
         while i < got.len()
         {
-            if got.get(i) == 0
+            if (got.get(i) == 0)
             {
                 nuls = true;
             }

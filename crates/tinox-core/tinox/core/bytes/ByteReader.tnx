@@ -20,7 +20,7 @@ namespace tinox.core.bytes
         fn open(path: String) -> ByteReader
         {
             const fd: Int64 = tinoxFileOpenBytes(path, "rb");
-            if fd == 0
+            if (fd == 0)
             {
                 println("runtime error: cannot open file for reading: " + path);
                 exit(1);
@@ -49,13 +49,13 @@ namespace tinox.core.bytes
             {
                 const h: Int64 = tinoxBufReadChunk(this.fd, chunk);
                 const n: Int64 = tinoxBufLen(h);
-                if n == 0
+                if (n == 0)
                 {
                     more = false;
                 }
                 else
                 {
-                    if httpConnWriteBuf(conn, h) < 0
+                    if (httpConnWriteBuf(conn, h) < 0)
                     {
                         more = false;
                     }

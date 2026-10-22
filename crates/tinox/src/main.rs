@@ -56,14 +56,28 @@ fn run() {
         "explain" => explain::run(&args[2..]),
         "fmt"     => fmt(&args[2..]),
         "repl"    => repl(),
+        "sources" => {
+            if let Err(e) = pm::cmd_sources() {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         "install" => {
             if !pm::cmd_install(&args[2..]) {
                 std::process::exit(1);
             }
         }
         "add"     => pm::cmd_add(&args[2..]),
-        "package" => pm::cmd_package(),
-        "publish" => pm::cmd_publish(&args[2..]),
+        "package" | "publish" => {
+            if let Some(root) = pm::find_project_root() {
+                if let Err(e) = pm::check_publishable(&root) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            if args[1] == "package" { pm::cmd_package(); }
+            else { pm::cmd_publish(&args[2..]); }
+        },
         "search"  => pm::cmd_search(&args[2..]),
         "help" | "--help" | "-h" => print_help(),
         _ => {
@@ -96,6 +110,7 @@ fn print_help() {
     println!("  tinox fmt   <file>         Format a Tinox file (print to stdout)");
     println!("  tinox fmt --write <file>   Format a Tinox file in place");
     println!("  tinox repl                 Start interactive REPL");
+    println!("  tinox sources                    Inspect installed/local dependency sources");
     println!("  tinox install              Download and install all dependencies");
     println!("  tinox install --update     Re-pin tinox.lock instead of verifying against it");
     println!("  tinox add <g> <a> <v> <u>  Add a dependency and install it");
@@ -1976,7 +1991,10 @@ fn gen_call_graph(args: &[String]) {
     if let Ok(c) = Path::new(&input_file).canonicalize() {
         visited.insert(c);
     }
-    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     if let Err(e) = resolve_imports(&mut ast, &base_dir, Path::new(&input_file), &mut visited, &dep_dirs, &missing_deps) {
         eprintln!("error: import error: {}", e);
         std::process::exit(1);
@@ -2520,7 +2538,7 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     let base = Path::new(path).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(path).canonicalize() { visited.insert(c); }
-    let (dep_dirs, missing_deps) = load_dep_dirs(&base);
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base)?;
     resolve_imports(&mut ast, &base, Path::new(path), &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("import error: {e}"))?;
     check_explicit_imports(Path::new(path), &dep_dirs, &missing_deps)?;
@@ -2546,7 +2564,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let base = Path::new(source).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(source).canonicalize() { visited.insert(c); }
-    let (dep_dirs, missing_deps) = load_dep_dirs(&base);
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base)?;
     resolve_imports(&mut ast, &base, Path::new(source), &mut visited, &dep_dirs, &missing_deps)?;
     check_explicit_imports(Path::new(source), &dep_dirs, &missing_deps)?;
     synthesize_accessors(&mut ast, source)?;
@@ -2721,11 +2739,11 @@ fn runtime_c_path() -> Option<PathBuf> {
 /// dependency the manifest declares but that isn't installed yet (see
 /// `resolve_imports`'s use of the latter to distinguish "never declared"
 /// from "declared but `tinox install` wasn't run").
-fn load_dep_dirs(base_dir: &Path) -> (Vec<PathBuf>, Vec<pm::MissingDep>) {
-    pm::find_project_root_from(base_dir)
-        .and_then(|root| pm::read_manifest(&root).ok().map(|m| (root, m)))
-        .map(|(root, m)| pm::installed_dep_dirs(&root, &m))
-        .unwrap_or_default()
+fn load_dep_dirs(base_dir: &Path) -> Result<(Vec<PathBuf>, Vec<pm::MissingDep>), String> {
+    match pm::find_project_root_from(base_dir) {
+        Some(root) => pm::dependency_dirs(&root, &pm::read_manifest(&root)?),
+        None => Ok(Default::default()),
+    }
 }
 
 /// `tinox.core` module names (artifactIds) declared in the nearest
@@ -3861,7 +3879,7 @@ fn prepare_program(input_path: &str) -> Result<(tinox_parser::SourceFile, tinox_
     if let Ok(canonical) = Path::new(input_path).canonicalize() {
         visited.insert(canonical);
     }
-    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir)?;
     resolve_imports(&mut ast, &base_dir, Path::new(input_path), &mut visited, &dep_dirs, &missing_deps)?;
     // No "Import error:" prefix here: this pass reports more than import
     // problems, and labels the import ones itself (see its own tail).
