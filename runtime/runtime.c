@@ -9403,7 +9403,13 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
     }
 }
 
-void* tinox_db_acquire_stmt_conn(void) { return _tinox_sqlite_db; }
+void* tinox_db_acquire_stmt_conn(void) {
+    if (_tinox_sqlite_db == NULL) {
+        fprintf(stderr, "sqlite: database connection was never initialized (no [database] config?)\n");
+        exit(1);
+    }
+    return _tinox_sqlite_db;
+}
 void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
 
 // @Transactional is a hard compile error for this driver (see the driver
@@ -9647,7 +9653,13 @@ typedef struct {
     char** data;   // row-major: data[row * n_cols + col]
 } TinoxMysqlResult;
 
-void* tinox_db_acquire_stmt_conn(void) { return _tinox_mysql_conn; }
+void* tinox_db_acquire_stmt_conn(void) {
+    if (_tinox_mysql_conn == NULL) {
+        fprintf(stderr, "MySQL: database connection was never initialized (no [database] config?)\n");
+        exit(1);
+    }
+    return _tinox_mysql_conn;
+}
 void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
 
 // @Transactional is a hard compile error for this driver (see the driver
@@ -9811,6 +9823,11 @@ static void service_close_database(void) {
 void tinox_orm_save_failed(const char* table) {
     fprintf(stderr, "ORM save failed for table '%s' (see database error above); "
                     "unassigned String fields are bound as NULL\n", table);
+    exit(1);
+}
+
+void tinox_orm_query_failed(const char* table) {
+    fprintf(stderr, "ORM query failed for table '%s' (see database error above)\n", table);
     exit(1);
 }
 

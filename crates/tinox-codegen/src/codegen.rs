@@ -1714,6 +1714,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_db_free(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i1 @tinox_db_result_failed(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_orm_save_failed(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_orm_query_failed(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_error(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8** @tinox_params_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_params_set(i8**, i64, i8*)").unwrap();
@@ -7005,6 +7006,8 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
         writeln!(&mut self.ir, "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {params_arr}, i64 {n_params})").unwrap();
         writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
+        // A failed query must not look like an empty result set.
+        self.emit_orm_failure_check(&result_reg, &entity.table_name, "tinox_orm_query_failed");
 
         match chain.terminal.as_str() {
             "count" => {
@@ -7194,6 +7197,11 @@ tr_done_{idx}:"#).unwrap();
 
     /// Abort with a visible error if an ORM save's INSERT/UPDATE failed.
     fn emit_orm_save_check(&mut self, result_reg: &str, table: &str) {
+        self.emit_orm_failure_check(result_reg, table, "tinox_orm_save_failed");
+    }
+
+    /// Abort via `fail_fn(table)` if a DB result signals failure.
+    fn emit_orm_failure_check(&mut self, result_reg: &str, table: &str, fail_fn: &str) {
         let failed = self.temp();
         writeln!(&mut self.ir, "  {failed} = call i1 @tinox_db_result_failed(i8* {result_reg})").unwrap();
         let fail_bb = self.new_bb("orm_save_failed");
@@ -7205,7 +7213,7 @@ tr_done_{idx}:"#).unwrap();
         let len = table.len() + 1;
         let p = self.temp();
         writeln!(&mut self.ir, "  {p} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
-        writeln!(&mut self.ir, "  call void @tinox_orm_save_failed(i8* {p})").unwrap();
+        writeln!(&mut self.ir, "  call void @{fail_fn}(i8* {p})").unwrap();
         writeln!(&mut self.ir, "  unreachable").unwrap();
         writeln!(&mut self.ir, "{ok_bb}:").unwrap();
     }
