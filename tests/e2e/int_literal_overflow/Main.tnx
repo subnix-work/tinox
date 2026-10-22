@@ -21,7 +21,7 @@ class Main
         println((0o755).toString());                   // octal -> 493
         println((1_000_000).toString());               // underscores
         println((-9223372036854775807).toString());    // i64::MIN+1
-        let f: Float64 = 3.14f64;                       // float with suffix
+        const f: Float64 = 3.14f64;                       // float with suffix
         println(f.toString());
         return 0;
     }

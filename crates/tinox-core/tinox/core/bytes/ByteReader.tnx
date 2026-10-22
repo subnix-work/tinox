@@ -1,0 +1,78 @@
+module tinox.core.bytes;
+
+namespace tinox.core.bytes
+{
+    extern fn tinoxFileOpenBytes(path: String, mode: String) -> Int64;
+    extern fn tinoxFileCloseBytes(handle: Int64);
+    extern fn tinoxBufReadChunk(handle: Int64, maxBytes: Int64) -> Int64;
+    extern fn tinoxBufLen(h: Int64) -> Int64;
+    extern fn httpConnWriteBuf(conn: Int64, h: Int64) -> Int64;
+
+    /**
+     * Bounded streaming reader over a file: memory stays at one chunk no
+     * matter how large the file is.
+     */
+    class ByteReader
+    {
+        var fd: Int64;
+
+        /** Opens a file for reading; a missing file is a hard error */
+        fn open(path: String) -> ByteReader
+        {
+            const fd: Int64 = tinoxFileOpenBytes(path, "rb");
+            if (fd == 0)
+            {
+                println("runtime error: cannot open file for reading: " + path);
+                exit(1);
+            }
+            return ByteReader { fd: fd };
+        }
+
+        /** Next chunk of at most max bytes; an empty buffer means EOF */
+        fn read(max: Int64) -> Bytes
+        {
+            return Bytes { handle: tinoxBufReadChunk(this.fd, max) };
+        }
+
+        /**
+         * Streams the rest of the file to a connection in chunk-sized
+         * pieces (never materializing the file). The blocking send is the
+         * backpressure: reading only continues as the peer drains. Stops
+         * early -- and still closes the file -- if the connection becomes
+         * invalid. Returns the number of bytes sent.
+         */
+        fn copyToConn(conn: Int64, chunk: Int64) -> Int64
+        {
+            var total: Int64 = 0;
+            var more: Bool = true;
+            while more
+            {
+                const h: Int64 = tinoxBufReadChunk(this.fd, chunk);
+                const n: Int64 = tinoxBufLen(h);
+                if (n == 0)
+                {
+                    more = false;
+                }
+                else
+                {
+                    if (httpConnWriteBuf(conn, h) < 0)
+                    {
+                        more = false;
+                    }
+                    else
+                    {
+                        total = total + n;
+                    }
+                }
+            }
+            this.close();
+            return total;
+        }
+
+        /** Closes the file; safe to call once */
+        fn close() -> Nothing
+        {
+            tinoxFileCloseBytes(this.fd);
+        }
+    }
+}

@@ -18,7 +18,7 @@ namespace tinox.core.sort
             var result: List<Int64> = arr;
             if (low < high)
             {
-                let pivotIndex: Int64 = Sort::partition(result, low, high);
+                const pivotIndex: Int64 = Sort::partition(result, low, high);
                 result = Sort::quickSortHelper(result, low, pivotIndex - 1);
                 result = Sort::quickSortHelper(result, pivotIndex + 1, high);
             }
@@ -27,7 +27,7 @@ namespace tinox.core.sort
 
         fn partition(arr: List<Int64>, low: Int64, high: Int64) -> Int64
         {
-            let pivot: Int64 = arr[high];
+            const pivot: Int64 = arr[high];
             var i: Int64 = low - 1;
             var j: Int64 = low;
             while j < high
@@ -35,13 +35,13 @@ namespace tinox.core.sort
                 if (arr[j] <= pivot)
                 {
                     i = i + 1;
-                    let temp: Int64 = arr[i];
+                    const temp: Int64 = arr[i];
                     arr[i] = arr[j];
                     arr[j] = temp;
                 }
                 j = j + 1;
             }
-            let temp: Int64 = arr[i + 1];
+            const temp: Int64 = arr[i + 1];
             arr[i + 1] = arr[high];
             arr[high] = temp;
             return i + 1;
@@ -58,14 +58,14 @@ namespace tinox.core.sort
 
         fn mergeSortHelper(arr: List<Int64>) -> List<Int64>
         {
-            let len: Int64 = arr.len();
+            const len: Int64 = arr.len();
             if (len <= 1)
             {
                 return arr;
             }
-            let mid: Int64 = len / 2;
-            let left: List<Int64> = Sort::mergeSortHelper(arr.slice(0, mid));
-            let right: List<Int64> = Sort::mergeSortHelper(arr.slice(mid, len));
+            const mid: Int64 = len / 2;
+            const left: List<Int64> = Sort::mergeSortHelper(arr.slice(0, mid));
+            const right: List<Int64> = Sort::mergeSortHelper(arr.slice(mid, len));
             return Sort::mergeInto(arr, left, right);
         }
 
@@ -109,7 +109,7 @@ namespace tinox.core.sort
             var i: Int64 = 1;
             while i < result.len()
             {
-                let key: Int64 = result[i];
+                const key: Int64 = result[i];
                 var j: Int64 = i - 1;
                 while j >= 0 && result[j] > key
                 {

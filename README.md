@@ -41,8 +41,8 @@ interested in what porting this would take.
 
 ```bash
 tinox new <name>                             # Scaffold a new project (writes tinox.toml)
-tinox build [file]                           # Compile to an executable (uses tinox.toml if no file)
-tinox run   [file]                           # Compile and run (uses tinox.toml if no file)
+tinox build [file] [--force]                 # Compile to an executable (uses tinox.toml if no file)
+tinox run   [file] [--force]                 # Compile and run (uses tinox.toml if no file)
 tinox dev   [file]                           # Dev mode: hot-reload on file changes
 tinox test  [file]                           # Run all @Test-annotated methods
 tinox test --watch                           # Re-run tests on file changes (TDD mode)
@@ -59,6 +59,20 @@ tinox search <query> [--repository <id>]     # Search a registry's package catal
 ```
 
 Run `tinox help` for the same list from the CLI itself.
+
+Use `tinox describe <Symbol>` for compact, checked API signatures and imports
+from the current project's resolved sources. `--member`, `--signatures-only`,
+`--limit`, and `--json` support focused queries; see the
+[symbol-description protocol](docs/compiler-describe.md).
+
+Use `tinox explain --bootstrap [file]` to inspect generated components, routes,
+scopes, injection and startup/join ordering without starting the application.
+`--json` exposes the same plan for tooling; see the
+[bootstrap explanation protocol](docs/compiler-explain.md).
+
+`tinox check --json` and `tinox build --json` provide versioned structured
+diagnostics for tooling. See the [diagnostics protocol](docs/compiler-diagnostics.md)
+for the schema, stable codes, source ranges, and LSP mapping.
 
 ### Testing
 
@@ -80,6 +94,145 @@ class MathSuite
 tinox test              # run once
 tinox test --watch      # re-run on file changes
 ```
+
+Tests are discovered recursively under `tests/` and `src/` of the nearest
+`tinox.toml` project. Hidden directories, `target`, `build`, `dist`,
+`node_modules`, and symlinks are skipped. Discovery/collection errors, failing
+tests, and suites without any `@Test` methods exit unsuccessfully. Watch mode
+keeps running after failures and discovers newly added nested files.
+
+### Application build reuse
+
+`tinox build` and `tinox run` reuse an unchanged executable after validating a
+versioned build fingerprint and the executable's content and execute permission.
+`--force` rebuilds explicitly; `TINOX_BUILD_CACHE=0` disables application reuse.
+`TINOX_CACHE_TRACE=1` reports hits, invalidation and conservative bypasses.
+Disabling the runtime cache also disables application reuse.
+
+The fingerprint covers source/import and manifest bytes actually read by the
+frontend (including installed dependency sources), generated IR, compiler/tool
+contents, target/optimization configuration, the preprocessed runtime/headers,
+C/link flags, environment, native tools' shared libraries and effective
+compiler/linker configuration. Actual
+link inputs and loaded shared libraries are checked by content and selection.
+Unsupported native flags or an incomplete native dependency inventory bypass
+reuse. This currently targets the existing Linux native toolchain.
+
+Native tool digests are memoized under the runtime cache only for files with
+precise change times older than the hash operation's safety window. Inode,
+size, mode, modification time and change time guard reuse, so restoring mtime
+after an update cannot preserve a stale tool digest. Recent/coarse-time files
+are hashed directly, and memo records are checksummed.
+
+Imports are resolved on every invocation; frontend queries reuse exact parsed
+sources and semantic results as described below. IR generation still runs;
+a proven application hit skips LLVM verification/optimization, object generation
+and linking. An unsuccessful frontend or backend clears the success marker.
+
+Build metadata and immutable executable artifacts live beside the output in
+`.<output-name>.tinox-build/`. Ignore `*.tinox-build/` in existing projects (new
+projects include this rule). Remove that directory to clear its cache when no
+builds or runs use it. Interrupted staging directories can be removed the same
+way. Different outputs have separate locks; publication uses private staging
+files and atomic renames. Immutable artifacts keep concurrent runs isolated
+from later rebuilds. Old artifacts remain until the directory is cleared.
+
+`tinox run` stores its output under the project's ignored `.tinox/run/`, or the
+user's Tinox cache for standalone files, and preserves the program's exit status
+and working directory.
+
+Measure the no-op path against a warm-runtime build with
+`python3 scripts/benchmark-build-cache.py --compiler target/release/tinox`.
+`--debug` selects debug application builds; `--methods 500` adds a synthetic
+backend workload. The script verifies each program's output and records raw
+samples, host/compiler identity and whether a warm application hit occurred.
+
+### Incremental frontend queries
+
+`tinox build`, `run`, `dev` and `check` reuse immutable parsed sources, per-file
+visibility/typechecking results, and whole-program expression types. The LSP
+uses the same parse and per-file semantic query layer for buffer diagnostics
+and imported project sources. Resolution remains owned by each frontend;
+this does not change the LSP's existing import-resolution capabilities.
+
+- `TINOX_FRONTEND_CACHE=0` disables all frontend reuse, independently of the
+  application/runtime caches. Use this to compare a clean frontend run.
+- `TINOX_FRONTEND_CACHE_DIR=/path` selects storage (default:
+  `$XDG_CACHE_HOME/tinox/frontend-v1` or `~/.cache/tinox/frontend-v1`).
+- `TINOX_CACHE_TRACE=1` reports parse, visibility and program query hits/misses.
+- `TINOX_TIMINGS=1` reports parsing, import resolution, per-file visibility,
+  typechecking, annotation processing and build backend milliseconds, including
+  failed queries. Import/visibility/total scopes include nested stages; their
+  timings must not be added together.
+
+Parsed sources are keyed by content and a schema fingerprint covering frontend
+compiler sources, manifests, dependency lockfile, target and Rust toolchain.
+They contain no resolved imports, generated accessors or assigned node IDs.
+Each caller gets its own AST, stamps canonical file origins, checks file and
+namespace rules, resolves explicit/implied/sibling imports afresh, and assigns
+IDs after merging in the existing declaration order.
+
+Per-file semantic queries depend on the canonical file identity and the exact
+ordered ASTs of that file and its resolved prelude closure, including annotations
+and spans. Editing a leaf reuses unrelated parsing and per-file checking;
+changing a signature or annotation invalidates every dependent query. Dependency
+bodies also invalidate users conservatively: `this` usage currently affects
+method-call semantics, so a signature-only approximation would be unsafe.
+Whole-program typechecking reruns after graph changes; its cached expression
+table is reused only with the *exact same AST and node numbering*. This is
+incrementality at file/query boundaries, not incremental LLVM generation or
+method-level semantic recomputation.
+
+Directory membership, deletions, ambiguity, namespace checks and import cycles
+are never inferred from cached filesystem metadata. Diagnostics are stored as
+structured spans/messages and rendered by the caller. Entries are size-limited,
+checksummed against their query key and atomically published; missing, damaged
+or unwritable caches recompute normally. Independent writers can safely race.
+There is no automatic disk eviction yet: remove the selected frontend cache to
+reclaim space; abandoned `.tmp-*` files from killed writers can be removed too.
+
+Reproduce the synthetic scale measurements (clean/cold/warm/leaf edits) with
+`python3 scripts/benchmark-frontend.py --compiler target/release/tinox`.
+Wall-time samples, query counts and nested stage summaries live in
+`benchmarks/frontend_cache_results.json`.
+
+Measured medians on the recorded Linux machine (three runs, synthetic 100-statement
+leaf methods; milliseconds for `tinox check`):
+
+| Files | Cache disabled | Cold | Warm | One leaf edited |
+| --- | ---: | ---: | ---: | ---: |
+| 21 | 12.3 | 13.2 | 4.4 | 7.8 |
+| 101 | 54.6 | 60.1 | 19.7 | 37.2 |
+| 301 | 165.1 | 166.9 | 56.5 | 114.1 |
+
+The 301-file leaf edit reparses one source and reuses 299 independent semantic
+queries; the entry and edited leaf recheck. Whole-program checking remains a
+material part of edit latency. Cold caching can cost more than a disabled run;
+these synthetic timings do not predict full application or service latency.
+
+### Runtime object cache
+
+Builds share runtime C objects under `$XDG_CACHE_HOME/tinox/runtime-v1` (or
+`~/.cache/tinox/runtime-v1`). The key includes the preprocessed runtime and
+headers, C compiler and tool contents/version/target, effective flags and include
+configuration. Linking still runs against the current host libraries.
+
+- `TINOX_CACHE_TRACE=1 tinox build` reports the cache key and hit/miss/bypass.
+- `TINOX_RUNTIME_CACHE=0 tinox build` compiles the runtime without caching.
+- `TINOX_RUNTIME_CACHE_DIR=/path tinox build` selects a separate cache.
+- To clear it, remove the selected cache directory while no builds are running.
+
+ASan, checked, TLS, database and HTTP/3 configurations have separate keys.
+Unknown C flags (including plugins, response files and native CPU selection)
+bypass caching conservatively. Objects are checksummed; a damaged entry rebuilds.
+Per-key kernel locks and atomic publication prevent concurrent or interrupted
+builds from exposing partially compiled objects. Interrupted builds can leave
+unused `.tmp-*` directories; clearing the cache removes them too.
+
+Measure disabled, cold and warm builds (including output verification) with
+`python3 scripts/benchmark-runtime-cache.py --compiler target/release/tinox`.
+Use `--debug` for debug application builds. Results include raw timings and host/
+compiler metadata; they describe this machine, not a service-readiness guarantee.
 
 ### Package Manager
 
@@ -157,10 +310,10 @@ class Main
 ### Variables
 
 ```tinox
-let x: Int64 = 42;          // immutable
+const x: Int64 = 42;          // immutable
 var y: Float64 = 3.14;      // mutable
-let name = "Tino";          // type inference
-let msg = "Hi ${name}!";    // string interpolation
+const name = "Tino";          // type inference
+const msg = "Hi ${name}!";    // string interpolation
 ```
 
 ### Namespaces & Static Methods
@@ -243,13 +396,13 @@ class Point
 
     fn distanceTo(other: Point) -> Float64
     {
-        let dx = this.x - other.x;
-        let dy = this.y - other.y;
+        const dx = this.x - other.x;
+        const dy = this.y - other.y;
         return Math::sqrt((dx * dx + dy * dy).toFloat64());
     }
 }
 
-let p = Point::new(3, 4);
+const p = Point::new(3, 4);
 ```
 
 ### Interfaces
@@ -321,7 +474,7 @@ class Main
 
     fnc main() -> Int32
     {
-        let b = new Box<Int64>(42);
+        const b = new Box<Int64>(42);
         println(b.get());
         return 0;
     }
@@ -342,7 +495,7 @@ class Main
 
     fnc main() -> Int32
     {
-        let doubled = apply(21, n => n * 2);
+        const doubled = apply(21, n => n * 2);
         println(doubled);   // 42
         return 0;
     }
@@ -352,27 +505,27 @@ class Main
 ### Tuples
 
 ```tinox
-let point = (10, 20);
+const point = (10, 20);
 println(point.0 + point.1);
 
-let nested = ((1, 2), 3);
+const nested = ((1, 2), 3);
 println(nested.0.1);        // 2
 ```
 
 ### Arrays & Builtins
 
 ```tinox
-let arr = [1, 2, 3, 4, 5];
+const arr = [1, 2, 3, 4, 5];
 arr.push(6);
 println(arr.len());         // 6
 println(arr.first());       // 1
 println(arr.last());        // 6
 
-let s = "hello";
+const s = "hello";
 println(s.toUpper());       // HELLO
 println(s.contains("ell")); // true
 
-let parts = "a,b,c".split(",");
+const parts = "a,b,c".split(",");
 println(parts.len());       // 3
 println(parts.join(" - ")); // a - b - c
 ```
@@ -380,7 +533,7 @@ println(parts.join(" - ")); // a - b - c
 ### Maps
 
 ```tinox
-let m = @{"one" => 1, "two" => 2};
+const m = @{"one" => 1, "two" => 2};
 m.insert("three", 3);
 println(m.get("one"));      // 1
 println(m.contains("two")); // true
@@ -388,7 +541,7 @@ println(m.len());           // 3
 m.remove("one");
 
 // Type-annotated map
-let headers: Map<String, String> = Map::new();
+const headers: Map<String, String> = Map::new();
 headers["Content-Type"] = "application/json";
 ```
 
@@ -423,13 +576,13 @@ class Main
 
     fnc main() -> Int32
     {
-        let handle = spawn fetchData(21);
-        let result = await handle;      // 42
+        const handle = spawn fetchData(21);
+        const result = await handle;      // 42
         println(result);
 
-        let ch = channel;
+        const ch = channel;
         send ch -> 99;
-        let v = recv ch;
+        const v = recv ch;
         println(v);
         return 0;
     }
@@ -440,21 +593,21 @@ class Main
 
 ```tinox
 // Writing
-let f = open("output.txt", "w");
+const f = open("output.txt", "w");
 f.write("Hello Tinox!\n");
 f.close();
 
 // Reading (entire contents)
-let f = open("output.txt");
-let content = f.read();
+const f = open("output.txt");
+const content = f.read();
 f.close();
 println(content);
 
 // Reading line by line
-let f = open("log.txt");
+const f = open("log.txt");
 while !f.eof()
 {
-    let line = f.readLine();
+    const line = f.readLine();
     println(line);
 }
 f.close();
@@ -473,7 +626,7 @@ class Main
 {
     fnc readFile(path: String) -> String
     {
-        let f = open(path);
+        const f = open(path);
         defer { f.close(); }   // runs automatically at the end of the function
 
         return f.read();
@@ -650,7 +803,7 @@ class UserController
     @Path("/users/:id")
     fnc getUser(ctx: HttpContext)
     {
-        let id: String = ctx.request.params["id"];
+        const id: String = ctx.request.params["id"];
         ctx.response.body = "{\"id\":${id}}";
     }
 
@@ -672,14 +825,14 @@ The standard library includes an RFC 6455 WebSocket server (`websocket`), built 
 ```tinox
 import tinox.core.websocket;
 
-let srv: Int64 = WsServer::listen(8790);
+const srv: Int64 = WsServer::listen(8790);
 
 while true {
-    let conn: Int64 = WsServer::accept(srv);   // includes handshake
+    const conn: Int64 = WsServer::accept(srv);   // includes handshake
     if conn <= 0 { continue; }
 
     while true {
-        let f: WsFrame = Ws::readMessage(conn); // ping/pong + close handled automatically
+        const f: WsFrame = Ws::readMessage(conn); // ping/pong + close handled automatically
         if f.opcode == 1 {
             Ws::sendText(conn, "echo: " + Ws::text(f));
             continue;
@@ -695,8 +848,8 @@ Known v1 gaps: no fragmentation, no client, no permessage-deflate.
 `wss://` (TLS) is also supported via `WsServer::listenTls(port, certPath, keyPath)` + `WsServer::acceptTls(srv)` (otherwise identical API). OpenSSL is linked by default, no extra flag required (opt out with `TINOX_TLS=0` if OpenSSL isn't available):
 
 ```tinox
-let srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
-let conn = WsServer::acceptTls(srv);   // includes TLS + WS handshake
+const srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
+const conn = WsServer::acceptTls(srv);   // includes TLS + WS handshake
 ```
 
 Alternatively, annotation-driven (`@WebsocketEndpoint`/`@OnOpen`/`@OnMessage`/`@OnClose`): the compiler generates the entire loop as `main` — no handshake/readMessage code needed. Only applies when the file has no `main` of its own and contains exactly one `@WebsocketEndpoint` class (more than one is a compile error):
@@ -722,16 +875,16 @@ The standard library includes an AMQP-0-9-1 **client** (`amqp091`, no broker) fo
 ```tinox
 import tinox.core.amqp091;
 
-let conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
-let ch = AmqpChannel091::open(conn);
-let queueName = ch.declareQueue("my-queue", true, false, false);
+const conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
+const ch = AmqpChannel091::open(conn);
+const queueName = ch.declareQueue("my-queue", true, false, false);
 
 var body: List<Int64> = [];
 for i in 0..3 { body.push("abc".charCodeAt(i)); }
 ch.publish("", queueName, body, "text/plain");
 
 ch.consume(queueName);
-let m = ch.nextMessage();       // blocking pull
+const m = ch.nextMessage();       // blocking pull
 if m.ok {
     ch.ack(m.deliveryTag);
 }
@@ -741,7 +894,7 @@ conn.close();
 `amqps://` (TLS) uses `AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)` instead of `connect` (otherwise identical API). OpenSSL is linked by default, no extra flag required; `verify=true` checks the broker's certificate chain and hostname against the system CA stores, `verify=false` is a deliberate opt-out for self-signed test certificates:
 
 ```tinox
-let conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true);
+const conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true);
 ```
 
 Heartbeats (§4.2.7) can be sent on a background thread, same explicit-opt-in pattern as `amqp10` — `conn.heartbeat` is the broker's proposed interval in seconds (from `connection.tune`, informational only until you start sending):
@@ -761,8 +914,8 @@ The standard library additionally includes a standalone AMQP-1.0 **client** (`am
 ```tinox
 import tinox.core.amqp10;
 
-let conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
-let session = Amqp10Session::begin(conn);
+const conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
+const session = Amqp10Session::begin(conn);
 var sender = Amqp10Link::attach(session, "my-sender", false, "/queues/my-queue");
 
 var body: List<Int64> = [];
@@ -772,7 +925,7 @@ sender.detach();
 
 var receiver = Amqp10Link::attach(session, "my-receiver", true, "/queues/my-queue");
 receiver.grantCredit(10);
-let m = receiver.nextMessage();       // blocking pull, waits for a transfer
+const m = receiver.nextMessage();       // blocking pull, waits for a transfer
 if m.ok {
     receiver.ack(m.deliveryId);
 }
@@ -801,7 +954,7 @@ class MyConsumer
 
 | Feature                       | Status         |
 |--------------------------------|----------------|
-| Variables (let/var)            | ✅ Done        |
+| Variables (const/var)          | ✅ Done        |
 | Namespaces                     | ✅ Done        |
 | Classes + inheritance          | ✅ Done        |
 | Constructors (`fnc new()`)     | ✅ Done        |
@@ -909,3 +1062,5 @@ See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 ## License
 
 MIT OR Apache-2.0
+
+For unpublished package development, see [local dependency overrides and stdlib test lanes](docs/local-dependencies.md).

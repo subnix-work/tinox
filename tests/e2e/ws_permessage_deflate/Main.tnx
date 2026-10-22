@@ -31,20 +31,20 @@ class Main
         // WsServer::listen delegates straight to httpServerCreate, so
         // listen(0) + httpServerBoundPort works exactly the same way
         // those other fixtures already rely on.
-        let srv = WsServer::listen(0);
+        const srv = WsServer::listen(0);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let port = httpServerBoundPort(srv);
+        const port = httpServerBoundPort(srv);
 
         // --- Connection 1: offers permessage-deflate ---
-        let cfd = socketCreateTcp();
+        const cfd = socketCreateTcp();
         socketConnect(cfd, "127.0.0.1", port);
-        let cconn = httpConnFromFd(cfd);
+        const cconn = httpConnFromFd(cfd);
         httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n");
-        let conn = WsServer::accept(srv);
-        let resp = httpConnReadRequest(cconn);
+        const conn = WsServer::accept(srv);
+        const resp = httpConnReadRequest(cconn);
         if (resp.contains("101")) {
             if (resp.contains("permessage-deflate")) {
                 println("ok-negotiated");
@@ -53,17 +53,17 @@ class Main
 
         // Client -> server: compress "Hello, World! Hello, World! Hello, World!"
         // ourselves, mask it, set RSV1, send as a single unfragmented frame.
-        let msg1 = "Hello, World! Hello, World! Hello, World!";
+        const msg1 = "Hello, World! Hello, World! Hello, World!";
         var raw1: List<Int64> = [];
         for i in 0..msg1.len() {
             raw1.push(msg1.charCodeAt(i) & 0xFF);
         }
-        let compressed1 = tinoxDeflateRaw(raw1);
+        const compressed1 = tinoxDeflateRaw(raw1);
         var frame1: List<Int64> = [];
         frame1.push(0xC0 | 1); // FIN=1, RSV1=1, opcode=1 (text)
-        let n1 = compressed1.len();
+        const n1 = compressed1.len();
         frame1.push(0x80 | n1); // masked, assumes n1 < 126 (true for this short message)
-        let mask1: List<Int64> = [5, 5, 5, 5];
+        const mask1: List<Int64> = [5, 5, 5, 5];
         for i in 0..4 {
             frame1.push(mask1[i]);
         }
@@ -72,7 +72,7 @@ class Main
         }
         httpConnWriteBytes(cconn, frame1);
 
-        let f1 = Ws::readMessage(conn);
+        const f1 = Ws::readMessage(conn);
         if (f1.opcode == 1) {
             if (Ws::text(f1) == msg1) {
                 println("ok-client-to-server-compressed");
@@ -84,13 +84,13 @@ class Main
         // carry the rest of the SAME compressed bytestream unmodified.
         // Ws::readMessage must accumulate the raw (still-compressed) bytes
         // across both fragments and decompress exactly once, at the end.
-        let msgFrag = "fragmented compressed message payload, part one and part two";
+        const msgFrag = "fragmented compressed message payload, part one and part two";
         var rawFrag: List<Int64> = [];
         for i in 0..msgFrag.len() {
             rawFrag.push(msgFrag.charCodeAt(i) & 0xFF);
         }
-        let compressedFrag = tinoxDeflateRaw(rawFrag);
-        let splitAt = compressedFrag.len() / 2;
+        const compressedFrag = tinoxDeflateRaw(rawFrag);
+        const splitAt = compressedFrag.len() / 2;
         var part1: List<Int64> = [];
         var part2: List<Int64> = [];
         for i in 0..splitAt {
@@ -99,7 +99,7 @@ class Main
         for i in splitAt..compressedFrag.len() {
             part2.push(compressedFrag[i]);
         }
-        let maskFrag: List<Int64> = [7, 7, 7, 7];
+        const maskFrag: List<Int64> = [7, 7, 7, 7];
 
         var startFrame: List<Int64> = [];
         startFrame.push(0x40 | 1); // FIN=0, RSV1=1, opcode=1 (text)
@@ -115,7 +115,7 @@ class Main
         for i in 0..part2.len() { contFrame.push(part2[i] ^ maskFrag[i % 4]); }
         httpConnWriteBytes(cconn, contFrame);
 
-        let fFrag = Ws::readMessage(conn);
+        const fFrag = Ws::readMessage(conn);
         if (fFrag.opcode == 1) {
             if (Ws::text(fFrag) == msgFrag) {
                 println("ok-fragmented-compressed");
@@ -129,14 +129,14 @@ class Main
         // not just trust the same code path being tested) and decompress
         // with the same primitive the server uses, to confirm correctness
         // without relying on WsClient (which never offers the extension).
-        let msg2 = "server reply server reply server reply";
+        const msg2 = "server reply server reply server reply";
         Ws::sendText(conn, msg2);
-        let hdr2 = httpConnReadN(cconn, 2);
-        let rsv1Bit = hdr2[0] & 0x40;
+        const hdr2 = httpConnReadN(cconn, 2);
+        const rsv1Bit = hdr2[0] & 0x40;
         var plen2: Int64 = hdr2[1] & 0x7F;
-        let payload2 = httpConnReadN(cconn, plen2);
+        const payload2 = httpConnReadN(cconn, plen2);
         if (rsv1Bit != 0) {
-            let decompressed2 = tinoxInflateRaw(payload2);
+            const decompressed2 = tinoxInflateRaw(payload2);
             if (wsLastInflateOk()) {
                 var text2: String = "";
                 for i in 0..decompressed2.len() {
@@ -152,24 +152,24 @@ class Main
         Ws::close(conn);
 
         // --- Connection 2: does NOT offer permessage-deflate ---
-        let cfd2 = socketCreateTcp();
+        const cfd2 = socketCreateTcp();
         socketConnect(cfd2, "127.0.0.1", port);
-        let cconn2 = httpConnFromFd(cfd2);
+        const cconn2 = httpConnFromFd(cfd2);
         httpConnSendRaw(cconn2, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
-        let conn2 = WsServer::accept(srv);
-        let resp2 = httpConnReadRequest(cconn2);
+        const conn2 = WsServer::accept(srv);
+        const resp2 = httpConnReadRequest(cconn2);
         if (resp2.contains("101")) {
             if (!resp2.contains("permessage-deflate")) {
                 println("ok-not-negotiated");
             }
         }
 
-        let msg3 = "plain message";
+        const msg3 = "plain message";
         Ws::sendText(conn2, msg3);
-        let hdr3 = httpConnReadN(cconn2, 2);
-        let rsv1Bit3 = hdr3[0] & 0x40;
+        const hdr3 = httpConnReadN(cconn2, 2);
+        const rsv1Bit3 = hdr3[0] & 0x40;
         var plen3: Int64 = hdr3[1] & 0x7F;
-        let payload3 = httpConnReadN(cconn2, plen3);
+        const payload3 = httpConnReadN(cconn2, plen3);
         var text3: String = "";
         for i in 0..payload3.len() {
             text3 = text3 + fromCharCode(payload3[i]);

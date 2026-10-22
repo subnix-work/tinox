@@ -175,7 +175,7 @@ namespace tinox.core.amqp10
 
         fn writeList(items: List<Amqp10Value>) -> Nothing
         {
-            let inner = Amqp10Writer::new();
+            const inner = Amqp10Writer::new();
             for i in 0..items.len() {
                 inner.writeValue(items[i]);
             }
@@ -189,7 +189,7 @@ namespace tinox.core.amqp10
          * even number of elements (caller's responsibility). */
         fn writeMap(pairs: List<Amqp10Value>) -> Nothing
         {
-            let inner = Amqp10Writer::new();
+            const inner = Amqp10Writer::new();
             for i in 0..pairs.len() {
                 inner.writeValue(pairs[i]);
             }

@@ -5,9 +5,19 @@
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
 
-.PHONY: check test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync
+.PHONY: check test-and-dogfood test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync
 
-check: clippy test dogfood grammar-sync ai-eval-test
+check: clippy test-and-dogfood grammar-sync workspace-stdlib ai-eval-test
+
+# Runs `test` and `dogfood` concurrently (CI's `test` job runs this alone).
+# The recursive make gives -j2 its own job server regardless of how `check`
+# itself was invoked.
+test-and-dogfood:
+	$(MAKE) --output-sync=target -j2 test dogfood
+
+# `test` and `dogfood` are independent (dogfood only needs the compiled
+# tinox binary), so `check` runs them concurrently; clippy runs first and
+# alone since it is quick and gates both. grammar-sync is a trivial cmp.
 
 # Lint gate: 0 warnings across the whole workspace (bins + tests).
 # Deliberate exceptions are #[allow(...)] with a justification in the code.
@@ -24,8 +34,20 @@ clippy:
 # `bash tests/runtime_tests.sh` script with no overlap with `test`, then
 # migrated to a plain cargo integration test without updating `check`'s
 # dependency list -- not a deliberate flakiness-catching double-run).
+#
+# Runs under cargo-nextest when installed (every test in its own process,
+# scheduled across all cores instead of one test binary after another;
+# `cargo install cargo-nextest --locked`), falling back to plain
+# `cargo test` otherwise. nextest does not run doctests, so those run
+# separately in the nextest branch.
 test:
-	cargo test --release
+	@if cargo nextest --version >/dev/null 2>&1; then \
+		cargo nextest run --release --workspace --no-fail-fast && \
+		cargo test --release --workspace --doc; \
+	else \
+		echo "cargo-nextest not installed -- falling back to cargo test (slower)"; \
+		cargo test --release; \
+	fi
 
 # End-to-end: golden tests (tests/e2e/*.tnx) + generated context matrix
 # + boundary cases + stdlib smoke gate (use every tinox-core module once).
@@ -180,3 +202,8 @@ install-hooks:
 .PHONY: ai-eval-test
 ai-eval-test:
 	python3 -m unittest discover -s benchmarks/ai -p '*_test.py'
+
+# Exercise unpublished extended modules separately from registry/archive tests.
+.PHONY: workspace-stdlib
+workspace-stdlib:
+	bash scripts/check-workspace-stdlib.sh

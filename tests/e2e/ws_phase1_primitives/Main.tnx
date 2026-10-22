@@ -33,31 +33,31 @@ class Main
 
         // Loopback: server + client in the same process (the backlog holds the pending
         // connection, so connect-before-accept works single-threaded).
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let cfd = socketCreateTcp();
+        const cfd = socketCreateTcp();
         if (!socketConnect(cfd, "127.0.0.1", port)) {
             println("connect failed");
             return 1;
         }
-        let sconn = httpServerAcceptConnHandle(srv);
-        let cconn = httpConnFromFd(cfd);
+        const sconn = httpServerAcceptConnHandle(srv);
+        const cconn = httpConnFromFd(cfd);
 
         // Client → server: 5 bytes incl. NUL and 0xFF
-        let out = [72, 0, 255, 7, 200];
+        const out = [72, 0, 255, 7, 200];
         httpConnWriteBytes(cconn, out);
-        let got = httpConnReadN(sconn, 5);
+        const got = httpConnReadN(sconn, 5);
         println(got.len().toString());
         println(got[0].toString() + " " + got[1].toString() + " " + got[2].toString() + " " + got[3].toString() + " " + got[4].toString());
 
         // Server → client: NUL at the start and end
-        let back = [0, 128, 0];
+        const back = [0, 128, 0];
         httpConnWriteBytes(sconn, back);
-        let got2 = httpConnReadN(cconn, 3);
+        const got2 = httpConnReadN(cconn, 3);
         println(got2.len().toString());
         println(got2[0].toString() + " " + got2[1].toString() + " " + got2[2].toString());
 

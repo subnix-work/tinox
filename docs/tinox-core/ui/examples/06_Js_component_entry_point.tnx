@@ -9,8 +9,8 @@ class Main
     // extra custom routes -- see CounterDemoApp's own doc comment.
     fnc main() -> Int32
     {
-        let widgetJs: String = Fs::readFile("assets/tinox-counter.js");
-        let server: HttpServer = HttpServer::new(8082);
+        const widgetJs: String = Fs::readFile("assets/tinox-counter.js");
+        const server: HttpServer = HttpServer::new(8082);
         server.get("/tinox-counter.js", ctx => {
             ctx.response.content(widgetJs, "application/javascript; charset=utf-8")
                 .header("Access-Control-Allow-Origin", "*");

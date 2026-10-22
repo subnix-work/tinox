@@ -1,0 +1,1644 @@
+{
+  "description": "Synthetic independent leaf classes, each with 100 arithmetic statements; Main imports every class. Native Linux release compiler; wall times include opt-in timing/trace emission. Baseline measured before adding query caching. These are frontend check measurements, not service or full-link latency.",
+  "baseline_before_optimization": {
+    "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+    "compiler_sha256": "5af9e5dca3fa9bfc3696a37fcb6e3f200cd0c2160dd46dc6efdd11f3300447f6",
+    "samples": [
+      {
+        "files": 21,
+        "mode": "disabled",
+        "median_seconds": 0.01109058499787352,
+        "runs": [
+          {
+            "seconds": 0.011120331997517496
+          },
+          {
+            "seconds": 0.01109058499787352
+          },
+          {
+            "seconds": 0.010876850999920862
+          }
+        ]
+      },
+      {
+        "files": 21,
+        "mode": "cold",
+        "median_seconds": 0.010415897999337176,
+        "runs": [
+          {
+            "seconds": 0.010415897999337176
+          }
+        ]
+      },
+      {
+        "files": 21,
+        "mode": "warm",
+        "median_seconds": 0.010934670001006452,
+        "runs": [
+          {
+            "seconds": 0.011739584999304498
+          },
+          {
+            "seconds": 0.010402662999695167
+          },
+          {
+            "seconds": 0.010934670001006452
+          }
+        ]
+      },
+      {
+        "files": 21,
+        "mode": "leaf-edit",
+        "median_seconds": 0.011466789001133293,
+        "runs": [
+          {
+            "seconds": 0.011667689002933912
+          },
+          {
+            "seconds": 0.011466789001133293
+          },
+          {
+            "seconds": 0.01106698099829373
+          }
+        ]
+      },
+      {
+        "files": 101,
+        "mode": "disabled",
+        "median_seconds": 0.051164186999812955,
+        "runs": [
+          {
+            "seconds": 0.05190751400004956
+          },
+          {
+            "seconds": 0.051164186999812955
+          },
+          {
+            "seconds": 0.051144929999281885
+          }
+        ]
+      },
+      {
+        "files": 101,
+        "mode": "cold",
+        "median_seconds": 0.051272361997689586,
+        "runs": [
+          {
+            "seconds": 0.051272361997689586
+          }
+        ]
+      },
+      {
+        "files": 101,
+        "mode": "warm",
+        "median_seconds": 0.05183876400042209,
+        "runs": [
+          {
+            "seconds": 0.05183876400042209
+          },
+          {
+            "seconds": 0.0513131389998307
+          },
+          {
+            "seconds": 0.0521651130002283
+          }
+        ]
+      },
+      {
+        "files": 101,
+        "mode": "leaf-edit",
+        "median_seconds": 0.05120417199941585,
+        "runs": [
+          {
+            "seconds": 0.05125423699792009
+          },
+          {
+            "seconds": 0.05070165099823498
+          },
+          {
+            "seconds": 0.05120417199941585
+          }
+        ]
+      },
+      {
+        "files": 301,
+        "mode": "disabled",
+        "median_seconds": 0.15606518200002029,
+        "runs": [
+          {
+            "seconds": 0.15606518200002029
+          },
+          {
+            "seconds": 0.1587149609986227
+          },
+          {
+            "seconds": 0.15226663700013887
+          }
+        ]
+      },
+      {
+        "files": 301,
+        "mode": "cold",
+        "median_seconds": 0.15068647500083898,
+        "runs": [
+          {
+            "seconds": 0.15068647500083898
+          }
+        ]
+      },
+      {
+        "files": 301,
+        "mode": "warm",
+        "median_seconds": 0.15850585499720182,
+        "runs": [
+          {
+            "seconds": 0.1614337400023942
+          },
+          {
+            "seconds": 0.15850585499720182
+          },
+          {
+            "seconds": 0.15151580499878037
+          }
+        ]
+      },
+      {
+        "files": 301,
+        "mode": "leaf-edit",
+        "median_seconds": 0.15001401100016665,
+        "runs": [
+          {
+            "seconds": 0.15001401100016665
+          },
+          {
+            "seconds": 0.16116882899950724
+          },
+          {
+            "seconds": 0.14652041400040616
+          }
+        ]
+      }
+    ]
+  },
+  "frontend_queries": {
+    "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+    "compiler_sha256": "4acbb02385b64d57790db7d631fa4e87cefeae7622b143931c22ae4c93fa1535",
+    "samples": [
+      {
+        "files": 21,
+        "mode": "disabled",
+        "median_seconds": 0.012284742999327136,
+        "runs": [
+          {
+            "seconds": 0.012544085002446081,
+            "queries": {
+              "parse:disabled": 42,
+              "visibility:disabled": 21,
+              "program:disabled": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 10.563,
+                "max_ms": 1.986
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 4.473000000000002,
+                "max_ms": 0.219
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 2.4010000000000002,
+                "max_ms": 2.398
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 4.392,
+                "max_ms": 1.989
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 6.777,
+                "max_ms": 6.777
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 1.787,
+                "max_ms": 1.787
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.011,
+                "max_ms": 0.011
+              }
+            }
+          },
+          {
+            "seconds": 0.012284742999327136,
+            "queries": {
+              "parse:disabled": 42,
+              "visibility:disabled": 21,
+              "program:disabled": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 10.888000000000002,
+                "max_ms": 2.117
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 4.5150000000000015,
+                "max_ms": 0.221
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 2.5,
+                "max_ms": 2.497
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 4.561000000000002,
+                "max_ms": 2.122
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 6.941,
+                "max_ms": 6.941
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 1.913,
+                "max_ms": 1.913
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.011,
+                "max_ms": 0.011
+              }
+            }
+          },
+          {
+            "seconds": 0.012235529997269623,
+            "queries": {
+              "parse:disabled": 42,
+              "visibility:disabled": 21,
+              "program:disabled": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 10.670000000000003,
+                "max_ms": 2.187
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 4.202,
+                "max_ms": 0.117
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 2.149,
+                "max_ms": 2.148
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 4.358,
+                "max_ms": 1.972
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 6.918,
+                "max_ms": 6.918
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 2.189,
+                "max_ms": 2.189
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.012,
+                "max_ms": 0.012
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 21,
+        "mode": "cold",
+        "median_seconds": 0.013217679002991645,
+        "runs": [
+          {
+            "seconds": 0.013217679002991645,
+            "queries": {
+              "parse:miss": 21,
+              "parse:hit": 21,
+              "visibility:miss": 21,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 11.558999999999997,
+                "max_ms": 2.471
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 3.8129999999999993,
+                "max_ms": 0.271
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 3.061,
+                "max_ms": 3.059
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 5.341999999999999,
+                "max_ms": 2.425
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 6.558,
+                "max_ms": 6.558
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 2.474,
+                "max_ms": 2.474
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.011,
+                "max_ms": 0.011
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 21,
+        "mode": "warm",
+        "median_seconds": 0.004427340001711855,
+        "runs": [
+          {
+            "seconds": 0.004759077997732675,
+            "queries": {
+              "parse:hit": 42,
+              "visibility:hit": 21,
+              "program:hit": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 3.4729999999999963,
+                "max_ms": 0.805
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 1.7510000000000003,
+                "max_ms": 0.063
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 1.063,
+                "max_ms": 1.059
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 1.2040000000000002,
+                "max_ms": 0.807
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 2.34,
+                "max_ms": 2.34
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 0.583,
+                "max_ms": 0.583
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.016,
+                "max_ms": 0.016
+              }
+            }
+          },
+          {
+            "seconds": 0.004427340001711855,
+            "queries": {
+              "parse:hit": 42,
+              "visibility:hit": 21,
+              "program:hit": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 2.9929999999999977,
+                "max_ms": 0.601
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 1.609,
+                "max_ms": 0.043
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 0.892,
+                "max_ms": 0.891
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 0.8350000000000004,
+                "max_ms": 0.406
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 2.008,
+                "max_ms": 2.008
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 0.603,
+                "max_ms": 0.603
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.017,
+                "max_ms": 0.017
+              }
+            }
+          },
+          {
+            "seconds": 0.004041890999360476,
+            "queries": {
+              "parse:hit": 42,
+              "visibility:hit": 21,
+              "program:hit": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 2.879999999999998,
+                "max_ms": 0.554
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 1.6430000000000002,
+                "max_ms": 0.055
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 0.905,
+                "max_ms": 0.904
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 0.7350000000000003,
+                "max_ms": 0.371
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 1.751,
+                "max_ms": 1.751
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 0.555,
+                "max_ms": 0.555
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.014,
+                "max_ms": 0.014
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 21,
+        "mode": "leaf-edit",
+        "median_seconds": 0.00781604499934474,
+        "runs": [
+          {
+            "seconds": 0.007792519998474745,
+            "queries": {
+              "parse:hit": 41,
+              "parse:miss": 1,
+              "visibility:miss": 2,
+              "visibility:hit": 19,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 6.540000000000004,
+                "max_ms": 2.168
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 1.7340000000000002,
+                "max_ms": 0.163
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 1.013,
+                "max_ms": 1.012
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 2.6879999999999975,
+                "max_ms": 2.165
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 3.702,
+                "max_ms": 3.702
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 2.17,
+                "max_ms": 2.17
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.01,
+                "max_ms": 0.01
+              }
+            }
+          },
+          {
+            "seconds": 0.009371297997859074,
+            "queries": {
+              "parse:hit": 41,
+              "parse:miss": 1,
+              "visibility:miss": 2,
+              "visibility:hit": 19,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 8.075999999999999,
+                "max_ms": 2.917
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 1.874,
+                "max_ms": 0.179
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 1.107,
+                "max_ms": 1.105
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 3.349999999999998,
+                "max_ms": 2.689
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 4.452,
+                "max_ms": 4.452
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 2.92,
+                "max_ms": 2.92
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.015,
+                "max_ms": 0.015
+              }
+            }
+          },
+          {
+            "seconds": 0.00781604499934474,
+            "queries": {
+              "parse:hit": 41,
+              "parse:miss": 1,
+              "visibility:miss": 2,
+              "visibility:hit": 19,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 64,
+                "total_ms": 6.611000000000004,
+                "max_ms": 2.168
+              },
+              "parse": {
+                "calls": 42,
+                "total_ms": 1.846,
+                "max_ms": 0.244
+              },
+              "imports": {
+                "calls": 21,
+                "total_ms": 1.097,
+                "max_ms": 1.096
+              },
+              "file-typecheck": {
+                "calls": 21,
+                "total_ms": 2.676999999999997,
+                "max_ms": 2.17
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 3.71,
+                "max_ms": 3.71
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 2.149,
+                "max_ms": 2.149
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.01,
+                "max_ms": 0.01
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 101,
+        "mode": "disabled",
+        "median_seconds": 0.0545563259984192,
+        "runs": [
+          {
+            "seconds": 0.0545563259984192,
+            "queries": {
+              "parse:disabled": 202,
+              "visibility:disabled": 101,
+              "program:disabled": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 51.118999999999986,
+                "max_ms": 10.668
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 20.972000000000023,
+                "max_ms": 0.183
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 10.905000000000001,
+                "max_ms": 10.903
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 22.136999999999993,
+                "max_ms": 10.671
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 33.673,
+                "max_ms": 33.673
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 8.357,
+                "max_ms": 8.357
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.014,
+                "max_ms": 0.014
+              }
+            }
+          },
+          {
+            "seconds": 0.055462532000092324,
+            "queries": {
+              "parse:disabled": 202,
+              "visibility:disabled": 101,
+              "program:disabled": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 50.33099999999996,
+                "max_ms": 9.185
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 21.048000000000023,
+                "max_ms": 0.15
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 11.115,
+                "max_ms": 11.11
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 20.811999999999998,
+                "max_ms": 9.19
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 32.828,
+                "max_ms": 32.828
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 8.884,
+                "max_ms": 8.884
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.031,
+                "max_ms": 0.031
+              }
+            }
+          },
+          {
+            "seconds": 0.05077544000232592,
+            "queries": {
+              "parse:disabled": 202,
+              "visibility:disabled": 101,
+              "program:disabled": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 47.35100000000002,
+                "max_ms": 7.873
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 20.54600000000001,
+                "max_ms": 0.214
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 10.829,
+                "max_ms": 10.827
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 19.277999999999988,
+                "max_ms": 7.845
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 30.374,
+                "max_ms": 30.374
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 7.875,
+                "max_ms": 7.875
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.014,
+                "max_ms": 0.014
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 101,
+        "mode": "cold",
+        "median_seconds": 0.060122632999991765,
+        "runs": [
+          {
+            "seconds": 0.060122632999991765,
+            "queries": {
+              "parse:miss": 101,
+              "parse:hit": 101,
+              "visibility:miss": 101,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 55.58800000000009,
+                "max_ms": 11.756
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 17.91400000000002,
+                "max_ms": 0.263
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 13.741,
+                "max_ms": 13.735
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 26.99299999999998,
+                "max_ms": 11.76
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 32.865,
+                "max_ms": 32.865
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 11.026,
+                "max_ms": 11.026
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.013,
+                "max_ms": 0.013
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 101,
+        "mode": "warm",
+        "median_seconds": 0.019672818001708947,
+        "runs": [
+          {
+            "seconds": 0.01979469800062361,
+            "queries": {
+              "parse:hit": 202,
+              "visibility:hit": 101,
+              "program:hit": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 16.13600000000003,
+                "max_ms": 3.746
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 8.524000000000004,
+                "max_ms": 0.085
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 4.853,
+                "max_ms": 4.848
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 4.070000000000004,
+                "max_ms": 2.123
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 9.344,
+                "max_ms": 9.344
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 3.747,
+                "max_ms": 3.747
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.021,
+                "max_ms": 0.021
+              }
+            }
+          },
+          {
+            "seconds": 0.017871648000436835,
+            "queries": {
+              "parse:hit": 202,
+              "visibility:hit": 101,
+              "program:hit": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 14.697000000000006,
+                "max_ms": 2.923
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 8.456999999999994,
+                "max_ms": 0.104
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 4.843999999999999,
+                "max_ms": 4.84
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 3.5249999999999835,
+                "max_ms": 1.707
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 8.632,
+                "max_ms": 8.632
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 2.924,
+                "max_ms": 2.924
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.015,
+                "max_ms": 0.015
+              }
+            }
+          },
+          {
+            "seconds": 0.019672818001708947,
+            "queries": {
+              "parse:hit": 202,
+              "visibility:hit": 101,
+              "program:hit": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 16.12800000000001,
+                "max_ms": 3.536
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 8.839999999999998,
+                "max_ms": 0.132
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 4.9479999999999995,
+                "max_ms": 4.946
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 3.9609999999999976,
+                "max_ms": 2.059
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 9.414,
+                "max_ms": 9.414
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 3.537,
+                "max_ms": 3.537
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.019,
+                "max_ms": 0.019
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 101,
+        "mode": "leaf-edit",
+        "median_seconds": 0.0372285279991047,
+        "runs": [
+          {
+            "seconds": 0.0372285279991047,
+            "queries": {
+              "parse:hit": 201,
+              "parse:miss": 1,
+              "visibility:miss": 2,
+              "visibility:hit": 99,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 32.34900000000002,
+                "max_ms": 10.708
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 8.988000000000005,
+                "max_ms": 0.223
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 5.289000000000001,
+                "max_ms": 5.288
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 13.134000000000013,
+                "max_ms": 10.713
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 18.647,
+                "max_ms": 18.647
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 10.564,
+                "max_ms": 10.564
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.025,
+                "max_ms": 0.025
+              }
+            }
+          },
+          {
+            "seconds": 0.03784989300038433,
+            "queries": {
+              "parse:hit": 201,
+              "parse:miss": 1,
+              "visibility:miss": 2,
+              "visibility:hit": 99,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 33.37900000000003,
+                "max_ms": 11.337
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 8.629000000000007,
+                "max_ms": 0.178
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 4.918,
+                "max_ms": 4.912
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 13.638000000000035,
+                "max_ms": 11.283
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 19.648,
+                "max_ms": 19.648
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 11.339,
+                "max_ms": 11.339
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.013,
+                "max_ms": 0.013
+              }
+            }
+          },
+          {
+            "seconds": 0.03640579000057187,
+            "queries": {
+              "parse:hit": 201,
+              "parse:miss": 1,
+              "visibility:miss": 2,
+              "visibility:hit": 99,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 304,
+                "total_ms": 32.36,
+                "max_ms": 10.707
+              },
+              "parse": {
+                "calls": 202,
+                "total_ms": 8.975000000000001,
+                "max_ms": 0.274
+              },
+              "imports": {
+                "calls": 101,
+                "total_ms": 5.055,
+                "max_ms": 5.053
+              },
+              "file-typecheck": {
+                "calls": 101,
+                "total_ms": 13.024000000000038,
+                "max_ms": 10.71
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 18.487,
+                "max_ms": 18.487
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 10.577,
+                "max_ms": 10.577
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.021,
+                "max_ms": 0.021
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 301,
+        "mode": "disabled",
+        "median_seconds": 0.1651332019973779,
+        "runs": [
+          {
+            "seconds": 0.15999831199951586,
+            "queries": {
+              "parse:disabled": 602,
+              "visibility:disabled": 301,
+              "program:disabled": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 147.19999999999976,
+                "max_ms": 25.912
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 62.39199999999984,
+                "max_ms": 0.273
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 32.448,
+                "max_ms": 32.443
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 60.82299999999995,
+                "max_ms": 25.915
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 96.617,
+                "max_ms": 96.617
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 25.042,
+                "max_ms": 25.042
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.034,
+                "max_ms": 0.034
+              }
+            }
+          },
+          {
+            "seconds": 0.16796774699832895,
+            "queries": {
+              "parse:disabled": 602,
+              "visibility:disabled": 301,
+              "program:disabled": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 156.1519999999995,
+                "max_ms": 31.116
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 63.00499999999979,
+                "max_ms": 0.271
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 33.321000000000005,
+                "max_ms": 33.313
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 63.09599999999983,
+                "max_ms": 28.923
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 98.578,
+                "max_ms": 98.578
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 31.122,
+                "max_ms": 31.122
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.057,
+                "max_ms": 0.057
+              }
+            }
+          },
+          {
+            "seconds": 0.1651332019973779,
+            "queries": {
+              "parse:disabled": 602,
+              "visibility:disabled": 301,
+              "program:disabled": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 153.55099999999993,
+                "max_ms": 30.478
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 62.35899999999974,
+                "max_ms": 0.256
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 32.997,
+                "max_ms": 32.99
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 61.762999999999884,
+                "max_ms": 27.862
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 96.456,
+                "max_ms": 96.456
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 30.483,
+                "max_ms": 30.483
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.075,
+                "max_ms": 0.075
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 301,
+        "mode": "cold",
+        "median_seconds": 0.16692131600211724,
+        "runs": [
+          {
+            "seconds": 0.16692131600211724,
+            "queries": {
+              "parse:miss": 301,
+              "parse:hit": 301,
+              "visibility:miss": 301,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 155.735,
+                "max_ms": 31.5
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 50.843999999999625,
+                "max_ms": 0.259
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 39.761,
+                "max_ms": 39.756
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 74.29000000000016,
+                "max_ms": 30.565
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 89.998,
+                "max_ms": 89.998
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 31.505,
+                "max_ms": 31.505
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.032,
+                "max_ms": 0.032
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 301,
+        "mode": "warm",
+        "median_seconds": 0.05652912000005017,
+        "runs": [
+          {
+            "seconds": 0.06000488000063342,
+            "queries": {
+              "parse:hit": 602,
+              "visibility:hit": 301,
+              "program:hit": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 50.739000000000445,
+                "max_ms": 13.147
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 25.73900000000005,
+                "max_ms": 0.13
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 14.396,
+                "max_ms": 14.393
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 12.505000000000042,
+                "max_ms": 6.279
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 28.69,
+                "max_ms": 28.69
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 13.15,
+                "max_ms": 13.15
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.036,
+                "max_ms": 0.036
+              }
+            }
+          },
+          {
+            "seconds": 0.05489053900237195,
+            "queries": {
+              "parse:hit": 602,
+              "visibility:hit": 301,
+              "program:hit": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 44.55900000000016,
+                "max_ms": 9.071
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 25.530000000000037,
+                "max_ms": 0.125
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 14.67,
+                "max_ms": 14.665
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 10.751000000000072,
+                "max_ms": 5.055
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 26.854,
+                "max_ms": 26.854
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 9.073,
+                "max_ms": 9.073
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.025,
+                "max_ms": 0.025
+              }
+            }
+          },
+          {
+            "seconds": 0.05652912000005017,
+            "queries": {
+              "parse:hit": 602,
+              "visibility:hit": 301,
+              "program:hit": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 47.45300000000029,
+                "max_ms": 10.605
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 25.37100000000003,
+                "max_ms": 0.12
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 14.012,
+                "max_ms": 14.009
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 12.092,
+                "max_ms": 5.908
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 28.198,
+                "max_ms": 28.198
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 10.607,
+                "max_ms": 10.607
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.034,
+                "max_ms": 0.034
+              }
+            }
+          }
+        ]
+      },
+      {
+        "files": 301,
+        "mode": "leaf-edit",
+        "median_seconds": 0.11407126000267453,
+        "runs": [
+          {
+            "seconds": 0.10679537699979846,
+            "queries": {
+              "parse:hit": 601,
+              "parse:miss": 1,
+              "visibility:miss": 2,
+              "visibility:hit": 299,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 95.99900000000036,
+                "max_ms": 32.364
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 26.990000000000038,
+                "max_ms": 0.334
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 15.061,
+                "max_ms": 15.057
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 38.929000000000244,
+                "max_ms": 32.369
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 55.72,
+                "max_ms": 55.72
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 30.821,
+                "max_ms": 30.821
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.022,
+                "max_ms": 0.022
+              }
+            }
+          },
+          {
+            "seconds": 0.11576215899913223,
+            "queries": {
+              "parse:hit": 601,
+              "parse:miss": 1,
+              "visibility:miss": 2,
+              "visibility:hit": 299,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 104.8450000000004,
+                "max_ms": 36.512
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 26.47900000000005,
+                "max_ms": 0.195
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 14.751,
+                "max_ms": 14.748
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 42.49300000000008,
+                "max_ms": 35.322
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 59.299,
+                "max_ms": 59.299
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 36.517,
+                "max_ms": 36.517
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.032,
+                "max_ms": 0.032
+              }
+            }
+          },
+          {
+            "seconds": 0.11407126000267453,
+            "queries": {
+              "parse:hit": 601,
+              "parse:miss": 1,
+              "visibility:miss": 2,
+              "visibility:hit": 299,
+              "program:miss": 1
+            },
+            "stages": {
+              "query": {
+                "calls": 904,
+                "total_ms": 102.71500000000023,
+                "max_ms": 36.183
+              },
+              "parse": {
+                "calls": 602,
+                "total_ms": 25.834000000000007,
+                "max_ms": 0.205
+              },
+              "imports": {
+                "calls": 301,
+                "total_ms": 14.372,
+                "max_ms": 14.369
+              },
+              "file-typecheck": {
+                "calls": 301,
+                "total_ms": 41.36099999999992,
+                "max_ms": 34.342
+              },
+              "visibility": {
+                "calls": 1,
+                "total_ms": 57.954,
+                "max_ms": 57.954
+              },
+              "typecheck": {
+                "calls": 1,
+                "total_ms": 36.188,
+                "max_ms": 36.188
+              },
+              "annotations": {
+                "calls": 1,
+                "total_ms": 0.028,
+                "max_ms": 0.028
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

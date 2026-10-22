@@ -1,0 +1,15 @@
+import tinox.core.http_server;
+import Work;
+
+class Probe
+{
+    @GET
+    @Path("/probe")
+    @Timed("probe")
+    @Counted("probe")
+    fnc probe() -> String
+    {
+        const work = Work::new();
+        return work.run();
+    }
+}

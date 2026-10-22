@@ -11,13 +11,16 @@ namespace tinox.core.fs
 
         fn writeFile(path: String, content: String) -> Nothing
         {
-            fileWriteAllText(path, content);
+            let err: String = fileWriteAllTextChecked(path, content);
+            if (err != "")
+            {
+                throw err;
+            }
         }
 
         fn appendFile(path: String, content: String) -> Nothing
         {
-            let existing: String = Fs::readFile(path);
-            Fs::writeFile(path, existing + content);
+            fileAppendText(path, content);
         }
 
         fn deleteFile(path: String) -> Nothing
@@ -27,7 +30,7 @@ namespace tinox.core.fs
 
         fn copyFile(src: String, dest: String) -> Nothing
         {
-            let content: String = Fs::readFile(src);
+            const content: String = Fs::readFile(src);
             Fs::writeFile(dest, content);
         }
 
@@ -44,7 +47,21 @@ namespace tinox.core.fs
 
         fn createDirectory(path: String) -> Nothing
         {
-            dirCreate(path);
+            let err: String = dirCreateChecked(path);
+            if (err != "")
+            {
+                throw err;
+            }
+        }
+
+        // Recursive, like `mkdir -p`; succeeds if the directory already exists.
+        fn createDirectories(path: String) -> Nothing
+        {
+            let err: String = dirCreateAllChecked(path);
+            if (err != "")
+            {
+                throw err;
+            }
         }
 
         fn deleteDirectory(path: String) -> Nothing

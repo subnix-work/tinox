@@ -31,7 +31,7 @@ namespace tinox.core.ui
         // used to reach this page) plus this port, at connect time.
         fnc shellHtml(wsPort: Int64) -> String
         {
-            let template: String = Assets::shellHtmlTemplate();
+            const template: String = Assets::shellHtmlTemplate();
             return template.replace("__TINOX_UI_WS_PORT__", wsPort.toString());
         }
 
@@ -173,7 +173,8 @@ namespace tinox.core.ui
   progress::-webkit-progress-bar { background: rgba(148, 163, 184, 0.14); }
   progress::-webkit-progress-value { background: var(--tinox-primary); }
   progress::-moz-progress-bar { background: var(--tinox-primary); }
-  .tinox-datagrid-wrap { display: block; width: 100%; }
+  .tinox-datagrid-wrap { display: block; width: 100%; min-width: 0; max-width: 100%; }
+  .tinox-datagrid-scroll { max-width: 100%; overflow-x: auto; }
   .tinox-datagrid-toolbar {
     display: flex;
     justify-content: flex-end;
@@ -457,6 +458,9 @@ namespace tinox.core.ui
       } else if (op.op === "insert") {
         var parent = findEl(op.parentId);
         if (!parent) continue;
+        // Component children may live inside a widget's inner container,
+        // just as they do on the initial build (e.g. DataGrid's table).
+        parent = parent.tinoxChildrenTarget || parent;
         var newEl = build(op.node);
         if (op.index >= parent.children.length) {
           parent.appendChild(newEl);
@@ -1361,8 +1365,11 @@ namespace tinox.core.ui
         gridToolbar.appendChild(gridMenuPanel);
         var gridTable = document.createElement("table");
         gridTable.className = "tinox-datagrid";
+        var gridScroll = document.createElement("div");
+        gridScroll.className = "tinox-datagrid-scroll";
+        gridScroll.appendChild(gridTable);
         el.appendChild(gridToolbar);
-        el.appendChild(gridTable);
+        el.appendChild(gridScroll);
         el.tinoxGridTable = gridTable;
         el.tinoxGridMenuPanel = gridMenuPanel;
         childrenTarget = gridTable;
@@ -1394,6 +1401,8 @@ namespace tinox.core.ui
     }
     if (!skipChildren) {
       var appendTarget = childrenTarget || el;
+      // Retain the same destination for later incremental insert ops.
+      el.tinoxChildrenTarget = appendTarget;
       var children = node.children || [];
       for (var i = 0; i < children.length; i++) {
         appendTarget.appendChild(build(children[i]));

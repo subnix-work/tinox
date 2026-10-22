@@ -403,18 +403,13 @@ the one-type-per-file rule (`check_namespace_path_matches`,
   `tinox install`, then `tinox test`). Backfilling this convention across
   every stdlib module is a separate, larger test-coverage initiative, not
   part of this layout migration.
-- **Extended-tier test files can't be run directly with `tinox test
-  <path>` from inside this repo, and that's pre-existing, not something
-  this migration introduced.** Unlike core-tier (always resolves via
-  `stdlib_dir()`), an extended-tier module's own `tinox.toml` declares no
-  dependency on itself, so `import tinox.core.<module>;` inside its own
-  `tests/` file has nothing to resolve against locally — exactly the same
-  gap `stdlib_smoke.rs`'s own doc comment already describes for its SMOKES
-  cases ("no longer resolve via `stdlib_dir()`/`TINOX_PATH` at build
-  time"). Verifying an extended-tier test's actual logic therefore always
-  goes through an installed (published) version of the module, the same
-  way `stdlib_smoke.rs` and `amqp10_consumer_annotation.rs` already do it
-  — not against the workspace's own uncommitted edits to that module.
+- **Extended-tier workspace testing (issue #313):** use an isolated consumer
+  with `tinox.overrides.yaml` to exercise unpublished modules, or run
+  `make workspace-stdlib` for the dedicated source smoke lane. Ordinary
+  e2e/dogfood tests still use installed published packages. The source lane
+  stages manifests with workspace dependency versions; it does not prove
+  compatibility of the original published pins. See
+  [local dependency workflows](docs/local-dependencies.md).
 - `crates/tinox/tests/stdlib_smoke.rs`'s `scan_module_dir` (the
   per-module inventory scan behind `stdlib_smoke_completeness`) needed a
   matching update: it transparently unwraps each extended-tier module's
@@ -1101,7 +1096,7 @@ listening socket), registered exactly like every sibling low-level HTTP builtin
 codegen.rs`'s matching `declare`) -- `httpServerCreate(0)` already made the OS
 pick a free ephemeral port, the missing piece was just a way to ask which one it
 picked. All 30 fixtures migrated: `httpServerCreate(LITERAL)` -> `httpServerCreate
-(0)` + `let port = httpServerBoundPort(srv);`, threading `port` through every
+(0)` + `const port = httpServerBoundPort(srv);`, threading `port` through every
 place that used to repeat the literal (connect calls, and a few OIDC/OAuth2
 fixtures that build a JWKS/token-endpoint URL as a string -- those splice via
 `"http://127.0.0.1:" + port.toString() + "/jwks.json"` instead).
@@ -1741,3 +1736,152 @@ unchanged and already existed; this adds real pooling and a
   pre-existing, not caused by this work: `docs.html`/`docs_en.html` have
   no `tinox.core.db` module section at all yet (unlike every other stdlib
   module) — filling that gap is a separate, still-open task.
+
+## Typed Tasks + `scope { }` Structured Concurrency (issue #301, since 2026-10-20)
+
+`spawn f()` is a `Task<T>` (T = `f`'s return type) and `await` yields `T`;
+a legacy `Int64` handle field still accepts a `Task<T>` (published stdlib
+packages store `spawn` results that way), but a plain Int is not a
+`Task<T>`, and a user class named `Task` is a hard error. `develop`'s
+`ValueType::Task` (semantic lowering, #335) is the representation; the
+`Task<T>` annotation maps onto it in `from_parser_type` and
+`type_to_value_erasing`.
+
+- **A `throw` inside a spawned function used to vanish** (`__tinox_err` is
+  thread-local, so the child's slot died with its thread and `await`
+  returned 0). `tinox_spawn_trampoline` now captures it into the
+  `TinoxTask`; `tinox_task_await` re-throws it in the awaiting thread
+  (every await of the same task, same error) and yields 0. A *detached*
+  task (`tinox_task_spawn_detached`, no handle) reports the error on stderr
+  instead. The task struct is GC-allocated, never freed on await, and the
+  result is cached, so repeat `await` is deterministic.
+- **`scope { ... }` is contextual (not reserved) and pure parser
+  desugaring** -- no new AST node, nothing downstream knows about it:
+  `const __scope_N = __scope_new(); try { body } catch (e: String) {
+  __scope_abort(...); throw e; } finally { __scope_join(...); }`, and every
+  `spawn` lexically inside becomes `__scope_register(scope, spawn ...)`
+  (typechecker/codegen special-case it as the identity on the task). The
+  parser clears its scope stack at every fn/method/lambda boundary, so a
+  spawn inside a closure is NOT owned by the enclosing scope.
+- **Error semantics:** normal exit / `return` / `break` -> `finally` joins,
+  then the first undelivered child failure (spawn order) is re-thrown; the
+  rest go to stderr as "task error suppressed". If the body itself throws,
+  the catch clause joins first via `__scope_abort`, the body's error wins
+  and all child failures are only reported. A failure already delivered
+  through `await` is not delivered again (`error_delivered`).
+- **Gotchas:** `__scope_join` is hardcoded as "may throw" in
+  `expr_may_throw` (otherwise no post-statement throw check follows it).
+  Static-call argument types are not type-checked at all (pre-existing,
+  e.g. `Main::take("s")` for a `Channel<Int64>` parameter passes), so
+  `Task<T>` parameter misuse is only caught for assignments.
+- **Deadlines/cancellation and shutdown (phases 4-5):** `taskCancel(t)`
+  cancels a typed task and descendants; `taskSetDeadline(ms)` sets the current
+  scope's monotonic deadline; `taskCheckCancellation()` is a CPU checkpoint.
+  `sleep`/`sleep_ms`, blocked `recv`, `await`, and `taskWaitReadable(fd)` are
+  cancellation points. Cleanup uses ordinary throw/defer/finally/transaction
+  unwinding, never pthread cancellation. Native blocking operations need their
+  own stop/close handling; ignored cancellation fails visibly after five seconds
+  during joining. Service control code can call `taskRequestShutdown()`; signal,
+  readiness and listener orchestration belong to #304.
+- **Ownership:** lexical scopes still register only lexical spawns. Other tasks
+  are owned by the spawning thread's implicit frame, joined when that frame
+  finishes, and cancelled/joined at process exit. Tokens inherit the currently
+  active lexical scope even across called methods. `taskDetach(t)` explicitly
+  removes owner/cancellation ancestry (process shutdown still applies); failures
+  in detached tasks are fatal. Handles are registry IDs, not unchecked addresses,
+  and expire at owner exit. Repeat awaits are cached while the owner lives.
+  Integer handle storage remains a deprecated compatibility path for published
+  packages; new task-control APIs require `Task<T>`.
+- **Runtime details:** task completion uses a mutex/condition variable; only a
+  completed pthread is joined, so cancellation polling never blocks holding a
+  join lock. Cyclic awaits fail visibly. Active registry entries and TLS scope /
+  current-task pointers are GC roots; frame/scope exit retires registry entries.
+  Abort/join restoration is idempotent because parser-generated finally cleanup
+  may follow abort. Genuine errors keep spawn-order precedence and suppressed
+  errors remain visible; cancellation caused by sibling failure is secondary.
+
+## Concurrency Budgets + Overload Handling (issue #302, since 2026-10-21)
+
+Runtime limits are resolved once per process (`tinox_limits()`, runtime.c) from
+detected defaults plus `TINOX_*` overrides; a malformed override is a hard
+startup failure, never a silent fallback.
+
+- **Effective CPUs** = min(`sched_getaffinity`, cgroup CPU quota rounded up).
+  cgroup v2 walks from the process's own cgroup (`/proc/self/cgroup`) up to
+  the root keeping the tightest `cpu.max` (a systemd scope / k8s pod slice
+  carries the quota on a parent, not on `/sys/fs/cgroup/cpu.max`); v1 reads
+  `cpu/cpu.cfs_quota_us`/`cpu.cfs_period_us`. `TINOX_CGROUP_ROOT` is a test
+  hook pointing detection at a fixture tree. Verified against a real
+  `systemd-run --user --scope -p CPUQuota=150%` (-> cpus=2).
+- **Limits**: `TINOX_CPUS`, `TINOX_HTTP_WORKERS` (default CPUs),
+  `TINOX_MAX_CONNECTIONS` (4096, hard ceiling = the per-worker `EPOLL_MAX_CONNS`
+  slot table), `TINOX_MAX_TASKS` (4096), `TINOX_MAX_WS_CONNECTIONS` (1024).
+- **Overload behaviour is protocol-visible**: HTTP/1 over the connection budget
+  gets `503` + `Retry-After: 1` + a JSON body naming the budget; a `spawn` over
+  the task budget returns a task that is already failed (no thread created), so
+  `await` / the owning `scope` re-throws "task budget exhausted"; a WebSocket
+  over budget is closed right after the upgrade (`tinox_ws_admit`/`_release`
+  in both `@WebsocketEndpoint` and `@TinoxUIApp` accept loops). Only joinable
+  `spawn` counts against the task budget; the per-connection detached WS
+  workers are governed by the WS budget instead. Nothing is retried
+  automatically.
+- **Visibility**: `Limits: ...` line in the startup banner (printed at run time
+  since affinity/cgroup are only known then) and gauges/counters
+  (`tinox_http_connections_{limit,open,peak,rejected_total}`, `tinox_tasks_*`,
+  `tinox_websocket_connections_*`) appended to `/metrics`.
+- **Execution-model inventory (why nothing else needs a budget)**: HTTP/1
+  = epoll workers (+ connection cap); `spawn` = one thread per task (task
+  cap); `@WebsocketEndpoint`/`@TinoxUIApp` = detached worker per connection
+  (WS cap); HTTP/2 (`Http2Server.listen`), HTTP/3 and the TLS
+  `httpServerAcceptTls` loops handle connections inline on the caller's
+  thread -- no thread growth, backlog bounded by `listen(4096)`; AMQP
+  0-9-1/1.0 use `spawn` for dispatcher/heartbeat loops, so they already
+  count against the task cap.
+- **Queueing**: `TINOX_QUEUE_WAIT_MS` (default 0) lets `spawn` and the WS
+  accept loop wait on a condvar for a freed slot, bounded by that deadline,
+  then reject. HTTP/1 never queues (blocking an epoll worker would stall
+  every other connection on it). Waits are visible as
+  `tinox_queue_{waiting,wait_ms_total,wait_ms_max,timeouts_total}`. A task
+  that spawns children while holding the last slot can wait out the whole
+  deadline -- that's why the default is 0.
+- **Config sources**: env var > `application.properties`
+  (`tinox.limits.<name without TINOX_, lowercase>`) > default; both are
+  validated the same way. Dev UI: `/limits` (`tinox_limits_json`).
+- **Verified in real containers** (`tinox docker` + `docker run --cpus=N`):
+  0.5 -> 1, 1.5 -> 2, 4 -> 4 CPUs "(cgroup quota)". Not an automated test
+  (needs a docker build; the cgroup parsing itself is covered by the
+  fixture-tree and `taskset` tests).
+- **Not covered**: per-endpoint overrides; HTTP/1 request deadlines beyond
+  the existing 5s first-request / 500ms keep-alive guards.
+- Tests: `crates/tinox/tests/concurrency_budgets.rs` (real curl/raw-socket
+  clients, `taskset`, cgroup fixture trees).
+
+
+## Shared Application State (issue #303)
+
+- Application/startup DI providers serialize construction and publication with
+  a process-wide recursive provider mutex. Nested, acyclic dependency creation
+  is safe; every caller receives the same initialized singleton. Defaults and
+  injection run before publication; generated providers do not invoke user
+  constructors. This does not protect subsequent mutations.
+- `@Synchronized` is supported on non-generic application/startup classes without
+  inheritance and their non-generic instance methods. A class annotation covers
+  all instance methods, excluding static methods. One recursive monitor is shared
+  per declaring class, even across manually-created instances; method annotations
+  share that same monitor. Wrapper-level release runs after body cleanup and
+  transaction completion, including return, throw and cooperative cancellation.
+- Waiting for a monitor is a cancellation point; acquisition failure skips the
+  body. Reentrancy is per POSIX thread, not inherited by spawned children. Avoid
+  awaiting a child that needs a held monitor, and order different class monitors
+  consistently. There is no deadlock-freedom or universal race-safety claim.
+- Keep mutable state private and protect reads too. Escaped mutable results,
+  direct field access, static methods and unannotated methods bypass locking.
+  Dev UI snapshots participate in the class monitor where present.
+- Shared-state warnings flag exposed/unguarded mutable singleton fields and
+  request-scoped dependencies captured directly or transitively by a singleton.
+  Prefer request-scoped controllers injecting application-scoped services.
+  Request-field refresh on singleton controllers does not provide request
+  isolation; warnings intentionally do not claim full race analysis.
+- For explicit critical sections, use semaphore-module locks with `defer`
+  immediately after successful acquisition. Existing low-level native lock
+  operations remain blocking and are not implicit cancellation points.

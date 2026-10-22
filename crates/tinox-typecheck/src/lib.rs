@@ -1,3 +1,6 @@
+pub mod semantic;
+pub mod cache;
+
 pub mod annotations;
 
 use std::collections::{HashMap, HashSet};
@@ -109,7 +112,7 @@ impl TypeError {
                 expected,
                 found,
                 span,
-            } => Error::new(*span, format!("expected {}, found {}", expected, found)),
+            } => Error::new(*span, format!("expected {}, found {}", expected, found)).with_types(expected, found),
             TypeError::BinaryOpTypeMismatch { op, lhs, rhs, span } => Error::new(
                 *span,
                 format!(
@@ -156,7 +159,7 @@ impl TypeError {
                     "function return type mismatch: expected {}, found {}",
                     expected, found
                 ),
-            ),
+            ).with_types(expected, found),
             TypeError::MissingReturn(span) => {
                 Error::new(*span, "missing return statement in function".to_string())
             }
@@ -172,7 +175,7 @@ impl TypeError {
                     "catch parameter type mismatch: expected {}, found {}",
                     expected, found
                 ),
-            ),
+            ).with_types(expected, found),
             TypeError::ThrowTypeMismatch(ty, span) => Error::new(
                 *span,
                 format!("throw requires a string or error type, found: {}", ty),
@@ -236,9 +239,16 @@ impl TypeError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ValueType {
+    /// Default signed Int64, including unsuffixed integer literals.
     Int,
+    Integer { bits: u8, signed: bool },
+    Float32,
+    Callable { params: Vec<ValueType>, ret: Box<ValueType> },
+    Reference { inner: Box<ValueType>, mutable: bool },
+    TupleOf(Vec<ValueType>),
+    Task(Box<ValueType>),
     Float,
     Bool,
     Char,
@@ -251,6 +261,7 @@ pub enum ValueType {
     /// Maps with a value type (keys are always String; Any = unknown)
     Map(Box<ValueType>),
     Ref,
+    /// Intentionally erased callback category for polymorphic runtime builtins.
     Fn,
     /// A class or enum type. The second field holds generic type arguments
     /// (`Box<Int64>` → `Named("Box", [Int])`); empty for non-generic types and
@@ -263,12 +274,8 @@ pub enum ValueType {
     Null,
 }
 
-// Custom equality (B2 step 1): two `Named` types are equal iff their class/enum
-// names match — the generic type args are additional info for field-type
-// substitution, NOT part of type identity. This keeps every existing `==`
-// comparison behaving exactly as before the args were added (`Box<Int>` and
-// `Box<String>` were both `Named("Box")` and compared equal). Arg-aware
-// compatibility is a later step.
+// Semantic identity is structural, including generic arguments and callback
+// signatures. Value-level compatibility/conversions are checked separately.
 impl PartialEq for ValueType {
     fn eq(&self, other: &Self) -> bool {
         use ValueType::*;
@@ -280,7 +287,13 @@ impl PartialEq for ValueType {
             (Array(a), Array(b)) => a == b,
             (Map(a), Map(b)) => a == b,
             (Nullable(a), Nullable(b)) => a == b,
-            (Named(a, _), Named(b, _)) => a == b,
+            (Named(a, aa), Named(b, ba)) => a == b && aa == ba,
+            (Integer { bits: a, signed: sa }, Integer { bits: b, signed: sb }) => a == b && sa == sb,
+            (Float32, Float32) => true,
+            (Callable { params: a, ret: ar }, Callable { params: b, ret: br }) => a == b && ar == br,
+            (Reference { inner: a, mutable: ma }, Reference { inner: b, mutable: mb }) => a == b && ma == mb,
+            (TupleOf(a), TupleOf(b)) => a == b,
+            (Task(a), Task(b)) => a == b,
             _ => false,
         }
     }
@@ -298,17 +311,18 @@ impl ValueType {
         ValueType::Map(Box::new(ValueType::Any))
     }
 
-    fn from_parser_type(ty: &Type) -> Self {
+    pub fn from_parser_type(ty: &Type) -> Self {
         match ty {
-            Type::Int8
-            | Type::Int16
-            | Type::Int32
-            | Type::Int64
-            | Type::UInt8
-            | Type::UInt16
-            | Type::UInt32
-            | Type::UInt64 => ValueType::Int,
-            Type::Float32 | Type::Float64 => ValueType::Float,
+            Type::Int8 => ValueType::Integer { bits: 8, signed: true },
+            Type::Int16 => ValueType::Integer { bits: 16, signed: true },
+            Type::Int32 => ValueType::Integer { bits: 32, signed: true },
+            Type::Int64 => ValueType::Int,
+            Type::UInt8 => ValueType::Integer { bits: 8, signed: false },
+            Type::UInt16 => ValueType::Integer { bits: 16, signed: false },
+            Type::UInt32 => ValueType::Integer { bits: 32, signed: false },
+            Type::UInt64 => ValueType::Integer { bits: 64, signed: false },
+            Type::Float32 => ValueType::Float32,
+            Type::Float64 => ValueType::Float,
             Type::Bool => ValueType::Bool,
             Type::Char => ValueType::Char,
             Type::String => ValueType::String,
@@ -325,28 +339,27 @@ impl ValueType {
             Type::Generic { name, args } if name == "Map" => ValueType::Map(Box::new(
                 args.get(1).map(Self::from_parser_type).unwrap_or(ValueType::Any),
             )),
+            // `Task<T>` annotation (issue #301): same representation `spawn`
+            // infers, so `const t: Task<Int64> = spawn f();` type-checks.
+            Type::Generic { name, args } if name == "Task" && args.len() == 1 => {
+                ValueType::Task(Box::new(Self::from_parser_type(&args[0])))
+            }
             Type::Generic { name, args } => ValueType::Named(
                 name.clone(),
                 args.iter().map(Self::from_parser_type).collect(),
             ),
             Type::Array(inner) => ValueType::Array(Box::new(Self::from_parser_type(inner))),
             Type::Map(_, v) => ValueType::Map(Box::new(Self::from_parser_type(v))),
-            Type::Tuple(_) => ValueType::Tuple,
-            Type::Mutable(_) => ValueType::Ref,
-            Type::Ref(_) => ValueType::Ref,
-            Type::Fn { .. } => ValueType::Fn,
+            Type::Tuple(items) => ValueType::TupleOf(items.iter().map(Self::from_parser_type).collect()),
+            Type::Mutable(inner) => ValueType::Reference { inner: Box::new(Self::from_parser_type(inner)), mutable: true },
+            Type::Ref(inner) => ValueType::Reference { inner: Box::new(Self::from_parser_type(inner)), mutable: false },
+            Type::Fn { params, ret } => ValueType::Callable { params: params.iter().map(Self::from_parser_type).collect(), ret: Box::new(Self::from_parser_type(ret)) },
             Type::Nullable(inner) => ValueType::Nullable(Box::new(ValueType::from_parser_type(inner))),
         }
     }
 
-    /// Translates a ValueType into codegen's marker language
-    /// (container_marker/elem_marker): "String", "Float", a class name,
-    /// "Array"/"Array:String"/"Array:Float"/"Array:<marker>"/"List:Class",
-    /// "Map"/"Map:<marker>". None for types with no marker semantics
-    /// (Int, Bool, Any, …).
-    /// A display for error messages — shows element/value types
-    /// ("List<String>", "Map<String, Int64>"). Don't use this for
-    /// dispatch keys, that's what to_string() is for.
+    /// Full type identity for diagnostics. Dispatch keys deliberately use
+    /// `dispatch_name`/Display instead of flattening diagnostics.
     fn display(&self) -> String {
         match self {
             ValueType::Array(e) if **e != ValueType::Any => format!("List<{}>", e.display()),
@@ -354,6 +367,7 @@ impl ValueType {
                 format!("Map<String, {}>", v.display())
             }
             ValueType::Nullable(inner) => format!("{}?", inner.display()),
+            ValueType::Named(name, args) if !args.is_empty() => format!("{}<{}>", name, args.iter().map(Self::display).collect::<Vec<_>>().join(", ")),
             other => other.to_string(),
         }
     }
@@ -366,6 +380,12 @@ impl std::fmt::Display for ValueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             ValueType::Int => "Int64".to_string(),
+            ValueType::Integer { bits, signed } => format!("{}Int{bits}", if *signed { "" } else { "U" }),
+            ValueType::Float32 => "Float32".into(),
+            ValueType::Callable { params, ret } => format!("fnc({}) -> {}", params.iter().map(Self::display).collect::<Vec<_>>().join(", "), ret.display()),
+            ValueType::Reference { inner, mutable } => format!("{}{}", if *mutable { "mutable " } else { "&" }, inner.display()),
+            ValueType::TupleOf(items) => format!("({})", items.iter().map(Self::display).collect::<Vec<_>>().join(", ")),
+            ValueType::Task(ret) => format!("Task<{}>", ret.display()),
             ValueType::Float => "Float64".to_string(),
             ValueType::Bool => "Bool".to_string(),
             ValueType::Char => "Char".to_string(),
@@ -436,6 +456,8 @@ pub struct TypeChecker {
     current_return_type: Option<ValueType>,
     /// All class names defined in the program — allows passing a class as a value (e.g. DB.of(User)).
     known_class_names: HashSet<String>,
+    /// Classes whose query chains are intercepted by ORM code generation.
+    entity_class_names: HashSet<String>,
     /// Subset of known_class_names that are generic (`class Foo<T>`). Generic
     /// classes legitimately use struct-literal fields without registered field
     /// declarations, so field-access checks stay permissive for them.
@@ -456,6 +478,7 @@ pub struct TypeChecker {
     /// typecheck→codegen type channel (the lossy marker table
     /// expr_markers has been removed).
     expr_types: HashMap<u32, ValueType>,
+    semantic_facts: semantic::SemanticFacts,
     /// B2 step 2: a generic method's `ClassName_method` → its UNERASED
     /// param types (self prepended as `Named(Class, [T-params])` for
     /// instance methods) + the type-param names (class + method). The
@@ -816,6 +839,13 @@ impl TypeChecker {
         }
         // HTTP low-level builtins (called from http_server.tnx)
         symbols.functions.insert("httpServerCreate".to_string(), FunctionSignature { params: vec![("port".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        // Task scopes (issue #301): internal helpers the parser's `scope { }`
+        // desugaring calls. `__scope_register` returns its second argument
+        // (a Task<T>) unchanged -- see the special case in check_call.
+        symbols.functions.insert("__scope_new".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        symbols.functions.insert("__scope_join".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        symbols.functions.insert("__scope_abort".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        symbols.functions.insert("__scope_register".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int), ("task".to_string(), ValueType::Any)], return_type: ValueType::Any });
         symbols.functions.insert("httpServerBoundPort".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerAcceptConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerReadRequest".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::String });
@@ -905,6 +935,38 @@ impl TypeChecker {
         symbols.functions.insert("List_removeAt".to_string(), FunctionSignature {
             params: vec![("arr".to_string(), ValueType::any_array()), ("i".to_string(), ValueType::Int)],
             return_type: ValueType::Nothing,
+        });
+        // Structured task operations use Task<Any> only as an input wildcard;
+        // the actual spawn/await result retains its complete semantic type.
+        for name in ["taskCancel", "taskDetach"] {
+            symbols.functions.insert(name.into(), FunctionSignature {
+                params: vec![("task".into(), ValueType::Task(Box::new(ValueType::Any)))],
+                return_type: ValueType::Nothing,
+            });
+        }
+        for name in ["taskCheckCancellation", "taskRequestShutdown"] {
+            symbols.functions.insert(name.into(), FunctionSignature { params: vec![], return_type: ValueType::Nothing });
+        }
+        symbols.functions.insert("taskWaitReadable".into(), FunctionSignature {
+            params: vec![("fd".into(), ValueType::Int)], return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("taskSetDeadline".into(), FunctionSignature {
+            params: vec![("milliseconds".into(), ValueType::Int)], return_type: ValueType::Nothing,
+        });
+        for (name, return_type) in [
+            ("serviceIsReady", ValueType::Bool), ("serviceIsLive", ValueType::Bool),
+            ("serviceIsStopping", ValueType::Bool), ("serviceState", ValueType::String),
+            ("serviceStatusJson", ValueType::String), ("serviceStartedMs", ValueType::Int),
+            ("serviceReadyMs", ValueType::Int), ("serviceShutdownMs", ValueType::Int),
+            ("serviceRequestShutdown", ValueType::Nothing), ("serviceAwaitShutdown", ValueType::Nothing),
+        ] {
+            symbols.functions.insert(name.into(), FunctionSignature { params: vec![], return_type });
+        }
+        symbols.functions.insert("serviceBoundPort".into(), FunctionSignature {
+            params: vec![("taskIndex".into(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("serviceAwaitReady".into(), FunctionSignature {
+            params: vec![("milliseconds".into(), ValueType::Int)], return_type: ValueType::Bool,
         });
         // Time
         symbols.functions.insert("now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
@@ -1109,10 +1171,19 @@ impl TypeChecker {
             });
         }
         // File I/O extended
-        for name in &["fileReadAllText", "fileWriteAllText", "fileDelete", "fileClose"] {
+        for name in &["fileReadAllText", "fileWriteAllText", "fileAppendText", "fileDelete", "fileClose"] {
             let ret = if *name == "fileReadAllText" { ValueType::String } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
+            });
+        }
+        symbols.functions.insert("fileWriteAllTextChecked".to_string(), FunctionSignature {
+            params: vec![("path".to_string(), ValueType::String), ("content".to_string(), ValueType::String)],
+            return_type: ValueType::String,
+        });
+        for name in &["dirCreateChecked", "dirCreateAllChecked"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("path".to_string(), ValueType::String)], return_type: ValueType::String,
             });
         }
         for name in &["dirList", "dirCreate", "dirDelete"] {
@@ -1257,10 +1328,12 @@ impl TypeChecker {
             type_param_scope: HashSet::new(),
             current_return_type: None,
             known_class_names: HashSet::new(),
+            entity_class_names: HashSet::new(),
             generic_class_names: HashSet::new(),
             class_type_params: HashMap::new(),
             method_uses_this: HashSet::new(),
             expr_types: HashMap::new(),
+            semantic_facts: semantic::SemanticFacts::default(),
             generic_method_param_types: HashMap::new(),
             class_fields: HashMap::new(),
             generic_instance_fn_arg_hints: HashMap::new(),
@@ -1277,7 +1350,9 @@ impl TypeChecker {
     }
 
     pub fn check(&mut self, source: &SourceFile) -> Result<SourceFile, ErrorBag> {
+        self.register_semantic_declarations(source);
         self.check_source_file(source);
+        if self.errors.is_empty() { self.validate_semantic_contracts(); }
         if self.errors.is_empty() {
             Ok(source.clone())
         } else {
@@ -1461,11 +1536,18 @@ impl TypeChecker {
                             .iter()
                             .map(|p| (p.name.clone(), Self::type_to_value_erasing(&p.param_type, &f.type_params)))
                             .collect(),
-                        return_type: Self::type_to_value_erasing(&f.ret_type, &f.type_params),
+                        return_type: Self::type_to_value(&f.ret_type),
                     };
                     self.symbols.functions.insert(f.name.clone(), sig);
+                    if !f.type_params.is_empty() { self.generic_method_param_types.insert(f.name.clone(), (f.params.iter().map(|p| Self::type_to_value(&p.param_type)).collect(), f.type_params.clone())); }
                 }
                 DeclKind::Class(c) => {
+                    if c.name == "Task" {
+                        self.errors.push(Error::new(
+                            decl.span,
+                            "`Task` is a built-in type (the result of `spawn`, see Task<T>); rename this class".to_string(),
+                        ));
+                    }
                     if let Some(parent) = &c.extends {
                         self.class_parents.insert(c.name.clone(), parent.clone());
                     }
@@ -1522,7 +1604,7 @@ impl TypeChecker {
                         );
                         let sig = FunctionSignature {
                             params,
-                            return_type: Self::erase_method_return_type(&method.ret_type, &method.type_params, &erase_params),
+                            return_type: Self::type_to_value(&method.ret_type),
                         };
                         let key = format!("{}_{}", c.name, method.name);
                         if !method.static_ && Self::stmt_uses_this(&method.body) {
@@ -1574,6 +1656,18 @@ impl TypeChecker {
                         }
                         self.symbols.functions.insert(key.clone(), sig);
                         self.method_visibility.insert(key, method.visibility.clone());
+                    }
+                    // Codegen emits a String-returning instance method for
+                    // classes with log-masked fields. Keep explicit methods'
+                    // signatures, matching codegen's override behavior.
+                    if c.fields.iter().any(|field| field.annotations.iter().any(|a| {
+                        matches!(a.name.as_str(), "Sensitive" | "Masked")
+                    })) {
+                        self.symbols.functions.entry(format!("{}_toString", c.name))
+                            .or_insert_with(|| FunctionSignature {
+                                params: vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))],
+                                return_type: ValueType::String,
+                            });
                     }
                     // @JsonSerializable: register compiler-generated toJson() and fromJson()
                     if c.annotations.iter().any(|a| a.name == "JsonSerializable") {
@@ -1939,6 +2033,9 @@ impl TypeChecker {
                 }
 
                 self.known_class_names.insert(name.clone());
+                if c.annotations.iter().any(|a| matches!(a.name.as_str(), "Entity" | "Table")) {
+                    self.entity_class_names.insert(name.clone());
+                }
                 if !c.type_params.is_empty() {
                     self.generic_class_names.insert(name.clone());
                     self.class_type_params.insert(name.clone(), c.type_params.clone());
@@ -1956,6 +2053,7 @@ impl TypeChecker {
         self.expand_class_inheritance(source);
 
         for decl in Self::flatten_decls(source) {
+            let first_error = self.errors.len();
             match &decl.node {
                 DeclKind::Function(f) => {
                     self.check_function(f);
@@ -1964,6 +2062,9 @@ impl TypeChecker {
                     self.check_class(c);
                 }
                 _ => {}
+            }
+            for error in &mut self.errors[first_error..] {
+                error.file = decl.file.as_deref().map(Into::into);
             }
         }
 
@@ -2056,32 +2157,20 @@ impl TypeChecker {
         for method in &c.methods {
             let saved_vars = self.symbols.enter_scope();
             let saved_type_params = std::mem::take(&mut self.type_param_scope);
-            for tp in &method.type_params {
+            for tp in c.type_params.iter().chain(&method.type_params) {
                 self.type_param_scope.insert(tp.clone());
             }
-            // Erase class-level type params too, not just the method's own
-            // (see the DeclKind::Class signature-registration arms) — a
-            // method BODY referencing a class param directly (`cache.data[key]`
-            // with `key: K`, `Cache<K,V>`) needs `key`'s registered type to be
-            // Any for the Map-index-validity check, else every generic-class
-            // method body with T-typed indexing/comparison spuriously errors.
-            let erase_params: Vec<String> = c
-                .type_params
-                .iter()
-                .chain(method.type_params.iter())
-                .cloned()
-                .collect();
             self.symbols.variables.insert(
                 "self".to_string(),
-                (ValueType::Named(c.name.clone(), vec![]), false),
+                (ValueType::Named(c.name.clone(), c.type_params.iter().map(|p| ValueType::Named(p.clone(), vec![])).collect()), false),
             );
             for param in &method.params {
                 self.symbols.variables.insert(
                     param.name.clone(),
-                    (Self::type_to_value_erasing(&param.param_type, &erase_params), false),
+                    (Self::type_to_value(&param.param_type), false),
                 );
             }
-            let expected = Self::type_to_value_erasing(&method.ret_type, &erase_params);
+            let expected = Self::type_to_value(&method.ret_type);
             let saved_return_type = self.current_return_type.replace(expected.clone());
             let has_return = self.check_stmt(&method.body);
             self.current_return_type = saved_return_type;
@@ -2166,8 +2255,8 @@ impl TypeChecker {
                 }
                 let final_type = match (value, ty) {
                     (Some(v), Some(t)) => {
-                        let val_ty = self.infer_type(v);
                         let ann_ty = Self::type_to_value(t);
+                        let val_ty = self.infer_argument(v, &ann_ty);
                         if !self.types_compatible(&ann_ty, &val_ty) {
                             self.errors.push(
                                 TypeError::TypeMismatch {
@@ -2209,8 +2298,8 @@ impl TypeChecker {
                 // was present).
                 let inferred_type = match (value, ty) {
                     (Some(v), Some(t)) => {
-                        let val_ty = self.infer_type(v);
                         let ann_ty = Self::type_to_value(t);
+                        let val_ty = self.infer_argument(v, &ann_ty);
                         if !self.types_compatible(&ann_ty, &val_ty) {
                             self.errors.push(
                                 TypeError::TypeMismatch {
@@ -2237,7 +2326,7 @@ impl TypeChecker {
             }
             StmtKind::Assignment { target, value } => {
                 let target_ty = self.infer_type(target);
-                let value_ty = self.infer_type(value);
+                let value_ty = self.infer_argument(value, &target_ty);
                 if !self.types_compatible(&target_ty, &value_ty) {
                     self.errors.push(
                         TypeError::TypeMismatch {
@@ -2327,8 +2416,9 @@ impl TypeChecker {
             }
             StmtKind::Return(opt_expr) => {
                 if let Some(expr) = opt_expr {
-                    let val_ty = self.infer_type(expr);
-                    if let Some(expected) = self.current_return_type.clone() {
+                    let expected_hint = self.current_return_type.clone();
+                    let val_ty = if let Some(expected) = &expected_hint { self.infer_argument(expr, expected) } else { self.infer_type(expr) };
+                    if let Some(expected) = expected_hint {
                         if !self.types_compatible(&expected, &val_ty) {
                             self.errors.push(TypeError::TypeMismatch {
                                 expected: expected.display(),
@@ -2470,9 +2560,39 @@ impl TypeChecker {
         }
         let ty = self.infer_type_inner(expr);
         if expr.id != 0 {
+            self.record_semantics(expr, &ty);
             self.expr_types.insert(expr.id, ty.clone());
         }
         ty
+    }
+
+    /// Mirror the receiver shapes accepted by codegen's ORM interceptor.
+    /// Query stubs return Any, but first() materializes this concrete entity.
+    fn orm_query_entity<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
+        match &expr.node {
+            ExprKind::EnumValue { enum_name, variant, args, .. }
+                if enum_name == "DB" && variant == "of" =>
+            {
+                match args.first().map(|a| &a.node) {
+                    Some(ExprKind::Ident(name)) if self.entity_class_names.contains(name) => Some(name),
+                    _ => None,
+                }
+            }
+            ExprKind::MethodCall { obj, method, args }
+                if method == "of" && matches!(&obj.node, ExprKind::Ident(name) if name == "DB") =>
+            {
+                match args.first().map(|a| &a.node) {
+                    Some(ExprKind::Ident(name)) if self.entity_class_names.contains(name) => Some(name),
+                    _ => None,
+                }
+            }
+            ExprKind::MethodCall { obj, method, .. }
+                if matches!(method.as_str(), "filter" | "orderBy" | "orderByDesc" | "limit" | "offset") =>
+            {
+                self.orm_query_entity(obj)
+            }
+            _ => None,
+        }
     }
 
     fn infer_type_inner(&mut self, expr: &Expr) -> ValueType {
@@ -2481,8 +2601,8 @@ impl TypeChecker {
             ExprKind::Ident(name) => {
                 if let Some((ty, _)) = self.symbols.variables.get(name) {
                     ty.clone()
-                } else if self.symbols.functions.contains_key(name) {
-                    ValueType::Fn
+                } else if let Some(sig) = self.symbols.functions.get(name) {
+                    ValueType::Callable { params: sig.params.iter().map(|(_,t)| t.clone()).collect(), ret: Box::new(sig.return_type.clone()) }
                 } else if self.known_class_names.contains(name) {
                     // Class name used as a value (e.g. DB.of(User)) — treat as Any
                     ValueType::Any
@@ -2569,6 +2689,11 @@ impl TypeChecker {
                 // Any-typed receiver: dynamic dispatch, no type errors
                 if obj_ty == ValueType::Any {
                     for arg in args { self.infer_type(arg); }
+                    if method == "first" && args.is_empty() {
+                        if let Some(entity) = self.orm_query_entity(obj) {
+                            return ValueType::Named(entity.to_string(), vec![]);
+                        }
+                    }
                     return ValueType::Any;
                 }
                 // `List<C>.toJson()` (C a @JsonSerializable class): mirrors
@@ -2594,13 +2719,17 @@ impl TypeChecker {
                         }
                     }
                 }
-                let class_name = obj_ty.to_string();
+                if matches!(&obj_ty, ValueType::Named(name, args) if args.is_empty() && self.type_param_scope.contains(name)) {
+                    for arg in args { self.infer_type(arg); }
+                    return ValueType::Any;
+                }
+                let class_name = obj_ty.dispatch_name();
 
                 // Check if method is a Fn-type field (callable field) on the class
                 let field_key = format!("{}.{}", class_name, method);
-                if let Some((ValueType::Fn, _)) = self.symbols.variables.get(&field_key) {
-                    for arg in args { self.infer_type(arg); }
-                    return ValueType::Any;
+                if let Some((field_type, _)) = self.symbols.variables.get(&field_key).cloned() {
+                    let field_type = if let ValueType::Named(name, targs) = &obj_ty { self.substitute_type_params(&field_type, name, targs) } else { field_type };
+                    if let Some(result) = self.check_callable(&field_type, args, expr.span) { return result; }
                 }
 
                 let method_name = format!("{}_{}", class_name, method);
@@ -2730,10 +2859,10 @@ impl TypeChecker {
                 let obj_ty = self.infer_type(obj);
                 let index_ty = self.infer_type(index);
                 let valid_index = match &obj_ty {
-                    ValueType::Map(_) => matches!(index_ty, ValueType::String | ValueType::Any),
+                    ValueType::Map(_) => matches!(index_ty, ValueType::String | ValueType::Any) || matches!(&index_ty, ValueType::Named(name,args) if args.is_empty() && self.type_param_scope.contains(name)),
                     ValueType::String => true,
                     ValueType::Any => true,
-                    _ => matches!(index_ty, ValueType::Int | ValueType::Any),
+                    _ => index_ty.is_integer() || index_ty == ValueType::Any,
                 };
                 if !valid_index {
                     self.errors
@@ -2848,7 +2977,7 @@ impl TypeChecker {
                     );
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter().skip(1)) {
-                    let arg_ty = self.infer_type(arg);
+                    let arg_ty = self.infer_argument(arg, expected_ty);
                     if !self.types_compatible(expected_ty, &arg_ty) {
                         self.errors.push(
                             TypeError::TypeMismatch {
@@ -2895,10 +3024,11 @@ impl TypeChecker {
                     Some(tps)
                         if !tps.is_empty()
                             && tps.iter().all(|tp| bindings.contains_key(tp))
-                            && !bindings.values().any(|v| self.contains_scoped_type_param(v)) =>
+                            =>
                     {
                         tps.iter().map(|tp| bindings[tp].clone()).collect()
                     }
+                    Some(tps) => tps.iter().map(|tp| bindings.get(tp).cloned().unwrap_or_else(|| ValueType::Named(tp.clone(), vec![]))).collect(),
                     _ => vec![],
                 };
                 // Bug 130: a struct literal that omits a declared field left the
@@ -3045,8 +3175,12 @@ impl TypeChecker {
                 ValueType::Any
             }
             ExprKind::Assign { target, value } => {
-                self.infer_type(target);
-                self.infer_type(value)
+                let target_ty = self.infer_type(target);
+                let found = self.infer_argument(value, &target_ty);
+                if !self.types_compatible(&target_ty, &found) {
+                    self.errors.push(TypeError::TypeMismatch { expected: target_ty.display(), found: found.display(), span: value.span }.to_error());
+                }
+                target_ty
             }
             ExprKind::CompoundAssign {
                 op: _,
@@ -3075,21 +3209,32 @@ impl TypeChecker {
                 let saved_return_type =
                     std::mem::replace(&mut self.current_return_type, lambda_ret);
                 let body_ty = self.infer_type(body);
+                let body_ty = self.lambda_result_type(body).unwrap_or(body_ty);
                 self.current_return_type = saved_return_type;
                 self.symbols.exit_scope(saved_vars);
-                let _ret = ret_type
+                let ret = ret_type
                     .as_ref()
                     .map(Self::type_to_value)
                     .unwrap_or(body_ty);
-                ValueType::Fn
+                ValueType::Callable { params: params.iter().map(|p| Self::type_to_value(&p.param_type)).collect(), ret: Box::new(ret) }
             }
             ExprKind::Spawn(inner) => {
-                self.infer_type(inner);
-                ValueType::Int // task handle (opaque i64)
+                ValueType::Task(Box::new(self.infer_type(inner)))
             }
             ExprKind::Await(inner) => {
-                self.infer_type(inner);
-                ValueType::Int // task result
+                match self.infer_type(inner) {
+                    ValueType::Task(result) => *result,
+                    // Legacy opaque Int64 handle (e.g. a stdlib field
+                    // declared `Int64` that stores a `spawn` result).
+                    ValueType::Int | ValueType::Any => ValueType::Int,
+                    other => {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!("`await` expects a Task<T>, found {}", other),
+                        ));
+                        ValueType::Any
+                    }
+                }
             }
             ExprKind::Channel => ValueType::Int, // channel handle (opaque i64)
             ExprKind::Send { channel, value } => {
@@ -3134,7 +3279,7 @@ impl TypeChecker {
             } => {
                 let start_ty = self.infer_type(start);
                 let end_ty = self.infer_type(end);
-                if !matches!(start_ty, ValueType::Int) || !matches!(end_ty, ValueType::Int) {
+                if !start_ty.is_integer() || !end_ty.is_integer() {
                     self.errors.push(
                         TypeError::InvalidRangeType(
                             format!("{}..{}", start_ty, end_ty),
@@ -3145,15 +3290,10 @@ impl TypeChecker {
                 }
                 ValueType::Range
             }
-            ExprKind::Tuple(exprs) => {
-                for e in exprs {
-                    self.infer_type(e);
-                }
-                ValueType::Tuple
-            }
-            ExprKind::TupleIndex { tuple, .. } => {
-                self.infer_type(tuple);
-                ValueType::Any
+            ExprKind::Tuple(exprs) => ValueType::TupleOf(exprs.iter().map(|e| self.infer_type(e)).collect()),
+            ExprKind::TupleIndex { tuple, index } => match self.infer_type(tuple) {
+                ValueType::TupleOf(items) => items.get(*index).cloned().unwrap_or(ValueType::Any),
+                _ => ValueType::Any,
             }
             ExprKind::EnumValue {
                 enum_name,
@@ -3288,9 +3428,6 @@ impl TypeChecker {
     ) -> Option<ValueType> {
         let static_key = format!("{}_{}", class_name, method_name);
         let sig = self.symbols.functions.get(&static_key).cloned()?;
-        for arg in args {
-            self.infer_type(arg);
-        }
         // Argument-count check (Bug 46/47). Instance methods (`fn`) carry
         // a leading synthetic "self" param and are called via one of two
         // Bug-38 styles. The receiver-as-self vs receiver-as-explicit-
@@ -3323,6 +3460,15 @@ impl TypeChecker {
                 }
                 .to_error(),
             );
+        }
+        let skip_self = usize::from(is_instance && args.len() == declared);
+        for (index, arg) in args.iter().enumerate() {
+            if let Some((_, expected)) = sig.params.get(index + skip_self) {
+                let actual = self.infer_argument(arg, expected);
+                if !self.types_compatible(expected, &actual) {
+                    self.errors.push(TypeError::TypeMismatch { expected: expected.display(), found: actual.display(), span: arg.span }.to_error());
+                }
+            } else { self.infer_type(arg); }
         }
         // B2 step 2 / #158 — type-argument inference for unannotated
         // bindings: `let bi = Box::make(42)` derives T=Int from the args
@@ -3394,6 +3540,14 @@ impl TypeChecker {
     }
 
     fn check_call(&mut self, func: &Expr, args: &[Expr], span: Span) -> ValueType {
+        // `__scope_register(scope, task)` is the identity on `task`: the
+        // spawn it wraps keeps its Task<T> type.
+        if let ExprKind::Ident(name) = &func.node {
+            if name == "__scope_register" && args.len() == 2 {
+                self.infer_type(&args[0]);
+                return self.infer_type(&args[1]);
+            }
+        }
         // Check if it's a simple identifier - could be function or lambda variable
         if let ExprKind::Ident(name) = &func.node {
             // First check if it's a defined function
@@ -3466,7 +3620,7 @@ impl TypeChecker {
                     return sig.return_type.clone();
                 }
                 for (arg, (_, expected_ty)) in args.iter().zip(sig.params.iter()) {
-                    let arg_ty = self.infer_type(arg);
+                    let arg_ty = self.infer_argument(arg, expected_ty);
                     if !self.types_compatible(expected_ty, &arg_ty) {
                         self.errors.push(
                             TypeError::TypeMismatch {
@@ -3478,18 +3632,11 @@ impl TypeChecker {
                         );
                     }
                 }
-                return sig.return_type.clone();
+                return self.unify_generic_return(name, &sig.return_type, args, &[]).unwrap_or(sig.return_type);
             }
 
-            // Check if it's a variable with Fn type (lambda)
-            if let Some((ty, _)) = self.symbols.variables.get(name) {
-                if *ty == ValueType::Fn {
-                    // Lambda call - just check arguments are present
-                    for arg in args {
-                        self.infer_type(arg);
-                    }
-                    return ValueType::Any; // We don't have detailed lambda type info
-                }
+            if let Some((ty, _)) = self.symbols.variables.get(name).cloned() {
+                if let Some(result) = self.check_callable(&ty, args, span) { return result; }
             }
 
             // Same-class bare `fnc` call (issue #149 stage 2): a sibling
@@ -3525,12 +3672,7 @@ impl TypeChecker {
         } else {
             // Not an identifier - could be complex expression returning Fn
             let func_ty = self.infer_type(func);
-            if func_ty == ValueType::Fn {
-                for arg in args {
-                    self.infer_type(arg);
-                }
-                return ValueType::Any;
-            }
+            if let Some(result) = self.check_callable(&func_ty, args, span) { return result; }
         }
 
         for arg in args {
@@ -3590,8 +3732,8 @@ impl TypeChecker {
         }
         let valid = match op {
             BinaryOp::Add => {
-                (matches!(lhs, ValueType::Int | ValueType::Float)
-                    && matches!(rhs, ValueType::Int | ValueType::Float))
+                ((lhs.is_integer() || lhs.is_float())
+                    && (rhs.is_integer() || rhs.is_float()))
                     || (matches!(lhs, ValueType::String) && matches!(rhs, ValueType::String))
             }
             BinaryOp::Sub
@@ -3601,26 +3743,27 @@ impl TypeChecker {
             | BinaryOp::Shl
             | BinaryOp::Shr
             | BinaryOp::ShrArith => {
-                matches!(lhs, ValueType::Int | ValueType::Float)
-                    && matches!(rhs, ValueType::Int | ValueType::Float)
+                (lhs.is_integer() || lhs.is_float())
+                    && (rhs.is_integer() || rhs.is_float())
             }
             BinaryOp::And | BinaryOp::Or => {
                 matches!(lhs, ValueType::Bool) && matches!(rhs, ValueType::Bool)
             }
             BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::Xor => {
-                matches!(lhs, ValueType::Int) && matches!(rhs, ValueType::Int)
+                lhs.is_integer() && rhs.is_integer()
             }
             BinaryOp::Eq | BinaryOp::Ne => {
                 // Reference types (stored as pointers) may be compared to null.
                 // Named/Any already short-circuit above; this covers Map/Array/
                 // String/Fn/Nullable == null.
                 lhs == rhs
+                    || ((lhs.is_integer() || lhs.is_float()) && (rhs.is_integer() || rhs.is_float()))
                     || (matches!(lhs, ValueType::Null) && Self::is_nullable_ref(rhs))
                     || (matches!(rhs, ValueType::Null) && Self::is_nullable_ref(lhs))
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                (matches!(lhs, ValueType::Int | ValueType::Float)
-                    && matches!(rhs, ValueType::Int | ValueType::Float))
+                ((lhs.is_integer() || lhs.is_float())
+                    && (rhs.is_integer() || rhs.is_float()))
                     || (matches!(lhs, ValueType::String) && matches!(rhs, ValueType::String))
             }
         };
@@ -3649,6 +3792,8 @@ impl TypeChecker {
                 | ValueType::Nullable(_)
                 | ValueType::Null
                 | ValueType::Fn
+                | ValueType::Callable { .. }
+                | ValueType::Reference { .. }
                 | ValueType::Ref
         )
     }
@@ -3658,9 +3803,9 @@ impl TypeChecker {
             return;
         }
         let valid = match op {
-            UnaryOp::Neg => matches!(operand, ValueType::Int | ValueType::Float),
+            UnaryOp::Neg => operand.is_integer() || operand.is_float(),
             UnaryOp::Not => matches!(operand, ValueType::Bool),
-            UnaryOp::BitNot => matches!(operand, ValueType::Int),
+            UnaryOp::BitNot => operand.is_integer(),
         };
         if !valid {
             self.errors.push(
@@ -3691,11 +3836,7 @@ impl TypeChecker {
                     || matches!(rhs, ValueType::Any | ValueType::Named(_, _))
                 {
                     ValueType::Any
-                } else if *lhs == ValueType::Float || *rhs == ValueType::Float {
-                    ValueType::Float
-                } else {
-                    ValueType::Int
-                }
+                } else { ValueType::numeric_promotion(lhs, rhs).unwrap_or_else(|| lhs.clone()) }
             }
         }
     }
@@ -3704,7 +3845,7 @@ impl TypeChecker {
         match op {
             UnaryOp::Neg => operand.clone(),
             UnaryOp::Not => ValueType::Bool,
-            UnaryOp::BitNot => ValueType::Int,
+            UnaryOp::BitNot => operand.clone(),
         }
     }
 
@@ -3738,6 +3879,7 @@ impl TypeChecker {
             return None;
         };
         let saved_vars = self.symbols.enter_scope();
+        let mut parameter_types = Vec::new();
         for (i, p) in params.iter().enumerate() {
             let declared = Self::type_to_value(&p.param_type);
             let bound = if declared == ValueType::Any {
@@ -3745,6 +3887,7 @@ impl TypeChecker {
             } else {
                 declared
             };
+            parameter_types.push(bound.clone());
             self.symbols.variables.insert(p.name.clone(), (bound, false));
         }
         // Return statements in the body belong to the lambda (same as
@@ -3752,9 +3895,12 @@ impl TypeChecker {
         let lambda_ret = ret_type.as_ref().map(Self::type_to_value);
         let saved_ret = std::mem::replace(&mut self.current_return_type, lambda_ret.clone());
         let body_ty = self.infer_type(body);
+        let body_ty = self.lambda_result_type(body).unwrap_or(body_ty);
         self.current_return_type = saved_ret;
         self.symbols.exit_scope(saved_vars);
-        Some(lambda_ret.unwrap_or(body_ty))
+        let result = lambda_ret.unwrap_or(body_ty);
+        if expr.id != 0 { self.expr_types.insert(expr.id, ValueType::Callable { params: parameter_types, ret: Box::new(result.clone()) }); }
+        Some(result)
     }
 
     /// Substitute a class's type parameters with concrete instance type args
@@ -3768,34 +3914,13 @@ impl TypeChecker {
         let Some(tparams) = self.class_type_params.get(class_name) else {
             return ty.clone();
         };
-        match ty {
-            ValueType::Named(n, _) => {
-                if let Some(idx) = tparams.iter().position(|p| p == n) {
-                    targs.get(idx).cloned().unwrap_or_else(|| ty.clone())
-                } else {
-                    ty.clone()
-                }
-            }
-            ValueType::Array(inner) => {
-                ValueType::Array(Box::new(self.substitute_type_params(inner, class_name, targs)))
-            }
-            ValueType::Map(v) => {
-                ValueType::Map(Box::new(self.substitute_type_params(v, class_name, targs)))
-            }
-            ValueType::Nullable(inner) => {
-                ValueType::Nullable(Box::new(self.substitute_type_params(inner, class_name, targs)))
-            }
-            _ => ty.clone(),
-        }
+        let bindings = tparams.iter().cloned().zip(targs.iter().cloned()).collect();
+        Self::substitute_bindings(ty, &bindings)
     }
 
-    /// Like `type_to_value` but resolves type parameters in scope to `Any`.
+    /// Preserve symbolic parameters until checked call-site specialization.
     fn resolve_type(&self, ty: &Type) -> ValueType {
-        match ty {
-            Type::Named(name) if self.type_param_scope.contains(name) => ValueType::Any,
-            Type::Generic { name, .. } if self.type_param_scope.contains(name) => ValueType::Any,
-            _ => Self::type_to_value(ty),
-        }
+        Self::type_to_value(ty)
     }
 
     /// Used during registration to erase type parameters to `Any`.
@@ -3825,10 +3950,12 @@ impl TypeChecker {
             }
             (ValueType::Array(p), ValueType::Array(a)) => Self::unify_param(p, a, tparams, bindings),
             (ValueType::Map(p), ValueType::Map(a)) => Self::unify_param(p, a, tparams, bindings),
+            (ValueType::Task(p), ValueType::Task(a)) => Self::unify_param(p, a, tparams, bindings),
             (ValueType::Nullable(p), ValueType::Nullable(a)) => {
                 Self::unify_param(p, a, tparams, bindings)
             }
             (ValueType::Nullable(p), a) => Self::unify_param(p, a, tparams, bindings),
+            (ValueType::Callable { params: ps, ret: pr }, ValueType::Callable { params: ars, ret: ar }) => { for (p,a) in ps.iter().zip(ars) { Self::unify_param(p,a,tparams,bindings); } Self::unify_param(pr,ar,tparams,bindings); }
             _ => {}
         }
     }
@@ -3854,6 +3981,10 @@ impl TypeChecker {
             ValueType::Nullable(inner) => {
                 ValueType::Nullable(Box::new(Self::substitute_bindings(inner, bindings)))
             }
+            ValueType::Callable { params, ret } => ValueType::Callable { params: params.iter().map(|p| Self::substitute_bindings(p, bindings)).collect(), ret: Box::new(Self::substitute_bindings(ret, bindings)) },
+            ValueType::Reference { inner, mutable } => ValueType::Reference { inner: Box::new(Self::substitute_bindings(inner, bindings)), mutable: *mutable },
+            ValueType::TupleOf(items) => ValueType::TupleOf(items.iter().map(|ty| Self::substitute_bindings(ty, bindings)).collect()),
+            ValueType::Task(result) => ValueType::Task(Box::new(Self::substitute_bindings(result, bindings))),
             _ => ty.clone(),
         }
     }
@@ -3864,9 +3995,10 @@ impl TypeChecker {
             ValueType::Named(n, args) => {
                 tparams.contains(n) || args.iter().any(|a| Self::contains_type_param(a, tparams))
             }
-            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) => {
+            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) | ValueType::Task(inner) | ValueType::Reference { inner, .. } => {
                 Self::contains_type_param(inner, tparams)
             }
+            ValueType::Callable { params, ret } => params.iter().any(|p| Self::contains_type_param(p, tparams)) || Self::contains_type_param(ret, tparams),
             _ => false,
         }
     }
@@ -3882,9 +4014,10 @@ impl TypeChecker {
                 self.type_param_scope.contains(n)
                     || args.iter().any(|a| self.contains_scoped_type_param(a))
             }
-            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) => {
+            ValueType::Array(inner) | ValueType::Map(inner) | ValueType::Nullable(inner) | ValueType::Task(inner) | ValueType::Reference { inner, .. } => {
                 self.contains_scoped_type_param(inner)
             }
+            ValueType::Callable { params, ret } => params.iter().any(|p| self.contains_scoped_type_param(p)) || self.contains_scoped_type_param(ret),
             _ => false,
         }
     }
@@ -3909,71 +4042,13 @@ impl TypeChecker {
             Type::Map(_, v) => {
                 ValueType::Map(Box::new(Self::type_to_value_erasing(v, type_params)))
             }
+            Type::Fn { params, ret } => ValueType::Callable { params: params.iter().map(|p| Self::type_to_value_erasing(p, type_params)).collect(), ret: Box::new(Self::type_to_value_erasing(ret, type_params)) },
+            Type::Generic { name, args } if name == "Task" && args.len() == 1 => {
+                ValueType::Task(Box::new(Self::type_to_value_erasing(&args[0], type_params)))
+            }
+            Type::Generic { name, args } => ValueType::Named(name.clone(), args.iter().map(|a| Self::type_to_value_erasing(a, type_params)).collect()),
             _ => Self::type_to_value(ty),
         }
-    }
-
-    /// Does `ty` reference any of `type_params` anywhere in its structure
-    /// (not just at the top level)? Used by `erase_method_return_type`
-    /// below — see #158.
-    fn type_references_param(ty: &Type, type_params: &[String]) -> bool {
-        match ty {
-            Type::Named(n) => type_params.contains(n),
-            Type::Generic { name, args } => {
-                type_params.contains(name) || args.iter().any(|a| Self::type_references_param(a, type_params))
-            }
-            Type::Array(inner) | Type::Ref(inner) | Type::Mutable(inner) | Type::Nullable(inner) => {
-                Self::type_references_param(inner, type_params)
-            }
-            Type::Map(k, v) => {
-                Self::type_references_param(k, type_params) || Self::type_references_param(v, type_params)
-            }
-            Type::Fn { params, ret } => {
-                params.iter().any(|p| Self::type_references_param(p, type_params))
-                    || Self::type_references_param(ret, type_params)
-            }
-            Type::Tuple(ts) => ts.iter().any(|t| Self::type_references_param(t, type_params)),
-            _ => false,
-        }
-    }
-
-    /// Return-type-specific extension of `type_to_value_erasing`, used
-    /// ONLY for a method's registered return type (#158): a user-defined
-    /// generic class's own type argument (`Option<U>`, `Box<U>`, …) that
-    /// mentions a type param owned by the METHOD ITSELF — not the
-    /// enclosing class — erases to `Any` wholesale, on top of
-    /// `type_to_value_erasing`'s existing behavior.
-    ///
-    /// Deliberately narrower than erasing on ANY type-param match found
-    /// anywhere: the enclosing CLASS's own type param (`Option<T>`'s `T`
-    /// in `fn some(value: T) -> Option<T>`) must stay structurally intact
-    /// (`Named("Option", [Named("T")])`) here, because
-    /// `check_class_method_call`'s call-site unification
-    /// (`unify_generic_return`) needs that literal `Named("T")` PRESENT
-    /// to even attempt resolving it from the receiver's actual type —
-    /// erasing it to `Any` breaks that already-working resolution
-    /// (confirmed empirically: erasing on ANY match regressed
-    /// `Option<Int64>::some(1).unwrap()`, a plain non-chained call with
-    /// no own-type-param method involved at all, into the exact same ICE
-    /// this fix exists to remove).
-    ///
-    /// A method-own type param mentioned this way (typically nested
-    /// inside an `fnc(T) -> U`-shaped parameter, e.g. `map`/`andThen`)
-    /// has no such existing resolution path to protect — `ValueType::Fn`
-    /// carries no parameter/return substructure for `unify_param` to
-    /// unify against in the first place, so erasing to `Any` costs
-    /// nothing there and instead makes `valuetype_to_marker`
-    /// (tinox-codegen) correctly return `None` for the call-site node,
-    /// falling back to codegen's own per-call-node marker inference
-    /// (`infer_own_type_params` / `methodcall_result_markers`, #153).
-    fn erase_method_return_type(ret_type: &Type, method_own_params: &[String], erase_params: &[String]) -> ValueType {
-        if !method_own_params.is_empty()
-            && matches!(ret_type, Type::Generic { .. })
-            && Self::type_references_param(ret_type, method_own_params)
-        {
-            return ValueType::Any;
-        }
-        Self::type_to_value_erasing(ret_type, erase_params)
     }
 
     fn is_subclass_or_equal(&self, candidate: &str, base: &str) -> bool {
@@ -4037,17 +4112,23 @@ impl TypeChecker {
     }
 
     fn types_compatible(&self, a: &ValueType, b: &ValueType) -> bool {
-        if a == b {
+        if a == b || ((a.is_integer() || a.is_float()) && (b.is_integer() || b.is_float())) {
             return true;
         }
+        if matches!(a, ValueType::Named(n, args) if args.is_empty() && self.type_param_scope.contains(n)) || matches!(b, ValueType::Named(n, args) if args.is_empty() && self.type_param_scope.contains(n)) { return true; }
         match (a, b) {
             (ValueType::Int, ValueType::Float) => true,
             (ValueType::Float, ValueType::Int) => true,
             (ValueType::Any, _) | (_, ValueType::Any) => true,
-            // Containers: compatible if the element/value types are compatible
-            // (Any elements stay wildcards — erased sources allow anything)
-            (ValueType::Array(a), ValueType::Array(b)) => self.types_compatible(a, b),
-            (ValueType::Map(a), ValueType::Map(b)) => self.types_compatible(a, b),
+            (ValueType::Fn, ValueType::Callable { .. }) | (ValueType::Callable { .. }, ValueType::Fn) => true,
+            (ValueType::Callable { params: a, ret: ar }, ValueType::Callable { params: b, ret: br }) => a.len() == b.len() && a.iter().zip(b).all(|(a,b)| self.semantic_compatible(a,b)) && self.semantic_compatible(ar,br),
+            (ValueType::Int, ValueType::Task(_)) => true,
+
+            // Existing containers cannot reinterpret their stored element words.
+            // Literal conversions are checked separately in infer_argument.
+            (ValueType::Array(a), ValueType::Array(b)) => self.semantic_compatible(a, b),
+            (ValueType::Map(a), ValueType::Map(b)) => self.semantic_compatible(a, b),
+            (ValueType::Task(a), ValueType::Task(b)) => self.semantic_compatible(a, b),
             // Null safety: null can only go into nullable types
             (ValueType::Nullable(_), ValueType::Null) => true,
             (_, ValueType::Null) => false,
@@ -4062,7 +4143,10 @@ impl TypeChecker {
             // accepted the same relationship, via a separate code path
             // that skips this check entirely rather than handling it
             // correctly).
-            (ValueType::Named(base_or_iface, _), ValueType::Named(class, _)) => {
+            (ValueType::Named(base_or_iface, aa), ValueType::Named(class, ba)) => {
+                if base_or_iface == class {
+                    return aa.is_empty() || ba.is_empty() || (aa.len() == ba.len() && aa.iter().zip(ba).all(|(a, b)| self.semantic_compatible(a, b)));
+                }
                 self.interface_implementations
                     .get(class)
                     .map(|ifaces| ifaces.iter().any(|i| i == base_or_iface))
@@ -4085,10 +4169,8 @@ impl TypeChecker {
         if a == b {
             return a.clone();
         }
+        if let Some(promoted) = ValueType::numeric_promotion(a, b) { return promoted; }
         match (a, b) {
-            (ValueType::Int, ValueType::Float) | (ValueType::Float, ValueType::Int) => {
-                ValueType::Float
-            }
             (ValueType::Array(x), ValueType::Array(y)) => {
                 ValueType::Array(Box::new(Self::lub(x, y)))
             }
@@ -4142,6 +4224,31 @@ mod tests {
         assert!(result.is_ok(), "expected ok but got errors: {:?}", result.unwrap_err().errors.iter().map(|e| &e.message).collect::<Vec<_>>());
     }
 
+    #[test]
+    fn orm_first_exports_entity_type() {
+        let code = r#"
+            class DB { fnc of(cls: Any) -> Any { return 0; } }
+            @Entity class Account { var id: Int64; var name: String; var balance: Int64; }
+            fn balance() -> Int64 {
+                return DB::of(Account).filter(a => a.id == 1).first().balance;
+            }
+        "#;
+        let tokens = Lexer::new(code).tokenize().unwrap();
+        let mut ast = Parser::new(tokens).parse().unwrap();
+        tinox_parser::assign_node_ids(&mut ast);
+        let mut checker = TypeChecker::new();
+        checker.check(&ast).unwrap();
+        let types = checker.expr_value_types();
+        assert!(types.values().any(|ty| *ty == ValueType::Named("Account".into(), vec![])));
+        // A known receiver also enables normal field validation, rather than
+        // silently accepting a typo through Any.
+        err_contains(&code.replace("first().balance", "first().missing"), "missing");
+        err_contains(&code.replace("first().balance", "first().name"), "String");
+        ok(&code.replace("@Entity", "@Table(\"accounts\")"));
+        // An unrelated dynamic first() must retain its permissive behavior.
+        ok("fn dynamic(q: Any) -> Int64 { return q.first().anything; }");
+    }
+
     fn err_contains(code: &str, msg: &str) {
         let result = typecheck_code(code);
         assert!(result.is_err(), "expected error containing '{}' but typecheck passed", msg);
@@ -4152,6 +4259,77 @@ mod tests {
             msg,
             bag.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn log_masked_tostring_has_a_checked_instance_signature() {
+        for annotation in ["Sensitive", "Masked"] {
+            let class = format!("class User {{ @{annotation} var secret: String; }}");
+            ok(&format!("{class} fn f(user: User) -> String {{ return user.toString(); }}"));
+            err_contains(
+                &format!("{class} fn f(user: User) -> String {{ return user.toString(1); }}"),
+                "expected 1 arguments, found 2",
+            );
+            err_contains(
+                &format!("{class} fn f(user: User) -> Int64 {{ return user.toString(); }}"),
+                "expected Int64, found String",
+            );
+        }
+        // A user-defined method takes precedence over the generated helper.
+        ok("class User { @Sensitive var secret: String; fn toString(value: Int64) -> Int64 { return value; } } fn f(user: User) -> Int64 { return user.toString(7); }");
+        err_contains(
+            "class User { var secret: String; } fn f(user: User) -> String { return user.toString(); }",
+            "undefined function: User_toString",
+        );
+    }
+
+    // --- typed tasks: spawn -> Task<T>, await -> T (issue #301) ---
+
+    #[test]
+    fn test_await_task_yields_declared_result_type() {
+        ok("class C { async fnc name() -> String { return \"x\"; } fnc main() -> Nothing { const t = spawn C::name(); const s: String = await t; } }");
+    }
+
+    #[test]
+    fn test_await_task_result_type_mismatch_errors() {
+        err_contains(
+            "class C { async fnc name() -> String { return \"x\"; } fnc main() -> Nothing { const t = spawn C::name(); const n: Int64 = await t; } }",
+            "Int",
+        );
+    }
+
+    #[test]
+    fn test_task_annotation_and_legacy_int_handle_storage_ok() {
+        ok("class C { async fnc f() -> Int64 { return 1; } fnc main() -> Nothing { const t: Task<Int64> = spawn C::f(); var legacy: Int64 = spawn C::f(); const r: Int64 = await t; const q = await legacy; } }");
+    }
+
+    #[test]
+    fn test_plain_int_is_not_a_task() {
+        err_contains(
+            "class C { fnc main() -> Nothing { const t: Task<Int64> = 5; } }",
+            "Task",
+        );
+    }
+
+    #[test]
+    fn test_await_on_non_task_errors() {
+        err_contains(
+            "class C { fnc main() -> Nothing { const s = \"x\"; const r = await s; } }",
+            "await",
+        );
+    }
+
+    #[test]
+    fn test_user_class_named_task_is_rejected() {
+        err_contains("class Task { var id: Int64; }", "built-in type");
+    }
+
+    #[test]
+    fn task_control_requires_a_typed_task() {
+        ok("class C { fnc f() -> String { return \"x\"; } fnc g() -> Nothing { const t = spawn C::f(); taskCancel(t); taskDetach(t); } }");
+        err_contains("class C { fnc f() -> Nothing { taskCancel(42); } }", "Task");
+        err_contains("class C { fnc f() -> Nothing { taskDetach(42); } }", "Task");
+        err_contains("class C { fnc f() -> Nothing { taskSetDeadline(\"soon\"); } }", "Int");
     }
 
     // --- same-class bare `fnc` calls (issue #149 stage 2) ---
@@ -5911,6 +6089,11 @@ class Jogger implements Runner {
     // ================================================================
     // Variable mutation
     // ================================================================
+
+    #[test]
+    fn test_const_reassign_err() {
+        err_contains("fn f() { const x = 1; x = 2; }", "immutable");
+    }
 
     #[test]
     fn test_let_reassign_err() {

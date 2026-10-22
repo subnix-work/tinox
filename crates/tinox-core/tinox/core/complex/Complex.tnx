@@ -31,16 +31,16 @@ namespace tinox.core.complex
 
         fn multiply(a: Complex, b: Complex) -> Complex
         {
-            let real: Float64 = a.real * b.real - a.imag * b.imag;
-            let imag: Float64 = a.real * b.imag + a.imag * b.real;
+            const real: Float64 = a.real * b.real - a.imag * b.imag;
+            const imag: Float64 = a.real * b.imag + a.imag * b.real;
             return Complex::new(real, imag);
         }
 
         fn divide(a: Complex, b: Complex) -> Complex
         {
-            let denom: Float64 = b.real * b.real + b.imag * b.imag;
-            let real: Float64 = (a.real * b.real + a.imag * b.imag) / denom;
-            let imag: Float64 = (a.imag * b.real - a.real * b.imag) / denom;
+            const denom: Float64 = b.real * b.real + b.imag * b.imag;
+            const real: Float64 = (a.real * b.real + a.imag * b.imag) / denom;
+            const imag: Float64 = (a.imag * b.real - a.real * b.imag) / denom;
             return Complex::new(real, imag);
         }
 
@@ -61,19 +61,19 @@ namespace tinox.core.complex
 
         fn reciprocal(c: Complex) -> Complex
         {
-            let denom: Float64 = c.real * c.real + c.imag * c.imag;
+            const denom: Float64 = c.real * c.real + c.imag * c.imag;
             return Complex::new(c.real / denom, -c.imag / denom);
         }
 
         fn toString(c: Complex) -> String
         {
-            let sign: String = (c.imag >= 0.0) ? "+" : "-";
+            const sign: String = (c.imag >= 0.0) ? "+" : "-";
             return c.real.toString() + sign + Mathf::abs(c.imag).toString() + "i";
         }
 
         fn exp(c: Complex) -> Complex
         {
-            let r: Float64 = Mathf::exp(c.real);
+            const r: Float64 = Mathf::exp(c.real);
             return Complex::new(r * Mathf::cos(c.imag), r * Mathf::sin(c.imag));
         }
 
@@ -84,10 +84,10 @@ namespace tinox.core.complex
 
         fn pow(c: Complex, n: Float64) -> Complex
         {
-            let mag: Float64 = Complex::magnitude(c);
-            let phase: Float64 = Complex::phase(c);
-            let newMag: Float64 = Mathf::pow(mag, n);
-            let newPhase: Float64 = phase * n;
+            const mag: Float64 = Complex::magnitude(c);
+            const phase: Float64 = Complex::phase(c);
+            const newMag: Float64 = Mathf::pow(mag, n);
+            const newPhase: Float64 = phase * n;
             return Complex::fromPolar(newMag, newPhase);
         }
     }

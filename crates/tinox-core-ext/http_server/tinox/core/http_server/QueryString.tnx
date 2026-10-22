@@ -1,5 +1,7 @@
 module tinox.core.http_server;
 
+import tinox.core.option;
+
 namespace tinox.core.http_server
 {
     /**
@@ -15,7 +17,7 @@ namespace tinox.core.http_server
          */
         fn parse(qs: String) -> Map<String, String>
         {
-            let params: Map<String, String> = Map::new();
+            const params: Map<String, String> = Map::new();
             if (qs.len() == 0)
             {
                 return params;
@@ -28,7 +30,7 @@ namespace tinox.core.http_server
 
             while i < qs.len()
             {
-                let ch: String = qs.substring(i, i + 1);
+                const ch: String = qs.substring(i, i + 1);
                 if (ch == "&")
                 {
                     if (key.len() > 0)
@@ -70,12 +72,23 @@ namespace tinox.core.http_server
          */
         fn get(qs: String, name: String) -> String
         {
-            let params: Map<String, String> = QueryString::parse(qs);
+            return QueryString::find(qs, name).unwrapOr("");
+        }
+
+        /**
+         * Finds a raw, case-sensitive query parameter. Some("") represents
+         * a bare key or key=; None represents absence. Like parse(), the
+         * last duplicate wins, empty keys are ignored, and no URL decoding
+         * is performed.
+         */
+        fn find(qs: String, name: String) -> Option<String>
+        {
+            const params: Map<String, String> = QueryString::parse(qs);
             if (params.contains(name))
             {
-                return params[name];
+                return Option<String>::some(params[name]);
             }
-            return "";
+            return Option<String>::none();
         }
     }
 }

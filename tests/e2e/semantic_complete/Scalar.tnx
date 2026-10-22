@@ -1,0 +1,3 @@
+class Scalar {
+    var value: Float32;
+}

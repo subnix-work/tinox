@@ -43,7 +43,7 @@ namespace tinox.core.amqp10
 
         fn begin(connection: Amqp10Connection) -> Amqp10Session
         {
-            let chanId = connection.nextChannelId;
+            const chanId = connection.nextChannelId;
             connection.nextChannelId = connection.nextChannelId + 1;
 
             var beginFields: List<Amqp10Value> = [
@@ -52,14 +52,14 @@ namespace tinox.core.amqp10
                 Amqp10Value::UIntVal(2147483647),  // incoming-window
                 Amqp10Value::UIntVal(2147483647)   // outgoing-window
             ];
-            let beginBody = Amqp10::encodePerformative(0x11, beginFields);
+            const beginBody = Amqp10::encodePerformative(0x11, beginFields);
             Amqp10::writeFrame(connection.conn, 0, chanId, beginBody);
 
-            let f = Amqp10::readFrame(connection.conn);
+            const f = Amqp10::readFrame(connection.conn);
             if (f.frameType != 0) {
                 return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), nextLinkHandle: 0 };
             }
-            let p = Amqp10::decodePerformative(f.body);
+            const p = Amqp10::decodePerformative(f.body);
             if (p.descriptor != 0x11) {
                 return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected begin (0x11), got descriptor=" + p.descriptor.toString(), nextLinkHandle: 0 };
             }
@@ -72,7 +72,7 @@ namespace tinox.core.amqp10
          */
         fn end() -> Nothing
         {
-            let endBody = Amqp10::encodePerformative(0x17, []);
+            const endBody = Amqp10::encodePerformative(0x17, []);
             Amqp10::writeFrame(this.conn, 0, this.chanId, endBody);
             Amqp10::readFrame(this.conn);
         }

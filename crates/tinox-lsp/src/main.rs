@@ -5,13 +5,12 @@ use std::path::{Path, PathBuf};
 
 use analysis::{
     build_registry_from_source, completions_at, definition_at, document_symbols,
-    hover_at, lsp_pos_to_offset, pos_to_lsp, TypeRegistry,
+    hover_at, lsp_pos_to_offset, TypeRegistry,
 };
 use dashmap::DashMap;
-use tinox_common::Error;
+use tinox_common::diagnostic::{Diagnostic as CompilerDiagnostic, SCHEMA_VERSION};
 use tinox_lexer::Lexer;
 use tinox_parser::{ast::SourceFile, Parser};
-use tinox_typecheck::{typecheck_with_prelude};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -298,14 +297,87 @@ fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path
             continue;
         }
         let Ok(src) = std::fs::read_to_string(&target) else { continue };
-        let Ok(tokens) = Lexer::new(&src).tokenize() else { continue };
-        let Ok(ast) = Parser::new(tokens).parse() else { continue };
+        let Ok(ast) = tinox_parser::parse_source_cached(&src) else { continue };
         for p in import_paths(&ast) {
             queue.push((p, target.clone()));
         }
         out.push(ast);
     }
     out
+}
+
+
+/// Load package imports from the exact graph used by the CLI. Local sources
+/// are parsed fresh on every update, so unpublished edits are immediately used.
+fn load_package_preludes(source: &SourceFile, file: &Path, dirs: &[PathBuf]) -> std::result::Result<Vec<SourceFile>, String> {
+    let mut out = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(file.canonicalize().unwrap_or_else(|_| file.to_path_buf()));
+    let mut queue: Vec<_> = import_paths(source).into_iter().map(|path| (path, file.to_path_buf())).collect();
+    while let Some((path, from)) = queue.pop() {
+        let relative: PathBuf = path.iter().collect();
+        let mut targets = Vec::new();
+        // Short sibling imports within a selected package keep working.
+        let sibling = dirs.iter().any(|dir| dir.canonicalize().is_ok_and(|dir| from.starts_with(dir)))
+            .then(|| from.parent().unwrap_or(Path::new(".")));
+        let bases = sibling.into_iter().chain(dirs.iter().map(PathBuf::as_path));
+        for base in bases {
+            let module = base.join(&relative);
+            let single = module.with_extension("tnx");
+            let mut found = if single.is_file() {
+                vec![single]
+            } else if module.is_dir() {
+                std::fs::read_dir(&module).map_err(|e| e.to_string())?
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().is_some_and(|e| e == "tnx"))
+                    .collect()
+            } else { Vec::new() };
+            found.sort();
+            if !found.is_empty() {
+                if !targets.is_empty() && targets != found {
+                    return Err(format!("Ambiguous package import: {}", path.join(".")));
+                }
+                targets = found;
+            }
+        }
+        for target in targets {
+            let target = target.canonicalize().map_err(|e| e.to_string())?;
+            if !visited.insert(target.clone()) { continue; }
+            let text = std::fs::read_to_string(&target).map_err(|e| e.to_string())?;
+            let ast = tinox_parser::parse_source_cached(&text).map_err(|e| format!("{}: {e:?}", target.display()))?;
+            queue.extend(import_paths(&ast).into_iter().map(|path| (path, target.clone())));
+            // A type import also brings in its own namespace siblings, matching
+            // the compiler's implicit same-namespace visibility.
+            for declaration in &ast.decls {
+                if let tinox_parser::ast::DeclKind::Namespace(namespace) = &declaration.node {
+                    queue.push((namespace.name.clone(), target.clone()));
+                }
+            }
+            out.push(ast);
+        }
+    }
+    Ok(out)
+}
+
+fn package_context(file: &Path) -> std::result::Result<(Vec<PathBuf>, Vec<String>), String> {
+    let Some(root) = find_project_root(file.parent().unwrap_or(Path::new("."))) else {
+        return Ok(Default::default());
+    };
+    let manifest = tinox::pm::read_manifest(&root)?;
+    let (dirs, _) = tinox::pm::dependency_dirs(&root, &manifest)?;
+    let provenance = tinox::pm::source_provenance(&root, &dirs)?;
+    Ok((dirs, provenance))
+}
+
+fn package_diagnostic(message: String, severity: DiagnosticSeverity) -> Diagnostic {
+    Diagnostic {
+        range: Range::default(),
+        severity: Some(severity),
+        code: Some(NumberOrString::String("TINOX-DEPENDENCY-SOURCE".into())),
+        source: Some("tinox".into()),
+        message,
+        ..Default::default()
+    }
 }
 
 
@@ -342,16 +414,44 @@ fn load_stdlib(path: &Path) -> TypeRegistry {
 impl Backend {
     async fn update(&self, uri: Url, text: String) {
         // Quick pre-parse to extract import names for stdlib prelude resolution.
-        let parsed = if let Ok(tokens) = Lexer::new(&text).tokenize() {
-            Parser::new(tokens).parse().ok()
-        } else {
-            None
-        };
+        let parsed = tinox_parser::parse_source_cached(&text).ok();
         let import_names = parsed.as_ref().map(module_names_from_imports).unwrap_or_default();
+        let (package_dirs, provenance) = match uri.to_file_path().ok().map(|file| package_context(&file)).transpose() {
+            Ok(context) => context.unwrap_or_default(),
+            Err(message) => {
+                self.client.publish_diagnostics(uri, vec![package_diagnostic(message, DiagnosticSeverity::ERROR)], None).await;
+                return;
+            }
+        };
+        let packages = match (&parsed, uri.to_file_path()) {
+            (Some(ast), Ok(file)) => load_package_preludes(ast, &file, &package_dirs),
+            _ => Ok(Vec::new()),
+        };
+        let packages = match packages {
+            Ok(packages) => packages,
+            Err(message) => {
+                self.client.publish_diagnostics(uri, vec![package_diagnostic(message, DiagnosticSeverity::ERROR)], None).await;
+                return;
+            }
+        };
+        let mut import_names = import_names;
+        let mut resolved_names = Vec::new();
+        for ast in parsed.iter().chain(packages.iter()) {
+            for path in import_paths(ast) {
+                let relative: PathBuf = path.iter().collect();
+                if package_dirs.iter().any(|dir| dir.join(&relative).is_dir() || dir.join(&relative).with_extension("tnx").is_file()) {
+                    if let Some(name) = path.last() { resolved_names.push(name.clone()); }
+                } else if let Some(name) = path.last() {
+                    if !import_names.contains(name) { import_names.push(name.clone()); }
+                }
+            }
+        }
         let mut preludes: Vec<&SourceFile> = import_names
             .iter()
+            .filter(|name| !resolved_names.contains(name))
             .filter_map(|name| self.stdlib_asts.get(name.as_str()))
             .collect();
+        preludes.extend(packages.iter());
 
         // Project-local imports (anything not `tinox.core.*`) aren't in
         // stdlib_asts at all -- resolve them from disk too, or every
@@ -368,44 +468,48 @@ impl Backend {
         };
         preludes.extend(project_local.iter());
 
-        let diags = compile(&text, &preludes, |ast| {
+        let mut diags = compile(&text, uri.to_file_path().ok().as_deref().and_then(Path::to_str), &preludes, |ast| {
             self.asts.insert(uri.clone(), ast);
         });
+        diags.extend(provenance.into_iter().map(|message| package_diagnostic(message, DiagnosticSeverity::INFORMATION)));
         self.docs.insert(uri.clone(), text);
         self.client.publish_diagnostics(uri, diags, None).await;
     }
 }
 
-fn err_to_diag(e: Error) -> Diagnostic {
+fn err_to_diag(diagnostic: CompilerDiagnostic, source: &str) -> Diagnostic {
+    let range = diagnostic.range.unwrap_or_else(tinox_common::Span::dummy);
+    // Compiler columns count Unicode scalar values; LSP uses UTF-16 units.
+    let position = |pos: tinox_common::Pos| Position {
+        line: pos.line.saturating_sub(1),
+        character: source.lines().nth(pos.line.saturating_sub(1) as usize)
+            .unwrap_or("").chars().take(pos.column.saturating_sub(1) as usize)
+            .map(|c| c.len_utf16() as u32).sum(),
+    };
     Diagnostic {
-        range: Range {
-            start: pos_to_lsp(e.span.start),
-            end: pos_to_lsp(e.span.end),
-        },
+        range: Range { start: position(range.start), end: position(range.end) },
         severity: Some(DiagnosticSeverity::ERROR),
-        message: e.message,
+        code: Some(NumberOrString::String(diagnostic.code.clone())),
+        message: diagnostic.message.clone(),
         source: Some("tinox".into()),
+        data: Some(serde_json::json!({ "schema_version": SCHEMA_VERSION, "diagnostic": diagnostic })),
         ..Default::default()
     }
 }
 
-// Lex → parse → typecheck; calls on_ast if parsing succeeded; returns diagnostics.
-fn compile(src: &str, preludes: &[&SourceFile], on_ast: impl FnOnce(SourceFile)) -> Vec<Diagnostic> {
-    let tokens = match Lexer::new(src).tokenize() {
-        Ok(t) => t,
-        Err(errs) => return errs.into_iter().map(err_to_diag).collect(),
+// Lex → parse → typecheck, using the same records and codes as the CLI.
+fn compile(src: &str, file: Option<&str>, preludes: &[&SourceFile], on_ast: impl FnOnce(SourceFile)) -> Vec<Diagnostic> {
+    let ast = match tinox_parser::parse_source_cached(src) {
+        Ok(ast) => ast,
+        Err(error) => return error.into_diagnostics(file).0.into_iter()
+            .map(|diagnostic| err_to_diag(diagnostic, src)).collect(),
     };
-
-    let ast = match Parser::new(tokens).parse() {
-        Ok(a) => a,
-        Err(bag) => return bag.errors.into_iter().map(err_to_diag).collect(),
-    };
-
-    let diags = match typecheck_with_prelude(&ast, preludes) {
+    let diags = match tinox_typecheck::cache::check_with_prelude_cached(&ast, preludes, file.unwrap_or("<lsp-buffer>")) {
         Ok(_) => vec![],
-        Err(bag) => bag.errors.into_iter().map(err_to_diag).collect(),
+        Err(bag) => bag.errors.into_iter().map(|error| {
+            err_to_diag(CompilerDiagnostic::from_error(error, "type", file), src)
+        }).collect(),
     };
-
     on_ast(ast);
     diags
 }
@@ -542,6 +646,15 @@ impl LanguageServer for Backend {
                     load_embedded_module(module, &mut reg);
                 }
             }
+            if let (Some(ast), Ok(file)) = (fresh_ast.as_ref(), uri.to_file_path()) {
+                if let Ok((dirs, _)) = package_context(&file) {
+                    if let Ok(packages) = load_package_preludes(ast, &file, &dirs) {
+                        for package in packages {
+                            reg.extend(build_registry_from_source(&package));
+                        }
+                    }
+                }
+            }
             reg
         };
 
@@ -604,7 +717,7 @@ fn parse_for_completion(text: &str, offset: u32) -> Option<SourceFile> {
 
 fn completions_generic() -> Vec<tower_lsp::lsp_types::CompletionItem> {
     use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind};
-    const KW: &[&str] = &["fn", "let", "var", "return", "if", "else", "while", "for", "class", "import"];
+    const KW: &[&str] = &["fn", "const", "var", "return", "if", "else", "while", "for", "class", "import"];
     KW.iter().map(|k| CompletionItem {
         label: k.to_string(),
         kind: Some(CompletionItemKind::KEYWORD),
@@ -710,9 +823,70 @@ mod tests {
         assert_eq!(preludes_owned.len(), 2, "expected PersonDao.tnx and Person.tnx to both resolve");
 
         let preludes: Vec<&SourceFile> = preludes_owned.iter().collect();
-        let result = typecheck_with_prelude(&ast, &preludes);
+        let result = tinox_typecheck::typecheck_with_prelude(&ast, &preludes);
         assert!(result.is_ok(), "expected clean typecheck, got: {:?}", result.err().map(|b| b.errors));
 
         std::fs::remove_dir_all(&root).ok();
     }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn shared_codes_details_and_utf16_ranges_reach_lsp() {
+        let source = "class Main { fnc main() -> Int32 { println(\"😀\"); return absent; } }";
+        let diagnostics = compile(source, Some("/tmp/Main.tnx"), &[], |_| {});
+        let diagnostic = diagnostics.iter().find(|d| d.message.contains("undefined variable")).unwrap();
+        assert_eq!(diagnostic.code, Some(NumberOrString::String("TINOX-TYPE".into())));
+        let data = diagnostic.data.as_ref().unwrap();
+        assert_eq!(data["schema_version"], 1);
+        assert_eq!(data["diagnostic"]["file"], "/tmp/Main.tnx");
+        let prefix = &source[..source.find("absent").unwrap()];
+        assert_eq!(diagnostic.range.start.character, prefix.encode_utf16().count() as u32);
+        let diagnostics = compile("class Main { fnc main() -> Int32 { return \"wrong\"; } }", None, &[], |_| {});
+        let data = diagnostics[0].data.as_ref().unwrap();
+        assert_eq!(data["diagnostic"]["expected"], "Int32");
+        assert_eq!(data["diagnostic"]["actual"], "String");
+        assert_eq!(data["diagnostic"]["code"], "TINOX-TYPE-MISMATCH");
+    }
+
+    #[test]
+    fn parser_and_annotation_categories_match_the_cli() {
+        for (source, category) in [("class Main {", "syntax"), ("`", "lex"), ("@Unknown class Main {}", "annotation")] {
+            let diagnostics = compile(source, None, &[], |_| {});
+            assert_eq!(diagnostics[0].data.as_ref().unwrap()["diagnostic"]["category"], category);
+        }
+    }
+
+    #[test]
+    fn local_package_selection_refreshes_types_and_reports_cli_provenance() {
+        let root = std::env::temp_dir().join(format!("tinox-lsp-overrides-{}", std::process::id()));
+        let local = root.join("package/src/tinox/core/json");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(root.join("tinox.toml"), "[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"json\"\nversion=\"1.0.0\"\n").unwrap();
+        std::fs::write(root.join("package/tinox.toml"), "[package]\nname=\"json\"\nversion=\"1.0.0\"\n").unwrap();
+        std::fs::write(root.join("tinox.overrides.yaml"), "overrides:\n  'tinox.core:json:1.0.0': package\n").unwrap();
+        let entry = root.join("Main.tnx");
+        let source = "import tinox.core.json.LocalJson; class Main { fnc main() -> Int32 { const n: Int64 = LocalJson::unpublished(); return 0; } }";
+        std::fs::write(&entry, source).unwrap();
+        std::fs::write(local.join("LocalJson.tnx"), "namespace tinox.core.json { class LocalJson { fnc unpublished() -> Int64 { return Helper::value(); } } }").unwrap();
+        std::fs::write(local.join("Helper.tnx"), "namespace tinox.core.json { class Helper { fnc value() -> Int64 { return 42; } } }").unwrap();
+        let ast = tinox_parser::parse_source_cached(source).unwrap();
+        let (dirs, provenance) = package_context(&entry).unwrap();
+        let cli_dirs = tinox::pm::dependency_dirs(&root, &tinox::pm::read_manifest(&root).unwrap()).unwrap().0;
+        assert_eq!(dirs, cli_dirs);
+        assert_eq!(provenance, tinox::pm::source_provenance(&root, &cli_dirs).unwrap());
+        assert!(provenance[0].contains("local override: tinox.core:json:1.0.0"));
+        let packages = load_package_preludes(&ast, &entry, &dirs).unwrap();
+        let preludes: Vec<_> = packages.iter().collect();
+        assert!(compile(source, entry.to_str(), &preludes, |_| {}).is_empty());
+        std::fs::write(local.join("LocalJson.tnx"), "namespace tinox.core.json { class LocalJson { fnc changed() -> Int64 { return 43; } } }").unwrap();
+        let packages = load_package_preludes(&ast, &entry, &dirs).unwrap();
+        let preludes: Vec<_> = packages.iter().collect();
+        assert!(!compile(source, entry.to_str(), &preludes, |_| {}).is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
 }
