@@ -9,10 +9,12 @@ use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Formatter, Parser};
 
 mod callgraph;
+mod contract;
 mod dockerfile;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
-mod contract;
 mod pm;
+mod reference;
+
 mod runtime_cache;
 mod build_cache;
 mod describe;
@@ -53,6 +55,12 @@ fn run() {
         "dev"   => dev_mode(&args[2..]),
         "test"  => run_tests(&args[2..]),
         "doc"   => gen_docs(&args[2..]),
+        "reference" => {
+            if let Err(e) = reference::run(&args[2..]) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         "graph" => gen_call_graph(&args[2..]),
         "contract" => gen_api_contract(&args[2..]),
         "check"   => check(&args[2..]),
@@ -60,14 +68,28 @@ fn run() {
         "explain" => explain::run(&args[2..]),
         "fmt"     => fmt(&args[2..]),
         "repl"    => repl(),
+        "sources" => {
+            if let Err(e) = pm::cmd_sources() {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         "install" => {
             if !pm::cmd_install(&args[2..]) {
                 std::process::exit(1);
             }
         }
         "add"     => pm::cmd_add(&args[2..]),
-        "package" => pm::cmd_package(),
-        "publish" => pm::cmd_publish(&args[2..]),
+        "package" | "publish" => {
+            if let Some(root) = pm::find_project_root() {
+                if let Err(e) = pm::check_publishable(&root) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            if args[1] == "package" { pm::cmd_package(); }
+            else { pm::cmd_publish(&args[2..]); }
+        },
         "search"  => pm::cmd_search(&args[2..]),
         "help" | "--help" | "-h" => print_help(),
         _ => {
@@ -93,6 +115,7 @@ fn print_help() {
     println!("  tinox test  [file]         Run all @Test-annotated methods");
     println!("  tinox test --watch         Re-run tests on file changes (TDD mode)");
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
+    println!("  tinox reference [path]     Export compiler reference metadata as JSON");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
     println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");
     println!("  tinox check [file]         Type-check without compiling");
@@ -102,6 +125,7 @@ fn print_help() {
     println!("  tinox fmt   <file>         Format a Tinox file (print to stdout)");
     println!("  tinox fmt --write <file>   Format a Tinox file in place");
     println!("  tinox repl                 Start interactive REPL");
+    println!("  tinox sources                    Inspect installed/local dependency sources");
     println!("  tinox install              Download and install all dependencies");
     println!("  tinox install --update     Re-pin tinox.lock instead of verifying against it");
     println!("  tinox add <g> <a> <v> <u>  Add a dependency and install it");
@@ -1749,7 +1773,7 @@ fn gen_api_contract(args: &[String]) {
         let base = path.parent().unwrap_or(Path::new("."));
         let mut visited = HashSet::new();
         if let Ok(canonical) = path.canonicalize() { visited.insert(canonical); }
-        let (deps, missing) = load_dep_dirs(base);
+        let (deps, missing) = load_dep_dirs(base)?;
         resolve_imports(&mut ast, base, path, &mut visited, &deps, &missing)?;
         check_explicit_imports(path, &deps, &missing)?;
         synthesize_accessors(&mut ast, &input)?;
@@ -2167,7 +2191,10 @@ fn gen_call_graph(args: &[String]) {
     if let Ok(c) = Path::new(&input_file).canonicalize() {
         visited.insert(c);
     }
-    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     if let Err(e) = resolve_imports(&mut ast, &base_dir, Path::new(&input_file), &mut visited, &dep_dirs, &missing_deps) {
         eprintln!("error: import error: {}", e);
         std::process::exit(1);
@@ -2232,10 +2259,15 @@ fn gen_call_graph(args: &[String]) {
 
 // ── Doc data model ────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
 struct DocParam  { name: String, ty: String }
+#[derive(serde::Serialize)]
 struct DocMethod { name: String, doc: Option<String>, params: Vec<DocParam>, ret: String, annotations: Vec<String>, is_static: bool }
+#[derive(serde::Serialize)]
 struct DocField  { name: String, ty: String, doc: Option<String>, annotations: Vec<String> }
 
+#[derive(serde::Serialize)]
+#[serde(tag = "kind")]
 enum DocItem {
     Class {
         name: String,
@@ -2711,7 +2743,7 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     let base = Path::new(path).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(path).canonicalize() { visited.insert(c); }
-    let (dep_dirs, missing_deps) = load_dep_dirs(&base);
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base)?;
     resolve_imports(&mut ast, &base, Path::new(path), &mut visited, &dep_dirs, &missing_deps)
         .map_err(|e| format!("import error: {e}"))?;
     check_explicit_imports(Path::new(path), &dep_dirs, &missing_deps)?;
@@ -2737,7 +2769,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let base = Path::new(source).parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut visited = HashSet::new();
     if let Ok(c) = Path::new(source).canonicalize() { visited.insert(c); }
-    let (dep_dirs, missing_deps) = load_dep_dirs(&base);
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base)?;
     resolve_imports(&mut ast, &base, Path::new(source), &mut visited, &dep_dirs, &missing_deps)?;
     check_explicit_imports(Path::new(source), &dep_dirs, &missing_deps)?;
     synthesize_accessors(&mut ast, source)?;
@@ -2773,7 +2805,6 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let config_fields = ann.config_fields.iter().map(|f| tinox_codegen::ConfigFieldInfo {
         class_name: f.class_name.clone(), field_name: f.field_name.clone(),
         config_key: f.config_key.clone(), field_llvm_type: f.field_llvm_type.clone(),
-        policy: f.policy.clone(), default_value: f.default_value.clone(), value_type: f.value_type.clone(),
     }).collect();
     let cli_commands = ann.cli_commands.iter().map(|c| tinox_codegen::CliCommandInfo {
         class_name: c.class_name.clone(), cmd_name: c.cmd_name.clone(),
@@ -2798,7 +2829,6 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     }).collect();
 
     let mut cg = CodeGen::new();
-    cg.set_target(resolve_target()?);
     cg.set_expr_value_types(tc.expr_value_types());
     cg.set_semantic_facts(tc.semantic_facts());
     cg.set_interface_info(iface, impls);
@@ -2840,6 +2870,9 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
         })
         .collect();
     cg.set_entity_entries(entity_entries_test);
+    let db_cfg_test = read_database_config();
+    cg.set_db_url(db_cfg_test.as_ref().map(|c| c.url.clone()));
+    cg.set_db_pool_size(db_cfg_test.as_ref().map(|c| c.pool as i64).unwrap_or(5));
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
 
@@ -2914,30 +2947,11 @@ fn runtime_c_path() -> Option<PathBuf> {
 /// dependency the manifest declares but that isn't installed yet (see
 /// `resolve_imports`'s use of the latter to distinguish "never declared"
 /// from "declared but `tinox install` wasn't run").
-fn load_dep_dirs(base_dir: &Path) -> (Vec<PathBuf>, Vec<pm::MissingDep>) {
-    pm::find_project_root_from(base_dir)
-        .and_then(|root| pm::read_manifest(&root).ok().map(|m| (root, m)))
-        .map(|(root, m)| match pm::installed_dep_dirs(&root, &m) {
-            Ok((dirs, missing, notes)) => {
-                // Issue #313: surface which local override was selected,
-                // once per distinct line per process (this runs several
-                // times per build/test invocation).
-                static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-                    std::sync::OnceLock::new();
-                let seen = SEEN.get_or_init(Default::default);
-                for note in notes {
-                    if seen.lock().unwrap().insert(note.clone()) {
-                        eprintln!("note: {}", note);
-                    }
-                }
-                (dirs, missing)
-            }
-            Err(e) => {
-                eprintln!("error: {}", e);
-                std::process::exit(1);
-            }
-        })
-        .unwrap_or_default()
+fn load_dep_dirs(base_dir: &Path) -> Result<(Vec<PathBuf>, Vec<pm::MissingDep>), String> {
+    match pm::find_project_root_from(base_dir) {
+        Some(root) => pm::dependency_dirs(&root, &pm::read_manifest(&root)?),
+        None => Ok(Default::default()),
+    }
 }
 
 /// `tinox.core` module names (artifactIds) declared in the nearest
@@ -4073,7 +4087,7 @@ fn prepare_program(input_path: &str) -> Result<(tinox_parser::SourceFile, tinox_
     if let Ok(canonical) = Path::new(input_path).canonicalize() {
         visited.insert(canonical);
     }
-    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir);
+    let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir)?;
     resolve_imports(&mut ast, &base_dir, Path::new(input_path), &mut visited, &dep_dirs, &missing_deps)?;
     // No "Import error:" prefix here: this pass reports more than import
     // problems, and labels the import ones itself (see its own tail).
@@ -4458,7 +4472,6 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
 
     let _backend_stage = tinox_common::frontend::Stage::new("backend");
     let mut codegen = CodeGen::new();
-    codegen.set_target(resolve_target()?);
     codegen.set_expr_value_types(checked.expr_types);
     codegen.set_semantic_facts(checked.semantics);
     codegen.set_interface_info(iface_methods, class_implements);
@@ -4471,7 +4484,6 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             class_name: f.class_name.clone(),
             field_name: f.field_name.clone(),
             config_key: f.config_key.clone(),
-            policy: f.policy.clone(), default_value: f.default_value.clone(), value_type: f.value_type.clone(),
             field_llvm_type: f.field_llvm_type.clone(),
         })
         .collect();
@@ -4609,6 +4621,9 @@ fn compile_file(input_path: &str, output_name: &str, opt: OptLevel) -> Result<Pa
     let _stage = tinox_common::frontend::Stage::new("total-build");
     let mut build = build_cache::Build::begin(output_name)?;
     let input_guard = build_cache::InputGuard::begin();
+    // Fail on an unsupported/non-native target before any work is done (#310).
+    tinox_codegen::target::Target::resolve()
+        .map_err(|e| Failure::new("toolchain", Some(input_path), None, e))?;
     let codegen = generate_program(input_path, opt, true)?;
     let ir = codegen.into_ir();
     let options = runtime_options().map_err(|e| Failure::new("toolchain", Some(input_path), None, e))?;
@@ -4668,38 +4683,16 @@ fn verify_ir(ir_path: &str) -> Result<(), Failure> {
     }
 }
 
-/// Resolve the compilation target (issue #310): `TINOX_TARGET` if set
-/// (`x86_64-linux` / `aarch64-linux`), otherwise the host architecture.
-/// Cross-compilation has no defined sysroot/toolchain contract yet, so a
-/// target different from the host is rejected up front instead of producing
-/// an object that cannot be linked against the host libraries.
-fn resolve_target() -> Result<tinox_codegen::Target, String> {
-    let host = tinox_codegen::Target::host().ok_or_else(|| {
-        "unsupported host: tinox supports Linux on x86_64 and aarch64 only".to_string()
-    })?;
-    match std::env::var("TINOX_TARGET") {
-        Ok(v) if !v.is_empty() => {
-            let t = tinox_codegen::Target::parse(&v)?;
-            if t != host {
-                return Err(format!(
-                    "TINOX_TARGET={} differs from the host ({}); cross-compilation is not supported yet, build natively on the target architecture",
-                    v,
-                    host.triple()
-                ));
-            }
-            Ok(t)
-        }
-        _ => Ok(host),
-    }
-}
-
 struct RuntimeOptions {
+    target: tinox_codegen::target::Target,
     source: String,
     flags: Vec<String>,
     link_flags: Vec<String>,
 }
 
 fn runtime_options() -> Result<RuntimeOptions, String> {
+    // Reject unknown/non-native targets before any artifact is produced (#310).
+    let target = tinox_codegen::target::Target::resolve()?;
     let runtime_src = runtime_c_path().ok_or_else(|| {
         "Cannot find runtime.c (checked the dev checkout path and /usr/share/tinox/runtime.c)".to_string()
     })?;
@@ -4792,6 +4785,7 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
     }
     link_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     Ok(RuntimeOptions {
+        target,
         source: runtime_src,
         flags: runtime_flags.into_iter().map(String::from).collect(),
         link_flags: link_args.into_iter().map(String::from).collect(),
@@ -4845,7 +4839,7 @@ fn compile_ll_to_exe_configured(ir_path: &str, output_name: &str, opt: OptLevel,
         let llc_status = Command::new("llc")
             .args([
                 llc_opt_flag,
-                format!("-march={}", target.llc_march()).as_str(),
+                &format!("-march={}", options.target.llc_arch()),
                 "-filetype=obj",
                 "-o",
                 &obj_path,

@@ -10,7 +10,13 @@ fast path), force 10 back-to-back full collections with
 resolution, unlike `tinox.core.time`'s millisecond clock which rounds
 these pauses to 0 at the smaller sizes).
 
-Run it with `tinox run benchmarks/bench_gc_pause.tnx`.
+Run it with `tinox run benchmarks/bench_gc_pause/Main.tnx`.
+
+**Scope:** this measures one *forced* collection in an otherwise idle
+process. It does not measure request p95/p99, allocation rate, RSS or
+behaviour under a container memory limit — see
+`benchmarks/service_latency/` (#312) for the service-level workloads and
+results, which also exercise Boehm's env-var tuning knobs.
 
 **Scope:** this measures *forced full-collection pause time only*, with no
 request load. For request p50/p95/p99, RSS and container-limit behavior

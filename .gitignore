@@ -26,6 +26,7 @@ Thumbs.db
 .tinox/
 *.tar.gz
 tinox.lock
+tinox.overrides.yaml
 
 # Claude Code
 claude
@@ -80,6 +81,10 @@ fuzz/*/leak-*
 fuzz/*/timeout-*
 fuzz/*/oom-*
 fuzz/*/slow-unit-*
+
+# Python documentation tooling
+__pycache__/
+*.pyc
 
 # Compiler query schema fingerprint build script
 !/crates/tinox-common/build.rs

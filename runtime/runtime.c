@@ -35,6 +35,7 @@
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/wait.h>
+#include <spawn.h>
 #include <time.h>
 #include <errno.h>
 #include <sched.h>
@@ -744,6 +745,21 @@ int64_t tinox_array_contains(int64_t* h, int64_t val) {
     TinoxArray* a = (TinoxArray*)h;
     for (int64_t i = 0; i < a->len; i++) if (a->data[i] == val) return 1;
     return 0;
+}
+
+// String-element variants: compare by content, not pointer identity.
+int64_t tinox_array_contains_str(int64_t* h, const char* val) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_contains");
+    TinoxArray* a = (TinoxArray*)h;
+    for (int64_t i = 0; i < a->len; i++) if (tinox_string_equals((const char*)a->data[i], val)) return 1;
+    return 0;
+}
+
+int64_t tinox_array_index_of_str(int64_t* h, const char* val) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_indexOf");
+    TinoxArray* a = (TinoxArray*)h;
+    for (int64_t i = 0; i < a->len; i++) if (tinox_string_equals((const char*)a->data[i], val)) return i;
+    return -1;
 }
 
 int64_t tinox_array_index_of(int64_t* h, int64_t val) {
@@ -1742,7 +1758,8 @@ static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
         t->telemetry = telemetry_context;
         t->queued_at = telemetry_clock(CLOCK_MONOTONIC);
     }
-    t->service_id = service_task_id; t->cleanup_mode = service_cleanup_mode;
+    t->service_id = service_task_id;
+    t->cleanup_mode = service_cleanup_mode;
     task->budgeted = budgeted;
     // Admission control (#302): over the task budget no thread is created.
     // The handle comes back already finished and failed, so `await` / the
@@ -2365,7 +2382,7 @@ void tinox_map_remove(void* map, const char* key) {
         char* k = m->entries[idx].key;
         if (!k) return;
         if (k != (char*)1 && strcmp(k, key) == 0) {
-            if (!m->borrowed_keys) free(m->entries[idx].key); // borrowed keys belong to the caller
+            if (!m->borrowed_keys) free(m->entries[idx].key);
             m->entries[idx].key = (char*)1; // tombstone
             m->len--;
             return;
@@ -2652,6 +2669,25 @@ void fileWriteAllText(const char* path, const char* content) {
     if (f) { fputs(content, f); fclose(f); }
 }
 
+// Checked variant: returns "" on success, otherwise "<path>: <strerror>".
+static char* tinox_fs_err(const char* what, const char* path) {
+    char tmp[64];
+    snprintf(tmp, sizeof(tmp), "%s", strerror(errno));
+    size_t n = strlen(what) + strlen(path) + strlen(tmp) + 8;
+    char* out = (char*)GC_malloc(n);
+    snprintf(out, n, "%s %s: %s", what, path, tmp);
+    return out;
+}
+
+char* fileWriteAllTextChecked(const char* path, const char* content) {
+    FILE* f = fopen(path, "w");
+    if (!f) return tinox_fs_err("cannot write", path);
+    int bad = fputs(content, f) < 0;
+    if (fclose(f) != 0) bad = 1;
+    if (bad) return tinox_fs_err("cannot write", path);
+    return (char*)"";
+}
+
 void fileAppendText(const char* path, const char* content) {
     FILE* f = fopen(path, "a");
     if (f) { fputs(content, f); fclose(f); }
@@ -2853,6 +2889,16 @@ void tinoxFileCloseBytes(int64_t handle) {
 // Every misuse (out-of-range index/slice, invalid length, I/O error,
 // converting a buffer with a NUL to a String) is a hard runtime error,
 // never a silent truncation or clamp.
+// Binary-safe HTTP bodies (#311). The request/response body fields stay plain
+// NUL-terminated C strings for every existing API; these side channels let
+// tinox.core.bytes recover the exact byte length of the CURRENT request body
+// and let a handler hand the writer a byte buffer with an explicit length.
+// Identity of the pointer is the guard: a stale/unrelated String never matches.
+static __thread const char* g_req_body_ptr = NULL;
+static __thread int64_t     g_req_body_len = 0;
+static __thread const char* g_resp_bytes_ptr = NULL;
+static __thread int64_t     g_resp_bytes_len = 0;
+
 typedef struct {
     int64_t len;
     unsigned char data[];
@@ -2966,6 +3012,31 @@ char* tinoxBufToString(int64_t h) {
     memcpy(s, b->data, (size_t)b->len);
     s[b->len] = '\0';
     return s;
+}
+
+// HTTP/1.1 server body bridge. Only valid inside a request handler of the
+// plain-TCP server (tinox_handle_one); anywhere else is a hard error rather
+// than a guess. The request body arrives as a String whose bytes after the
+// first NUL are invisible to String APIs -- this recovers the exact payload.
+int64_t tinoxBufFromRequestBody(const char* body) {
+    if (!body || body != g_req_body_ptr) {
+        fprintf(stderr, "runtime error: Bytes.fromRequestBody requires the body of the request currently being handled\n");
+        exit(1);
+    }
+    TinoxBuf* r = tinox_buf_alloc(g_req_body_len);
+    memcpy(r->data, body, (size_t)g_req_body_len);
+    return (int64_t)(intptr_t)r;
+}
+
+// Returns a body "String" that points at the buffer payload and registers the
+// exact length for the response writer (which would otherwise strlen and
+// truncate at the first 0x00). The pointer is only honoured when it is still
+// the response body at write time.
+char* tinoxBufAsResponseBody(int64_t h) {
+    TinoxBuf* b = tinox_buf_of(h, "asResponseBody");
+    g_resp_bytes_ptr = (const char*)b->data;
+    g_resp_bytes_len = b->len;
+    return (char*)b->data;
 }
 
 // Explicit adapters to/from the legacy List<Int64> (one element per byte).
@@ -3744,7 +3815,7 @@ void envSetCurrentDir(const char* path) {
 
 // ---- Argv-based subprocess execution (tinox.core.process) -----------------
 //
-// fork+execvp, never a shell: every argv element is passed as its own execvp
+// posix_spawnp, never a shell: every argv element is passed as its own native
 // argument, so a value flowing straight from untrusted input (e.g. a
 // Kubernetes namespace/pod name taken from an HTTP path param) can never be
 // interpreted as shell syntax. This is deliberately a separate mechanism from
@@ -3792,6 +3863,60 @@ static void tinox_growbuf_append(TinoxGrowBuf* b, const char* data, size_t n) {
     b->buf[b->len] = '\0';
 }
 
+// Build the child's environment in the parent: entries KEY=value override
+// inherited values; bare KEY removes a value. Never mutate the host environment
+// or call setenv/malloc after fork in a multithreaded runtime.
+static pid_t tinox_spawn_piped(char** argv, const char* cwd, TinoxArray* changes,
+                                int in_pipe[2], int out_pipe[2], int err_pipe[2]) {
+    extern char** environ;
+    size_t count = 0;
+    while (environ[count]) count++;
+    size_t extra = changes ? (size_t)changes->len : 0;
+    char** env = calloc(count + extra + 1, sizeof(char*));
+    if (!env) { perror("process environment"); exit(1); }
+    memcpy(env, environ, count * sizeof(char*));
+    for (size_t i = 0; i < extra; i++) {
+        char* entry = (char*)changes->data[i];
+        size_t keylen = strcspn(entry, "=");
+        if (!keylen) {
+            fprintf(stderr, "runtime error: process environment key must not be empty\n");
+            exit(1);
+        }
+        for (size_t j = 0; j < count;) {
+            if (strncmp(env[j], entry, keylen) == 0 && env[j][keylen] == '=') {
+                memmove(env + j, env + j + 1, (count - j) * sizeof(char*));
+                count--;
+            } else j++;
+        }
+        if (entry[keylen] == '=') env[count++] = entry;
+        env[count] = NULL;
+    }
+    posix_spawn_file_actions_t actions;
+    int error = posix_spawn_file_actions_init(&actions);
+    if (error) { errno = error; perror("process spawn actions"); exit(1); }
+    #define PROCESS_ACTION(action) do { error = (action); if (error) { \
+        errno = error; perror("process spawn action"); exit(1); } } while (0)
+    PROCESS_ACTION(posix_spawn_file_actions_adddup2(&actions, in_pipe[0], STDIN_FILENO));
+    PROCESS_ACTION(posix_spawn_file_actions_adddup2(&actions, out_pipe[1], STDOUT_FILENO));
+    PROCESS_ACTION(posix_spawn_file_actions_adddup2(&actions, err_pipe[1], STDERR_FILENO));
+    for (int i = 0; i < 2; i++) {
+        PROCESS_ACTION(posix_spawn_file_actions_addclose(&actions, in_pipe[i]));
+        PROCESS_ACTION(posix_spawn_file_actions_addclose(&actions, out_pipe[i]));
+        PROCESS_ACTION(posix_spawn_file_actions_addclose(&actions, err_pipe[i]));
+    }
+    if (cwd && *cwd) PROCESS_ACTION(posix_spawn_file_actions_addchdir_np(&actions, cwd));
+    #undef PROCESS_ACTION
+    pid_t pid;
+    error = posix_spawnp(&pid, argv[0], &actions, NULL, argv, env);
+    posix_spawn_file_actions_destroy(&actions);
+    free(env);
+    if (error) {
+        // Preserve Process::run's conventional 127 for setup/exec failures.
+        return -1;
+    }
+    return pid;
+}
+
 // Runs argv[0] with argv[1..] as arguments, feeding `stdin_data` to the
 // child's stdin (empty string = closed/empty stdin, e.g. for a plain
 // `kubectl get`) and capturing stdout/stderr separately, enforcing a
@@ -3809,11 +3934,10 @@ static void tinox_growbuf_append(TinoxGrowBuf* b, const char* data, size_t n) {
 // case here: `kubectl apply -f -` with a large manifest can easily write
 // enough progress/warning output to hit this before finishing reading).
 //
-// No GC_/Tinox runtime calls happen in the child between fork() and
-// execvp()/_exit() -- the one hazard specific to forking inside a GC'd,
-// multi-threaded process (another thread could hold a GC or malloc lock at
-// the moment of fork, and only the calling thread survives into the child).
-int64_t processRun(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_data) {
+// posix_spawnp performs child setup without invoking GC or allocation code
+// after fork in this multithreaded runtime.
+int64_t processRunWithOptions(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_data,
+                              const char* cwd, int64_t* env_handle) {
     TinoxArray* argv_arr = (TinoxArray*)argv_handle;
     if (!argv_arr || argv_arr->len < 1) {
         fprintf(stderr, "runtime error: process_run: argv must have at least one element (the program)\n");
@@ -3833,31 +3957,19 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_d
     int in_pipe[2];
     int out_pipe[2];
     int err_pipe[2];
-    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+    if (pipe2(in_pipe, O_CLOEXEC) != 0 || pipe2(out_pipe, O_CLOEXEC) != 0 || pipe2(err_pipe, O_CLOEXEC) != 0) {
         fprintf(stderr, "runtime error: process_run: pipe() failed: %s\n", strerror(errno));
         exit(1);
     }
 
-    pid_t pid = fork();
+    pid_t pid = tinox_spawn_piped(argv, cwd, (TinoxArray*)env_handle, in_pipe, out_pipe, err_pipe);
     if (pid < 0) {
-        fprintf(stderr, "runtime error: process_run: fork() failed: %s\n", strerror(errno));
-        exit(1);
-    }
-    if (pid == 0) {
-        // Child. Deliberately no fprintf/GC/malloc-locking-sensitive calls
-        // here beyond what's unavoidable (dup2/close/execvp are all
-        // async-signal-safe) -- see the fork-safety note above. execvp only
-        // returns on failure; _exit(127) matches the shell's own
-        // "command not found" convention so the caller can distinguish it
-        // from a real exit code without needing a message string here.
-        dup2(in_pipe[0], STDIN_FILENO);
-        dup2(out_pipe[1], STDOUT_FILENO);
-        dup2(err_pipe[1], STDERR_FILENO);
-        close(in_pipe[0]); close(in_pipe[1]);
-        close(out_pipe[0]); close(out_pipe[1]);
-        close(err_pipe[0]); close(err_pipe[1]);
-        execvp(argv[0], argv);
-        _exit(127);
+        for (int i = 0; i < 2; i++) { close(in_pipe[i]); close(out_pipe[i]); close(err_pipe[i]); }
+        free(argv);
+        TinoxProcessResult* result = GC_malloc(sizeof(*result));
+        result->out = GC_strdup(""); result->err = GC_strdup("");
+        result->exit_code = 127; result->timed_out = 0;
+        return (int64_t)(intptr_t)result;
     }
 
     // Parent
@@ -3968,6 +4080,10 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_d
     free(out_buf.buf);
     free(err_buf.buf);
     return (int64_t)(intptr_t)result;
+}
+
+int64_t processRun(int64_t* argv, int64_t timeout_ms, const char* input) {
+    return processRunWithOptions(argv, timeout_ms, input, "", NULL);
 }
 
 char* processResultStdout(int64_t handle) {
@@ -4108,8 +4224,7 @@ void rwlockWriteUnlock(int64_t handle) {
     pthread_rwlock_unlock((pthread_rwlock_t*)(intptr_t)handle);
 }
 
-// ---- Long-lived interactive subprocess (tinox.core.process, exec/PTY-less
-// terminal bridging) ---------------------------------------------------
+// ---- Long-lived interactive subprocess (tinox.core.process, PTY or pipes) ---------------------------------------------------
 //
 // Unlike processRun (blocks until the child exits, returns the full
 // captured output), this spawns and returns IMMEDIATELY -- the caller
@@ -4142,6 +4257,10 @@ typedef struct {
     int fd;  // PTY master -- single fd, read AND write (a real terminal has no separate stdin/stdout either)
     int64_t exited;
     int64_t exit_code;
+    int piped;
+    int stdin_fd;
+    int stderr_fd;
+    TinoxGrowBuf output[2];
 } TinoxInteractiveProcess;
 
 int64_t processSpawnInteractive(int64_t* argv_handle) {
@@ -4177,13 +4296,102 @@ int64_t processSpawnInteractive(int64_t* argv_handle) {
 
     // Parent
     free(argv);
+    fcntl(master_fd, F_SETFD, FD_CLOEXEC);
 
     TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)GC_malloc(sizeof(TinoxInteractiveProcess));
+    memset(p, 0, sizeof(*p));
+    p->stdin_fd = p->stderr_fd = -1;
     p->pid = pid;
     p->fd = master_fd;
     p->exited = 0;
     p->exit_code = 0;
     return (int64_t)(intptr_t)p;
+}
+
+int64_t processSpawnPiped(int64_t* argv_handle, const char* cwd, int64_t* env_handle) {
+    TinoxArray* args = (TinoxArray*)argv_handle;
+    if (!args || args->len < 1) {
+        fprintf(stderr, "runtime error: processSpawnPiped requires a program\n"); exit(1);
+    }
+    char** argv = calloc((size_t)args->len + 1, sizeof(char*));
+    if (!argv) { perror("process argv"); exit(1); }
+    for (int64_t i = 0; i < args->len; i++) argv[i] = (char*)args->data[i];
+    int input[2], output[2], error[2];
+    if (pipe2(input, O_CLOEXEC) || pipe2(output, O_CLOEXEC) || pipe2(error, O_CLOEXEC)) {
+        perror("process pipes"); exit(1);
+    }
+    pid_t pid = tinox_spawn_piped(argv, cwd, (TinoxArray*)env_handle, input, output, error);
+    free(argv);
+    close(input[0]); close(output[1]); close(error[1]);
+    TinoxInteractiveProcess* p = GC_malloc(sizeof(*p));
+    memset(p, 0, sizeof(*p));
+    p->pid = pid; p->piped = 1;
+    p->stdin_fd = input[1]; p->fd = output[0]; p->stderr_fd = error[0];
+    if (pid < 0) { p->exited = 1; p->exit_code = 127; close(p->stdin_fd); p->stdin_fd = -1; }
+    return (int64_t)(intptr_t)p;
+}
+
+void processCloseStdin(int64_t handle) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    if (p->piped && p->stdin_fd >= 0) { close(p->stdin_fd); p->stdin_fd = -1; }
+}
+
+static int64_t tinox_process_millis(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Drain BOTH channels while waiting, so a full stderr pipe cannot block a
+// JSON response on stdout. Partial lines survive timeouts. One reader per
+// process; callers must serialize reads/kill/close operations themselves.
+static char* tinox_piped_read(TinoxInteractiveProcess* p, int channel, int line, int64_t timeout) {
+    TinoxGrowBuf* b = &p->output[channel];
+    int64_t deadline = tinox_process_millis() + (timeout > 0 ? timeout : 0);
+    for (;;) {
+        char* newline = b->len ? memchr(b->buf, '\n', b->len) : NULL;
+        int stream_fd = channel ? p->stderr_fd : p->fd;
+        if (b->len && (!line || newline || stream_fd < 0)) {
+            size_t n = newline && line ? (size_t)(newline - b->buf) + 1 : b->len;
+            char* result = GC_malloc(n + 1);
+            memcpy(result, b->buf, n); result[n] = 0;
+            memmove(b->buf, b->buf + n, b->len - n);
+            b->len -= n;
+            return result;
+        }
+        if (stream_fd < 0) return GC_strdup("");
+        int64_t remaining = deadline - tinox_process_millis();
+        int wait = timeout < 0 ? -1 : remaining > INT_MAX ? INT_MAX : remaining > 0 ? (int)remaining : 0;
+        struct pollfd fds[2] = {{p->fd, POLLIN, 0}, {p->stderr_fd, POLLIN, 0}};
+        int ready = poll(fds, 2, wait);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) return GC_strdup("");
+        for (int i = 0; i < 2; i++) {
+            if (!(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            char buf[8192];
+            ssize_t n = read(fds[i].fd, buf, sizeof(buf));
+            if (n > 0) tinox_growbuf_append(&p->output[i], buf, (size_t)n);
+            else if (n == 0 || (errno != EINTR && errno != EAGAIN)) {
+                close(fds[i].fd);
+                if (i) p->stderr_fd = -1; else p->fd = -1;
+            }
+        }
+        // Still return any completed line from this iteration before timeout.
+        if (timeout >= 0 && tinox_process_millis() >= deadline) {
+            newline = b->len ? memchr(b->buf, '\n', b->len) : NULL;
+            stream_fd = channel ? p->stderr_fd : p->fd;
+            if (!(b->len && (!line || newline || stream_fd < 0))) return GC_strdup("");
+        }
+    }
+}
+
+char* processReadStderr(int64_t handle, int64_t timeout) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    return p->piped ? tinox_piped_read(p, 1, 0, timeout) : GC_strdup("");
+}
+char* processReadLine(int64_t handle, int64_t timeout) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    return p->piped ? tinox_piped_read(p, 0, 1, timeout) : GC_strdup("");
 }
 
 // Best-effort: on a write error (e.g. the child already exited and closed
@@ -4196,7 +4404,7 @@ void processWriteStdin(int64_t handle, const char* data) {
     size_t len = strlen(data);
     size_t written = 0;
     while (written < len) {
-        ssize_t n = write(p->fd, data + written, len - written);
+        ssize_t n = write(p->piped ? p->stdin_fd : p->fd, data + written, len - written);
         if (n > 0) { written += (size_t)n; continue; }
         if (n < 0 && errno == EINTR) continue;
         break;
@@ -4204,11 +4412,11 @@ void processWriteStdin(int64_t handle, const char* data) {
 }
 
 // Blocks up to timeoutMs waiting for output; returns whatever's available
-// (possibly a partial line), or "" on timeout/EOF/error. Never blocks
-// indefinitely -- the caller (a spawned reader loop) needs to periodically
-// re-check whether it should keep running.
+// (possibly a partial line), or "" on timeout/EOF/error. A negative timeout
+// waits indefinitely; zero polls without waiting.
 char* processReadOutput(int64_t handle, int64_t timeoutMs) {
     TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    if (p->piped) return tinox_piped_read(p, 0, 0, timeoutMs);
     struct pollfd fd;
     fd.fd = p->fd;
     fd.events = POLLIN;
@@ -4238,26 +4446,43 @@ int64_t processIsAlive(int64_t handle) {
     if (p->exited) {
         return 0;
     }
-    int status;
-    pid_t r = waitpid(p->pid, &status, WNOHANG);
+    int status = 0;
+    pid_t r;
+    do { r = waitpid(p->pid, &status, WNOHANG); } while (r < 0 && errno == EINTR);
     if (r == 0) {
         return 1;
     }
     p->exited = 1;
-    if (WIFEXITED(status)) p->exit_code = WEXITSTATUS(status);
+    if (r < 0) p->exit_code = -1;
+    else if (WIFEXITED(status)) p->exit_code = WEXITSTATUS(status);
     else if (WIFSIGNALED(status)) p->exit_code = -WTERMSIG(status);
     return 0;
 }
 
+// INT64_MIN means still running; every exit code (including negative
+// signal numbers) remains distinguishable from that sentinel.
+int64_t processExitCode(int64_t handle) {
+    if (processIsAlive(handle)) return INT64_MIN;
+    return ((TinoxInteractiveProcess*)(intptr_t)handle)->exit_code;
+}
+
 void processKillInteractive(int64_t handle) {
     TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
-    if (!p->exited) {
+    if (processIsAlive(handle)) {
         kill(p->pid, SIGKILL);
-        int status;
-        while (waitpid(p->pid, &status, 0) < 0 && errno == EINTR) {}
+        int status = 0;
+        pid_t r;
+        do { r = waitpid(p->pid, &status, 0); } while (r < 0 && errno == EINTR);
+        p->exit_code = r < 0 ? -1 : WIFSIGNALED(status) ? -WTERMSIG(status) : WEXITSTATUS(status);
         p->exited = 1;
     }
-    close(p->fd);
+    if (p->fd >= 0) { close(p->fd); p->fd = -1; }
+    processCloseStdin(handle);
+    if (p->stderr_fd >= 0) { close(p->stderr_fd); p->stderr_fd = -1; }
+    for (int i = 0; i < 2; i++) {
+        free(p->output[i].buf);
+        memset(&p->output[i], 0, sizeof(p->output[i]));
+    }
 }
 
 // ---- Directory builtins ----
@@ -4281,6 +4506,29 @@ char* dirList(const char* path) {
 
 void dirCreate(const char* path) {
     mkdir(path, 0755);
+}
+
+char* dirCreateChecked(const char* path) {
+    if (mkdir(path, 0755) != 0) return tinox_fs_err("cannot create directory", path);
+    return (char*)"";
+}
+
+// Like `mkdir -p`: creates missing parents, succeeds if it already exists.
+char* dirCreateAllChecked(const char* path) {
+    size_t len = strlen(path);
+    char* buf = (char*)GC_malloc(len + 2);
+    memcpy(buf, path, len + 1);
+    for (size_t i = 1; i <= len; i++) {
+        if (buf[i] == '/' || buf[i] == '\0') {
+            char saved = buf[i];
+            buf[i] = '\0';
+            if (mkdir(buf, 0755) != 0 && errno != EEXIST) return tinox_fs_err("cannot create directory", path);
+            buf[i] = saved;
+        }
+    }
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return tinox_fs_err("cannot create directory", path);
+    return (char*)"";
 }
 
 void dirDelete(const char* path) {
@@ -5263,8 +5511,8 @@ static void conn_close(TinoxConn* c) {
 }
 #endif
 
-// bind_addr NULL means the existing INADDR_ANY (0.0.0.0) behavior every
-// current caller relies on; a non-NULL dotted-quad (e.g. "127.0.0.1", used
+// bind_addr NULL means INADDR_ANY (0.0.0.0) unless TINOX_BIND_ADDRESS is set
+// (see below), the behavior every current caller relies on; a non-NULL dotted-quad (e.g. "127.0.0.1", used
 // by the dev-mode introspection server -- see tinox_HttpServer_new_bind)
 // restricts the listening socket to that interface only.
 void tinox_service_close_connection(int64_t handle) {
@@ -5282,6 +5530,20 @@ int64_t httpServerCreateOn(int64_t port, const char* bind_addr) {
     setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
+    // Process-wide default for every listener (HttpServer, @TinoxUIApp, WS,
+    // HTTP/2, SSE) that didn't ask for a specific address. A malformed value
+    // is a hard startup failure, never a silent fallback to 0.0.0.0.
+    if (!bind_addr) {
+        const char* env_bind = getenv("TINOX_BIND_ADDRESS");
+        if (env_bind && *env_bind) {
+            struct in_addr probe;
+            if (inet_pton(AF_INET, env_bind, &probe) != 1) {
+                fprintf(stderr, "tinox: invalid TINOX_BIND_ADDRESS '%s' (expected an IPv4 address such as 127.0.0.1)\n", env_bind);
+                exit(1);
+            }
+            bind_addr = env_bind;
+        }
+    }
     if (bind_addr) {
         if (inet_pton(AF_INET, bind_addr, &addr.sin_addr) != 1) { close(fd); return -1; }
     } else {
@@ -5327,6 +5589,7 @@ int64_t httpServerAcceptConn(int64_t server_fd) {
 
 // Static recv buffer — reused across requests, grows as needed
 static __thread char*  g_recv_buf = NULL;
+static __thread size_t g_recv_used = 0; // bytes held in g_recv_buf after the last conn_read_request (binary-safe body length)
 static __thread size_t g_recv_cap = 0;
 
 // Bug 96: moved up from the route-based API section below (where it was
@@ -5396,6 +5659,7 @@ static char* conn_read_request(TinoxConn* c) {
                     strlen(body413), body413);
                 conn_send_all(c, resp413, (size_t)rn);
                 buf[0] = '\0';
+                g_recv_used = 0;
                 return buf;
             }
             long total = header_len + body_len;
@@ -5417,6 +5681,7 @@ static char* conn_read_request(TinoxConn* c) {
         break;
     }
     buf[used] = '\0';
+    g_recv_used = used;
     return buf;
 }
 
@@ -7783,6 +8048,15 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
         if (*hdr_line == '\r') req_body = hdr_line + 2;
         else if (*hdr_line == '\n') req_body = hdr_line + 1;
     }
+    g_req_body_ptr = req_body;
+    g_req_body_len = 0;
+    if (raw_req == g_recv_buf && req_body > raw_req && req_body <= raw_req + g_recv_used) {
+        g_req_body_len = (int64_t)(g_recv_used - (size_t)(req_body - raw_req));
+    } else {
+        g_req_body_len = (int64_t)strlen(req_body);
+    }
+    g_resp_bytes_ptr = NULL;
+    g_resp_bytes_len = 0;
 
     tinox_map_reset(&g_resp_headers_map);
     g_response[0] = handler ? 200 : 404;
@@ -7876,7 +8150,9 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     const char* conn_hdr     = req_close ? conn_close : conn_ka;
     size_t      conn_hdr_len = req_close ? (sizeof(conn_close) - 1) : (sizeof(conn_ka) - 1);
 
-    size_t body_len = status == 204 ? 0 : strlen(body);
+    size_t body_len = status == 204 ? 0
+        : (g_resp_bytes_ptr && body == g_resp_bytes_ptr) ? (size_t)g_resp_bytes_len : strlen(body);
+    g_resp_bytes_ptr = NULL;
     const char* status_text = http_status_text(status);
     size_t st_len = strlen(status_text);
     size_t resp_cap = 9 + 3 + 1 + st_len + 2 + hdr_off + 16 + 20 + 2 + conn_hdr_len + 2 + body_len + 1;
@@ -9161,174 +9437,86 @@ int64_t* tinox_json_list_deserialize(int64_t* arr_val, int64_t* (*from_json)(int
     return (int64_t*)out;
 }
 
-// ---- Runtime application configuration (separate from tinox.toml) ----
+// ---- Config (@Config annotation) ----
+// Reads key=value pairs from application.properties in the current directory.
+
 #define TINOX_CONFIG_MAX_ENTRIES 256
+#define TINOX_CONFIG_MAX_LINE    1024
 
 typedef struct { char* key; char* value; } TinoxConfigEntry;
+
 static TinoxConfigEntry tinox_config_entries[TINOX_CONFIG_MAX_ENTRIES];
-static int tinox_config_count = -1;
-static int tinox_config_errors;
-
-typedef struct {
-    const char *key, *type, *policy, *fallback, *value;
-    char *env_name;
-} TinoxConfigDeclaration;
-static TinoxConfigDeclaration tinox_config_declarations[TINOX_CONFIG_MAX_ENTRIES];
-static int tinox_config_decl_count;
-
-static void tinox_config_error(const char *key, const char *reason) {
-    // Never print raw input, defaults, paths or environment values.
-    fprintf(stderr, "configuration '%s': %s\n", key, reason);
-    tinox_config_errors++;
-}
+static int              tinox_config_count = -1; // -1 = not loaded
 
 static void tinox_config_load(void) {
     tinox_config_count = 0;
-    const char *path = getenv("TINOX_CONFIG_FILE");
-    FILE *f = fopen(path ? path : "application.properties", "r");
-    if (!f) {
-        if (path) tinox_config_error("file", "cannot open explicit configuration file");
-        else if (errno != ENOENT) tinox_config_error("file", "cannot open configuration file");
-        return;
-    }
-    char *line = NULL;
-    size_t capacity = 0;
-    ssize_t length;
-    while ((length = getline(&line, &capacity, f)) >= 0) {
-        if (memchr(line, 0, (size_t)length)) {
-            tinox_config_error("file", "embedded NUL in properties file");
-            continue;
-        }
-        while (length && (line[length-1] == '\n' || line[length-1] == '\r')) line[--length] = 0;
-        char *key = line;
-        while (*key == ' ' || *key == '\t') key++;
-        if (!*key || *key == '#' || *key == '!') continue;
-        char *eq = strchr(key, '=');
-        if (!eq) { tinox_config_error("file", "expected key=value"); continue; }
-        char *end = eq;
-        while (end > key && (end[-1] == ' ' || end[-1] == '\t')) end--;
-        *end = 0;
-        char *value = eq + 1;
-        while (*value == ' ' || *value == '\t') value++;
-        int index = 0;
-        for (; index < tinox_config_count; index++) {
-            if (!strcmp(tinox_config_entries[index].key, key)) break;
-        }
-        if (index == TINOX_CONFIG_MAX_ENTRIES) { tinox_config_error("file", "too many properties"); continue; }
-        if (index == tinox_config_count) {
-            tinox_config_entries[index].key = strdup(key);
+    FILE* f = fopen("application.properties", "r");
+    if (!f) return;
+    char line[TINOX_CONFIG_MAX_LINE];
+    while (fgets(line, sizeof(line), f)) {
+        // strip newline
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+        // skip empty lines and comments
+        if (len == 0 || line[0] == '#' || line[0] == '!') continue;
+        char* eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char* key = line;
+        char* val = eq + 1;
+        // trim trailing whitespace from key
+        char* kend = eq - 1;
+        while (kend >= key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
+        // trim leading whitespace from value
+        while (*val == ' ' || *val == '\t') val++;
+        if (tinox_config_count < TINOX_CONFIG_MAX_ENTRIES) {
+            tinox_config_entries[tinox_config_count].key   = strdup(key);
+            tinox_config_entries[tinox_config_count].value = strdup(val);
             tinox_config_count++;
-        } else {
-            free(tinox_config_entries[index].value);
         }
-        tinox_config_entries[index].value = strdup(value); // Last duplicate wins.
     }
-    if (ferror(f)) tinox_config_error("file", "cannot read configuration file");
-    // getline() allocated `line` with libc malloc, not the GC: the parenthesized call bypasses the free() -> GC_free macro.
-    (free)(line);
     fclose(f);
 }
 
-static const char *tinox_config_file_value(const char *key) {
-    if (tinox_config_count < 0) tinox_config_load();
-    for (int i = 0; i < tinox_config_count; i++)
-        if (!strcmp(tinox_config_entries[i].key, key)) return tinox_config_entries[i].value;
-    return NULL;
-}
-
 static const char* tinox_config_lookup(const char* key) {
-    for (int i = 0; i < tinox_config_decl_count; i++)
-        if (!strcmp(tinox_config_declarations[i].key, key)) return tinox_config_declarations[i].value;
-    const char *value = tinox_config_file_value(key);
-    return value ? value : "";
+    if (tinox_config_count < 0) tinox_config_load();
+    for (int i = 0; i < tinox_config_count; i++) {
+        if (strcmp(tinox_config_entries[i].key, key) == 0)
+            return tinox_config_entries[i].value;
+    }
+    return "";
 }
 
-static int tinox_config_valid_integer(const char *value, const char *type) {
-    int is_unsigned = !strncmp(type, "UInt", 4);
-    int bits = atoi(type + (is_unsigned ? 4 : 3));
-    const char *digit = value;
-    if (*digit == '-' || *digit == '+') digit++;
-    if (!*digit || (is_unsigned && *value == '-')) return 0;
-    for (; *digit; digit++) if (*digit < '0' || *digit > '9') return 0;
-    errno = 0;
-    if (is_unsigned) {
-        unsigned long long n = strtoull(value, NULL, 10);
-        return errno != ERANGE && (bits == 64 || n <= ((1ULL << bits) - 1));
-    }
-    long long n = strtoll(value, NULL, 10);
-    return errno != ERANGE && (bits == 64 || (n >= -(1LL << (bits-1)) && n <= (1LL << (bits-1))-1));
+char* tinox_config_get(const char* key) {
+    return (char*)tinox_config_lookup(key);
 }
 
-void tinox_config_declare(const char *key, const char *type, const char *policy, const char *fallback) {
-    char *env_name = malloc(strlen(key) + sizeof("TINOX_CONFIG_"));
-    strcpy(env_name, "TINOX_CONFIG_");
-    char *out = env_name + strlen(env_name);
-    for (const unsigned char *p = (const unsigned char*)key; *p; p++)
-        *out++ = (*p == '.' || *p == '-') ? '_' : (char)toupper(*p);
-    *out = 0;
-    if (!strcmp(env_name, "TINOX_CONFIG_FILE")) tinox_config_error(key, "environment name is reserved for the configuration file selector");
-    for (int i = 0; i < tinox_config_decl_count; i++) {
-        TinoxConfigDeclaration *d = &tinox_config_declarations[i];
-        if (!strcmp(d->key, key)) {
-            if (strcmp(d->type, type) || strcmp(d->policy, policy) ||
-                (d->fallback == NULL) != (fallback == NULL) ||
-                (fallback && strcmp(d->fallback, fallback)))
-                tinox_config_error(key, "conflicting declarations");
-            free(env_name);
-            return;
-        }
-        if (!strcmp(d->env_name, env_name)) tinox_config_error(key, "environment name collides with another declaration");
-    }
-    if (tinox_config_decl_count == TINOX_CONFIG_MAX_ENTRIES) {
-        tinox_config_error(key, "too many declarations"); free(env_name); return;
-    }
-    const char *value = getenv(env_name);
-    if (!value) value = tinox_config_file_value(key);
-    if (!value) value = fallback;
-    int missing = value == NULL;
-    if (missing) value = "";
-    // Snapshot before any application threads start. Legacy getters retain their parsing.
-    tinox_config_declarations[tinox_config_decl_count++] = (TinoxConfigDeclaration){key, type, policy, fallback, strdup(value), env_name};
-    if (!strcmp(policy, "legacy")) return;
-    if (!strcmp(policy, "required") && !*value) {
-        tinox_config_error(key, missing ? "required value is missing" : "required value is empty");
-    } else if (!missing && strcmp(type, "String")) {
-        if (!*value) {
-            tinox_config_error(key, "value is empty");
-        } else if (!strcmp(type, "Bool")) {
-            if (strcmp(value, "true") && strcmp(value, "false")) tinox_config_error(key, "expected true or false");
-        } else if (!tinox_config_valid_integer(value, type)) {
-            tinox_config_error(key, "expected decimal integer within declared type range");
-        }
-    }
-}
-
-char* tinox_config_get(const char* key) { return (char*)tinox_config_lookup(key); }
 int64_t tinox_config_get_int(const char* key) {
-    const char *v = tinox_config_lookup(key);
-    if (!v || !*v) return 0;
-    // Strict unsigned fields use the same 64-bit representation as Tinox slots.
-    for (int i = 0; i < tinox_config_decl_count; i++) {
-        TinoxConfigDeclaration *d = &tinox_config_declarations[i];
-        if (!strcmp(d->key, key) && strcmp(d->policy, "legacy") && !strncmp(d->type, "UInt", 4))
-            return (int64_t)strtoull(v, NULL, 10);
-    }
-    return (int64_t)atoll(v); // Preserve the legacy getter, including overflow behavior.
-}
-int64_t tinox_config_get_bool(const char* key) {
-    const char *v = tinox_config_lookup(key);
-    return v && (!strcmp(v, "true") || !strcmp(v, "1") || !strcmp(v, "yes"));
+    const char* v = tinox_config_lookup(key);
+    if (!v || *v == '\0') return 0;
+    return (int64_t)atoll(v);
 }
 
-// Introspection intentionally redacts even undeclared properties: they may be secrets.
+int64_t tinox_config_get_bool(const char* key) {
+    const char* v = tinox_config_lookup(key);
+    if (!v || *v == '\0') return 0;
+    return (strcmp(v, "true") == 0 || strcmp(v, "1") == 0 || strcmp(v, "yes") == 0) ? 1 : 0;
+}
+
+// Dumps every application.properties key/value as a flat JSON object --
+// unlike tinox_config_get*, which only ever looks up a single key a
+// @Config field already declared, this backs the dev-mode introspection
+// API's /config endpoint (it needs to show what's actually loaded, not
+// just what the program happens to read). Values are always emitted as
+// JSON strings (application.properties has no type info of its own --
+// tinox_config_get_int/_bool parse on demand per @Config field, not at
+// load time).
 char* tinox_config_dump_json(void) {
     if (tinox_config_count < 0) tinox_config_load();
-    char *b = jsonBuilderCreate();
-    for (int i = 0; i < tinox_config_count; i++)
-        jsonBuilderAddString(b, tinox_config_entries[i].key, "[redacted]");
-    for (int i = 0; i < tinox_config_decl_count; i++)
-        if (!tinox_config_file_value(tinox_config_declarations[i].key))
-            jsonBuilderAddString(b, tinox_config_declarations[i].key, "[redacted]");
+    char* b = jsonBuilderCreate();
+    for (int i = 0; i < tinox_config_count; i++) {
+        jsonBuilderAddString(b, tinox_config_entries[i].key, tinox_config_entries[i].value);
+    }
     return jsonBuilderFinish(b);
 }
 
@@ -9718,6 +9906,12 @@ bool tinox_db_is_null(void* result, int64_t row, int64_t col) {
 
 void tinox_db_free(void* result) { PQclear((PGresult*)result); }
 
+bool tinox_db_result_failed(void* result) {
+    if (!result) return true;
+    ExecStatusType st = PQresultStatus((PGresult*)result);
+    return st != PGRES_TUPLES_OK && st != PGRES_COMMAND_OK;
+}
+
 char* tinox_db_error(void* conn) {
     return GC_strdup(PQerrorMessage((PGconn*)conn));
 }
@@ -9752,7 +9946,13 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
     }
 }
 
-void* tinox_db_acquire_stmt_conn(void) { return _tinox_sqlite_db; }
+void* tinox_db_acquire_stmt_conn(void) {
+    if (_tinox_sqlite_db == NULL) {
+        fprintf(stderr, "sqlite: database connection was never initialized (no [database] config?)\n");
+        exit(1);
+    }
+    return _tinox_sqlite_db;
+}
 void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
 
 // @Transactional is a hard compile error for this driver (see the driver
@@ -9855,6 +10055,15 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
         }
         n_rows++;
     }
+    if (rc != SQLITE_DONE) {
+        // A failed step (e.g. a NOT NULL / UNIQUE constraint) used to be
+        // swallowed and look like an empty result. Make it visible.
+        fprintf(stderr, "SQLite error: %s\nSQL: %s\n", sqlite3_errmsg(db), sql);
+        sqlite3_reset(stmt);
+        if (rows) free(rows);
+        pthread_mutex_unlock(&_tinox_sqlite_mu);
+        return NULL;
+    }
     // Do NOT finalize — statement is cached for reuse
 
     TinoxSqliteResult* res = (TinoxSqliteResult*)GC_malloc(sizeof(TinoxSqliteResult));
@@ -9896,6 +10105,7 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
     return res->data[(int)row * res->n_cols + (int)col] == NULL;
 }
 void    tinox_db_free(void* r) { (void)r; }
+bool    tinox_db_result_failed(void* r) { return r == NULL; }
 char*   tinox_db_error(void* c) { return GC_strdup(sqlite3_errmsg((sqlite3*)c)); }
 
 #elif defined(TINOX_DB_MYSQL)
@@ -9986,7 +10196,13 @@ typedef struct {
     char** data;   // row-major: data[row * n_cols + col]
 } TinoxMysqlResult;
 
-void* tinox_db_acquire_stmt_conn(void) { return _tinox_mysql_conn; }
+void* tinox_db_acquire_stmt_conn(void) {
+    if (_tinox_mysql_conn == NULL) {
+        fprintf(stderr, "MySQL: database connection was never initialized (no [database] config?)\n");
+        exit(1);
+    }
+    return _tinox_mysql_conn;
+}
 void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
 
 // @Transactional is a hard compile error for this driver (see the driver
@@ -10101,6 +10317,7 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
     return res->data[(int)row * res->n_cols + (int)col] == NULL;
 }
 void    tinox_db_free(void* r) { (void)r; /* GC managed */ }
+bool    tinox_db_result_failed(void* r) { return r == NULL; }
 char*   tinox_db_error(void* c) { return GC_strdup(mysql_error((MYSQL*)c)); }
 
 #else
@@ -10119,7 +10336,9 @@ char*   tinox_db_getval(void* r, int64_t row, int64_t col)                    { 
 int64_t tinox_db_getval_int(void* r, int64_t row, int64_t col)                { (void)r;(void)row;(void)col; return 0; }
 bool    tinox_db_is_null(void* r, int64_t row, int64_t col)                   { (void)r;(void)row;(void)col; return true; }
 void    tinox_db_free(void* r)                                                 { (void)r; }
+bool    tinox_db_result_failed(void* r)                                        { (void)r; return false; }
 char*   tinox_db_error(void* c)                                                { (void)c; return ""; }
+
 #endif /* DB driver */
 
 static void service_close_database(void) {
@@ -10142,6 +10361,19 @@ static void service_close_database(void) {
 #endif
 }
 
+// ORM save() hit a failed INSERT/UPDATE (the driver already logged the
+// SQL error). Never continue with a half-saved entity.
+void tinox_orm_save_failed(const char* table) {
+    fprintf(stderr, "ORM save failed for table '%s' (see database error above); "
+                    "unassigned String fields are bound as NULL\n", table);
+    exit(1);
+}
+
+void tinox_orm_query_failed(const char* table) {
+    fprintf(stderr, "ORM query failed for table '%s' (see database error above)\n", table);
+    exit(1);
+}
+
 // Param helpers (always available)
 char** tinox_params_alloc(int64_t n) {
     return (char**)GC_malloc(sizeof(char*) * (size_t)n);
@@ -10160,7 +10392,6 @@ char* tinox_int_to_param(int64_t val) {
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);
-extern void tinox_config_init(void) __attribute__((weak));
 
 // Error slot from the generated IR (@__tinox_err = thread_local global i64
 // 0, since bug 101 -- previously a plain global that HTTP worker threads
@@ -10274,9 +10505,6 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     _tinox_argc = argc;
     _tinox_argv = argv;
-    tinox_config_load();
-    if (tinox_config_init) tinox_config_init();
-    if (tinox_config_errors) return 78;
     telemetryInit();
     if (telemetry_enabled) {
         telemetry_event("service.start");

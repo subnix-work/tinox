@@ -1,0 +1,532 @@
+{
+ "meta": {
+  "date_utc": "2026-10-22T18:05:46Z",
+  "git_commit": "db1c127",
+  "git_dirty": true,
+  "tinox_version": "Tinox Compiler v2.4.0",
+  "libgc": "gc 8.2.12-1",
+  "cpu_model": "AMD Ryzen 9 9950X3D 16-Core Processor",
+  "logical_cores": 32,
+  "mem_total_mib": 61878,
+  "kernel": "7.2.9-arch1-1",
+  "python": "3.14.8",
+  "service_cpus": "0-3",
+  "client_cpus": "8-15",
+  "wrapper": null,
+  "memory_limit_mib": null,
+  "memory_limit_enforced": false,
+  "env_tuning": {}
+ },
+ "profile": "report",
+ "args": {
+  "profile": "report",
+  "tinox": "/data/worktrees/subnix-work/tinox/task-7/target/release/tinox",
+  "port": 18312,
+  "duration": 30.0,
+  "warmup": 10.0,
+  "cold": 5.0,
+  "conns": 32,
+  "client_procs": 4,
+  "rate": 0.0,
+  "n": 200,
+  "cache_items": 200000,
+  "cpus": "0-3",
+  "client_cpus": "8-15",
+  "wrapper": null,
+  "mem_limit_mib": null,
+  "env": [],
+  "out": "/tmp/sb/suite/w2_report200_c32.json"
+ },
+ "service_cmd": "taskset -c 0-3 /tmp/sb/suite/w2_report200_c32.json.bin",
+ "build_s": 1.7,
+ "startup_to_ready_ms": 19.7,
+ "prefill_s": 0.0,
+ "rss_at_ready": {
+  "VmHWM": 11408,
+  "VmRSS": 11408,
+  "Threads": 48
+ },
+ "rss_after_prefill": {
+  "VmHWM": 11408,
+  "VmRSS": 11408,
+  "Threads": 48
+ },
+ "cold": [
+  {
+   "path": "/report/200",
+   "method": "GET",
+   "conns": 32,
+   "procs": 4,
+   "duration_s": 5.0,
+   "target_rate": null,
+   "mode": "closed",
+   "ok": 128151,
+   "rps": 25630.2,
+   "http_error": 0,
+   "timeout": 0,
+   "conn_error": 0,
+   "p50_ms": 1.016,
+   "p95_ms": 3.086,
+   "p99_ms": 5.615,
+   "p999_ms": 7.298,
+   "max_ms": 11.503,
+   "cmd": "taskset -c 8-15 /usr/sbin/python3 -I /data/worktrees/subnix-work/tinox/task-7/benchmarks/service_latency/loadgen.py --port 18312 --method GET --path /report/200 --conns 32 --procs 4 --duration 5.0"
+  }
+ ],
+ "steady": [
+  {
+   "path": "/report/200",
+   "method": "GET",
+   "conns": 32,
+   "procs": 4,
+   "duration_s": 30.0,
+   "target_rate": null,
+   "mode": "closed",
+   "ok": 683451,
+   "rps": 22781.7,
+   "http_error": 0,
+   "timeout": 0,
+   "conn_error": 0,
+   "p50_ms": 1.18,
+   "p95_ms": 3.214,
+   "p99_ms": 4.323,
+   "p999_ms": 5.797,
+   "max_ms": 16.626,
+   "cmd": "taskset -c 8-15 /usr/sbin/python3 -I /data/worktrees/subnix-work/tinox/task-7/benchmarks/service_latency/loadgen.py --port 18312 --method GET --path /report/200 --conns 32 --procs 4 --duration 30.0"
+  }
+ ],
+ "samples": [
+  {
+   "t": 0.5,
+   "VmHWM": 17220,
+   "VmRSS": 16988,
+   "Threads": 48,
+   "boehm_heap_bytes": 4952064
+  },
+  {
+   "t": 1.0,
+   "VmHWM": 17220,
+   "VmRSS": 16972,
+   "Threads": 48,
+   "boehm_heap_bytes": 4952064
+  },
+  {
+   "t": 1.5,
+   "VmHWM": 17220,
+   "VmRSS": 16932,
+   "Threads": 48,
+   "boehm_heap_bytes": 4845568
+  },
+  {
+   "t": 2.0,
+   "VmHWM": 17220,
+   "VmRSS": 16964,
+   "Threads": 48,
+   "boehm_heap_bytes": 4841472
+  },
+  {
+   "t": 2.5,
+   "VmHWM": 17220,
+   "VmRSS": 16900,
+   "Threads": 48,
+   "boehm_heap_bytes": 4771840
+  },
+  {
+   "t": 3.0,
+   "VmHWM": 17220,
+   "VmRSS": 16856,
+   "Threads": 48,
+   "boehm_heap_bytes": 4792320
+  },
+  {
+   "t": 3.5,
+   "VmHWM": 17220,
+   "VmRSS": 16916,
+   "Threads": 48,
+   "boehm_heap_bytes": 4788224
+  },
+  {
+   "t": 4.01,
+   "VmHWM": 17220,
+   "VmRSS": 16960,
+   "Threads": 48,
+   "boehm_heap_bytes": 4833280
+  },
+  {
+   "t": 4.51,
+   "VmHWM": 17220,
+   "VmRSS": 16960,
+   "Threads": 48,
+   "boehm_heap_bytes": 4833280
+  },
+  {
+   "t": 5.01,
+   "VmHWM": 17220,
+   "VmRSS": 16940,
+   "Threads": 48,
+   "boehm_heap_bytes": 4812800
+  },
+  {
+   "t": 5.51,
+   "VmHWM": 17220,
+   "VmRSS": 16948,
+   "Threads": 48,
+   "boehm_heap_bytes": 4820992
+  },
+  {
+   "t": 6.01,
+   "VmHWM": 17220,
+   "VmRSS": 16932,
+   "Threads": 48,
+   "boehm_heap_bytes": 4804608
+  },
+  {
+   "t": 6.51,
+   "VmHWM": 17220,
+   "VmRSS": 16836,
+   "Threads": 48,
+   "boehm_heap_bytes": 4808704
+  },
+  {
+   "t": 7.02,
+   "VmHWM": 17260,
+   "VmRSS": 16872,
+   "Threads": 48,
+   "boehm_heap_bytes": 4808704
+  },
+  {
+   "t": 7.52,
+   "VmHWM": 17260,
+   "VmRSS": 16936,
+   "Threads": 48,
+   "boehm_heap_bytes": 4747264
+  },
+  {
+   "t": 8.02,
+   "VmHWM": 17260,
+   "VmRSS": 16892,
+   "Threads": 48,
+   "boehm_heap_bytes": 4706304
+  },
+  {
+   "t": 8.52,
+   "VmHWM": 17260,
+   "VmRSS": 16892,
+   "Threads": 48,
+   "boehm_heap_bytes": 4804608
+  },
+  {
+   "t": 9.03,
+   "VmHWM": 17260,
+   "VmRSS": 16932,
+   "Threads": 48,
+   "boehm_heap_bytes": 4804608
+  },
+  {
+   "t": 9.53,
+   "VmHWM": 17260,
+   "VmRSS": 16932,
+   "Threads": 48,
+   "boehm_heap_bytes": 4804608
+  },
+  {
+   "t": 10.03,
+   "VmHWM": 17260,
+   "VmRSS": 16824,
+   "Threads": 48,
+   "boehm_heap_bytes": 4694016
+  },
+  {
+   "t": 10.53,
+   "VmHWM": 17260,
+   "VmRSS": 16852,
+   "Threads": 48,
+   "boehm_heap_bytes": 4816896
+  },
+  {
+   "t": 11.03,
+   "VmHWM": 17260,
+   "VmRSS": 16908,
+   "Threads": 48,
+   "boehm_heap_bytes": 4804608
+  },
+  {
+   "t": 11.54,
+   "VmHWM": 17260,
+   "VmRSS": 16868,
+   "Threads": 48,
+   "boehm_heap_bytes": 4739072
+  },
+  {
+   "t": 12.04,
+   "VmHWM": 17260,
+   "VmRSS": 16800,
+   "Threads": 48,
+   "boehm_heap_bytes": 4669440
+  },
+  {
+   "t": 12.54,
+   "VmHWM": 17260,
+   "VmRSS": 16872,
+   "Threads": 48,
+   "boehm_heap_bytes": 4743168
+  },
+  {
+   "t": 13.04,
+   "VmHWM": 17260,
+   "VmRSS": 16876,
+   "Threads": 48,
+   "boehm_heap_bytes": 4804608
+  },
+  {
+   "t": 13.54,
+   "VmHWM": 17260,
+   "VmRSS": 16844,
+   "Threads": 48,
+   "boehm_heap_bytes": 4714496
+  },
+  {
+   "t": 14.04,
+   "VmHWM": 17260,
+   "VmRSS": 16840,
+   "Threads": 48,
+   "boehm_heap_bytes": 4767744
+  },
+  {
+   "t": 14.54,
+   "VmHWM": 17260,
+   "VmRSS": 16844,
+   "Threads": 48,
+   "boehm_heap_bytes": 4767744
+  },
+  {
+   "t": 15.04,
+   "VmHWM": 17260,
+   "VmRSS": 16896,
+   "Threads": 48,
+   "boehm_heap_bytes": 4767744
+  },
+  {
+   "t": 15.54,
+   "VmHWM": 17260,
+   "VmRSS": 16900,
+   "Threads": 48,
+   "boehm_heap_bytes": 4923392
+  },
+  {
+   "t": 16.05,
+   "VmHWM": 17260,
+   "VmRSS": 16864,
+   "Threads": 48,
+   "boehm_heap_bytes": 4763648
+  },
+  {
+   "t": 16.55,
+   "VmHWM": 17260,
+   "VmRSS": 16820,
+   "Threads": 48,
+   "boehm_heap_bytes": 4685824
+  },
+  {
+   "t": 17.05,
+   "VmHWM": 17260,
+   "VmRSS": 16864,
+   "Threads": 48,
+   "boehm_heap_bytes": 4767744
+  },
+  {
+   "t": 17.55,
+   "VmHWM": 17260,
+   "VmRSS": 16900,
+   "Threads": 48,
+   "boehm_heap_bytes": 4763648
+  },
+  {
+   "t": 18.05,
+   "VmHWM": 17260,
+   "VmRSS": 16828,
+   "Threads": 48,
+   "boehm_heap_bytes": 4689920
+  },
+  {
+   "t": 18.55,
+   "VmHWM": 17260,
+   "VmRSS": 16840,
+   "Threads": 48,
+   "boehm_heap_bytes": 4702208
+  },
+  {
+   "t": 19.05,
+   "VmHWM": 17260,
+   "VmRSS": 16904,
+   "Threads": 48,
+   "boehm_heap_bytes": 4767744
+  },
+  {
+   "t": 19.55,
+   "VmHWM": 17260,
+   "VmRSS": 16868,
+   "Threads": 48,
+   "boehm_heap_bytes": 4714496
+  },
+  {
+   "t": 20.06,
+   "VmHWM": 17260,
+   "VmRSS": 16832,
+   "Threads": 48,
+   "boehm_heap_bytes": 4694016
+  },
+  {
+   "t": 20.56,
+   "VmHWM": 17260,
+   "VmRSS": 16900,
+   "Threads": 48,
+   "boehm_heap_bytes": 4763648
+  },
+  {
+   "t": 21.06,
+   "VmHWM": 17260,
+   "VmRSS": 16900,
+   "Threads": 48,
+   "boehm_heap_bytes": 4763648
+  },
+  {
+   "t": 21.56,
+   "VmHWM": 17260,
+   "VmRSS": 16824,
+   "Threads": 48,
+   "boehm_heap_bytes": 4685824
+  },
+  {
+   "t": 22.06,
+   "VmHWM": 17260,
+   "VmRSS": 16832,
+   "Threads": 48,
+   "boehm_heap_bytes": 4689920
+  },
+  {
+   "t": 22.56,
+   "VmHWM": 17260,
+   "VmRSS": 16900,
+   "Threads": 48,
+   "boehm_heap_bytes": 4763648
+  },
+  {
+   "t": 23.06,
+   "VmHWM": 17260,
+   "VmRSS": 16816,
+   "Threads": 48,
+   "boehm_heap_bytes": 4677632
+  },
+  {
+   "t": 23.57,
+   "VmHWM": 17260,
+   "VmRSS": 16828,
+   "Threads": 48,
+   "boehm_heap_bytes": 4689920
+  },
+  {
+   "t": 24.07,
+   "VmHWM": 17260,
+   "VmRSS": 16812,
+   "Threads": 48,
+   "boehm_heap_bytes": 4673536
+  },
+  {
+   "t": 24.57,
+   "VmHWM": 17260,
+   "VmRSS": 16828,
+   "Threads": 48,
+   "boehm_heap_bytes": 4763648
+  },
+  {
+   "t": 25.07,
+   "VmHWM": 17260,
+   "VmRSS": 16832,
+   "Threads": 48,
+   "boehm_heap_bytes": 4763648
+  },
+  {
+   "t": 25.57,
+   "VmHWM": 17260,
+   "VmRSS": 16812,
+   "Threads": 48,
+   "boehm_heap_bytes": 4669440
+  },
+  {
+   "t": 26.08,
+   "VmHWM": 17260,
+   "VmRSS": 16832,
+   "Threads": 48,
+   "boehm_heap_bytes": 4694016
+  },
+  {
+   "t": 26.58,
+   "VmHWM": 17260,
+   "VmRSS": 16828,
+   "Threads": 48,
+   "boehm_heap_bytes": 4689920
+  },
+  {
+   "t": 27.08,
+   "VmHWM": 17260,
+   "VmRSS": 16844,
+   "Threads": 48,
+   "boehm_heap_bytes": 4788224
+  },
+  {
+   "t": 27.58,
+   "VmHWM": 17260,
+   "VmRSS": 16924,
+   "Threads": 48,
+   "boehm_heap_bytes": 4788224
+  },
+  {
+   "t": 28.09,
+   "VmHWM": 17260,
+   "VmRSS": 16808,
+   "Threads": 48,
+   "boehm_heap_bytes": 4669440
+  },
+  {
+   "t": 28.59,
+   "VmHWM": 17260,
+   "VmRSS": 16816,
+   "Threads": 48,
+   "boehm_heap_bytes": 4677632
+  },
+  {
+   "t": 29.09,
+   "VmHWM": 17260,
+   "VmRSS": 16800,
+   "Threads": 48,
+   "boehm_heap_bytes": 4661248
+  },
+  {
+   "t": 29.59,
+   "VmHWM": 17260,
+   "VmRSS": 16812,
+   "Threads": 48,
+   "boehm_heap_bytes": 4673536
+  },
+  {
+   "t": 30.09,
+   "VmHWM": 17260,
+   "VmRSS": 16808,
+   "Threads": 48,
+   "boehm_heap_bytes": 4669440
+  },
+  {
+   "t": 30.59,
+   "VmHWM": 17260,
+   "VmRSS": 16824,
+   "Threads": 48,
+   "boehm_heap_bytes": 4694016
+  }
+ ],
+ "service_alive_at_end": true,
+ "rss_peak_kib": 17260,
+ "steady_rss_kib_max": 16988,
+ "steady_threads_max": 48,
+ "gc_log": null
+}

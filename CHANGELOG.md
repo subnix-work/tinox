@@ -4,7 +4,24 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Fs::appendFile` really appends** (#352): uses the registered `fileAppendText`
+  builtin (`fopen(path, "a")`) instead of reading and rewriting the whole file
+  (FIFO hang, lost concurrent appends, quadratic cost).
+
 ### Added
+
+- **Pipe-based subprocess sessions** (#355): `InteractiveProcess::startPiped`
+  supports child cwd/environment, separate stdout/stderr, `closeStdin`, buffered
+  `readLine` with timeout, and `exitCode`. `Process::runWithOptions` adds cwd
+  and environment overrides/removals while preserving existing `run` callers
+  and PTY sessions.
+
+- Consumer-local `tinox.overrides.yaml` package overrides with transitive
+  resolution, mutable-source lock records, CLI/LSP provenance and publication
+  guards (#313). `make workspace-stdlib` and its separate CI lane exercise
+  unpublished extended modules alongside existing registry compatibility tests.
 
 - **`tinox docker --source-build`** (#309): compiles the project inside a
   pinned builder image (`docker/builder/Dockerfile`, tagged with the compiler

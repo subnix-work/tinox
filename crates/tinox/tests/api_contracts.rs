@@ -1,6 +1,6 @@
 //! Exercise the additive HTTP API from workspace sources, without installing
 //! an older registry package that cannot contain the new methods.
-// This harness only needs a few of the shared helpers; the rest serve e2e.rs and matrix.rs.
+// This suite uses only repo_root and run_captured from the shared e2e harness.
 #[allow(dead_code)]
 mod common;
 

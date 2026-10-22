@@ -57,7 +57,21 @@ namespace tinox.core.process
          */
         fn run(argv: List<String>, timeoutMs: Int64, stdin: String) -> ProcessResult
         {
-            const handle: Int64 = processRun(argv, timeoutMs, stdin);
+            const env: List<String> = [];
+            return Process::runWithOptions(argv, timeoutMs, stdin, "", env);
+        }
+
+        /**
+         * Like run(), with child-only working directory and environment.
+         * cwd="" inherits the current directory. env entries KEY=value set
+         * or override inherited variables; bare KEY removes a variable.
+         * An empty list inherits the environment unchanged. PATH lookup uses
+         * the parent's PATH (posix_spawnp); use an explicit executable path
+         * when overriding PATH. Invalid cwd/exec failures return code 127.
+         */
+        fn runWithOptions(argv: List<String>, timeoutMs: Int64, stdin: String, cwd: String, env: List<String>) -> ProcessResult
+        {
+            const handle: Int64 = processRunWithOptions(argv, timeoutMs, stdin, cwd, env);
             const out: String = processResultStdout(handle);
             const err: String = processResultStderr(handle);
             const code: Int64 = processResultExitCode(handle);
