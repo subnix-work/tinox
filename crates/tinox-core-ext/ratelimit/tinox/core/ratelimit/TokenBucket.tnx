@@ -30,8 +30,8 @@ namespace tinox.core.ratelimit
 
         fn refill(bucket: TokenBucket) -> Nothing
         {
-            let now: Int64 = Time::now();
-            let elapsed: Float64 = (Float64)(now - bucket.lastRefill) / 1000.0;
+            const now: Int64 = Time::now();
+            const elapsed: Float64 = (Float64)(now - bucket.lastRefill) / 1000.0;
             bucket.tokens = Mathf::min((Float64)bucket.capacity, bucket.tokens + elapsed * bucket.refillRate);
             bucket.lastRefill = now;
         }

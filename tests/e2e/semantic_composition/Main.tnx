@@ -1,0 +1,46 @@
+// expect: 2
+// expect: 3
+// expect: 4
+// expect: 5
+// expect: 6
+// expect: 7
+// expect: 255
+// expect: 255
+// expect: 1.5
+// expect: tuple
+// expect: 2.5
+// expect: 3
+import Factory;
+import Reader;
+import Adapter;
+import Packet;
+class Main {
+    fnc apply(f: fnc(Float64) -> Float64, value: Float64) -> Float64 { return f(value); }
+    fnc make() -> fnc(Float64) -> Float64 { return x => x + 1.0; }
+    fnc captured(f: fnc(Float64) -> Float64) -> fnc(Float64) -> Float64 { return x => f(x); }
+    fnc read(reader: Reader) -> Float64 { return reader.read(6.0); }
+    fnc shadow(f: fnc(Int64) -> Int64) -> Float64 {
+        const inner = fnc(f: fnc(Float64) -> Float64) -> Float64 { return f(1.0); };
+        return inner(x => x + 2.0);
+    }
+    fnc main() -> Int32 {
+        println(Main::apply(fnc(x: Float64) -> Float64 { return x + 0.5; }, 1.5));
+        const f: fnc(Float64) -> Float64 = x => x + 1.0;
+        println(f(2));
+        println(Main::make()(3.0));
+        println(Main::captured(f)(4.0));
+        println(Factory<Float64>::apply(fnc() -> Float64 { return 6.0; }));
+        println(Main::read(Adapter {}));
+        const value: UInt8 = 255;
+        println(value as Int64);
+        const packet = Packet { value: value };
+        println(packet.value as Int64);
+        const tuple = (1.5, "tuple");
+        println(tuple.0);
+        println(tuple.1);
+        const single: Float32 = 2.5;
+        println(Factory<Float32>::apply(fnc() -> Float32 { return single; }) as Float64);
+        println(Main::shadow(x => x));
+        return 0;
+    }
+}

@@ -1,0 +1,12 @@
+// expect-exit: 1
+// expect-contains: cyclic task await
+class Main {
+    fnc selfWait(inbox: Int64) -> Nothing { const task = recv inbox; await task; }
+    fnc main() -> Int32 {
+        const inbox = channel;
+        const task = spawn Main::selfWait(inbox);
+        send inbox -> task;
+        await task;
+        return 0;
+    }
+}

@@ -37,8 +37,13 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
+#include <sched.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <limits.h>
 #include <zlib.h>
 #include <stdatomic.h>
+#include <fcntl.h>
 #ifdef __GLIBC__
 #include <execinfo.h>
 #include <pty.h>
@@ -51,6 +56,7 @@
 // freed — leaks are intentional here, overflows/UAF are the target.
 #include <string.h>
 #define GC_malloc(s)     calloc(1, (s))
+#define GC_malloc_atomic(s) calloc(1, (s))
 #define GC_realloc(p, s) realloc((p), (s))
 #define GC_free(p)       ((void)(p))
 #define GC_strdup(s)     strdup(s)
@@ -122,6 +128,7 @@ void tinox_free(void* ptr) {
 // it registers has been declared); this forward declaration lets the
 // earlier call sites (tinox_task_spawn, main) reference it.
 static void tinox_gc_register_thread_roots(void);
+static void tinox_gc_unregister_thread_roots(void);
 
 // Print functions
 void tinox_print_int(int64_t val) {
@@ -556,7 +563,7 @@ int tinox_parse_bool_checked(const char* s, int* out) {
 // without that function's object-key/comma bookkeeping.
 char* tinox_json_encode_string(const char* s) {
     size_t sl = s ? strlen(s) : 0;
-    char* buf = (char*)malloc(sl * 2 + 3); // worst case: every char escaped + 2 quotes + NUL
+    char* buf = (char*)malloc(sl * 6 + 3); // allow six-byte JSON control escapes
     size_t len = 0;
     buf[len++] = '"';
     for (size_t i = 0; i < sl; i++) {
@@ -566,6 +573,12 @@ char* tinox_json_encode_string(const char* s) {
         else if (c == '\n') { buf[len++] = '\\'; buf[len++] = 'n'; }
         else if (c == '\r') { buf[len++] = '\\'; buf[len++] = 'r'; }
         else if (c == '\t') { buf[len++] = '\\'; buf[len++] = 't'; }
+        else if (c < 0x20) {
+            static const char hex[] = "0123456789abcdef";
+            buf[len++] = '\\'; buf[len++] = 'u';
+            buf[len++] = '0'; buf[len++] = '0';
+            buf[len++] = hex[c >> 4]; buf[len++] = hex[c & 15];
+        }
         else                { buf[len++] = (char)c; }
     }
     buf[len++] = '"';
@@ -749,85 +762,1420 @@ int64_t* tinox_array_remove_at(int64_t* h, int64_t idx) {
     return h;
 }
 
-// ---- Async runtime ----
+// ---- Observability (#305): W3C Trace Context and OTLP/HTTP JSON ----
+// Fixed-size, value-only contexts can cross threads without sharing GC roots.
+// No headers, bodies, URLs, exception text, or application fields are captured.
+#include <sys/random.h>
+static const char* tinox_config_lookup(const char* key);
+void tinox_counter_inc(const char* name);
+void tinox_histogram_record(const char* name, int64_t duration_ns);
 
 typedef struct {
+    char trace[33], span[17], parent[17], request[65], name[65];
+    int sampled, kind;
+    int64_t start, monotonic;
+} TinoxTelemetryContext;
+static __thread TinoxTelemetryContext telemetry_context;
+static __thread TinoxTelemetryContext telemetry_stack[32];
+static __thread int telemetry_depth;
+static int telemetry_enabled, telemetry_sample = 10000;
+static char telemetry_service[65] = "tinox";
+static struct sockaddr_in telemetry_collector;
+static int telemetry_export_enabled;
+static pthread_once_t telemetry_once = PTHREAD_ONCE_INIT;
+#define TINOX_TELEMETRY_QUEUE 128
+static TinoxTelemetryContext telemetry_queue[TINOX_TELEMETRY_QUEUE];
+static size_t telemetry_head, telemetry_count;
+static int telemetry_busy;
+static pthread_mutex_t telemetry_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t telemetry_cv = PTHREAD_COND_INITIALIZER;
+
+static int64_t telemetry_clock(clockid_t clock) {
+    struct timespec ts;
+    clock_gettime(clock, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+static void telemetry_random(char* out, size_t bytes) {
+    unsigned char data[16];
+    size_t off = 0;
+    while (off < bytes) {
+        ssize_t n = getrandom(data + off, bytes - off, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { fprintf(stderr, "tinox: cannot generate telemetry ID\n"); exit(1); }
+        off += (size_t)n;
+    }
+    // IDs must be nonzero, including in the astronomically unlikely all-zero draw.
+    int nonzero = 0;
+    for (size_t i = 0; i < bytes; i++) nonzero |= data[i];
+    if (!nonzero) data[0] = 1;
+    for (size_t i = 0; i < bytes; i++) {
+        out[i*2] = "0123456789abcdef"[data[i] >> 4];
+        out[i*2+1] = "0123456789abcdef"[data[i] & 15];
+    }
+    out[bytes*2] = 0;
+}
+static int telemetry_hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+static int telemetry_parent(const char* p, TinoxTelemetryContext* ctx) {
+    if (!p) return 0;
+    size_t n = strnlen(p, 513);
+    if (n < 55 || n > 512 || p[2] != '-' || p[35] != '-' || p[52] != '-') return 0;
+    if (telemetry_hex(p[0]) < 0 || telemetry_hex(p[1]) < 0 || !strncmp(p, "ff", 2)) return 0;
+    if (!strncmp(p, "00", 2) ? n != 55 : (n > 55 && (n < 57 || p[55] != '-'))) return 0;
+    int trace_nonzero = 0, span_nonzero = 0;
+    for (int i = 3; i < 55; i++) {
+        if (i == 35 || i == 52) continue;
+        int h = telemetry_hex(p[i]);
+        if (h < 0) return 0;
+        if (i < 35) trace_nonzero |= h;
+        else if (i < 52) span_nonzero |= h;
+    }
+    if (!trace_nonzero || !span_nonzero) return 0;
+    memcpy(ctx->trace, p + 3, 32); ctx->trace[32] = 0;
+    memcpy(ctx->parent, p + 36, 16); ctx->parent[16] = 0;
+    ctx->sampled = telemetry_hex(p[54]) & 1;
+    return 1;
+}
+// Only ASCII tokens enter correlation fields/resource names. Invalid incoming
+// request IDs are replaced, never truncated into colliding identifiers.
+static int telemetry_token(const char* s) {
+    if (!s || !*s || strnlen(s, 65) > 64) return 0;
+    for (const unsigned char* p = (const unsigned char*)s; *p; p++)
+        if (!( (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+               (*p >= '0' && *p <= '9') || *p == '-' || *p == '_' || *p == '.')) return 0;
+    return 1;
+}
+static const char* telemetry_setting(const char* env, const char* key, const char* dflt) {
+    const char* v = getenv(env);
+    if (!v) v = tinox_config_lookup(key);
+    return v && *v ? v : dflt;
+}
+static void telemetry_config_error(const char* key) {
+    fprintf(stderr, "tinox: invalid telemetry configuration: %s\n", key);
+    exit(1);
+}
+// All exporter I/O uses a single absolute 200ms deadline. Numeric IPv4 avoids
+// unbounded DNS resolution. Deploy a local collector for TLS/auth/retry routing.
+static int telemetry_wait(int fd, short events, int64_t deadline) {
+    for (;;) {
+        int64_t remaining = deadline - telemetry_clock(CLOCK_MONOTONIC);
+        if (remaining <= 0) return 0;
+        struct pollfd p = { fd, events, 0 };
+        int rc = poll(&p, 1, (int)((remaining + 999999) / 1000000));
+        if (rc < 0 && errno == EINTR) continue;
+        return rc > 0 && (p.revents & events);
+    }
+}
+static int telemetry_export(const TinoxTelemetryContext* c) {
+    char body[1536], req[2048];
+    int64_t end = c->start + c->monotonic; // queued monotonic stores elapsed ns
+    int n = snprintf(body, sizeof(body),
+        "{\"resourceSpans\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\","
+        "\"value\":{\"stringValue\":\"%s\"}}]},\"scopeSpans\":[{\"scope\":{\"name\":\"tinox\"},"
+        "\"spans\":[{\"traceId\":\"%s\",\"spanId\":\"%s\",\"parentSpanId\":\"%s\","
+        "\"name\":\"%s\",\"kind\":%d,\"flags\":%d,\"startTimeUnixNano\":\"%lld\",\"endTimeUnixNano\":\"%lld\"}]}]}]}",
+        telemetry_service, c->trace, c->span, c->parent, c->name, c->kind, c->sampled,
+        (long long)c->start, (long long)end);
+    int len = snprintf(req, sizeof(req),
+        "POST /v1/traces HTTP/1.1\r\nHost: %s:%u\r\nContent-Type: application/json\r\n"
+        "Connection: close\r\nContent-Length: %d\r\n\r\n%s",
+        inet_ntoa(telemetry_collector.sin_addr), ntohs(telemetry_collector.sin_port), n, body);
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (fd < 0) return 0;
+    int64_t deadline = telemetry_clock(CLOCK_MONOTONIC) + 200000000;
+    int ok = 0;
+    if (connect(fd, (struct sockaddr*)&telemetry_collector, sizeof(telemetry_collector)) < 0 && errno != EINPROGRESS) goto done;
+    if (!telemetry_wait(fd, POLLOUT, deadline)) goto done;
+    int error = 0; socklen_t error_len = sizeof(error);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_len) || error) goto done;
+    size_t off = 0;
+    while (off < (size_t)len) {
+        if (!telemetry_wait(fd, POLLOUT, deadline)) goto done;
+        ssize_t sent = send(fd, req + off, (size_t)len - off, MSG_NOSIGNAL);
+        if (sent < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        if (sent <= 0) goto done;
+        off += (size_t)sent;
+    }
+    char response[256]; off = 0;
+    while (off < sizeof(response) - 1) {
+        if (!telemetry_wait(fd, POLLIN, deadline)) goto done;
+        ssize_t got = recv(fd, response + off, sizeof(response) - 1 - off, 0);
+        if (got < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        if (got <= 0) goto done;
+        off += (size_t)got; response[off] = 0;
+        if (strstr(response, "\r\n")) {
+            // OTLP success is 200. No retries: collector owns durable delivery.
+            ok = !strncmp(response, "HTTP/1.1 200 ", 13) || !strncmp(response, "HTTP/1.0 200 ", 13);
+            break;
+        }
+    }
+ done:
+    close(fd);
+    return ok;
+}
+static void* telemetry_worker(void* unused) {
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&telemetry_mu);
+        while (!telemetry_count) pthread_cond_wait(&telemetry_cv, &telemetry_mu);
+        TinoxTelemetryContext c = telemetry_queue[telemetry_head];
+        telemetry_head = (telemetry_head + 1) % TINOX_TELEMETRY_QUEUE;
+        telemetry_count--; telemetry_busy = 1;
+        pthread_mutex_unlock(&telemetry_mu);
+        tinox_counter_inc(telemetry_export(&c) ? "tinox_telemetry_exported_total" : "tinox_telemetry_export_failed_total");
+        pthread_mutex_lock(&telemetry_mu);
+        telemetry_busy = 0;
+        pthread_mutex_unlock(&telemetry_mu);
+    }
+    return NULL;
+}
+static void telemetry_init_once(void) {
+    const char* enabled = telemetry_setting("TINOX_TELEMETRY_ENABLED", "tinox.telemetry.enabled", "false");
+    if (strcmp(enabled, "true") && strcmp(enabled, "false")) telemetry_config_error("enabled (true/false)");
+    telemetry_enabled = !strcmp(enabled, "true");
+    const char* sample = telemetry_setting("TINOX_TELEMETRY_SAMPLE", "tinox.telemetry.sample", "10000");
+    char* end; errno = 0;
+    long rate = strtol(sample, &end, 10);
+    if (errno || end == sample || *end || rate < 0 || rate > 10000) telemetry_config_error("sample (0..10000)");
+    telemetry_sample = (int)rate;
+    const char* service = telemetry_setting("TINOX_TELEMETRY_SERVICE", "tinox.telemetry.service", "tinox");
+    if (!telemetry_token(service)) telemetry_config_error("service (1..64 ASCII token bytes)");
+    strcpy(telemetry_service, service);
+    const char* endpoint = telemetry_setting("TINOX_TELEMETRY_ENDPOINT", "tinox.telemetry.endpoint", "");
+    if (*endpoint) {
+        char ip[16]; unsigned port; int consumed = 0;
+        if (sscanf(endpoint, "http://%15[0-9.]:%u/v1/traces%n", ip, &port, &consumed) != 2 ||
+            !consumed || endpoint[consumed] || !port || port > 65535 ||
+            inet_pton(AF_INET, ip, &telemetry_collector.sin_addr) != 1) telemetry_config_error("endpoint (http://IPv4:port/v1/traces)");
+        telemetry_collector.sin_family = AF_INET;
+        telemetry_collector.sin_port = htons((uint16_t)port);
+        if (telemetry_enabled) {
+            pthread_t worker;
+            if (pthread_create(&worker, NULL, telemetry_worker, NULL)) telemetry_config_error("exporter thread");
+            pthread_detach(worker);
+            telemetry_export_enabled = 1;
+        }
+    }
+}
+void telemetryInit(void) { pthread_once(&telemetry_once, telemetry_init_once); }
+int64_t telemetryEnabled(void) { return telemetry_enabled; }
+
+static int64_t telemetry_enter(const char* name, const char* parent, const char* request, int kind) {
+    if (!telemetry_enabled) return 0;
+    if (telemetry_depth == 32) { tinox_counter_inc("tinox_telemetry_scope_rejected_total"); return 0; }
+    telemetry_stack[telemetry_depth++] = telemetry_context;
+    TinoxTelemetryContext old = telemetry_context;
+    memset(&telemetry_context, 0, sizeof(telemetry_context));
+    if (parent ? !telemetry_parent(parent, &telemetry_context) : !old.trace[0]) {
+        telemetry_random(telemetry_context.trace, 16);
+        unsigned draw = 0;
+        for (int i = 28; i < 32; i++) draw = draw * 16 + (unsigned)telemetry_hex(telemetry_context.trace[i]);
+        telemetry_context.sampled = draw < (unsigned)((65536ULL * telemetry_sample) / 10000);
+    } else if (!parent) {
+        strcpy(telemetry_context.trace, old.trace);
+        strcpy(telemetry_context.parent, old.span);
+        telemetry_context.sampled = old.sampled;
+    }
+    telemetry_random(telemetry_context.span, 8);
+    const char* id = request && *request ? request : parent ? NULL : old.request;
+    strcpy(telemetry_context.request, telemetry_token(id) ? id : telemetry_context.trace);
+    strcpy(telemetry_context.name, telemetry_token(name) ? name : "operation");
+    telemetry_context.kind = kind;
+    telemetry_context.start = telemetry_clock(CLOCK_REALTIME);
+    telemetry_context.monotonic = telemetry_clock(CLOCK_MONOTONIC);
+    return telemetry_depth;
+}
+int64_t telemetryBegin(const char* name, const char* parent, const char* request) {
+    // Empty parent continues the current operation; incoming adapters pass a
+    // non-NULL parent directly to telemetry_enter to force a fresh boundary.
+    return telemetry_enter(name, parent && *parent ? parent : NULL, request, 1);
+}
+int64_t telemetryEnd(int64_t token) {
+    if (!token) return 1;
+    if (token != telemetry_depth) return 0;
+    TinoxTelemetryContext c = telemetry_context;
+    c.monotonic = telemetry_clock(CLOCK_MONOTONIC) - c.monotonic;
+    const char* metric = c.kind == 2 ? "tinox_http_server_duration_ns" :
+                         c.kind == 3 ? "tinox_http_client_duration_ns" : "tinox_operation_duration_ns";
+    tinox_histogram_record(metric, c.monotonic);
+    if (c.sampled && telemetry_export_enabled) {
+        // Producers never wait behind network I/O. Full queues drop newest.
+        pthread_mutex_lock(&telemetry_mu);
+        if (telemetry_count < TINOX_TELEMETRY_QUEUE) {
+            telemetry_queue[(telemetry_head + telemetry_count) % TINOX_TELEMETRY_QUEUE] = c;
+            telemetry_count++;
+            pthread_cond_signal(&telemetry_cv);
+        } else tinox_counter_inc("tinox_telemetry_dropped_total");
+        pthread_mutex_unlock(&telemetry_mu);
+    }
+    telemetry_context = telemetry_stack[--telemetry_depth];
+    return 1;
+}
+// Automatic boundaries also close application scopes abandoned by an error
+// path, so a reused worker cannot leak context into the next request.
+static void telemetry_leave(int64_t token) {
+    if (!token) return;
+    while (telemetry_depth >= token) telemetryEnd(telemetry_depth);
+}
+char* telemetryTraceparent(void) {
+    char p[56] = "";
+    if (telemetry_context.trace[0]) snprintf(p, sizeof(p), "00-%s-%s-%02x", telemetry_context.trace, telemetry_context.span, telemetry_context.sampled);
+    return GC_strdup(p);
+}
+char* telemetryRequestId(void) { return GC_strdup(telemetry_context.request); }
+// An explicit bounded best-effort drain for short-lived apps; never called by
+// a handler. Pending spans may be lost on process exit or exporter failure.
+int64_t telemetryFlush(void) {
+    if (!telemetry_export_enabled) return 1;
+    int64_t deadline = telemetry_clock(CLOCK_MONOTONIC) + 250000000;
+    do {
+        pthread_mutex_lock(&telemetry_mu);
+        int pending = telemetry_count || telemetry_busy;
+        pthread_mutex_unlock(&telemetry_mu);
+        if (!pending) return 1;
+        struct timespec pause = {0, 1000000}; nanosleep(&pause, NULL);
+    } while (telemetry_clock(CLOCK_MONOTONIC) < deadline);
+    return 0;
+}
+// Bounded JSON string escaping, including every control byte. Preserve UTF-8
+// boundaries when truncating. The caller's existing @Sensitive/@Masked
+// toString conversion happens before logging, exactly as for text output.
+static void telemetry_quote(char** out, const char* s, size_t limit) {
+    *(*out)++ = '"';
+    if (!s) s = "";
+    size_t n = strnlen(s, limit + 1);
+    if (n > limit) { n = limit; while (n && ((unsigned char)s[n] & 0xc0) == 0x80) n--; }
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') { *(*out)++ = '\\'; *(*out)++ = (char)c; }
+        else if (c < 32) { int len = sprintf(*out, "\\u%04x", c); *out += len; }
+        else *(*out)++ = (char)c;
+    }
+    *(*out)++ = '"'; **out = 0;
+}
+char* telemetryLogJson(const char* timestamp, const char* level, const char* logger, const char* message) {
+    char buf[32768], *out = buf;
+    const char* keys[] = {"timestamp", "level", "logger", "message", "request_id", "trace_id", "span_id"};
+    const char* vals[] = {timestamp, level, logger, message, telemetry_context.request, telemetry_context.trace, telemetry_context.span};
+    const size_t limits[] = {64, 16, 128, 4096, 64, 32, 16};
+    *out++ = '{';
+    for (int i = 0; i < 7; i++) {
+        if (i) *out++ = ',';
+        telemetry_quote(&out, keys[i], 32); *out++ = ':';
+        telemetry_quote(&out, vals[i], limits[i]);
+    }
+    *out++ = '}'; *out = 0;
+    return GC_strdup(buf);
+}
+void telemetryWriteLogJson(const char* timestamp, const char* level, const char* logger, const char* message) {
+    // One stdio operation keeps concurrent structured records on separate lines.
+    puts(telemetryLogJson(timestamp, level, logger, message));
+}
+static void telemetry_event(const char* event) {
+    char stamp[32]; snprintf(stamp, sizeof(stamp), "%lld", (long long)telemetry_clock(CLOCK_REALTIME));
+    puts(telemetryLogJson(stamp, "INFO", "tinox", event));
+}
+
+// ---- Async runtime ----
+
+// Structured tasks (#301). Handles are monotonically allocated IDs, never
+// unchecked addresses. The active registry roots task data for the GC and
+// rejects forged, detached, or expired handles without dereferencing them.
+extern __thread int64_t __tinox_err;
+typedef struct TinoxTask TinoxTask;
+typedef struct TinoxTaskScope TinoxTaskScope;
+struct TinoxTaskScope {
+    _Atomic(TinoxTaskScope*) parent;
+    atomic_bool cancelled;
+    _Atomic int64_t deadline;
+    int closed;
+    TinoxTask* children; // modified only by the owning thread
+    TinoxTask* children_tail;
+};
+struct TinoxTask {
+    uintptr_t id;
     pthread_t thread;
-} TinoxTask;
+    pthread_t creator_thread;
+    pthread_mutex_t mu;
+    pthread_cond_t cond;
+    int done, joined, observed, detached;
+    int budgeted; // holds a slot of the TINOX_MAX_TASKS budget (#302)
+    void* retval;
+    int64_t error;
+    TinoxTaskScope* scope;
+    TinoxTaskScope* owner;
+    TinoxTask* sibling;
+    TinoxTask* previous;
+    TinoxTask* registry_next;
+    TinoxTask* waiting_on; // protected by task_registry_mu
+};
+static __thread TinoxTaskScope* task_scope;
+static __thread TinoxTaskScope* task_frame_scope;
+static __thread TinoxTask* current_task;
+static pthread_mutex_t task_registry_mu = PTHREAD_MUTEX_INITIALIZER;
+// Bucket heads are also conservative GC roots for all active tasks.
+#define TINOX_TASK_BUCKETS 1024
+static TinoxTask* task_registry[TINOX_TASK_BUCKETS];
+static uintptr_t task_next_id = 1;
+static __thread int service_task_id = -1;
+static __thread int service_work_depth;
+static __thread int service_cleanup_mode;
+static int service_request_if_active(void);
+static int service_enabled(void);
+static int service_should_cancel(void);
+bool serviceIsStopping(void);
+static atomic_bool task_shutdown_requested;
+static atomic_bool task_shutdown_complete;
+static const char task_cancelled_error[] = "Task cancelled";
+static const char task_deadline_error[] = "Task deadline exceeded";
+static const char task_shutdown_error[] = "Task service shutdown requested";
+
+
+static void task_fatal(const char* message) {
+    fprintf(stderr, "tinox: %s\n", message);
+    exit(1);
+}
+static void task_pthread_check(int rc) {
+    if (rc) {
+        fprintf(stderr, "tinox: task pthread operation failed: %s\n", strerror(rc));
+        exit(1);
+    }
+}
+static void* task_shutdown_watchdog(void* unused) {
+    (void)unused;
+    struct timespec remaining = { 5, 0 };
+    while (nanosleep(&remaining, &remaining) < 0 && errno == EINTR) {}
+    if (!atomic_load(&task_shutdown_complete))
+        task_fatal("service shutdown request ignored for 5 seconds; check cancellation checkpoints and blocking operations");
+    return NULL;
+}
+static void task_request_shutdown_now(void) {
+    if (atomic_exchange(&task_shutdown_requested, true)) return;
+    if (service_enabled()) return;
+    // The owner itself may be stuck outside any cancellation point. A bounded
+    // process watchdog makes that failure visible without terminating a thread
+    // asynchronously or releasing another thread's resources.
+    pthread_t watchdog;
+    task_pthread_check(pthread_create(&watchdog, NULL, task_shutdown_watchdog, NULL));
+    task_pthread_check(pthread_detach(watchdog));
+}
+void taskRequestShutdown(void) {
+    if (!service_request_if_active()) task_request_shutdown_now();
+}
+static void task_cond_init(pthread_cond_t* cond) {
+    pthread_condattr_t attr;
+    task_pthread_check(pthread_condattr_init(&attr));
+    task_pthread_check(pthread_condattr_setclock(&attr, CLOCK_MONOTONIC));
+    task_pthread_check(pthread_cond_init(cond, &attr));
+    task_pthread_check(pthread_condattr_destroy(&attr));
+}
+static int64_t task_clock_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+static TinoxTaskScope* task_new_scope(TinoxTaskScope* parent) {
+    TinoxTaskScope* scope = calloc(1, sizeof(*scope));
+    atomic_init(&scope->parent, parent);
+    atomic_init(&scope->cancelled, false);
+    atomic_init(&scope->deadline, 0);
+    return scope;
+}
+static TinoxTaskScope* task_ensure_scope(void) {
+    if (!task_scope) task_frame_scope = task_scope = task_new_scope(NULL);
+    return task_scope;
+}
+static const char* task_cancellation(TinoxTaskScope* scope) {
+    if (!service_cleanup_mode && (atomic_load(&task_shutdown_requested) || service_should_cancel())) return task_shutdown_error;
+    for (; scope; scope = atomic_load(&scope->parent)) {
+        if (atomic_load(&scope->cancelled)) return task_cancelled_error;
+        int64_t deadline = atomic_load(&scope->deadline);
+        if (deadline && task_clock_ms() >= deadline) return task_deadline_error;
+    }
+    return NULL;
+}
+void taskCheckCancellation(void) {
+    const char* error = task_cancellation(task_scope);
+    if (error && !__tinox_err) __tinox_err = (int64_t)(intptr_t)error;
+}
+void taskSetDeadline(int64_t milliseconds) {
+    int64_t now_ms = task_clock_ms();
+    if (milliseconds < 0 || milliseconds > INT64_MAX - now_ms)
+        task_fatal("taskSetDeadline requires a nonnegative duration in milliseconds");
+    atomic_store(&task_ensure_scope()->deadline, now_ms + milliseconds);
+    taskCheckCancellation();
+}
+void taskWaitReadable(int64_t fd) {
+    if (fd < 0 || fd > INT_MAX) task_fatal("taskWaitReadable requires a valid file descriptor");
+    struct pollfd pfd = { .fd = (int)fd, .events = POLLIN };
+    while (1) {
+        taskCheckCancellation();
+        if (__tinox_err) return;
+        int rc = poll(&pfd, 1, 10);
+        if (rc < 0 && errno == EINTR) continue;
+        if (rc < 0 || (pfd.revents & POLLNVAL)) {
+            if (!__tinox_err) __tinox_err = (int64_t)(intptr_t)"Task I/O wait failed";
+            return;
+        }
+        if (rc > 0) return;
+    }
+}
+static void taskScopeEnter(void) {
+    task_scope = task_new_scope(task_ensure_scope());
+}
+static TinoxTask* task_lookup(uintptr_t id) {
+    pthread_mutex_lock(&task_registry_mu);
+    TinoxTask* task = task_registry[id % TINOX_TASK_BUCKETS];
+    while (task && task->id != id) task = task->registry_next;
+    pthread_mutex_unlock(&task_registry_mu);
+    if (!task) task_fatal("invalid or expired task handle (integer handles are deprecated; use Task<T>)");
+    return task;
+}
+void taskCancel(int64_t handle) {
+    TinoxTask* task = task_lookup((uintptr_t)handle);
+    atomic_store(&task->scope->cancelled, true);
+}
+static void task_unregister(TinoxTask* task) {
+    pthread_mutex_lock(&task_registry_mu);
+    TinoxTask** link = &task_registry[task->id % TINOX_TASK_BUCKETS];
+    while (*link && *link != task) link = &(*link)->registry_next;
+    if (*link) *link = task->registry_next;
+    task->registry_next = NULL;
+    pthread_mutex_unlock(&task_registry_mu);
+}
+// Called with task->mu locked. Short timed waits allow cancellation without
+// asynchronous termination, signals, or releasing resources from another thread.
+static void task_wait_tick(TinoxTask* task) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    ts.tv_nsec += 10000000;
+    if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+    int rc = pthread_cond_timedwait(&task->cond, &task->mu, &ts);
+    if (rc != ETIMEDOUT) task_pthread_check(rc);
+}
+static void task_join_locked(TinoxTask* task) {
+    if (!task->joined) {
+        task_pthread_check(pthread_join(task->thread, NULL));
+        task->joined = 1;
+    }
+}
+static int task_is_cancellation(int64_t error) {
+    return error == (int64_t)(intptr_t)task_cancelled_error
+        || error == (int64_t)(intptr_t)task_deadline_error
+        || error == (int64_t)(intptr_t)task_shutdown_error;
+}
+static void task_close_scope(TinoxTaskScope* scope, int suppress_all, int shutdown) {
+    if (scope->closed) return;
+    int64_t original_error = __tinox_err;
+    if (original_error || suppress_all || shutdown) atomic_store(&scope->cancelled, true);
+    int64_t cancel_started = 0;
+    for (TinoxTask* task = scope->children; task; task = task->sibling) {
+        pthread_mutex_lock(&task->mu);
+        while (!task->done) {
+            // Notice failures out of spawn order, but deliver them below in
+            // spawn order. Otherwise a blocked earlier sibling can hide them.
+            for (TinoxTask* other = scope->children; other; other = other->sibling) {
+                if (other == task || pthread_mutex_trylock(&other->mu) != 0) continue;
+                if (other->done && !other->observed && other->error && !task_is_cancellation(other->error))
+                    atomic_store(&scope->cancelled, true);
+                pthread_mutex_unlock(&other->mu);
+            }
+            if (task_cancellation(scope)) {
+                if (!cancel_started) cancel_started = task_clock_ms();
+                if ((!service_enabled() || !serviceIsStopping()) && task_clock_ms() - cancel_started >= 5000)
+                    task_fatal("task ignored cooperative cancellation for 5 seconds during scope shutdown");
+            }
+            task_wait_tick(task);
+        }
+        task_join_locked(task);
+        pthread_mutex_unlock(&task->mu);
+    }
+    int64_t first_error = 0;
+    // A failure causing sibling cancellation takes precedence over that
+    // cancellation. An explicit cancel/deadline is still observable on its own.
+    for (int cancellation_pass = 0; cancellation_pass < 2; cancellation_pass++) {
+        for (TinoxTask* task = scope->children; task; task = task->sibling) {
+            pthread_mutex_lock(&task->mu);
+            if (!task->observed && task->error && task_is_cancellation(task->error) == cancellation_pass) {
+                task->observed = 1;
+                if (!original_error && !suppress_all && !first_error && !(shutdown && cancellation_pass))
+                    first_error = task->error;
+                else if (!cancellation_pass)
+                    fprintf(stderr, "tinox: task error suppressed: %s\n", (char*)(intptr_t)task->error);
+            }
+            pthread_mutex_unlock(&task->mu);
+        }
+    }
+    for (TinoxTask* task = scope->children; task; task = task->sibling) task_unregister(task);
+    scope->children = scope->children_tail = NULL;
+    scope->closed = 1;
+    __tinox_err = original_error ? original_error : first_error;
+}
+int64_t __scope_new(void) {
+    taskScopeEnter();
+    return (int64_t)(intptr_t)task_scope;
+}
+static void task_remove_owner(TinoxTask* task) {
+    TinoxTaskScope* owner = task->owner;
+    if (task->previous) task->previous->sibling = task->sibling;
+    else owner->children = task->sibling;
+    if (task->sibling) task->sibling->previous = task->previous;
+    else owner->children_tail = task->previous;
+    task->previous = task->sibling = NULL;
+}
+static void task_add_owner(TinoxTask* task, TinoxTaskScope* owner) {
+    task->owner = owner;
+    task->previous = owner->children_tail;
+    if (owner->children_tail) owner->children_tail->sibling = task;
+    else owner->children = task;
+    owner->children_tail = task;
+}
+void __scope_add(int64_t handle, int64_t task_handle) {
+    TinoxTaskScope* scope = (TinoxTaskScope*)(intptr_t)handle;
+    TinoxTask* task = task_lookup((uintptr_t)task_handle);
+    if (scope != task_scope || scope->closed || task->owner != task_frame_scope)
+        task_fatal("invalid task scope registration");
+    // Registration stays lexical: spawns in called methods or closures remain
+    // owned by the thread frame, exactly as the parser's scope stack specifies.
+    task_remove_owner(task);
+    task_add_owner(task, scope);
+}
+void __scope_abort(int64_t handle) {
+    TinoxTaskScope* scope = (TinoxTaskScope*)(intptr_t)handle;
+    task_close_scope(scope, 1, 0);
+    if (task_scope == scope) task_scope = atomic_load(&scope->parent);
+}
+void __scope_join(int64_t handle) {
+    TinoxTaskScope* scope = (TinoxTaskScope*)(intptr_t)handle;
+    task_close_scope(scope, 0, 0);
+    // A rethrow may bypass the generated finally; abort restores it too.
+    if (task_scope == scope) task_scope = atomic_load(&scope->parent);
+}
 
 typedef struct TinoxChannelNode {
     int64_t value;
     struct TinoxChannelNode* next;
 } TinoxChannelNode;
-
 typedef struct {
     TinoxChannelNode* head;
     TinoxChannelNode* tail;
     pthread_mutex_t mutex;
-    pthread_cond_t  cond;
+    pthread_cond_t cond;
 } TinoxChannel;
+
+// ---- Concurrency budgets (issue #302) ----
+// One validated set of limits per process, resolved lazily on first use:
+// an explicit TINOX_* environment override wins over the detected default,
+// and a malformed override is a hard startup failure (no silent fallback
+// to a default the operator did not ask for).
+//
+//   TINOX_CPUS                  effective CPU count (default: detected)
+//   TINOX_HTTP_WORKERS          HTTP/1 epoll worker threads (default: CPUs)
+//   TINOX_MAX_CONNECTIONS       open HTTP/1 connections, all workers (4096)
+//   TINOX_MAX_TASKS             concurrently running `spawn` threads (4096)
+//   TINOX_MAX_WS_CONNECTIONS    concurrently open WebSocket connections (1024)
+//   TINOX_QUEUE_WAIT_MS         how long `spawn` / a WebSocket accept may
+//                               wait for a free slot before the request is
+//                               rejected (default 0 = reject immediately)
+//
+// Each setting can also be given in application.properties as
+// `tinox.limits.<name>` (e.g. `tinox.limits.max_tasks=256`); the
+// environment variable wins, then the properties file, then the default.
+//
+// Detected CPUs = min(sched affinity/cpuset, cgroup CPU quota), so a
+// container started with `--cpus=1.5` or a `taskset` mask no longer sizes
+// its pools by the host's online core count.
+#define TINOX_MAX_CONNECTIONS_CEILING 4096 // EPOLL_MAX_CONNS slot table, see below
+
+typedef struct {
+    int64_t cpus;
+    const char* cpu_source;
+    int64_t http_workers;
+    int64_t max_connections;
+    int64_t max_tasks;
+    int64_t max_ws_connections;
+    int64_t queue_wait_ms;
+} TinoxLimits;
+
+static TinoxLimits g_limits;
+static pthread_once_t g_limits_once = PTHREAD_ONCE_INIT;
+static atomic_llong g_active_tasks, g_peak_tasks, g_rejected_tasks;
+static atomic_llong g_open_conns, g_peak_conns, g_rejected_conns;
+static atomic_llong g_active_ws, g_peak_ws, g_rejected_ws;
+// Queue (wait-for-slot) accounting shared by the task and WebSocket budgets.
+static atomic_llong g_waiting, g_wait_total_ms, g_wait_max_ms, g_wait_timeouts;
+static pthread_mutex_t g_budget_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_budget_cv;
+static const char* tinox_config_lookup(const char* key);
+
+static void tinox_atomic_max(atomic_llong* peak, long long v) {
+    long long cur = atomic_load(peak);
+    while (v > cur && !atomic_compare_exchange_weak(peak, &cur, v)) {}
+}
+
+// Reads a small text file into buf; returns 0 on success.
+static int tinox_read_small_file(const char* path, char* buf, size_t cap) {
+    FILE* f = fopen(path, "r");
+    if (!f) return -1;
+    size_t n = fread(buf, 1, cap - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    return 0;
+}
+
+// CPU quota of the enclosing cgroup as a whole number of CPUs (rounded
+// up, at least 1), or 0 when there is no quota. TINOX_CGROUP_ROOT only
+// exists so tests can point this at a fixture tree.
+static int64_t tinox_cgroup_cpu_quota(void) {
+    const char* root = getenv("TINOX_CGROUP_ROOT");
+    int fixture = root && *root;
+    if (!fixture) root = "/sys/fs/cgroup";
+    char path[1024], buf[256];
+    long long quota = 0, period = 0;
+
+    // cgroup v2: "<quota|max> <period>". The process may sit in a nested
+    // cgroup (systemd scope, k8s pod slice) whose parents carry the quota,
+    // so walk from the process's own cgroup up to the root keeping the
+    // tightest limit. Inside a container the cgroup namespace makes the
+    // own cgroup "/" already.
+    char rel[512] = "";
+    if (!fixture && tinox_read_small_file("/proc/self/cgroup", buf, sizeof(buf)) == 0) {
+        char* line = strstr(buf, "0::");
+        if (line) {
+            line += 3;
+            size_t n = strcspn(line, "\n");
+            if (n < sizeof(rel)) { memcpy(rel, line, n); rel[n] = '\0'; }
+        }
+    }
+    int64_t best = 0;
+    int found_v2 = 0;
+    for (;;) {
+        snprintf(path, sizeof(path), "%s%s/cpu.max", root, rel);
+        if (tinox_read_small_file(path, buf, sizeof(buf)) == 0) {
+            found_v2 = 1;
+            if (strncmp(buf, "max", 3) != 0 && sscanf(buf, "%lld %lld", &quota, &period) == 2
+                && quota > 0 && period > 0) {
+                int64_t cpus = (quota + period - 1) / period;
+                if (best == 0 || cpus < best) best = cpus;
+            }
+        }
+        char* slash = strrchr(rel, '/');
+        if (!slash) break;
+        *slash = '\0';
+    }
+    if (found_v2) return best;
+
+    // cgroup v1: separate quota (-1 = none) and period files
+    snprintf(path, sizeof(path), "%s/cpu/cpu.cfs_quota_us", root);
+    if (tinox_read_small_file(path, buf, sizeof(buf)) != 0) return 0;
+    quota = atoll(buf);
+    snprintf(path, sizeof(path), "%s/cpu/cpu.cfs_period_us", root);
+    if (tinox_read_small_file(path, buf, sizeof(buf)) != 0) return 0;
+    period = atoll(buf);
+    if (quota > 0 && period > 0) return (quota + period - 1) / period;
+    return 0;
+}
+
+static int64_t tinox_limit_env(const char* name, int64_t dflt, int64_t min, int64_t max) {
+    const char* v = getenv(name);
+    if (!v || !*v) {
+        // application.properties: tinox.limits.<lowercased name without TINOX_>
+        char key[128] = "tinox.limits.";
+        size_t o = strlen(key);
+        for (const char* c = name + 6; *c && o < sizeof(key) - 1; c++)
+            key[o++] = (char)tolower((unsigned char)*c);
+        key[o] = '\0';
+        v = tinox_config_lookup(key);
+        if (!v || !*v) return dflt;
+        name = key;
+    }
+    char* end = NULL;
+    errno = 0;
+    long long n = strtoll(v, &end, 10);
+    if (errno != 0 || *end != '\0' || n < min || n > max) {
+        fprintf(stderr, "tinox: invalid %s=\"%s\" (expected an integer in %lld..%lld)\n",
+                name, v, (long long)min, (long long)max);
+        exit(1);
+    }
+    return (int64_t)n;
+}
+
+static void tinox_limits_init_once(void) {
+    int64_t cpus = 0;
+    const char* source = "online";
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) == 0 && CPU_COUNT(&set) > 0) {
+        cpus = CPU_COUNT(&set);
+        source = "affinity";
+    } else {
+        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        cpus = n > 0 ? n : 1;
+    }
+    int64_t quota = tinox_cgroup_cpu_quota();
+    if (quota > 0 && quota < cpus) {
+        cpus = quota;
+        source = "cgroup quota";
+    }
+    const char* ov = getenv("TINOX_CPUS");
+    if (ov && *ov) source = "TINOX_CPUS";
+    g_limits.cpus = tinox_limit_env("TINOX_CPUS", cpus, 1, 4096);
+    g_limits.cpu_source = source;
+    g_limits.http_workers = tinox_limit_env("TINOX_HTTP_WORKERS", g_limits.cpus, 1, 256);
+    g_limits.max_connections = tinox_limit_env("TINOX_MAX_CONNECTIONS", 4096, 1, TINOX_MAX_CONNECTIONS_CEILING);
+    g_limits.max_tasks = tinox_limit_env("TINOX_MAX_TASKS", 4096, 1, 1000000);
+    g_limits.max_ws_connections = tinox_limit_env("TINOX_MAX_WS_CONNECTIONS", 1024, 1, 1000000);
+    g_limits.queue_wait_ms = tinox_limit_env("TINOX_QUEUE_WAIT_MS", 0, 0, 600000);
+    pthread_condattr_t ca;
+    pthread_condattr_init(&ca);
+    pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+    pthread_cond_init(&g_budget_cv, &ca);
+    pthread_condattr_destroy(&ca);
+}
+
+static const TinoxLimits* tinox_limits(void) {
+    pthread_once(&g_limits_once, tinox_limits_init_once);
+    return &g_limits;
+}
+
+// Reserves one slot in a counter bounded by `max`; 0 when exhausted.
+static int tinox_budget_acquire(atomic_llong* active, atomic_llong* peak, int64_t max) {
+    long long cur = atomic_load(active);
+    while (cur < max) {
+        if (atomic_compare_exchange_weak(active, &cur, cur + 1)) {
+            tinox_atomic_max(peak, cur + 1);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Like tinox_budget_acquire, but may queue for up to TINOX_QUEUE_WAIT_MS
+// for a slot to free up. The wait is bounded by that deadline, so a queue
+// can never grow past (callers x deadline) and a request that does not
+// get a slot in time is rejected, never retried or run late.
+static int tinox_budget_acquire_queued(atomic_llong* active, atomic_llong* peak, int64_t max) {
+    if (tinox_budget_acquire(active, peak, max)) return 1;
+    int64_t wait_ms = tinox_limits()->queue_wait_ms;
+    if (wait_ms <= 0) return 0;
+    struct timespec t0, deadline;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    deadline = t0;
+    deadline.tv_sec += wait_ms / 1000;
+    deadline.tv_nsec += (wait_ms % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }
+    atomic_fetch_add(&g_waiting, 1);
+    int got = 0;
+    pthread_mutex_lock(&g_budget_mu);
+    for (;;) {
+        if (tinox_budget_acquire(active, peak, max)) { got = 1; break; }
+        if (pthread_cond_timedwait(&g_budget_cv, &g_budget_mu, &deadline) == ETIMEDOUT) {
+            got = tinox_budget_acquire(active, peak, max);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_budget_mu);
+    atomic_fetch_sub(&g_waiting, 1);
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long long waited = (long long)(t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    atomic_fetch_add(&g_wait_total_ms, waited);
+    tinox_atomic_max(&g_wait_max_ms, waited);
+    if (!got) atomic_fetch_add(&g_wait_timeouts, 1);
+    return got;
+}
+
+// Frees a slot and wakes any queued acquirer.
+static void tinox_budget_release(atomic_llong* active) {
+    atomic_fetch_sub(active, 1);
+    if (atomic_load(&g_waiting) > 0) {
+        pthread_mutex_lock(&g_budget_mu);
+        pthread_cond_broadcast(&g_budget_cv);
+        pthread_mutex_unlock(&g_budget_mu);
+    }
+}
+
+// Effective limits, for the startup banner / inspection output.
+void tinox_print_limits(void) {
+    const TinoxLimits* l = tinox_limits();
+    printf("Limits: cpus=%lld (%s), http workers=%lld, max connections=%lld, max tasks=%lld, max websocket connections=%lld, queue wait=%lld ms\n",
+           (long long)l->cpus, l->cpu_source, (long long)l->http_workers,
+           (long long)l->max_connections, (long long)l->max_tasks,
+           (long long)l->max_ws_connections, (long long)l->queue_wait_ms);
+    fflush(stdout);
+}
+
+// Effective limits and live saturation counters as JSON (Dev UI /limits).
+char* tinox_limits_json(void) {
+    const TinoxLimits* l = tinox_limits();
+    char* buf = (char*)GC_malloc(1024);
+    snprintf(buf, 1024,
+        "{\"cpus\":%lld,\"cpuSource\":\"%s\",\"httpWorkers\":%lld,\"maxConnections\":%lld,"
+        "\"maxTasks\":%lld,\"maxWebsocketConnections\":%lld,\"queueWaitMs\":%lld,"
+        "\"connectionsOpen\":%lld,\"connectionsRejected\":%lld,"
+        "\"tasksActive\":%lld,\"tasksRejected\":%lld,"
+        "\"websocketConnectionsActive\":%lld,\"websocketConnectionsRejected\":%lld,"
+        "\"queueWaiting\":%lld,\"queueWaitMaxMs\":%lld,\"queueTimeouts\":%lld}",
+        (long long)l->cpus, l->cpu_source, (long long)l->http_workers,
+        (long long)l->max_connections, (long long)l->max_tasks,
+        (long long)l->max_ws_connections, (long long)l->queue_wait_ms,
+        (long long)atomic_load(&g_open_conns), (long long)atomic_load(&g_rejected_conns),
+        (long long)atomic_load(&g_active_tasks), (long long)atomic_load(&g_rejected_tasks),
+        (long long)atomic_load(&g_active_ws), (long long)atomic_load(&g_rejected_ws),
+        (long long)atomic_load(&g_waiting), (long long)atomic_load(&g_wait_max_ms),
+        (long long)atomic_load(&g_wait_timeouts));
+    return buf;
+}
+
+// Limits + saturation counters as Prometheus text (appended to /metrics).
+static int tinox_limits_metrics_text(char* buf, size_t cap) {
+    const TinoxLimits* l = tinox_limits();
+    return snprintf(buf, cap,
+        "# TYPE tinox_cpus gauge\ntinox_cpus %lld\n"
+        "# TYPE tinox_http_workers gauge\ntinox_http_workers %lld\n"
+        "# TYPE tinox_http_connections_limit gauge\ntinox_http_connections_limit %lld\n"
+        "# TYPE tinox_http_connections_open gauge\ntinox_http_connections_open %lld\n"
+        "# TYPE tinox_http_connections_peak gauge\ntinox_http_connections_peak %lld\n"
+        "# TYPE tinox_http_connections_rejected_total counter\ntinox_http_connections_rejected_total %lld\n"
+        "# TYPE tinox_tasks_limit gauge\ntinox_tasks_limit %lld\n"
+        "# TYPE tinox_tasks_active gauge\ntinox_tasks_active %lld\n"
+        "# TYPE tinox_tasks_peak gauge\ntinox_tasks_peak %lld\n"
+        "# TYPE tinox_tasks_rejected_total counter\ntinox_tasks_rejected_total %lld\n"
+        "# TYPE tinox_websocket_connections_limit gauge\ntinox_websocket_connections_limit %lld\n"
+        "# TYPE tinox_websocket_connections_active gauge\ntinox_websocket_connections_active %lld\n"
+        "# TYPE tinox_websocket_connections_peak gauge\ntinox_websocket_connections_peak %lld\n"
+        "# TYPE tinox_websocket_connections_rejected_total counter\ntinox_websocket_connections_rejected_total %lld\n"
+        "# TYPE tinox_queue_wait_limit_ms gauge\ntinox_queue_wait_limit_ms %lld\n"
+        "# TYPE tinox_queue_waiting gauge\ntinox_queue_waiting %lld\n"
+        "# TYPE tinox_queue_wait_ms_total counter\ntinox_queue_wait_ms_total %lld\n"
+        "# TYPE tinox_queue_wait_ms_max gauge\ntinox_queue_wait_ms_max %lld\n"
+        "# TYPE tinox_queue_timeouts_total counter\ntinox_queue_timeouts_total %lld\n",
+        (long long)l->cpus, (long long)l->http_workers,
+        (long long)l->max_connections, (long long)atomic_load(&g_open_conns),
+        (long long)atomic_load(&g_peak_conns), (long long)atomic_load(&g_rejected_conns),
+        (long long)l->max_tasks, (long long)atomic_load(&g_active_tasks),
+        (long long)atomic_load(&g_peak_tasks), (long long)atomic_load(&g_rejected_tasks),
+        (long long)l->max_ws_connections, (long long)atomic_load(&g_active_ws),
+        (long long)atomic_load(&g_peak_ws), (long long)atomic_load(&g_rejected_ws),
+        (long long)l->queue_wait_ms, (long long)atomic_load(&g_waiting),
+        (long long)atomic_load(&g_wait_total_ms), (long long)atomic_load(&g_wait_max_ms),
+        (long long)atomic_load(&g_wait_timeouts));
+}
+
+// WebSocket admission: the accept loop asks before handing a connection to
+// a worker thread, and releases when that worker finishes.
+int64_t tinox_ws_admit(void) {
+    if (tinox_budget_acquire_queued(&g_active_ws, &g_peak_ws, tinox_limits()->max_ws_connections)) return 1;
+    atomic_fetch_add(&g_rejected_ws, 1);
+    return 0;
+}
+void tinox_ws_release(void) { tinox_budget_release(&g_active_ws); }
 
 typedef struct {
     void* (*fn)(void*);
     void* args;
+    TinoxTask* task;
+    TinoxTelemetryContext telemetry;
+    int64_t queued_at;
+    int service_id;
+    int cleanup_mode;
 } TinoxSpawnTrampolineArgs;
 
-// Registers this new thread's GC TLS roots (Bug 140) before running the
-// actual spawned closure body -- `fn` is compiler-generated code with no
-// opportunity to call tinox_gc_register_thread_roots() itself.
 static void* tinox_spawn_trampoline(void* raw) {
-    TinoxSpawnTrampolineArgs* t = (TinoxSpawnTrampolineArgs*)raw;
+    TinoxSpawnTrampolineArgs* t = raw;
     tinox_gc_register_thread_roots();
+    if (telemetry_enabled) telemetry_context = t->telemetry;
+    int64_t span_token = telemetry_enter("task", NULL, NULL, 1);
+    if (span_token) tinox_histogram_record("tinox_task_queue_duration_ns", telemetry_clock(CLOCK_MONOTONIC) - t->queued_at);
+    service_task_id = t->service_id;
+    service_cleanup_mode = t->cleanup_mode;
+    current_task = t->task;
+    task_frame_scope = task_scope = current_task->scope;
     void* (*fn)(void*) = t->fn;
     void* args = t->args;
     free(t);
-    return fn(args);
+    void* ret = fn(args);
+    task_close_scope(task_frame_scope, 0, 0);
+    telemetry_leave(span_token);
+    TinoxTask* task = current_task;
+    pthread_mutex_lock(&task->mu);
+    task->retval = ret;
+    task->error = __tinox_err;
+    task->done = 1;
+    if (task->detached) {
+        if (task->error && task->error != (int64_t)(intptr_t)task_shutdown_error) {
+            fprintf(stderr, "Uncaught detached task error: %s\n", (char*)(intptr_t)task->error);
+            exit(1);
+        }
+        task_unregister(task);
+    }
+    pthread_cond_broadcast(&task->cond);
+    pthread_mutex_unlock(&task->mu);
+    task_frame_scope = task_scope = NULL;
+    current_task = NULL;
+    tinox_gc_unregister_thread_roots();
+    if (task->budgeted) tinox_budget_release(&g_active_tasks);
+    return ret;
 }
-
-void* tinox_task_spawn(void* (*fn)(void*), void* args) {
-    TinoxTask* task = malloc(sizeof(TinoxTask));
-    TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
-    t->fn = fn;
-    t->args = args;
-    pthread_create(&task->thread, NULL, tinox_spawn_trampoline, t);
-    return task;
+static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
+    task_ensure_scope();
+    TinoxTaskScope* owner = task_frame_scope;
+    TinoxTask* task = calloc(1, sizeof(*task));
+    task->owner = owner;
+    task->creator_thread = pthread_self();
+    task->scope = task_new_scope(task_scope);
+    task_pthread_check(pthread_mutex_init(&task->mu, NULL));
+    task_cond_init(&task->cond);
+    pthread_mutex_lock(&task_registry_mu);
+    if (!task_next_id || task_next_id > INT64_MAX) task_fatal("task handle space exhausted");
+    task->id = task_next_id++;
+    size_t bucket = task->id % TINOX_TASK_BUCKETS;
+    task->registry_next = task_registry[bucket];
+    task_registry[bucket] = task;
+    pthread_mutex_unlock(&task_registry_mu);
+    task_add_owner(task, owner);
+    TinoxSpawnTrampolineArgs* t = malloc(sizeof(*t));
+    t->fn = fn; t->args = args; t->task = task;
+    if (telemetry_enabled) {
+        t->telemetry = telemetry_context;
+        t->queued_at = telemetry_clock(CLOCK_MONOTONIC);
+    }
+    t->service_id = service_task_id; t->cleanup_mode = service_cleanup_mode;
+    task->budgeted = budgeted;
+    // Admission control (#302): over the task budget no thread is created.
+    // The handle comes back already finished and failed, so `await` / the
+    // owning scope re-throw the rejection instead of the process growing
+    // threads without bound -- or silently dropping the work.
+    if (budgeted && !tinox_budget_acquire_queued(&g_active_tasks, &g_peak_tasks, tinox_limits()->max_tasks)) {
+        atomic_fetch_add(&g_rejected_tasks, 1);
+        free(t);
+        task->budgeted = 0;
+        pthread_mutex_lock(&task->mu);
+        task->error = (int64_t)(intptr_t)"task budget exhausted: too many concurrently running tasks (TINOX_MAX_TASKS)";
+        task->done = 1;
+        task->joined = 1; // there is no thread to join
+        pthread_cond_broadcast(&task->cond);
+        pthread_mutex_unlock(&task->mu);
+        return (void*)task->id;
+    }
+    task_pthread_check(pthread_create(&task->thread, NULL, tinox_spawn_trampoline, t));
+    return (void*)task->id;
 }
-
+// Joinable tasks count against TINOX_MAX_TASKS; the detached per-connection
+// workers are governed by their own (WebSocket) budget instead.
+void* tinox_task_spawn(void* (*fn)(void*), void* args) { return task_spawn_impl(fn, args, 1); }
 int64_t tinox_task_await(void* handle) {
-    TinoxTask* task = (TinoxTask*)handle;
-    void* retval = NULL;
-    pthread_join(task->thread, &retval);
-    free(task);
-    return (int64_t)(uintptr_t)retval;
+    TinoxTask* task = task_lookup((uintptr_t)handle);
+    for (TinoxTaskScope* scope = task_scope; scope; scope = atomic_load(&scope->parent))
+        if (scope == task->scope) task_fatal("cyclic task await of self or ancestor");
+    pthread_mutex_lock(&task_registry_mu);
+    for (TinoxTask* p = task; p; p = p->waiting_on)
+        if (p == current_task) task_fatal("cyclic task await");
+    if (current_task) current_task->waiting_on = task;
+    pthread_mutex_unlock(&task_registry_mu);
+    pthread_mutex_lock(&task->mu);
+    if (task->detached) task_fatal("cannot await a detached task");
+    int64_t cancel_started = 0;
+    while (!task->done && !task_cancellation(task_scope)) {
+        if (task_cancellation(task->scope)) {
+            if (!cancel_started) cancel_started = task_clock_ms();
+            if (task_clock_ms() - cancel_started >= 5000)
+                task_fatal("task ignored cooperative cancellation for 5 seconds during await");
+        }
+        task_wait_tick(task);
+    }
+    taskCheckCancellation();
+    int64_t result = 0;
+    if (!__tinox_err) {
+        task_join_locked(task);
+        task->observed = 1;
+        __tinox_err = task->error;
+        result = (int64_t)(uintptr_t)task->retval;
+    }
+    pthread_mutex_unlock(&task->mu);
+    pthread_mutex_lock(&task_registry_mu);
+    if (current_task) current_task->waiting_on = NULL;
+    pthread_mutex_unlock(&task_registry_mu);
+    return result;
+}
+void taskDetach(int64_t handle) {
+    TinoxTask* task = task_lookup((uintptr_t)handle);
+    if (!pthread_equal(task->creator_thread, pthread_self()))
+        task_fatal("only a task's owning thread may detach it");
+    if (task->owner != task_scope && task->owner != task_frame_scope) task_fatal("only a task's owning scope may detach it");
+    pthread_mutex_lock(&task->mu);
+    if (task->joined || task->detached) task_fatal("cannot detach an awaited or detached task");
+    task_pthread_check(pthread_detach(task->thread));
+    task->detached = 1;
+    task_remove_owner(task);
+    atomic_store(&task->scope->parent, NULL);
+    if (task->done) {
+        if (task->error && task->error != (int64_t)(intptr_t)task_shutdown_error) {
+            fprintf(stderr, "Uncaught detached task error: %s\n", (char*)(intptr_t)task->error);
+            exit(1);
+        }
+        task_unregister(task);
+    }
+    pthread_mutex_unlock(&task->mu);
+}
+void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
+    taskDetach((int64_t)(uintptr_t)task_spawn_impl(fn, args, 0));
 }
 
-// Fire-and-forget variant of tinox_task_spawn -- no TinoxTask handle, no
-// tinox_task_await ever expected. Reuses the SAME tinox_spawn_trampoline
-// (still gets the GC thread-root registration a spawned thread needs --
-// Bug 140), just pthread_detach()s instead of leaving the thread joinable.
-// For @WebsocketEndpoint's per-connection worker threads (codegen.rs,
-// emit_ws_code): a real, long-running server accepts and drops many
-// connections over its lifetime, and tinox_task_spawn's own joinable
-// threads would leak one pthread's kernel resources per connection
-// forever unless something calls tinox_task_await on every single one --
-// nothing sensibly can, since the accept loop's whole point is to keep
-// accepting without waiting on any one connection. Mirrors the exact
-// pthread_create+pthread_detach pattern tinox_HttpServer_listen's own
-// epoll worker pool already uses for the same "never joined, must not
-// leak" reason.
-void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
-    TinoxSpawnTrampolineArgs* t = malloc(sizeof(TinoxSpawnTrampolineArgs));
-    t->fn = fn;
-    t->args = args;
-    pthread_t tid;
-    pthread_create(&tid, NULL, tinox_spawn_trampoline, t);
-    pthread_detach(tid);
+// ---- Coordinated services (#304); activated explicitly by @Service ----
+enum { SERVICE_OFF, SERVICE_INITIALIZING, SERVICE_STARTING, SERVICE_READY,
+       SERVICE_UNREADY, SERVICE_DRAINING, SERVICE_STOPPING, SERVICE_STOPPED, SERVICE_FAILED };
+#define SERVICE_MAX_TASKS 1024
+static atomic_int service_state;
+static atomic_bool service_stop_requested, service_initialized, service_complete;
+static atomic_bool service_live = true;
+static atomic_int service_work, service_workers;
+static _Atomic int64_t service_started_at, service_ready_at, service_shutdown_at;
+static int64_t service_startup_limit, service_shutdown_limit;
+static int service_expected;
+static bool service_ready_tasks[SERVICE_MAX_TASKS];
+static int64_t service_ports[SERVICE_MAX_TASKS];
+static pthread_mutex_t service_mu = PTHREAD_MUTEX_INITIALIZER;
+static char* service_error;
+static pthread_t service_coordinator_thread;
+static atomic_bool service_health_stop;
+static int service_pipe[2] = { -1, -1 };
+static volatile sig_atomic_t service_signal_fd = -1;
+static volatile sig_atomic_t service_signal_pending;
+extern int64_t __tinox_service_ready_checks(void) __attribute__((weak));
+extern int64_t __tinox_service_live_checks(void) __attribute__((weak));
+extern void __tinox_service_stop_hooks(void) __attribute__((weak));
+static void service_close_database(void);
+
+static int service_enabled(void) { return atomic_load(&service_state) != SERVICE_OFF; }
+bool serviceIsStopping(void) { return service_enabled() && atomic_load(&service_stop_requested); }
+static int service_should_cancel(void) {
+    return serviceIsStopping() && !service_work_depth && !atomic_load(&service_work);
+}
+static int service_quiescing(void) { return service_enabled() && atomic_load(&service_state) >= SERVICE_STOPPING; }
+bool serviceIsReady(void) { return atomic_load(&service_state) == SERVICE_READY && !serviceIsStopping(); }
+bool serviceIsLive(void) {
+    int state = atomic_load(&service_state);
+    return state >= SERVICE_INITIALIZING && state < SERVICE_STOPPED && atomic_load(&service_live);
+}
+char* serviceState(void) {
+    static char* const names[] = { "inactive", "initializing", "starting", "ready", "unready", "draining", "stopping", "stopped", "failed" };
+    return names[atomic_load(&service_state)];
+}
+int64_t serviceStartedMs(void) { return atomic_load(&service_started_at); }
+int64_t serviceReadyMs(void) { return atomic_load(&service_ready_at); }
+int64_t serviceShutdownMs(void) { return atomic_load(&service_shutdown_at); }
+static void service_wake(void) {
+    char byte = 1;
+    ssize_t n;
+    do { n = write(service_pipe[1], &byte, 1); } while (n < 0 && errno == EINTR);
+    if (n < 0 && errno != EAGAIN) task_fatal("service coordinator wake failed");
+}
+static int service_request_if_active(void) {
+    if (!service_enabled()) return 0;
+    atomic_store(&service_stop_requested, true);
+    int64_t unset = 0;
+    if (atomic_compare_exchange_strong(&service_shutdown_at, &unset, task_clock_ms()))
+        atomic_store(&service_state, SERVICE_DRAINING);
+    service_wake();
+    return 1;
+}
+void serviceRequestShutdown(void) {
+    if (!service_request_if_active()) task_fatal("serviceRequestShutdown requires @Service");
+}
+// The signal handler only writes to a nonblocking self-pipe and preserves errno.
+static void service_signal_handler(int signal_number) {
+    (void)signal_number;
+    int saved = errno;
+    service_signal_pending = 1;
+    char byte = 1;
+    if (service_signal_fd >= 0) { ssize_t ignored = write(service_signal_fd, &byte, 1); (void)ignored; }
+    errno = saved;
+}
+static void service_record_error(const char* context, int include_thread_error) {
+    pthread_mutex_lock(&service_mu);
+    if (!service_error) {
+        const char* detail = include_thread_error && __tinox_err ? (char*)(intptr_t)__tinox_err : NULL;
+        size_t size = strlen(context) + (detail ? strlen(detail) + 2 : 0) + 1;
+        service_error = GC_malloc(size);
+        snprintf(service_error, size, detail ? "%s: %s" : "%s", context, detail);
+    }
+    pthread_mutex_unlock(&service_mu);
+    atomic_store(&service_live, false);
+    __tinox_err = 0;
+    serviceRequestShutdown();
+}
+void tinox_service_fail(const char* context) { service_record_error(context, 1); }
+int64_t tinox_service_check_error(const char* context) {
+    if (serviceIsStopping() && __tinox_err == (int64_t)(intptr_t)task_shutdown_error) { __tinox_err = 0; return 0; }
+    if (__tinox_err) { service_record_error(context, 1); return 0; }
+    return 1;
+}
+void tinox_service_cleanup_enter(void) {
+    service_cleanup_mode = 1;
+    if (__tinox_err == (int64_t)(intptr_t)task_shutdown_error) __tinox_err = 0;
+}
+void tinox_service_cleanup_error(const char* context) { if (__tinox_err) service_record_error(context, 1); }
+int64_t tinox_service_failed(void) {
+    pthread_mutex_lock(&service_mu);
+    int failed = service_error != NULL;
+    pthread_mutex_unlock(&service_mu);
+    return failed;
+}
+typedef struct ServiceHookFrame {
+    TinoxTaskScope* scope;
+    TinoxTaskScope* frame;
+    const char* label;
+    struct ServiceHookFrame* previous;
+} ServiceHookFrame;
+static __thread ServiceHookFrame* service_hook_stack;
+void tinox_service_hook_begin(const char* label) {
+    ServiceHookFrame* saved = GC_malloc(sizeof(*saved));
+    saved->scope = task_scope; saved->frame = task_frame_scope;
+    saved->label = label; saved->previous = service_hook_stack;
+    service_hook_stack = saved;
+    task_frame_scope = task_scope = task_new_scope(task_scope);
+}
+void tinox_service_hook_end(void) {
+    ServiceHookFrame* saved = service_hook_stack;
+    if (!saved) task_fatal("unbalanced service hook scope");
+    if (__tinox_err && __tinox_err != (int64_t)(intptr_t)task_shutdown_error) {
+        int64_t error = __tinox_err;
+        service_record_error(saved->label, 1); __tinox_err = error;
+    }
+    task_close_scope(task_frame_scope, 0, 0);
+    if (__tinox_err && __tinox_err != (int64_t)(intptr_t)task_shutdown_error) {
+        int64_t error = __tinox_err;
+        service_record_error(saved->label, 1); __tinox_err = error;
+    }
+    task_scope = saved->scope; task_frame_scope = saved->frame;
+    service_hook_stack = saved->previous;
+}
+static int64_t service_invoke_health(int64_t (*check)(void), const char* label) {
+    if (!check) return 1;
+    tinox_service_hook_begin(label);
+    int64_t result = check();
+    tinox_service_hook_end();
+    return result;
+}
+static void service_force_exit(const char* reason) {
+    int flags = fcntl(STDERR_FILENO, F_GETFL);
+    if (flags >= 0) (void)fcntl(STDERR_FILENO, F_SETFL, flags | O_NONBLOCK);
+    (void)write(STDERR_FILENO, "tinox: ", 7);
+    (void)write(STDERR_FILENO, reason, strlen(reason));
+    (void)write(STDERR_FILENO, "\n", 1);
+    _Exit(1);
+}
+static void* service_watchdog(void* unused) {
+    (void)unused;
+    while (!atomic_load(&service_complete)) {
+        // Health callbacks can block; signal deadlines must not depend on them.
+        if (service_signal_pending) service_request_if_active();
+        int64_t now_ms = task_clock_ms();
+        int64_t shutdown_at = atomic_load(&service_shutdown_at);
+        if (shutdown_at && now_ms - shutdown_at >= service_shutdown_limit)
+            service_force_exit("service shutdown deadline exceeded; forced process termination");
+        if (!shutdown_at && !atomic_load(&service_ready_at) && now_ms - serviceStartedMs() >= service_startup_limit)
+            service_force_exit("service startup/readiness deadline exceeded; forced process termination");
+        struct timespec delay = { 0, 10000000 };
+        while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
+    }
+    return NULL;
+}
+static void* service_coordinator(void* unused) {
+    (void)unused;
+    tinox_gc_register_thread_roots();
+    task_ensure_scope();
+    while (!atomic_load(&service_health_stop)) {
+        struct pollfd pfd = { .fd = service_pipe[0], .events = POLLIN };
+        int rc;
+        do { rc = poll(&pfd, 1, 10); } while (rc < 0 && errno == EINTR);
+        if (rc < 0) service_force_exit("service coordinator poll failed");
+        if (rc > 0) {
+            char bytes[64];
+            while (read(service_pipe[0], bytes, sizeof(bytes)) > 0) {}
+            atomic_store(&service_stop_requested, true);
+        }
+        if (serviceIsStopping()) {
+            if (!atomic_load(&service_shutdown_at)) {
+                atomic_store(&service_shutdown_at, task_clock_ms());
+                atomic_store(&service_state, SERVICE_DRAINING);
+            }
+            if (!atomic_load(&service_work) && !atomic_load(&service_workers))
+                atomic_store(&service_state, SERVICE_STOPPING);
+            continue;
+        }
+        if (!atomic_load(&service_initialized)) continue;
+        int ready = 1;
+        pthread_mutex_lock(&service_mu);
+        for (int i = 0; i < service_expected; i++) if (!service_ready_tasks[i]) ready = 0;
+        pthread_mutex_unlock(&service_mu);
+        // Health functions run outside service_mu; user synchronization may block.
+        if (ready) ready = service_invoke_health(__tinox_service_ready_checks, "Readiness hook failed") != 0;
+        if (serviceIsStopping() && __tinox_err == (int64_t)(intptr_t)task_shutdown_error) { __tinox_err = 0; continue; }
+        if (__tinox_err) { service_record_error("Readiness hook failed", 1); continue; }
+        int live = service_invoke_health(__tinox_service_live_checks, "Liveness hook failed") != 0;
+        if (serviceIsStopping() && __tinox_err == (int64_t)(intptr_t)task_shutdown_error) { __tinox_err = 0; continue; }
+        if (__tinox_err) { service_record_error("Liveness hook failed", 1); continue; }
+        atomic_store(&service_live, live != 0);
+        ready = ready && live;
+        if (serviceIsStopping()) continue;
+        if (ready && !atomic_load(&service_ready_at)) atomic_store(&service_ready_at, task_clock_ms());
+        atomic_store(&service_state, ready ? SERVICE_READY : (atomic_load(&service_ready_at) ? SERVICE_UNREADY : SERVICE_STARTING));
+    }
+    task_close_scope(task_frame_scope, 0, 1);
+    tinox_gc_unregister_thread_roots();
+    return NULL;
+}
+void tinox_service_begin(int64_t expected, int64_t startup_ms, int64_t shutdown_ms) {
+    if (service_enabled() || expected < 0 || expected > SERVICE_MAX_TASKS || startup_ms <= 0 || shutdown_ms <= 0)
+        task_fatal("invalid service lifecycle configuration");
+    (void)tinox_limits(); // Validate effective concurrency configuration before initialization.
+    service_expected = (int)expected;
+    service_startup_limit = startup_ms;
+    service_shutdown_limit = shutdown_ms;
+    for (int i = 0; i < service_expected; i++) service_ports[i] = -1;
+    atomic_store(&service_started_at, task_clock_ms());
+    if (pipe2(service_pipe, O_NONBLOCK | O_CLOEXEC) < 0) task_fatal("service self-pipe creation failed");
+    service_signal_fd = service_pipe[1];
+    struct sigaction action = {0};
+    action.sa_handler = service_signal_handler;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGTERM, &action, NULL) || sigaction(SIGINT, &action, NULL)) task_fatal("service signal registration failed");
+    atomic_store(&service_state, SERVICE_INITIALIZING);
+    pthread_t thread;
+    task_pthread_check(pthread_create(&thread, NULL, service_watchdog, NULL));
+    task_pthread_check(pthread_detach(thread));
+    task_pthread_check(pthread_create(&service_coordinator_thread, NULL, service_coordinator, NULL));
+}
+void tinox_service_initialized(void) {
+    atomic_store(&service_initialized, true);
+    if (!serviceIsStopping()) atomic_store(&service_state, SERVICE_STARTING);
+}
+void tinox_service_task_enter(int64_t id) { service_task_id = (int)id; }
+void tinox_service_task_exit(int64_t result) {
+    int expected_stop = serviceIsStopping() && __tinox_err == (int64_t)(intptr_t)task_shutdown_error;
+    if (expected_stop) __tinox_err = 0;
+    if (__tinox_err) service_record_error("Required service task failed", 1);
+    else if (result && !expected_stop) service_record_error("Required service startup/listener failed", 0);
+    else if (!serviceIsStopping()) service_record_error("Required service task exited unexpectedly", 0);
+}
+void tinox_service_listener_ready(int64_t port) {
+    if (!service_enabled() || service_task_id < 0) return;
+    pthread_mutex_lock(&service_mu);
+    if (service_task_id >= service_expected) task_fatal("invalid service listener identity");
+    service_ready_tasks[service_task_id] = true;
+    service_ports[service_task_id] = port;
+    pthread_mutex_unlock(&service_mu);
+}
+int64_t serviceBoundPort(int64_t id) {
+    if (!service_enabled() || id < 0 || id >= service_expected) task_fatal("serviceBoundPort requires a registered task index");
+    pthread_mutex_lock(&service_mu);
+    int64_t port = service_ports[id];
+    pthread_mutex_unlock(&service_mu);
+    return port;
+}
+bool serviceAwaitReady(int64_t milliseconds) {
+    if (milliseconds < 0 || milliseconds > INT64_MAX - task_clock_ms()) task_fatal("serviceAwaitReady requires a nonnegative duration");
+    int64_t end = task_clock_ms() + milliseconds;
+    while (!serviceIsReady() && !serviceIsStopping() && task_clock_ms() < end) {
+        struct timespec delay = {0, 1000000}; nanosleep(&delay, NULL);
+    }
+    return serviceIsReady();
+}
+void serviceAwaitShutdown(void) {
+    if (!service_enabled()) task_fatal("serviceAwaitShutdown requires @Service");
+    while (!serviceIsStopping()) { struct timespec delay = {0, 1000000}; nanosleep(&delay, NULL); }
+}
+int64_t tinox_service_work_enter(void) {
+    if (!service_enabled()) return 1;
+    if (service_work_depth) { service_work_depth++; return 1; }
+    pthread_mutex_lock(&service_mu);
+    int admitted = !serviceIsStopping();
+    if (admitted) { atomic_fetch_add(&service_work, 1); service_work_depth = 1; }
+    pthread_mutex_unlock(&service_mu);
+    return admitted;
+}
+void tinox_service_existing_work_enter(void) {
+    if (service_enabled() && !service_work_depth++) atomic_fetch_add(&service_work, 1);
+}
+void tinox_service_work_exit(void) {
+    if (service_enabled() && service_work_depth > 0 && !--service_work_depth) atomic_fetch_sub(&service_work, 1);
+}
+int64_t tinox_service_worker_start(void) {
+    pthread_mutex_lock(&service_mu);
+    int admitted = !serviceIsStopping();
+    if (admitted && service_enabled()) atomic_fetch_add(&service_workers, 1);
+    pthread_mutex_unlock(&service_mu);
+    return admitted;
+}
+void tinox_service_worker_end(void) {
+    if (service_enabled()) {
+        task_close_scope(task_frame_scope, 0, 0);
+        if (__tinox_err) service_record_error("WebSocket worker child failed", 1);
+        atomic_fetch_sub(&service_workers, 1);
+    }
+}
+// Waiting readers return EOF when draining and no admitted callback remains.
+// Writers still run so completed handlers can send replies/acknowledgements.
+static int service_io_wait(int fd, short events) {
+    if (!service_enabled()) return 1;
+    for (;;) {
+        if (serviceIsStopping() && !service_work_depth && !atomic_load(&service_work)) return 0;
+        struct pollfd pfd = { .fd = fd, .events = events };
+        int rc = poll(&pfd, 1, 10);
+        if (rc < 0 && errno == EINTR) continue;
+        if (rc < 0 || (pfd.revents & POLLNVAL)) return 0;
+        if (rc > 0) return 1;
+    }
+}
+void tinox_service_main_returned(int64_t main_result) {
+    if (serviceIsStopping() && __tinox_err == (int64_t)(intptr_t)task_shutdown_error) __tinox_err = 0;
+    if (__tinox_err) service_record_error("Main failed", 1);
+    else if (main_result) service_record_error("Main returned a nonzero status", 0);
+    else if (!service_expected) serviceRequestShutdown();
+}
+int64_t tinox_service_finish(int64_t main_result) {
+    if (serviceIsStopping() && __tinox_err == (int64_t)(intptr_t)task_shutdown_error) __tinox_err = 0;
+    if (__tinox_err) service_record_error("Main failed", 1);
+    else if (main_result) service_record_error("Main returned a nonzero status", 0);
+    serviceRequestShutdown();
+    if (!atomic_load(&service_shutdown_at)) atomic_store(&service_shutdown_at, task_clock_ms());
+    // Detached connection workers own their OnClose descendants. They must
+    // finish before shared resources are torn down; the watchdog bounds this wait.
+    while (atomic_load(&service_work) || atomic_load(&service_workers)) {
+        struct timespec delay = {0, 1000000};
+        while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
+    }
+    // All generated listeners are joined by bootstrap before this point. Join
+    // the remaining structured children before running resource-disposal hooks.
+    atomic_store(&service_health_stop, true);
+    service_wake();
+    task_pthread_check(pthread_join(service_coordinator_thread, NULL));
+    task_request_shutdown_now();
+    task_close_scope(task_frame_scope, 0, 1);
+    if (__tinox_err == (int64_t)(intptr_t)task_shutdown_error) __tinox_err = 0;
+    if (__tinox_err) service_record_error("Background task failed during shutdown", 1);
+    service_cleanup_mode = 1;
+    task_frame_scope = task_scope = task_new_scope(NULL);
+    if (__tinox_service_stop_hooks) __tinox_service_stop_hooks();
+    task_close_scope(task_frame_scope, 0, 0);
+    if (__tinox_err) service_record_error("Shutdown cleanup failed", 1);
+    service_close_database();
+    int failed = (int)tinox_service_failed();
+    atomic_store(&service_state, failed ? SERVICE_FAILED : SERVICE_STOPPED);
+    atomic_store(&service_live, false);
+    atomic_store(&service_complete, true);
+    if (failed) fprintf(stderr, "tinox: service failed: %s\n", service_error);
+    return failed ? 1 : main_result;
 }
 
 void* tinox_channel_create(void) {
     TinoxChannel* ch = calloc(1, sizeof(TinoxChannel));
     pthread_mutex_init(&ch->mutex, NULL);
-    pthread_cond_init(&ch->cond, NULL);
+    task_cond_init(&ch->cond);
     return ch;
 }
 
@@ -844,9 +2192,20 @@ void tinox_channel_send(void* handle, int64_t value) {
 }
 
 int64_t tinox_channel_recv(void* handle) {
+    taskCheckCancellation();
+    if (__tinox_err) return 0;
     TinoxChannel* ch = (TinoxChannel*)handle;
     pthread_mutex_lock(&ch->mutex);
-    while (!ch->head) pthread_cond_wait(&ch->cond, &ch->mutex);
+    while (!ch->head) {
+        taskCheckCancellation();
+        if (__tinox_err) { pthread_mutex_unlock(&ch->mutex); return 0; }
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        ts.tv_nsec += 10000000;
+        if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+        int rc = pthread_cond_timedwait(&ch->cond, &ch->mutex, &ts);
+        if (rc != ETIMEDOUT) task_pthread_check(rc);
+    }
     TinoxChannelNode* node = ch->head;
     ch->head = node->next;
     if (!ch->head) ch->tail = NULL;
@@ -1006,7 +2365,7 @@ void tinox_map_remove(void* map, const char* key) {
         char* k = m->entries[idx].key;
         if (!k) return;
         if (k != (char*)1 && strcmp(k, key) == 0) {
-            free(m->entries[idx].key);
+            if (!m->borrowed_keys) free(m->entries[idx].key); // borrowed keys belong to the caller
             m->entries[idx].key = (char*)1; // tombstone
             m->len--;
             return;
@@ -1302,6 +2661,525 @@ void fileClose(void* handle) {
     if (handle) fclose((FILE*)handle);
 }
 
+// ---- Byte-exact file/stdin I/O ----
+// fileReadAllText/fileWriteAllText above are strlen/fputs-based char* --
+// silently truncate at an embedded 0x00 byte (same reason tinox.core.zip
+// documents itself as "text content only"). These three operate on
+// List<Int64> (one element per byte, 0-255) end to end instead, using the
+// same TinoxArray ABI tinoxDeflateRaw/tinoxGzip already use below, so no
+// NUL-related truncation is possible anywhere in the read/write path.
+// Not registered as compiler builtins -- consumed via `extern fn` in
+// Tinox source, same pattern tinox.core.compress/zip already use for
+// their own runtime primitives.
+
+int64_t* tinoxFileReadAllBytes(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "runtime error: cannot open file for reading: %s\n", path);
+        exit(1);
+    }
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long size = ftell(f);
+        if (size >= 0) {
+            fseek(f, 0, SEEK_SET);
+            unsigned char* raw = (unsigned char*)malloc(size > 0 ? (size_t)size : 1);
+            size_t got = fread(raw, 1, (size_t)size, f);
+            fclose(f);
+            int64_t* h = tinox_array_new((int64_t)got, (int64_t)got);
+            TinoxArray* a = (TinoxArray*)h;
+            for (size_t i = 0; i < got; i++) a->data[i] = (int64_t)raw[i];
+            free(raw);
+            return h;
+        }
+        fseek(f, 0, SEEK_SET);
+    }
+    // Fallback for pipes/character devices, where SEEK_END doesn't work.
+    size_t cap = 65536, used = 0;
+    unsigned char* raw = (unsigned char*)malloc(cap);
+    size_t n;
+    while ((n = fread(raw + used, 1, cap - used, f)) > 0) {
+        used += n;
+        if (used == cap) {
+            cap *= 2;
+            unsigned char* nb = (unsigned char*)malloc(cap);
+            memcpy(nb, raw, used);
+            free(raw);
+            raw = nb;
+        }
+    }
+    fclose(f);
+    int64_t* h = tinox_array_new((int64_t)used, (int64_t)used);
+    TinoxArray* a = (TinoxArray*)h;
+    for (size_t i = 0; i < used; i++) a->data[i] = (int64_t)raw[i];
+    free(raw);
+    return h;
+}
+
+void tinoxFileWriteAllBytes(const char* path, int64_t* bytes) {
+    TinoxArray* a = (TinoxArray*)bytes;
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "runtime error: cannot open file for writing: %s\n", path);
+        exit(1);
+    }
+    int64_t len = a->len;
+    if (len > 0) {
+        unsigned char* raw = (unsigned char*)malloc((size_t)len);
+        for (int64_t i = 0; i < len; i++) raw[i] = (unsigned char)(a->data[i] & 0xFF);
+        fwrite(raw, 1, (size_t)len, f);
+        free(raw);
+    }
+    fclose(f);
+}
+
+int64_t* tinoxStdinReadAllBytes(void) {
+    size_t cap = 65536, used = 0;
+    unsigned char* raw = (unsigned char*)malloc(cap);
+    size_t n;
+    while ((n = fread(raw + used, 1, cap - used, stdin)) > 0) {
+        used += n;
+        if (used == cap) {
+            cap *= 2;
+            unsigned char* nb = (unsigned char*)malloc(cap);
+            memcpy(nb, raw, used);
+            free(raw);
+            raw = nb;
+        }
+    }
+    int64_t* h = tinox_array_new((int64_t)used, (int64_t)used);
+    TinoxArray* a = (TinoxArray*)h;
+    for (size_t i = 0; i < used; i++) a->data[i] = (int64_t)raw[i];
+    free(raw);
+    return h;
+}
+
+// ---- Streaming byte-exact file I/O ----
+// The *AllBytes primitives above materialize a whole file as one
+// List<Int64> -- 8 bytes of heap per file byte, so a multi-GB input needs
+// tens of GB of RAM. These operate on an open handle (the FILE* as an
+// Int64, 0 = open failed) in caller-sized chunks instead, so memory stays
+// bounded by the chunk size regardless of file size. Every I/O error
+// (short write, read error, failed flush on close) is a hard runtime
+// error, never a silently truncated file. Consumed via `extern fn`, same
+// as the primitives above.
+
+int64_t tinoxFileOpenBytes(const char* path, const char* mode) {
+    FILE* f = fopen(path, mode);
+    return (int64_t)(intptr_t)f;
+}
+
+// Reads up to maxBytes; returns fewer only at EOF (an empty list = EOF).
+int64_t* tinoxFileReadChunk(int64_t handle, int64_t maxBytes) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) {
+        fprintf(stderr, "runtime error: tinoxFileReadChunk on a closed/invalid handle\n");
+        exit(1);
+    }
+    if (maxBytes < 0) maxBytes = 0;
+    unsigned char* raw = (unsigned char*)malloc(maxBytes > 0 ? (size_t)maxBytes : 1);
+    size_t used = 0;
+    while (used < (size_t)maxBytes) {
+        size_t n = fread(raw + used, 1, (size_t)maxBytes - used, f);
+        if (n == 0) break;
+        used += n;
+    }
+    if (ferror(f)) {
+        free(raw);
+        fprintf(stderr, "runtime error: read error: %s\n", strerror(errno));
+        exit(1);
+    }
+    int64_t* h = tinox_array_new((int64_t)used, (int64_t)used);
+    TinoxArray* a = (TinoxArray*)h;
+    for (size_t i = 0; i < used; i++) a->data[i] = (int64_t)raw[i];
+    free(raw);
+    return h;
+}
+
+void tinoxFileWriteChunk(int64_t handle, int64_t* bytes) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) {
+        fprintf(stderr, "runtime error: tinoxFileWriteChunk on a closed/invalid handle\n");
+        exit(1);
+    }
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t len = a->len;
+    if (len <= 0) return;
+    unsigned char* raw = (unsigned char*)malloc((size_t)len);
+    for (int64_t i = 0; i < len; i++) raw[i] = (unsigned char)(a->data[i] & 0xFF);
+    size_t wrote = fwrite(raw, 1, (size_t)len, f);
+    free(raw);
+    if (wrote != (size_t)len) {
+        fprintf(stderr, "runtime error: write error: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+// Skips n bytes forward; returns false if the seek failed or would land
+// past EOF (e.g. a truncated file).
+bool tinoxFileSkipBytes(int64_t handle, int64_t n) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f || n < 0) return false;
+    off_t cur = ftello(f);
+    if (cur < 0 || fseeko(f, 0, SEEK_END) != 0) return false;
+    off_t end = ftello(f);
+    if (end < 0 || (int64_t)(end - cur) < n) {
+        fseeko(f, cur, SEEK_SET);
+        return false;
+    }
+    return fseeko(f, cur + (off_t)n, SEEK_SET) == 0;
+}
+
+void tinoxFileCloseBytes(int64_t handle) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) return;
+    if (fclose(f) != 0) {
+        fprintf(stderr, "runtime error: error closing file: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+// ---- Compact byte buffers (issue #311) ----
+// A buffer handle (carried as an Int64 in Tinox source, wrapped by
+// tinox.core.bytes.Bytes) points at ONE pointer-free GC block:
+//   [ int64 len | len payload bytes ]
+// i.e. 1 byte of heap per logical byte (+8 header), versus 8 bytes per
+// byte for List<Int64>. The whole block is allocated with
+// GC_malloc_atomic, which is correct because it never contains a pointer
+// (the length is a plain integer), so the collector never has to scan the
+// payload. The block is never resized in place: slice/concat copy, so a
+// handle's length is immutable and every access is checked against it.
+// Embedded 0x00 bytes are ordinary payload -- nothing here is strlen-based
+// except the explicit String adapters, which are documented as such.
+// Every misuse (out-of-range index/slice, invalid length, I/O error,
+// converting a buffer with a NUL to a String) is a hard runtime error,
+// never a silent truncation or clamp.
+typedef struct {
+    int64_t len;
+    unsigned char data[];
+} TinoxBuf;
+
+#define TINOX_BUF_MAX ((int64_t)1 << 40)
+
+static TinoxBuf* tinox_buf_alloc(int64_t len) {
+    if (len < 0 || len > TINOX_BUF_MAX) {
+        fprintf(stderr, "runtime error: byte buffer length %lld is invalid\n", (long long)len);
+        exit(1);
+    }
+    TinoxBuf* b = (TinoxBuf*)GC_malloc_atomic(sizeof(TinoxBuf) + (size_t)len + 1);
+    if (!b) {
+        fprintf(stderr, "runtime error: out of memory allocating %lld byte buffer\n", (long long)len);
+        exit(1);
+    }
+    b->len = len;
+    b->data[len] = 0;
+    return b;
+}
+
+static TinoxBuf* tinox_buf_of(int64_t h, const char* op) {
+    if (h == 0) {
+        fprintf(stderr, "runtime error: %s on a null byte buffer\n", op);
+        exit(1);
+    }
+    return (TinoxBuf*)(intptr_t)h;
+}
+
+int64_t tinoxBufNew(int64_t len) {
+    TinoxBuf* b = tinox_buf_alloc(len);
+    memset(b->data, 0, (size_t)len);
+    return (int64_t)(intptr_t)b;
+}
+
+int64_t tinoxBufLen(int64_t h) {
+    return tinox_buf_of(h, "length")->len;
+}
+
+int64_t tinoxBufGet(int64_t h, int64_t i) {
+    TinoxBuf* b = tinox_buf_of(h, "get");
+    if (i < 0 || i >= b->len) {
+        fprintf(stderr, "runtime error: byte buffer index %lld out of bounds (length %lld)\n",
+                (long long)i, (long long)b->len);
+        exit(1);
+    }
+    return (int64_t)b->data[i];
+}
+
+void tinoxBufSet(int64_t h, int64_t i, int64_t v) {
+    TinoxBuf* b = tinox_buf_of(h, "set");
+    if (i < 0 || i >= b->len) {
+        fprintf(stderr, "runtime error: byte buffer index %lld out of bounds (length %lld)\n",
+                (long long)i, (long long)b->len);
+        exit(1);
+    }
+    if (v < 0 || v > 255) {
+        fprintf(stderr, "runtime error: byte value %lld out of range 0..255\n", (long long)v);
+        exit(1);
+    }
+    b->data[i] = (unsigned char)v;
+}
+
+// Copy of [start, end). start == end yields an empty buffer.
+int64_t tinoxBufSlice(int64_t h, int64_t start, int64_t end) {
+    TinoxBuf* b = tinox_buf_of(h, "slice");
+    if (start < 0 || end < start || end > b->len) {
+        fprintf(stderr, "runtime error: byte buffer slice [%lld, %lld) out of bounds (length %lld)\n",
+                (long long)start, (long long)end, (long long)b->len);
+        exit(1);
+    }
+    TinoxBuf* r = tinox_buf_alloc(end - start);
+    memcpy(r->data, b->data + start, (size_t)(end - start));
+    return (int64_t)(intptr_t)r;
+}
+
+int64_t tinoxBufConcat(int64_t a, int64_t c) {
+    TinoxBuf* x = tinox_buf_of(a, "concat");
+    TinoxBuf* y = tinox_buf_of(c, "concat");
+    TinoxBuf* r = tinox_buf_alloc(x->len + y->len);
+    memcpy(r->data, x->data, (size_t)x->len);
+    memcpy(r->data + x->len, y->data, (size_t)y->len);
+    return (int64_t)(intptr_t)r;
+}
+
+bool tinoxBufEquals(int64_t a, int64_t c) {
+    TinoxBuf* x = tinox_buf_of(a, "equals");
+    TinoxBuf* y = tinox_buf_of(c, "equals");
+    return x->len == y->len && memcmp(x->data, y->data, (size_t)x->len) == 0;
+}
+
+// Copies the String's UTF-8/char bytes (strlen of a Tinox String, so a
+// String itself can never carry an embedded NUL).
+int64_t tinoxBufFromString(const char* s) {
+    size_t n = s ? strlen(s) : 0;
+    TinoxBuf* r = tinox_buf_alloc((int64_t)n);
+    if (n) memcpy(r->data, s, n);
+    return (int64_t)(intptr_t)r;
+}
+
+// A Tinox String is NUL-terminated, so a buffer with an embedded 0x00
+// cannot be represented as one: that is a hard error, not a truncation.
+char* tinoxBufToString(int64_t h) {
+    TinoxBuf* b = tinox_buf_of(h, "toString");
+    if (b->len > 0 && memchr(b->data, 0, (size_t)b->len) != NULL) {
+        fprintf(stderr, "runtime error: byte buffer contains an embedded NUL byte and cannot be converted to a String\n");
+        exit(1);
+    }
+    char* s = (char*)GC_malloc_atomic((size_t)b->len + 1);
+    memcpy(s, b->data, (size_t)b->len);
+    s[b->len] = '\0';
+    return s;
+}
+
+// Explicit adapters to/from the legacy List<Int64> (one element per byte).
+int64_t tinoxBufFromList(int64_t* list) {
+    TinoxArray* a = (TinoxArray*)list;
+    int64_t n = a ? a->len : 0;
+    TinoxBuf* r = tinox_buf_alloc(n);
+    for (int64_t i = 0; i < n; i++) {
+        int64_t v = a->data[i];
+        if (v < 0 || v > 255) {
+            fprintf(stderr, "runtime error: list element %lld has value %lld, outside byte range 0..255\n",
+                    (long long)i, (long long)v);
+            exit(1);
+        }
+        r->data[i] = (unsigned char)v;
+    }
+    return (int64_t)(intptr_t)r;
+}
+
+int64_t* tinoxBufToList(int64_t h) {
+    TinoxBuf* b = tinox_buf_of(h, "toList");
+    int64_t* lh = tinox_array_new(b->len, b->len);
+    TinoxArray* a = (TinoxArray*)lh;
+    for (int64_t i = 0; i < b->len; i++) a->data[i] = (int64_t)b->data[i];
+    return lh;
+}
+
+// Whole-file read/write straight into/out of the compact payload: no
+// intermediate copy, no per-byte widening.
+int64_t tinoxBufReadFile(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "runtime error: cannot open file for reading: %s\n", path);
+        exit(1);
+    }
+    struct stat st;
+    if (fstat(fileno(f), &st) == 0 && S_ISREG(st.st_mode)) {
+        TinoxBuf* r = tinox_buf_alloc((int64_t)st.st_size);
+        size_t got = fread(r->data, 1, (size_t)st.st_size, f);
+        if (ferror(f) || got != (size_t)st.st_size) {
+            fprintf(stderr, "runtime error: read error on %s\n", path);
+            exit(1);
+        }
+        fclose(f);
+        return (int64_t)(intptr_t)r;
+    }
+    // Pipes/devices: unknown size, grow geometrically.
+    size_t cap = 65536, used = 0;
+    unsigned char* raw = (unsigned char*)malloc(cap);
+    size_t n;
+    while ((n = fread(raw + used, 1, cap - used, f)) > 0) {
+        used += n;
+        if (used == cap) { cap *= 2; raw = (unsigned char*)realloc(raw, cap); }
+    }
+    if (ferror(f)) {
+        fprintf(stderr, "runtime error: read error on %s\n", path);
+        exit(1);
+    }
+    fclose(f);
+    TinoxBuf* r = tinox_buf_alloc((int64_t)used);
+    memcpy(r->data, raw, used);
+    free(raw);
+    return (int64_t)(intptr_t)r;
+}
+
+void tinoxBufWriteFile(const char* path, int64_t h) {
+    TinoxBuf* b = tinox_buf_of(h, "writeFile");
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "runtime error: cannot open file for writing: %s\n", path);
+        exit(1);
+    }
+    if (b->len > 0 && fwrite(b->data, 1, (size_t)b->len, f) != (size_t)b->len) {
+        fprintf(stderr, "runtime error: write error: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (fclose(f) != 0) {
+        fprintf(stderr, "runtime error: error closing file: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+// Streaming counterparts of tinoxFileReadChunk/WriteChunk on the same
+// open handle (tinoxFileOpenBytes). An empty buffer = EOF.
+int64_t tinoxBufReadChunk(int64_t handle, int64_t maxBytes) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) {
+        fprintf(stderr, "runtime error: tinoxBufReadChunk on a closed/invalid handle\n");
+        exit(1);
+    }
+    if (maxBytes < 0) maxBytes = 0;
+    TinoxBuf* r = tinox_buf_alloc(maxBytes);
+    size_t used = 0;
+    while (used < (size_t)maxBytes) {
+        size_t n = fread(r->data + used, 1, (size_t)maxBytes - used, f);
+        if (n == 0) break;
+        used += n;
+    }
+    if (ferror(f)) {
+        fprintf(stderr, "runtime error: read error: %s\n", strerror(errno));
+        exit(1);
+    }
+    r->len = (int64_t)used;
+    r->data[used] = 0;
+    return (int64_t)(intptr_t)r;
+}
+
+void tinoxBufWriteChunk(int64_t handle, int64_t h) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) {
+        fprintf(stderr, "runtime error: tinoxBufWriteChunk on a closed/invalid handle\n");
+        exit(1);
+    }
+    TinoxBuf* b = tinox_buf_of(h, "writeChunk");
+    if (b->len > 0 && fwrite(b->data, 1, (size_t)b->len, f) != (size_t)b->len) {
+        fprintf(stderr, "runtime error: write error: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+int64_t tinoxBufStdinReadAll(void) {
+    size_t cap = 65536, used = 0;
+    unsigned char* raw = (unsigned char*)malloc(cap);
+    size_t n;
+    while ((n = fread(raw + used, 1, cap - used, stdin)) > 0) {
+        used += n;
+        if (used == cap) { cap *= 2; raw = (unsigned char*)realloc(raw, cap); }
+    }
+    TinoxBuf* r = tinox_buf_alloc((int64_t)used);
+    memcpy(r->data, raw, used);
+    free(raw);
+    return (int64_t)(intptr_t)r;
+}
+
+// Size of a regular file in bytes, or -1 if it doesn't exist / isn't one.
+int64_t tinoxFileSizeBytes(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
+    return (int64_t)st.st_size;
+}
+
+// What a path is, for recursive directory walks:
+//   0 = doesn't exist (incl. a dangling symlink), 1 = regular file (or a
+//   symlink to one), 2 = directory, 3 = something else (fifo, device,
+//   socket), 4 = symlink to a directory, 5 = directory that can't be read.
+// Distinguishing 4 from 2 lets a walker avoid following symlinked
+// directories (loops); 5 lets it fail loudly instead of silently treating
+// an unreadable directory as empty, which is what dirList() does.
+int64_t tinoxPathKind(const char* path) {
+    struct stat lst, st;
+    if (lstat(path, &lst) != 0) return 0;
+    if (stat(path, &st) != 0) return 0;
+    if (S_ISREG(st.st_mode)) return 1;
+    if (S_ISDIR(st.st_mode)) {
+        if (S_ISLNK(lst.st_mode)) return 4;
+        return access(path, R_OK | X_OK) == 0 ? 2 : 5;
+    }
+    return 3;
+}
+
+static int tinox_cmp_cstr(const void* a, const void* b) {
+    return strcmp(*(const char* const*)a, *(const char* const*)b);
+}
+
+// Directory entry names (without "." / ".."), sorted bytewise so walks are
+// deterministic. Unlike dirList(), an unreadable directory is a hard error.
+int64_t* tinoxDirEntriesSorted(const char* path) {
+    DIR* d = opendir(path);
+    if (!d) {
+        fprintf(stderr, "runtime error: cannot read directory %s: %s\n", path, strerror(errno));
+        exit(1);
+    }
+    size_t cap = 32, n = 0;
+    char** names = (char**)malloc(cap * sizeof(char*));
+    struct dirent* ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        if (n == cap) {
+            cap *= 2;
+            names = (char**)realloc(names, cap * sizeof(char*));
+        }
+        names[n++] = GC_strdup(ent->d_name);
+    }
+    closedir(d);
+    qsort(names, n, sizeof(char*), tinox_cmp_cstr);
+    int64_t* h = tinox_array_new(0, (int64_t)(n > 0 ? n : 4));
+    for (size_t i = 0; i < n; i++) tinox_array_push(h, (int64_t)names[i]);
+    free(names);
+    return h;
+}
+
+// Canonical absolute path (symlinks resolved), or "" if it can't be
+// resolved (e.g. doesn't exist).
+char* tinoxRealPath(const char* path) {
+    char buf[PATH_MAX];
+    if (!realpath(path, buf)) return GC_strdup("");
+    return GC_strdup(buf);
+}
+
+int64_t tinoxCpuCount(void) {
+    return tinox_limits()->cpus;
+}
+
+// Unlike printStderr, no trailing newline -- for in-place "\r" progress
+// lines. Only meaningful on a terminal; callers check tinoxStderrIsTty().
+void tinoxStderrWrite(const char* msg) {
+    fputs(msg, stderr);
+    fflush(stderr);
+}
+
+bool tinoxStderrIsTty(void) {
+    return isatty(2) != 0;
+}
+
 // ---- Socket builtins (tinox.core.socket) ----
 // Handles are raw fds as i64; -1 = error. Blocking BSD sockets —
 // deliberately kept simple (no epoll here; the HTTP server further down
@@ -1353,6 +3231,7 @@ bool socketListen(int64_t fd) {
 
 int64_t socketAccept(int64_t fd) {
     if (fd < 0) return -1;
+    if (!service_io_wait((int)fd, POLLIN)) return -1;
     return (int64_t)accept((int)fd, NULL, NULL);
 }
 
@@ -1442,6 +3321,8 @@ typedef struct {
 static __thread char* _tinox_http_req_headers = NULL; // "Name: Value\r\n" chain
 
 void httpSetHeader(const char* name, const char* value) {
+    // The active context owns these headers; prevent duplicate wire values.
+    if (telemetry_enabled && (!strcasecmp(name, "traceparent") || !strcasecmp(name, "x-request-id") || !strcasecmp(name, "tracestate"))) return;
     size_t old_len = _tinox_http_req_headers ? strlen(_tinox_http_req_headers) : 0;
     size_t add = strlen(name) + strlen(value) + 4; // ": " + "\r\n"
     char* buf = (char*)malloc(old_len + add + 1);
@@ -2103,6 +3984,45 @@ int64_t processResultExitCode(int64_t handle) {
 
 int64_t processResultTimedOut(int64_t handle) {
     return ((TinoxProcessResult*)(intptr_t)handle)->timed_out;
+}
+
+// DI publication is serialized across the dependency graph. Recursive entry
+// permits nested providers; dependency cycles are rejected before codegen.
+static pthread_mutex_t tinox_di_mu = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+void tinox_di_enter(void) { task_pthread_check(pthread_mutex_lock(&tinox_di_mu)); }
+void tinox_di_exit(void) { task_pthread_check(pthread_mutex_unlock(&tinox_di_mu)); }
+
+// One recursive monitor per annotated class, rooted by its generated global.
+// This protects annotated calls, not direct field access or escaped objects.
+static pthread_mutex_t tinox_monitor_init_mu = PTHREAD_MUTEX_INITIALIZER;
+int64_t tinox_monitor_enter(int64_t* slot) {
+    task_pthread_check(pthread_mutex_lock(&tinox_monitor_init_mu));
+    if (!*slot) {
+        pthread_mutex_t* mutex = GC_malloc(sizeof(*mutex));
+        pthread_mutexattr_t attr;
+        task_pthread_check(pthread_mutexattr_init(&attr));
+        task_pthread_check(pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE));
+        task_pthread_check(pthread_mutex_init(mutex, &attr));
+        task_pthread_check(pthread_mutexattr_destroy(&attr));
+        *slot = (int64_t)(intptr_t)mutex;
+    }
+    pthread_mutex_t* mutex = (pthread_mutex_t*)(intptr_t)*slot;
+    task_pthread_check(pthread_mutex_unlock(&tinox_monitor_init_mu));
+    for (;;) {
+        // Preserve an already-unwinding error when called by cleanup code.
+        if (!__tinox_err && task_cancellation(task_scope)) {
+            taskCheckCancellation();
+            return 0;
+        }
+        int rc = pthread_mutex_trylock(mutex);
+        if (!rc) return 1;
+        if (rc != EBUSY) task_pthread_check(rc);
+        struct timespec delay = { 0, 10000000 };
+        while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
+    }
+}
+void tinox_monitor_exit(int64_t* slot) {
+    task_pthread_check(pthread_mutex_unlock((pthread_mutex_t*)(intptr_t)*slot));
 }
 
 // ---- Real synchronization primitives (tinox.core.semaphore) ---------------
@@ -3250,6 +5170,9 @@ static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
     if (atomic_load(&c->closing)) return 0;
     atomic_fetch_add(&c->inflight, 1);
     ssize_t result;
+    if ((!c->ssl || SSL_pending((SSL*)c->ssl) == 0) && !service_io_wait(c->fd, POLLIN)) {
+        atomic_fetch_sub(&c->inflight, 1); return 0;
+    }
     if (c->ssl) {
         int r;
         do { r = SSL_read((SSL*)c->ssl, buf, (int)n); }
@@ -3314,6 +5237,7 @@ static ssize_t conn_recv(TinoxConn* c, char* buf, size_t n) {
     // for the full rationale -- identical inflight/closing protocol here.
     if (atomic_load(&c->closing)) return 0;
     atomic_fetch_add(&c->inflight, 1);
+    if (!service_io_wait(c->fd, POLLIN)) { atomic_fetch_sub(&c->inflight, 1); return 0; }
     ssize_t r;
     do { r = recv(c->fd, buf, n, 0); } while (r < 0 && errno == EINTR);
     atomic_fetch_sub(&c->inflight, 1);
@@ -3343,6 +5267,13 @@ static void conn_close(TinoxConn* c) {
 // current caller relies on; a non-NULL dotted-quad (e.g. "127.0.0.1", used
 // by the dev-mode introspection server -- see tinox_HttpServer_new_bind)
 // restricts the listening socket to that interface only.
+void tinox_service_close_connection(int64_t handle) {
+    if (handle > 0) {
+        TinoxConn* connection = (TinoxConn*)(intptr_t)handle;
+        if (!atomic_load(&connection->closing)) conn_close(connection);
+    }
+}
+
 int64_t httpServerCreateOn(int64_t port, const char* bind_addr) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -3383,6 +5314,7 @@ int64_t httpServerBoundPort(int64_t server_fd) {
 int64_t httpServerAcceptConn(int64_t server_fd) {
     struct sockaddr_in client = {0};
     socklen_t len = sizeof(client);
+    if (!service_io_wait((int)server_fd, POLLIN)) return -1;
     int fd = accept((int)server_fd, (struct sockaddr*)&client, &len);
     if (fd >= 0) {
         int one = 1;
@@ -3562,6 +5494,7 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
     if (!g_tls_ctx) return -1;
     struct sockaddr_in client = {0};
     socklen_t len = sizeof(client);
+    if (!service_io_wait((int)server_fd, POLLIN)) return -1;
     int fd = accept((int)server_fd, (struct sockaddr*)&client, &len);
     if (fd < 0) return -1;
     int one = 1;
@@ -3934,12 +5867,17 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
 
     size_t body_len = body ? strlen(body) : 0;
     const char* extra = _tinox_http_req_headers ? _tinox_http_req_headers : "";
-    size_t req_cap = strlen(method) + strlen(path) + strlen(host) + strlen(extra) + body_len + 256;
+    char correlation[256] = "";
+    if (telemetry_enabled && telemetry_context.trace[0]) {
+        snprintf(correlation, sizeof(correlation), "traceparent: 00-%s-%s-%02x\r\nx-request-id: %s\r\n",
+                 telemetry_context.trace, telemetry_context.span, telemetry_context.sampled, telemetry_context.request);
+    }
+    size_t req_cap = strlen(method) + strlen(path) + strlen(host) + strlen(extra) + strlen(correlation) + body_len + 256;
     char* req = (char*)malloc(req_cap);
     int req_len = snprintf(req, req_cap,
-        "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s"
+        "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n%s%s"
         "Content-Length: %zu\r\n\r\n",
-        method, path, host, extra, body_len);
+        method, path, host, extra, correlation, body_len);
     if (body_len) {
         memcpy(req + req_len, body, body_len);
         req_len += (int)body_len;
@@ -4072,11 +6010,17 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
     return resp;
 }
 
-int64_t* httpGet(const char* url)                    { return (int64_t*)http_request("GET", url, NULL); }
-int64_t* httpPost(const char* url, const char* body) { return (int64_t*)http_request("POST", url, body); }
-int64_t* httpPut(const char* url, const char* body)  { return (int64_t*)http_request("PUT", url, body); }
-int64_t* httpDelete(const char* url)                 { return (int64_t*)http_request("DELETE", url, NULL); }
-int64_t* httpPatch(const char* url, const char* body){ return (int64_t*)http_request("PATCH", url, body); }
+static int64_t* telemetry_http_request(const char* method, const char* url, const char* body) {
+    int64_t token = telemetry_enter("http.client", NULL, NULL, 3);
+    TinoxHttpResponse* response = http_request(method, url, body);
+    telemetry_leave(token);
+    return (int64_t*)response;
+}
+int64_t* httpGet(const char* url) { return telemetry_http_request("GET", url, NULL); }
+int64_t* httpPost(const char* url, const char* body) { return telemetry_http_request("POST", url, body); }
+int64_t* httpPut(const char* url, const char* body) { return telemetry_http_request("PUT", url, body); }
+int64_t* httpDelete(const char* url) { return telemetry_http_request("DELETE", url, NULL); }
+int64_t* httpPatch(const char* url, const char* body) { return telemetry_http_request("PATCH", url, body); }
 
 // ---- Binary-safe conn primitives (WebSocket frames etc.) ----
 // httpConnReadRequest/httpConnSendRaw are C-string-based and cut off at
@@ -4134,6 +6078,48 @@ int64_t httpConnWriteBytes(int64_t conn, int64_t* arr) {
     conn_send_all(c, (const char*)buf, (size_t)a->len);
     free(buf);
     return a->len;
+}
+
+// ---- Compact-buffer conn I/O (issue #311) ----
+// Length-aware, no per-byte widening: payloads go straight between the
+// socket and a tinox.core.bytes buffer.
+
+// Reads EXACTLY n bytes unless EOF/error comes first; the result's length
+// is the number actually read (callers MUST check it, same contract as
+// httpConnReadN). `n` is often peer-declared, so the buffer grows with the
+// bytes that actually arrive (4096-byte steps, doubling) instead of
+// trusting the claim -- same bound as httpConnReadN (issue #111).
+int64_t httpConnReadBuf(int64_t conn, int64_t n) {
+    if (conn <= 0 || n <= 0) return tinoxBufNew(0);
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    int64_t cap = n < 4096 ? n : 4096;
+    unsigned char* raw = (unsigned char*)GC_malloc_atomic((size_t)cap);
+    int64_t used = 0;
+    while (used < n) {
+        if (used == cap) {
+            int64_t ncap = cap * 2 < n ? cap * 2 : n;
+            unsigned char* nb = (unsigned char*)GC_malloc_atomic((size_t)ncap);
+            memcpy(nb, raw, (size_t)used);
+            raw = nb;
+            cap = ncap;
+        }
+        ssize_t got = conn_recv(c, (char*)raw + used, (size_t)(cap - used));
+        if (got <= 0) break;
+        used += got;
+    }
+    TinoxBuf* r = tinox_buf_alloc(used);
+    memcpy(r->data, raw, (size_t)used);
+    return (int64_t)(intptr_t)r;
+}
+
+// Writes the whole buffer. Returns bytes written (== len) or -1 for an
+// invalid conn handle. Blocks while the peer's receive window is full,
+// which is the backpressure bounded streaming relies on.
+int64_t httpConnWriteBuf(int64_t conn, int64_t h) {
+    if (conn <= 0) return -1;
+    TinoxBuf* b = tinox_buf_of(h, "httpConnWriteBuf");
+    if (b->len > 0) conn_send_all((TinoxConn*)(intptr_t)conn, (const char*)b->data, (size_t)b->len);
+    return b->len;
 }
 
 // Closes a connection (TLS shutdown + free + close).
@@ -4537,6 +6523,11 @@ static int http3_nghttp3_recv_header(nghttp3_conn* h3conn, int64_t stream_id, in
     } else if (strcmp(nameStr, ":path") == 0) {
         slot->path = valStr;
     } else if (nameStr[0] != ':') {
+        // HTTP/3 field names are lowercase on the wire; the handlers look headers up in their
+        // canonical HTTP/1 spelling ("Content-Type", "Authorization"), so store them that way.
+        for (size_t i = 0; nameStr[i]; i++) {
+            nameStr[i] = (char)((i == 0 || nameStr[i - 1] == '-') ? toupper((unsigned char)nameStr[i]) : tolower((unsigned char)nameStr[i]));
+        }
         tinox_map_set(slot->headersMap, nameStr, (int64_t)(intptr_t)valStr);
     }
     return 0;
@@ -4859,6 +6850,7 @@ int64_t http3ServerCreate(int64_t port, const char* certPath, const char* keyPat
     srv->maxEarlyDataSize = maxEarlyDataSize;
     RAND_bytes(srv->statelessResetSecret, sizeof(srv->statelessResetSecret));
     RAND_bytes(srv->retrySecret, sizeof(srv->retrySecret));
+    tinox_service_listener_ready(httpServerBoundPort(srv->udpFd));
     return (int64_t)(intptr_t)srv;
 }
 
@@ -5023,6 +7015,7 @@ static void http3_flush_writes(Http3Server* srv) {
 // -arrived HTTP/3 request (end_stream fired), -1 if nothing to dispatch
 // this tick, or -2 on a fatal socket error.
 int64_t http3ServerPumpOnce(int64_t serverHandle) {
+    if (serviceIsStopping()) return -2;
     Http3Server* srv = (Http3Server*)(intptr_t)serverHandle;
 
     // 1. Compute the poll() timeout from the soonest ngtcp2 timer expiry
@@ -5035,7 +7028,7 @@ int64_t http3ServerPumpOnce(int64_t serverHandle) {
         if (exp != UINT64_MAX && exp < soonest) soonest = exp;
     }
     int timeoutMs = soonest > now ? (int)((soonest - now) / 1000000ULL) : 0;
-    if (timeoutMs > 1000) timeoutMs = 1000;
+    if (timeoutMs > (service_enabled() ? 10 : 1000)) timeoutMs = service_enabled() ? 10 : 1000;
 
     struct pollfd pfd = { .fd = srv->udpFd, .events = POLLIN, .revents = 0 };
     int pr;
@@ -5693,6 +7686,33 @@ static void normalize_header_key(char* k) {
     }
 }
 
+char* serviceStatusJson(void) {
+    char buf[512];
+    snprintf(buf, sizeof(buf), "{\"state\":\"%s\",\"ready\":%s,\"live\":%s,\"startedMs\":%lld,\"readyMs\":%lld,\"shutdownMs\":%lld}",
+        serviceState(), serviceIsReady() ? "true" : "false", serviceIsLive() ? "true" : "false",
+        (long long)serviceStartedMs(), (long long)serviceReadyMs(), (long long)serviceShutdownMs());
+    return GC_strdup(buf);
+}
+void tinox_service_health_response(int64_t context, int64_t readiness) {
+    int64_t* response = (int64_t*)(intptr_t)((int64_t*)(intptr_t)context)[1];
+    response[0] = (readiness ? serviceIsReady() : serviceIsLive()) ? 200 : 503;
+    response[2] = (int64_t)(intptr_t)serviceStatusJson();
+    tinox_map_set((void*)(intptr_t)response[1], "Content-Type", (int64_t)(intptr_t)"application/json");
+}
+void tinox_service_unavailable(int64_t context) {
+    int64_t* response = (int64_t*)(intptr_t)((int64_t*)(intptr_t)context)[1];
+    response[0] = 503; response[2] = (int64_t)(intptr_t)"Service draining";
+}
+void tinox_service_request_done(int64_t context) {
+    if (__tinox_err) {
+        fprintf(stderr, "tinox: request handler error: %s\n", (char*)(intptr_t)__tinox_err);
+        int64_t* response = (int64_t*)(intptr_t)((int64_t*)(intptr_t)context)[1];
+        response[0] = 500; response[2] = (int64_t)(intptr_t)"Request failed";
+        __tinox_err = 0;
+    }
+    tinox_service_work_exit();
+}
+
 static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_alive_out) {
     *keep_alive_out = 0;
     char* raw_req = httpServerReadRequest(client_fd);
@@ -5731,6 +7751,7 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
 
     // Parse HTTP headers — normalize keys to Title-Case, track Connection header
     tinox_map_reset(&g_req_headers_map);
+    int trace_headers = 0, request_headers = 0;
     int req_close = 0; // HTTP/1.1 default: keep-alive
     char* hdr_line = strchr(raw_req, '\n');
     while (hdr_line) {
@@ -5748,6 +7769,10 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
             while (vlen > 0 && (vstart[vlen-1] == '\r' || vstart[vlen-1] == ' ')) vlen--;
             vstart[vlen] = '\0';
             if (strcmp(hkey, "Connection") == 0 && strcmp(vstart, "close") == 0) req_close = 1;
+            if (telemetry_enabled) {
+                if (!strcmp(hkey, "Traceparent")) trace_headers++;
+                if (!strcmp(hkey, "X-Request-Id")) request_headers++;
+            }
             tinox_map_set_borrow(&g_req_headers_map, hkey, (int64_t)vstart);
         }
         hdr_line = eol;
@@ -5774,7 +7799,36 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     g_ctx[0] = (int64_t)g_request;
     g_ctx[1] = (int64_t)g_response;
 
-    if (handler) handler((int64_t)g_ctx);
+    int64_t span_token = 0;
+    if (telemetry_enabled) {
+        const char* incoming_parent = (const char*)(uintptr_t)tinox_map_get(&g_req_headers_map, "Traceparent");
+        const char* incoming_request = (const char*)(uintptr_t)tinox_map_get(&g_req_headers_map, "X-Request-Id");
+        span_token = telemetry_enter("http.server", trace_headers == 1 && incoming_parent ? incoming_parent : "",
+                                    request_headers == 1 && incoming_request ? incoming_request : "", 2);
+        if (span_token) {
+            telemetry_event("request.start");
+            tinox_map_set(&g_resp_headers_map, "X-Request-Id", (int64_t)(uintptr_t)telemetryRequestId());
+        }
+    }
+    int service_admitted = 0;
+    if (service_enabled() && strcmp(method, "GET") == 0 &&
+        (!strcmp(path, "/health/ready") || !strcmp(path, "/health/live"))) {
+        tinox_service_health_response((int64_t)g_ctx, !strcmp(path, "/health/ready"));
+    } else if (!(service_admitted = (int)tinox_service_work_enter())) {
+        tinox_service_unavailable((int64_t)g_ctx);
+        req_close = 1;
+    } else {
+        if (handler) handler((int64_t)g_ctx);
+        if (__tinox_err && service_enabled()) {
+            fprintf(stderr, "tinox: request handler error: %s\n", (char*)(intptr_t)__tinox_err);
+            g_response[0] = 500; g_response[2] = (int64_t)(intptr_t)"Request failed"; __tinox_err = 0;
+        }
+    }
+    if (span_token) {
+        while (telemetry_depth > span_token) telemetryEnd(telemetry_depth);
+        telemetry_event("request.end");
+    }
+    telemetry_leave(span_token);
 
     char* body = (char*)g_response[2];
     if (!body) body = "";
@@ -5801,7 +7855,7 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
             }
         }
     }
-    if (tinox_map_contains(resp_hdr_map, "Content-Type") == 0) {
+    if (status != 204 && tinox_map_contains(resp_hdr_map, "Content-Type") == 0) {
         static const char ct[] = "Content-Type: application/json\r\n";
         // Bug 95: this fallback copy was unconditional, unlike every other
         // write into hdr_buf above (each bounds-checked against
@@ -5822,7 +7876,7 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     const char* conn_hdr     = req_close ? conn_close : conn_ka;
     size_t      conn_hdr_len = req_close ? (sizeof(conn_close) - 1) : (sizeof(conn_ka) - 1);
 
-    size_t body_len = strlen(body);
+    size_t body_len = status == 204 ? 0 : strlen(body);
     const char* status_text = http_status_text(status);
     size_t st_len = strlen(status_text);
     size_t resp_cap = 9 + 3 + 1 + st_len + 2 + hdr_off + 16 + 20 + 2 + conn_hdr_len + 2 + body_len + 1;
@@ -5840,9 +7894,11 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     memcpy(out, status_text, st_len); out += st_len;
     out[0] = '\r'; out[1] = '\n'; out += 2;
     memcpy(out, hdr_buf, hdr_off); out += hdr_off;
-    memcpy(out, "Content-Length: ", 16); out += 16;
-    out += fast_i64_write((int64_t)body_len, out);
-    out[0] = '\r'; out[1] = '\n'; out += 2;
+    if (status != 204) {
+        memcpy(out, "Content-Length: ", 16); out += 16;
+        out += fast_i64_write((int64_t)body_len, out);
+        out[0] = '\r'; out[1] = '\n'; out += 2;
+    }
     memcpy(out, conn_hdr, conn_hdr_len); out += conn_hdr_len;
     out[0] = '\r'; out[1] = '\n'; out += 2;
     memcpy(out, body, body_len); out += body_len;
@@ -5866,7 +7922,8 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
         if (n == 0) break;
         sent_bytes += (size_t)n;
     }
-    *keep_alive_out = !req_close;
+    if (service_admitted) tinox_service_work_exit();
+    *keep_alive_out = !req_close && !serviceIsStopping();
 }
 
 // Per-connection state for epoll-based multi-connection handler
@@ -5914,6 +7971,7 @@ static uint64_t epoll_now_ms(void) {
 static void epoll_slot_add(int fd, uint64_t now_ms) {
     int idx = fd % EPOLL_MAX_CONNS;
     if (g_epoll_slots[idx].fd < 0) g_epoll_nconns++;
+    else atomic_fetch_sub(&g_open_conns, 1); // slot collision: that fd is already counted
     g_epoll_slots[idx].fd = fd;
     g_epoll_slots[idx].last_ms = now_ms;
     g_epoll_slots[idx].served = 0;
@@ -5921,7 +7979,10 @@ static void epoll_slot_add(int fd, uint64_t now_ms) {
 
 static void epoll_slot_remove(int fd) {
     int idx = fd % EPOLL_MAX_CONNS;
-    if (g_epoll_slots[idx].fd >= 0) g_epoll_nconns--;
+    if (g_epoll_slots[idx].fd >= 0) {
+        g_epoll_nconns--;
+        atomic_fetch_sub(&g_open_conns, 1);
+    }
     g_epoll_slots[idx].fd = -1;
 }
 
@@ -5942,7 +8003,7 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
 
     struct epoll_event events[64];
 
-    while (1) {
+    while (!service_quiescing()) {
         // EINTR-Retry (Bug 68/140 discipline, s. conn_recv/conn_send): a
         // blocking epoll_wait can be interrupted by the GC's SIGPWR stop-
         // the-world signal like any other blocking syscall -- without a
@@ -5962,7 +8023,21 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
                 struct sockaddr_in client = {0};
                 socklen_t len = sizeof(client);
                 int cfd = accept(fd, (struct sockaddr*)&client, &len);
-                if (cfd >= 0) {
+                if (cfd >= 0 && !tinox_budget_acquire(&g_open_conns, &g_peak_conns, tinox_limits()->max_connections)) {
+                    // Over the connection budget (#302): answer with a
+                    // visible, distinguishable overload response instead of
+                    // queueing without bound or dropping silently.
+                    static const char overload[] =
+                        "HTTP/1.1 503 Service Unavailable\r\n"
+                        "Content-Type: application/json\r\n"
+                        "Retry-After: 1\r\n"
+                        "Connection: close\r\n"
+                        "Content-Length: 51\r\n\r\n"
+                        "{\"error\":\"overloaded: connection budget exhausted\"}";
+                    atomic_fetch_add(&g_rejected_conns, 1);
+                    (void)!send(cfd, overload, sizeof(overload) - 1, MSG_NOSIGNAL | MSG_DONTWAIT);
+                    close(cfd);
+                } else if (cfd >= 0) {
                     int one = 1;
                     setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
                     struct timeval tv = { .tv_sec = 5 }; // zombie guard
@@ -6026,6 +8101,15 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
             }
         }
     }
+    for (int i = 0; i < EPOLL_MAX_CONNS; i++) {
+        if (g_epoll_slots[i].fd >= 0) {
+            int fd = g_epoll_slots[i].fd;
+            epoll_slot_remove(fd);
+            close(fd);
+        }
+    }
+    g_epoll_nconns = 0;
+    close(epfd);
 }
 
 struct TinoxWorkerArgs { TinoxHttpServer* srv; int64_t port; const char* bind_addr; };
@@ -6038,14 +8122,62 @@ static void* tinox_worker_run(void* arg) {
     return NULL;
 }
 
+// Managed HTTP workers own joinable threads and their own listener/clients.
+struct ServiceHttpWorkerArgs {
+    TinoxHttpServer* server;
+    int64_t port;
+    int service_id;
+    atomic_int ready;
+    atomic_bool failed;
+};
+static void* service_http_worker(void* raw) {
+    struct ServiceHttpWorkerArgs* args = raw;
+    service_task_id = args->service_id;
+    int64_t fd = httpServerCreateOn(args->port, args->server->bind_addr);
+    if (fd < 0) {
+        atomic_store(&args->failed, true);
+        service_record_error("HTTP worker listener bind failed", 0);
+    }
+    atomic_fetch_add(&args->ready, 1);
+    if (fd >= 0) { tinox_handle_connections(args->server, fd); httpServerClose(fd); }
+    if (task_frame_scope) { task_close_scope(task_frame_scope, 0, 1); if (__tinox_err) service_record_error("HTTP worker task failed", 1); }
+    tinox_gc_unregister_thread_roots();
+    return NULL;
+}
+static void service_http_listen(TinoxHttpServer* server) {
+    int64_t fd = httpServerCreateOn(server->port, server->bind_addr);
+    if (fd < 0) { service_record_error("HTTP listener bind failed", 0); return; }
+    int64_t port = httpServerBoundPort(fd);
+    int workers = (int)tinox_limits()->http_workers;
+    // Same one-thread-per-CPU model, with bounded stack usage for thread IDs.
+    pthread_t* threads = GC_malloc(sizeof(*threads) * (size_t)workers);
+    struct ServiceHttpWorkerArgs args = { .server = server, .port = port, .service_id = service_task_id };
+    atomic_init(&args.ready, 0); atomic_init(&args.failed, false);
+    int created = 0;
+    for (int i = 1; i < workers; i++) {
+        int rc = pthread_create(&threads[created], NULL, service_http_worker, &args);
+        if (rc) { service_record_error("HTTP worker creation failed", 0); break; }
+        created++;
+    }
+    while (atomic_load(&args.ready) < created) {
+        struct timespec delay = {0, 1000000}; nanosleep(&delay, NULL);
+    }
+    if (!atomic_load(&args.failed) && !serviceIsStopping()) tinox_service_listener_ready(port);
+    tinox_handle_connections(server, fd);
+    httpServerClose(fd);
+    for (int i = 0; i < created; i++) task_pthread_check(pthread_join(threads[i], NULL));
+}
+
 void tinox_HttpServer_listen(int64_t* server) {
     signal(SIGPIPE, SIG_IGN); // writev/send to closed connection should not kill process
     TinoxHttpServer* srv = (TinoxHttpServer*)server;
+    if (service_enabled()) { service_http_listen(srv); return; }
     int64_t port = srv->port;
     fprintf(stderr, "HttpServer listening on port %lld\n", (long long)port);
 
-    int ncpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
-    int nthreads = ncpus > 0 ? ncpus : 8; // one thread per CPU, each handles multiple conns via epoll
+    // One epoll thread per effective CPU (affinity/cgroup-aware) unless
+    // TINOX_HTTP_WORKERS overrides it; each handles many conns via epoll.
+    int nthreads = (int)tinox_limits()->http_workers;
 
     // Bug found while adding the dev-mode introspection server (the first
     // caller to ever run a SECOND HttpServer::listen() in one process):
@@ -7029,86 +9161,174 @@ int64_t* tinox_json_list_deserialize(int64_t* arr_val, int64_t* (*from_json)(int
     return (int64_t*)out;
 }
 
-// ---- Config (@Config annotation) ----
-// Reads key=value pairs from application.properties in the current directory.
-
+// ---- Runtime application configuration (separate from tinox.toml) ----
 #define TINOX_CONFIG_MAX_ENTRIES 256
-#define TINOX_CONFIG_MAX_LINE    1024
 
 typedef struct { char* key; char* value; } TinoxConfigEntry;
-
 static TinoxConfigEntry tinox_config_entries[TINOX_CONFIG_MAX_ENTRIES];
-static int              tinox_config_count = -1; // -1 = not loaded
+static int tinox_config_count = -1;
+static int tinox_config_errors;
+
+typedef struct {
+    const char *key, *type, *policy, *fallback, *value;
+    char *env_name;
+} TinoxConfigDeclaration;
+static TinoxConfigDeclaration tinox_config_declarations[TINOX_CONFIG_MAX_ENTRIES];
+static int tinox_config_decl_count;
+
+static void tinox_config_error(const char *key, const char *reason) {
+    // Never print raw input, defaults, paths or environment values.
+    fprintf(stderr, "configuration '%s': %s\n", key, reason);
+    tinox_config_errors++;
+}
 
 static void tinox_config_load(void) {
     tinox_config_count = 0;
-    FILE* f = fopen("application.properties", "r");
-    if (!f) return;
-    char line[TINOX_CONFIG_MAX_LINE];
-    while (fgets(line, sizeof(line), f)) {
-        // strip newline
-        size_t len = strlen(line);
-        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
-        // skip empty lines and comments
-        if (len == 0 || line[0] == '#' || line[0] == '!') continue;
-        char* eq = strchr(line, '=');
-        if (!eq) continue;
-        *eq = '\0';
-        char* key = line;
-        char* val = eq + 1;
-        // trim trailing whitespace from key
-        char* kend = eq - 1;
-        while (kend >= key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
-        // trim leading whitespace from value
-        while (*val == ' ' || *val == '\t') val++;
-        if (tinox_config_count < TINOX_CONFIG_MAX_ENTRIES) {
-            tinox_config_entries[tinox_config_count].key   = strdup(key);
-            tinox_config_entries[tinox_config_count].value = strdup(val);
-            tinox_config_count++;
-        }
+    const char *path = getenv("TINOX_CONFIG_FILE");
+    FILE *f = fopen(path ? path : "application.properties", "r");
+    if (!f) {
+        if (path) tinox_config_error("file", "cannot open explicit configuration file");
+        else if (errno != ENOENT) tinox_config_error("file", "cannot open configuration file");
+        return;
     }
+    char *line = NULL;
+    size_t capacity = 0;
+    ssize_t length;
+    while ((length = getline(&line, &capacity, f)) >= 0) {
+        if (memchr(line, 0, (size_t)length)) {
+            tinox_config_error("file", "embedded NUL in properties file");
+            continue;
+        }
+        while (length && (line[length-1] == '\n' || line[length-1] == '\r')) line[--length] = 0;
+        char *key = line;
+        while (*key == ' ' || *key == '\t') key++;
+        if (!*key || *key == '#' || *key == '!') continue;
+        char *eq = strchr(key, '=');
+        if (!eq) { tinox_config_error("file", "expected key=value"); continue; }
+        char *end = eq;
+        while (end > key && (end[-1] == ' ' || end[-1] == '\t')) end--;
+        *end = 0;
+        char *value = eq + 1;
+        while (*value == ' ' || *value == '\t') value++;
+        int index = 0;
+        for (; index < tinox_config_count; index++) {
+            if (!strcmp(tinox_config_entries[index].key, key)) break;
+        }
+        if (index == TINOX_CONFIG_MAX_ENTRIES) { tinox_config_error("file", "too many properties"); continue; }
+        if (index == tinox_config_count) {
+            tinox_config_entries[index].key = strdup(key);
+            tinox_config_count++;
+        } else {
+            free(tinox_config_entries[index].value);
+        }
+        tinox_config_entries[index].value = strdup(value); // Last duplicate wins.
+    }
+    if (ferror(f)) tinox_config_error("file", "cannot read configuration file");
+    // getline() allocated `line` with libc malloc, not the GC: the parenthesized call bypasses the free() -> GC_free macro.
+    (free)(line);
     fclose(f);
 }
 
-static const char* tinox_config_lookup(const char* key) {
+static const char *tinox_config_file_value(const char *key) {
     if (tinox_config_count < 0) tinox_config_load();
-    for (int i = 0; i < tinox_config_count; i++) {
-        if (strcmp(tinox_config_entries[i].key, key) == 0)
-            return tinox_config_entries[i].value;
+    for (int i = 0; i < tinox_config_count; i++)
+        if (!strcmp(tinox_config_entries[i].key, key)) return tinox_config_entries[i].value;
+    return NULL;
+}
+
+static const char* tinox_config_lookup(const char* key) {
+    for (int i = 0; i < tinox_config_decl_count; i++)
+        if (!strcmp(tinox_config_declarations[i].key, key)) return tinox_config_declarations[i].value;
+    const char *value = tinox_config_file_value(key);
+    return value ? value : "";
+}
+
+static int tinox_config_valid_integer(const char *value, const char *type) {
+    int is_unsigned = !strncmp(type, "UInt", 4);
+    int bits = atoi(type + (is_unsigned ? 4 : 3));
+    const char *digit = value;
+    if (*digit == '-' || *digit == '+') digit++;
+    if (!*digit || (is_unsigned && *value == '-')) return 0;
+    for (; *digit; digit++) if (*digit < '0' || *digit > '9') return 0;
+    errno = 0;
+    if (is_unsigned) {
+        unsigned long long n = strtoull(value, NULL, 10);
+        return errno != ERANGE && (bits == 64 || n <= ((1ULL << bits) - 1));
     }
-    return "";
+    long long n = strtoll(value, NULL, 10);
+    return errno != ERANGE && (bits == 64 || (n >= -(1LL << (bits-1)) && n <= (1LL << (bits-1))-1));
 }
 
-char* tinox_config_get(const char* key) {
-    return (char*)tinox_config_lookup(key);
+void tinox_config_declare(const char *key, const char *type, const char *policy, const char *fallback) {
+    char *env_name = malloc(strlen(key) + sizeof("TINOX_CONFIG_"));
+    strcpy(env_name, "TINOX_CONFIG_");
+    char *out = env_name + strlen(env_name);
+    for (const unsigned char *p = (const unsigned char*)key; *p; p++)
+        *out++ = (*p == '.' || *p == '-') ? '_' : (char)toupper(*p);
+    *out = 0;
+    if (!strcmp(env_name, "TINOX_CONFIG_FILE")) tinox_config_error(key, "environment name is reserved for the configuration file selector");
+    for (int i = 0; i < tinox_config_decl_count; i++) {
+        TinoxConfigDeclaration *d = &tinox_config_declarations[i];
+        if (!strcmp(d->key, key)) {
+            if (strcmp(d->type, type) || strcmp(d->policy, policy) ||
+                (d->fallback == NULL) != (fallback == NULL) ||
+                (fallback && strcmp(d->fallback, fallback)))
+                tinox_config_error(key, "conflicting declarations");
+            free(env_name);
+            return;
+        }
+        if (!strcmp(d->env_name, env_name)) tinox_config_error(key, "environment name collides with another declaration");
+    }
+    if (tinox_config_decl_count == TINOX_CONFIG_MAX_ENTRIES) {
+        tinox_config_error(key, "too many declarations"); free(env_name); return;
+    }
+    const char *value = getenv(env_name);
+    if (!value) value = tinox_config_file_value(key);
+    if (!value) value = fallback;
+    int missing = value == NULL;
+    if (missing) value = "";
+    // Snapshot before any application threads start. Legacy getters retain their parsing.
+    tinox_config_declarations[tinox_config_decl_count++] = (TinoxConfigDeclaration){key, type, policy, fallback, strdup(value), env_name};
+    if (!strcmp(policy, "legacy")) return;
+    if (!strcmp(policy, "required") && !*value) {
+        tinox_config_error(key, missing ? "required value is missing" : "required value is empty");
+    } else if (!missing && strcmp(type, "String")) {
+        if (!*value) {
+            tinox_config_error(key, "value is empty");
+        } else if (!strcmp(type, "Bool")) {
+            if (strcmp(value, "true") && strcmp(value, "false")) tinox_config_error(key, "expected true or false");
+        } else if (!tinox_config_valid_integer(value, type)) {
+            tinox_config_error(key, "expected decimal integer within declared type range");
+        }
+    }
 }
 
+char* tinox_config_get(const char* key) { return (char*)tinox_config_lookup(key); }
 int64_t tinox_config_get_int(const char* key) {
-    const char* v = tinox_config_lookup(key);
-    if (!v || *v == '\0') return 0;
-    return (int64_t)atoll(v);
+    const char *v = tinox_config_lookup(key);
+    if (!v || !*v) return 0;
+    // Strict unsigned fields use the same 64-bit representation as Tinox slots.
+    for (int i = 0; i < tinox_config_decl_count; i++) {
+        TinoxConfigDeclaration *d = &tinox_config_declarations[i];
+        if (!strcmp(d->key, key) && strcmp(d->policy, "legacy") && !strncmp(d->type, "UInt", 4))
+            return (int64_t)strtoull(v, NULL, 10);
+    }
+    return (int64_t)atoll(v); // Preserve the legacy getter, including overflow behavior.
 }
-
 int64_t tinox_config_get_bool(const char* key) {
-    const char* v = tinox_config_lookup(key);
-    if (!v || *v == '\0') return 0;
-    return (strcmp(v, "true") == 0 || strcmp(v, "1") == 0 || strcmp(v, "yes") == 0) ? 1 : 0;
+    const char *v = tinox_config_lookup(key);
+    return v && (!strcmp(v, "true") || !strcmp(v, "1") || !strcmp(v, "yes"));
 }
 
-// Dumps every application.properties key/value as a flat JSON object --
-// unlike tinox_config_get*, which only ever looks up a single key a
-// @Config field already declared, this backs the dev-mode introspection
-// API's /config endpoint (it needs to show what's actually loaded, not
-// just what the program happens to read). Values are always emitted as
-// JSON strings (application.properties has no type info of its own --
-// tinox_config_get_int/_bool parse on demand per @Config field, not at
-// load time).
+// Introspection intentionally redacts even undeclared properties: they may be secrets.
 char* tinox_config_dump_json(void) {
     if (tinox_config_count < 0) tinox_config_load();
-    char* b = jsonBuilderCreate();
-    for (int i = 0; i < tinox_config_count; i++) {
-        jsonBuilderAddString(b, tinox_config_entries[i].key, tinox_config_entries[i].value);
-    }
+    char *b = jsonBuilderCreate();
+    for (int i = 0; i < tinox_config_count; i++)
+        jsonBuilderAddString(b, tinox_config_entries[i].key, "[redacted]");
+    for (int i = 0; i < tinox_config_decl_count; i++)
+        if (!tinox_config_file_value(tinox_config_declarations[i].key))
+            jsonBuilderAddString(b, tinox_config_declarations[i].key, "[redacted]");
     return jsonBuilderFinish(b);
 }
 
@@ -7291,7 +9511,7 @@ char* tinox_metrics_prometheus(void) {
     pthread_mutex_lock(&_tinox_metrics_mu);
     // Upper bound per entry: histogram lines repeat a (up to 255-byte)
     // name 5 times plus ~200 bytes of fixed text -- comfortably under 2048.
-    size_t cap = (size_t)(_tinox_counter_n + _tinox_histogram_n + _tinox_gauge_n + 1) * 2048 + 64;
+    size_t cap = (size_t)(_tinox_counter_n + _tinox_histogram_n + _tinox_gauge_n + 1) * 2048 + 4096 + 64;
     char* buf = (char*)GC_malloc(cap);
     size_t pos = 0;
 
@@ -7324,6 +9544,7 @@ char* tinox_metrics_prometheus(void) {
             (long long)_tinox_gauges[i].value);
         tinox_metrics_append(&pos, cap, n);
     }
+    tinox_metrics_append(&pos, cap, tinox_limits_metrics_text(buf + pos, cap - pos));
     pthread_mutex_unlock(&_tinox_metrics_mu);
     return buf;
 }
@@ -7372,6 +9593,7 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
         if (PQstatus(c) != CONNECTION_OK) {
             fprintf(stderr, "DB connection failed: %s\n", PQerrorMessage(c));
             PQfinish(c);
+            if (service_enabled()) { service_record_error("PostgreSQL initialization failed", 0); return; }
             exit(1);
         }
         _tinox_pg_pool[i] = c;
@@ -7525,6 +9747,7 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
     else if (strncmp(path, "sqlite://", 9) == 0) path += 9;
     if (sqlite3_open(path, &_tinox_sqlite_db) != SQLITE_OK) {
         fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(_tinox_sqlite_db));
+        if (service_enabled()) { service_record_error("SQLite initialization failed", 0); return; }
         exit(1);
     }
 }
@@ -7743,6 +9966,7 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
     _tinox_mysql_conn = mysql_init(NULL);
     if (!_tinox_mysql_conn) {
         fprintf(stderr, "MySQL init failed\n");
+        if (service_enabled()) { service_record_error("MySQL initialization failed", 0); return; }
         exit(1);
     }
     char host[256], user[256], pass[256], db[256];
@@ -7750,7 +9974,8 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
     _parse_mysql_url(url, host, user, pass, db, &port);
     if (!mysql_real_connect(_tinox_mysql_conn, host, user, pass, db, port, NULL, 0)) {
         fprintf(stderr, "MySQL connection failed: %s\n", mysql_error(_tinox_mysql_conn));
-        mysql_close(_tinox_mysql_conn);
+        mysql_close(_tinox_mysql_conn); _tinox_mysql_conn = NULL;
+        if (service_enabled()) { service_record_error("MySQL initialization failed", 0); return; }
         exit(1);
     }
 }
@@ -7897,6 +10122,26 @@ void    tinox_db_free(void* r)                                                 {
 char*   tinox_db_error(void* c)                                                { (void)c; return ""; }
 #endif /* DB driver */
 
+static void service_close_database(void) {
+#ifdef TINOX_DB_POSTGRES
+    for (int i = 0; i < TINOX_DB_POOL_MAX; i++) {
+        if (_tinox_pg_pool[i]) { PQfinish(_tinox_pg_pool[i]); _tinox_pg_pool[i] = NULL; }
+    }
+    _tinox_pg_pool_size = _tinox_pg_pool_free_count = 0;
+#elif defined(TINOX_DB_SQLITE)
+    if (_tinox_sqlite_db) {
+        for (int i = 0; i < STMT_CACHE_SIZE; i++) {
+            if (_stmt_cache[i].stmt) sqlite3_finalize(_stmt_cache[i].stmt);
+            _stmt_cache[i].sql = NULL; _stmt_cache[i].stmt = NULL;
+        }
+        if (sqlite3_close(_tinox_sqlite_db) != SQLITE_OK) service_record_error("SQLite disposal failed", 0);
+        _tinox_sqlite_db = NULL;
+    }
+#elif defined(TINOX_DB_MYSQL)
+    if (_tinox_mysql_conn) { mysql_close(_tinox_mysql_conn); _tinox_mysql_conn = NULL; }
+#endif
+}
+
 // Param helpers (always available)
 char** tinox_params_alloc(int64_t n) {
     return (char**)GC_malloc(sizeof(char*) * (size_t)n);
@@ -7915,6 +10160,7 @@ char* tinox_int_to_param(int64_t val) {
 // ---- Entry point ----
 
 extern int64_t tinox_main(void);
+extern void tinox_config_init(void) __attribute__((weak));
 
 // Error slot from the generated IR (@__tinox_err = thread_local global i64
 // 0, since bug 101 -- previously a plain global that HTTP worker threads
@@ -7934,6 +10180,25 @@ extern __thread int64_t __tinox_err;
 // only adds the CALLING thread's TLS slot, so this must run once per
 // thread (the `registered` guard below is itself `__thread`, so each
 // thread gets its own independent one-shot check).
+// Every `__thread` GC pointer a thread running Tinox code may hold (see
+// Bug 140 above) -- one list, shared by register and unregister below.
+#define TINOX_GC_THREAD_ROOTS(X) \
+    X(_tinox_http_req_headers) \
+    X(g_recv_buf) \
+    X(g_resp_buf) \
+    X(g_wrap_buf) \
+    X(g_response) \
+    X(g_request) \
+    X(g_ctx) \
+    X(g_req_headers_map) \
+    X(g_resp_headers_map) \
+    X(g_path_params_map) \
+    X(task_scope) \
+    X(task_frame_scope) \
+    X(current_task) \
+    X(service_hook_stack) \
+    X(__tinox_err)
+
 static void tinox_gc_register_thread_roots(void) {
 #ifndef TINOX_NO_GC
     // GC_add_roots is a Boehm-GC-specific API (<gc.h>, only included in
@@ -7950,19 +10215,35 @@ static void tinox_gc_register_thread_roots(void) {
     static __thread int registered = 0;
     if (registered) return;
     registered = 1;
-#define TINOX_GC_ROOT(var) GC_add_roots(&(var), (char*)&(var) + sizeof(var) + 1)
-    TINOX_GC_ROOT(_tinox_http_req_headers);
-    TINOX_GC_ROOT(g_recv_buf);
-    TINOX_GC_ROOT(g_resp_buf);
-    TINOX_GC_ROOT(g_wrap_buf);
-    TINOX_GC_ROOT(g_response);
-    TINOX_GC_ROOT(g_request);
-    TINOX_GC_ROOT(g_ctx);
-    TINOX_GC_ROOT(g_req_headers_map);
-    TINOX_GC_ROOT(g_resp_headers_map);
-    TINOX_GC_ROOT(g_path_params_map);
-    TINOX_GC_ROOT(__tinox_err);
+#define TINOX_GC_ROOT(var) GC_add_roots(&(var), (char*)&(var) + sizeof(var) + 1);
+    TINOX_GC_THREAD_ROOTS(TINOX_GC_ROOT)
 #undef TINOX_GC_ROOT
+#endif
+}
+
+// Counterpart to tinox_gc_register_thread_roots, for a thread that is
+// about to exit. The roots it registered point into THIS thread's TLS
+// block, which glibc frees together with the thread's stack once the
+// thread is gone (munmap'd outright once its stack cache is full, ~40MB
+// -- i.e. after a few 8MB-stack threads). Left registered, the next
+// collection's root scan reads that unmapped range and SIGSEGVs inside
+// libgc's mark code. Found via zox (tinox-compress) spawning 32 short-
+// lived block-decoder threads per batch: ~40% of runs of a 20MB
+// extraction crashed in GC_malloc -> mark; 0% with GC_DONT_GC=1. Boehm
+// may merge adjacent root segments, so the whole [lowest, highest) span
+// of this thread's variables is removed in one call rather than one
+// var at a time (GC_remove_roots only drops segments fully inside the
+// given range).
+static void tinox_gc_unregister_thread_roots(void) {
+#ifndef TINOX_NO_GC
+    char* lo = (char*)UINTPTR_MAX;
+    char* hi = NULL;
+#define TINOX_GC_ROOT_SPAN(var) \
+    if ((char*)&(var) < lo) lo = (char*)&(var); \
+    if ((char*)&(var) + sizeof(var) + 1 > hi) hi = (char*)&(var) + sizeof(var) + 1;
+    TINOX_GC_THREAD_ROOTS(TINOX_GC_ROOT_SPAN)
+#undef TINOX_GC_ROOT_SPAN
+    GC_remove_roots(lo, hi);
 #endif
 }
 
@@ -7993,7 +10274,25 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
     _tinox_argc = argc;
     _tinox_argv = argv;
+    tinox_config_load();
+    if (tinox_config_init) tinox_config_init();
+    if (tinox_config_errors) return 78;
+    telemetryInit();
+    if (telemetry_enabled) {
+        telemetry_event("service.start");
+        tinox_counter_inc("tinox_service_starts_total");
+    }
+    task_ensure_scope();
     int64_t rc = tinox_main();
+    // Process shutdown owns every remaining joinable child.
+    if (__tinox_err == (int64_t)(intptr_t)task_shutdown_error) __tinox_err = 0;
+    task_close_scope(task_frame_scope, 0, 1);
+    atomic_store(&task_shutdown_complete, true);
+    if (telemetry_enabled) {
+        telemetry_event("service.stop");
+        tinox_counter_inc("tinox_service_stops_total");
+    }
+    telemetryFlush();
     if (__tinox_err != 0) {
         // throw is type-checked as String-or-Error; usually a String.
         const char* msg = (const char*)(intptr_t)__tinox_err;
@@ -8035,10 +10334,17 @@ int64_t now(void) {
 }
 
 void sleep_ms(int64_t ms) {
-    struct timespec ts;
-    ts.tv_sec = ms / 1000;
-    ts.tv_nsec = (ms % 1000) * 1000000LL;
-    nanosleep(&ts, NULL);
+    if (ms < 0 || ms > INT64_MAX - task_clock_ms()) task_fatal("sleep requires a nonnegative duration");
+    int64_t end = task_clock_ms() + ms;
+    do {
+        taskCheckCancellation();
+        if (__tinox_err) return;
+        int64_t remaining = end - task_clock_ms();
+        if (remaining <= 0) return;
+        if (remaining > 10) remaining = 10;
+        struct timespec ts = { 0, remaining * 1000000 };
+        while (nanosleep(&ts, &ts) < 0 && errno == EINTR) {}
+    } while (1);
 }
 
 char* strftimeStr(const char* fmt, int64_t t) {

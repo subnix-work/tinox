@@ -19,11 +19,11 @@ import tinox.core.base64;
 class Main
 {
     fnc bytesToHex(b: List<Int64>) -> String {
-        let alphabet: String = "0123456789abcdef";
+        const alphabet: String = "0123456789abcdef";
         var s: String = "";
         for i in 0..b.len() {
-            let hi = (b[i] >> 4) & 15;
-            let lo = b[i] & 15;
+            const hi = (b[i] >> 4) & 15;
+            const lo = b[i] & 15;
             s = s + alphabet.substring(hi, hi+1) + alphabet.substring(lo, lo+1);
         }
         return s;
@@ -31,27 +31,27 @@ class Main
 
 
     fnc main() -> Int32 {
-        let password = Amqp10::stringToBytes("testpass");
-        let salt: List<Int64> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        let iterations = 4096;
+        const password = Amqp10::stringToBytes("testpass");
+        const salt: List<Int64> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        const iterations = 4096;
 
         // python3: hashlib.pbkdf2_hmac('sha256', b'testpass', salt, 4096, dklen=32)
-        let saltedPassword = Amqp10::pbkdf2HmacSha256(password, salt, iterations);
+        const saltedPassword = Amqp10::pbkdf2HmacSha256(password, salt, iterations);
         if (bytesToHex(saltedPassword) == "7903ae83ca06b339de2328863b4ec0cc644b2c8aa4b652f5b9c07518583c3a1d") {
             println("salted:match");
         }
 
-        let clientKey = hmacSha256Bytes(Amqp10::stringToBytes("Client Key"), saltedPassword);
+        const clientKey = hmacSha256Bytes(Amqp10::stringToBytes("Client Key"), saltedPassword);
         if (bytesToHex(clientKey) == "26dac491d44395986aeb09a9d74ce281f017f99ef3e4ec74d3d6de68ad5d7ca9") {
             println("clientKey:match");
         }
 
-        let storedKey = sha256Bytes(clientKey);
+        const storedKey = sha256Bytes(clientKey);
         if (bytesToHex(storedKey) == "3832fa4072bda8c81f24a25517f44244526072ef8c6cd5264bce4b8eb6c940ca") {
             println("storedKey:match");
         }
 
-        let serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword);
+        const serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword);
         if (bytesToHex(serverKey) == "7164272d3414f671296fdd7b449969ab608d7ea694a0cc9978a62821c34146df") {
             println("serverKey:match");
         }
@@ -59,22 +59,22 @@ class Main
         // Full SCRAM message construction with fixed nonces (client_nonce=
         // "clientnonce123", server appends "servernonce456") — matches a
         // hand-computed reference AuthMessage/ClientProof/ServerSignature.
-        let clientNonce = "clientnonce123";
-        let combinedNonce = clientNonce + "servernonce456";
-        let gs2Header = "n,,";
-        let clientFirstMessageBare = "n=testuser,r=" + clientNonce;
-        let saltB64 = Base64::encodeBytes(salt);
-        let serverFirstMessage = "r=" + combinedNonce + ",s=" + saltB64 + ",i=" + iterations.toString();
-        let clientFinalMessageWithoutProof = "c=" + Base64::encode(gs2Header) + ",r=" + combinedNonce;
-        let authMessage = clientFirstMessageBare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof;
+        const clientNonce = "clientnonce123";
+        const combinedNonce = clientNonce + "servernonce456";
+        const gs2Header = "n,,";
+        const clientFirstMessageBare = "n=testuser,r=" + clientNonce;
+        const saltB64 = Base64::encodeBytes(salt);
+        const serverFirstMessage = "r=" + combinedNonce + ",s=" + saltB64 + ",i=" + iterations.toString();
+        const clientFinalMessageWithoutProof = "c=" + Base64::encode(gs2Header) + ",r=" + combinedNonce;
+        const authMessage = clientFirstMessageBare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof;
 
-        let clientSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), storedKey);
-        let clientProof = Amqp10::xorBytes(clientKey, clientSignature);
+        const clientSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), storedKey);
+        const clientProof = Amqp10::xorBytes(clientKey, clientSignature);
         if (Base64::encodeBytes(clientProof) == "YX9Lo8AZrX4iE+CvhAJLrMLrRjvkz5cYGFG3lBi0e+w=") {
             println("clientProof:match");
         }
 
-        let serverSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey);
+        const serverSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey);
         if (Base64::encodeBytes(serverSignature) == "Yl+LLICJz9+jDX0tXsvB4pwH3J0kK/kdutaT6iy4OOs=") {
             println("serverSig:match");
         }

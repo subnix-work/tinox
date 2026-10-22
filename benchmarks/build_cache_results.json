@@ -1,0 +1,168 @@
+{
+  "notes": "Local measurements with warm runtime-object caches and concurrent verification activity. The compiler is release-built. Three disabled and warm samples; one cold application-cache sample. The larger case is a synthetic 3000-method compiler workload, not a service or production benchmark. Native digest memoization is enabled with change-time/inode validation. Cold application-cache runs include initial native digest/inventory setup.",
+  "tiny_debug": {
+    "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+    "machine": "x86_64",
+    "compiler": "/tmp/tinox-295-final",
+    "compiler_sha256": "8d3543b054975d5e7bc199b1015073e54f1fc4d824b3fffbb5872bb530ca3500",
+    "cc": "cc (GCC) 16.2.1 20260810",
+    "synthetic_methods": 0,
+    "application_optimization": "debug",
+    "environment": {
+      "TINOX_CFLAGS": null,
+      "TINOX_TLS": null,
+      "TINOX_HTTP3": null
+    },
+    "samples": {
+      "disabled": [
+        {
+          "seconds": 0.1103981680025754,
+          "trace": "[build-cache] bypass: forced or cache disabled\n[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269\n[build-cache] bypass: native dependency inventory unavailable"
+        },
+        {
+          "seconds": 0.11221216400008416,
+          "trace": "[build-cache] bypass: forced or cache disabled\n[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269\n[build-cache] bypass: native dependency inventory unavailable"
+        },
+        {
+          "seconds": 0.11097836699991603,
+          "trace": "[build-cache] bypass: forced or cache disabled\n[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269\n[build-cache] bypass: native dependency inventory unavailable"
+        }
+      ],
+      "cold": [
+        {
+          "seconds": 0.4160965009978099,
+          "trace": "[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269"
+        }
+      ],
+      "warm": [
+        {
+          "seconds": 0.1019341360006365,
+          "trace": "[build-cache] hit 7322d02745da543fbc05987839d6f057a88000d3473784f729d39fbf6e3d636e"
+        },
+        {
+          "seconds": 0.10442461399725289,
+          "trace": "[build-cache] hit 7322d02745da543fbc05987839d6f057a88000d3473784f729d39fbf6e3d636e"
+        },
+        {
+          "seconds": 0.10297038900171174,
+          "trace": "[build-cache] hit 7322d02745da543fbc05987839d6f057a88000d3473784f729d39fbf6e3d636e"
+        }
+      ]
+    },
+    "median_seconds": {
+      "disabled": 0.11097836699991603,
+      "cold": 0.4160965009978099,
+      "warm": 0.10297038900171174
+    }
+  },
+  "tiny_release": {
+    "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+    "machine": "x86_64",
+    "compiler": "/tmp/tinox-295-final",
+    "compiler_sha256": "8d3543b054975d5e7bc199b1015073e54f1fc4d824b3fffbb5872bb530ca3500",
+    "cc": "cc (GCC) 16.2.1 20260810",
+    "synthetic_methods": 0,
+    "application_optimization": "release",
+    "environment": {
+      "TINOX_CFLAGS": null,
+      "TINOX_TLS": null,
+      "TINOX_HTTP3": null
+    },
+    "samples": {
+      "disabled": [
+        {
+          "seconds": 0.11677933399914764,
+          "trace": "[build-cache] bypass: forced or cache disabled\n[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269\n[build-cache] bypass: native dependency inventory unavailable"
+        },
+        {
+          "seconds": 0.11732090999794309,
+          "trace": "[build-cache] bypass: forced or cache disabled\n[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269\n[build-cache] bypass: native dependency inventory unavailable"
+        },
+        {
+          "seconds": 0.11536197899840772,
+          "trace": "[build-cache] bypass: forced or cache disabled\n[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269\n[build-cache] bypass: native dependency inventory unavailable"
+        }
+      ],
+      "cold": [
+        {
+          "seconds": 0.42745460299920524,
+          "trace": "[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269"
+        }
+      ],
+      "warm": [
+        {
+          "seconds": 0.10405558500133338,
+          "trace": "[build-cache] hit 3fbb60e1e2e93eaf441cb8f3dfcacdb1ebe53bf1566fa53764fa722d860b9ce8"
+        },
+        {
+          "seconds": 0.09945447999780299,
+          "trace": "[build-cache] hit 3fbb60e1e2e93eaf441cb8f3dfcacdb1ebe53bf1566fa53764fa722d860b9ce8"
+        },
+        {
+          "seconds": 0.10327946500183316,
+          "trace": "[build-cache] hit 3fbb60e1e2e93eaf441cb8f3dfcacdb1ebe53bf1566fa53764fa722d860b9ce8"
+        }
+      ]
+    },
+    "median_seconds": {
+      "disabled": 0.11677933399914764,
+      "cold": 0.42745460299920524,
+      "warm": 0.10327946500183316
+    }
+  },
+  "synthetic_release": {
+    "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+    "machine": "x86_64",
+    "compiler": "/tmp/tinox-295-final",
+    "compiler_sha256": "8d3543b054975d5e7bc199b1015073e54f1fc4d824b3fffbb5872bb530ca3500",
+    "cc": "cc (GCC) 16.2.1 20260810",
+    "synthetic_methods": 3000,
+    "application_optimization": "release",
+    "environment": {
+      "TINOX_CFLAGS": null,
+      "TINOX_TLS": null,
+      "TINOX_HTTP3": null
+    },
+    "samples": {
+      "disabled": [
+        {
+          "seconds": 2.1973945169993385,
+          "trace": "[build-cache] bypass: forced or cache disabled\n[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269\n[build-cache] bypass: native dependency inventory unavailable"
+        },
+        {
+          "seconds": 2.1546867359975295,
+          "trace": "[build-cache] bypass: forced or cache disabled\n[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269\n[build-cache] bypass: native dependency inventory unavailable"
+        },
+        {
+          "seconds": 2.1677950539997255,
+          "trace": "[build-cache] bypass: forced or cache disabled\n[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269\n[build-cache] bypass: native dependency inventory unavailable"
+        }
+      ],
+      "cold": [
+        {
+          "seconds": 2.504638446000172,
+          "trace": "[build-cache] miss: compiling application backend\n[runtime-cache] hit badddadc32a39bcbf6adbab445ebe27cb521f750354b8a3aefa9d68182b7c269"
+        }
+      ],
+      "warm": [
+        {
+          "seconds": 0.8738531160015555,
+          "trace": "[build-cache] hit 7d7fda5cee4aab32bea7dc40fc5485b1e1da8c4d80f20b42a47d10b30f4028a5"
+        },
+        {
+          "seconds": 0.8719387300006929,
+          "trace": "[build-cache] hit 7d7fda5cee4aab32bea7dc40fc5485b1e1da8c4d80f20b42a47d10b30f4028a5"
+        },
+        {
+          "seconds": 0.8962933879993216,
+          "trace": "[build-cache] hit 7d7fda5cee4aab32bea7dc40fc5485b1e1da8c4d80f20b42a47d10b30f4028a5"
+        }
+      ]
+    },
+    "median_seconds": {
+      "disabled": 2.1677950539997255,
+      "cold": 2.504638446000172,
+      "warm": 0.8738531160015555
+    }
+  }
+}

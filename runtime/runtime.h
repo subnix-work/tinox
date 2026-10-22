@@ -41,4 +41,15 @@ char*   tinox_config_get(const char* key);
 int64_t tinox_config_get_int(const char* key);
 int64_t tinox_config_get_bool(const char* key);
 
+// Observability (configuration initialized once at process startup).
+void telemetryInit(void);
+int64_t telemetryEnabled(void);
+int64_t telemetryBegin(const char* name, const char* parent, const char* request_id);
+int64_t telemetryEnd(int64_t token);
+char* telemetryTraceparent(void);
+char* telemetryRequestId(void);
+int64_t telemetryFlush(void);
+char* telemetryLogJson(const char* timestamp, const char* level, const char* logger, const char* message);
+void telemetryWriteLogJson(const char* timestamp, const char* level, const char* logger, const char* message);
+
 #endif // TINOX_RUNTIME_H

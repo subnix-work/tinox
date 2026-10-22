@@ -23,11 +23,11 @@ namespace tinox.core.iter
         {
             if (this.cycled)
             {
-                let idx: Int64 = this.current % this.end;
+                const idx: Int64 = this.current % this.end;
                 this.current = this.current + 1;
                 return this.data[idx];
             }
-            let result: Int64 = this.current;
+            const result: Int64 = this.current;
             this.current = this.current + this.step;
             return result;
         }

@@ -1,0 +1,7 @@
+class Tools {
+    async fnc takeByte(value: UInt8) -> UInt8 { return value; }
+    fnc join<T>(task: Task<T>) -> T { return await task; }
+    fnc byteFromFloat() -> UInt8 { return 255.0; }
+    fnc identity<T>(value: T) -> T { return value; }
+    fnc numeric(value: Float64) -> Float64 { return value + 0.5; }
+}

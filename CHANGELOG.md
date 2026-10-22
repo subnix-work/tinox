@@ -20,6 +20,14 @@ All notable changes to Tinox are documented in this file.
   writable `/app/data`, binary root-owned). `[docker] uid = 0` opts back into
   root explicitly; the build verifies the image's effective UID. New
   `[docker]` keys: `uid`, `builder`, `include`.
+- **`const` replaces `let` for immutable bindings** (`const x = 1;`,
+  `const x: Int64 = 1;`, also in `for (const i = ...; ...)` init and as
+  a field modifier). `let` read like JavaScript/TypeScript's *mutable*
+  block binding and caused confusion; `const` says what it means. All
+  stdlib, examples, tests, and docs were migrated. `let` is still
+  accepted as a legacy alias (same AST node, same immutability check)
+  so already-published tinox-central packages and downstream projects
+  keep compiling; `tinox fmt` and LSP hover now print `const`.
 
 ## [2.4.0] - 2026-09-21
 

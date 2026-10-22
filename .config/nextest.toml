@@ -1,0 +1,11 @@
+# Tests that compile a checked-in example whose @WebsocketEndpoint port is a
+# literal baked into the example source (8793 for examples/ws_echo_annotated)
+# cannot use a dynamic port. cargo test ran each test binary one after
+# another so this never collided; nextest runs them in parallel, so the
+# binaries sharing a port are serialized through a single-slot test group.
+[test-groups]
+ws-port-8793 = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(ws_annotations) | binary(ws_concurrent_connections)'
+test-group = 'ws-port-8793'

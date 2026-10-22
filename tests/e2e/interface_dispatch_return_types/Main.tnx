@@ -17,7 +17,7 @@
 // expect: checker-label
 // expect: true
 // expect: 7
-// expect: 1
+// expect: true
 import IChecker;
 import CheckerImpl;
 
@@ -25,14 +25,15 @@ class Main
 {
     fnc main() -> Int32
     {
-        let impl: CheckerImpl = CheckerImpl { touched: false };
-        let c: IChecker = impl;
+        const impl: CheckerImpl = CheckerImpl { touched: false };
+        const c: IChecker = impl;
 
         println(c.label());
         println(c.isOk());
         println(c.count());
 
         c.touch();
+        // A checked field read retains Bool instead of its raw i64 slot.
         println(impl.touched);
 
         return 0;

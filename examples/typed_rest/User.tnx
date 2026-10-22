@@ -1,0 +1,8 @@
+import tinox.core.json;
+
+@JsonSerializable
+class User
+{
+    var id: Int64;
+    var name: String;
+}
