@@ -1055,6 +1055,9 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, coding conventions, and how to submit changes.
 
+The [native service and AI development roadmap](docs/development-roadmap.md)
+maps the #316 proposals to delivered code, verification and remaining work.
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
