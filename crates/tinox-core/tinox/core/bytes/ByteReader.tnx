@@ -45,7 +45,7 @@ namespace tinox.core.bytes
         {
             var total: Int64 = 0;
             var more: Bool = true;
-            while (more)
+            while more
             {
                 const h: Int64 = tinoxBufReadChunk(this.fd, chunk);
                 const n: Int64 = tinoxBufLen(h);

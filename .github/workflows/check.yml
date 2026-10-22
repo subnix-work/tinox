@@ -44,10 +44,9 @@ on:
 permissions:
   contents: read
 
-# Two independent jobs on separate runners instead of one serial
-# `make check`: `lint` (clippy + grammar-sync) and `test` (nextest +
-# dogfood, which `make check` already runs concurrently). Together they
-# are exactly `make check`; the pre-push hook still runs it as one.
+# Independent lanes split `make check`: lint, published artifact tests
+# (including dogfood), and unpublished workspace stdlib sources.
+# The pre-push hook still runs all three through one aggregate command.
 jobs:
   check:
     name: check (${{ matrix.name }})
@@ -61,6 +60,8 @@ jobs:
             make: clippy grammar-sync
           - name: test
             make: test-and-dogfood
+          - name: workspace-stdlib
+            make: workspace-stdlib
     steps:
       - uses: actions/checkout@v5
         with:
@@ -85,7 +86,7 @@ jobs:
       - name: Install system toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libgc-dev libsqlite3-dev sqlite3 libpq-dev postgresql-client
+          sudo apt-get install -y python3 clang llvm libgc-dev libsqlite3-dev sqlite3 libpq-dev postgresql-client
 
       - name: llc/opt available?
         run: |
@@ -123,3 +124,22 @@ jobs:
 
       - name: make ${{ matrix.make }}
         run: make -C tinox ${{ matrix.make }}
+
+  # Issue #310: native Linux ARM64 verification (real arm64 runner, not
+  # emulation). Covers target selection plus build-and-run smoke tests.
+  arm64:
+    name: arm64 (native smoke)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libgc-dev libssl-dev zlib1g-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Native ARM64 target, codegen and e2e smoke
+        run: |
+          uname -m
+          cargo test --release -p tinox-codegen target
+          cargo test --release -p tinox --test target_selection --test codegen --test e2e

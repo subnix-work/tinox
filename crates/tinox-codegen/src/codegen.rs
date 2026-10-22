@@ -594,11 +594,22 @@ pub struct CodeGen {
     /// declared return type (map: result element type, filter: i1). Taken by
     /// gen_lambda like the param hint.
     pending_lambda_ret_llvm: Option<String>,
+    /// Compilation target (issue #310): drives the IR header and `llc -march`.
+    target: crate::target::Target,
 }
 
 impl CodeGen {
+    /// Override the compilation target (default: `Target::resolve()`, falling
+    /// back to the host; the driver validates `TINOX_TARGET` before this runs).
+    pub fn set_target(&mut self, target: crate::target::Target) {
+        self.target = target;
+    }
+
     pub fn new() -> Self {
         Self {
+            target: crate::target::Target::resolve()
+                .or_else(|_| crate::target::Target::host())
+                .unwrap_or(crate::target::Target::X86_64),
             ir: String::new(),
             lambda_ir: String::new(),
             strings: HashMap::new(),
@@ -1490,10 +1501,11 @@ impl CodeGen {
         writeln!(&mut self.ir, "source_filename = \"tinox\"").unwrap();
         writeln!(
             &mut self.ir,
-            "target datalayout = \"e-m:e-i64:64-f80:128-n8:16:32:64-S128\""
+            "target datalayout = \"{}\"",
+            self.target.data_layout()
         )
         .unwrap();
-        writeln!(&mut self.ir, "target triple = \"x86_64-unknown-linux-gnu\"").unwrap();
+        writeln!(&mut self.ir, "target triple = \"{}\"", self.target.triple()).unwrap();
         writeln!(&mut self.ir).unwrap();
         // Global error slot for cross-function throw propagation:
         // throw without an enclosing try stores here and returns; statements
@@ -14399,7 +14411,7 @@ tr_done_{idx}:"#).unwrap();
     pub fn write_asm(&self, ir_path: &Path, asm_path: &Path) -> Result<(), Error> {
         let bc_path = self.run_opt(ir_path)?;
         let output = std::process::Command::new("llc")
-            .args(["-O3", "-march=x86-64", "-filetype=asm", "-o"])
+            .args(["-O3", &format!("-march={}", self.target.llc_arch()), "-filetype=asm", "-o"])
             .arg(asm_path)
             .arg(&bc_path)
             .output()
@@ -14417,7 +14429,7 @@ tr_done_{idx}:"#).unwrap();
     pub fn write_obj(&self, ir_path: &Path, obj_path: &Path) -> Result<(), Error> {
         let bc_path = self.run_opt(ir_path)?;
         let output = std::process::Command::new("llc")
-            .args(["-O3", "-march=x86-64", "-filetype=obj", "-o"])
+            .args(["-O3", &format!("-march={}", self.target.llc_arch()), "-filetype=obj", "-o"])
             .arg(obj_path)
             .arg(&bc_path)
             .output()

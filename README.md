@@ -1055,3 +1055,5 @@ See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 ## License
 
 MIT OR Apache-2.0
+
+For unpublished package development, see [local dependency overrides and stdlib test lanes](docs/local-dependencies.md).

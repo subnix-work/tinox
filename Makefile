@@ -7,7 +7,7 @@ export DOGFOOD_DIR
 
 .PHONY: check test-and-dogfood test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync
 
-check: clippy test-and-dogfood grammar-sync
+check: clippy test-and-dogfood grammar-sync workspace-stdlib
 
 # Runs `test` and `dogfood` concurrently (CI's `test` job runs this alone).
 # The recursive make gives -j2 its own job server regardless of how `check`
@@ -197,3 +197,8 @@ grammar-sync:
 install-hooks:
 	git config core.hooksPath .githooks
 	@echo "core.hooksPath = .githooks set (pre-push: make check)"
+
+# Exercise unpublished extended modules separately from registry/archive tests.
+.PHONY: workspace-stdlib
+workspace-stdlib:
+	bash scripts/check-workspace-stdlib.sh

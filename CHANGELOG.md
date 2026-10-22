@@ -12,6 +12,11 @@ All notable changes to Tinox are documented in this file.
 
 ### Added
 
+- Consumer-local `tinox.overrides.yaml` package overrides with transitive
+  resolution, mutable-source lock records, CLI/LSP provenance and publication
+  guards (#313). `make workspace-stdlib` and its separate CI lane exercise
+  unpublished extended modules alongside existing registry compatibility tests.
+
 - **`tinox docker --source-build`** (#309): compiles the project inside a
   pinned builder image (`docker/builder/Dockerfile`, tagged with the compiler
   version) in a two-stage build, so the binary is linked against the runtime
