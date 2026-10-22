@@ -1808,6 +1808,7 @@ epoll_fd = epoll_create1(0);
       bounded by the kernel listen queue and they never grow threads. AMQP connections use
       <code>spawn</code> and therefore count against <code>TINOX_MAX_TASKS</code>.
       A rejected request is never retried automatically.
+      <strong>Bind address:</strong> by default every listener (<code>HttpServer</code>, <code>@TinoxUIApp</code>, WebSocket, HTTP/2, SSE) binds <code>0.0.0.0</code>. <code>TINOX_BIND_ADDRESS=127.0.0.1</code> restricts them to one IPv4 address (e.g. loopback-only for local dashboards); an invalid value aborts startup.
     </p>
 
     <div class="info-box green">

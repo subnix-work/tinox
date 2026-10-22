@@ -1822,6 +1822,7 @@ epoll_fd = epoll_create1(0);
       Kernel-Listen-Queue begrenzt und sie erzeugen keine Threads. AMQP-Verbindungen nutzen
       <code>spawn</code> und z&auml;hlen daher gegen <code>TINOX_MAX_TASKS</code>.
       Abgewiesene Anfragen werden nie automatisch wiederholt.
+      <strong>Bind-Adresse:</strong> Standardm&auml;&szlig;ig binden alle Listener (<code>HttpServer</code>, <code>@TinoxUIApp</code>, WebSocket, HTTP/2, SSE) auf <code>0.0.0.0</code>. <code>TINOX_BIND_ADDRESS=127.0.0.1</code> beschr&auml;nkt sie auf eine IPv4-Adresse (z.&nbsp;B. nur Loopback f&uuml;r lokale Dashboards); ein ung&uuml;ltiger Wert bricht den Start hart ab.
     </p>
 
     <div class="info-box green">
