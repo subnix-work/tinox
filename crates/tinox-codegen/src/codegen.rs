@@ -1551,6 +1551,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @fileReadAllText(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @fileWriteAllText(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @fileAppendText(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @fileWriteAllTextChecked(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @dirCreateChecked(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @dirCreateAllChecked(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @fileClose(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @processArgs()").unwrap();
         writeln!(&mut self.ir, "declare i1 @fileExists(i8*)").unwrap();

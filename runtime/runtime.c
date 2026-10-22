@@ -1299,6 +1299,25 @@ void fileWriteAllText(const char* path, const char* content) {
     if (f) { fputs(content, f); fclose(f); }
 }
 
+// Checked variant: returns "" on success, otherwise "<path>: <strerror>".
+static char* tinox_fs_err(const char* what, const char* path) {
+    char tmp[64];
+    snprintf(tmp, sizeof(tmp), "%s", strerror(errno));
+    size_t n = strlen(what) + strlen(path) + strlen(tmp) + 8;
+    char* out = (char*)GC_malloc(n);
+    snprintf(out, n, "%s %s: %s", what, path, tmp);
+    return out;
+}
+
+char* fileWriteAllTextChecked(const char* path, const char* content) {
+    FILE* f = fopen(path, "w");
+    if (!f) return tinox_fs_err("cannot write", path);
+    int bad = fputs(content, f) < 0;
+    if (fclose(f) != 0) bad = 1;
+    if (bad) return tinox_fs_err("cannot write", path);
+    return (char*)"";
+}
+
 void fileAppendText(const char* path, const char* content) {
     FILE* f = fopen(path, "a");
     if (f) { fputs(content, f); fclose(f); }
@@ -2367,6 +2386,29 @@ char* dirList(const char* path) {
 
 void dirCreate(const char* path) {
     mkdir(path, 0755);
+}
+
+char* dirCreateChecked(const char* path) {
+    if (mkdir(path, 0755) != 0) return tinox_fs_err("cannot create directory", path);
+    return (char*)"";
+}
+
+// Like `mkdir -p`: creates missing parents, succeeds if it already exists.
+char* dirCreateAllChecked(const char* path) {
+    size_t len = strlen(path);
+    char* buf = (char*)GC_malloc(len + 2);
+    memcpy(buf, path, len + 1);
+    for (size_t i = 1; i <= len; i++) {
+        if (buf[i] == '/' || buf[i] == '\0') {
+            char saved = buf[i];
+            buf[i] = '\0';
+            if (mkdir(buf, 0755) != 0 && errno != EEXIST) return tinox_fs_err("cannot create directory", path);
+            buf[i] = saved;
+        }
+    }
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return tinox_fs_err("cannot create directory", path);
+    return (char*)"";
 }
 
 void dirDelete(const char* path) {
