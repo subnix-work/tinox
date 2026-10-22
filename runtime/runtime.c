@@ -2509,6 +2509,268 @@ void tinoxFileCloseBytes(int64_t handle) {
     }
 }
 
+// ---- Compact byte buffers (issue #311) ----
+// A buffer handle (carried as an Int64 in Tinox source, wrapped by
+// tinox.core.bytes.Bytes) points at ONE pointer-free GC block:
+//   [ int64 len | len payload bytes ]
+// i.e. 1 byte of heap per logical byte (+8 header), versus 8 bytes per
+// byte for List<Int64>. The whole block is allocated with
+// GC_malloc_atomic, which is correct because it never contains a pointer
+// (the length is a plain integer), so the collector never has to scan the
+// payload. The block is never resized in place: slice/concat copy, so a
+// handle's length is immutable and every access is checked against it.
+// Embedded 0x00 bytes are ordinary payload -- nothing here is strlen-based
+// except the explicit String adapters, which are documented as such.
+// Every misuse (out-of-range index/slice, invalid length, I/O error,
+// converting a buffer with a NUL to a String) is a hard runtime error,
+// never a silent truncation or clamp.
+typedef struct {
+    int64_t len;
+    unsigned char data[];
+} TinoxBuf;
+
+#define TINOX_BUF_MAX ((int64_t)1 << 40)
+
+static TinoxBuf* tinox_buf_alloc(int64_t len) {
+    if (len < 0 || len > TINOX_BUF_MAX) {
+        fprintf(stderr, "runtime error: byte buffer length %lld is invalid\n", (long long)len);
+        exit(1);
+    }
+    TinoxBuf* b = (TinoxBuf*)GC_malloc_atomic(sizeof(TinoxBuf) + (size_t)len + 1);
+    if (!b) {
+        fprintf(stderr, "runtime error: out of memory allocating %lld byte buffer\n", (long long)len);
+        exit(1);
+    }
+    b->len = len;
+    b->data[len] = 0;
+    return b;
+}
+
+static TinoxBuf* tinox_buf_of(int64_t h, const char* op) {
+    if (h == 0) {
+        fprintf(stderr, "runtime error: %s on a null byte buffer\n", op);
+        exit(1);
+    }
+    return (TinoxBuf*)(intptr_t)h;
+}
+
+int64_t tinoxBufNew(int64_t len) {
+    TinoxBuf* b = tinox_buf_alloc(len);
+    memset(b->data, 0, (size_t)len);
+    return (int64_t)(intptr_t)b;
+}
+
+int64_t tinoxBufLen(int64_t h) {
+    return tinox_buf_of(h, "length")->len;
+}
+
+int64_t tinoxBufGet(int64_t h, int64_t i) {
+    TinoxBuf* b = tinox_buf_of(h, "get");
+    if (i < 0 || i >= b->len) {
+        fprintf(stderr, "runtime error: byte buffer index %lld out of bounds (length %lld)\n",
+                (long long)i, (long long)b->len);
+        exit(1);
+    }
+    return (int64_t)b->data[i];
+}
+
+void tinoxBufSet(int64_t h, int64_t i, int64_t v) {
+    TinoxBuf* b = tinox_buf_of(h, "set");
+    if (i < 0 || i >= b->len) {
+        fprintf(stderr, "runtime error: byte buffer index %lld out of bounds (length %lld)\n",
+                (long long)i, (long long)b->len);
+        exit(1);
+    }
+    if (v < 0 || v > 255) {
+        fprintf(stderr, "runtime error: byte value %lld out of range 0..255\n", (long long)v);
+        exit(1);
+    }
+    b->data[i] = (unsigned char)v;
+}
+
+// Copy of [start, end). start == end yields an empty buffer.
+int64_t tinoxBufSlice(int64_t h, int64_t start, int64_t end) {
+    TinoxBuf* b = tinox_buf_of(h, "slice");
+    if (start < 0 || end < start || end > b->len) {
+        fprintf(stderr, "runtime error: byte buffer slice [%lld, %lld) out of bounds (length %lld)\n",
+                (long long)start, (long long)end, (long long)b->len);
+        exit(1);
+    }
+    TinoxBuf* r = tinox_buf_alloc(end - start);
+    memcpy(r->data, b->data + start, (size_t)(end - start));
+    return (int64_t)(intptr_t)r;
+}
+
+int64_t tinoxBufConcat(int64_t a, int64_t c) {
+    TinoxBuf* x = tinox_buf_of(a, "concat");
+    TinoxBuf* y = tinox_buf_of(c, "concat");
+    TinoxBuf* r = tinox_buf_alloc(x->len + y->len);
+    memcpy(r->data, x->data, (size_t)x->len);
+    memcpy(r->data + x->len, y->data, (size_t)y->len);
+    return (int64_t)(intptr_t)r;
+}
+
+bool tinoxBufEquals(int64_t a, int64_t c) {
+    TinoxBuf* x = tinox_buf_of(a, "equals");
+    TinoxBuf* y = tinox_buf_of(c, "equals");
+    return x->len == y->len && memcmp(x->data, y->data, (size_t)x->len) == 0;
+}
+
+// Copies the String's UTF-8/char bytes (strlen of a Tinox String, so a
+// String itself can never carry an embedded NUL).
+int64_t tinoxBufFromString(const char* s) {
+    size_t n = s ? strlen(s) : 0;
+    TinoxBuf* r = tinox_buf_alloc((int64_t)n);
+    if (n) memcpy(r->data, s, n);
+    return (int64_t)(intptr_t)r;
+}
+
+// A Tinox String is NUL-terminated, so a buffer with an embedded 0x00
+// cannot be represented as one: that is a hard error, not a truncation.
+char* tinoxBufToString(int64_t h) {
+    TinoxBuf* b = tinox_buf_of(h, "toString");
+    if (b->len > 0 && memchr(b->data, 0, (size_t)b->len) != NULL) {
+        fprintf(stderr, "runtime error: byte buffer contains an embedded NUL byte and cannot be converted to a String\n");
+        exit(1);
+    }
+    char* s = (char*)GC_malloc_atomic((size_t)b->len + 1);
+    memcpy(s, b->data, (size_t)b->len);
+    s[b->len] = '\0';
+    return s;
+}
+
+// Explicit adapters to/from the legacy List<Int64> (one element per byte).
+int64_t tinoxBufFromList(int64_t* list) {
+    TinoxArray* a = (TinoxArray*)list;
+    int64_t n = a ? a->len : 0;
+    TinoxBuf* r = tinox_buf_alloc(n);
+    for (int64_t i = 0; i < n; i++) {
+        int64_t v = a->data[i];
+        if (v < 0 || v > 255) {
+            fprintf(stderr, "runtime error: list element %lld has value %lld, outside byte range 0..255\n",
+                    (long long)i, (long long)v);
+            exit(1);
+        }
+        r->data[i] = (unsigned char)v;
+    }
+    return (int64_t)(intptr_t)r;
+}
+
+int64_t* tinoxBufToList(int64_t h) {
+    TinoxBuf* b = tinox_buf_of(h, "toList");
+    int64_t* lh = tinox_array_new(b->len, b->len);
+    TinoxArray* a = (TinoxArray*)lh;
+    for (int64_t i = 0; i < b->len; i++) a->data[i] = (int64_t)b->data[i];
+    return lh;
+}
+
+// Whole-file read/write straight into/out of the compact payload: no
+// intermediate copy, no per-byte widening.
+int64_t tinoxBufReadFile(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "runtime error: cannot open file for reading: %s\n", path);
+        exit(1);
+    }
+    struct stat st;
+    if (fstat(fileno(f), &st) == 0 && S_ISREG(st.st_mode)) {
+        TinoxBuf* r = tinox_buf_alloc((int64_t)st.st_size);
+        size_t got = fread(r->data, 1, (size_t)st.st_size, f);
+        if (ferror(f) || got != (size_t)st.st_size) {
+            fprintf(stderr, "runtime error: read error on %s\n", path);
+            exit(1);
+        }
+        fclose(f);
+        return (int64_t)(intptr_t)r;
+    }
+    // Pipes/devices: unknown size, grow geometrically.
+    size_t cap = 65536, used = 0;
+    unsigned char* raw = (unsigned char*)malloc(cap);
+    size_t n;
+    while ((n = fread(raw + used, 1, cap - used, f)) > 0) {
+        used += n;
+        if (used == cap) { cap *= 2; raw = (unsigned char*)realloc(raw, cap); }
+    }
+    if (ferror(f)) {
+        fprintf(stderr, "runtime error: read error on %s\n", path);
+        exit(1);
+    }
+    fclose(f);
+    TinoxBuf* r = tinox_buf_alloc((int64_t)used);
+    memcpy(r->data, raw, used);
+    free(raw);
+    return (int64_t)(intptr_t)r;
+}
+
+void tinoxBufWriteFile(const char* path, int64_t h) {
+    TinoxBuf* b = tinox_buf_of(h, "writeFile");
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "runtime error: cannot open file for writing: %s\n", path);
+        exit(1);
+    }
+    if (b->len > 0 && fwrite(b->data, 1, (size_t)b->len, f) != (size_t)b->len) {
+        fprintf(stderr, "runtime error: write error: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (fclose(f) != 0) {
+        fprintf(stderr, "runtime error: error closing file: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+// Streaming counterparts of tinoxFileReadChunk/WriteChunk on the same
+// open handle (tinoxFileOpenBytes). An empty buffer = EOF.
+int64_t tinoxBufReadChunk(int64_t handle, int64_t maxBytes) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) {
+        fprintf(stderr, "runtime error: tinoxBufReadChunk on a closed/invalid handle\n");
+        exit(1);
+    }
+    if (maxBytes < 0) maxBytes = 0;
+    TinoxBuf* r = tinox_buf_alloc(maxBytes);
+    size_t used = 0;
+    while (used < (size_t)maxBytes) {
+        size_t n = fread(r->data + used, 1, (size_t)maxBytes - used, f);
+        if (n == 0) break;
+        used += n;
+    }
+    if (ferror(f)) {
+        fprintf(stderr, "runtime error: read error: %s\n", strerror(errno));
+        exit(1);
+    }
+    r->len = (int64_t)used;
+    r->data[used] = 0;
+    return (int64_t)(intptr_t)r;
+}
+
+void tinoxBufWriteChunk(int64_t handle, int64_t h) {
+    FILE* f = (FILE*)(intptr_t)handle;
+    if (!f) {
+        fprintf(stderr, "runtime error: tinoxBufWriteChunk on a closed/invalid handle\n");
+        exit(1);
+    }
+    TinoxBuf* b = tinox_buf_of(h, "writeChunk");
+    if (b->len > 0 && fwrite(b->data, 1, (size_t)b->len, f) != (size_t)b->len) {
+        fprintf(stderr, "runtime error: write error: %s\n", strerror(errno));
+        exit(1);
+    }
+}
+
+int64_t tinoxBufStdinReadAll(void) {
+    size_t cap = 65536, used = 0;
+    unsigned char* raw = (unsigned char*)malloc(cap);
+    size_t n;
+    while ((n = fread(raw + used, 1, cap - used, stdin)) > 0) {
+        used += n;
+        if (used == cap) { cap *= 2; raw = (unsigned char*)realloc(raw, cap); }
+    }
+    TinoxBuf* r = tinox_buf_alloc((int64_t)used);
+    memcpy(r->data, raw, used);
+    free(raw);
+    return (int64_t)(intptr_t)r;
+}
+
 // Size of a regular file in bytes, or -1 if it doesn't exist / isn't one.
 int64_t tinoxFileSizeBytes(const char* path) {
     struct stat st;
@@ -5474,6 +5736,48 @@ int64_t httpConnWriteBytes(int64_t conn, int64_t* arr) {
     conn_send_all(c, (const char*)buf, (size_t)a->len);
     free(buf);
     return a->len;
+}
+
+// ---- Compact-buffer conn I/O (issue #311) ----
+// Length-aware, no per-byte widening: payloads go straight between the
+// socket and a tinox.core.bytes buffer.
+
+// Reads EXACTLY n bytes unless EOF/error comes first; the result's length
+// is the number actually read (callers MUST check it, same contract as
+// httpConnReadN). `n` is often peer-declared, so the buffer grows with the
+// bytes that actually arrive (4096-byte steps, doubling) instead of
+// trusting the claim -- same bound as httpConnReadN (issue #111).
+int64_t httpConnReadBuf(int64_t conn, int64_t n) {
+    if (conn <= 0 || n <= 0) return tinoxBufNew(0);
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    int64_t cap = n < 4096 ? n : 4096;
+    unsigned char* raw = (unsigned char*)GC_malloc_atomic((size_t)cap);
+    int64_t used = 0;
+    while (used < n) {
+        if (used == cap) {
+            int64_t ncap = cap * 2 < n ? cap * 2 : n;
+            unsigned char* nb = (unsigned char*)GC_malloc_atomic((size_t)ncap);
+            memcpy(nb, raw, (size_t)used);
+            raw = nb;
+            cap = ncap;
+        }
+        ssize_t got = conn_recv(c, (char*)raw + used, (size_t)(cap - used));
+        if (got <= 0) break;
+        used += got;
+    }
+    TinoxBuf* r = tinox_buf_alloc(used);
+    memcpy(r->data, raw, (size_t)used);
+    return (int64_t)(intptr_t)r;
+}
+
+// Writes the whole buffer. Returns bytes written (== len) or -1 for an
+// invalid conn handle. Blocks while the peer's receive window is full,
+// which is the backpressure bounded streaming relies on.
+int64_t httpConnWriteBuf(int64_t conn, int64_t h) {
+    if (conn <= 0) return -1;
+    TinoxBuf* b = tinox_buf_of(h, "httpConnWriteBuf");
+    if (b->len > 0) conn_send_all((TinoxConn*)(intptr_t)conn, (const char*)b->data, (size_t)b->len);
+    return b->len;
 }
 
 // Closes a connection (TLS shutdown + free + close).

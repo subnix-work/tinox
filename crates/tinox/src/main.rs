@@ -2729,7 +2729,7 @@ const CORE_MODULES: &[&str] = &[
     "io", "fs", "env", "process", "debug", "socket",
     "semaphore", "time", "cron", "events",
     "logger", "validation", "regex", "random", "hash", "uuid",
-    "base64", "hex", "uri",
+    "base64", "hex", "uri", "bytes",
 ];
 
 /// Returns the path to runtime.c: the dev-checkout path relative to this
