@@ -6,6 +6,16 @@ class Main
 {
     fnc main() -> Int32
     {
+        // Issue #358: empty ORM queries must return defaults without
+        // libpq warnings, including repeated polling of the same query.
+        for i in 0..3 {
+            let none: Account = DB::of(Account).filter(a => a.name == "does-not-exist").first();
+            println("missing: " + none.id.toString() + ":" + none.name + ":" + none.balance.toString());
+            let rows: List<Account> = DB::of(Account).filter(a => a.name == "does-not-exist").list();
+            println("missing list: " + rows.len().toString());
+            println("missing count: " + DB::of(Account).filter(a => a.name == "does-not-exist").count().toString());
+        }
+
         let svc = new BankService();
 
         // Succeeds -- commits, real balance change expected in Postgres.

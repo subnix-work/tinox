@@ -271,6 +271,10 @@ version = "1.0.0"
         String::from_utf8_lossy(&run.stderr)
     );
     let stdout = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(stdout.matches("missing: 0::0\n").count(), 3, "stdout: {stdout}");
+    assert_eq!(stdout.matches("missing list: 0\n").count(), 3, "stdout: {stdout}");
+    assert_eq!(stdout.matches("missing count: 0\n").count(), 3, "stdout: {stdout}");
+    assert!(run.stderr.is_empty(), "unexpected stderr: {}", String::from_utf8_lossy(&run.stderr));
     assert!(stdout.contains("transfer1 done"), "stdout: {stdout}");
     assert!(stdout.contains("transfer2 rolled back: insufficient funds"), "stdout: {stdout}");
     assert!(stdout.contains("balance after touch: 501"), "stdout: {stdout}");
