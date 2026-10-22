@@ -2,6 +2,7 @@ pub mod codegen;
 pub mod target;
 
 pub use codegen::CodeGen;
+pub use target::Target;
 pub use codegen::DiComponentInfo;
 pub use codegen::DiInjectField;
 pub use codegen::DiScope;
