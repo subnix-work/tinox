@@ -39,7 +39,7 @@ fn curl(work: &Path, url: &str, http3: bool, args: &[&str]) -> Option<(u16, Stri
         .args(["--write-out", "%{http_code}"]);
     if http3 { cmd.args(["--http3-only", "--insecure"]); }
     let out = cmd.args(args).arg(url).output().expect("curl must be installed");
-    if !out.status.success() { return None; }
+    if !out.status.success() { eprintln!("curl {url}: {}", String::from_utf8_lossy(&out.stderr)); return None; }
     Some((
         String::from_utf8(out.stdout).unwrap().parse().unwrap(),
         std::fs::read_to_string(work.join("headers.txt")).unwrap().to_lowercase(),
@@ -63,7 +63,8 @@ fn verify(http3: bool) {
     let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = if http3 { udp.local_addr().unwrap().port() } else { tcp.local_addr().unwrap().port() };
     let annotation = if http3 { format!("@Http3RestController({port}, \"cert.pem\", \"key.pem\")") } else { String::new() };
-    let source = "import tinox.core.http3_server;\n".to_string() + r#"
+    // The TCP build has no HTTP/3 runtime to link, so it must not pull the HTTP/3 module in.
+    let source = (if http3 { "import tinox.core.http3_server;\n" } else { "" }).to_string() + r#"
 import tinox.core.http_server;
 import User;
 class Ctrl {

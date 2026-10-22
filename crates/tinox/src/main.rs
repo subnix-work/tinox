@@ -1591,7 +1591,7 @@ fn gen_api_contract(args: &[String]) {
         let mut visited = HashSet::new();
         if let Ok(canonical) = path.canonicalize() { visited.insert(canonical); }
         let (deps, missing) = load_dep_dirs(base);
-        resolve_imports(&mut ast, base, &mut visited, &deps, &missing)?;
+        resolve_imports(&mut ast, base, path, &mut visited, &deps, &missing)?;
         check_explicit_imports(path, &deps, &missing)?;
         synthesize_accessors(&mut ast, &input)?;
         tinox_parser::assign_node_ids(&mut ast);
