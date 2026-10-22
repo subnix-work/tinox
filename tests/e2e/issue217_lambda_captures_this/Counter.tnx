@@ -4,7 +4,7 @@ class Counter
     var label: String;
 
     // Issue #217's own reproducer shape: a lambda inside an instance
-    // method referencing `this` directly, with no `let self_ = this;`
+    // method referencing `this` directly, with no `const self_ = this;`
     // alias. Used to fail codegen with "'this' used outside of a method".
     fn makeHandler() -> fnc(Int64) -> Nothing
     {
@@ -39,7 +39,7 @@ class Counter
     fn makeNested() -> fnc(Int64) -> Nothing
     {
         return fn(n: Int64) {
-            let inner: fnc(Int64) -> Nothing = fn(m: Int64) { this.x = this.x + m; };
+            const inner: fnc(Int64) -> Nothing = fn(m: Int64) { this.x = this.x + m; };
             inner(n);
         };
     }

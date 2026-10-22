@@ -49,7 +49,7 @@ namespace tinox.core.kubernetes
         // subresource's own `?follow=true`), use `openRaw` instead.
         fnc open(client: KubernetesClient, path: String) -> Watch
         {
-            let watchPath: String = path.contains("?") ? (path + "&watch=true") : (path + "?watch=true");
+            const watchPath: String = path.contains("?") ? (path + "&watch=true") : (path + "?watch=true");
             return Watch::openRaw(client, watchPath);
         }
 
@@ -61,10 +61,10 @@ namespace tinox.core.kubernetes
         // own, different query parameters instead.
         fnc openRaw(client: KubernetesClient, path: String) -> Watch
         {
-            let auth: ClusterAuth = client.auth;
-            let parsed: ParsedUrl = ParsedUrl::parse(auth.serverUrl);
+            const auth: ClusterAuth = client.auth;
+            const parsed: ParsedUrl = ParsedUrl::parse(auth.serverUrl);
 
-            let fd: Int64 = socketCreateTcp();
+            const fd: Int64 = socketCreateTcp();
             if (!socketConnect(fd, parsed.host, parsed.port))
             {
                 throw "Watch::openRaw: failed to connect to " + parsed.host + ":" + parsed.port.toString();
@@ -113,7 +113,7 @@ namespace tinox.core.kubernetes
             // bytes, since a chunked response has no Content-Length for it
             // to stop at). httpConnReadLine reads one byte at a time, so it
             // can never over-read past the blank line ending the headers.
-            let statusLine: String = httpConnReadLine(conn);
+            const statusLine: String = httpConnReadLine(conn);
             if (!statusLine.contains("200"))
             {
                 httpConnClose(conn);
@@ -121,7 +121,7 @@ namespace tinox.core.kubernetes
             }
             while true
             {
-                let line: String = httpConnReadLine(conn);
+                const line: String = httpConnReadLine(conn);
                 if (line.len() == 0)
                 {
                     break;
@@ -136,12 +136,12 @@ namespace tinox.core.kubernetes
         {
             while true
             {
-                let nlIdx: Int64 = this.buffer.indexOf("\n");
+                const nlIdx: Int64 = this.buffer.indexOf("\n");
                 if (nlIdx >= 0)
                 {
-                    let line: String = this.buffer.substring(0, nlIdx);
+                    const line: String = this.buffer.substring(0, nlIdx);
                     this.buffer = this.buffer.substring(nlIdx + 1, this.buffer.len());
-                    let trimmed: String = line.trim();
+                    const trimmed: String = line.trim();
                     if (trimmed.len() > 0)
                     {
                         return trimmed;
@@ -152,7 +152,7 @@ namespace tinox.core.kubernetes
                 {
                     return "";
                 }
-                let chunk: String = this.readNextChunk();
+                const chunk: String = this.readNextChunk();
                 if (chunk.len() == 0)
                 {
                     this.streamEnded = true;
@@ -171,24 +171,24 @@ namespace tinox.core.kubernetes
         // normal way a watch ends, not an error).
         fn readNextChunk() -> String
         {
-            let sizeLine: String = httpConnReadLine(this.conn);
+            const sizeLine: String = httpConnReadLine(this.conn);
             if (sizeLine.len() == 0)
             {
                 return "";
             }
             var hexPart: String = sizeLine;
-            let semi: Int64 = hexPart.indexOf(";");
+            const semi: Int64 = hexPart.indexOf(";");
             if (semi >= 0)
             {
                 hexPart = hexPart.substring(0, semi);
             }
             hexPart = hexPart.trim();
-            let size: Int64 = Watch::parseHex(hexPart);
+            const size: Int64 = Watch::parseHex(hexPart);
             if (size <= 0)
             {
                 return "";
             }
-            let bytes: List<Int64> = httpConnReadN(this.conn, size);
+            const bytes: List<Int64> = httpConnReadN(this.conn, size);
             if (bytes.len() < size)
             {
                 this.streamEnded = true;
@@ -203,8 +203,8 @@ namespace tinox.core.kubernetes
             var i: Int64 = 0;
             while i < s.len()
             {
-                let c: String = s.substring(i, i + 1).toLower();
-                let code: Int64 = c.charCodeAt(0);
+                const c: String = s.substring(i, i + 1).toLower();
+                const code: Int64 = c.charCodeAt(0);
                 var digit: Int64 = -1;
                 if (code >= 48 && code <= 57)
                 {

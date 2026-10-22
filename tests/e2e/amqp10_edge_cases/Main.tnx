@@ -52,10 +52,10 @@ class Main
         var more: Bool = true;
         var count: Int64 = 0;
         while more {
-            let fT = Amqp10::readFrame(sconn);
+            const fT = Amqp10::readFrame(sconn);
             count = count + 1;
-            let r = Amqp10Reader::new(fT.body);
-            let v = r.readValue();
+            const r = Amqp10Reader::new(fT.body);
+            const v = r.readValue();
             more = false;
             match v {
                 DescribedVal(d) => {
@@ -70,7 +70,7 @@ class Main
                 }
                 _ => {}
             }
-            let rest = r.readRawBytes(r.remaining());
+            const rest = r.readRawBytes(r.remaining());
             for i in 0..rest.len() { bytes.push(rest[i]); }
         }
         return amqp10_edge_cases { frameCount: count, bytes: bytes };
@@ -84,7 +84,7 @@ class Main
             Amqp10Value::BinaryVal([tag]), Amqp10Value::UIntVal(0),
             Amqp10Value::BoolVal(true), Amqp10Value::BoolVal(false)
         ];
-        let transferBody = Amqp10::encodePerformative(0x14, transferFields);
+        const transferBody = Amqp10::encodePerformative(0x14, transferFields);
         var fullFrame: List<Int64> = [];
         for i in 0..transferBody.len() { fullFrame.push(transferBody[i]); }
         for i in 0..msgBytes.len() { fullFrame.push(msgBytes[i]); }
@@ -94,15 +94,15 @@ class Main
 
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
 
         // --- SASL header + negotiation ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-        let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
         Amqp10::writeFrame(sconn, 1, 0, mechBody);
         Amqp10::readFrame(sconn);
-        let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
+        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
         // --- AMQP header ---
@@ -120,7 +120,7 @@ class Main
         Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
 
         // --- begin / begin-ok ---
-        let fBegin = Amqp10::readFrame(sconn);
+        const fBegin = Amqp10::readFrame(sconn);
         var beginFields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin.chanId), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
@@ -128,8 +128,8 @@ class Main
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
 
         // --- attach (sender) / attach-ok + flow(credit=3) -- all three publishes need credit ---
-        let fAttach1 = Amqp10::readFrame(sconn);
-        let pAttach1 = Amqp10::decodePerformative(fAttach1.body);
+        const fAttach1 = Amqp10::readFrame(sconn);
+        const pAttach1 = Amqp10::decodePerformative(fAttach1.body);
         var okAttach1: Bool = pAttach1.descriptor == 0x12;
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach1.fields));
         var flowFields: List<Amqp10Value> = [
@@ -140,18 +140,18 @@ class Main
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x13, flowFields));
 
         // --- receive + reassemble three transfers: empty, exact boundary, boundary+1 ---
-        let rEmpty = reassembleTransfer(sconn);
-        let rExact = reassembleTransfer(sconn);
-        let rPlus1 = reassembleTransfer(sconn);
+        const rEmpty = reassembleTransfer(sconn);
+        const rExact = reassembleTransfer(sconn);
+        const rPlus1 = reassembleTransfer(sconn);
 
         // --- detach (sender) / detach-ok ---
-        let fDetach1 = Amqp10::readFrame(sconn);
-        let pDetach1 = Amqp10::decodePerformative(fDetach1.body);
+        const fDetach1 = Amqp10::readFrame(sconn);
+        const pDetach1 = Amqp10::decodePerformative(fDetach1.body);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x16, pDetach1.fields));
 
         // --- attach (receiver) / attach-ok ---
-        let fAttach2 = Amqp10::readFrame(sconn);
-        let pAttach2 = Amqp10::decodePerformative(fAttach2.body);
+        const fAttach2 = Amqp10::readFrame(sconn);
+        const pAttach2 = Amqp10::decodePerformative(fAttach2.body);
         // Issue 76: link handles are now sequential (sender link=0, this
         // receiver link=1) instead of always 0 — relayMessage() must pick
         // up the real handle from the attach, otherwise
@@ -167,23 +167,23 @@ class Main
 
         // --- mirror all three messages byte-identically + wait for a disposition each time ---
         relayMessage(sconn, fBegin.chanId, subLinkHandle, 11, rEmpty.bytes);
-        let fDisp1 = Amqp10::readFrame(sconn);
-        let pDisp1 = Amqp10::decodePerformative(fDisp1.body);
+        const fDisp1 = Amqp10::readFrame(sconn);
+        const pDisp1 = Amqp10::decodePerformative(fDisp1.body);
         var okAck1: Bool = pDisp1.descriptor == 0x15;
 
         relayMessage(sconn, fBegin.chanId, subLinkHandle, 12, rExact.bytes);
-        let fDisp2 = Amqp10::readFrame(sconn);
-        let pDisp2 = Amqp10::decodePerformative(fDisp2.body);
+        const fDisp2 = Amqp10::readFrame(sconn);
+        const pDisp2 = Amqp10::decodePerformative(fDisp2.body);
         var okAck2: Bool = pDisp2.descriptor == 0x15;
 
         relayMessage(sconn, fBegin.chanId, subLinkHandle, 13, rPlus1.bytes);
-        let fDisp3 = Amqp10::readFrame(sconn);
-        let pDisp3 = Amqp10::decodePerformative(fDisp3.body);
+        const fDisp3 = Amqp10::readFrame(sconn);
+        const pDisp3 = Amqp10::decodePerformative(fDisp3.body);
         var okAck3: Bool = pDisp3.descriptor == 0x15;
 
         // --- detach / end / close ---
-        let fDetach2 = Amqp10::readFrame(sconn);
-        let pDetach2 = Amqp10::decodePerformative(fDetach2.body);
+        const fDetach2 = Amqp10::readFrame(sconn);
+        const pDetach2 = Amqp10::decodePerformative(fDetach2.body);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x16, pDetach2.fields));
         Amqp10::readFrame(sconn);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x17, []));
@@ -216,21 +216,21 @@ class Main
         // 255 data bytes, built by hand (the writer only writes str32).
         var str8Bytes: List<Int64> = [0xa1, 255];
         for i in 0..255 { str8Bytes.push(65); }
-        let str8Reader = Amqp10Reader::new(str8Bytes);
+        const str8Reader = Amqp10Reader::new(str8Bytes);
         match str8Reader.readValue() {
             StrVal(s) => { if (s.len() == 255) { println("ok-str8-255"); } }
             _ => {}
         }
 
         // str8 with length 0 -- edge case at the LOWER end of the 1-byte length.
-        let str8EmptyReader = Amqp10Reader::new([0xa1, 0]);
+        const str8EmptyReader = Amqp10Reader::new([0xa1, 0]);
         match str8EmptyReader.readValue() {
             StrVal(s) => { if (s.len() == 0) { println("ok-str8-empty"); } }
             _ => {}
         }
 
         // vbin8 (0xa0) with length 0.
-        let vbin8EmptyReader = Amqp10Reader::new([0xa0, 0]);
+        const vbin8EmptyReader = Amqp10Reader::new([0xa0, 0]);
         match vbin8EmptyReader.readValue() {
             BinaryVal(b) => { if (b.len() == 0) { println("ok-vbin8-empty"); } }
             _ => {}
@@ -239,7 +239,7 @@ class Main
         // sym8 (0xa3) at the 255-byte boundary.
         var sym8Bytes: List<Int64> = [0xa3, 255];
         for i in 0..255 { sym8Bytes.push(66); }
-        let sym8Reader = Amqp10Reader::new(sym8Bytes);
+        const sym8Reader = Amqp10Reader::new(sym8Bytes);
         match sym8Reader.readValue() {
             SymbolVal(s) => { if (s.len() == 255) { println("ok-sym8-255"); } }
             _ => {}
@@ -250,7 +250,7 @@ class Main
         // upper limit like 0-9-1's shortstr (a bug found there).
         var longStr: String = "";
         for i in 0..300 { longStr = longStr + "A"; }
-        let wStr = Amqp10Writer::new();
+        const wStr = Amqp10Writer::new();
         wStr.writeString(longStr);
         match Amqp10Reader::new(wStr.bytes).readValue() {
             StrVal(s) => { if (s.len() == 300) { println("ok-longstring"); } }
@@ -259,7 +259,7 @@ class Main
 
         var longSym: String = "";
         for i in 0..300 { longSym = longSym + "B"; }
-        let wSym = Amqp10Writer::new();
+        const wSym = Amqp10Writer::new();
         wSym.writeSymbol(longSym);
         match Amqp10Reader::new(wSym.bytes).readValue() {
             SymbolVal(s) => { if (s.len() == 300) { println("ok-longsymbol"); } }
@@ -268,7 +268,7 @@ class Main
 
         var longBin: List<Int64> = [];
         for i in 0..300 { longBin.push(67); }
-        let wBin = Amqp10Writer::new();
+        const wBin = Amqp10Writer::new();
         wBin.writeBinary(longBin);
         match Amqp10Reader::new(wBin.bytes).readValue() {
             BinaryVal(b) => { if (b.len() == 300) { println("ok-longbinary"); } }
@@ -276,30 +276,30 @@ class Main
         }
 
         // --- Part B: simulated broker, empty body + multi-frame boundary ---
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv);
 
-        let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
         if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
         println("ok-connect");
 
-        let session = Amqp10Session::begin(conn);
+        const session = Amqp10Session::begin(conn);
         var link = Amqp10Link::attach(session, "pub-link", false, "test-target");
 
         // Measure overhead at runtime instead of hard-coding it -- robust
         // against changes to encodeMessageBody()'s section layout.
-        let overhead = Amqp10::encodeMessageBody([], "t").len();
-        let maxBodyPerFrame = link.maxFrameSize - 64; // s. Amqp10Link::publish()
-        let exactLen = maxBodyPerFrame - overhead;
-        let plus1Len = exactLen + 1;
+        const overhead = Amqp10::encodeMessageBody([], "t").len();
+        const maxBodyPerFrame = link.maxFrameSize - 64; // s. Amqp10Link::publish()
+        const exactLen = maxBodyPerFrame - overhead;
+        const plus1Len = exactLen + 1;
 
         var exactBody: List<Int64> = [];
         for i in 0..exactLen { exactBody.push(66); }
@@ -321,10 +321,10 @@ class Main
 
         link.detach();
 
-        let subLink = Amqp10Link::attach(session, "sub-link", true, "test-source");
+        const subLink = Amqp10Link::attach(session, "sub-link", true, "test-source");
         subLink.grantCredit(5);
 
-        let mEmpty = subLink.nextMessage();
+        const mEmpty = subLink.nextMessage();
         if (mEmpty.ok) {
             if (mEmpty.body.len() == 0) {
                 println("ok-consume-empty");
@@ -332,7 +332,7 @@ class Main
             subLink.ack(mEmpty.deliveryId);
         }
 
-        let mExact = subLink.nextMessage();
+        const mExact = subLink.nextMessage();
         if (mExact.ok) {
             if (mExact.body.len() == exactLen) {
                 println("ok-consume-exact");
@@ -340,7 +340,7 @@ class Main
             subLink.ack(mExact.deliveryId);
         }
 
-        let mPlus1 = subLink.nextMessage();
+        const mPlus1 = subLink.nextMessage();
         if (mPlus1.ok) {
             if (mPlus1.body.len() == plus1Len) {
                 println("ok-consume-plus1");
@@ -352,7 +352,7 @@ class Main
         session.end();
         conn.close();
 
-        let brokerOk = await handle;
+        const brokerOk = await handle;
         if (brokerOk == 1) {
             println("ok-broker-saw-all");
         }

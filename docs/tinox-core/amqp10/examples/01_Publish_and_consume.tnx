@@ -4,17 +4,17 @@ class Main
 {
     fnc main() -> Int32
     {
-        let conn: Amqp10Connection = Amqp10Connection::connect("localhost", 5672, "guest", "guest");
-        let session: Amqp10Session = Amqp10Session::begin(conn);
+        const conn: Amqp10Connection = Amqp10Connection::connect("localhost", 5672, "guest", "guest");
+        const session: Amqp10Session = Amqp10Session::begin(conn);
 
         // role=false is a sender link (target = the destination address)
-        let sender: Amqp10Link = Amqp10Link::attach(session, "publisher", false, "orders");
+        const sender: Amqp10Link = Amqp10Link::attach(session, "publisher", false, "orders");
         sender.publish(Amqp10::stringToBytes("hello amqp-1.0"), "text/plain");
 
         // role=true is a receiver link (source = where messages come from)
-        let receiver: Amqp10Link = Amqp10Link::attach(session, "consumer", true, "orders");
+        const receiver: Amqp10Link = Amqp10Link::attach(session, "consumer", true, "orders");
         receiver.grantCredit(1);
-        let msg: Amqp10Message = receiver.nextMessage();
+        const msg: Amqp10Message = receiver.nextMessage();
         if (msg.ok)
         {
             println(tinoxBytesToString(msg.body));

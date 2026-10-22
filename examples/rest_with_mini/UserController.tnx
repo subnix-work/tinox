@@ -2,14 +2,8 @@ import tinox.core.http_server;
 import tinox.core.json;
 import User;
 
-// Auto-serialize mode for listUsers/createUser/renameUser (no @HttpContext
-// param, return type is the real domain object) -- the compiler serializes
-// the returned List<User>/User as the JSON response body itself, replacing
-// the manual Json::serialize(...)/ctx.response.body= wiring this example
-// used to demonstrate. getUser mixes in @HttpContext to show the other
-// mode: a dynamic 404 (a fixed @StatusCode can't express "sometimes 200,
-// sometimes 404"), same pattern as
-// examples/http3_rest_api_annotated/src/TaskController.tnx's getTask.
+// This example retains raw HttpContext response handling.
+// See ../typed_rest for dynamic status codes with Response<User>.
 class UserController
 {
     fnc findUserIndex(users: List<User>, id: Int64) -> Int64
@@ -40,8 +34,8 @@ class UserController
     @Path("/users/:id")
     fn getUser(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
-        let users: List<User> = [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
-        let idx: Int64 = findUserIndex(users, id);
+        const users: List<User> = [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
+        const idx: Int64 = findUserIndex(users, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"user not found\"}");

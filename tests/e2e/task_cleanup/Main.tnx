@@ -1,0 +1,24 @@
+// expect: finally
+// expect: defer
+// expect: Task cancelled
+class Main {
+    fnc worker(ready: Int64) -> Nothing {
+        defer { println("defer"); }
+        try {
+            send ready -> 1;
+            sleep(10000);
+        } finally { println("finally"); }
+    }
+    fnc main() -> Int32 {
+        const ready = channel;
+        try {
+            scope {
+                const worker = spawn Main::worker(ready);
+                recv ready;
+                taskCancel(worker);
+                await worker;
+            }
+        } catch (e: String) { println(e); }
+        return 0;
+    }
+}

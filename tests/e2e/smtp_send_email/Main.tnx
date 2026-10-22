@@ -26,7 +26,7 @@ import tinox.core.socket;
 class Main
 {
     async fnc fakeServer(srv: Int64) -> Int64 {
-        let conn = httpServerAcceptConnHandle(srv);
+        const conn = httpServerAcceptConnHandle(srv);
         if (conn <= 0) {
             return 0;
         }
@@ -39,18 +39,18 @@ class Main
         // ("testuser"/"testpass") — the first client attempt deliberately
         // sends the wrong password, so it must be rejected; the second
         // sends the right one and must be accepted.
-        let authLine1 = httpConnReadLine(conn); // "AUTH PLAIN <base64>"
-        let payload1 = authLine1.substring(11, authLine1.len());
-        let decoded1 = Base64::decodeBytes(payload1);
+        const authLine1 = httpConnReadLine(conn); // "AUTH PLAIN <base64>"
+        const payload1 = authLine1.substring(11, authLine1.len());
+        const decoded1 = Base64::decodeBytes(payload1);
         if (Main::checkAuth(decoded1, "testuser", "testpass")) {
             httpConnSendRaw(conn, "235 OK\r\n");
         } else {
             httpConnSendRaw(conn, "535 Authentication failed\r\n");
         }
 
-        let authLine2 = httpConnReadLine(conn);
-        let payload2 = authLine2.substring(11, authLine2.len());
-        let decoded2 = Base64::decodeBytes(payload2);
+        const authLine2 = httpConnReadLine(conn);
+        const payload2 = authLine2.substring(11, authLine2.len());
+        const decoded2 = Base64::decodeBytes(payload2);
         if (Main::checkAuth(decoded2, "testuser", "testpass")) {
             httpConnSendRaw(conn, "235 OK\r\n");
         } else {
@@ -68,7 +68,7 @@ class Main
         var received: String = "";
         var done: Bool = false;
         while !done {
-            let line = httpConnReadLine(conn);
+            const line = httpConnReadLine(conn);
             if (line == ".") {
                 done = true;
             } else {
@@ -82,7 +82,7 @@ class Main
         httpConnSendRaw(conn, "250 OK: queued\r\n");
         httpConnClose(conn);
 
-        let expected = "From: sender@example.org\nTo: recipient@example.org\nSubject: Dot Test\n\nline one\n.dotline\nline three\n";
+        const expected = "From: sender@example.org\nTo: recipient@example.org\nSubject: Dot Test\n\nline one\n.dotline\nline three\n";
         if (received == expected) {
             return 1;
         }
@@ -117,32 +117,32 @@ class Main
     }
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeServer(srv);
+        const handle = spawn fakeServer(srv);
 
-        let client: SmtpClient = SmtpClient::connect("127.0.0.1", port);
+        const client: SmtpClient = SmtpClient::connect("127.0.0.1", port);
         if (client.conn <= 0) {
             println("connect failed: " + client.errorMessage);
             return 1;
         }
         println("connected");
 
-        let badAuth: Bool = client.authPlain("testuser", "wrongpass");
+        const badAuth: Bool = client.authPlain("testuser", "wrongpass");
         println("bad auth ok (should be false): " + badAuth.toString());
 
-        let goodAuth: Bool = client.authPlain("testuser", "testpass");
+        const goodAuth: Bool = client.authPlain("testuser", "testpass");
         println("good auth ok (should be true): " + goodAuth.toString());
 
-        let ok: Bool = client.send("sender@example.org", ["recipient@example.org"], "Dot Test", "line one\n.dotline\nline three");
+        const ok: Bool = client.send("sender@example.org", ["recipient@example.org"], "Dot Test", "line one\n.dotline\nline three");
         println("send ok: " + ok.toString());
         client.close();
 
-        let bodyMatch = await handle;
+        const bodyMatch = await handle;
         println("body match: " + (bodyMatch == 1).toString());
         return 0;
     }

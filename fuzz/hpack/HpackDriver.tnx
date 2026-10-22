@@ -4,8 +4,8 @@ class HpackDriver
 {
     fnc tinoxHpackDecode(bytes: List<Int64>) -> Int64
     {
-        let dynTable: HpackDynTable = HpackDynTable::new(4096);
-        let headers: List<HpackHeader> = Hpack::decode(bytes, dynTable);
+        const dynTable: HpackDynTable = HpackDynTable::new(4096);
+        const headers: List<HpackHeader> = Hpack::decode(bytes, dynTable);
         return headers.len();
     }
 }

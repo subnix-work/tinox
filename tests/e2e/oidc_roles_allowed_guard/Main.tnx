@@ -34,17 +34,17 @@ class Main
 {
 
     async fnc fakeJwksProvider(srv: Int64) -> Int64 {
-        let jwksBody = "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"key1\",\"n\":\"paFXzTfxN6cVjtAJBMIYyj87nt-HmTvS8rGP2oTh6gTK1rx__9qh77HX28NdoEpXXIhRmYK9-1XCFA-ZhHDZn9TsWVLqBLn1mgPFhrJLdgNn47LokHi1WM8ESMee7S-6_rvyFQZQedR70057WzyE1hUgrN3UiemDDk_EQpabibG-kiFYD7rFj9AEQ0s3_C1QmFoz_bPA3ntvAI5IZ6Sz0Z1Y3LBidm_Cio1HcXYsvp-yASqaawysYBSukCb5geatLY3MHlYIAm7F1mjxmEGntm05c4lMpwBchl47oSh78xUcDt2VH7rcUimDgG63MBz0JpywcmrFGU6265V2EJy9wQ\",\"e\":\"AQAB\"}]}";
+        const jwksBody = "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"key1\",\"n\":\"paFXzTfxN6cVjtAJBMIYyj87nt-HmTvS8rGP2oTh6gTK1rx__9qh77HX28NdoEpXXIhRmYK9-1XCFA-ZhHDZn9TsWVLqBLn1mgPFhrJLdgNn47LokHi1WM8ESMee7S-6_rvyFQZQedR70057WzyE1hUgrN3UiemDDk_EQpabibG-kiFYD7rFj9AEQ0s3_C1QmFoz_bPA3ntvAI5IZ6Sz0Z1Y3LBidm_Cio1HcXYsvp-yASqaawysYBSukCb5geatLY3MHlYIAm7F1mjxmEGntm05c4lMpwBchl47oSh78xUcDt2VH7rcUimDgG63MBz0JpywcmrFGU6265V2EJy9wQ\",\"e\":\"AQAB\"}]}";
 
         var allOk: Int64 = 1;
         var i: Int64 = 0;
         while i < 3 {
-            let conn = httpServerAcceptConnHandle(srv);
-            let req = httpConnReadRequest(conn);
+            const conn = httpServerAcceptConnHandle(srv);
+            const req = httpConnReadRequest(conn);
             if (!req.contains("GET") || !req.contains("/jwks.json")) {
                 allOk = 0;
             }
-            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + jwksBody.len().toString() + "\r\nConnection: close\r\n\r\n" + jwksBody;
+            const resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + jwksBody.len().toString() + "\r\nConnection: close\r\n\r\n" + jwksBody;
             httpConnSendRaw(conn, resp);
             httpConnClose(conn);
             i = i + 1;
@@ -58,30 +58,30 @@ class Main
         if (bearer != "") {
             headers.insert("Authorization", bearer);
         }
-        let req: HttpRequest = HttpRequest::new("GET", "/api/hello", "", headers, "");
+        const req: HttpRequest = HttpRequest::new("GET", "/api/hello", "", headers, "");
         return HttpContext::fromRequest(req);
     }
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeJwksProvider(srv);
+        const handle = spawn fakeJwksProvider(srv);
 
         Env::setVar("OIDC_ISSUER", "https://issuer.example.com");
         Env::setVar("OIDC_JWKS_URI", "http://127.0.0.1:" + port.toString() + "/jwks.json");
         Env::setVar("OIDC_AUDIENCE", "my-client-id");
 
-        let validToken = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImtleTEiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJ1c2VyNDIiLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlLmNvbSIsImF1ZCI6Im15LWNsaWVudC1pZCIsImV4cCI6OTk5OTk5OTk5OSwicmVhbG1fYWNjZXNzIjp7InJvbGVzIjpbImFwaS11c2VyIl19fQ.cqEdNwnOpfR94pLfx-kn5-w-045E4d3-WYCaPZceN5Pa8Oe2_poWMSmjdLm3RpFbdhY1NDnbKU1LgswyOIsBXyGkIjJaYBuP11u0QllCGawblRkcQ5o0yqeXIoFmO6jzAjCK6OTDWEzHGeF3JuhFjHx6G4ZHww_GM4pEhELqb5Ex8clE63QhvaXA_TOrvqoIJnwglgGmSnTs23IREXBkO-nUVGPy00aS9YgRBXRx2q-iaMiXDUT50sfb0buT_GdBqRPwiFmXDnWMag8ioCPolpK-pQrNHMvTHVcb_VZP4vHoFuMuf0DWaZDN9-vL6lhV45-3diIqqlO8s0J9ESwnLA";
-        let malformedIdToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleTEifQ.eyJzdWIiOiJ1c2VyMSJ9.fakesig";
+        const validToken = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImtleTEiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJ1c2VyNDIiLCJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlLmNvbSIsImF1ZCI6Im15LWNsaWVudC1pZCIsImV4cCI6OTk5OTk5OTk5OSwicmVhbG1fYWNjZXNzIjp7InJvbGVzIjpbImFwaS11c2VyIl19fQ.cqEdNwnOpfR94pLfx-kn5-w-045E4d3-WYCaPZceN5Pa8Oe2_poWMSmjdLm3RpFbdhY1NDnbKU1LgswyOIsBXyGkIjJaYBuP11u0QllCGawblRkcQ5o0yqeXIoFmO6jzAjCK6OTDWEzHGeF3JuhFjHx6G4ZHww_GM4pEhELqb5Ex8clE63QhvaXA_TOrvqoIJnwglgGmSnTs23IREXBkO-nUVGPy00aS9YgRBXRx2q-iaMiXDUT50sfb0buT_GdBqRPwiFmXDnWMag8ioCPolpK-pQrNHMvTHVcb_VZP4vHoFuMuf0DWaZDN9-vL6lhV45-3diIqqlO8s0J9ESwnLA";
+        const malformedIdToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleTEifQ.eyJzdWIiOiJ1c2VyMSJ9.fakesig";
 
         // 1. No token -> 401, no network call.
-        let ctx1: HttpContext = makeCtx("");
-        let ok1: Bool = OidcGuard::checkRoles(ctx1, "api-user");
+        const ctx1: HttpContext = makeCtx("");
+        const ok1: Bool = OidcGuard::checkRoles(ctx1, "api-user");
         if (!ok1) {
             if (ctx1.response.statusCode == 401) {
                 println("ok-no-token");
@@ -89,15 +89,15 @@ class Main
         }
 
         // 2. Valid token, matching role -> true, response untouched.
-        let ctx2: HttpContext = makeCtx("Bearer " + validToken);
-        let ok2: Bool = OidcGuard::checkRoles(ctx2, "api-user");
+        const ctx2: HttpContext = makeCtx("Bearer " + validToken);
+        const ok2: Bool = OidcGuard::checkRoles(ctx2, "api-user");
         if (ok2) {
             println("ok-role-match");
         }
 
         // 3. Valid token, non-matching required role -> 403, false.
-        let ctx3: HttpContext = makeCtx("Bearer " + validToken);
-        let ok3: Bool = OidcGuard::checkRoles(ctx3, "admin");
+        const ctx3: HttpContext = makeCtx("Bearer " + validToken);
+        const ok3: Bool = OidcGuard::checkRoles(ctx3, "admin");
         if (!ok3) {
             if (ctx3.response.statusCode == 403) {
                 println("ok-role-mismatch");
@@ -105,8 +105,8 @@ class Main
         }
 
         // 4. Valid token matches the second entry in a multi-role allowed list.
-        let ctx4: HttpContext = makeCtx("Bearer " + validToken);
-        let ok4: Bool = OidcGuard::checkRoles(ctx4, "admin|api-user");
+        const ctx4: HttpContext = makeCtx("Bearer " + validToken);
+        const ok4: Bool = OidcGuard::checkRoles(ctx4, "admin|api-user");
         if (ok4) {
             println("ok-multi-role-match");
         }
@@ -114,15 +114,15 @@ class Main
         // 5. Malformed-alg token is rejected on the alg check alone -- no
         //    JWKS fetch happens for this one (not counted in the 3 the fake
         //    provider expects).
-        let ctx5: HttpContext = makeCtx("Bearer " + malformedIdToken);
-        let ok5: Bool = OidcGuard::checkRoles(ctx5, "api-user");
+        const ctx5: HttpContext = makeCtx("Bearer " + malformedIdToken);
+        const ok5: Bool = OidcGuard::checkRoles(ctx5, "api-user");
         if (!ok5) {
             if (ctx5.response.statusCode == 401) {
                 println("ok-malformed-alg-rejected");
             }
         }
 
-        let brokerOk = await handle;
+        const brokerOk = await handle;
         if (brokerOk == 1) {
             println("ok-broker-saw-correct-requests");
         }

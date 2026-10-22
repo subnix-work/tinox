@@ -15,21 +15,21 @@ import Box;
 class Main
 {
     fnc main() -> Int32 {
-        let b: Box<Int64> = Box<Int64> { value: 7 };
-        let b2: Box<String> = b.transform(fnc(x: Int64) -> String { return "v"; });
+        const b: Box<Int64> = Box<Int64> { value: 7 };
+        const b2: Box<String> = b.transform(fnc(x: Int64) -> String { return "v"; });
         println(b2.get());
 
-        let o: Option<Int64> = Option<Int64>::some(41);
-        let o2: Option<String> = o.map(fnc(x: Int64) -> String { return "mapped"; });
+        const o: Option<Int64> = Option<Int64>::some(41);
+        const o2: Option<String> = o.map(fnc(x: Int64) -> String { return "mapped"; });
         if (o2.isSome()) {
             println(o2.unwrap());
         }
-        let n: Option<Int64> = Option<Int64>::none();
-        let n2: Option<String> = n.map(fnc(x: Int64) -> String { return "nope"; });
+        const n: Option<Int64> = Option<Int64>::none();
+        const n2: Option<String> = n.map(fnc(x: Int64) -> String { return "nope"; });
         println(n2.isSome());
 
-        let o3: Option<Int64> = Option<Int64>::some(5);
-        let o4: Option<String> = o3.andThen(fnc(x: Int64) -> Option<String> {
+        const o3: Option<Int64> = Option<Int64>::some(5);
+        const o4: Option<String> = o3.andThen(fnc(x: Int64) -> Option<String> {
             return Option<String>::some("chained");
         });
         println(o4.unwrap());

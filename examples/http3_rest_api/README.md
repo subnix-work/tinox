@@ -1,7 +1,7 @@
 # HTTP/3 REST API (tasks)
 
 A small in-memory JSON REST API -- list/get/create/update/toggle-done/delete
-on a `Task { id, title, done }` resource -- served entirely over HTTP/3
+on a `TodoItem { id, title, done }` resource -- served entirely over HTTP/3
 (RFC 9114, QUIC/RFC 9000) via `tinox.core.http3_server.Http3Server`.
 
 `Http3Server` has the exact same fluent route-registration API as
@@ -89,7 +89,7 @@ one can't also be named `Main.tnx` in the same directory:
 @Http3RestController(8843, "cert.pem", "key.pem")
 class TaskController
 {
-    var tasks: List<Task>;
+    var tasks: List<TodoItem>;
 
     @GET
     @Path("/tasks")
@@ -129,7 +129,7 @@ time if you want to compare them side by side.
 
 ## Notes
 
-- Storage is a single in-memory `List<Task>`, shared by every route
+- Storage is a single in-memory `List<TodoItem>`, shared by every route
   handler's closure. `List<T>` is a reference-semantic handle (`push`,
   `pop`, and index-assignment all mutate the same underlying buffer every
   closure's captured copy of the handle points to), which is what makes

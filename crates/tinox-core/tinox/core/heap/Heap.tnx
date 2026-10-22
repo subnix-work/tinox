@@ -29,8 +29,8 @@ namespace tinox.core.heap
             {
                 throw "Heap is empty";
             }
-            let result: T = heap.items[0];
-            let last: T = heap.items[heap.items.len() - 1];
+            const result: T = heap.items[0];
+            const last: T = heap.items[heap.items.len() - 1];
             heap.items.pop();
             if (heap.items.len() > 0)
             {
@@ -54,10 +54,10 @@ namespace tinox.core.heap
             var index: Int64 = startIndex;
             while index > 0
             {
-                let parent: Int64 = (index - 1) / 2;
+                const parent: Int64 = (index - 1) / 2;
                 if (heap.comparator(heap.items[index], heap.items[parent]))
                 {
-                    let temp: T = heap.items[index];
+                    const temp: T = heap.items[index];
                     heap.items[index] = heap.items[parent];
                     heap.items[parent] = temp;
                     index = parent;
@@ -72,11 +72,11 @@ namespace tinox.core.heap
         fn siftDown(heap: Heap<T>, startIndex: Int64) -> Nothing
         {
             var index: Int64 = startIndex;
-            let len: Int64 = heap.items.len();
+            const len: Int64 = heap.items.len();
             while true
             {
-                let left: Int64 = 2 * index + 1;
-                let right: Int64 = 2 * index + 2;
+                const left: Int64 = 2 * index + 1;
+                const right: Int64 = 2 * index + 2;
                 var smallest: Int64 = index;
                 if (left < len && heap.comparator(heap.items[left], heap.items[smallest]))
                 {
@@ -88,7 +88,7 @@ namespace tinox.core.heap
                 }
                 if (smallest != index)
                 {
-                    let temp: T = heap.items[index];
+                    const temp: T = heap.items[index];
                     heap.items[index] = heap.items[smallest];
                     heap.items[smallest] = temp;
                     index = smallest;

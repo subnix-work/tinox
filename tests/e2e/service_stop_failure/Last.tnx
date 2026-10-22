@@ -1,0 +1,7 @@
+import First;
+@ApplicationComponent
+class Last {
+ @Inject private var first: First;
+ @OnStop
+ fn stop() -> Nothing { println("last stop"); throw "stop failed"; }
+}

@@ -1,5 +1,6 @@
 # Build artifacts
 /target
+*.tinox-build/
 **/*.rlib
 **/*.pdb
 
@@ -25,6 +26,7 @@ Thumbs.db
 .tinox/
 *.tar.gz
 tinox.lock
+tinox.overrides.yaml
 
 # Claude Code
 claude
@@ -79,3 +81,6 @@ fuzz/*/leak-*
 fuzz/*/timeout-*
 fuzz/*/oom-*
 fuzz/*/slow-unit-*
+
+# Compiler query schema fingerprint build script
+!/crates/tinox-common/build.rs

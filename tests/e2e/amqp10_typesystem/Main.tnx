@@ -43,9 +43,9 @@ import tinox.core.amqp10;
 class Main
 {
     fnc roundtrip(v: Amqp10Value) -> Amqp10Value {
-        let w = Amqp10Writer::new();
+        const w = Amqp10Writer::new();
         w.writeValue(v);
-        let r = Amqp10Reader::new(w.bytes);
+        const r = Amqp10Reader::new(w.bytes);
         return r.readValue();
     }
 
@@ -194,7 +194,7 @@ class Main
         }
 
         // Described type: descriptor 0x10 (open) + ListVal[StrVal("container")]
-        let described = Amqp10Described { descriptor: 0x10, value: Amqp10Value::ListVal([Amqp10Value::StrVal("container")]) };
+        const described = Amqp10Described { descriptor: 0x10, value: Amqp10Value::ListVal([Amqp10Value::StrVal("container")]) };
         match roundtrip(Amqp10Value::DescribedVal(described)) {
             DescribedVal(d) => {
                 if (d.descriptor == 0x10) {
@@ -212,11 +212,11 @@ class Main
         }
 
         // float (0x72) + 4-byte payload: the cursor must still advance correctly
-        let rFloat = Amqp10Reader::new([0x72, 1, 2, 3, 4, 0x50, 99]);
-        let floatVal = rFloat.readValue();
+        const rFloat = Amqp10Reader::new([0x72, 1, 2, 3, 4, 0x50, 99]);
+        const floatVal = rFloat.readValue();
         match floatVal {
             ErrorVal(_msg) => {
-                let next = rFloat.readValue();
+                const next = rFloat.readValue();
                 match next {
                     UByteVal(n) => { if (n == 99) { println("ok-error-float"); } }
                     _ => {}
@@ -226,36 +226,36 @@ class Main
         }
 
         // Unknown format code (0x1f is not a valid format code)
-        let rUnknown = Amqp10Reader::new([0x1f]);
+        const rUnknown = Amqp10Reader::new([0x1f]);
         match rUnknown.readValue() {
             ErrorVal(_msg) => { println("ok-error-unknown-code"); }
             _ => {}
         }
 
         // --- Short forms that ONLY the reader needs to know (the writer never writes them) ---
-        let rSmalluint = Amqp10Reader::new([0x52, 200]);
+        const rSmalluint = Amqp10Reader::new([0x52, 200]);
         match rSmalluint.readValue() { UIntVal(n) => { if (n == 200) { println("ok-smalluint"); } } _ => {} }
 
-        let rUint0 = Amqp10Reader::new([0x43]);
+        const rUint0 = Amqp10Reader::new([0x43]);
         match rUint0.readValue() { UIntVal(n) => { if (n == 0) { println("ok-uint0"); } } _ => {} }
 
-        let rSmallulong = Amqp10Reader::new([0x53, 42]);
+        const rSmallulong = Amqp10Reader::new([0x53, 42]);
         match rSmallulong.readValue() { ULongVal(n) => { if (n == 42) { println("ok-smallulong"); } } _ => {} }
 
-        let rUlong0 = Amqp10Reader::new([0x44]);
+        const rUlong0 = Amqp10Reader::new([0x44]);
         match rUlong0.readValue() { ULongVal(n) => { if (n == 0) { println("ok-ulong0"); } } _ => {} }
 
-        let rSmallint = Amqp10Reader::new([0x54, 256 - 5]); // -5 as a signed byte
+        const rSmallint = Amqp10Reader::new([0x54, 256 - 5]); // -5 as a signed byte
         match rSmallint.readValue() { IntVal(n) => { if (n == -5) { println("ok-smallint"); } } _ => {} }
 
-        let rSmalllong = Amqp10Reader::new([0x55, 256 - 7]); // -7
+        const rSmalllong = Amqp10Reader::new([0x55, 256 - 7]); // -7
         match rSmalllong.readValue() { LongVal(n) => { if (n == -7) { println("ok-smalllong"); } } _ => {} }
 
-        let rList0 = Amqp10Reader::new([0x45]);
+        const rList0 = Amqp10Reader::new([0x45]);
         match rList0.readValue() { ListVal(items) => { if (items.len() == 0) { println("ok-list0"); } } _ => {} }
 
         // array8 of 2 symbols: format=0xe0, size, count=2, element-code=0xa3, "ab", "cd"
-        let rArray = Amqp10Reader::new([0xe0, 8, 2, 0xa3, 2, 97, 98, 2, 99, 100]);
+        const rArray = Amqp10Reader::new([0xe0, 8, 2, 0xa3, 2, 97, 98, 2, 99, 100]);
         match rArray.readValue() {
             ListVal(items) => {
                 if (items.len() == 2) {
