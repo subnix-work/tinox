@@ -1,0 +1,21 @@
+// Build once; supply deployment values through the runtime environment.
+class Main {
+    @Config("service.port", "default", "8080")
+    var port: UInt16;
+
+    @Config("service.debug", "optional")
+    var debug: Bool;
+
+    @Sensitive
+    @Config("service.token", "required")
+    var token: String;
+
+    fnc main() -> Int32 {
+        let settings = Main {};
+        println(settings.port);
+        println(settings.debug);
+        // The generated toString() masks the token.
+        println(settings.toString());
+        return 0;
+    }
+}

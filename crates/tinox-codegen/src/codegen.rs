@@ -1,5 +1,7 @@
 #[path = "bootstrap.rs"]
 pub mod bootstrap;
+#[path = "lifecycle.rs"]
+pub mod lifecycle;
 use bootstrap::{BackgroundTask, Endpoint};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -36,6 +38,9 @@ pub struct ConfigFieldInfo {
     pub class_name: String,
     pub field_name: String,
     pub config_key: String,
+    pub policy: String,
+    pub default_value: Option<String>,
+    pub value_type: String,
     /// LLVM type: "i8*" for String, "i64" for Int*, "i1" for Bool
     pub field_llvm_type: String,
 }
@@ -570,6 +575,8 @@ pub struct CodeGen {
     user_main_class: bool,
     /// Set of class names defined in user/imported code
     defined_classes: HashSet<String>,
+    service_options: Option<lifecycle::ServiceOptions>,
+    lifecycle_hooks: Vec<lifecycle::Hook>,
     synchronized_classes: HashSet<String>,
     monitored_classes: HashSet<String>,
     /// class_name -> field_name -> class_type_name (only for fields with Named/class types)
@@ -681,6 +688,8 @@ impl CodeGen {
             dev_test_command: String::new(),
             user_main_class: false,
             defined_classes: HashSet::new(),
+            service_options: None,
+            lifecycle_hooks: Vec::new(),
             synchronized_classes: HashSet::new(),
             monitored_classes: HashSet::new(),
             struct_field_class_types: HashMap::new(),
@@ -794,7 +803,7 @@ impl CodeGen {
         let label = format!("__metric_str_{}", self.strings.len());
         self.strings.insert(label.clone(), s.to_string());
         let len = s.len() + 1;
-        format!("getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0")
+        format!("getelementptr ([{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0)")
     }
 
     /// Emit a tinox_clock_nanos() call, subtract start_reg, and call tinox_histogram_record.
@@ -1743,6 +1752,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @processResultStderr(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @processResultExitCode(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @processResultTimedOut(i64)").unwrap();
+        self.emit_service_declarations();
         writeln!(&mut self.ir, "declare void @tinox_di_enter()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_di_exit()").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_monitor_enter(i64*)").unwrap();
@@ -1865,6 +1875,8 @@ impl CodeGen {
             }
             v
         }).collect();
+
+        self.configure_lifecycle(&all_classes);
 
         self.synchronized_classes = all_classes.iter()
             .filter(|c| c.annotations.iter().any(|a| a.name == "Synchronized"))
@@ -2225,6 +2237,8 @@ impl CodeGen {
         // Emit vtable globals for classes that implement interfaces
         self.emit_vtable_globals(source);
 
+        self.emit_lifecycle_hooks();
+
         // Emit REST route shims and registration function
         self.emit_route_code();
 
@@ -2269,6 +2283,7 @@ impl CodeGen {
         // Emit SQL-constant functions and row-mapping helpers for @Entity classes
         self.emit_entity_code();
         self.emit_global_initializers();
+        self.emit_config_validation();
 
         for (name, s) in &self.strings {
             let escaped = Self::escape_llvm_string(s);
@@ -2283,6 +2298,20 @@ impl CodeGen {
         }
 
         Ok(())
+    }
+
+    /// Runtime resolves and validates every declaration before any application code.
+    fn emit_config_validation(&mut self) {
+        writeln!(&mut self.ir, "declare void @tinox_config_declare(i8*, i8*, i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "define void @tinox_config_init() {{").unwrap();
+        for field in self.config_fields.clone() {
+            let key = self.make_string_const(&field.config_key);
+            let ty = self.make_string_const(&field.value_type);
+            let policy = self.make_string_const(&field.policy);
+            let fallback = field.default_value.as_deref().map(|s| self.make_string_const(s)).unwrap_or_else(|| "null".to_string());
+            writeln!(&mut self.ir, "  call void @tinox_config_declare(i8* {key}, i8* {ty}, i8* {policy}, i8* {fallback})").unwrap();
+        }
+        writeln!(&mut self.ir, "  ret void\n}}").unwrap();
     }
 
     /// Generates route handler shims, `__tinox_register_routes`, and (if needed) a `main`
@@ -2320,13 +2349,19 @@ impl CodeGen {
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__route_{}_{}", route.class_name, route.method_name);
 
-            writeln!(&mut self.lambda_ir, "define void @{shim}(i64 %ctx_i64) {{").unwrap();
+            let body_shim = if self.service_enabled() {
+                format!("{shim}__body")
+            } else {
+                shim.clone()
+            };
+            writeln!(&mut self.lambda_ir, "define void @{body_shim}(i64 %ctx_i64) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
             self.emit_route_shim_body(idx, route);
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
+            self.emit_managed_route_wrapper(&shim, false);
         }
 
         // ── Metrics endpoint shim (if enabled) ──────────────────────────────────
@@ -2955,7 +2990,20 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "auto_ok_{idx}:").unwrap();
         }
 
-        let json_var = match &route.return_type {
+        if let Type::Generic { name, args } = &route.return_type {
+            if name == "Response" {
+                self.emit_typed_route_response(idx, route, result, &args[0]);
+                return;
+            }
+        }
+        let json_var = self.emit_route_json_value(&route.return_type, result, ret_llvm);
+        writeln!(&mut self.lambda_ir,
+            "  %discard_auto_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {json_var})").unwrap();
+    }
+
+    /// One serializer for ordinary returns and Response<T> success bodies.
+    fn emit_route_json_value(&mut self, ty: &Type, result: &str, ret_llvm: &str) -> String {
+        match ty {
             Type::Named(cls) => {
                 let v = self.temp();
                 writeln!(&mut self.lambda_ir, "  {v} = call i8* @{cls}_toJson({ret_llvm} {result})").unwrap();
@@ -3004,10 +3052,116 @@ impl CodeGen {
                 v
             }
             _ => unreachable!("return type validated as auto-serializable at typecheck time"),
-        };
+        }
+    }
 
-        writeln!(&mut self.lambda_ir,
-            "  %discard_auto_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {json_var})").unwrap();
+    /// Response<T>'s five slots are fixed across generic specializations:
+    /// status, headers, zero/one body values, error message, variant tag.
+    /// Both transport shims call this code before handing off HttpResponse.
+    fn emit_typed_route_response(&mut self, idx: usize, route: &RouteEntry, result: &str, body_ty: &Type) {
+        for (slot, name) in [(0, "status"), (1, "headers"), (2, "values"), (3, "message"), (4, "kind")] {
+            writeln!(&mut self.lambda_ir, "  %tr_{name}_slot_{idx} = getelementptr i64, i64* {result}, i64 {slot}").unwrap();
+            writeln!(&mut self.lambda_ir, "  %tr_{name}_{idx} = load i64, i64* %tr_{name}_slot_{idx}").unwrap();
+        }
+        let default_status = route.status_code.unwrap_or(200);
+        let empty = self.emit_lambda_string_literal("");
+        let error_prefix = self.emit_lambda_string_literal("{\"error\":");
+        let error_suffix = self.emit_lambda_string_literal("}");
+        let invalid = self.emit_lambda_string_literal("{\"error\":\"invalid typed response\"}");
+        // Merge rather than replace existing headers (middleware may have
+        // installed headers before the annotated handler was invoked).
+        writeln!(&mut self.lambda_ir, r#"  %tr_hmap_{idx} = inttoptr i64 %tr_headers_{idx} to i8*
+  %tr_keys_{idx} = call i64* @tinox_map_keys(i8* %tr_hmap_{idx})
+  %tr_count_{idx} = load i64, i64* %tr_keys_{idx}
+  br label %tr_headers_loop_{idx}
+tr_headers_loop_{idx}:
+  %tr_i_{idx} = phi i64 [ 0, %auto_ok_{idx} ], [ %tr_next_{idx}, %tr_headers_copy_{idx} ]
+  %tr_more_{idx} = icmp slt i64 %tr_i_{idx}, %tr_count_{idx}
+  br i1 %tr_more_{idx}, label %tr_headers_copy_{idx}, label %tr_dispatch_{idx}
+tr_headers_copy_{idx}:
+  %tr_keyraw_{idx} = call i64 @tinox_array_get(i64* %tr_keys_{idx}, i64 %tr_i_{idx})
+  %tr_key_{idx} = inttoptr i64 %tr_keyraw_{idx} to i8*
+  %tr_valraw_{idx} = call i64 @tinox_map_get(i8* %tr_hmap_{idx}, i8* %tr_key_{idx})
+  %tr_val_{idx} = inttoptr i64 %tr_valraw_{idx} to i8*
+  %tr_header_discard_{idx} = call i64* @HttpResponse_header(i64* %resp_pauto_{idx}, i8* %tr_key_{idx}, i8* %tr_val_{idx})
+  %tr_next_{idx} = add i64 %tr_i_{idx}, 1
+  br label %tr_headers_loop_{idx}
+tr_dispatch_{idx}:
+  %tr_target_status_slot_{idx} = getelementptr i64, i64* %resp_pauto_{idx}, i64 0
+  switch i64 %tr_kind_{idx}, label %tr_invalid_{idx} [ i64 0, label %tr_success_{idx} i64 1, label %tr_error_{idx} i64 2, label %tr_empty_{idx} ]
+tr_success_{idx}:
+  %tr_default_{idx} = icmp eq i64 %tr_status_{idx}, 0
+  %tr_code_{idx} = select i1 %tr_default_{idx}, i64 {default_status}, i64 %tr_status_{idx}
+  %tr_low_{idx} = icmp sge i64 %tr_code_{idx}, 200
+  %tr_high_{idx} = icmp sle i64 %tr_code_{idx}, 299
+  %tr_not204_{idx} = icmp ne i64 %tr_code_{idx}, 204
+  %tr_not205_{idx} = icmp ne i64 %tr_code_{idx}, 205
+  %tr_range_{idx} = and i1 %tr_low_{idx}, %tr_high_{idx}
+  %tr_body_status_{idx} = and i1 %tr_not204_{idx}, %tr_not205_{idx}
+  %tr_valid_{idx} = and i1 %tr_range_{idx}, %tr_body_status_{idx}
+  br i1 %tr_valid_{idx}, label %tr_body_check_{idx}, label %tr_invalid_{idx}
+tr_body_check_{idx}:
+  %tr_values_ptr_{idx} = inttoptr i64 %tr_values_{idx} to i64*
+  %tr_values_null_{idx} = icmp eq i64* %tr_values_ptr_{idx}, null
+  br i1 %tr_values_null_{idx}, label %tr_invalid_{idx}, label %tr_body_count_{idx}
+tr_body_count_{idx}:
+  %tr_len_{idx} = load i64, i64* %tr_values_ptr_{idx}
+  %tr_one_{idx} = icmp eq i64 %tr_len_{idx}, 1
+  br i1 %tr_one_{idx}, label %tr_body_load_{idx}, label %tr_invalid_{idx}
+tr_body_load_{idx}:
+  %tr_raw_{idx} = call i64 @tinox_array_get(i64* %tr_values_ptr_{idx}, i64 0)"#).unwrap();
+        let llvm = Self::type_to_llvm(body_ty);
+        let value = format!("%tr_body_{idx}");
+        match llvm.as_str() {
+            "i64" => {
+                writeln!(&mut self.lambda_ir, "  {value} = add i64 %tr_raw_{idx}, 0").unwrap();
+            }
+            "i32" | "i1" => {
+                writeln!(&mut self.lambda_ir, "  {value} = trunc i64 %tr_raw_{idx} to {llvm}").unwrap();
+            }
+            _ => {
+                writeln!(&mut self.lambda_ir, "  {value} = inttoptr i64 %tr_raw_{idx} to {llvm}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %tr_null_{idx} = icmp eq {llvm} {value}, null").unwrap();
+                writeln!(&mut self.lambda_ir, "  br i1 %tr_null_{idx}, label %tr_invalid_{idx}, label %tr_body_serialize_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "tr_body_serialize_{idx}:").unwrap();
+            }
+        }
+        let json = self.emit_route_json_value(body_ty, &value, &llvm);
+        writeln!(&mut self.lambda_ir, r#"  store i64 %tr_code_{idx}, i64* %tr_target_status_slot_{idx}
+  %tr_body_discard_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {json})
+  br label %tr_done_{idx}
+tr_error_{idx}:
+  %tr_error_low_{idx} = icmp sge i64 %tr_status_{idx}, 400
+  %tr_error_high_{idx} = icmp sle i64 %tr_status_{idx}, 599
+  %tr_error_valid_{idx} = and i1 %tr_error_low_{idx}, %tr_error_high_{idx}
+  br i1 %tr_error_valid_{idx}, label %tr_error_body_{idx}, label %tr_invalid_{idx}
+tr_error_body_{idx}:
+  %tr_msg_{idx} = inttoptr i64 %tr_message_{idx} to i8*
+  %tr_encoded_{idx} = call i8* @tinox_json_encode_string(i8* %tr_msg_{idx})
+  %tr_prefix_{idx} = call i8* @tinox_string_concat(i8* {error_prefix}, i8* %tr_encoded_{idx})
+  %tr_error_json_{idx} = call i8* @tinox_string_concat(i8* %tr_prefix_{idx}, i8* {error_suffix})
+  store i64 %tr_status_{idx}, i64* %tr_target_status_slot_{idx}
+  %tr_error_discard_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* %tr_error_json_{idx})
+  br label %tr_done_{idx}
+tr_empty_{idx}:
+  %tr_empty_valid_{idx} = icmp eq i64 %tr_status_{idx}, 204
+  br i1 %tr_empty_valid_{idx}, label %tr_empty_body_{idx}, label %tr_invalid_{idx}
+tr_empty_body_{idx}:
+  store i64 204, i64* %tr_target_status_slot_{idx}
+  %tr_empty_slot_{idx} = getelementptr i64, i64* %resp_pauto_{idx}, i64 2
+  %tr_empty_raw_{idx} = ptrtoint i8* {empty} to i64
+  store i64 %tr_empty_raw_{idx}, i64* %tr_empty_slot_{idx}
+  %tr_response_headers_slot_{idx} = getelementptr i64, i64* %resp_pauto_{idx}, i64 1
+  %tr_response_headers_raw_{idx} = load i64, i64* %tr_response_headers_slot_{idx}
+  %tr_response_headers_{idx} = inttoptr i64 %tr_response_headers_raw_{idx} to i8*"#).unwrap();
+        let content_type = self.emit_lambda_string_literal("Content-Type");
+        writeln!(&mut self.lambda_ir, r#"  call void @tinox_map_remove(i8* %tr_response_headers_{idx}, i8* {content_type})
+  br label %tr_done_{idx}
+tr_invalid_{idx}:
+  store i64 500, i64* %tr_target_status_slot_{idx}
+  %tr_invalid_discard_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {invalid})
+  br label %tr_done_{idx}
+tr_done_{idx}:"#).unwrap();
     }
 
     /// Generates an auto-run `main` for the single `@Http3RestController`
@@ -3058,13 +3212,19 @@ impl CodeGen {
         // ── Per-route shims (closure-callable: trailing i64* %env) ──────────────
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__h3route_{}_{}", route.class_name, route.method_name);
-            writeln!(&mut self.lambda_ir, "define void @{shim}(i64 %ctx_i64, i64* %env) {{").unwrap();
+            let body_shim = if self.service_enabled() {
+                format!("{shim}__body")
+            } else {
+                shim.clone()
+            };
+            writeln!(&mut self.lambda_ir, "define void @{body_shim}(i64 %ctx_i64, i64* %env) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
             self.emit_route_shim_body(idx, route);
             writeln!(&mut self.lambda_ir, "  ret void").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
+            self.emit_managed_route_wrapper(&shim, true);
         }
 
         // ── Auto-main: build the Http3Server, register every route as a
@@ -3081,6 +3241,13 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir,
             "  %h3_server = call i64* @Http3Server_new(i64* null, i64 {}, i8* %h3_certp, i8* %h3_keyp)",
             controller.port).unwrap();
+
+        if self.service_enabled() {
+            for name in ["live", "ready"] {
+                let len = name.len() + 9;
+                writeln!(&mut self.lambda_ir, "  %health_{name}_raw = call i8* @tinox_alloc(i64 16)\n  %health_{name}_block = bitcast i8* %health_{name}_raw to i64*\n  %health_{name}_fn = ptrtoint void (i64, i64*)* @__tinox_service_{name}_route to i64\n  store i64 %health_{name}_fn, i64* %health_{name}_block\n  %health_{name}_env = getelementptr i64, i64* %health_{name}_block, i64 1\n  store i64 0, i64* %health_{name}_env\n  %health_{name}_path = getelementptr [{len} x i8], [{len} x i8]* @__service_{name}_path, i64 0, i64 0\n  %health_{name}_registered = call i64* @Http3Server_get(i64* %h3_server, i8* %health_{name}_path, i64* %health_{name}_block)").unwrap();
+            }
+        }
 
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__h3route_{}_{}", route.class_name, route.method_name);
@@ -3238,15 +3405,42 @@ impl CodeGen {
             .filter(|(_, name)| !declared_names.contains(name.as_str()))
             .map(|(i, _)| i)
             .collect();
-        if string_fields.is_empty() {
-            return;
+        if !string_fields.is_empty() {
+            let empty_str_ptr = self.emit_lambda_string_literal("");
+            for idx in string_fields {
+                let field_ptr = self.temp();
+                writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  store i8* {empty_str_ptr}, i8** {field_ptr}").unwrap();
+            }
         }
-        let empty_str_ptr = self.emit_lambda_string_literal("");
-        for idx in string_fields {
+        self.emit_config_injection(class_name, inst_reg, true);
+    }
+
+    fn emit_config_injection(&mut self, class_name: &str, instance: &str, lambda: bool) {
+        let layout = self.struct_layouts.get(class_name).cloned().unwrap_or_default();
+        let mut body = String::new();
+        for field in self.config_fields.clone().iter().filter(|f| f.class_name == class_name) {
+            let Some(idx) = layout.iter().position(|f| f == &field.field_name) else { continue };
+            let key = self.make_string_const(&field.config_key);
+            let value = self.temp();
+            let getter = match field.field_llvm_type.as_str() {
+                "i8*" => "tinox_config_get",
+                "i1" => "tinox_config_get_bool",
+                _ => "tinox_config_get_int",
+            };
+            let ty = if field.field_llvm_type == "i8*" { "i8*" } else { "i64" };
+            writeln!(&mut body, "  {value} = call {ty} @{getter}(i8* {key})").unwrap();
             let field_ptr = self.temp();
-            writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
-            writeln!(&mut self.lambda_ir, "  store i8* {empty_str_ptr}, i8** {field_ptr}").unwrap();
+            writeln!(&mut body, "  {field_ptr} = getelementptr i64, ptr {instance}, i64 {idx}").unwrap();
+            if ty == "i8*" {
+                let bits = self.temp();
+                writeln!(&mut body, "  {bits} = ptrtoint i8* {value} to i64").unwrap();
+                writeln!(&mut body, "  store i64 {bits}, i64* {field_ptr}").unwrap();
+            } else {
+                writeln!(&mut body, "  store i64 {value}, i64* {field_ptr}").unwrap();
+            }
         }
+        if lambda { self.lambda_ir.push_str(&body); } else { self.ir.push_str(&body); }
     }
 
     fn emit_ws_code(&mut self) {
@@ -3297,12 +3491,24 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %srv = call i64 @WsServer_listen(i64* null, i64 {port})").unwrap();
             writeln!(&mut self.lambda_ir, "  %srv_bad = icmp slt i64 %srv, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %srv_bad, label %bind_fail, label %accept_loop").unwrap();
+            let listen_ok = if self.service_enabled() {
+                "listener_ready"
+            } else {
+                "accept_loop"
+            };
+            writeln!(&mut self.lambda_ir, "  br i1 %srv_bad, label %bind_fail, label %{listen_ok}").unwrap();
 
             writeln!(&mut self.lambda_ir, "bind_fail:").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
 
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "listener_ready:\n  %port = call i64 @httpServerBoundPort(i64 %srv)\n  call void @tinox_service_listener_ready(i64 %port)\n  br label %accept_loop").unwrap();
+
+            }
             writeln!(&mut self.lambda_ir, "accept_loop:").unwrap();
+            if self.service_enabled() {
+            writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %service_done, label %accept_next\naccept_next:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %conn = call i64 @WsServer_accept(i64* null, i64 %srv)").unwrap();
             writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn, 0").unwrap();
             writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %accept_loop, label %admit").unwrap();
@@ -3323,6 +3529,9 @@ impl CodeGen {
             // for passing arguments through tinox_task_spawn's fixed
             // i8*(i8*) trampoline signature.
             writeln!(&mut self.lambda_ir, "dispatch:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %worker_admitted = call i64 @tinox_service_worker_start()\n  %worker_ok = icmp ne i64 %worker_admitted, 0\n  br i1 %worker_ok, label %worker_spawn, label %worker_rejected\nworker_rejected:\n  call void @tinox_ws_release()\n  call void @tinox_service_close_connection(i64 %conn)\n  br label %accept_loop\nworker_spawn:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %args_raw = call i8* @tinox_alloc(i64 16)").unwrap();
             writeln!(&mut self.lambda_ir, "  %args_ap = bitcast i8* %args_raw to [2 x i64]*").unwrap();
             writeln!(&mut self.lambda_ir, "  %fp_i64 = ptrtoint i64 (i64)* @{worker_fn} to i64").unwrap();
@@ -3332,6 +3541,13 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  store i64 %conn, i64* %conn_slot").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @tinox_task_spawn_detached(i8* (i8*)* @{worker_wrapper}, i8* %args_raw)").unwrap();
             writeln!(&mut self.lambda_ir, "  br label %accept_loop").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "service_done:\n  call void @httpServerClose(i64 %srv)\n  ret i64 0"
+                )
+                .unwrap();
+            }
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
@@ -3344,15 +3560,28 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
             self.emit_field_defaults(&ep.class_name, "%inst");
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_existing_work_enter()"
+                )
+                .unwrap();
+            }
             if let Some(ref on_open) = ep.on_open {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_open).unwrap();
             }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("WebSocket callback failed");
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()\n  %open_ok = call i64 @tinox_service_check_error(i8* {label})\n  %opened = icmp ne i64 %open_ok, 0\n  br i1 %opened, label %msg_loop, label %conn_end").unwrap();
+            } else {
             writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
+            }
 
             // opcode 1 (text) → @OnMessage; anything else (binary, close, EOF,
             // protocol error — Ping/Pong are already auto-handled inside
             // Ws::readMessage and never reach here) ends the connection.
             writeln!(&mut self.lambda_ir, "msg_loop:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %closing = call i1 @serviceIsStopping()\n  br i1 %closing, label %conn_end, label %read_next\nread_next:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %f = call i64* @Ws_readMessage(i64* null, i64 %conn)").unwrap();
             writeln!(&mut self.lambda_ir, "  %opcode_ptr = getelementptr %class.WsFrame, ptr %f, i32 0, i32 1").unwrap();
             writeln!(&mut self.lambda_ir, "  %opcode = load i64, i64* %opcode_ptr").unwrap();
@@ -3360,18 +3589,40 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br i1 %is_text, label %handle_text, label %conn_end").unwrap();
 
             writeln!(&mut self.lambda_ir, "handle_text:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %handle_admitted, label %conn_end\nhandle_admitted:").unwrap();
+            }
             if let Some(ref on_message) = ep.on_message {
                 writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn, i8* %msg)", ep.class_name, on_message).unwrap();
             }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("WebSocket callback failed");
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()\n  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %msg_loop, label %conn_end").unwrap();
+            } else {
             writeln!(&mut self.lambda_ir, "  br label %msg_loop").unwrap();
+            }
 
             writeln!(&mut self.lambda_ir, "conn_end:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_cleanup_enter()\n  call void @tinox_service_existing_work_enter()\n  %shutdown_close = call i1 @serviceIsStopping()\n  br i1 %shutdown_close, label %send_shutdown_close, label %close_callback\nsend_shutdown_close:\n  call void @Ws_sendClose(i64* null, i64 %conn, i64 1001)\n  br label %close_callback\nclose_callback:").unwrap();
+            }
             if let Some(ref on_close) = ep.on_close {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn)", ep.class_name, on_close).unwrap();
             }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("WebSocket OnClose failed");
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_cleanup_error(i8* {label})\n  call void @tinox_service_work_exit()").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  call void @Ws_close(i64* null, i64 %conn)").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @tinox_ws_release()").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_worker_end()"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
@@ -3886,6 +4137,13 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %begin_fail, label %do_attach").unwrap();
 
             writeln!(&mut self.lambda_ir, "begin_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
 
             writeln!(&mut self.lambda_ir, "do_attach:").unwrap();
@@ -3896,6 +4154,13 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br i1 %handle_bad, label %attach_fail, label %consumer_ready").unwrap();
 
             writeln!(&mut self.lambda_ir, "attach_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
 
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
@@ -3905,7 +4170,17 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %service_close, label %recv_next\nrecv_next:").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_grantCredit(i64* %link_obj, i64 1)").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_listener_ready(i64 -1)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @Amqp10Link_nextMessage(i64* %link_obj)").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 3").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
@@ -3913,13 +4188,31 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %message_next, label %service_close\nmessage_next:").unwrap();
+            }
             if let Some(ref on_message) = c.on_message {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+            }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("AMQP handler failed");
+                writeln!(&mut self.lambda_ir, "  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %ack_message, label %handler_failed\nhandler_failed:\n  call void @tinox_service_work_exit()\n  br label %service_close\nack_message:").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  %delivery_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 2").unwrap();
             writeln!(&mut self.lambda_ir, "  %delivery_val = load i64, i64* %delivery_field").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_ack(i64* %link_obj, i64 %delivery_val)").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_work_exit()"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "service_close:\n  call void @tinox_service_cleanup_enter()\n  call void @Amqp10Connection_close(i64* %conn_obj)\n  call void @tinox_service_close_connection(i64 %conn_val)\n  ret i64 0").unwrap();
+            }
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
@@ -3995,6 +4288,13 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %open_fail, label %do_qos").unwrap();
 
             writeln!(&mut self.lambda_ir, "open_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
 
             writeln!(&mut self.lambda_ir, "do_qos:").unwrap();
@@ -4002,6 +4302,13 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br i1 %qos_ok, label %do_consume, label %qos_fail").unwrap();
 
             writeln!(&mut self.lambda_ir, "qos_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
 
             writeln!(&mut self.lambda_ir, "do_consume:").unwrap();
@@ -4011,6 +4318,13 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br i1 %tag_bad, label %consume_fail, label %consumer_ready").unwrap();
 
             writeln!(&mut self.lambda_ir, "consume_fail:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_close_connection(i64 %conn_val)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  ret i64 4").unwrap();
 
             writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
@@ -4020,6 +4334,16 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %service_close, label %recv_next\nrecv_next:").unwrap();
+            }
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_listener_ready(i64 -1)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @AmqpChannel091_nextMessage(i64* %chan_obj)").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 5").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
@@ -4027,13 +4351,31 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
 
             writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %message_next, label %service_close\nmessage_next:").unwrap();
+            }
             if let Some(ref on_message) = c.on_message {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+            }
+            if self.service_enabled() {
+                let label = self.emit_lambda_string_literal("AMQP handler failed");
+                writeln!(&mut self.lambda_ir, "  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %ack_message, label %handler_failed\nhandler_failed:\n  call void @tinox_service_work_exit()\n  br label %service_close\nack_message:").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  %tag_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 0").unwrap();
             writeln!(&mut self.lambda_ir, "  %tag_val = load i64, i64* %tag_field").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @AmqpChannel091_ack(i64* %chan_obj, i64 %tag_val)").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_work_exit()"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "service_close:\n  call void @tinox_service_cleanup_enter()\n  call void @AmqpConnection091_close(i64* %conn_obj)\n  call void @tinox_service_close_connection(i64 %conn_val)\n  ret i64 0").unwrap();
+            }
 
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
@@ -4183,13 +4525,22 @@ impl CodeGen {
                 .find(|p| p.kind == RouteParamKind::PostParam)
                 .map(|p| self.devui_json_example_for_type(&p.ty, class_ast_map, &do_not_serialize, &mut HashSet::new(), 0))
                 .unwrap_or_else(|| "null".to_string());
-            let response_example = if matches!(&r.return_type, Type::Named(n) if n == "HttpContext") {
+            let typed_body = match &r.return_type {
+                Type::Generic { name, args } if name == "Response" => args.first(),
+                _ => None,
+            };
+            let manual = matches!(&r.return_type, Type::Named(n) if n == "HttpContext");
+            let response_example = if manual {
                 "null".to_string()
             } else {
-                self.devui_json_example_for_type(&r.return_type, class_ast_map, &do_not_serialize, &mut HashSet::new(), 0)
+                self.devui_json_example_for_type(typed_body.unwrap_or(&r.return_type), class_ast_map, &do_not_serialize, &mut HashSet::new(), 0)
             };
+            let response_mode = if typed_body.is_some() { "typed" } else if manual { "manual" } else { "json" };
+            let alternatives = if typed_body.is_some() {
+                format!(r#"[{{"status":"2XX","example":{response_example}}},{{"status":"204","example":null}},{{"status":"4XX","example":{{"error":"string"}}}},{{"status":"5XX","example":{{"error":"string"}}}}]"#)
+            } else { "[]".to_string() };
             format!(
-                "{{\"method\":{},\"path\":{},\"class\":{},\"methodName\":{},\"statusCode\":{},\"produces\":{},\"consumes\":{},\"params\":{},\"requestExample\":{},\"responseExample\":{}}}",
+                "{{\"method\":{},\"path\":{},\"class\":{},\"methodName\":{},\"statusCode\":{},\"produces\":{},\"consumes\":{},\"params\":{},\"requestExample\":{},\"responseExample\":{},\"responseMode\":{},\"responseAlternatives\":{}}}",
                 Self::devui_json_string(&r.http_method),
                 Self::devui_json_string(&r.path),
                 Self::devui_json_string(&r.class_name),
@@ -4200,6 +4551,8 @@ impl CodeGen {
                 params_json,
                 request_example,
                 response_example,
+                Self::devui_json_string(response_mode),
+                alternatives,
             )
         }).collect();
         format!("[{}]", items.join(","))
@@ -4807,7 +5160,21 @@ impl CodeGen {
             let tramp = format!("__tinox_trampoline_{idx}");
             writeln!(&mut self.lambda_ir, "define i8* @{tramp}(i8* %_unused) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_task_enter(i64 {idx})"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %r = call i64 @{run_fn}()").unwrap();
+            if self.service_enabled() {
+                writeln!(
+                    &mut self.lambda_ir,
+                    "  call void @tinox_service_task_exit(i64 %r)"
+                )
+                .unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  %rp = inttoptr i64 %r to i8*").unwrap();
             writeln!(&mut self.lambda_ir, "  ret i8* %rp").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
@@ -4846,6 +5213,8 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir, "define i32 @tinox_main() {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
 
+        self.emit_service_bootstrap_start(handles.len());
+
         // t0: captured before anything else runs, so the elapsed time
         // printed below covers the banner print itself too (negligible,
         // but simpler than threading a "skip this call" flag through).
@@ -4877,7 +5246,10 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "  {t1} = call i64 @tinox_now_ms()").unwrap();
             let elapsed = self.temp();
             writeln!(&mut self.lambda_ir, "  {elapsed} = sub i64 {t1}, {t0}").unwrap();
-            let started_pfx_ptr = self.emit_lambda_string_literal("Started in ");
+            let started_pfx_ptr = self.emit_lambda_string_literal(if self.service_enabled() {
+                "Bootstrap spawned in "
+            } else {"Started in "
+            });
             writeln!(&mut self.lambda_ir, "  call void @tinox_print_string(i8* {started_pfx_ptr})").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @tinox_print_int(i64 {elapsed})").unwrap();
             let started_sfx_ptr = self.emit_lambda_string_literal(" ms\n");
@@ -4886,6 +5258,13 @@ impl CodeGen {
 
         if self.user_main_class {
             writeln!(&mut self.lambda_ir, "  %rc = call i32 @Main_main()").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %main_result = sext i32 %rc to i64\n  call void @tinox_service_main_returned(i64 %main_result)").unwrap();
+            }
+        }
+
+        if self.service_enabled() {
+            writeln!(&mut self.lambda_ir, "  call void @tinox_service_cleanup_enter()").unwrap();
         }
 
         for (idx, _) in &handles {
@@ -4893,7 +5272,11 @@ impl CodeGen {
         }
 
         if self.user_main_class {
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %service_result = call i64 @tinox_service_finish(i64 %main_result)\n  %service_rc = trunc i64 %service_result to i32\n  ret i32 %service_rc").unwrap();
+            } else {
             writeln!(&mut self.lambda_ir, "  ret i32 %rc").unwrap();
+            }
         } else {
             // No class Main: the first background kind's own join result is
             // the process's exit code (matches the pre-bootstrap behavior
@@ -10938,51 +11321,7 @@ impl CodeGen {
                     let store_val = self.coerce_to_i64(&val, &val_ty);
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
                 }
-                // @Config: inject values from application.properties for annotated fields
-                let cfg_fields: Vec<ConfigFieldInfo> = self.config_fields.iter()
-                    .filter(|f| &f.class_name == name)
-                    .cloned()
-                    .collect();
-                for cf in &cfg_fields {
-                    if let Some(field_idx) = layout.iter().position(|f| f == &cf.field_name) {
-                        let key_label = format!("str{}", self.strings.len());
-                        self.strings.insert(key_label.clone(), cf.config_key.clone());
-                        let key_len = cf.config_key.len() + 1;
-                        let key_ptr = self.temp();
-                        writeln!(&mut self.ir,
-                            "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0",
-                            key_ptr, key_len, key_len, key_label).unwrap();
-                        let field_ptr = self.temp();
-                        writeln!(&mut self.ir,
-                            "{} = getelementptr i64, ptr {}, i64 {}",
-                            field_ptr, typed_ptr, field_idx).unwrap();
-                        match cf.field_llvm_type.as_str() {
-                            "i8*" => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir,
-                                    "{} = call i8* @tinox_config_get(i8* {})",
-                                    raw, key_ptr).unwrap();
-                                let as_i64 = self.temp();
-                                writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", as_i64, raw).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", as_i64, field_ptr).unwrap();
-                            }
-                            "i1" => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir,
-                                    "{} = call i64 @tinox_config_get_bool(i8* {})",
-                                    raw, key_ptr).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
-                            }
-                            _ => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir,
-                                    "{} = call i64 @tinox_config_get_int(i8* {})",
-                                    raw, key_ptr).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
-                            }
-                        }
-                    }
-                }
+                self.emit_config_injection(name, &typed_ptr, false);
 
                 // @Log: auto-initialize the synthetic 'log' field with Logger::new(ClassName)
                 if self.log_classes.contains(name) {
@@ -11378,6 +11717,7 @@ impl CodeGen {
                         }
                     }
                 }
+                self.emit_config_injection(&effective_class, &typed_ptr, false);
                 Ok((typed_ptr, "i64*".to_string()))
             }
             ExprKind::Lambda {

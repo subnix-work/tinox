@@ -65,6 +65,27 @@ fn text(explanation: &Explanation) -> String {
         plan.mode,
         plan.entry_point.as_deref().unwrap_or("none")
     );
+    if plan.lifecycle.enabled {
+        writeln!(
+            output,
+            "Lifecycle: startup {} ms; shutdown {} ms",
+            plan.lifecycle.startup_timeout_ms, plan.lifecycle.shutdown_timeout_ms
+        )
+        .unwrap();
+        writeln!(output, "  States: {}", plan.lifecycle.states.join(" -> ")).unwrap();
+        for hook in &plan.lifecycle.hooks {
+            writeln!(
+                output,
+                "  Hook: @{} {}.{}",
+                hook.kind, hook.class, hook.method
+            )
+            .unwrap();
+        }
+        writeln!(output, "  Readiness: {}", plan.lifecycle.readiness).unwrap();
+        for step in &plan.lifecycle.shutdown {
+            writeln!(output, "  Shutdown: {step}").unwrap();
+        }
+    }
     for init in &plan.initializers {
         writeln!(
             output,

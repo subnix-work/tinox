@@ -9,6 +9,7 @@ use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Formatter, Parser};
 
 mod callgraph;
+mod contract;
 mod pm;
 mod runtime_cache;
 mod build_cache;
@@ -51,6 +52,7 @@ fn run() {
         "test"  => run_tests(&args[2..]),
         "doc"   => gen_docs(&args[2..]),
         "graph" => gen_call_graph(&args[2..]),
+        "contract" => gen_api_contract(&args[2..]),
         "check"   => check(&args[2..]),
         "describe" => describe::run(&args[2..]),
         "explain" => explain::run(&args[2..]),
@@ -89,6 +91,7 @@ fn print_help() {
     println!("  tinox test --watch         Re-run tests on file changes (TDD mode)");
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
+    println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox explain --bootstrap [file]  Explain generated wiring (--json)");
     println!("  tinox describe <Symbol>    Describe a resolved API (--json, --member name)");
@@ -1573,6 +1576,35 @@ fn dev_mode(args: &[String]) {
     cleanup();
 }
 
+fn gen_api_contract(args: &[String]) {
+    let Some(input) = resolve_entry_file(args) else { std::process::exit(1); };
+    let result = (|| -> Result<String, String> {
+        let source = fs::read_to_string(&input).map_err(|e| format!("cannot read {input}: {e}"))?;
+        let tokens = Lexer::new(&source).tokenize().map_err(|e| format!("lex error: {e:?}"))?;
+        let mut ast = Parser::new(tokens).parse().map_err(|e| format!("parse error: {e}"))?;
+        let path = Path::new(&input);
+        check_one_type_per_file(&ast.decls, path)?;
+        check_no_top_level_fn(&ast.decls, path)?;
+        check_namespace_path_matches(&ast.decls, path)?;
+        stamp_file_identity(&mut ast.decls, path);
+        let base = path.parent().unwrap_or(Path::new("."));
+        let mut visited = HashSet::new();
+        if let Ok(canonical) = path.canonicalize() { visited.insert(canonical); }
+        let (deps, missing) = load_dep_dirs(base);
+        resolve_imports(&mut ast, base, path, &mut visited, &deps, &missing)?;
+        check_explicit_imports(path, &deps, &missing)?;
+        synthesize_accessors(&mut ast, &input)?;
+        tinox_parser::assign_node_ids(&mut ast);
+        tinox_typecheck::TypeChecker::new().check(&ast).map_err(|e| format!("type error:\n{e}"))?;
+        let annotations = tinox_typecheck::annotations::process_annotations(&ast);
+        contract::generate(&ast.decls, &annotations)
+    })();
+    match result {
+        Ok(document) => print!("{document}"),
+        Err(error) => { eprintln!("error: {error}"); std::process::exit(1); }
+    }
+}
+
 fn check(args: &[String]) {
     if let Err(failure) = diagnostics::validate_format(args) { diagnostics::finish(args, Err(failure)); }
     let input = resolve_entry_file(args).unwrap_or_else(|| {
@@ -2582,6 +2614,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let config_fields = ann.config_fields.iter().map(|f| tinox_codegen::ConfigFieldInfo {
         class_name: f.class_name.clone(), field_name: f.field_name.clone(),
         config_key: f.config_key.clone(), field_llvm_type: f.field_llvm_type.clone(),
+        policy: f.policy.clone(), default_value: f.default_value.clone(), value_type: f.value_type.clone(),
     }).collect();
     let cli_commands = ann.cli_commands.iter().map(|c| tinox_codegen::CliCommandInfo {
         class_name: c.class_name.clone(), cmd_name: c.cmd_name.clone(),
@@ -3881,7 +3914,7 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
     fn classes<'a>(decls: &'a [tinox_parser::Decl], names: &[&str], out: &mut Vec<&'a tinox_parser::Decl>) {
         for decl in decls {
             match &decl.node {
-                DeclKind::Class(class) if names.contains(&class.name.as_str()) => out.push(decl),
+                DeclKind::Class(class) if names.is_empty() || names.contains(&class.name.as_str()) => out.push(decl),
                 DeclKind::Namespace(namespace) => classes(&namespace.decls, names, out),
                 _ => {}
             }
@@ -3901,6 +3934,44 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         }
         failure
     };
+    let mut all_classes = Vec::new();
+    classes(&ast.decls, &[], &mut all_classes);
+    let main_class = all_classes.iter().find_map(|decl| match &decl.node {
+        DeclKind::Class(class) if class.name == "Main" => Some(class),
+        _ => None,
+    });
+    let managed = main_class.is_some_and(|c| c.annotations.iter().any(|a| a.name == "Service"));
+    if managed {
+        if !ann_result.cli_commands.is_empty() || !ann_result.tinoxui_apps.is_empty() {
+            return Err(annotation_error(&["Main"], "@Service supports REST/HTTP3, WebSocket and AMQP services; @Command and @TinoxUIApp entry points are not supported".into()));
+        }
+        if ann_result
+            .route_entries
+            .iter()
+            .any(|route| matches!(route.path.as_str(), "/health/live" | "/health/ready"))
+        {
+            return Err(annotation_error(&["Main"], "@Service reserves /health/live and /health/ready; use @Liveness/@Readiness contributions instead".into()));
+        }
+    } else if main_class.is_some() || !ann_result.cli_commands.is_empty() {
+        let hook_owner = all_classes.iter().find_map(|decl| match &decl.node {
+            DeclKind::Class(class)
+                if class.methods.iter().any(|m| {
+                    m.annotations.iter().any(|a| {
+                        matches!(
+                            a.name.as_str(),
+                            "OnStart" | "OnStop" | "Readiness" | "Liveness"
+                        )
+                    })
+                }) =>
+            {
+                Some(class.name.as_str())
+            }
+            _ => None,
+        });
+        if let Some(owner) = hook_owner {
+            return Err(annotation_error(&[owner], "Lifecycle hooks require @Service on class Main (library/test definitions may be checked without activating a service)".into()));
+        }
+    }
     // Providers recurse before publishing singleton instances. Reject missing
     // providers and every cycle before LLVM generation or startup can fail.
     fn visit_di(index: usize, components: &[tinox_typecheck::annotations::DiComponentInfo],
@@ -4220,6 +4291,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             class_name: f.class_name.clone(),
             field_name: f.field_name.clone(),
             config_key: f.config_key.clone(),
+            policy: f.policy.clone(), default_value: f.default_value.clone(), value_type: f.value_type.clone(),
             field_llvm_type: f.field_llvm_type.clone(),
         })
         .collect();

@@ -489,6 +489,7 @@ pub struct TypeChecker {
     /// literal that omits a required field at compile time instead of
     /// leaving the corresponding heap slot as uninitialized garbage.
     class_fields: HashMap<String, Vec<String>>,
+    config_field_names: HashSet<String>,
     /// Issue #165: `ClassName_method` -> for each Fn-typed param at that
     /// (0-based, self excluded) arg position, the UNERASED `ValueType`s of
     /// the lambda's OWN params (e.g. `andThen(transform: fnc(T) -> Option<U>)`
@@ -951,6 +952,21 @@ impl TypeChecker {
         symbols.functions.insert("taskSetDeadline".into(), FunctionSignature {
             params: vec![("milliseconds".into(), ValueType::Int)], return_type: ValueType::Nothing,
         });
+        for (name, return_type) in [
+            ("serviceIsReady", ValueType::Bool), ("serviceIsLive", ValueType::Bool),
+            ("serviceIsStopping", ValueType::Bool), ("serviceState", ValueType::String),
+            ("serviceStatusJson", ValueType::String), ("serviceStartedMs", ValueType::Int),
+            ("serviceReadyMs", ValueType::Int), ("serviceShutdownMs", ValueType::Int),
+            ("serviceRequestShutdown", ValueType::Nothing), ("serviceAwaitShutdown", ValueType::Nothing),
+        ] {
+            symbols.functions.insert(name.into(), FunctionSignature { params: vec![], return_type });
+        }
+        symbols.functions.insert("serviceBoundPort".into(), FunctionSignature {
+            params: vec![("taskIndex".into(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("serviceAwaitReady".into(), FunctionSignature {
+            params: vec![("milliseconds".into(), ValueType::Int)], return_type: ValueType::Bool,
+        });
         // Time
         symbols.functions.insert("now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
         symbols.functions.insert("Time_now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
@@ -1309,6 +1325,7 @@ impl TypeChecker {
             semantic_facts: semantic::SemanticFacts::default(),
             generic_method_param_types: HashMap::new(),
             class_fields: HashMap::new(),
+            config_field_names: HashSet::new(),
             generic_instance_fn_arg_hints: HashMap::new(),
             prelude_decls: Vec::new(),
         }
@@ -1538,6 +1555,9 @@ impl TypeChecker {
                     for field in &c.fields {
                         let ty = Self::type_to_value(&field.field_type);
                         let key = format!("{}.{}", c.name, field.name);
+                        if field.annotations.iter().any(|a| a.name == "Config") {
+                            self.config_field_names.insert(key.clone());
+                        }
                         self.symbols.variables.insert(key.clone(), (ty, true));
                         self.field_visibility.insert(key, field.visibility.clone());
                     }
@@ -1630,19 +1650,11 @@ impl TypeChecker {
                         self.symbols.functions.insert(key.clone(), sig);
                         self.method_visibility.insert(key, method.visibility.clone());
                     }
-                    // @Sensitive / @Masked fields: codegen generates toString() (masking those fields)
-                    // unless the class defines its own, so calls on it must resolve here too.
-                    let to_string_key = format!("{}_toString", c.name);
-                    if !self.symbols.functions.contains_key(&to_string_key)
-                        && c.fields.iter().any(|f| f.annotations.iter().any(|a| a.name == "Sensitive" || a.name == "Masked"))
-                    {
-                        self.symbols.functions.insert(
-                            to_string_key,
-                            FunctionSignature {
-                                params: vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))],
-                                return_type: ValueType::String,
-                            },
-                        );
+                    if c.fields.iter().any(|f| f.annotations.iter().any(|a| matches!(a.name.as_str(), "Sensitive" | "Masked"))) {
+                        self.symbols.functions.entry(format!("{}_toString", c.name)).or_insert_with(|| FunctionSignature {
+                            params: vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))],
+                            return_type: ValueType::String,
+                        });
                     }
                     // @JsonSerializable: register compiler-generated toJson() and fromJson()
                     if c.annotations.iter().any(|a| a.name == "JsonSerializable") {
@@ -2982,7 +2994,7 @@ impl TypeChecker {
                         let missing: Vec<&str> = all_fields
                             .iter()
                             .map(|s| s.as_str())
-                            .filter(|f| !given.contains(f))
+                            .filter(|f| !given.contains(f) && !self.config_field_names.contains(&format!("{name}.{f}")))
                             .collect();
                         if !missing.is_empty() {
                             self.errors.push(Error::new(
@@ -6433,6 +6445,12 @@ class Jogger implements Runner {
     // ================================================================
     // Struct literal missing/unknown field (Bug 130)
     // ================================================================
+
+    #[test]
+    fn config_fields_are_injected_but_ordinary_fields_are_required() {
+        ok(r#"class Settings { @Config("port", "required") var port: Int32; } class Main { fnc main() -> Int32 { let s = Settings {}; return s.port; } }"#);
+        err_contains(r#"class Settings { @Config("port", "required") var port: Int32; var name: String; } class Main { fnc main() -> Int32 { let s = Settings {}; return 0; } }"#, "missing field(s): name");
+    }
 
     #[test]
     fn test_struct_literal_missing_field_errors() {

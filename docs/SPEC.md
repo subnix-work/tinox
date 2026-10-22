@@ -178,11 +178,9 @@ List<T>              Growable list (stdlib class, tinox.core.list — the
 Map<K, V>            Built-in map type
 Ref<T>               Mutable reference to T
 (T1, T2, ...)        Tuple type, indexed with .0/.1/...
-T?                    Nullable type (Type::Nullable in the parser; parsed
-                      and type-checked, but rarely used in real code —
-                      most APIs prefer sentinel/empty-string/-1 returns,
-                      e.g. HttpRequest.getParam(name) returning "" rather
-                      than String?)
+T?                    Nullable type (parsed and type-checked; new library
+                      lookup APIs use Option<T> for absence; legacy APIs
+                      may still return sentinels)
 Fn(P1, P2) -> R       Function type
 ```
 
@@ -466,6 +464,60 @@ class Box<T>
 
 Generic bound syntax (`<T: SomeInterface>` / `where T: X`) is not
 exercised anywhere in real code today.
+
+### Absence and recoverable errors
+
+New library contracts use the existing `tinox.core.option.Option<T>` for
+an absent value and `tinox.core.result.Result<T>` for an expected failure.
+`Some("")` is a present empty string; `None` is absence. An empty value is
+not evidence of failure. Use `isSome()`/`isNone()` or `unwrapOr()` to handle
+absence deliberately. Do not add a nullable `T?` variant of the same lookup
+or mix nullable and optional values without distinct domain meanings.
+
+`Result<T>` has a **String** error today. Check `isOk()`/`isErr()`, then
+read the value or `getError()`. Never infer success from an empty error or
+parse error wording as a machine-readable code. Preserve operation, target,
+and underlying cause in failure messages; redact secrets. An API that needs
+stable error codes or retry metadata should define a domain outcome object
+with documented fields. This increment does not introduce `Result<T,E>`,
+change generic arity, or change the List-backed representation. Typed errors
+and representation changes require separate design and allocation evidence.
+`Result<Option<T>>` is appropriate only when an operation can independently
+fail or succeed without a value.
+
+Exceptions (`throw String`, `catch e: String`) propagate to the caller's
+handler and remain appropriate for violated preconditions, programming or
+setup failures, and existing throwing contracts. `Option.unwrap()` on None
+throws `"Option is None"`; `Result.unwrap()` on Err throws its original
+error string. They are explicit conversions to an exception contract.
+`map`/`andThen` callbacks can throw; neither container catches callback
+exceptions. Use `finally` for required cleanup on normal or exceptional
+exit; returning an Err is ordinary control flow and still requires cleanup.
+Process aborts and runtime safety checks are not recoverable Result errors.
+
+The first additive migration is `HttpRequest.findHeader`, `findParam`,
+`findQuery`, and `QueryString::find`, all returning `Option<String>`.
+Headers retain case-insensitive lookup with exact spelling preferred;
+path/query names are case-sensitive. Queries keep the existing raw parser:
+no percent/plus decoding, last duplicate wins, bare keys are present-empty,
+and empty keys are ignored. For example:
+
+```tinox
+import tinox.core.http_server;
+import tinox.core.option;
+
+// Inside an annotation-driven route with @HttpContext ctx:
+let header: Option<String> = ctx.request.findHeader("X-Trace");
+if (header.isNone()) { ctx.response.status(400).text("X-Trace is required"); }
+else { ctx.response.text("trace=" + header.unwrap()); }
+```
+
+`getHeader`/`getParam`/`getQuery` and `QueryString::get` retain their String
+signatures and empty fallback. `findHeader("X").unwrapOr("")` deliberately
+opts back into that old contract. No compiler/LSP deprecations are added;
+replacements must first be released and available to consumers. See the
+[API inventory and migration boundaries](api-contracts.md) for legacy I/O
+limitations and follow-up work.
 
 ### Try-Catch-Finally
 
