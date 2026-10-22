@@ -1,0 +1,15 @@
+@Startup
+@Synchronized
+class Dependency {
+    private var usable: Bool = false;
+    fnc prepare(dependency: Dependency) -> Nothing { sleep(10); dependency.prepared(); }
+    fn prepared() -> Nothing { this.usable = true; println("dependency ready"); }
+    @OnStart
+    fn start() -> Nothing { println("dependency starting"); spawn Dependency::prepare(this); }
+    @Readiness
+    fn ready() -> Bool { return this.usable; }
+    @Liveness
+    fn live() -> Bool { return true; }
+    @OnStop
+    fn stop() -> Nothing { this.usable = false; println("dependency stop"); }
+}

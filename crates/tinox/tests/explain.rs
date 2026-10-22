@@ -283,3 +283,18 @@ fn combined_database_and_startup_program_passes_real_llvm_verification() {
     assert!(output.status.success(), "{output:?}");
     assert!(executable.is_file());
 }
+
+#[test]
+fn managed_lifecycle_plan_exposes_order_and_budgets_without_running_hooks() {
+    let project = Project::new();
+    project.write("src/Main.tnx", "import State; @Service(1200, 2300) class Main { fnc main() -> Int32 { return 0; } }");
+    project.write("src/State.tnx", "@Startup class State { @OnStart fn start() -> Nothing { println(\"HOOK_MUST_NOT_RUN\"); } @OnStop fn stop() -> Nothing {} @Readiness fn ready() -> Bool { return true; } }");
+    let explanation = project.query();
+    let lifecycle = &explanation["plan"]["lifecycle"];
+    assert_eq!(lifecycle["enabled"], true);
+    assert_eq!(lifecycle["startup_timeout_ms"], 1200);
+    assert_eq!(lifecycle["shutdown_timeout_ms"], 2300);
+    assert!(lifecycle["hooks"].as_array().unwrap().iter().any(|hook| hook["kind"] == "OnStart" && hook["class"] == "State"));
+    assert_eq!(lifecycle["health_paths"], json!(["/health/live", "/health/ready"]));
+    assert_eq!(explanation["plan"]["steps"][0]["action"], "managed_initializer");
+}

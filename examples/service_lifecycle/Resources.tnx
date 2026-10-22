@@ -1,0 +1,19 @@
+@ApplicationComponent
+@Synchronized
+class Resources {
+    private var available: Bool = false;
+    @OnStart
+    fn start() -> Nothing {
+        this.available = true;
+        println("Resources initialized");
+    }
+    @Readiness
+    fn ready() -> Bool { return this.available; }
+    @Liveness
+    fn live() -> Bool { return true; }
+    @OnStop
+    fn stop() -> Nothing {
+        this.available = false;
+        println("Resources closed after active requests finished");
+    }
+}

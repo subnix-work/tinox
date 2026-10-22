@@ -3881,7 +3881,7 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
     fn classes<'a>(decls: &'a [tinox_parser::Decl], names: &[&str], out: &mut Vec<&'a tinox_parser::Decl>) {
         for decl in decls {
             match &decl.node {
-                DeclKind::Class(class) if names.contains(&class.name.as_str()) => out.push(decl),
+                DeclKind::Class(class) if names.is_empty() || names.contains(&class.name.as_str()) => out.push(decl),
                 DeclKind::Namespace(namespace) => classes(&namespace.decls, names, out),
                 _ => {}
             }
@@ -3901,6 +3901,44 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         }
         failure
     };
+    let mut all_classes = Vec::new();
+    classes(&ast.decls, &[], &mut all_classes);
+    let main_class = all_classes.iter().find_map(|decl| match &decl.node {
+        DeclKind::Class(class) if class.name == "Main" => Some(class),
+        _ => None,
+    });
+    let managed = main_class.is_some_and(|c| c.annotations.iter().any(|a| a.name == "Service"));
+    if managed {
+        if !ann_result.cli_commands.is_empty() || !ann_result.tinoxui_apps.is_empty() {
+            return Err(annotation_error(&["Main"], "@Service supports REST/HTTP3, WebSocket and AMQP services; @Command and @TinoxUIApp entry points are not supported".into()));
+        }
+        if ann_result
+            .route_entries
+            .iter()
+            .any(|route| matches!(route.path.as_str(), "/health/live" | "/health/ready"))
+        {
+            return Err(annotation_error(&["Main"], "@Service reserves /health/live and /health/ready; use @Liveness/@Readiness contributions instead".into()));
+        }
+    } else if main_class.is_some() || !ann_result.cli_commands.is_empty() {
+        let hook_owner = all_classes.iter().find_map(|decl| match &decl.node {
+            DeclKind::Class(class)
+                if class.methods.iter().any(|m| {
+                    m.annotations.iter().any(|a| {
+                        matches!(
+                            a.name.as_str(),
+                            "OnStart" | "OnStop" | "Readiness" | "Liveness"
+                        )
+                    })
+                }) =>
+            {
+                Some(class.name.as_str())
+            }
+            _ => None,
+        });
+        if let Some(owner) = hook_owner {
+            return Err(annotation_error(&[owner], "Lifecycle hooks require @Service on class Main (library/test definitions may be checked without activating a service)".into()));
+        }
+    }
     // Providers recurse before publishing singleton instances. Reject missing
     // providers and every cycle before LLVM generation or startup can fail.
     fn visit_di(index: usize, components: &[tinox_typecheck::annotations::DiComponentInfo],
