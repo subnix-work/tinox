@@ -8950,6 +8950,12 @@ bool tinox_db_is_null(void* result, int64_t row, int64_t col) {
 
 void tinox_db_free(void* result) { PQclear((PGresult*)result); }
 
+bool tinox_db_result_failed(void* result) {
+    if (!result) return true;
+    ExecStatusType st = PQresultStatus((PGresult*)result);
+    return st != PGRES_TUPLES_OK && st != PGRES_COMMAND_OK;
+}
+
 char* tinox_db_error(void* conn) {
     return GC_strdup(PQerrorMessage((PGconn*)conn));
 }
@@ -9087,6 +9093,15 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
         }
         n_rows++;
     }
+    if (rc != SQLITE_DONE) {
+        // A failed step (e.g. a NOT NULL / UNIQUE constraint) used to be
+        // swallowed and look like an empty result. Make it visible.
+        fprintf(stderr, "SQLite error: %s\nSQL: %s\n", sqlite3_errmsg(db), sql);
+        sqlite3_reset(stmt);
+        if (rows) free(rows);
+        pthread_mutex_unlock(&_tinox_sqlite_mu);
+        return NULL;
+    }
     // Do NOT finalize — statement is cached for reuse
 
     TinoxSqliteResult* res = (TinoxSqliteResult*)GC_malloc(sizeof(TinoxSqliteResult));
@@ -9128,6 +9143,7 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
     return res->data[(int)row * res->n_cols + (int)col] == NULL;
 }
 void    tinox_db_free(void* r) { (void)r; }
+bool    tinox_db_result_failed(void* r) { return r == NULL; }
 char*   tinox_db_error(void* c) { return GC_strdup(sqlite3_errmsg((sqlite3*)c)); }
 
 #elif defined(TINOX_DB_MYSQL)
@@ -9333,6 +9349,7 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
     return res->data[(int)row * res->n_cols + (int)col] == NULL;
 }
 void    tinox_db_free(void* r) { (void)r; /* GC managed */ }
+bool    tinox_db_result_failed(void* r) { return r == NULL; }
 char*   tinox_db_error(void* c) { return GC_strdup(mysql_error((MYSQL*)c)); }
 
 #else
@@ -9351,7 +9368,9 @@ char*   tinox_db_getval(void* r, int64_t row, int64_t col)                    { 
 int64_t tinox_db_getval_int(void* r, int64_t row, int64_t col)                { (void)r;(void)row;(void)col; return 0; }
 bool    tinox_db_is_null(void* r, int64_t row, int64_t col)                   { (void)r;(void)row;(void)col; return true; }
 void    tinox_db_free(void* r)                                                 { (void)r; }
+bool    tinox_db_result_failed(void* r)                                        { (void)r; return false; }
 char*   tinox_db_error(void* c)                                                { (void)c; return ""; }
+
 #endif /* DB driver */
 
 static void service_close_database(void) {
@@ -9372,6 +9391,14 @@ static void service_close_database(void) {
 #elif defined(TINOX_DB_MYSQL)
     if (_tinox_mysql_conn) { mysql_close(_tinox_mysql_conn); _tinox_mysql_conn = NULL; }
 #endif
+}
+
+// ORM save() hit a failed INSERT/UPDATE (the driver already logged the
+// SQL error). Never continue with a half-saved entity.
+void tinox_orm_save_failed(const char* table) {
+    fprintf(stderr, "ORM save failed for table '%s' (see database error above); "
+                    "unassigned String fields are bound as NULL\n", table);
+    exit(1);
 }
 
 // Param helpers (always available)
