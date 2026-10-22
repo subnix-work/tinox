@@ -9,6 +9,7 @@ use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Formatter, Parser};
 
 mod callgraph;
+mod contract;
 mod dockerfile;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
@@ -53,6 +54,7 @@ fn run() {
         "test"  => run_tests(&args[2..]),
         "doc"   => gen_docs(&args[2..]),
         "graph" => gen_call_graph(&args[2..]),
+        "contract" => gen_api_contract(&args[2..]),
         "check"   => check(&args[2..]),
         "describe" => describe::run(&args[2..]),
         "explain" => explain::run(&args[2..]),
@@ -92,6 +94,7 @@ fn print_help() {
     println!("  tinox test --watch         Re-run tests on file changes (TDD mode)");
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
+    println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox explain --bootstrap [file]  Explain generated wiring (--json)");
     println!("  tinox describe <Symbol>    Describe a resolved API (--json, --member name)");
@@ -1730,6 +1733,35 @@ fn dev_mode(args: &[String]) {
     }
 
     cleanup();
+}
+
+fn gen_api_contract(args: &[String]) {
+    let Some(input) = resolve_entry_file(args) else { std::process::exit(1); };
+    let result = (|| -> Result<String, String> {
+        let source = fs::read_to_string(&input).map_err(|e| format!("cannot read {input}: {e}"))?;
+        let tokens = Lexer::new(&source).tokenize().map_err(|e| format!("lex error: {e:?}"))?;
+        let mut ast = Parser::new(tokens).parse().map_err(|e| format!("parse error: {e}"))?;
+        let path = Path::new(&input);
+        check_one_type_per_file(&ast.decls, path)?;
+        check_no_top_level_fn(&ast.decls, path)?;
+        check_namespace_path_matches(&ast.decls, path)?;
+        stamp_file_identity(&mut ast.decls, path);
+        let base = path.parent().unwrap_or(Path::new("."));
+        let mut visited = HashSet::new();
+        if let Ok(canonical) = path.canonicalize() { visited.insert(canonical); }
+        let (deps, missing) = load_dep_dirs(base);
+        resolve_imports(&mut ast, base, path, &mut visited, &deps, &missing)?;
+        check_explicit_imports(path, &deps, &missing)?;
+        synthesize_accessors(&mut ast, &input)?;
+        tinox_parser::assign_node_ids(&mut ast);
+        tinox_typecheck::TypeChecker::new().check(&ast).map_err(|e| format!("type error:\n{e}"))?;
+        let annotations = tinox_typecheck::annotations::process_annotations(&ast);
+        contract::generate(&ast.decls, &annotations)
+    })();
+    match result {
+        Ok(document) => print!("{document}"),
+        Err(error) => { eprintln!("error: {error}"); std::process::exit(1); }
+    }
 }
 
 fn check(args: &[String]) {

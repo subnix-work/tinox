@@ -1175,6 +1175,15 @@ impl TypeChecker {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
             });
         }
+        symbols.functions.insert("fileWriteAllTextChecked".to_string(), FunctionSignature {
+            params: vec![("path".to_string(), ValueType::String), ("content".to_string(), ValueType::String)],
+            return_type: ValueType::String,
+        });
+        for name in &["dirCreateChecked", "dirCreateAllChecked"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("path".to_string(), ValueType::String)], return_type: ValueType::String,
+            });
+        }
         for name in &["dirList", "dirCreate", "dirDelete"] {
             let ret = if *name == "dirList" { ValueType::Array(Box::new(ValueType::String)) } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {

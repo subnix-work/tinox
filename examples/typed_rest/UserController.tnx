@@ -1,0 +1,79 @@
+import tinox.core.http_server;
+import tinox.core.json;
+import User;
+
+// Domain returns and Response<User> share the compiler JSON serializer.
+class UserController
+{
+    fnc findUserIndex(users: List<User>, id: Int64) -> Int64
+    {
+        var i: Int64 = 0;
+        while i < users.len()
+        {
+            if (users[i].id == id)
+            {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    @GET
+    @Path("/users")
+    @Produces("application/json")
+    @StatusCode(200)
+    fn listUsers() -> List<User>
+    {
+        return [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
+    }
+
+    @GET
+    @Path("/users/:id")
+    fn getUser(@PathParam id: Int64) -> Response<User>
+    {
+        let users: List<User> = [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }];
+        let idx: Int64 = findUserIndex(users, id);
+        if (idx < 0)
+        {
+            return Response<User>::error(404, "user not found");
+        }
+        return Response<User>::ok(users[idx]).header("X-User-Id", id.toString());
+    }
+
+    @POST
+    @Path("/users")
+    @Consumes("application/json")
+    @StatusCode(201)
+    fn createUser(@PostParam user: User) -> Response<User>
+    {
+        if (user.name == "")
+        {
+            return Response<User>::error(422, "name must not be empty");
+        }
+        return Response<User>::ok(user);
+    }
+
+    // A second, standalone @PostParam example: @PathParam + @PostParam
+    // together, still auto-serialized (no @HttpContext needed since the
+    // status is always 200 here).
+    @POST
+    @Path("/users/:id/rename")
+    fn renameUser(@PathParam id: Int64, @PostParam user: User) -> User
+    {
+        user.id = id;
+        return user;
+    }
+
+    @DELETE
+    @Path("/users/:id")
+    fn deleteUser(@PathParam id: Int64) -> Response<User>
+    {
+        if (id < 1 || id > 2)
+        {
+            return Response<User>::error(404, "user not found");
+        }
+        return Response<User>::noContent();
+    }
+
+}

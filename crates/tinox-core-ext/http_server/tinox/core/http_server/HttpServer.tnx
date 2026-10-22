@@ -307,10 +307,16 @@ namespace tinox.core.http_server
                 raw = raw + keys[hi] + ": " + response.headers[keys[hi]] + "\r\n";
                 hi = hi + 1;
             }
-            raw = raw + "Content-Length: " + response.body.len().toString() + "\r\n";
+            if (response.statusCode != 204)
+            {
+                raw = raw + "Content-Length: " + response.body.len().toString() + "\r\n";
+            }
             raw = raw + "Connection: close\r\n";
             raw = raw + "\r\n";
-            raw = raw + response.body;
+            if (response.statusCode != 204)
+            {
+                raw = raw + response.body;
+            }
             return raw;
         }
 

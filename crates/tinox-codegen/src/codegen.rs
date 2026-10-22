@@ -1644,6 +1644,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @fileReadAllText(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @fileWriteAllText(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @fileAppendText(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @fileWriteAllTextChecked(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @dirCreateChecked(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @dirCreateAllChecked(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @fileClose(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @processArgs()").unwrap();
         writeln!(&mut self.ir, "declare i1 @fileExists(i8*)").unwrap();
@@ -2642,12 +2645,8 @@ impl CodeGen {
                 writeln!(&mut self.lambda_ir, "  %req_fct_{idx} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
                 writeln!(&mut self.lambda_ir, "  %req_ict_{idx} = load i64, i64* %req_fct_{idx}").unwrap();
                 writeln!(&mut self.lambda_ir, "  %req_pct_{idx} = inttoptr i64 %req_ict_{idx} to i64*").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_hf_ct_{idx} = getelementptr i64, i64* %req_pct_{idx}, i64 3").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_hi_ct_{idx} = load i64, i64* %req_hf_ct_{idx}").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_hm_ct_{idx} = inttoptr i64 %req_hi_ct_{idx} to i8*").unwrap();
                 writeln!(&mut self.lambda_ir, "  %ct_key_{idx} = getelementptr [13 x i8], [13 x i8]* @__hdr_content_type, i64 0, i64 0").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_ct_val_{idx} = call i64 @tinox_map_get(i8* %req_hm_ct_{idx}, i8* %ct_key_{idx})").unwrap();
-                writeln!(&mut self.lambda_ir, "  %req_ct_str_{idx} = inttoptr i64 %req_ct_val_{idx} to i8*").unwrap();
+                writeln!(&mut self.lambda_ir, "  %req_ct_str_{idx} = call i8* @HttpRequest_getHeader(i64* %req_pct_{idx}, i8* %ct_key_{idx})").unwrap();
                 writeln!(&mut self.lambda_ir, "  %expected_ct_{idx} = getelementptr [{ct_len} x i8], [{ct_len} x i8]* @__route_consumes_{idx}, i64 0, i64 0").unwrap();
                 writeln!(&mut self.lambda_ir, "  %ct_match_{idx} = call i64 @tinox_string_starts_with(i8* %req_ct_str_{idx}, i8* %expected_ct_{idx})").unwrap();
                 writeln!(&mut self.lambda_ir, "  %ct_ok_{idx} = icmp eq i64 %ct_match_{idx}, 1").unwrap();
@@ -2974,7 +2973,20 @@ impl CodeGen {
             writeln!(&mut self.lambda_ir, "auto_ok_{idx}:").unwrap();
         }
 
-        let json_var = match &route.return_type {
+        if let Type::Generic { name, args } = &route.return_type {
+            if name == "Response" {
+                self.emit_typed_route_response(idx, route, result, &args[0]);
+                return;
+            }
+        }
+        let json_var = self.emit_route_json_value(&route.return_type, result, ret_llvm);
+        writeln!(&mut self.lambda_ir,
+            "  %discard_auto_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {json_var})").unwrap();
+    }
+
+    /// One serializer for ordinary returns and Response<T> success bodies.
+    fn emit_route_json_value(&mut self, ty: &Type, result: &str, ret_llvm: &str) -> String {
+        match ty {
             Type::Named(cls) => {
                 let v = self.temp();
                 writeln!(&mut self.lambda_ir, "  {v} = call i8* @{cls}_toJson({ret_llvm} {result})").unwrap();
@@ -3023,10 +3035,116 @@ impl CodeGen {
                 v
             }
             _ => unreachable!("return type validated as auto-serializable at typecheck time"),
-        };
+        }
+    }
 
-        writeln!(&mut self.lambda_ir,
-            "  %discard_auto_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {json_var})").unwrap();
+    /// Response<T>'s five slots are fixed across generic specializations:
+    /// status, headers, zero/one body values, error message, variant tag.
+    /// Both transport shims call this code before handing off HttpResponse.
+    fn emit_typed_route_response(&mut self, idx: usize, route: &RouteEntry, result: &str, body_ty: &Type) {
+        for (slot, name) in [(0, "status"), (1, "headers"), (2, "values"), (3, "message"), (4, "kind")] {
+            writeln!(&mut self.lambda_ir, "  %tr_{name}_slot_{idx} = getelementptr i64, i64* {result}, i64 {slot}").unwrap();
+            writeln!(&mut self.lambda_ir, "  %tr_{name}_{idx} = load i64, i64* %tr_{name}_slot_{idx}").unwrap();
+        }
+        let default_status = route.status_code.unwrap_or(200);
+        let empty = self.emit_lambda_string_literal("");
+        let error_prefix = self.emit_lambda_string_literal("{\"error\":");
+        let error_suffix = self.emit_lambda_string_literal("}");
+        let invalid = self.emit_lambda_string_literal("{\"error\":\"invalid typed response\"}");
+        // Merge rather than replace existing headers (middleware may have
+        // installed headers before the annotated handler was invoked).
+        writeln!(&mut self.lambda_ir, r#"  %tr_hmap_{idx} = inttoptr i64 %tr_headers_{idx} to i8*
+  %tr_keys_{idx} = call i64* @tinox_map_keys(i8* %tr_hmap_{idx})
+  %tr_count_{idx} = load i64, i64* %tr_keys_{idx}
+  br label %tr_headers_loop_{idx}
+tr_headers_loop_{idx}:
+  %tr_i_{idx} = phi i64 [ 0, %auto_ok_{idx} ], [ %tr_next_{idx}, %tr_headers_copy_{idx} ]
+  %tr_more_{idx} = icmp slt i64 %tr_i_{idx}, %tr_count_{idx}
+  br i1 %tr_more_{idx}, label %tr_headers_copy_{idx}, label %tr_dispatch_{idx}
+tr_headers_copy_{idx}:
+  %tr_keyraw_{idx} = call i64 @tinox_array_get(i64* %tr_keys_{idx}, i64 %tr_i_{idx})
+  %tr_key_{idx} = inttoptr i64 %tr_keyraw_{idx} to i8*
+  %tr_valraw_{idx} = call i64 @tinox_map_get(i8* %tr_hmap_{idx}, i8* %tr_key_{idx})
+  %tr_val_{idx} = inttoptr i64 %tr_valraw_{idx} to i8*
+  %tr_header_discard_{idx} = call i64* @HttpResponse_header(i64* %resp_pauto_{idx}, i8* %tr_key_{idx}, i8* %tr_val_{idx})
+  %tr_next_{idx} = add i64 %tr_i_{idx}, 1
+  br label %tr_headers_loop_{idx}
+tr_dispatch_{idx}:
+  %tr_target_status_slot_{idx} = getelementptr i64, i64* %resp_pauto_{idx}, i64 0
+  switch i64 %tr_kind_{idx}, label %tr_invalid_{idx} [ i64 0, label %tr_success_{idx} i64 1, label %tr_error_{idx} i64 2, label %tr_empty_{idx} ]
+tr_success_{idx}:
+  %tr_default_{idx} = icmp eq i64 %tr_status_{idx}, 0
+  %tr_code_{idx} = select i1 %tr_default_{idx}, i64 {default_status}, i64 %tr_status_{idx}
+  %tr_low_{idx} = icmp sge i64 %tr_code_{idx}, 200
+  %tr_high_{idx} = icmp sle i64 %tr_code_{idx}, 299
+  %tr_not204_{idx} = icmp ne i64 %tr_code_{idx}, 204
+  %tr_not205_{idx} = icmp ne i64 %tr_code_{idx}, 205
+  %tr_range_{idx} = and i1 %tr_low_{idx}, %tr_high_{idx}
+  %tr_body_status_{idx} = and i1 %tr_not204_{idx}, %tr_not205_{idx}
+  %tr_valid_{idx} = and i1 %tr_range_{idx}, %tr_body_status_{idx}
+  br i1 %tr_valid_{idx}, label %tr_body_check_{idx}, label %tr_invalid_{idx}
+tr_body_check_{idx}:
+  %tr_values_ptr_{idx} = inttoptr i64 %tr_values_{idx} to i64*
+  %tr_values_null_{idx} = icmp eq i64* %tr_values_ptr_{idx}, null
+  br i1 %tr_values_null_{idx}, label %tr_invalid_{idx}, label %tr_body_count_{idx}
+tr_body_count_{idx}:
+  %tr_len_{idx} = load i64, i64* %tr_values_ptr_{idx}
+  %tr_one_{idx} = icmp eq i64 %tr_len_{idx}, 1
+  br i1 %tr_one_{idx}, label %tr_body_load_{idx}, label %tr_invalid_{idx}
+tr_body_load_{idx}:
+  %tr_raw_{idx} = call i64 @tinox_array_get(i64* %tr_values_ptr_{idx}, i64 0)"#).unwrap();
+        let llvm = Self::type_to_llvm(body_ty);
+        let value = format!("%tr_body_{idx}");
+        match llvm.as_str() {
+            "i64" => {
+                writeln!(&mut self.lambda_ir, "  {value} = add i64 %tr_raw_{idx}, 0").unwrap();
+            }
+            "i32" | "i1" => {
+                writeln!(&mut self.lambda_ir, "  {value} = trunc i64 %tr_raw_{idx} to {llvm}").unwrap();
+            }
+            _ => {
+                writeln!(&mut self.lambda_ir, "  {value} = inttoptr i64 %tr_raw_{idx} to {llvm}").unwrap();
+                writeln!(&mut self.lambda_ir, "  %tr_null_{idx} = icmp eq {llvm} {value}, null").unwrap();
+                writeln!(&mut self.lambda_ir, "  br i1 %tr_null_{idx}, label %tr_invalid_{idx}, label %tr_body_serialize_{idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "tr_body_serialize_{idx}:").unwrap();
+            }
+        }
+        let json = self.emit_route_json_value(body_ty, &value, &llvm);
+        writeln!(&mut self.lambda_ir, r#"  store i64 %tr_code_{idx}, i64* %tr_target_status_slot_{idx}
+  %tr_body_discard_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {json})
+  br label %tr_done_{idx}
+tr_error_{idx}:
+  %tr_error_low_{idx} = icmp sge i64 %tr_status_{idx}, 400
+  %tr_error_high_{idx} = icmp sle i64 %tr_status_{idx}, 599
+  %tr_error_valid_{idx} = and i1 %tr_error_low_{idx}, %tr_error_high_{idx}
+  br i1 %tr_error_valid_{idx}, label %tr_error_body_{idx}, label %tr_invalid_{idx}
+tr_error_body_{idx}:
+  %tr_msg_{idx} = inttoptr i64 %tr_message_{idx} to i8*
+  %tr_encoded_{idx} = call i8* @tinox_json_encode_string(i8* %tr_msg_{idx})
+  %tr_prefix_{idx} = call i8* @tinox_string_concat(i8* {error_prefix}, i8* %tr_encoded_{idx})
+  %tr_error_json_{idx} = call i8* @tinox_string_concat(i8* %tr_prefix_{idx}, i8* {error_suffix})
+  store i64 %tr_status_{idx}, i64* %tr_target_status_slot_{idx}
+  %tr_error_discard_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* %tr_error_json_{idx})
+  br label %tr_done_{idx}
+tr_empty_{idx}:
+  %tr_empty_valid_{idx} = icmp eq i64 %tr_status_{idx}, 204
+  br i1 %tr_empty_valid_{idx}, label %tr_empty_body_{idx}, label %tr_invalid_{idx}
+tr_empty_body_{idx}:
+  store i64 204, i64* %tr_target_status_slot_{idx}
+  %tr_empty_slot_{idx} = getelementptr i64, i64* %resp_pauto_{idx}, i64 2
+  %tr_empty_raw_{idx} = ptrtoint i8* {empty} to i64
+  store i64 %tr_empty_raw_{idx}, i64* %tr_empty_slot_{idx}
+  %tr_response_headers_slot_{idx} = getelementptr i64, i64* %resp_pauto_{idx}, i64 1
+  %tr_response_headers_raw_{idx} = load i64, i64* %tr_response_headers_slot_{idx}
+  %tr_response_headers_{idx} = inttoptr i64 %tr_response_headers_raw_{idx} to i8*"#).unwrap();
+        let content_type = self.emit_lambda_string_literal("Content-Type");
+        writeln!(&mut self.lambda_ir, r#"  call void @tinox_map_remove(i8* %tr_response_headers_{idx}, i8* {content_type})
+  br label %tr_done_{idx}
+tr_invalid_{idx}:
+  store i64 500, i64* %tr_target_status_slot_{idx}
+  %tr_invalid_discard_{idx} = call i64* @HttpResponse_json(i64* %resp_pauto_{idx}, i8* {invalid})
+  br label %tr_done_{idx}
+tr_done_{idx}:"#).unwrap();
     }
 
     /// Generates an auto-run `main` for the single `@Http3RestController`
@@ -4363,13 +4481,22 @@ impl CodeGen {
                 .find(|p| p.kind == RouteParamKind::PostParam)
                 .map(|p| self.devui_json_example_for_type(&p.ty, class_ast_map, &do_not_serialize, &mut HashSet::new(), 0))
                 .unwrap_or_else(|| "null".to_string());
-            let response_example = if matches!(&r.return_type, Type::Named(n) if n == "HttpContext") {
+            let typed_body = match &r.return_type {
+                Type::Generic { name, args } if name == "Response" => args.first(),
+                _ => None,
+            };
+            let manual = matches!(&r.return_type, Type::Named(n) if n == "HttpContext");
+            let response_example = if manual {
                 "null".to_string()
             } else {
-                self.devui_json_example_for_type(&r.return_type, class_ast_map, &do_not_serialize, &mut HashSet::new(), 0)
+                self.devui_json_example_for_type(typed_body.unwrap_or(&r.return_type), class_ast_map, &do_not_serialize, &mut HashSet::new(), 0)
             };
+            let response_mode = if typed_body.is_some() { "typed" } else if manual { "manual" } else { "json" };
+            let alternatives = if typed_body.is_some() {
+                format!(r#"[{{"status":"2XX","example":{response_example}}},{{"status":"204","example":null}},{{"status":"4XX","example":{{"error":"string"}}}},{{"status":"5XX","example":{{"error":"string"}}}}]"#)
+            } else { "[]".to_string() };
             format!(
-                "{{\"method\":{},\"path\":{},\"class\":{},\"methodName\":{},\"statusCode\":{},\"produces\":{},\"consumes\":{},\"params\":{},\"requestExample\":{},\"responseExample\":{}}}",
+                "{{\"method\":{},\"path\":{},\"class\":{},\"methodName\":{},\"statusCode\":{},\"produces\":{},\"consumes\":{},\"params\":{},\"requestExample\":{},\"responseExample\":{},\"responseMode\":{},\"responseAlternatives\":{}}}",
                 Self::devui_json_string(&r.http_method),
                 Self::devui_json_string(&r.path),
                 Self::devui_json_string(&r.class_name),
@@ -4380,6 +4507,8 @@ impl CodeGen {
                 params_json,
                 request_example,
                 response_example,
+                Self::devui_json_string(response_mode),
+                alternatives,
             )
         }).collect();
         format!("[{}]", items.join(","))

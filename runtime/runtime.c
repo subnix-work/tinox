@@ -562,7 +562,7 @@ int tinox_parse_bool_checked(const char* s, int* out) {
 // without that function's object-key/comma bookkeeping.
 char* tinox_json_encode_string(const char* s) {
     size_t sl = s ? strlen(s) : 0;
-    char* buf = (char*)malloc(sl * 2 + 3); // worst case: every char escaped + 2 quotes + NUL
+    char* buf = (char*)malloc(sl * 6 + 3); // allow six-byte JSON control escapes
     size_t len = 0;
     buf[len++] = '"';
     for (size_t i = 0; i < sl; i++) {
@@ -572,6 +572,12 @@ char* tinox_json_encode_string(const char* s) {
         else if (c == '\n') { buf[len++] = '\\'; buf[len++] = 'n'; }
         else if (c == '\r') { buf[len++] = '\\'; buf[len++] = 'r'; }
         else if (c == '\t') { buf[len++] = '\\'; buf[len++] = 't'; }
+        else if (c < 0x20) {
+            static const char hex[] = "0123456789abcdef";
+            buf[len++] = '\\'; buf[len++] = 'u';
+            buf[len++] = '0'; buf[len++] = '0';
+            buf[len++] = hex[c >> 4]; buf[len++] = hex[c & 15];
+        }
         else                { buf[len++] = (char)c; }
     }
     buf[len++] = '"';
@@ -2359,7 +2365,7 @@ void tinox_map_remove(void* map, const char* key) {
         char* k = m->entries[idx].key;
         if (!k) return;
         if (k != (char*)1 && strcmp(k, key) == 0) {
-            free(m->entries[idx].key);
+            if (!m->borrowed_keys) free(m->entries[idx].key);
             m->entries[idx].key = (char*)1; // tombstone
             m->len--;
             return;
@@ -2644,6 +2650,25 @@ char* fileReadAllText(const char* path) {
 void fileWriteAllText(const char* path, const char* content) {
     FILE* f = fopen(path, "w");
     if (f) { fputs(content, f); fclose(f); }
+}
+
+// Checked variant: returns "" on success, otherwise "<path>: <strerror>".
+static char* tinox_fs_err(const char* what, const char* path) {
+    char tmp[64];
+    snprintf(tmp, sizeof(tmp), "%s", strerror(errno));
+    size_t n = strlen(what) + strlen(path) + strlen(tmp) + 8;
+    char* out = (char*)GC_malloc(n);
+    snprintf(out, n, "%s %s: %s", what, path, tmp);
+    return out;
+}
+
+char* fileWriteAllTextChecked(const char* path, const char* content) {
+    FILE* f = fopen(path, "w");
+    if (!f) return tinox_fs_err("cannot write", path);
+    int bad = fputs(content, f) < 0;
+    if (fclose(f) != 0) bad = 1;
+    if (bad) return tinox_fs_err("cannot write", path);
+    return (char*)"";
 }
 
 void fileAppendText(const char* path, const char* content) {
@@ -4013,6 +4038,29 @@ char* dirList(const char* path) {
 
 void dirCreate(const char* path) {
     mkdir(path, 0755);
+}
+
+char* dirCreateChecked(const char* path) {
+    if (mkdir(path, 0755) != 0) return tinox_fs_err("cannot create directory", path);
+    return (char*)"";
+}
+
+// Like `mkdir -p`: creates missing parents, succeeds if it already exists.
+char* dirCreateAllChecked(const char* path) {
+    size_t len = strlen(path);
+    char* buf = (char*)GC_malloc(len + 2);
+    memcpy(buf, path, len + 1);
+    for (size_t i = 1; i <= len; i++) {
+        if (buf[i] == '/' || buf[i] == '\0') {
+            char saved = buf[i];
+            buf[i] = '\0';
+            if (mkdir(buf, 0755) != 0 && errno != EEXIST) return tinox_fs_err("cannot create directory", path);
+            buf[i] = saved;
+        }
+    }
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return tinox_fs_err("cannot create directory", path);
+    return (char*)"";
 }
 
 void dirDelete(const char* path) {
@@ -7540,7 +7588,7 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
             }
         }
     }
-    if (tinox_map_contains(resp_hdr_map, "Content-Type") == 0) {
+    if (status != 204 && tinox_map_contains(resp_hdr_map, "Content-Type") == 0) {
         static const char ct[] = "Content-Type: application/json\r\n";
         // Bug 95: this fallback copy was unconditional, unlike every other
         // write into hdr_buf above (each bounds-checked against
@@ -7561,7 +7609,7 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     const char* conn_hdr     = req_close ? conn_close : conn_ka;
     size_t      conn_hdr_len = req_close ? (sizeof(conn_close) - 1) : (sizeof(conn_ka) - 1);
 
-    size_t body_len = strlen(body);
+    size_t body_len = status == 204 ? 0 : strlen(body);
     const char* status_text = http_status_text(status);
     size_t st_len = strlen(status_text);
     size_t resp_cap = 9 + 3 + 1 + st_len + 2 + hdr_off + 16 + 20 + 2 + conn_hdr_len + 2 + body_len + 1;
@@ -7579,9 +7627,11 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     memcpy(out, status_text, st_len); out += st_len;
     out[0] = '\r'; out[1] = '\n'; out += 2;
     memcpy(out, hdr_buf, hdr_off); out += hdr_off;
-    memcpy(out, "Content-Length: ", 16); out += 16;
-    out += fast_i64_write((int64_t)body_len, out);
-    out[0] = '\r'; out[1] = '\n'; out += 2;
+    if (status != 204) {
+        memcpy(out, "Content-Length: ", 16); out += 16;
+        out += fast_i64_write((int64_t)body_len, out);
+        out[0] = '\r'; out[1] = '\n'; out += 2;
+    }
     memcpy(out, conn_hdr, conn_hdr_len); out += conn_hdr_len;
     out[0] = '\r'; out[1] = '\n'; out += 2;
     memcpy(out, body, body_len); out += body_len;

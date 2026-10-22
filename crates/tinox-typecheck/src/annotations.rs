@@ -94,6 +94,15 @@ pub struct RouteInfo {
     pub return_type: Type,
 }
 
+/// The payload type remains in route metadata even though the transport
+/// receives only a serialized body. Shared by validation and API contracts.
+pub fn response_body_type(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Generic { name, args } if name == "Response" && args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiScope {
     Application,
@@ -1962,7 +1971,37 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
         }
     }
 
-    let return_ok = is_http_context_type(&method.ret_type)
+    let serializable = |ty: &Type| {
+        is_json_serializable_class_type(ty, json_serializable)
+            || is_json_serializable_list_type(ty, json_serializable)
+            || matches!(ty, Type::String | Type::Int64 | Type::Int32 | Type::Bool)
+    };
+    let typed_response = matches!(&method.ret_type, Type::Generic { name, .. } if name == "Response");
+    if typed_response {
+        if !response_body_type(&method.ret_type).is_some_and(serializable) {
+            errors.push(Error::new(method.span, format!(
+                "REST handler '{}' requires Response<T> with one JSON-serializable body type; use a \
+                 @JsonSerializable class, List of such classes, String, Int64, Int32 or Bool",
+                method.name
+            )));
+        }
+        for ann in &method.annotations {
+            if ann.name == "Produces" && ann.args.first().and_then(media_type_arg_to_mime).as_deref() != Some("application/json") {
+                errors.push(Error::new(ann.span, "Response<T> serializes JSON: use @Produces(\"application/json\") or remove @Produces"));
+            }
+            if ann.name == "StatusCode" {
+                let valid = matches!(ann.args.first(), Some(AnnotationArg::Literal(Literal::Integer(n)))
+                    if (200..=299).contains(n) && *n != 204 && *n != 205);
+                if !valid {
+                    errors.push(Error::new(ann.span, "Response<T> @StatusCode must be a body-bearing success status (200-299 except 204/205); use Response<T>::error or ::noContent for other outcomes"));
+                }
+            }
+        }
+        if method.params.iter().any(|p| p.annotations.iter().any(|a| a.name == "HttpContext")) {
+            errors.push(Error::new(method.span, "Response<T> cannot be combined with @HttpContext; return HttpContext for manual response handling"));
+        }
+    }
+    let return_ok = typed_response || is_http_context_type(&method.ret_type)
         || is_json_serializable_class_type(&method.ret_type, json_serializable)
         || is_json_serializable_list_type(&method.ret_type, json_serializable)
         || matches!(&method.ret_type, Type::String | Type::Int64 | Type::Int32 | Type::Bool);
@@ -2170,6 +2209,28 @@ mod tests {
         let errors = valid("class Ctrl { @GET\nfn list() -> Ctx { return Ctx::new(); } }");
         assert!(!errors.is_empty());
         assert!(errors.iter().any(|e| e.message.contains("cannot auto-serialize return type")));
+    }
+
+    #[test]
+    fn typed_response_annotation_contract() {
+        for ty in ["String", "Int64", "Int32", "Bool", "Person", "List<Person>"] {
+            let src = format!("@annotation class JsonSerializable {{}}\n@JsonSerializable class Person {{ var name: String; }}\nclass Ctrl {{ @GET @Produces(\"application/json\") @StatusCode(201) fn get() -> Response<{ty}> {{}} }}");
+            assert!(valid(&src).is_empty(), "{ty}: {:?}", valid(&src));
+            let routes = proc(&src).route_entries;
+            assert!(response_body_type(&routes[0].return_type).is_some());
+        }
+        for (annotations, params, ty, diagnostic) in [
+            ("", "", "Response<Unknown>", "one JSON-serializable body type"),
+            ("", "", "Response<Response<String>>", "one JSON-serializable body type"),
+            ("@Produces(\"text/plain\")", "", "Response<String>", "serializes JSON"),
+            ("@StatusCode(204)", "", "Response<String>", "body-bearing success status"),
+            ("@StatusCode(205)", "", "Response<String>", "body-bearing success status"),
+            ("@StatusCode(404)", "", "Response<String>", "body-bearing success status"),
+            ("", "@HttpContext ctx: HttpContext", "Response<String>", "cannot be combined with @HttpContext"),
+        ] {
+            let errors = valid(&format!("class Ctrl {{ @GET {annotations} fn get({params}) -> {ty} {{}} }}"));
+            assert!(errors.iter().any(|e| e.message.contains(diagnostic)), "{errors:?}");
+        }
     }
 
     #[test]
