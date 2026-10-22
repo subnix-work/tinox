@@ -16,8 +16,7 @@ namespace tinox.core.fs
 
         fn appendFile(path: String, content: String) -> Nothing
         {
-            const existing: String = Fs::readFile(path);
-            Fs::writeFile(path, existing + content);
+            fileAppendText(path, content);
         }
 
         fn deleteFile(path: String) -> Nothing

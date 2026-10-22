@@ -1169,7 +1169,7 @@ impl TypeChecker {
             });
         }
         // File I/O extended
-        for name in &["fileReadAllText", "fileWriteAllText", "fileDelete", "fileClose"] {
+        for name in &["fileReadAllText", "fileWriteAllText", "fileAppendText", "fileDelete", "fileClose"] {
             let ret = if *name == "fileReadAllText" { ValueType::String } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
