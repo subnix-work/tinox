@@ -15686,6 +15686,14 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
         ExprKind::Unary { op: _, operand } => {
             collect_free_vars_inner(operand, param_names, vars);
         }
+        // Ternary expressions share the If node with expression-form conditionals.
+        ExprKind::If { cond, then_branch, else_branch } => {
+            collect_free_vars_inner(cond, param_names, vars);
+            collect_free_vars_inner(then_branch, param_names, vars);
+            if let Some(else_branch) = else_branch {
+                collect_free_vars_inner(else_branch, param_names, vars);
+            }
+        }
         ExprKind::Call { func, args } => {
             collect_free_vars_inner(func, param_names, vars);
             for arg in args {
