@@ -2888,6 +2888,16 @@ void tinoxFileCloseBytes(int64_t handle) {
 // Every misuse (out-of-range index/slice, invalid length, I/O error,
 // converting a buffer with a NUL to a String) is a hard runtime error,
 // never a silent truncation or clamp.
+// Binary-safe HTTP bodies (#311). The request/response body fields stay plain
+// NUL-terminated C strings for every existing API; these side channels let
+// tinox.core.bytes recover the exact byte length of the CURRENT request body
+// and let a handler hand the writer a byte buffer with an explicit length.
+// Identity of the pointer is the guard: a stale/unrelated String never matches.
+static __thread const char* g_req_body_ptr = NULL;
+static __thread int64_t     g_req_body_len = 0;
+static __thread const char* g_resp_bytes_ptr = NULL;
+static __thread int64_t     g_resp_bytes_len = 0;
+
 typedef struct {
     int64_t len;
     unsigned char data[];
@@ -3001,6 +3011,31 @@ char* tinoxBufToString(int64_t h) {
     memcpy(s, b->data, (size_t)b->len);
     s[b->len] = '\0';
     return s;
+}
+
+// HTTP/1.1 server body bridge. Only valid inside a request handler of the
+// plain-TCP server (tinox_handle_one); anywhere else is a hard error rather
+// than a guess. The request body arrives as a String whose bytes after the
+// first NUL are invisible to String APIs -- this recovers the exact payload.
+int64_t tinoxBufFromRequestBody(const char* body) {
+    if (!body || body != g_req_body_ptr) {
+        fprintf(stderr, "runtime error: Bytes.fromRequestBody requires the body of the request currently being handled\n");
+        exit(1);
+    }
+    TinoxBuf* r = tinox_buf_alloc(g_req_body_len);
+    memcpy(r->data, body, (size_t)g_req_body_len);
+    return (int64_t)(intptr_t)r;
+}
+
+// Returns a body "String" that points at the buffer payload and registers the
+// exact length for the response writer (which would otherwise strlen and
+// truncate at the first 0x00). The pointer is only honoured when it is still
+// the response body at write time.
+char* tinoxBufAsResponseBody(int64_t h) {
+    TinoxBuf* b = tinox_buf_of(h, "asResponseBody");
+    g_resp_bytes_ptr = (const char*)b->data;
+    g_resp_bytes_len = b->len;
+    return (char*)b->data;
 }
 
 // Explicit adapters to/from the legacy List<Int64> (one element per byte).
@@ -5399,6 +5434,7 @@ int64_t httpServerAcceptConn(int64_t server_fd) {
 
 // Static recv buffer — reused across requests, grows as needed
 static __thread char*  g_recv_buf = NULL;
+static __thread size_t g_recv_used = 0; // bytes held in g_recv_buf after the last conn_read_request (binary-safe body length)
 static __thread size_t g_recv_cap = 0;
 
 // Bug 96: moved up from the route-based API section below (where it was
@@ -5468,6 +5504,7 @@ static char* conn_read_request(TinoxConn* c) {
                     strlen(body413), body413);
                 conn_send_all(c, resp413, (size_t)rn);
                 buf[0] = '\0';
+                g_recv_used = 0;
                 return buf;
             }
             long total = header_len + body_len;
@@ -5489,6 +5526,7 @@ static char* conn_read_request(TinoxConn* c) {
         break;
     }
     buf[used] = '\0';
+    g_recv_used = used;
     return buf;
 }
 
@@ -7850,6 +7888,15 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
         if (*hdr_line == '\r') req_body = hdr_line + 2;
         else if (*hdr_line == '\n') req_body = hdr_line + 1;
     }
+    g_req_body_ptr = req_body;
+    g_req_body_len = 0;
+    if (raw_req == g_recv_buf && req_body > raw_req && req_body <= raw_req + g_recv_used) {
+        g_req_body_len = (int64_t)(g_recv_used - (size_t)(req_body - raw_req));
+    } else {
+        g_req_body_len = (int64_t)strlen(req_body);
+    }
+    g_resp_bytes_ptr = NULL;
+    g_resp_bytes_len = 0;
 
     tinox_map_reset(&g_resp_headers_map);
     g_response[0] = handler ? 200 : 404;
@@ -7943,7 +7990,9 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     const char* conn_hdr     = req_close ? conn_close : conn_ka;
     size_t      conn_hdr_len = req_close ? (sizeof(conn_close) - 1) : (sizeof(conn_ka) - 1);
 
-    size_t body_len = status == 204 ? 0 : strlen(body);
+    size_t body_len = status == 204 ? 0
+        : (g_resp_bytes_ptr && body == g_resp_bytes_ptr) ? (size_t)g_resp_bytes_len : strlen(body);
+    g_resp_bytes_ptr = NULL;
     const char* status_text = http_status_text(status);
     size_t st_len = strlen(status_text);
     size_t resp_cap = 9 + 3 + 1 + st_len + 2 + hdr_off + 16 + 20 + 2 + conn_hdr_len + 2 + body_len + 1;
