@@ -799,8 +799,6 @@ type InstalledDepDirs = (Vec<PathBuf>, Vec<MissingDep>, Vec<String>);
 /// one provenance line per override actually applied, for the caller to
 /// surface. An override no dependency in the graph refers to is a hard
 /// error rather than a silent no-op.
-pub type InstalledDepResolution = (Vec<PathBuf>, Vec<MissingDep>, Vec<String>);
-
 pub fn installed_dep_dirs(
     root: &Path,
     manifest: &TinoxManifest,
