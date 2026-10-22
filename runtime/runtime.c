@@ -35,6 +35,7 @@
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/wait.h>
+#include <spawn.h>
 #include <time.h>
 #include <errno.h>
 #include <sched.h>
@@ -3814,7 +3815,7 @@ void envSetCurrentDir(const char* path) {
 
 // ---- Argv-based subprocess execution (tinox.core.process) -----------------
 //
-// fork+execvp, never a shell: every argv element is passed as its own execvp
+// posix_spawnp, never a shell: every argv element is passed as its own native
 // argument, so a value flowing straight from untrusted input (e.g. a
 // Kubernetes namespace/pod name taken from an HTTP path param) can never be
 // interpreted as shell syntax. This is deliberately a separate mechanism from
@@ -3862,6 +3863,60 @@ static void tinox_growbuf_append(TinoxGrowBuf* b, const char* data, size_t n) {
     b->buf[b->len] = '\0';
 }
 
+// Build the child's environment in the parent: entries KEY=value override
+// inherited values; bare KEY removes a value. Never mutate the host environment
+// or call setenv/malloc after fork in a multithreaded runtime.
+static pid_t tinox_spawn_piped(char** argv, const char* cwd, TinoxArray* changes,
+                                int in_pipe[2], int out_pipe[2], int err_pipe[2]) {
+    extern char** environ;
+    size_t count = 0;
+    while (environ[count]) count++;
+    size_t extra = changes ? (size_t)changes->len : 0;
+    char** env = calloc(count + extra + 1, sizeof(char*));
+    if (!env) { perror("process environment"); exit(1); }
+    memcpy(env, environ, count * sizeof(char*));
+    for (size_t i = 0; i < extra; i++) {
+        char* entry = (char*)changes->data[i];
+        size_t keylen = strcspn(entry, "=");
+        if (!keylen) {
+            fprintf(stderr, "runtime error: process environment key must not be empty\n");
+            exit(1);
+        }
+        for (size_t j = 0; j < count;) {
+            if (strncmp(env[j], entry, keylen) == 0 && env[j][keylen] == '=') {
+                memmove(env + j, env + j + 1, (count - j) * sizeof(char*));
+                count--;
+            } else j++;
+        }
+        if (entry[keylen] == '=') env[count++] = entry;
+        env[count] = NULL;
+    }
+    posix_spawn_file_actions_t actions;
+    int error = posix_spawn_file_actions_init(&actions);
+    if (error) { errno = error; perror("process spawn actions"); exit(1); }
+    #define PROCESS_ACTION(action) do { error = (action); if (error) { \
+        errno = error; perror("process spawn action"); exit(1); } } while (0)
+    PROCESS_ACTION(posix_spawn_file_actions_adddup2(&actions, in_pipe[0], STDIN_FILENO));
+    PROCESS_ACTION(posix_spawn_file_actions_adddup2(&actions, out_pipe[1], STDOUT_FILENO));
+    PROCESS_ACTION(posix_spawn_file_actions_adddup2(&actions, err_pipe[1], STDERR_FILENO));
+    for (int i = 0; i < 2; i++) {
+        PROCESS_ACTION(posix_spawn_file_actions_addclose(&actions, in_pipe[i]));
+        PROCESS_ACTION(posix_spawn_file_actions_addclose(&actions, out_pipe[i]));
+        PROCESS_ACTION(posix_spawn_file_actions_addclose(&actions, err_pipe[i]));
+    }
+    if (cwd && *cwd) PROCESS_ACTION(posix_spawn_file_actions_addchdir_np(&actions, cwd));
+    #undef PROCESS_ACTION
+    pid_t pid;
+    error = posix_spawnp(&pid, argv[0], &actions, NULL, argv, env);
+    posix_spawn_file_actions_destroy(&actions);
+    free(env);
+    if (error) {
+        // Preserve Process::run's conventional 127 for setup/exec failures.
+        return -1;
+    }
+    return pid;
+}
+
 // Runs argv[0] with argv[1..] as arguments, feeding `stdin_data` to the
 // child's stdin (empty string = closed/empty stdin, e.g. for a plain
 // `kubectl get`) and capturing stdout/stderr separately, enforcing a
@@ -3879,11 +3934,10 @@ static void tinox_growbuf_append(TinoxGrowBuf* b, const char* data, size_t n) {
 // case here: `kubectl apply -f -` with a large manifest can easily write
 // enough progress/warning output to hit this before finishing reading).
 //
-// No GC_/Tinox runtime calls happen in the child between fork() and
-// execvp()/_exit() -- the one hazard specific to forking inside a GC'd,
-// multi-threaded process (another thread could hold a GC or malloc lock at
-// the moment of fork, and only the calling thread survives into the child).
-int64_t processRun(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_data) {
+// posix_spawnp performs child setup without invoking GC or allocation code
+// after fork in this multithreaded runtime.
+int64_t processRunWithOptions(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_data,
+                              const char* cwd, int64_t* env_handle) {
     TinoxArray* argv_arr = (TinoxArray*)argv_handle;
     if (!argv_arr || argv_arr->len < 1) {
         fprintf(stderr, "runtime error: process_run: argv must have at least one element (the program)\n");
@@ -3903,31 +3957,19 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_d
     int in_pipe[2];
     int out_pipe[2];
     int err_pipe[2];
-    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+    if (pipe2(in_pipe, O_CLOEXEC) != 0 || pipe2(out_pipe, O_CLOEXEC) != 0 || pipe2(err_pipe, O_CLOEXEC) != 0) {
         fprintf(stderr, "runtime error: process_run: pipe() failed: %s\n", strerror(errno));
         exit(1);
     }
 
-    pid_t pid = fork();
+    pid_t pid = tinox_spawn_piped(argv, cwd, (TinoxArray*)env_handle, in_pipe, out_pipe, err_pipe);
     if (pid < 0) {
-        fprintf(stderr, "runtime error: process_run: fork() failed: %s\n", strerror(errno));
-        exit(1);
-    }
-    if (pid == 0) {
-        // Child. Deliberately no fprintf/GC/malloc-locking-sensitive calls
-        // here beyond what's unavoidable (dup2/close/execvp are all
-        // async-signal-safe) -- see the fork-safety note above. execvp only
-        // returns on failure; _exit(127) matches the shell's own
-        // "command not found" convention so the caller can distinguish it
-        // from a real exit code without needing a message string here.
-        dup2(in_pipe[0], STDIN_FILENO);
-        dup2(out_pipe[1], STDOUT_FILENO);
-        dup2(err_pipe[1], STDERR_FILENO);
-        close(in_pipe[0]); close(in_pipe[1]);
-        close(out_pipe[0]); close(out_pipe[1]);
-        close(err_pipe[0]); close(err_pipe[1]);
-        execvp(argv[0], argv);
-        _exit(127);
+        for (int i = 0; i < 2; i++) { close(in_pipe[i]); close(out_pipe[i]); close(err_pipe[i]); }
+        free(argv);
+        TinoxProcessResult* result = GC_malloc(sizeof(*result));
+        result->out = GC_strdup(""); result->err = GC_strdup("");
+        result->exit_code = 127; result->timed_out = 0;
+        return (int64_t)(intptr_t)result;
     }
 
     // Parent
@@ -4038,6 +4080,10 @@ int64_t processRun(int64_t* argv_handle, int64_t timeout_ms, const char* stdin_d
     free(out_buf.buf);
     free(err_buf.buf);
     return (int64_t)(intptr_t)result;
+}
+
+int64_t processRun(int64_t* argv, int64_t timeout_ms, const char* input) {
+    return processRunWithOptions(argv, timeout_ms, input, "", NULL);
 }
 
 char* processResultStdout(int64_t handle) {
@@ -4178,8 +4224,7 @@ void rwlockWriteUnlock(int64_t handle) {
     pthread_rwlock_unlock((pthread_rwlock_t*)(intptr_t)handle);
 }
 
-// ---- Long-lived interactive subprocess (tinox.core.process, exec/PTY-less
-// terminal bridging) ---------------------------------------------------
+// ---- Long-lived interactive subprocess (tinox.core.process, PTY or pipes) ---------------------------------------------------
 //
 // Unlike processRun (blocks until the child exits, returns the full
 // captured output), this spawns and returns IMMEDIATELY -- the caller
@@ -4212,6 +4257,10 @@ typedef struct {
     int fd;  // PTY master -- single fd, read AND write (a real terminal has no separate stdin/stdout either)
     int64_t exited;
     int64_t exit_code;
+    int piped;
+    int stdin_fd;
+    int stderr_fd;
+    TinoxGrowBuf output[2];
 } TinoxInteractiveProcess;
 
 int64_t processSpawnInteractive(int64_t* argv_handle) {
@@ -4247,13 +4296,102 @@ int64_t processSpawnInteractive(int64_t* argv_handle) {
 
     // Parent
     free(argv);
+    fcntl(master_fd, F_SETFD, FD_CLOEXEC);
 
     TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)GC_malloc(sizeof(TinoxInteractiveProcess));
+    memset(p, 0, sizeof(*p));
+    p->stdin_fd = p->stderr_fd = -1;
     p->pid = pid;
     p->fd = master_fd;
     p->exited = 0;
     p->exit_code = 0;
     return (int64_t)(intptr_t)p;
+}
+
+int64_t processSpawnPiped(int64_t* argv_handle, const char* cwd, int64_t* env_handle) {
+    TinoxArray* args = (TinoxArray*)argv_handle;
+    if (!args || args->len < 1) {
+        fprintf(stderr, "runtime error: processSpawnPiped requires a program\n"); exit(1);
+    }
+    char** argv = calloc((size_t)args->len + 1, sizeof(char*));
+    if (!argv) { perror("process argv"); exit(1); }
+    for (int64_t i = 0; i < args->len; i++) argv[i] = (char*)args->data[i];
+    int input[2], output[2], error[2];
+    if (pipe2(input, O_CLOEXEC) || pipe2(output, O_CLOEXEC) || pipe2(error, O_CLOEXEC)) {
+        perror("process pipes"); exit(1);
+    }
+    pid_t pid = tinox_spawn_piped(argv, cwd, (TinoxArray*)env_handle, input, output, error);
+    free(argv);
+    close(input[0]); close(output[1]); close(error[1]);
+    TinoxInteractiveProcess* p = GC_malloc(sizeof(*p));
+    memset(p, 0, sizeof(*p));
+    p->pid = pid; p->piped = 1;
+    p->stdin_fd = input[1]; p->fd = output[0]; p->stderr_fd = error[0];
+    if (pid < 0) { p->exited = 1; p->exit_code = 127; close(p->stdin_fd); p->stdin_fd = -1; }
+    return (int64_t)(intptr_t)p;
+}
+
+void processCloseStdin(int64_t handle) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    if (p->piped && p->stdin_fd >= 0) { close(p->stdin_fd); p->stdin_fd = -1; }
+}
+
+static int64_t tinox_process_millis(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Drain BOTH channels while waiting, so a full stderr pipe cannot block a
+// JSON response on stdout. Partial lines survive timeouts. One reader per
+// process; callers must serialize reads/kill/close operations themselves.
+static char* tinox_piped_read(TinoxInteractiveProcess* p, int channel, int line, int64_t timeout) {
+    TinoxGrowBuf* b = &p->output[channel];
+    int64_t deadline = tinox_process_millis() + (timeout > 0 ? timeout : 0);
+    for (;;) {
+        char* newline = b->len ? memchr(b->buf, '\n', b->len) : NULL;
+        int stream_fd = channel ? p->stderr_fd : p->fd;
+        if (b->len && (!line || newline || stream_fd < 0)) {
+            size_t n = newline && line ? (size_t)(newline - b->buf) + 1 : b->len;
+            char* result = GC_malloc(n + 1);
+            memcpy(result, b->buf, n); result[n] = 0;
+            memmove(b->buf, b->buf + n, b->len - n);
+            b->len -= n;
+            return result;
+        }
+        if (stream_fd < 0) return GC_strdup("");
+        int64_t remaining = deadline - tinox_process_millis();
+        int wait = timeout < 0 ? -1 : remaining > INT_MAX ? INT_MAX : remaining > 0 ? (int)remaining : 0;
+        struct pollfd fds[2] = {{p->fd, POLLIN, 0}, {p->stderr_fd, POLLIN, 0}};
+        int ready = poll(fds, 2, wait);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) return GC_strdup("");
+        for (int i = 0; i < 2; i++) {
+            if (!(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            char buf[8192];
+            ssize_t n = read(fds[i].fd, buf, sizeof(buf));
+            if (n > 0) tinox_growbuf_append(&p->output[i], buf, (size_t)n);
+            else if (n == 0 || (errno != EINTR && errno != EAGAIN)) {
+                close(fds[i].fd);
+                if (i) p->stderr_fd = -1; else p->fd = -1;
+            }
+        }
+        // Still return any completed line from this iteration before timeout.
+        if (timeout >= 0 && tinox_process_millis() >= deadline) {
+            newline = b->len ? memchr(b->buf, '\n', b->len) : NULL;
+            stream_fd = channel ? p->stderr_fd : p->fd;
+            if (!(b->len && (!line || newline || stream_fd < 0))) return GC_strdup("");
+        }
+    }
+}
+
+char* processReadStderr(int64_t handle, int64_t timeout) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    return p->piped ? tinox_piped_read(p, 1, 0, timeout) : GC_strdup("");
+}
+char* processReadLine(int64_t handle, int64_t timeout) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    return p->piped ? tinox_piped_read(p, 0, 1, timeout) : GC_strdup("");
 }
 
 // Best-effort: on a write error (e.g. the child already exited and closed
@@ -4266,7 +4404,7 @@ void processWriteStdin(int64_t handle, const char* data) {
     size_t len = strlen(data);
     size_t written = 0;
     while (written < len) {
-        ssize_t n = write(p->fd, data + written, len - written);
+        ssize_t n = write(p->piped ? p->stdin_fd : p->fd, data + written, len - written);
         if (n > 0) { written += (size_t)n; continue; }
         if (n < 0 && errno == EINTR) continue;
         break;
@@ -4274,11 +4412,11 @@ void processWriteStdin(int64_t handle, const char* data) {
 }
 
 // Blocks up to timeoutMs waiting for output; returns whatever's available
-// (possibly a partial line), or "" on timeout/EOF/error. Never blocks
-// indefinitely -- the caller (a spawned reader loop) needs to periodically
-// re-check whether it should keep running.
+// (possibly a partial line), or "" on timeout/EOF/error. A negative timeout
+// waits indefinitely; zero polls without waiting.
 char* processReadOutput(int64_t handle, int64_t timeoutMs) {
     TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    if (p->piped) return tinox_piped_read(p, 0, 0, timeoutMs);
     struct pollfd fd;
     fd.fd = p->fd;
     fd.events = POLLIN;
@@ -4308,26 +4446,43 @@ int64_t processIsAlive(int64_t handle) {
     if (p->exited) {
         return 0;
     }
-    int status;
-    pid_t r = waitpid(p->pid, &status, WNOHANG);
+    int status = 0;
+    pid_t r;
+    do { r = waitpid(p->pid, &status, WNOHANG); } while (r < 0 && errno == EINTR);
     if (r == 0) {
         return 1;
     }
     p->exited = 1;
-    if (WIFEXITED(status)) p->exit_code = WEXITSTATUS(status);
+    if (r < 0) p->exit_code = -1;
+    else if (WIFEXITED(status)) p->exit_code = WEXITSTATUS(status);
     else if (WIFSIGNALED(status)) p->exit_code = -WTERMSIG(status);
     return 0;
 }
 
+// INT64_MIN means still running; every exit code (including negative
+// signal numbers) remains distinguishable from that sentinel.
+int64_t processExitCode(int64_t handle) {
+    if (processIsAlive(handle)) return INT64_MIN;
+    return ((TinoxInteractiveProcess*)(intptr_t)handle)->exit_code;
+}
+
 void processKillInteractive(int64_t handle) {
     TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
-    if (!p->exited) {
+    if (processIsAlive(handle)) {
         kill(p->pid, SIGKILL);
-        int status;
-        while (waitpid(p->pid, &status, 0) < 0 && errno == EINTR) {}
+        int status = 0;
+        pid_t r;
+        do { r = waitpid(p->pid, &status, 0); } while (r < 0 && errno == EINTR);
+        p->exit_code = r < 0 ? -1 : WIFSIGNALED(status) ? -WTERMSIG(status) : WEXITSTATUS(status);
         p->exited = 1;
     }
-    close(p->fd);
+    if (p->fd >= 0) { close(p->fd); p->fd = -1; }
+    processCloseStdin(handle);
+    if (p->stderr_fd >= 0) { close(p->stderr_fd); p->stderr_fd = -1; }
+    for (int i = 0; i < 2; i++) {
+        free(p->output[i].buf);
+        memset(&p->output[i], 0, sizeof(p->output[i]));
+    }
 }
 
 // ---- Directory builtins ----

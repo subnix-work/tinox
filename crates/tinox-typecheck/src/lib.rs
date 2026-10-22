@@ -1032,6 +1032,34 @@ impl TypeChecker {
             ],
             return_type: ValueType::Int,
         });
+        symbols.functions.insert("processRunWithOptions".to_string(), FunctionSignature {
+            params: vec![
+                ("argv".to_string(), ValueType::Array(Box::new(ValueType::String))),
+                ("timeoutMs".to_string(), ValueType::Int),
+                ("stdin".to_string(), ValueType::String),
+                ("cwd".to_string(), ValueType::String),
+                ("env".to_string(), ValueType::Array(Box::new(ValueType::String))),
+            ], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("processSpawnPiped".to_string(), FunctionSignature {
+            params: vec![
+                ("argv".to_string(), ValueType::Array(Box::new(ValueType::String))),
+                ("cwd".to_string(), ValueType::String),
+                ("env".to_string(), ValueType::Array(Box::new(ValueType::String))),
+            ], return_type: ValueType::Int,
+        });
+        for name in &["processReadLine", "processReadStderr"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int), ("timeoutMs".to_string(), ValueType::Int)],
+                return_type: ValueType::String,
+            });
+        }
+        for name in &["processCloseStdin", "processExitCode"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("handle".to_string(), ValueType::Int)],
+                return_type: if *name == "processExitCode" { ValueType::Int } else { ValueType::Nothing },
+            });
+        }
         for name in &["processResultStdout", "processResultStderr", "processResultExitCode", "processResultTimedOut"] {
             let ret = if *name == "processResultStdout" || *name == "processResultStderr" { ValueType::String }
                       else { ValueType::Int };

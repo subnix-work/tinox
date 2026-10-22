@@ -1764,6 +1764,12 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @isStdinTty()").unwrap();
         writeln!(&mut self.ir, "declare i64 @isStdoutTty()").unwrap();
         writeln!(&mut self.ir, "declare i64 @processId()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processRunWithOptions(i64*, i64, i8*, i8*, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processSpawnPiped(i64*, i8*, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processReadLine(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @processReadStderr(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @processCloseStdin(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @processExitCode(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @processRun(i64*, i64, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @processResultStdout(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @processResultStderr(i64)").unwrap();
