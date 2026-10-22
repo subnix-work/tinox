@@ -19,7 +19,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let p: Person = Person { name: "Ada", age: 36 };
+        const p: Person = Person { name: "Ada", age: 36 };
         println(p.getName());
         println(p.getAge().toString());
         p.setName("Grace");
@@ -27,7 +27,7 @@ class Main
         p.setAge(85);
         println(p.getAge().toString());
 
-        let w: Widget = Widget { label: "hi", internalCounter: 0 };
+        const w: Widget = Widget { label: "hi", internalCounter: 0 };
         println(w.getLabel());
 
         return 0;

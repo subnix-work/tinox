@@ -60,22 +60,22 @@ class Main
      */
     fnc dummyChannel091() -> AmqpChannel091
     {
-        let inbox: Channel<AmqpFrame091> = channel;
+        const inbox: Channel<AmqpFrame091> = channel;
         send inbox -> AmqpFrame091 { frameType: -1, chanId: 0, payload: [] };
         return AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox };
     }
 
 
     fnc main() -> Int32 {
-        let name255 = makeName(255);
-        let name256 = makeName(256);
+        const name255 = makeName(255);
+        const name256 = makeName(256);
 
         // Boundary case: exactly 255 bytes -- MUST be treated as valid
         // (dial does fail, conn=-1, but the shortstr length check
         // itself must NOT trigger; in this case the encoding reaches the
         // point BEFORE sending without an error message).
-        let chBoundary = dummyChannel091();
-        let rBoundary = chBoundary.declareQueue(name255, true, false, false);
+        const chBoundary = dummyChannel091();
+        const rBoundary = chBoundary.declareQueue(name255, true, false, false);
         // conn=-1 naturally makes the actual network call fail
         // (no real socket) -- the ONLY thing that matters is that the length
         // check itself does NOT trigger (the "too long" error message must not
@@ -86,31 +86,31 @@ class Main
 
         // 256 bytes: beyond the shortstr maximum -- must be rejected hard
         // on the client side.
-        let ch1 = dummyChannel091();
-        let r1 = ch1.declareQueue(name256, true, false, false);
+        const ch1 = dummyChannel091();
+        const r1 = ch1.declareQueue(name256, true, false, false);
         if (r1 == "") {
             if (ch1.errorMessage.len() > 0) {
                 println("ok-declare-rejected");
             }
         }
 
-        let ch2 = dummyChannel091();
-        let r2 = ch2.bindQueue(name256, "x", "y");
+        const ch2 = dummyChannel091();
+        const r2 = ch2.bindQueue(name256, "x", "y");
         if (r2 == false) {
             if (ch2.errorMessage.len() > 0) {
                 println("ok-bind-rejected");
             }
         }
 
-        let ch3 = dummyChannel091();
-        let r3 = ch3.consume(name256);
+        const ch3 = dummyChannel091();
+        const r3 = ch3.consume(name256);
         if (r3 == "") {
             if (ch3.errorMessage.len() > 0) {
                 println("ok-consume-rejected");
             }
         }
 
-        let ch4 = dummyChannel091();
+        const ch4 = dummyChannel091();
         var body: List<Int64> = [];
         ch4.publish(name256, "y", body, "");
         if (ch4.errorMessage.len() > 0) {

@@ -31,7 +31,7 @@ namespace tinox.core.ui
         // used to reach this page) plus this port, at connect time.
         fnc shellHtml(wsPort: Int64) -> String
         {
-            let template: String = Assets::shellHtmlTemplate();
+            const template: String = Assets::shellHtmlTemplate();
             return template.replace("__TINOX_UI_WS_PORT__", wsPort.toString());
         }
 

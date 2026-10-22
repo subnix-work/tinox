@@ -60,10 +60,10 @@ namespace tinox.core.logger
 
         fn log(logger: Logger, level: String, message: String) -> Nothing
         {
-            let timestamp: String = Time::now().toString();
+            const timestamp: String = Time::now().toString();
             if (logger.jsonFormat)
             {
-                let record: LogRecord = LogRecord { timestamp: timestamp, level: level, logger: logger.name, message: message };
+                const record: LogRecord = LogRecord { timestamp: timestamp, level: level, logger: logger.name, message: message };
                 println(Logger::toJson(record));
             }
             else

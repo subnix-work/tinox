@@ -31,7 +31,7 @@ class Main
 
 
     fnc useCompute() -> Int64 {
-        let r: Int64 = compute(0 - 5);
+        const r: Int64 = compute(0 - 5);
         println("after compute (never)");   // skipped — immediate unwinding
         return r;
     }
@@ -61,7 +61,7 @@ class Main
 
         // Return-value function throws, caller catches
         try {
-            let v: Int64 = useCompute();
+            const v: Int64 = useCompute();
             println(v.toString());
         } catch e: String {
             println("caught: " + e);

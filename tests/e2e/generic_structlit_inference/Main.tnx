@@ -22,16 +22,16 @@ class Main
 {
     fnc main() -> Int32 {
         // Unannotated: T=String from the initializer
-        let bs = Box { value: "hallo" };
+        const bs = Box { value: "hallo" };
         println(bs.value);                    // hallo
         println(bs.value.len().toString());  // 5
 
         // Unannotated: T=Int64
-        let bi = Box { value: 42 };
+        const bi = Box { value: 42 };
         println(bi.value.toString());        // 42
 
         // Annotated (was also broken: literal path overwrote the annotation)
-        let ba: Box<String> = Box { value: "hi" };
+        const ba: Box<String> = Box { value: "hi" };
         println(ba.value);                    // hi
         println(ba.value.len().toString());  // 2
 
@@ -40,7 +40,7 @@ class Main
         println(bv.value.toString());        // 7
 
         // Two type params bound independently
-        let p = Pair { a: "eins", b: 2.5 };
+        const p = Pair { a: "eins", b: 2.5 };
         println(p.a);                         // eins
         println(p.b.toString());             // 2.5
         return 0;

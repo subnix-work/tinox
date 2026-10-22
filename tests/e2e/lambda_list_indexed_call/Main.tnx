@@ -17,8 +17,8 @@ class Main
         });
         var i = 0;
         while i < checks.len() {
-            let a: Bool = checks[i](42);
-            let b: Bool = checks[i](5);
+            const a: Bool = checks[i](42);
+            const b: Bool = checks[i](5);
             if (a) { println("a"); } else { println("-"); }
             if (b) { println("b"); } else { println("-"); }
             i = i + 1;

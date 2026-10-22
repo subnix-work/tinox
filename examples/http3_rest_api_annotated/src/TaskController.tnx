@@ -1,5 +1,5 @@
 // Declarative counterpart to examples/http3_rest_api/src/Main.tnx's
-// hand-written Http3Server::new()/.get()/.post()/... version -- same Task
+// hand-written Http3Server::new()/.get()/.post()/... version -- same TodoItem
 // CRUD surface, but every route is just a @GET/@POST/@PUT/@PATCH/@DELETE +
 // @Path method, exactly like the plain (TCP) REST annotations in
 // examples/rest_minimal. The single @Http3RestController(port, cert, key)
@@ -12,27 +12,30 @@
 // @ApplicationComponent makes the compiler reuse ONE TaskController
 // instance across every request (via a generated _di_get() singleton
 // getter) instead of allocating a fresh, zeroed instance per call --
-// required here since `tasks` needs to persist between requests. That
+// required here since `tasks` needs to persist between requests.
+// @Synchronized serializes all instance methods with one recursive class
+// monitor, protecting lazy list initialization and subsequent mutations. That
 // getter zero-allocates the instance (it does not call any constructor),
 // so `tasks`/`initialized` start out as null/false; ensureInit() lazily
 // seeds `tasks` on first use rather than relying on a constructor that
 // never runs.
 import tinox.core.http3_server;
 import tinox.core.json;
-import Task;
+import TodoItem;
 
 @ApplicationComponent
+@Synchronized
 @Http3RestController(8843, "cert.pem", "key.pem")
 class TaskController
 {
-    var tasks: List<Task>;
-    var initialized: Bool;
+    private var tasks: List<TodoItem>;
+    private var initialized: Bool;
 
     // Issue #149 stage 2: these three were free top-level functions;
     // now static `fnc` siblings, called bare from the instance methods
     // below exactly as before (resolved via check_call's same-class
     // fallback, not `this.` -- they don't need a TaskController receiver).
-    fnc findTaskIndex(tasks: List<Task>, id: Int64) -> Int64
+    fnc findTaskIndex(tasks: List<TodoItem>, id: Int64) -> Int64
     {
         var i: Int64 = 0;
         while i < tasks.len()
@@ -46,7 +49,7 @@ class TaskController
         return -1;
     }
 
-    fnc nextTaskId(tasks: List<Task>) -> Int64
+    fnc nextTaskId(tasks: List<TodoItem>) -> Int64
     {
         var maxId: Int64 = 0;
         var i: Int64 = 0;
@@ -61,7 +64,7 @@ class TaskController
         return maxId + 1;
     }
 
-    fnc removeTaskAt(tasks: List<Task>, index: Int64) -> Nothing
+    fnc removeTaskAt(tasks: List<TodoItem>, index: Int64) -> Nothing
     {
         var i: Int64 = index;
         while i < tasks.len() - 1
@@ -77,8 +80,8 @@ class TaskController
         if (!this.initialized)
         {
             this.tasks = [
-                Task { id: 1, title: "Try tinox.core.http3_server", done: false },
-                Task { id: 2, title: "curl --http3-only this API", done: false }
+                TodoItem { id: 1, title: "Try tinox.core.http3_server", done: false },
+                TodoItem { id: 2, title: "curl --http3-only this API", done: false }
             ];
             this.initialized = true;
         }
@@ -86,10 +89,16 @@ class TaskController
 
     @GET
     @Path("/tasks")
-    fn listTasks() -> List<Task>
+    fn listTasks() -> List<TodoItem>
     {
         this.ensureInit();
-        return this.tasks;
+        // Response serialization happens after this method releases its lock.
+        // Copy both the list and its mutable items while still protected.
+        var result: List<TodoItem> = [];
+        for item in this.tasks {
+            result.push(TodoItem { id: item.id, title: item.title, done: item.done });
+        }
+        return result;
     }
 
     @GET
@@ -97,7 +106,7 @@ class TaskController
     fn getTask(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
         this.ensureInit();
-        let idx: Int64 = findTaskIndex(this.tasks, id);
+        const idx: Int64 = findTaskIndex(this.tasks, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
@@ -110,20 +119,20 @@ class TaskController
     @POST
     @Path("/tasks")
     @StatusCode(201)
-    fn createTask(@PostParam task: Task) -> Task
+    fn createTask(@PostParam task: TodoItem) -> TodoItem
     {
         this.ensureInit();
         task.id = nextTaskId(this.tasks);
         this.tasks.push(task);
-        return task;
+        return TodoItem { id: task.id, title: task.title, done: task.done };
     }
 
     @PUT
     @Path("/tasks/:id")
-    fn updateTask(@PathParam id: Int64, @PostParam task: Task, @HttpContext ctx: HttpContext) -> HttpContext
+    fn updateTask(@PathParam id: Int64, @PostParam task: TodoItem, @HttpContext ctx: HttpContext) -> HttpContext
     {
         this.ensureInit();
-        let idx: Int64 = findTaskIndex(this.tasks, id);
+        const idx: Int64 = findTaskIndex(this.tasks, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
@@ -140,7 +149,7 @@ class TaskController
     fn toggleDone(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
         this.ensureInit();
-        let idx: Int64 = findTaskIndex(this.tasks, id);
+        const idx: Int64 = findTaskIndex(this.tasks, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");
@@ -157,7 +166,7 @@ class TaskController
     fn deleteTask(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
         this.ensureInit();
-        let idx: Int64 = findTaskIndex(this.tasks, id);
+        const idx: Int64 = findTaskIndex(this.tasks, id);
         if (idx < 0)
         {
             ctx.response.status(404).json("{\"error\":\"task not found\"}");

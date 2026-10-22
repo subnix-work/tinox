@@ -16,7 +16,7 @@ import tinox.core.time;
 class Main
 {
     async fnc fakeServer(srv: Int64) -> Int64 {
-        let conn = SseServer::accept(srv);
+        const conn = SseServer::accept(srv);
         if (conn <= 0) {
             return 0;
         }
@@ -28,15 +28,15 @@ class Main
     }
 
     fnc main() -> Int32 {
-        let srv = SseServer::listen(47821);
+        const srv = SseServer::listen(47821);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeServer(srv);
+        const handle = spawn fakeServer(srv);
 
-        let fd = Socket::createTcp();
-        let connected = Socket::connect(fd, "127.0.0.1", 47821);
+        const fd = Socket::createTcp();
+        const connected = Socket::connect(fd, "127.0.0.1", 47821);
         if (connected) {
             println("ok-accept");
         }
@@ -45,7 +45,7 @@ class Main
         var received: String = "";
         var attempts: Int64 = 0;
         while attempts < 50 {
-            let chunk = Socket::receive(fd, 4096);
+            const chunk = Socket::receive(fd, 4096);
             if (chunk.len() > 0) {
                 received = received + chunk;
             }
@@ -70,7 +70,7 @@ class Main
             println("ok-comment");
         }
 
-        let result = await handle;
+        const result = await handle;
         return 0;
     }
 }

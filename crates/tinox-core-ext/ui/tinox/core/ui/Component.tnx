@@ -91,21 +91,21 @@ namespace tinox.core.ui
 
         fnc textField(value: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value);
             return Component { id: "", type: "TextField", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
 
         fnc checkbox(checked: Bool, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("checked", checked ? "true" : "false");
             return Component { id: "", type: "Checkbox", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
 
         fnc textArea(value: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value);
             return Component { id: "", type: "TextArea", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
@@ -121,9 +121,9 @@ namespace tinox.core.ui
         // caller already has for any value it chooses not to validate.
         fnc numberField(value: Float64, onChange: fnc(Float64) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value.toString());
-            let wrapped: fnc(String) -> Nothing = fn(v: String) { onChange(v.toFloat()); };
+            const wrapped: fnc(String) -> Nothing = fn(v: String) { onChange(v.toFloat()); };
             return Component { id: "", type: "NumberField", text: "", props: props, children: [], visible: true, onEvent: wrapped };
         }
 
@@ -134,9 +134,9 @@ namespace tinox.core.ui
         // here.
         fnc intField(value: Int64, onChange: fnc(Int64) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value.toString());
-            let wrapped: fnc(String) -> Nothing = fn(v: String) { onChange(v.toInt()); };
+            const wrapped: fnc(String) -> Nothing = fn(v: String) { onChange(v.toInt()); };
             return Component { id: "", type: "IntField", text: "", props: props, children: [], visible: true, onEvent: wrapped };
         }
 
@@ -144,14 +144,14 @@ namespace tinox.core.ui
         // (see ui.js's own build()) rather than trusting the caller.
         fnc heading(text: String, level: Int64) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("level", level.toString());
             return Component { id: "", type: "Heading", text: text, props: props, children: [], visible: true, onEvent: fn(v: String) { } };
         }
 
         fnc image(src: String, alt: String) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("src", src);
             props.insert("alt", alt);
             return Component { id: "", type: "Image", text: "", props: props, children: [], visible: true, onEvent: fn(v: String) { } };
@@ -170,7 +170,7 @@ namespace tinox.core.ui
         // needed on either side.
         fnc progressBar(value: Float64) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value.toString());
             return Component { id: "", type: "ProgressBar", text: "", props: props, children: [], visible: true, onEvent: fn(v: String) { } };
         }
@@ -189,7 +189,7 @@ namespace tinox.core.ui
         // method name.
         fnc dropdown(options: List<String>, selected: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("options", Component::encodePipeList(options));
             props.insert("selected", selected);
             return Component { id: "", type: "Select", text: "", props: props, children: [], visible: true, onEvent: onChange };
@@ -222,7 +222,7 @@ namespace tinox.core.ui
         // brand-new instance, regardless of the address bar.
         fnc link(text: String, path: String, onNavigate: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("href", path);
             return Component { id: "", type: "Link", text: text, props: props, children: [], visible: true, onEvent: onNavigate };
         }
@@ -231,7 +231,7 @@ namespace tinox.core.ui
         // separate Date/DateTime type in Tinox's stdlib to bind to instead.
         fnc datePicker(value: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value);
             return Component { id: "", type: "DatePicker", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
@@ -240,7 +240,7 @@ namespace tinox.core.ui
         // comment for the v1 limitation this implies).
         fnc radioGroup(options: List<String>, selected: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("options", Component::encodePipeList(options));
             props.insert("selected", selected);
             return Component { id: "", type: "RadioGroup", text: "", props: props, children: [], visible: true, onEvent: onChange };
@@ -277,7 +277,7 @@ namespace tinox.core.ui
         // picker while uploadUrl is non-empty; has no effect when it's "".
         fnc fileUpload(uploadUrl: String, showProgress: Bool, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("uploadUrl", uploadUrl);
             props.insert("showProgress", showProgress.toString());
             return Component { id: "", type: "FileUpload", text: "", props: props, children: [], visible: true, onEvent: onChange };
@@ -295,7 +295,7 @@ namespace tinox.core.ui
         // (`.toInt()` it in the handler).
         fnc tabs(labels: List<String>, activeIndex: Int64, content: Component, onTabChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("labels", Component::encodePipeList(labels));
             props.insert("active", activeIndex.toString());
             return Component { id: "", type: "Tabs", text: "", props: props, children: [content], visible: true, onEvent: onTabChange };
@@ -308,7 +308,7 @@ namespace tinox.core.ui
         // the dialog's own close button is clicked (value is always "").
         fnc dialog(title: String, content: Component, open: Bool, onClose: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("title", title);
             props.insert("open", open ? "true" : "false");
             return Component { id: "", type: "Dialog", text: "", props: props, children: [content], visible: true, onEvent: onClose };
@@ -321,7 +321,7 @@ namespace tinox.core.ui
         // open/closed prop -- one fewer thing to keep in sync.
         fnc notification(message: String, kind: String) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("kind", kind);
             return Component { id: "", type: "Notification", text: message, props: props, children: [], visible: true, onEvent: fn(v: String) { } };
         }
@@ -341,7 +341,7 @@ namespace tinox.core.ui
         // unrelated update only patches the parts that actually changed.
         fnc accordionSection(header: String, content: Component, expanded: Bool) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("header", header);
             props.insert("expanded", expanded ? "true" : "false");
             return Component { id: "", type: "AccordionSection", text: "", props: props, children: [content], visible: true, onEvent: fn(v: String) { } };
@@ -364,7 +364,7 @@ namespace tinox.core.ui
 
         fnc gridCell(text: String, isHeader: Bool) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("header", isHeader ? "true" : "false");
             return Component { id: "", type: "GridCell", text: text, props: props, children: [], visible: true, onEvent: fn(v: String) { } };
         }
@@ -378,7 +378,7 @@ namespace tinox.core.ui
         // GridColumn::ofComponent, the actual entry point apps use.
         fnc gridCellComponent(content: Component, isHeader: Bool) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("header", isHeader ? "true" : "false");
             return Component { id: "", type: "GridCell", text: "", props: props, children: [content], visible: true, onEvent: fn(v: String) { } };
         }
@@ -450,8 +450,8 @@ namespace tinox.core.ui
         // same-origin plain-path moduleUrl needs no such header.
         fnc jsComponent(tag: String, moduleUrl: String, props: Map<String, String>, onEvent: fnc(String) -> Nothing) -> Component
         {
-            let p: Map<String, String> = Map::new();
-            let keys: List<String> = props.keys();
+            const p: Map<String, String> = Map::new();
+            const keys: List<String> = props.keys();
             var i: Int64 = 0;
             while i < keys.len()
             {
@@ -532,14 +532,14 @@ namespace tinox.core.ui
 
         fnc passwordField(value: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value);
             return Component { id: "", type: "PasswordField", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
 
         fnc emailField(value: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value);
             return Component { id: "", type: "EmailField", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
@@ -547,7 +547,7 @@ namespace tinox.core.ui
         // value: "HH:MM" (native <input type="time"> format).
         fnc timePicker(value: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value);
             return Component { id: "", type: "TimePicker", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
@@ -555,7 +555,7 @@ namespace tinox.core.ui
         // value: "YYYY-MM-DDTHH:MM" (native <input type="datetime-local"> format).
         fnc dateTimePicker(value: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value);
             return Component { id: "", type: "DateTimePicker", text: "", props: props, children: [], visible: true, onEvent: onChange };
         }
@@ -566,11 +566,11 @@ namespace tinox.core.ui
         // conversion mirrors numberField's own wrapping.
         fnc slider(value: Float64, min: Float64, max: Float64, onChange: fnc(Float64) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("value", value.toString());
             props.insert("min", min.toString());
             props.insert("max", max.toString());
-            let wrapped: fnc(String) -> Nothing = fn(v: String) { onChange(v.toFloat()); };
+            const wrapped: fnc(String) -> Nothing = fn(v: String) { onChange(v.toFloat()); };
             return Component { id: "", type: "Slider", text: "", props: props, children: [], visible: true, onEvent: wrapped };
         }
 
@@ -582,7 +582,7 @@ namespace tinox.core.ui
         // is left to the app, same as every other widget here.
         fnc comboBox(options: List<String>, value: String, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("options", Component::encodePipeList(options));
             props.insert("value", value);
             return Component { id: "", type: "ComboBox", text: "", props: props, children: [], visible: true, onEvent: onChange };
@@ -595,7 +595,7 @@ namespace tinox.core.ui
         // dropdown/radioGroup already use for their own options encoding.
         fnc checkboxGroup(options: List<String>, selected: List<String>, onChange: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("options", Component::encodePipeList(options));
             props.insert("selected", Component::encodePipeList(selected));
             return Component { id: "", type: "CheckboxGroup", text: "", props: props, children: [], visible: true, onEvent: onChange };
@@ -609,7 +609,7 @@ namespace tinox.core.ui
         // position, same documented v1 limitation.
         fnc splitLayout(first: Component, second: Component, initialSplitPercent: Float64) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("split", initialSplitPercent.toString());
             return Component { id: "", type: "SplitLayout", text: "", props: props, children: [first, second], visible: true, onEvent: fn(v: String) { } };
         }
@@ -623,7 +623,7 @@ namespace tinox.core.ui
         // reports "TopLabel:SubLabel" for whichever sub-item was clicked.
         fnc menuBar(menus: List<String>, onSelect: fnc(String) -> Nothing) -> Component
         {
-            let props: Map<String, String> = Map::new();
+            const props: Map<String, String> = Map::new();
             props.insert("menus", Component::encodePipeList(menus));
             return Component { id: "", type: "MenuBar", text: "", props: props, children: [], visible: true, onEvent: onSelect };
         }
@@ -639,23 +639,23 @@ namespace tinox.core.ui
         // `name`.
         fnc avatar(name: String, imageUrl: String) -> Component
         {
-            let style: String = "width:2.5rem;height:2.5rem;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--tinox-primary-10);color:var(--tinox-primary-text);font-weight:600;overflow:hidden;";
+            const style: String = "width:2.5rem;height:2.5rem;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--tinox-primary-10);color:var(--tinox-primary-text);font-weight:600;overflow:hidden;";
             if (imageUrl != "")
             {
                 return Component::image(imageUrl, name).withStyle(style + "object-fit:cover;");
             }
-            let initials: String = Component::initialsOf(name);
+            const initials: String = Component::initialsOf(name);
             return Component::label(initials).withStyle(style);
         }
 
         fnc initialsOf(name: String) -> String
         {
-            let parts: List<String> = name.split(" ");
+            const parts: List<String> = name.split(" ");
             var result: String = "";
             var i: Int64 = 0;
             while i < parts.len() && i < 2
             {
-                let part: String = parts[i];
+                const part: String = parts[i];
                 if (part.len() > 0)
                 {
                     result = result + part.charAt(0);
@@ -674,14 +674,14 @@ namespace tinox.core.ui
             if (kind == "success") { color = "#34d399"; }
             if (kind == "error") { color = "#fb7185"; }
             if (kind == "warning") { color = "#fbbf24"; }
-            let style: String = "display:inline-block;padding:2px 10px;border-radius:999px;font-size:0.75rem;font-weight:600;border:1px solid " + color + ";color:" + color + ";background:" + color + "1a;";
+            const style: String = "display:inline-block;padding:2px 10px;border-radius:999px;font-size:0.75rem;font-weight:600;border:1px solid " + color + ";color:" + color + ";background:" + color + "1a;";
             return Component::label(text).withStyle(style);
         }
 
         // A titled, bordered content box (Vaadin Card equivalent).
         fnc card(title: String, content: Component) -> Component
         {
-            let style: String = "border:1px solid var(--tinox-glass-border);border-radius:var(--tinox-radius-l);padding:1rem;background:var(--tinox-glass);";
+            const style: String = "border:1px solid var(--tinox-glass-border);border-radius:var(--tinox-radius-l);padding:1rem;background:var(--tinox-glass);";
             return Component::vbox([
                 Component::heading(title, 4),
                 content
@@ -700,7 +700,7 @@ namespace tinox.core.ui
         // backdrop/close-button click, same as a plain dialog's onClose.
         fnc confirmDialog(title: String, message: String, open: Bool, onConfirm: fnc(String) -> Nothing, onCancel: fnc(String) -> Nothing) -> Component
         {
-            let body: Component = Component::vbox([
+            const body: Component = Component::vbox([
                 Component::label(message),
                 Component::hbox([
                     Component::button("Confirm", onConfirm),
@@ -719,7 +719,7 @@ namespace tinox.core.ui
             var i: Int64 = 0;
             while i < items.len()
             {
-                let isLast: Bool = (i == items.len() - 1);
+                const isLast: Bool = (i == items.len() - 1);
                 if (isLast)
                 {
                     parts.push(Component::label(items[i]));
