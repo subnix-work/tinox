@@ -1064,13 +1064,82 @@
       Use resource-specific stop/close operations or <code>taskWaitReadable</code>;
       after five seconds of ignored cancellation during scope shutdown, the runtime
       fails visibly instead of hanging silently. Explicit await of a cancelled task and
-      a service shutdown request have the same five-second watchdog. Readiness and signal/listener
-      orchestration remain the service lifecycle's responsibility (issue #304).
+      a service shutdown request have the same five-second watchdog. With <code>@Service</code>, its configured common shutdown deadline replaces
+      the standalone five-second shutdown watchdog; see the service lifecycle below.
       Detached workers are explicitly outside structured joining.</p>
     <p>Legacy <code>Int64</code> handle storage/await remains temporarily compatible
       for published packages. New code and task-control operations require
       <code>Task&lt;T&gt;</code>. Invalid/expired handles and cyclic awaits fail with a
       diagnostic; integer handles are deprecated.</p>
+
+    <h4>Coordinated service lifecycle</h4>
+    <p>Add <code>@Service(startupMs, shutdownMs)</code> to <code>class Main</code> to
+      enable coordinated startup, health reporting and graceful shutdown. Both durations
+      are optional positive integer milliseconds (defaults: 30000 and 5000; maximum:
+      3600000). The coordinator starts before database initialization and eager DI.
+      Existing programs opt into this contract explicitly.</p>
+    <pre><code>@ApplicationComponent
+@Synchronized
+class Resources {
+    @OnStart
+    fn start() -&gt; Nothing { /* Initialize resources before listeners start. */ }
+    @Readiness
+    fn ready() -&gt; Bool { return true; }
+    @Liveness
+    fn live() -&gt; Bool { return true; }
+    @OnStop
+    fn stop() -&gt; Nothing { /* Dispose resources after callbacks and tasks finish. */ }
+}
+
+@Service(30000, 5000)
+class Main {
+    fnc main() -&gt; Int32 { return 0; }
+}</code></pre>
+    <p>Import the component and annotated controllers/endpoints from the entry file.
+      Hooks are synchronous instance methods without parameters, on non-generic
+      <code>@ApplicationComponent</code>/<code>@Startup</code> classes without inheritance.
+      Start hooks run after injected dependencies' hooks, then by class/method name;
+      stop hooks run in reverse order. Each hook joins its spawned children before
+      the next step. All initialized owners receive stop hooks even after a startup
+      failure; cleanup continues after errors, preserves the first failure and exits
+      nonzero. Protect mutable state shared with health checks and callbacks using
+      <code>@Synchronized</code>.</p>
+    <p>States are <code>initializing → starting → ready</code>, with <code>unready</code>
+      for failed health contributions, then <code>draining → stopping → stopped</code>
+      (or <code>failed</code>). Readiness requires completed initialization/start hooks,
+      bound required listeners, consumer handshakes and successful readiness/liveness
+      contributions. Returning from Main is not a readiness barrier; with listeners,
+      it leaves the service running. Without listeners, returning requests shutdown.</p>
+    <p>Generated HTTP and HTTP/3 servers reserve <code>GET /health/live</code> and
+      <code>GET /health/ready</code>: HTTP 200 or 503 with JSON state, readiness, liveness
+      and monotonic <code>startedMs</code>, <code>readyMs</code>, <code>shutdownMs</code>.
+      Started means managed bootstrap entry; ready is the first successful health pass,
+      not process creation or banner timing. Health contributions run periodically on
+      the coordinator and should be quick. Unready startup exceeding its budget fails
+      visibly. A later false health result changes health, without restarting the process.</p>
+    <p><code>serviceState()</code>, <code>serviceStatusJson()</code>,
+      <code>serviceIsReady()</code>, <code>serviceIsLive()</code>,
+      <code>serviceIsStopping()</code> and the three timestamp getters
+      <code>serviceStartedMs()</code>/<code>serviceReadyMs()</code>/<code>serviceShutdownMs()</code>
+      expose the same state. <code>serviceAwaitReady(ms)</code> returns Bool;
+      <code>serviceBoundPort(index)</code> reports the actual port of an auto-run task
+      in bootstrap-plan order (-1 before binding or for a broker).
+      <code>tinox explain --bootstrap Main.tnx --json</code> includes deadlines,
+      hook order, tasks and shutdown policy.</p>
+    <p>SIGTERM, SIGINT, <code>serviceRequestShutdown()</code> and
+      <code>taskRequestShutdown()</code> mark the service unready and stop admission.
+      Accepted HTTP responses and broker acknowledgements finish; WebSockets send close
+      code 1001 and run OnClose. Listeners/workers join before remaining structured
+      children are cancelled/joined, reverse stop hooks run and database pools close.
+      <code>serviceAwaitShutdown()</code> lets Main wait for the stop request.
+      One common shutdown deadline covers every stage; expiry terminates the process
+      with status 1, including blocked native I/O or hooks. No asynchronous thread
+      cancellation is used. Explicitly detached user tasks remain outside structured joining.</p>
+    <p>Use an exec-form container entrypoint so signals reach tinox. Configure a startup
+      probe and readiness/liveness probes against the health paths, and give the
+      orchestrator a termination grace period longer than the shutdown budget.
+      CLI <code>@Command</code> and <code>@TinoxUIApp</code> entrypoints cannot currently
+      combine with <code>@Service</code>; compilation rejects them visibly.</p>
 
     <h4>Shared application state</h4>
     <p><code>@ApplicationComponent</code> creates one lazy singleton per component class;
@@ -1234,6 +1303,35 @@ class Api {
       virtual functions. Every object that implements an interface receives
       a pointer to a table of function pointers.
     </p>
+
+    <h3>Absence and recoverable errors</h3>
+    <p>For new library APIs, use <code>Option&lt;T&gt;</code> for absence and
+      <code>Result&lt;T&gt;</code> for expected failures. Import
+      <code>tinox.core.option</code> and <code>tinox.core.result</code>.
+      <code>Some("")</code> means present-empty; <code>None</code> means absent.
+      Check <code>isSome()</code>/<code>isNone()</code> or choose an explicit
+      fallback with <code>unwrapOr()</code>. Do not add a nullable
+      <code>T?</code> alternative for the same lookup.</p>
+    <p><code>Result&lt;T&gt;</code> retains its String error. Use
+      <code>isOk()</code>/<code>isErr()</code> and <code>getError()</code>;
+      preserve operation, target and cause without exposing secrets. Do not
+      infer status from message contents. APIs needing stable error categories
+      should use documented domain outcome fields. A generic typed-error
+      Result and allocation changes are deferred.</p>
+    <p>Exceptions remain appropriate for documented precondition, programming
+      and setup failures. <code>Option.unwrap()</code> on None throws
+      <code>"Option is None"</code>; <code>Result.unwrap()</code> on Err throws
+      the original error. Callback exceptions propagate through combinators.
+      Use <code>finally</code> for cleanup on normal and exceptional exits.</p>
+    <p>The additive HTTP methods <code>findHeader</code>, <code>findParam</code>,
+      <code>findQuery</code> and <code>QueryString::find</code> return
+      <code>Option&lt;String&gt;</code>. Headers are case-insensitive;
+      path/query names are case-sensitive. Queries keep raw values, the last
+      duplicate, and present-empty bare keys. Existing String getters keep
+      their empty fallback without deprecation warnings. These source APIs
+      require a future HTTP package release; existing published versions do
+      not contain them. See the <a href="docs/api-contracts.md">API inventory
+      and migration guide</a> for examples and legacy I/O limitations.</p>
 
     <h3>Keyword Overview</h3>
     <table>
@@ -2001,6 +2099,7 @@ epoll_fd = epoll_create1(0);
     <div class="mod-section" id="mod-http_server">
 
   <h2>http_server</h2>
+  <p>Typed JSON responses with dynamic status codes are available as <code>Response&lt;T&gt;</code>. See the <a href="docs/typed-rest-responses.md">typed response and OpenAPI contract guide</a> for checkout-library setup and the annotation-first CRUD example.</p>
   <p class="mod-ref-note">Full reference (description, dependencies, examples, classes &amp; methods) is loaded directly from the published tinox-central package documentation, so it does not have to be maintained in two places: <a href="docs/tinox-core/http_server/1-0-4/docs.html" target="_blank" rel="noopener">docs/tinox-core/http_server/1-0-4/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/http_server/1-0-4/docs.html" loading="lazy" title="tinox.core:http_server documentation"></iframe>
   <p class="mod-ref-note">Request body size cap: 4&nbsp;MiB (<code>TINOX_MAX_BODY</code> in <code>runtime.c</code>). A request whose <code>Content-Length</code> exceeds this is rejected up front with <code>413 Payload Too Large</code> and the connection is closed &mdash; the handler is never invoked, and the body is never silently truncated and processed as if it were complete (issue #174).</p>
@@ -2500,6 +2599,7 @@ epoll_fd = epoll_create1(0);
     <div class="mod-section" id="mod-logger">
 
   <h2>logger</h2>
+  <p><a href="docs/observability.md">Request correlation, structured logging and OTLP tracing (development reference)</a></p>
   <p class="mod-ref-note">Full reference (description, dependencies, examples, classes &amp; methods) is loaded directly from the published tinox-central package documentation, so it does not have to be maintained in two places: <a href="docs/tinox-core/logger/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/logger/1-0-0/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/logger/1-0-0/docs.html" loading="lazy" title="tinox.core:logger documentation"></iframe>
   </div>

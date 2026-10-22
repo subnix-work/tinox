@@ -456,6 +456,8 @@ pub struct TypeChecker {
     current_return_type: Option<ValueType>,
     /// All class names defined in the program — allows passing a class as a value (e.g. DB.of(User)).
     known_class_names: HashSet<String>,
+    /// Classes whose query chains are intercepted by ORM code generation.
+    entity_class_names: HashSet<String>,
     /// Subset of known_class_names that are generic (`class Foo<T>`). Generic
     /// classes legitimately use struct-literal fields without registered field
     /// declarations, so field-access checks stay permissive for them.
@@ -951,6 +953,21 @@ impl TypeChecker {
         symbols.functions.insert("taskSetDeadline".into(), FunctionSignature {
             params: vec![("milliseconds".into(), ValueType::Int)], return_type: ValueType::Nothing,
         });
+        for (name, return_type) in [
+            ("serviceIsReady", ValueType::Bool), ("serviceIsLive", ValueType::Bool),
+            ("serviceIsStopping", ValueType::Bool), ("serviceState", ValueType::String),
+            ("serviceStatusJson", ValueType::String), ("serviceStartedMs", ValueType::Int),
+            ("serviceReadyMs", ValueType::Int), ("serviceShutdownMs", ValueType::Int),
+            ("serviceRequestShutdown", ValueType::Nothing), ("serviceAwaitShutdown", ValueType::Nothing),
+        ] {
+            symbols.functions.insert(name.into(), FunctionSignature { params: vec![], return_type });
+        }
+        symbols.functions.insert("serviceBoundPort".into(), FunctionSignature {
+            params: vec![("taskIndex".into(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("serviceAwaitReady".into(), FunctionSignature {
+            params: vec![("milliseconds".into(), ValueType::Int)], return_type: ValueType::Bool,
+        });
         // Time
         symbols.functions.insert("now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
         symbols.functions.insert("Time_now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
@@ -1154,10 +1171,19 @@ impl TypeChecker {
             });
         }
         // File I/O extended
-        for name in &["fileReadAllText", "fileWriteAllText", "fileDelete", "fileClose"] {
+        for name in &["fileReadAllText", "fileWriteAllText", "fileAppendText", "fileDelete", "fileClose"] {
             let ret = if *name == "fileReadAllText" { ValueType::String } else { ValueType::Nothing };
             symbols.functions.insert(name.to_string(), FunctionSignature {
                 params: vec![("path".to_string(), ValueType::String)], return_type: ret,
+            });
+        }
+        symbols.functions.insert("fileWriteAllTextChecked".to_string(), FunctionSignature {
+            params: vec![("path".to_string(), ValueType::String), ("content".to_string(), ValueType::String)],
+            return_type: ValueType::String,
+        });
+        for name in &["dirCreateChecked", "dirCreateAllChecked"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature {
+                params: vec![("path".to_string(), ValueType::String)], return_type: ValueType::String,
             });
         }
         for name in &["dirList", "dirCreate", "dirDelete"] {
@@ -1302,6 +1328,7 @@ impl TypeChecker {
             type_param_scope: HashSet::new(),
             current_return_type: None,
             known_class_names: HashSet::new(),
+            entity_class_names: HashSet::new(),
             generic_class_names: HashSet::new(),
             class_type_params: HashMap::new(),
             method_uses_this: HashSet::new(),
@@ -1629,6 +1656,18 @@ impl TypeChecker {
                         }
                         self.symbols.functions.insert(key.clone(), sig);
                         self.method_visibility.insert(key, method.visibility.clone());
+                    }
+                    // Codegen emits a String-returning instance method for
+                    // classes with log-masked fields. Keep explicit methods'
+                    // signatures, matching codegen's override behavior.
+                    if c.fields.iter().any(|field| field.annotations.iter().any(|a| {
+                        matches!(a.name.as_str(), "Sensitive" | "Masked")
+                    })) {
+                        self.symbols.functions.entry(format!("{}_toString", c.name))
+                            .or_insert_with(|| FunctionSignature {
+                                params: vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))],
+                                return_type: ValueType::String,
+                            });
                     }
                     // @JsonSerializable: register compiler-generated toJson() and fromJson()
                     if c.annotations.iter().any(|a| a.name == "JsonSerializable") {
@@ -1994,6 +2033,9 @@ impl TypeChecker {
                 }
 
                 self.known_class_names.insert(name.clone());
+                if c.annotations.iter().any(|a| matches!(a.name.as_str(), "Entity" | "Table")) {
+                    self.entity_class_names.insert(name.clone());
+                }
                 if !c.type_params.is_empty() {
                     self.generic_class_names.insert(name.clone());
                     self.class_type_params.insert(name.clone(), c.type_params.clone());
@@ -2524,6 +2566,35 @@ impl TypeChecker {
         ty
     }
 
+    /// Mirror the receiver shapes accepted by codegen's ORM interceptor.
+    /// Query stubs return Any, but first() materializes this concrete entity.
+    fn orm_query_entity<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
+        match &expr.node {
+            ExprKind::EnumValue { enum_name, variant, args, .. }
+                if enum_name == "DB" && variant == "of" =>
+            {
+                match args.first().map(|a| &a.node) {
+                    Some(ExprKind::Ident(name)) if self.entity_class_names.contains(name) => Some(name),
+                    _ => None,
+                }
+            }
+            ExprKind::MethodCall { obj, method, args }
+                if method == "of" && matches!(&obj.node, ExprKind::Ident(name) if name == "DB") =>
+            {
+                match args.first().map(|a| &a.node) {
+                    Some(ExprKind::Ident(name)) if self.entity_class_names.contains(name) => Some(name),
+                    _ => None,
+                }
+            }
+            ExprKind::MethodCall { obj, method, .. }
+                if matches!(method.as_str(), "filter" | "orderBy" | "orderByDesc" | "limit" | "offset") =>
+            {
+                self.orm_query_entity(obj)
+            }
+            _ => None,
+        }
+    }
+
     fn infer_type_inner(&mut self, expr: &Expr) -> ValueType {
         match &expr.node {
             ExprKind::Literal(lit) => self.literal_type(lit),
@@ -2618,6 +2689,11 @@ impl TypeChecker {
                 // Any-typed receiver: dynamic dispatch, no type errors
                 if obj_ty == ValueType::Any {
                     for arg in args { self.infer_type(arg); }
+                    if method == "first" && args.is_empty() {
+                        if let Some(entity) = self.orm_query_entity(obj) {
+                            return ValueType::Named(entity.to_string(), vec![]);
+                        }
+                    }
                     return ValueType::Any;
                 }
                 // `List<C>.toJson()` (C a @JsonSerializable class): mirrors
@@ -4148,6 +4224,31 @@ mod tests {
         assert!(result.is_ok(), "expected ok but got errors: {:?}", result.unwrap_err().errors.iter().map(|e| &e.message).collect::<Vec<_>>());
     }
 
+    #[test]
+    fn orm_first_exports_entity_type() {
+        let code = r#"
+            class DB { fnc of(cls: Any) -> Any { return 0; } }
+            @Entity class Account { var id: Int64; var name: String; var balance: Int64; }
+            fn balance() -> Int64 {
+                return DB::of(Account).filter(a => a.id == 1).first().balance;
+            }
+        "#;
+        let tokens = Lexer::new(code).tokenize().unwrap();
+        let mut ast = Parser::new(tokens).parse().unwrap();
+        tinox_parser::assign_node_ids(&mut ast);
+        let mut checker = TypeChecker::new();
+        checker.check(&ast).unwrap();
+        let types = checker.expr_value_types();
+        assert!(types.values().any(|ty| *ty == ValueType::Named("Account".into(), vec![])));
+        // A known receiver also enables normal field validation, rather than
+        // silently accepting a typo through Any.
+        err_contains(&code.replace("first().balance", "first().missing"), "missing");
+        err_contains(&code.replace("first().balance", "first().name"), "String");
+        ok(&code.replace("@Entity", "@Table(\"accounts\")"));
+        // An unrelated dynamic first() must retain its permissive behavior.
+        ok("fn dynamic(q: Any) -> Int64 { return q.first().anything; }");
+    }
+
     fn err_contains(code: &str, msg: &str) {
         let result = typecheck_code(code);
         assert!(result.is_err(), "expected error containing '{}' but typecheck passed", msg);
@@ -4157,6 +4258,28 @@ mod tests {
             "expected error containing '{}', got: {:?}",
             msg,
             bag.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn log_masked_tostring_has_a_checked_instance_signature() {
+        for annotation in ["Sensitive", "Masked"] {
+            let class = format!("class User {{ @{annotation} var secret: String; }}");
+            ok(&format!("{class} fn f(user: User) -> String {{ return user.toString(); }}"));
+            err_contains(
+                &format!("{class} fn f(user: User) -> String {{ return user.toString(1); }}"),
+                "expected 1 arguments, found 2",
+            );
+            err_contains(
+                &format!("{class} fn f(user: User) -> Int64 {{ return user.toString(); }}"),
+                "expected Int64, found String",
+            );
+        }
+        // A user-defined method takes precedence over the generated helper.
+        ok("class User { @Sensitive var secret: String; fn toString(value: Int64) -> Int64 { return value; } } fn f(user: User) -> Int64 { return user.toString(7); }");
+        err_contains(
+            "class User { var secret: String; } fn f(user: User) -> String { return user.toString(); }",
+            "undefined function: User_toString",
         );
     }
 

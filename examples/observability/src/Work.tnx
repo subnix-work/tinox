@@ -1,0 +1,23 @@
+import tinox.core.http;
+import tinox.core.logger;
+
+@Log
+class Work
+{
+    fn new() -> Work { return Work {}; }
+
+    fn run() -> String
+    {
+        Logger::info(this.log, "handling probe");
+        const task = spawn Work::dependency();
+        return await task;
+    }
+
+    async fnc dependency() -> String
+    {
+        const logger = Logger::new("dependency");
+        Logger::info(logger, "calling dependency");
+        const response = Http::get("http://127.0.0.1:8081/health");
+        return httpBody(response);
+    }
+}

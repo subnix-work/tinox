@@ -124,3 +124,19 @@ fn conflicting_requested_versions_are_rejected_and_publication_is_blocked() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("version conflict"));
     p.cli(&["check", "src/Main.tnx"], false);
 }
+
+#[test]
+fn contract_generation_uses_local_sources_and_propagates_override_errors() {
+    let p = Project::new();
+    p.write("local/src/demo/counter/Counter.tnx",
+        "namespace demo.counter { class Counter { fnc unpublished() -> Int64 { return 42; } } }");
+    p.write("src/Main.tnx",
+        "import demo.counter; class Main { fnc main() -> Int32 { println(Counter::unpublished()); return 0; } }");
+    let out = p.cli(&["contract", "src/Main.tnx"], true);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("openapi:"));
+    p.write("tinox.overrides.yaml", "overrides:\n  'demo:counter:1.0.0': missing\n");
+    let out = p.cli(&["contract", "src/Main.tnx"], false);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("missing"));
+    fs::remove_file(p.0.join("tinox.overrides.yaml")).unwrap();
+    p.cli(&["contract", "src/Main.tnx"], false);
+}

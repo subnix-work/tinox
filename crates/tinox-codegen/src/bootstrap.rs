@@ -156,6 +156,7 @@ pub struct Step {
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct BootstrapPlan {
+    pub lifecycle: super::lifecycle::LifecyclePlan,
     pub mode: String,
     pub entry_point: Option<String>,
     pub banner: bool,
@@ -225,6 +226,9 @@ impl CodeGen {
     }
     pub(super) fn emit_global_initializers(&mut self) {
         use std::fmt::Write;
+        if self.service_enabled() {
+            return;
+        }
         let initializers = self.bootstrap_plan().initializers;
         if initializers.is_empty() {
             return;
@@ -286,7 +290,7 @@ impl CodeGen {
         };
         let components = self.di_components.iter().map(|component| Component {
             class: component.class_name.clone(), scope: scope(&component.scope).into(),
-            initialization: match component.scope { DiScope::Startup => "eager global constructor before main", DiScope::Application => "lazy on first provider call", DiScope::HttpRequest => "fresh instance per factory call" }.into(),
+            initialization: match component.scope { DiScope::Startup if self.service_enabled() => "eager managed initialization before hooks and listeners", DiScope::Startup => "eager global constructor before main", DiScope::Application => "lazy on first provider call", DiScope::HttpRequest => "fresh instance per factory call" }.into(),
             provider: format!("{}_di_{}", component.class_name, if component.scope == DiScope::HttpRequest { "create" } else { "get" }),
             injections: component.inject_fields.iter().map(|field| {
                 let target = self.di_components.iter().find(|c| c.class_name == field.field_type);
@@ -370,9 +374,12 @@ impl CodeGen {
         let mut steps = initializers
             .iter()
             .map(|init| Step {
-                action: "global_constructor".into(),
+                action: if self.service_enabled() {
+                    "managed_initializer"
+                } else { "global_constructor"
+                }.into(),
                 target: init.name.clone(),
-                ordering: format!("priority {}, before entry point", init.priority),
+                ordering: format!("priority {}, before hooks and entry point", init.priority),
             })
             .collect::<Vec<_>>();
         for task in &background_tasks {
@@ -395,7 +402,7 @@ impl CodeGen {
             steps.push(Step {
                 action: "join".into(),
                 target: task.function.clone(),
-                ordering: "registration order, after Main returns; may wait indefinitely".into(),
+                ordering: if self.service_enabled() { "registration order, after Main returns; bounded by the common shutdown deadline after a stop request" } else { "registration order, after Main returns; may wait indefinitely" }.into(),
             });
         }
         let mut notes = vec![
@@ -403,12 +410,13 @@ impl CodeGen {
             "Spawn order does not establish execution order between threads or readiness before Main.".into(),
             "Application and startup singleton getters serialize initialization/publication; shared mutable state needs @Synchronized or explicit coordination. Request-scoped dependencies captured by singletons are shared and unsafe for per-request state.".into(),
             "WebSocket/UI instances are allocated per connection and AMQP instances per consumer connection; those paths do not use DI providers.".into(),
-            "No generated coordinated shutdown or cancellation protocol is promised by this bootstrap (#304).".into(),
+            if self.service_enabled() {
+            "Managed lifecycle: signal coordinator, admission control, joined workers, reverse OnStop hooks and database disposal share one shutdown deadline." } else { "Coordinated lifecycle is opt-in: annotate class Main with @Service." }.into(),
         ];
         if mode != "command" && !self.cli_commands.is_empty() {
             notes.push("Command dispatch is suppressed because an earlier generated entry point already owns main.".into());
         }
-        BootstrapPlan { mode: mode.into(), entry_point, banner: self.banner_enabled && !background_tasks.is_empty(), initializers, background_tasks, components, routes,
+        BootstrapPlan { lifecycle: self.lifecycle_plan(), mode: mode.into(), entry_point, banner: self.banner_enabled && !background_tasks.is_empty(), initializers, background_tasks, components, routes,
             configuration: self.config_fields.iter().map(|field| ConfigurationBinding { class: field.class_name.clone(), field: field.field_name.clone(), key: field.config_key.clone(), resolution: "runtime; unresolved".into(), value: None, application: "generated struct-literal construction path; not automatically read by DI/endpoint allocation".into() }).collect(),
             steps, notes }
     }

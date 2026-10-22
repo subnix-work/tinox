@@ -94,6 +94,15 @@ pub struct RouteInfo {
     pub return_type: Type,
 }
 
+/// The payload type remains in route metadata even though the transport
+/// receives only a serialized body. Shared by validation and API contracts.
+pub fn response_body_type(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Generic { name, args } if name == "Response" && args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiScope {
     Application,
@@ -669,6 +678,20 @@ impl AnnotationProcessor {
             },
         );
 
+        registry.insert("Service".into(), AnnotationInfo {
+            name: "Service".into(), valid_targets: vec![AnnotationTarget::Class],
+            min_args: 0, max_args: 2,
+            description: "Enable coordinated lifecycle on Main; optional startup and shutdown deadlines in milliseconds (30000, 5000)".into(),
+        });
+        for (name, description) in [
+            ("OnStart", "Run a singleton initialization hook before starting required services"),
+            ("OnStop", "Run a singleton disposal hook after draining, in reverse dependency/method order"),
+            ("Readiness", "Contribute a synchronous Bool to readiness after required listeners/consumers are usable"),
+            ("Liveness", "Contribute a synchronous Bool to liveness"),
+        ] {
+            registry.insert(name.into(), AnnotationInfo { name: name.into(), valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0, max_args: 0, description: description.into() });
+        }
         registry.insert("Synchronized".into(), AnnotationInfo {
             name: "Synchronized".into(),
             valid_targets: vec![AnnotationTarget::Class, AnnotationTarget::Method],
@@ -1742,6 +1765,52 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
         }
         DeclKind::Class(c) => {
             errors.extend(processor.validate(&c.annotations, AnnotationTarget::Class));
+            if let Some(service) = c.annotations.iter().find(|a| a.name == "Service") {
+                if c.name != "Main" || !c.type_params.is_empty() || c.extends.is_some() {
+                    errors.push(Error::new(
+                        service.span,
+                        "@Service belongs on a non-generic class Main without inheritance",
+                    ));
+                }
+                for arg in &service.args {
+                    if !matches!(arg, AnnotationArg::Literal(Literal::Integer(ms)) if *ms > 0 && *ms <= 3600000)
+                    {
+                        errors.push(Error::new(
+                            service.span,
+                            "@Service deadlines must be integer milliseconds in 1..=3600000",
+                        ));
+                    }
+                }
+            }
+            for method in &c.methods {
+                for hook in method.annotations.iter().filter(|a| {
+                    matches!(
+                        a.name.as_str(),
+                        "OnStart" | "OnStop" | "Readiness" | "Liveness"
+                    )
+                }) {
+                    let health = matches!(hook.name.as_str(), "Readiness" | "Liveness");
+                    let return_ok = if health {
+                        matches!(method.ret_type, Type::Bool)
+                    } else {
+                        matches!(method.ret_type, Type::Nothing)
+                    };
+                    if method.static_
+                        || method.is_async
+                        || !method.type_params.is_empty()
+                        || !method.params.is_empty()
+                        || !return_ok
+                        || !c.type_params.is_empty()
+                        || c.extends.is_some()
+                        || !c
+                            .annotations
+                            .iter()
+                            .any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"))
+                    {
+                        errors.push(Error::new(hook.span, format!("@{} requires a synchronous, non-generic singleton instance method with no parameters returning {} (no class inheritance)", hook.name, if health { "Bool" } else { "Nothing" })));
+                    }
+                }
+            }
             let synchronized_class = c.annotations.iter().any(|a| a.name == "Synchronized");
             let has_synchronized = synchronized_class || c.methods.iter().any(|m| m.annotations.iter().any(|a| a.name == "Synchronized"));
             if has_synchronized && (!c.annotations.iter().any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"))
@@ -1902,7 +1971,37 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
         }
     }
 
-    let return_ok = is_http_context_type(&method.ret_type)
+    let serializable = |ty: &Type| {
+        is_json_serializable_class_type(ty, json_serializable)
+            || is_json_serializable_list_type(ty, json_serializable)
+            || matches!(ty, Type::String | Type::Int64 | Type::Int32 | Type::Bool)
+    };
+    let typed_response = matches!(&method.ret_type, Type::Generic { name, .. } if name == "Response");
+    if typed_response {
+        if !response_body_type(&method.ret_type).is_some_and(serializable) {
+            errors.push(Error::new(method.span, format!(
+                "REST handler '{}' requires Response<T> with one JSON-serializable body type; use a \
+                 @JsonSerializable class, List of such classes, String, Int64, Int32 or Bool",
+                method.name
+            )));
+        }
+        for ann in &method.annotations {
+            if ann.name == "Produces" && ann.args.first().and_then(media_type_arg_to_mime).as_deref() != Some("application/json") {
+                errors.push(Error::new(ann.span, "Response<T> serializes JSON: use @Produces(\"application/json\") or remove @Produces"));
+            }
+            if ann.name == "StatusCode" {
+                let valid = matches!(ann.args.first(), Some(AnnotationArg::Literal(Literal::Integer(n)))
+                    if (200..=299).contains(n) && *n != 204 && *n != 205);
+                if !valid {
+                    errors.push(Error::new(ann.span, "Response<T> @StatusCode must be a body-bearing success status (200-299 except 204/205); use Response<T>::error or ::noContent for other outcomes"));
+                }
+            }
+        }
+        if method.params.iter().any(|p| p.annotations.iter().any(|a| a.name == "HttpContext")) {
+            errors.push(Error::new(method.span, "Response<T> cannot be combined with @HttpContext; return HttpContext for manual response handling"));
+        }
+    }
+    let return_ok = typed_response || is_http_context_type(&method.ret_type)
         || is_json_serializable_class_type(&method.ret_type, json_serializable)
         || is_json_serializable_list_type(&method.ret_type, json_serializable)
         || matches!(&method.ret_type, Type::String | Type::Int64 | Type::Int32 | Type::Bool);
@@ -1988,6 +2087,22 @@ mod tests {
 
     fn valid(src: &str) -> Vec<Error> {
         validate_annotations(&parse(src), &[])
+    }
+
+    #[test]
+    fn service_hooks_require_explicit_singleton_instance_contracts() {
+        for source in [
+            "@Service(0) class Main {}",
+            "@Service(3600001) class Main {}",
+            "@Service class Other {}",
+            "class Plain { @OnStart fn start() -> Nothing {} }",
+            "@Startup class State { @OnStop fnc stop() -> Nothing {} }",
+            "@Startup class State { @Readiness fn ready() -> Int64 { return 1; } }",
+            "@Startup class State { @Liveness fn live(value: Bool) -> Bool { return value; } }",
+        ] {
+            assert!(!valid(source).is_empty(), "unexpectedly accepted: {source}");
+        }
+        assert!(valid("@Service(1000, 2000) class Main {} @Startup class State { @OnStart fn start() -> Nothing {} @OnStop fn stop() -> Nothing {} @Readiness fn ready() -> Bool { return true; } @Liveness fn live() -> Bool { return true; } }").is_empty());
     }
 
     #[test]
@@ -2094,6 +2209,28 @@ mod tests {
         let errors = valid("class Ctrl { @GET\nfn list() -> Ctx { return Ctx::new(); } }");
         assert!(!errors.is_empty());
         assert!(errors.iter().any(|e| e.message.contains("cannot auto-serialize return type")));
+    }
+
+    #[test]
+    fn typed_response_annotation_contract() {
+        for ty in ["String", "Int64", "Int32", "Bool", "Person", "List<Person>"] {
+            let src = format!("@annotation class JsonSerializable {{}}\n@JsonSerializable class Person {{ var name: String; }}\nclass Ctrl {{ @GET @Produces(\"application/json\") @StatusCode(201) fn get() -> Response<{ty}> {{}} }}");
+            assert!(valid(&src).is_empty(), "{ty}: {:?}", valid(&src));
+            let routes = proc(&src).route_entries;
+            assert!(response_body_type(&routes[0].return_type).is_some());
+        }
+        for (annotations, params, ty, diagnostic) in [
+            ("", "", "Response<Unknown>", "one JSON-serializable body type"),
+            ("", "", "Response<Response<String>>", "one JSON-serializable body type"),
+            ("@Produces(\"text/plain\")", "", "Response<String>", "serializes JSON"),
+            ("@StatusCode(204)", "", "Response<String>", "body-bearing success status"),
+            ("@StatusCode(205)", "", "Response<String>", "body-bearing success status"),
+            ("@StatusCode(404)", "", "Response<String>", "body-bearing success status"),
+            ("", "@HttpContext ctx: HttpContext", "Response<String>", "cannot be combined with @HttpContext"),
+        ] {
+            let errors = valid(&format!("class Ctrl {{ @GET {annotations} fn get({params}) -> {ty} {{}} }}"));
+            assert!(errors.iter().any(|e| e.message.contains(diagnostic)), "{errors:?}");
+        }
     }
 
     #[test]

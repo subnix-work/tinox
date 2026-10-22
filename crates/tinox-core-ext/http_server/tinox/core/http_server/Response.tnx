@@ -1,0 +1,63 @@
+module tinox.core.http_server;
+
+namespace tinox.core.http_server
+{
+    /**
+     * A typed JSON response for annotation-driven REST handlers.
+     * T has the same supported types as an auto-serialized route return.
+     * The compiler serializes the body; applications never build JSON here.
+     * The field order is part of the shared HTTP/HTTP3 route-shim ABI.
+     */
+    class Response<T>
+    {
+        var statusCode: Int64;
+        var headers: Map<String, String>;
+        // A zero/one-element list avoids inventing a null value for T.
+        var values: List<T>;
+        var errorMessage: String;
+        // 0 = success, 1 = error, 2 = no content.
+        var kind: Int64;
+
+        /** Uses @StatusCode, or 200, as the success status. */
+        fnc ok(value: T) -> Response<T>
+        {
+            return Response<T> { statusCode: 0, headers: Map::new(), values: [value], errorMessage: "", kind: 0 };
+        }
+
+        /** Returns the centrally escaped JSON object {"error": message}. */
+        fnc error(code: Int64, message: String) -> Response<T>
+        {
+            return Response<T> { statusCode: code, headers: Map::new(), values: [], errorMessage: message, kind: 1 };
+        }
+
+        fnc noContent() -> Response<T>
+        {
+            return Response<T> { statusCode: 204, headers: Map::new(), values: [], errorMessage: "", kind: 2 };
+        }
+
+        /** Overrides the default success status (200-299, except 204/205). */
+        fn withStatus(code: Int64) -> Response<T>
+        {
+            this.statusCode = code;
+            // Zero is the internal default-status sentinel, not an override.
+            if (code == 0) { this.statusCode = -1; }
+            return this;
+        }
+
+        /** JSON content type and transport framing are owned by the server. */
+        fn header(name: String, value: String) -> Response<T>
+        {
+            let lower: String = name.toLowerCase();
+            if (lower == "content-type" || lower == "content-length" || lower == "transfer-encoding" || lower == "connection")
+            {
+                throw "Response.header: content type and framing headers are reserved";
+            }
+            if (name.contains("\r") || name.contains("\n") || value.contains("\r") || value.contains("\n"))
+            {
+                throw "Response.header: header names and values must not contain newlines";
+            }
+            this.headers[name] = value;
+            return this;
+        }
+    }
+}

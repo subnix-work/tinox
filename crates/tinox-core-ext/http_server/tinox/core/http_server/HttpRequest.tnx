@@ -1,6 +1,7 @@
 module tinox.core.http_server;
 
 import tinox.core.json;
+import tinox.core.option;
 
 namespace tinox.core.http_server
 {
@@ -61,12 +62,23 @@ namespace tinox.core.http_server
          *
          * @param name the header name (case-insensitive lookup)
          * @return the header value, or empty string if not found
+         * Use findHeader() to distinguish absent from present-empty.
          */
         fn getHeader(name: String) -> String
         {
+            return this.findHeader(name).unwrapOr("");
+        }
+
+        /**
+         * Finds a header using case-insensitive lookup. Some("") means
+         * present but empty; None means absent. Exact spelling wins when
+         * the map contains multiple spellings, as with getHeader().
+         */
+        fn findHeader(name: String) -> Option<String>
+        {
             if (this.headers.contains(name))
             {
-                return this.headers[name];
+                return Option<String>::some(this.headers[name]);
             }
             const lower: String = name.toLowerCase();
             var key: Int64 = 0;
@@ -75,11 +87,11 @@ namespace tinox.core.http_server
             {
                 if (keys[key].toLowerCase() == lower)
                 {
-                    return this.headers[keys[key]];
+                    return Option<String>::some(this.headers[keys[key]]);
                 }
                 key = key + 1;
             }
-            return "";
+            return Option<String>::none();
         }
 
         /**
@@ -87,14 +99,21 @@ namespace tinox.core.http_server
          *
          * @param name the parameter name
          * @return the parameter value, or empty string if not found
+         * Use the corresponding find method to preserve absence.
          */
         fn getParam(name: String) -> String
         {
+            return this.findParam(name).unwrapOr("");
+        }
+
+        /** Finds a case-sensitive path parameter, preserving empty values. */
+        fn findParam(name: String) -> Option<String>
+        {
             if (this.params.contains(name))
             {
-                return this.params[name];
+                return Option<String>::some(this.params[name]);
             }
-            return "";
+            return Option<String>::none();
         }
 
         /**
@@ -102,10 +121,21 @@ namespace tinox.core.http_server
          *
          * @param name the query parameter name
          * @return the parameter value, or empty string if not found
+         * Use the corresponding find method to preserve absence.
          */
         fn getQuery(name: String) -> String
         {
             return QueryString::get(this.queryString, name);
+        }
+
+        /**
+         * Finds a query parameter, preserving present-empty values.
+         * Uses QueryString::parse semantics (raw keys/values, last duplicate
+         * wins, a bare key is empty, empty keys are ignored).
+         */
+        fn findQuery(name: String) -> Option<String>
+        {
+            return QueryString::find(this.queryString, name);
         }
 
         /**

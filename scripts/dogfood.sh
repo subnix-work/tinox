@@ -109,6 +109,9 @@ for f in "${GOOD_EXAMPLES[@]}"; do
     run_job "$(job_id "build_$f")" "$TINOX" build "$f" -o "$TMP/out/$(job_id "build_$f")"
 done
 
+# This example exercises unpublished extended-library changes from checkout.
+run_job "$(job_id typed_rest_build)" env TINOX="$TINOX" bash examples/typed_rest/build.sh "$TMP/out/typed_rest"
+
 run_smoke_job "$(job_id smoke_simple)" examples/simple_test/Main.tnx ""
 run_smoke_job "$(job_id smoke_vtable)" examples/vtable_dispatch/Main.tnx "$(printf '5\n10\n42')"
 run_smoke_job "$(job_id smoke_modules)" examples/modules/main_example/Main.tnx "$(printf '7\n12')"
@@ -150,6 +153,7 @@ for f in "${GOOD_EXAMPLES[@]}"; do
 done
 
 echo "== Dogfood: example smoke runs =="
+report "examples/typed_rest (checkout libraries)" "$(job_id typed_rest_build)"
 report examples/simple_test/Main.tnx "$(job_id smoke_simple)"
 report examples/vtable_dispatch/Main.tnx "$(job_id smoke_vtable)"
 report examples/modules/main_example/Main.tnx "$(job_id smoke_modules)"

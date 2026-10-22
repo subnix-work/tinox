@@ -1,0 +1,14 @@
+[package]
+name = "observability"
+version = "0.1.0"
+description = "Correlate annotated routes, spawned operations and outbound HTTP calls"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http_server"
+version = "1.0.4"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http"
+version = "1.0.3"
