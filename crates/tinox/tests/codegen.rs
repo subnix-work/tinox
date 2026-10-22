@@ -50,7 +50,7 @@ fn run(source: &str) -> String {
     fs::write(&ll, &ir).expect("write IR");
 
     assert!(
-        Command::new("llc").args(["-O1", "-march=x86-64", "-filetype=obj", "-o", &obj, &ll])
+        Command::new("llc").args(["-O1", if cfg!(target_arch = "aarch64") { "-march=aarch64" } else { "-march=x86-64" }, "-filetype=obj", "-o", &obj, &ll])
             .status().expect("llc").success(),
         "llc failed"
     );

@@ -2798,6 +2798,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     }).collect();
 
     let mut cg = CodeGen::new();
+    cg.set_target(resolve_target()?);
     cg.set_expr_value_types(tc.expr_value_types());
     cg.set_semantic_facts(tc.semantic_facts());
     cg.set_interface_info(iface, impls);
@@ -4438,6 +4439,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
 
     let _backend_stage = tinox_common::frontend::Stage::new("backend");
     let mut codegen = CodeGen::new();
+    codegen.set_target(resolve_target()?);
     codegen.set_expr_value_types(checked.expr_types);
     codegen.set_semantic_facts(checked.semantics);
     codegen.set_interface_info(iface_methods, class_implements);
@@ -4647,6 +4649,31 @@ fn verify_ir(ir_path: &str) -> Result<(), Failure> {
     }
 }
 
+/// Resolve the compilation target (issue #310): `TINOX_TARGET` if set
+/// (`x86_64-linux` / `aarch64-linux`), otherwise the host architecture.
+/// Cross-compilation has no defined sysroot/toolchain contract yet, so a
+/// target different from the host is rejected up front instead of producing
+/// an object that cannot be linked against the host libraries.
+fn resolve_target() -> Result<tinox_codegen::Target, String> {
+    let host = tinox_codegen::Target::host().ok_or_else(|| {
+        "unsupported host: tinox supports Linux on x86_64 and aarch64 only".to_string()
+    })?;
+    match std::env::var("TINOX_TARGET") {
+        Ok(v) if !v.is_empty() => {
+            let t = tinox_codegen::Target::parse(&v)?;
+            if t != host {
+                return Err(format!(
+                    "TINOX_TARGET={} differs from the host ({}); cross-compilation is not supported yet, build natively on the target architecture",
+                    v,
+                    host.triple()
+                ));
+            }
+            Ok(t)
+        }
+        _ => Ok(host),
+    }
+}
+
 struct RuntimeOptions {
     source: String,
     flags: Vec<String>,
@@ -4758,6 +4785,7 @@ fn compile_ll_to_exe(ir_path: &str, output_name: &str, opt: OptLevel) -> Result<
 
 fn compile_ll_to_exe_configured(ir_path: &str, output_name: &str, opt: OptLevel,
     options: &RuntimeOptions, trace: Option<&mut Option<Vec<PathBuf>>>) -> Result<(), Failure> {
+    let target = resolve_target()?;
     let toolchain_result = (|| -> Result<(), Failure> {
         let obj_path = format!("{}.o", output_name);
 
@@ -4798,7 +4826,7 @@ fn compile_ll_to_exe_configured(ir_path: &str, output_name: &str, opt: OptLevel,
         let llc_status = Command::new("llc")
             .args([
                 llc_opt_flag,
-                "-march=x86-64",
+                format!("-march={}", target.llc_march()).as_str(),
                 "-filetype=obj",
                 "-o",
                 &obj_path,
