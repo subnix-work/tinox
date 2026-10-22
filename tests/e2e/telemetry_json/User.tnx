@@ -1,0 +1,7 @@
+class User
+{
+    @Sensitive
+    var password: String;
+    @Masked
+    var email: String;
+}
