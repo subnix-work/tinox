@@ -1,0 +1,59 @@
+// Issue #357: captures used only in exception-handling bodies must enter
+// the closure environment, including nested blocks and throw operands.
+// expect: hello
+// expect: caught: boom
+// expect: 42
+// expect: nested
+// expect: outer
+class Main
+{
+    fnc call(f: fnc() -> Nothing) -> Nothing
+    {
+        f();
+    }
+
+    fnc main() -> Int32
+    {
+        const greeting: String = "hello";
+        Main::call(fn() {
+            try {
+                println(greeting);
+            } catch e: String {
+                println("error " + e);
+            }
+        });
+
+        const prefix: String = "caught: ";
+        const failure: String = "boom";
+        const answer: Int64 = 42;
+        Main::call(fn() {
+            try {
+                throw failure;
+            } catch e: String {
+                println(prefix + e);
+            } finally {
+                println(answer);
+            }
+        });
+
+        const nested: String = "nested";
+        const e: String = "outer";
+        Main::call(fn() {
+            if true {
+                {
+                    try {
+                        try {
+                            throw "inner";
+                        } catch e: String {
+                            println(nested);
+                        }
+                    } finally {
+                        // A catch parameter must not hide captures in finally.
+                        println(e);
+                    }
+                }
+            }
+        });
+        return 0;
+    }
+}
