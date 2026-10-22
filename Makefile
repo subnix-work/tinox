@@ -7,7 +7,7 @@ export DOGFOOD_DIR
 
 .PHONY: check test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync
 
-check: clippy test dogfood grammar-sync
+check: clippy test dogfood grammar-sync ai-eval-test
 
 # Lint gate: 0 warnings across the whole workspace (bins + tests).
 # Deliberate exceptions are #[allow(...)] with a justification in the code.
@@ -175,3 +175,8 @@ grammar-sync:
 install-hooks:
 	git config core.hooksPath .githooks
 	@echo "core.hooksPath = .githooks set (pre-push: make check)"
+
+# Local evaluation protocol regressions: no model/provider calls.
+.PHONY: ai-eval-test
+ai-eval-test:
+	python3 -m unittest discover -s benchmarks/ai -p '*_test.py'
