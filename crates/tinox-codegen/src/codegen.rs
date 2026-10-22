@@ -17586,6 +17586,52 @@ mod tests {
     // ================================================================
 
     #[test]
+    fn test_lambda_try_capture_scopes() {
+        // Issue #357: catch parameters are local to their own handler,
+        // while references in try/finally and nested closures remain free.
+        for (body, expected) in [
+            (
+                r#"
+                    try { throw failure; }
+                    catch e: String { println(prefix + e); }
+                    finally { println(cleanup); }
+                "#,
+                vec!["failure", "println", "prefix", "cleanup"],
+            ),
+            (
+                r#"
+                    try { println(e); }
+                    catch e: String { println(e); }
+                    finally { println(e); }
+                "#,
+                vec!["println", "e"],
+            ),
+            (
+                r#"
+                    try { throw failure; }
+                    catch e: String {
+                        const nested = fn() { println(e + greeting + value); };
+                    }
+                "#,
+                vec!["failure", "println", "greeting"],
+            ),
+        ] {
+            let src = format!(
+                "fn main() -> Nothing {{ const callback = fn(value: String) {{ {body} }}; }}"
+            );
+            let tokens = Lexer::new(&src).tokenize().expect("lex failed");
+            let ast = Parser::new(tokens).parse().expect("parse failed");
+            let DeclKind::Function(function) = &ast.decls[0].node else {
+                panic!("expected function");
+            };
+            let mut actual = HashSet::new();
+            collect_free_vars_stmt(&function.body, &HashSet::new(), &mut actual);
+            let expected = expected.into_iter().map(String::from).collect::<HashSet<_>>();
+            assert_eq!(actual, expected, "incorrect captures for {body}");
+        }
+    }
+
+    #[test]
     fn test_try_catch_ir() {
         let ir = compile_to_ir(concat!(
             "fn main() -> Int64 {\n",
