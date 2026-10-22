@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+serde = { workspace = true }
 tinox-common = { path = "../tinox-common" }
 tinox-parser = { path = "../tinox-parser" }
 # Typed-value bridge (type-system unification): the codegen consumes the

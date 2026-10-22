@@ -26,7 +26,7 @@ namespace tinox.core.ini
 
         fn getInt(config: IniConfig, section: String, key: String, default: Int64) -> Int64
         {
-            let strVal: String = IniConfig::getString(config, section, key, "");
+            const strVal: String = IniConfig::getString(config, section, key, "");
             if (strVal == "")
             {
                 return default;

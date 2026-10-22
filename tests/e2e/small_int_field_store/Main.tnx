@@ -12,7 +12,7 @@ import small_int_field_store;
 class Main
 {
     fnc main() -> Int32 {
-        let c: small_int_field_store = small_int_field_store::make(1000, 42);   // i32/i16 parameters in field store
+        const c: small_int_field_store = small_int_field_store::make(1000, 42);   // i32/i16 parameters in field store
         println(c.n.toString());         // 1000
         println(c.m.toString());         // 42
         println((c.n + 1).toString());   // 1001

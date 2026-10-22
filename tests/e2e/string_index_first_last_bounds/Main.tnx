@@ -12,14 +12,14 @@ class Main
 {
     fnc main() -> Int32 {
         // String index: valid + out-of-bounds
-        let s: String = "hi";
+        const s: String = "hi";
         println(s[0].toString());        // 104 (h)
         println(s[100].toString());      // -1 (out of bounds, used to be 0/garbage)
 
         // first()/last() on Int and String arrays (valid)
-        let xs: List<Int64> = [10, 20, 30];
+        const xs: List<Int64> = [10, 20, 30];
         println(xs.first().toString() + "," + xs.last().toString());   // 10,30
-        let ss: List<String> = ["a", "b", "c"];
+        const ss: List<String> = ["a", "b", "c"];
         println(ss.first() + "," + ss.last());                          // a,c
         return 0;
     }

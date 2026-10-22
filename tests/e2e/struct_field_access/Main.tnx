@@ -11,7 +11,7 @@ class Main
 
     fnc main() -> Int32
     {
-        let p: struct_field_access = struct_field_access { x: 3, y: 4 };
+        const p: struct_field_access = struct_field_access { x: 3, y: 4 };
         println(distance(p));
         return 0;
     }

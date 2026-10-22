@@ -42,15 +42,15 @@ namespace tinox.core.amqp091
                 this.truncated = true;
                 return 0;
             }
-            let v = this.bytes[this.pos];
+            const v = this.bytes[this.pos];
             this.pos = this.pos + 1;
             return v;
         }
 
         fn short() -> Int64
         {
-            let hi = this.octet();
-            let lo = this.octet();
+            const hi = this.octet();
+            const lo = this.octet();
             return (hi << 8) | lo;
         }
 
@@ -73,7 +73,7 @@ namespace tinox.core.amqp091
          * -42 -> 4294967254). */
         fn longSigned() -> Int64
         {
-            let v = this.long();
+            const v = this.long();
             if (v >= 2147483648) {
                 return v - 4294967296;
             }
@@ -101,7 +101,7 @@ namespace tinox.core.amqp091
                 // is in codegen.rs, but other builtin arguments are
                 // presumably affected the same way — done via a local
                 // variable here regardless, just to be safe.
-                let b = this.octet();
+                const b = this.octet();
                 bytes.push(b);
             }
             return tinoxBytesToString(bytes);
@@ -109,13 +109,13 @@ namespace tinox.core.amqp091
 
         fn shortstr() -> String
         {
-            let n = this.octet();
+            const n = this.octet();
             return this.rawStr(n);
         }
 
         fn longstr() -> String
         {
-            let n = this.long();
+            const n = this.long();
             return this.rawStr(n);
         }
 
@@ -124,9 +124,9 @@ namespace tinox.core.amqp091
          * caller decides whether that's fatal. */
         fn fieldValue() -> AmqpFieldValue091
         {
-            let tag = this.octet();
+            const tag = this.octet();
             if (tag == 116) { // 't'
-                let b = this.octet();
+                const b = this.octet();
                 return AmqpFieldValue091::BoolVal(b != 0);
             }
             if (tag == 73) { // 'I'
@@ -155,8 +155,8 @@ namespace tinox.core.amqp091
 
         fn fieldTable() -> Map<String, AmqpFieldValue091>
         {
-            let tableLen = this.long();
-            let endPos = this.pos + tableLen;
+            const tableLen = this.long();
+            const endPos = this.pos + tableLen;
             var result: Map<String, AmqpFieldValue091> = Map::new();
             while this.pos < endPos {
                 // Bug 89: endPos comes from the broker-controlled tableLen
@@ -165,8 +165,8 @@ namespace tinox.core.amqp091
                 // without this check `this.pos < endPos` would stay true
                 // forever — an infinite loop instead of a crash.
                 if (this.truncated) { break; }
-                let key = this.shortstr();
-                let value = this.fieldValue();
+                const key = this.shortstr();
+                const value = this.fieldValue();
                 result.insert(key, value);
             }
             return result;
@@ -174,8 +174,8 @@ namespace tinox.core.amqp091
 
         fn fieldArray() -> List<AmqpFieldValue091>
         {
-            let arrLen = this.long();
-            let endPos = this.pos + arrLen;
+            const arrLen = this.long();
+            const endPos = this.pos + arrLen;
             var result: List<AmqpFieldValue091> = [];
             while this.pos < endPos {
                 if (this.truncated) { break; }

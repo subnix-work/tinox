@@ -11,7 +11,7 @@ import Res;
 class Main
 {
     fnc main() -> Int32 {
-        let r = Res::Ok(User { id: 7, name: "Alice" });
+        const r = Res::Ok(User { id: 7, name: "Alice" });
         match r {
             Ok(u) => {
                 println(u.name);
@@ -20,7 +20,7 @@ class Main
             }
             Err(m) => println(m);
         }
-        let e = Res::Err("broken");
+        const e = Res::Err("broken");
         match e {
             Ok(u) => println(u.name);
             Err(m) => println("err: " + m);

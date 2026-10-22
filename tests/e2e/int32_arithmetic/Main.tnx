@@ -18,7 +18,7 @@ class Main
 
 
     fnc main() -> Int32 {
-        let s: Int32 = add32(10, 20);
+        const s: Int32 = add32(10, 20);
         print(s);
         print("\n");
         print(factorial(5));

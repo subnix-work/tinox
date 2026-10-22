@@ -4,10 +4,10 @@ class Main
 {
     fnc main() -> Int32
     {
-        let client: RestClient = RestClient::new("https://api.example.com");
+        const client: RestClient = RestClient::new("https://api.example.com");
         client.bearerAuth("my-token");
 
-        let response: RestResponse = client.get("/users/42");
+        const response: RestResponse = client.get("/users/42");
         if (response.isOk())
         {
             println("body: " + response.text());
@@ -17,7 +17,7 @@ class Main
             println("request failed with status " + response.status().toString());
         }
 
-        let created: RestResponse = client.post("/users", "{\"name\":\"Ada\"}");
+        const created: RestResponse = client.post("/users", "{\"name\":\"Ada\"}");
         created.ensureSuccess();
         println("created: " + created.text());
 

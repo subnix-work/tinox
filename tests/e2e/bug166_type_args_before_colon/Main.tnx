@@ -29,14 +29,14 @@ class Main {
 
         // Same call shape via an intermediate let annotation -- was
         // already working before this fix, must keep working.
-        let r: Result<Int64> = Result<Int64>::err("bad2");
+        const r: Result<Int64> = Result<Int64>::err("bad2");
         println(r.getError());
 
         // A different generic class, chained without a let.
         println(Option<Int64>::none().isNone().toString());
 
         // Nested generic type arg before :: (>> tokenization).
-        let nested: Result<List<Int64>> = Result<List<Int64>>::err("nested");
+        const nested: Result<List<Int64>> = Result<List<Int64>>::err("nested");
         println(nested.getError());
         println(nested.isErr().toString());
 

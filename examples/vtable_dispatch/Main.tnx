@@ -7,13 +7,13 @@ class Main
     fnc main() -> Int32
     {
         // Direct (concrete) dispatch — should work as before
-        let c: Circle = Circle { radius: 5 };
-        let s: Square = Square { side: 10 };
+        const c: Circle = Circle { radius: 5 };
+        const s: Square = Square { side: 10 };
         println(c.draw());
         println(s.draw());
 
         // Interface (vtable) dispatch
-        let shape: IDrawable = Circle { radius: 42 };
+        const shape: IDrawable = Circle { radius: 42 };
         println(shape.draw());
 
         return 0;

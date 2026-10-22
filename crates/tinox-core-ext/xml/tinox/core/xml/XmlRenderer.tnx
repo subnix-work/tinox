@@ -7,7 +7,7 @@ namespace tinox.core.xml
         fn render(node: XmlNode) -> String
         {
             var result: String = "<" + node.tagName;
-            let keys: List<String> = node.attrs.keys();
+            const keys: List<String> = node.attrs.keys();
             var i: Int64 = 0;
             while i < keys.len()
             {
