@@ -10414,7 +10414,7 @@ tr_done_{idx}:"#).unwrap();
                 let is_map_dispatch = match declared_type.as_deref() {
                     Some(t) => Self::is_map_marker(t),
                     None => obj_ty == "i64"
-                        && matches!(method.as_str(), "get" | "insert" | "contains" | "keys" | "values" | "remove" | "len"),
+                        && matches!(method.as_str(), "get" | "insert" | "set" | "contains" | "keys" | "values" | "remove" | "len"),
                 };
                 if is_map_dispatch {
                     let map_obj_ptr = if obj_ty == "i64" {
@@ -10433,7 +10433,7 @@ tr_done_{idx}:"#).unwrap();
                             // Type the value by the map's value marker
                             return Ok(if let Some(ty) = self.semantic_type(expr.id).filter(|ty| *ty != tinox_typecheck::ValueType::Any) { self.decode_semantic_word(result, &ty) } else { self.coerce_map_value(result, declared_type.as_deref()) });
                         }
-                        "insert" => {
+                        "insert" | "set" => {
                             let (key, key_ty) = self.gen_expr(&args[0], ctx)?;
                             let key_i8 = self.emit_map_key(&key, &key_ty);
                             let (val, val_ty) = self.gen_expr(&args[1], ctx)?;
