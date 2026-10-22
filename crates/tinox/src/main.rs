@@ -13,6 +13,8 @@ mod contract;
 mod dockerfile;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
+mod reference;
+
 mod runtime_cache;
 mod build_cache;
 mod describe;
@@ -53,6 +55,12 @@ fn run() {
         "dev"   => dev_mode(&args[2..]),
         "test"  => run_tests(&args[2..]),
         "doc"   => gen_docs(&args[2..]),
+        "reference" => {
+            if let Err(e) = reference::run(&args[2..]) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         "graph" => gen_call_graph(&args[2..]),
         "contract" => gen_api_contract(&args[2..]),
         "check"   => check(&args[2..]),
@@ -107,6 +115,7 @@ fn print_help() {
     println!("  tinox test  [file]         Run all @Test-annotated methods");
     println!("  tinox test --watch         Re-run tests on file changes (TDD mode)");
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
+    println!("  tinox reference [path]     Export compiler reference metadata as JSON");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
     println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");
     println!("  tinox check [file]         Type-check without compiling");
@@ -2250,10 +2259,15 @@ fn gen_call_graph(args: &[String]) {
 
 // ── Doc data model ────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
 struct DocParam  { name: String, ty: String }
+#[derive(serde::Serialize)]
 struct DocMethod { name: String, doc: Option<String>, params: Vec<DocParam>, ret: String, annotations: Vec<String>, is_static: bool }
+#[derive(serde::Serialize)]
 struct DocField  { name: String, ty: String, doc: Option<String>, annotations: Vec<String> }
 
+#[derive(serde::Serialize)]
+#[serde(tag = "kind")]
 enum DocItem {
     Class {
         name: String,

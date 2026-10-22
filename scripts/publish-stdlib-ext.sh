@@ -32,6 +32,10 @@ if [ ! -x "$TINOX_BIN" ]; then
 fi
 TINOX_BIN="$(cd "$(dirname "$TINOX_BIN")" && pwd)/$(basename "$TINOX_BIN")"
 
+# Validate matching immutable docs/dependency links before any upload. Stage
+# and commit new pages beforehand with `make docs-stage`.
+python3 scripts/reference.py verify-release || exit 1
+
 PUBLISHED=0
 SKIPPED=0
 FAILED=0

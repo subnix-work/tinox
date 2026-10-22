@@ -1,0 +1,9 @@
+class Main
+{
+    fnc main() -> Int32
+    {
+        const name: String = "Tinox";
+        println("Hello, " + name + "!");
+        return 0;
+    }
+}

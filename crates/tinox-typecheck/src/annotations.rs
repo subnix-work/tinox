@@ -972,6 +972,13 @@ impl AnnotationProcessor {
         Self { registry }
     }
 
+    /// Read-only, stable view of the registry used by annotation validation.
+    pub fn reference_annotations(&self) -> Vec<&AnnotationInfo> {
+        let mut entries: Vec<_> = self.registry.values().collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    }
+
     pub fn register_custom_annotation(&mut self, name: &str) {
         self.registry.insert(
             name.to_string(),
