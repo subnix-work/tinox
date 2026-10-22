@@ -367,6 +367,36 @@ fn main() -> Int64 {
 "#), "10\n20");
 }
 
+// Issue #351: set is the same mutation as insert, including value encoding.
+#[test]
+fn test_map_set_alias() {
+    assert_eq!(run(r#"
+class Main {
+    fnc main() -> Int32 {
+        var m: Map<String, String> = Map::new();
+        m.set("k", "v");
+        println(m.get("k"));
+        m.set("k", "updated");
+        println(m.get("k"));
+        m.insert("other", "inserted");
+        println(m.get("other"));
+        println(m.len());
+
+        var ints: Map<String, Int64> = Map::new();
+        ints.set("n", 42);
+        println(ints.get("n"));
+        var floats: Map<String, Float64> = Map::new();
+        floats.set("n", 1.5);
+        println(floats.get("n"));
+        var bools: Map<String, Bool> = Map::new();
+        bools.set("b", true);
+        println(bools.get("b"));
+        return 0;
+    }
+}
+"#), "v\nupdated\ninserted\n2\n42\n1.5\ntrue");
+}
+
 #[test]
 fn test_map_len_remove() {
     assert_eq!(run(r#"
