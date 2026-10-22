@@ -1,0 +1,19 @@
+// expect: dependency starting
+// expect: dependency ready
+// expect: application start
+// expect: true
+// expect: ready
+// expect: true
+// expect: application stop
+// expect: application cleanup
+// expect: dependency stop
+import Application;
+@Service(2000, 2000)
+class Main {
+    fnc main() -> Int32 {
+        println(serviceAwaitReady(1000));
+        println(serviceState());
+        println(serviceReadyMs() >= serviceStartedMs());
+        return 0;
+    }
+}

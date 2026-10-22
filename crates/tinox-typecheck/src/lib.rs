@@ -952,6 +952,21 @@ impl TypeChecker {
         symbols.functions.insert("taskSetDeadline".into(), FunctionSignature {
             params: vec![("milliseconds".into(), ValueType::Int)], return_type: ValueType::Nothing,
         });
+        for (name, return_type) in [
+            ("serviceIsReady", ValueType::Bool), ("serviceIsLive", ValueType::Bool),
+            ("serviceIsStopping", ValueType::Bool), ("serviceState", ValueType::String),
+            ("serviceStatusJson", ValueType::String), ("serviceStartedMs", ValueType::Int),
+            ("serviceReadyMs", ValueType::Int), ("serviceShutdownMs", ValueType::Int),
+            ("serviceRequestShutdown", ValueType::Nothing), ("serviceAwaitShutdown", ValueType::Nothing),
+        ] {
+            symbols.functions.insert(name.into(), FunctionSignature { params: vec![], return_type });
+        }
+        symbols.functions.insert("serviceBoundPort".into(), FunctionSignature {
+            params: vec![("taskIndex".into(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("serviceAwaitReady".into(), FunctionSignature {
+            params: vec![("milliseconds".into(), ValueType::Int)], return_type: ValueType::Bool,
+        });
         // Time
         symbols.functions.insert("now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
         symbols.functions.insert("Time_now".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
