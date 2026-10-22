@@ -745,6 +745,21 @@ int64_t tinox_array_contains(int64_t* h, int64_t val) {
     return 0;
 }
 
+// String-element variants: compare by content, not pointer identity.
+int64_t tinox_array_contains_str(int64_t* h, const char* val) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_contains");
+    TinoxArray* a = (TinoxArray*)h;
+    for (int64_t i = 0; i < a->len; i++) if (tinox_string_equals((const char*)a->data[i], val)) return 1;
+    return 0;
+}
+
+int64_t tinox_array_index_of_str(int64_t* h, const char* val) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_indexOf");
+    TinoxArray* a = (TinoxArray*)h;
+    for (int64_t i = 0; i < a->len; i++) if (tinox_string_equals((const char*)a->data[i], val)) return i;
+    return -1;
+}
+
 int64_t tinox_array_index_of(int64_t* h, int64_t val) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_indexOf");
     TinoxArray* a = (TinoxArray*)h;

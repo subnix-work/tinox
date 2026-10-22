@@ -1616,6 +1616,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @tinox_array_reverse(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_array_contains(i64*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_array_index_of(i64*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_array_contains_str(i64*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_array_index_of_str(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_map_create()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_map_set(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_get(i8*, i8*)").unwrap();
@@ -9645,8 +9647,9 @@ tr_done_{idx}:"#).unwrap();
                                 writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
                                 return Ok((bool_val, "i1".to_string()));
                             } else {
-                                let (val, _) = self.gen_expr(&args[1], ctx)?;
-                                writeln!(&mut self.ir, "{} = call i64 @tinox_array_contains(i64* {}, i64 {})", result, haystack, val).unwrap();
+                                let (val, vty) = self.gen_expr(&args[1], ctx)?;
+                                let callee = if vty == "i8*" { "tinox_array_contains_str" } else { "tinox_array_contains" };
+                                writeln!(&mut self.ir, "{} = call i64 @{}(i64* {}, {} {})", result, callee, haystack, if vty == "i8*" { "i8*" } else { "i64" }, val).unwrap();
                                 let bool_val = self.temp();
                                 writeln!(&mut self.ir, "{} = trunc i64 {} to i1", bool_val, result).unwrap();
                                 return Ok((bool_val, "i1".to_string()));
@@ -9659,8 +9662,9 @@ tr_done_{idx}:"#).unwrap();
                                 let (needle, _) = self.gen_expr(&args[1], ctx)?;
                                 writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, haystack, needle).unwrap();
                             } else {
-                                let (val, _) = self.gen_expr(&args[1], ctx)?;
-                                writeln!(&mut self.ir, "{} = call i64 @tinox_array_index_of(i64* {}, i64 {})", result, haystack, val).unwrap();
+                                let (val, vty) = self.gen_expr(&args[1], ctx)?;
+                                let callee = if vty == "i8*" { "tinox_array_index_of_str" } else { "tinox_array_index_of" };
+                                writeln!(&mut self.ir, "{} = call i64 @{}(i64* {}, {} {})", result, callee, haystack, if vty == "i8*" { "i8*" } else { "i64" }, val).unwrap();
                             }
                             return Ok((result, "i64".to_string()));
                         }
@@ -10294,17 +10298,19 @@ tr_done_{idx}:"#).unwrap();
                             return Ok((raw, "i64".to_string()));
                         }
                         "contains" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, vty) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_array_contains(i64* {}, i64 {})", result, obj_ptr, val).unwrap();
+                            let callee = if vty == "i8*" { "tinox_array_contains_str" } else { "tinox_array_contains" };
+                            writeln!(&mut self.ir, "{} = call i64 @{}(i64* {}, {} {})", result, callee, obj_ptr, if vty == "i8*" { "i8*" } else { "i64" }, val).unwrap();
                             let b = self.temp();
                             writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", b, result).unwrap();
                             return Ok((b, "i1".to_string()));
                         }
                         "indexOf" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, vty) = self.gen_expr(&args[0], ctx)?;
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_array_index_of(i64* {}, i64 {})", result, obj_ptr, val).unwrap();
+                            let callee = if vty == "i8*" { "tinox_array_index_of_str" } else { "tinox_array_index_of" };
+                            writeln!(&mut self.ir, "{} = call i64 @{}(i64* {}, {} {})", result, callee, obj_ptr, if vty == "i8*" { "i8*" } else { "i64" }, val).unwrap();
                             return Ok((result, "i64".to_string()));
                         }
                         "sort" => {
