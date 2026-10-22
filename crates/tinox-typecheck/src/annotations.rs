@@ -669,6 +669,20 @@ impl AnnotationProcessor {
             },
         );
 
+        registry.insert("Service".into(), AnnotationInfo {
+            name: "Service".into(), valid_targets: vec![AnnotationTarget::Class],
+            min_args: 0, max_args: 2,
+            description: "Enable coordinated lifecycle on Main; optional startup and shutdown deadlines in milliseconds (30000, 5000)".into(),
+        });
+        for (name, description) in [
+            ("OnStart", "Run a singleton initialization hook before starting required services"),
+            ("OnStop", "Run a singleton disposal hook after draining, in reverse dependency/method order"),
+            ("Readiness", "Contribute a synchronous Bool to readiness after required listeners/consumers are usable"),
+            ("Liveness", "Contribute a synchronous Bool to liveness"),
+        ] {
+            registry.insert(name.into(), AnnotationInfo { name: name.into(), valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0, max_args: 0, description: description.into() });
+        }
         registry.insert("Synchronized".into(), AnnotationInfo {
             name: "Synchronized".into(),
             valid_targets: vec![AnnotationTarget::Class, AnnotationTarget::Method],
@@ -1742,6 +1756,52 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
         }
         DeclKind::Class(c) => {
             errors.extend(processor.validate(&c.annotations, AnnotationTarget::Class));
+            if let Some(service) = c.annotations.iter().find(|a| a.name == "Service") {
+                if c.name != "Main" || !c.type_params.is_empty() || c.extends.is_some() {
+                    errors.push(Error::new(
+                        service.span,
+                        "@Service belongs on a non-generic class Main without inheritance",
+                    ));
+                }
+                for arg in &service.args {
+                    if !matches!(arg, AnnotationArg::Literal(Literal::Integer(ms)) if *ms > 0 && *ms <= 3600000)
+                    {
+                        errors.push(Error::new(
+                            service.span,
+                            "@Service deadlines must be integer milliseconds in 1..=3600000",
+                        ));
+                    }
+                }
+            }
+            for method in &c.methods {
+                for hook in method.annotations.iter().filter(|a| {
+                    matches!(
+                        a.name.as_str(),
+                        "OnStart" | "OnStop" | "Readiness" | "Liveness"
+                    )
+                }) {
+                    let health = matches!(hook.name.as_str(), "Readiness" | "Liveness");
+                    let return_ok = if health {
+                        matches!(method.ret_type, Type::Bool)
+                    } else {
+                        matches!(method.ret_type, Type::Nothing)
+                    };
+                    if method.static_
+                        || method.is_async
+                        || !method.type_params.is_empty()
+                        || !method.params.is_empty()
+                        || !return_ok
+                        || !c.type_params.is_empty()
+                        || c.extends.is_some()
+                        || !c
+                            .annotations
+                            .iter()
+                            .any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"))
+                    {
+                        errors.push(Error::new(hook.span, format!("@{} requires a synchronous, non-generic singleton instance method with no parameters returning {} (no class inheritance)", hook.name, if health { "Bool" } else { "Nothing" })));
+                    }
+                }
+            }
             let synchronized_class = c.annotations.iter().any(|a| a.name == "Synchronized");
             let has_synchronized = synchronized_class || c.methods.iter().any(|m| m.annotations.iter().any(|a| a.name == "Synchronized"));
             if has_synchronized && (!c.annotations.iter().any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"))
@@ -1988,6 +2048,22 @@ mod tests {
 
     fn valid(src: &str) -> Vec<Error> {
         validate_annotations(&parse(src), &[])
+    }
+
+    #[test]
+    fn service_hooks_require_explicit_singleton_instance_contracts() {
+        for source in [
+            "@Service(0) class Main {}",
+            "@Service(3600001) class Main {}",
+            "@Service class Other {}",
+            "class Plain { @OnStart fn start() -> Nothing {} }",
+            "@Startup class State { @OnStop fnc stop() -> Nothing {} }",
+            "@Startup class State { @Readiness fn ready() -> Int64 { return 1; } }",
+            "@Startup class State { @Liveness fn live(value: Bool) -> Bool { return value; } }",
+        ] {
+            assert!(!valid(source).is_empty(), "unexpectedly accepted: {source}");
+        }
+        assert!(valid("@Service(1000, 2000) class Main {} @Startup class State { @OnStart fn start() -> Nothing {} @OnStop fn stop() -> Nothing {} @Readiness fn ready() -> Bool { return true; } @Liveness fn live() -> Bool { return true; } }").is_empty());
     }
 
     #[test]

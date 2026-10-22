@@ -1072,14 +1072,83 @@
       <code>taskWaitReadable</code> verwenden. Nach fünf Sekunden ignoriertem
       Abbruch beim Scope-Ende scheitert die Runtime sichtbar statt still zu hängen.
       Ein explizites Await eines abgebrochenen Tasks und eine Service-Stoppanforderung
-      haben dieselbe Fünf-Sekunden-Grenze. Readiness sowie Signal-/Listener-Steuerung bleiben Aufgabe des
-      Service-Lebenszyklus (Issue #304). Abgekoppelte Worker werden ausdrücklich
+      haben dieselbe Fünf-Sekunden-Grenze. Mit <code>@Service</code> gilt stattdessen
+      das gemeinsame konfigurierte Shutdown-Budget; siehe den Service-Lebenszyklus unten. Abgekoppelte Worker werden ausdrücklich
       nicht strukturiert eingesammelt.</p>
     <p>Speichern und Await bisheriger <code>Int64</code>-Handles bleiben für
       veröffentlichte Pakete vorübergehend kompatibel. Neuer Code und die
       Task-Steueroperationen verwenden <code>Task&lt;T&gt;</code>. Ungültige/abgelaufene
       Handles und zyklische Awaits scheitern mit Diagnose; Integer-Handles sind
       veraltet.</p>
+
+    <h4>Koordinierter Service-Lebenszyklus</h4>
+    <p><code>@Service(startupMs, shutdownMs)</code> auf <code>class Main</code> aktiviert
+      koordinierten Start, Health-Status und geordnetes Herunterfahren. Beide Angaben
+      sind optionale positive Millisekunden (Standard: 30000 und 5000; Maximum: 3600000).
+      Der Koordinator startet vor Datenbankinitialisierung und eager DI.</p>
+    <pre><code>@ApplicationComponent
+@Synchronized
+class Resources {
+    @OnStart
+    fn start() -&gt; Nothing { /* Initialize resources before listeners start. */ }
+    @Readiness
+    fn ready() -&gt; Bool { return true; }
+    @Liveness
+    fn live() -&gt; Bool { return true; }
+    @OnStop
+    fn stop() -&gt; Nothing { /* Dispose resources after callbacks and tasks finish. */ }
+}
+
+@Service(30000, 5000)
+class Main {
+    fnc main() -&gt; Int32 { return 0; }
+}</code></pre>
+    <p>Komponente und annotierte Controller/Endpoints aus der Einstiegsdatei importieren.
+      Hooks sind synchrone Instanzmethoden ohne Parameter auf nichtgenerischen
+      <code>@ApplicationComponent</code>/<code>@Startup</code>-Klassen ohne Vererbung.
+      Start-Hooks folgen den injizierten Abhängigkeiten, danach Klassen-/Methodennamen;
+      Stop-Hooks laufen umgekehrt. Jeder Hook joint seine gestarteten Kinder vor dem
+      nächsten Schritt. Auch nach Startfehlern erhalten initialisierte Besitzer ihre
+      Stop-Hooks. Cleanup läuft trotz Fehlern weiter; der erste Fehler bleibt erhalten,
+      der Prozess endet mit Fehlerstatus. Gemeinsamen veränderlichen Zustand mit
+      <code>@Synchronized</code> schützen.</p>
+    <p>Zustände: <code>initializing → starting → ready</code>, bei negativem Health-Beitrag
+      <code>unready</code>, anschließend <code>draining → stopping → stopped</code> oder
+      <code>failed</code>. Readiness verlangt abgeschlossene Initialisierung/Start-Hooks,
+      gebundene Listener, Consumer-Handshakes und positive Readiness-/Liveness-Beiträge.
+      Main ist keine Readiness-Barriere: Mit Listenern läuft der Dienst nach seiner
+      Rückkehr weiter; ohne Listener fordert die Rückkehr das Herunterfahren an.</p>
+    <p>Generierte HTTP-/HTTP/3-Server reservieren <code>GET /health/live</code> und
+      <code>GET /health/ready</code>: Status 200 oder 503 mit JSON für Zustand, Readiness,
+      Liveness und monotone Zeitstempel <code>startedMs</code>, <code>readyMs</code>,
+      <code>shutdownMs</code>. Start meint den Eintritt in den verwalteten Bootstrap,
+      Ready den ersten erfolgreichen Health-Durchlauf, nicht Prozessstart oder Banner.
+      Health-Methoden laufen regelmäßig im Koordinator und sollten kurz bleiben.
+      Überschrittenes Startbudget beendet den Prozess sichtbar; spätere negative
+      Health-Ergebnisse ändern den Status, starten den Prozess aber nicht neu.</p>
+    <p><code>serviceState()</code>, <code>serviceStatusJson()</code>,
+      <code>serviceIsReady()</code>, <code>serviceIsLive()</code>, <code>serviceIsStopping()</code>
+      und <code>serviceStartedMs()</code>/<code>serviceReadyMs()</code>/<code>serviceShutdownMs()</code>
+      liefern denselben Status. <code>serviceAwaitReady(ms)</code> liefert Bool;
+      <code>serviceBoundPort(index)</code> den tatsächlichen Port eines Auto-Run-Tasks
+      in Bootstrap-Plan-Reihenfolge (-1 vor Bind oder bei Brokern).
+      <code>tinox explain --bootstrap Main.tnx --json</code> zeigt Budgets, Hook-Reihenfolge,
+      Tasks und Shutdown-Vertrag.</p>
+    <p>SIGTERM, SIGINT, <code>serviceRequestShutdown()</code> und <code>taskRequestShutdown()</code>
+      setzen den Dienst auf unready und stoppen neue Arbeit. Angenommene HTTP-Antworten
+      und Broker-Bestätigungen werden beendet; WebSockets senden Close-Code 1001 und
+      rufen OnClose auf. Listener und Worker werden gejoint, danach übrige strukturierte
+      Kinder abgebrochen/gejoint, Stop-Hooks umgekehrt ausgeführt und Datenbank-Pools
+      geschlossen. <code>serviceAwaitShutdown()</code> lässt Main auf die Stop-Anforderung
+      warten. Ein gemeinsames Shutdown-Budget umfasst alle Schritte; bei Ablauf endet
+      der Prozess mit Status 1, auch bei blockierendem nativen I/O oder Hooks.
+      Keine asynchrone Thread-Terminierung; explizit detached gestartete Benutzer-Tasks
+      bleiben außerhalb des strukturierten Join-Vertrags.</p>
+    <p>Container mit Exec-Entrypoint starten, damit Signale tinox erreichen.
+      Startup-, Readiness- und Liveness-Probes auf die Health-Pfade richten; die
+      Termination-Grace-Period muss länger als das Shutdown-Budget sein.
+      <code>@Command</code> und <code>@TinoxUIApp</code> lassen sich derzeit nicht mit
+      <code>@Service</code> kombinieren; der Compiler meldet dies als Fehler.</p>
 
     <h4>Gemeinsamer Anwendungszustand</h4>
     <p><code>@ApplicationComponent</code> erzeugt pro Komponentenklasse einen lazy
