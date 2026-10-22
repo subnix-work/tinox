@@ -56,6 +56,7 @@
 // freed — leaks are intentional here, overflows/UAF are the target.
 #include <string.h>
 #define GC_malloc(s)     calloc(1, (s))
+#define GC_malloc_atomic(s) calloc(1, (s))
 #define GC_realloc(p, s) realloc((p), (s))
 #define GC_free(p)       ((void)(p))
 #define GC_strdup(s)     strdup(s)
