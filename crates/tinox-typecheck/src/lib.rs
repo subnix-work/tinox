@@ -1645,6 +1645,18 @@ impl TypeChecker {
                         self.symbols.functions.insert(key.clone(), sig);
                         self.method_visibility.insert(key, method.visibility.clone());
                     }
+                    // Codegen emits a String-returning instance method for
+                    // classes with log-masked fields. Keep explicit methods'
+                    // signatures, matching codegen's override behavior.
+                    if c.fields.iter().any(|field| field.annotations.iter().any(|a| {
+                        matches!(a.name.as_str(), "Sensitive" | "Masked")
+                    })) {
+                        self.symbols.functions.entry(format!("{}_toString", c.name))
+                            .or_insert_with(|| FunctionSignature {
+                                params: vec![("self".to_string(), ValueType::Named(c.name.clone(), vec![]))],
+                                return_type: ValueType::String,
+                            });
+                    }
                     // @JsonSerializable: register compiler-generated toJson() and fromJson()
                     if c.annotations.iter().any(|a| a.name == "JsonSerializable") {
                         self.symbols.functions.insert(
@@ -4172,6 +4184,28 @@ mod tests {
             "expected error containing '{}', got: {:?}",
             msg,
             bag.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn log_masked_tostring_has_a_checked_instance_signature() {
+        for annotation in ["Sensitive", "Masked"] {
+            let class = format!("class User {{ @{annotation} var secret: String; }}");
+            ok(&format!("{class} fn f(user: User) -> String {{ return user.toString(); }}"));
+            err_contains(
+                &format!("{class} fn f(user: User) -> String {{ return user.toString(1); }}"),
+                "expected 1 arguments, found 2",
+            );
+            err_contains(
+                &format!("{class} fn f(user: User) -> Int64 {{ return user.toString(); }}"),
+                "expected Int64, found String",
+            );
+        }
+        // A user-defined method takes precedence over the generated helper.
+        ok("class User { @Sensitive var secret: String; fn toString(value: Int64) -> Int64 { return value; } } fn f(user: User) -> Int64 { return user.toString(7); }");
+        err_contains(
+            "class User { var secret: String; } fn f(user: User) -> String { return user.toString(); }",
+            "undefined function: User_toString",
         );
     }
 
