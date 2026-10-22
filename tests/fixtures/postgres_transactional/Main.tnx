@@ -9,6 +9,15 @@ class Main
     }
     fnc main() -> Int32
     {
+        // Issue #358: empty ORM queries must return defaults without
+        // libpq warnings, including repeated polling of the same query.
+        for pollIndex in 0..3 {
+            const none: Account = DB::of(Account).filter(a => a.name == "does-not-exist").first();
+            println("missing: " + none.id.toString() + ":" + none.name + ":" + none.balance.toString());
+            const rows: List<Account> = DB::of(Account).filter(a => a.name == "does-not-exist").list();
+            println("missing list: " + rows.len().toString());
+            println("missing count: " + DB::of(Account).filter(a => a.name == "does-not-exist").count().toString());
+        }
         // Issue #358: empty ORM queries must not read row zero in libpq.
         const missing: Account = DB::of(Account).filter(a => a.name == "does-not-exist").first();
         println("missing id: " + missing.id.toString());

@@ -15931,6 +15931,18 @@ fn collect_free_vars_inner(expr: &Expr, param_names: &HashSet<String>, vars: &mu
                 collect_free_vars_stmt(stmt, param_names, vars);
             }
         }
+        ExprKind::Throw(expr) => collect_free_vars_inner(expr, param_names, vars),
+        ExprKind::Try { body, catches, finally } => {
+            collect_free_vars_inner(body, param_names, vars);
+            for catch in catches {
+                let mut catch_params = param_names.clone();
+                catch_params.insert(catch.param.clone());
+                collect_free_vars_stmt(&catch.body, &catch_params, vars);
+            }
+            if let Some(finally) = finally {
+                collect_free_vars_inner(finally, param_names, vars);
+            }
+        }
         ExprKind::Range {
             start,
             end,
