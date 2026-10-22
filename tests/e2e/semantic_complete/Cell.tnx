@@ -1,0 +1,8 @@
+class Cell<T> {
+    var value: T;
+    fnc of(value: T) -> Cell<T> { return Cell { value: value }; }
+    fn get() -> T { return this.value; }
+    fn map<U>(transform: fnc(T) -> U) -> Cell<U> {
+        return Cell::of(transform(this.value));
+    }
+}

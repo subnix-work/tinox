@@ -1,0 +1,4 @@
+// expect: awake
+class Main {
+    fnc main() -> Int32 { sleep(1); println("awake"); return 0; }
+}

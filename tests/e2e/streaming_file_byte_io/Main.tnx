@@ -1,0 +1,67 @@
+// Streaming byte-exact file I/O primitives (tinoxFileOpenBytes & co):
+// chunked write, chunked read across a chunk boundary, skip, size,
+// path kinds, sorted directory listing, realpath.
+// expect: size=300
+// expect: chunks=256,44,0
+// expect: first=0 last=43 wrap=255
+// expect: skip-ok=true skip-past-eof=false
+// expect: kind file=1 dir=2 missing=0
+// expect: entries=a.bin,b.bin
+// expect: realpath-nonempty=true missing-empty=true
+// expect: done
+
+extern fn tinoxFileOpenBytes(path: String, mode: String) -> Int64;
+extern fn tinoxFileReadChunk(handle: Int64, maxBytes: Int64) -> List<Int64>;
+extern fn tinoxFileWriteChunk(handle: Int64, bytes: List<Int64>);
+extern fn tinoxFileSkipBytes(handle: Int64, n: Int64) -> Bool;
+extern fn tinoxFileCloseBytes(handle: Int64);
+extern fn tinoxFileSizeBytes(path: String) -> Int64;
+extern fn tinoxPathKind(path: String) -> Int64;
+extern fn tinoxDirEntriesSorted(path: String) -> List<String>;
+extern fn tinoxRealPath(path: String) -> String;
+
+class Main
+{
+    fnc main() -> Int32 {
+        let dir: String = "/tmp/tinox_streaming_byte_io_e2e";
+        dirDelete(dir);
+        dirCreate(dir);
+        let path: String = dir + "/b.bin";
+
+        var data: List<Int64> = [];
+        var i: Int64 = 0;
+        while i < 300 {
+            data.push(i % 256);
+            i = i + 1;
+        }
+        let w: Int64 = tinoxFileOpenBytes(path, "wb");
+        tinoxFileWriteChunk(w, data);
+        tinoxFileCloseBytes(w);
+        let w2: Int64 = tinoxFileOpenBytes(dir + "/a.bin", "wb");
+        tinoxFileCloseBytes(w2);
+        println("size=" + tinoxFileSizeBytes(path).toString());
+
+        let r: Int64 = tinoxFileOpenBytes(path, "rb");
+        let c1: List<Int64> = tinoxFileReadChunk(r, 256);
+        let c2: List<Int64> = tinoxFileReadChunk(r, 256);
+        let c3: List<Int64> = tinoxFileReadChunk(r, 256);
+        tinoxFileCloseBytes(r);
+        println("chunks=" + c1.len().toString() + "," + c2.len().toString() + "," + c3.len().toString());
+        println("first=" + c1[0].toString() + " last=" + c2[43].toString() + " wrap=" + c1[255].toString());
+
+        let s: Int64 = tinoxFileOpenBytes(path, "rb");
+        let ok: Bool = tinoxFileSkipBytes(s, 100);
+        let past: Bool = tinoxFileSkipBytes(s, 1000);
+        tinoxFileCloseBytes(s);
+        println("skip-ok=" + ok.toString() + " skip-past-eof=" + past.toString());
+
+        println("kind file=" + tinoxPathKind(path).toString() + " dir=" + tinoxPathKind(dir).toString() + " missing=" + tinoxPathKind(dir + "/nope").toString());
+        let names: List<String> = tinoxDirEntriesSorted(dir);
+        println("entries=" + names[0] + "," + names[1]);
+        println("realpath-nonempty=" + (tinoxRealPath(dir).len() > 0).toString() + " missing-empty=" + (tinoxRealPath(dir + "/nope").len() == 0).toString());
+
+        dirDelete(dir);
+        println("done");
+        return 0;
+    }
+}

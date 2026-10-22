@@ -16,10 +16,10 @@ class Main
 {
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
         httpConnReadN(sconn, 8); // protocol header
 
-        let w1 = AmqpWriter091::new();
+        const w1 = AmqpWriter091::new();
         w1.octet(0);
         w1.octet(9);
         var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
@@ -29,7 +29,7 @@ class Main
         Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes));
         Amqp091::readFrame(sconn); // start-ok
 
-        let w2 = AmqpWriter091::new();
+        const w2 = AmqpWriter091::new();
         w2.short(2047);
         w2.long(131072);
         w2.short(60);
@@ -37,26 +37,26 @@ class Main
         Amqp091::readFrame(sconn); // tune-ok
         Amqp091::readFrame(sconn); // open
 
-        let w3 = AmqpWriter091::new();
+        const w3 = AmqpWriter091::new();
         w3.shortstr("");
         Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes));
 
         Amqp091::readFrame(sconn); // channel.open
-        let w4 = AmqpWriter091::new();
+        const w4 = AmqpWriter091::new();
         w4.longstr("");
         Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
 
         // --- exchange.declare -> declare-ok ---
-        let fDecl = Amqp091::readFrame(sconn);
-        let mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
+        const fDecl = Amqp091::readFrame(sconn);
+        const mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
         var argsOk: Bool = false;
         if (mDecl.classId == 40) {
             if (mDecl.methodId == 10) {
-                let r = AmqpReader091::new(mDecl.args);
+                const r = AmqpReader091::new(mDecl.args);
                 r.short(); // reserved-1
-                let name = r.shortstr();
-                let exType = r.shortstr();
-                let flags = r.octet();
+                const name = r.shortstr();
+                const exType = r.shortstr();
+                const flags = r.octet();
                 if (name == "my-exchange") {
                     if (exType == "topic") {
                         if ((flags & 2) != 0) { // durable bit set
@@ -70,7 +70,7 @@ class Main
 
         // --- second exchange.declare -> broker rejects via channel.close ---
         Amqp091::readFrame(sconn); // exchange.declare (unchecked, only care about the rejection path)
-        let wClose = AmqpWriter091::new();
+        const wClose = AmqpWriter091::new();
         wClose.short(406); // reply-code: PRECONDITION_FAILED
         wClose.shortstr("PRECONDITION_FAILED - inequivalent arg 'type'");
         wClose.short(40); // class-id
@@ -88,30 +88,30 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv);
 
-        let c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
-        let ch = AmqpChannel091::open(c);
+        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
+        const ch = AmqpChannel091::open(c);
 
-        let declared = ch.declareExchange("my-exchange", "topic", true, false);
+        const declared = ch.declareExchange("my-exchange", "topic", true, false);
         if (declared) {
             println("ok-declare");
         }
 
-        let rejected = ch.declareExchange("my-exchange", "direct", false, false);
+        const rejected = ch.declareExchange("my-exchange", "direct", false, false);
         if (!rejected) {
             if (ch.errorMessage.contains("PRECONDITION_FAILED")) {
                 println("ok-reject");
             }
         }
 
-        let brokerSawArgs = await handle;
+        const brokerSawArgs = await handle;
         if (brokerSawArgs == 1) {
             println("ok-args-seen");
         }

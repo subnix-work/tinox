@@ -21,10 +21,10 @@ namespace tinox.core.hpack
 
         fn add(header: HpackHeader) -> Nothing
         {
-            let entrySize: Int64 = header.name.len() + header.value.len() + 32;
+            const entrySize: Int64 = header.name.len() + header.value.len() + 32;
             while this.currentSize + entrySize > this.maxSize && this.entries.len() > 0
             {
-                let last: HpackHeader = this.entries[this.entries.len() - 1];
+                const last: HpackHeader = this.entries[this.entries.len() - 1];
                 this.currentSize = this.currentSize - (last.name.len() + last.value.len() + 32);
                 this.entries.removeAt(this.entries.len() - 1);
             }
@@ -40,7 +40,7 @@ namespace tinox.core.hpack
             this.maxSize = newSize;
             while this.currentSize > this.maxSize && this.entries.len() > 0
             {
-                let last: HpackHeader = this.entries[this.entries.len() - 1];
+                const last: HpackHeader = this.entries[this.entries.len() - 1];
                 this.currentSize = this.currentSize - (last.name.len() + last.value.len() + 32);
                 this.entries.removeAt(this.entries.len() - 1);
             }

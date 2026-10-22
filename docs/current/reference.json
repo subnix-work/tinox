@@ -203,6 +203,15 @@
       ]
     },
     {
+      "description": "Contribute a synchronous Bool to liveness",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "Liveness",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "Injects a 'log: Logger' field initialized with Logger::new(ClassName)",
       "max_args": 0,
       "min_args": 0,
@@ -261,6 +270,24 @@
       "max_args": 0,
       "min_args": 0,
       "name": "OnOpen",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
+      "description": "Run a singleton initialization hook before starting required services",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "OnStart",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
+      "description": "Run a singleton disposal hook after draining, in reverse dependency/method order",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "OnStop",
       "targets": [
         "Method"
       ]
@@ -348,6 +375,15 @@
       ]
     },
     {
+      "description": "Contribute a synchronous Bool to readiness after required listeners/consumers are usable",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "Readiness",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "@Route(\"/path/:param\") -- on a `fn() -> Component` method inside a @TinoxUIApp class, registers it as that path's builder (Vaadin-style route dispatch). The class must declare `var currentRoute: String;`: the compiler seeds it from the browser's initial request path at WS connect time, and the app's own navigation (e.g. Component::link's onNavigate handler) is expected to assign it on every subsequent navigation -- the compiler re-dispatches off its current value on every render. Patterns may use `:name` path-parameter segments (RouteMatcher syntax); a matched `:name` is auto-assigned into a same-named String field on the class, if one exists, before the method runs. When the current route matches no @Route pattern, the class's plain @View method renders instead (fallback/404 case) -- @View stays required even when @Route is used. Also registers the HTTP shell at each literal @Route path so a hard reload/deep link doesn't 404.",
       "max_args": 1,
       "min_args": 1,
@@ -363,6 +399,15 @@
       "name": "Sensitive",
       "targets": [
         "Field"
+      ]
+    },
+    {
+      "description": "Enable coordinated lifecycle on Main; optional startup and shutdown deadlines in milliseconds (30000, 5000)",
+      "max_args": 2,
+      "min_args": 0,
+      "name": "Service",
+      "targets": [
+        "Class"
       ]
     },
     {
@@ -390,6 +435,16 @@
       "min_args": 1,
       "name": "StatusCode",
       "targets": [
+        "Method"
+      ]
+    },
+    {
+      "description": "Serialize annotated singleton instance methods with one recursive class monitor; release on return, error and cancellation",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "Synchronized",
+      "targets": [
+        "Class",
         "Method"
       ]
     },
@@ -597,6 +652,10 @@
     "Time_now": "() -> Int64",
     "Time_parse": "(s: String) -> Int64",
     "Time_toString": "(t: Any) -> String",
+    "__scope_abort": "(scope: Int64) -> Nothing",
+    "__scope_join": "(scope: Int64) -> Nothing",
+    "__scope_new": "() -> Int64",
+    "__scope_register": "(scope: Int64, task: Any) -> Any",
     "abs": "(x: Any) -> Any",
     "aesDecryptRaw": "(data: String, key: String) -> String",
     "aesEncryptRaw": "(data: String, key: String) -> String",
@@ -615,6 +674,8 @@
     "currentTimeSecs": "() -> Int64",
     "deleteFile": "(path: String) -> Nothing",
     "dirCreate": "(path: String) -> Nothing",
+    "dirCreateAllChecked": "(path: String) -> String",
+    "dirCreateChecked": "(path: String) -> String",
     "dirDelete": "(path: String) -> Nothing",
     "dirList": "(path: String) -> List<String>",
     "endsWith": "(s: String, pat: String) -> Bool",
@@ -629,11 +690,13 @@
     "expf": "(x: Float64) -> Float64",
     "fabs": "(x: Float64) -> Float64",
     "fabsf": "(x: Float64) -> Float64",
+    "fileAppendText": "(path: String) -> Nothing",
     "fileClose": "(path: String) -> Nothing",
     "fileDelete": "(path: String) -> Nothing",
     "fileExists": "(path: String) -> Bool",
     "fileReadAllText": "(path: String) -> String",
     "fileWriteAllText": "(path: String) -> Nothing",
+    "fileWriteAllTextChecked": "(path: String, content: String) -> String",
     "first": "(arr: Array) -> Int64",
     "floor": "(x: Any) -> Float64",
     "floorf": "(x: Float64) -> Float64",
@@ -745,6 +808,18 @@
     "semaphoreNew": "(initialCount: Int64) -> Int64",
     "semaphoreRelease": "(handle: Int64) -> Nothing",
     "semaphoreTryAcquire": "(handle: Int64) -> Int64",
+    "serviceAwaitReady": "(milliseconds: Int64) -> Bool",
+    "serviceAwaitShutdown": "() -> Nothing",
+    "serviceBoundPort": "(taskIndex: Int64) -> Int64",
+    "serviceIsLive": "() -> Bool",
+    "serviceIsReady": "() -> Bool",
+    "serviceIsStopping": "() -> Bool",
+    "serviceReadyMs": "() -> Int64",
+    "serviceRequestShutdown": "() -> Nothing",
+    "serviceShutdownMs": "() -> Int64",
+    "serviceStartedMs": "() -> Int64",
+    "serviceState": "() -> String",
+    "serviceStatusJson": "() -> String",
     "sha1Hash": "(data: String) -> String",
     "sha256Bytes": "(data: List<Int64>) -> List<Int64>",
     "sha256Hash": "(data: String) -> String",
@@ -770,6 +845,12 @@
     "strftimeStr": "(fmt: String, t: Int64) -> String",
     "tan": "(x: Float64) -> Float64",
     "tanf": "(x: Float64) -> Float64",
+    "taskCancel": "(task: Task<Any>) -> Nothing",
+    "taskCheckCancellation": "() -> Nothing",
+    "taskDetach": "(task: Task<Any>) -> Nothing",
+    "taskRequestShutdown": "() -> Nothing",
+    "taskSetDeadline": "(milliseconds: Int64) -> Nothing",
+    "taskWaitReadable": "(fd: Int64) -> Nothing",
     "tinox_clock_nanos": "() -> Int64",
     "tinox_counter_inc": "(name: String) -> Nothing",
     "tinox_gauge_set": "(name: String, value: Int64) -> Nothing",

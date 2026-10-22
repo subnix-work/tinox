@@ -1,0 +1,23 @@
+// Bug 353: Fs::writeFile / Fs::createDirectory failed silently
+// expect: write failed
+// expect: mkdir failed
+// expect: true
+// expect: hello
+import tinox.core.fs;
+import tinox.core.io;
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        try { Fs::writeFile("/tmp/tinox_bug353/nope/file.txt", "x"); println("no error"); }
+        catch (e: String) { println("write failed"); }
+        try { Fs::createDirectory("/tmp/tinox_bug353/a/b/c"); println("no error"); }
+        catch (e: String) { println("mkdir failed"); }
+        Fs::createDirectories("/tmp/tinox_bug353/a/b/c");
+        println(File::exists("/tmp/tinox_bug353/a/b/c").toString());
+        Fs::writeFile("/tmp/tinox_bug353/a/b/c/f.txt", "hello");
+        println(Fs::readFile("/tmp/tinox_bug353/a/b/c/f.txt"));
+        return 0;
+    }
+}

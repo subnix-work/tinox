@@ -9,7 +9,7 @@ Use one top-level class/interface/enum per file, named exactly like its type.
 The entry point is `class Main` in `Main.tnx` with
 `fnc main() -> Int32`. Return `0` for success. `fnc` declares static methods;
 `fn` declares instance methods. Call static methods with `Type::method()`;
-call instance methods with `object.method()`. Use `let` for bindings and `var`
+call instance methods with `object.method()`. Use `const` for immutable bindings and `var`
 for mutable bindings. Statements end with `;`. Types include `Int64`, `Int32`,
 `Float64`, `Bool`, `String`, `Nothing`, `List<T>` and `Map<K, V>`.
 Prefer annotations for supported wiring and generated accessors.
@@ -21,7 +21,7 @@ class Main
 {
     fnc main() -> Int32
     {
-        let name: String = "Tinox";
+        const name: String = "Tinox";
         println("Hello, " + name + "!");
         return 0;
     }
@@ -39,7 +39,7 @@ class Main
 
     fnc main() -> Int32
     {
-        let counter = new Main();
+        const counter = new Main();
         counter.setCount(42);
         println(counter.getCount());
         return 0;
@@ -93,6 +93,8 @@ Deeper queries:
 - `tinox reference crates/tinox-core-ext/crypto/tinox/core/crypto` exports source
   API metadata from the same parser/doc model as `tinox doc`. Lex/parse failures
   fail the export. It does not imply that every exported declaration typechecks.
+- `tinox describe <Symbol> --json` queries resolved APIs through the compiler
+  dependency graph; `tinox explain --bootstrap` explains generated wiring.
 - `tinox doc` generates the current project's HTML API documentation.
 - [English reference](../docs_en.html), [German reference](../docs.html),
   [language specification](SPEC.md), [examples](guide/examples/) and

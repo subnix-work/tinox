@@ -18,7 +18,7 @@ namespace tinox.core.kubernetes
         {
             var jobTemplate: PodTemplateSpec = PodTemplateSpec::create(Map::new(), containers);
             jobTemplate.spec.restartPolicy = "Never";
-            let jobSpec: JobSpec = JobSpec { template: jobTemplate, completions: 1, parallelism: 1, backoffLimit: 6 };
+            const jobSpec: JobSpec = JobSpec { template: jobTemplate, completions: 1, parallelism: 1, backoffLimit: 6 };
             return CronJob {
                 apiVersion: "batch/v1", kind: "CronJob",
                 metadata: ObjectMeta::withNameAndNamespace(name, namespace),

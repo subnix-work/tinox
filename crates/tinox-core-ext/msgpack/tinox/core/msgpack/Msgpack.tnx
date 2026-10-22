@@ -7,9 +7,9 @@
  * same self-describing dynamic-value model as JSON (object/array/
  * string/int/float/bool/null).
  *
- *   let payload: MsgpackValue = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: fields };
- *   let bytes: List<Int64> = Msgpack::encode(payload);
- *   let decoded: MsgpackValue = Msgpack::decode(bytes);
+ *   const payload: MsgpackValue = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: fields };
+ *   const bytes: List<Int64> = Msgpack::encode(payload);
+ *   const decoded: MsgpackValue = Msgpack::decode(bytes);
  *
  * Encoding always picks the most compact representation that fits
  * (fixint/fixstr/fixarray/fixmap where possible, otherwise the smallest
@@ -54,7 +54,7 @@ namespace tinox.core.msgpack
 
         fn decode(bytes: List<Int64>) -> MsgpackValue
         {
-            let reader: MsgpackReader = MsgpackReader::new(bytes);
+            const reader: MsgpackReader = MsgpackReader::new(bytes);
             return Msgpack::decodeValue(reader);
         }
 
@@ -115,7 +115,7 @@ namespace tinox.core.msgpack
 
         fn encodeString(s: String, out: List<Int64>) -> Nothing
         {
-            let len: Int64 = s.len();
+            const len: Int64 = s.len();
             if (len < 32)
             {
                 out.push(0xa0 | len);
@@ -145,7 +145,7 @@ namespace tinox.core.msgpack
 
         fn encodeArray(items: List<MsgpackValue>, out: List<Int64>) -> Nothing
         {
-            let len: Int64 = items.len();
+            const len: Int64 = items.len();
             if (len < 16)
             {
                 out.push(0x90 | len);
@@ -170,8 +170,8 @@ namespace tinox.core.msgpack
 
         fn encodeMap(m: Map<String, MsgpackValue>, out: List<Int64>) -> Nothing
         {
-            let keys: List<String> = m.keys();
-            let len: Int64 = keys.len();
+            const keys: List<String> = m.keys();
+            const len: Int64 = keys.len();
             if (len < 16)
             {
                 out.push(0x80 | len);
@@ -212,7 +212,7 @@ namespace tinox.core.msgpack
 
         fn decodeValue(reader: MsgpackReader) -> MsgpackValue
         {
-            let tag: Int64 = reader.readByte();
+            const tag: Int64 = reader.readByte();
             if (reader.failed)
             {
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
@@ -252,13 +252,13 @@ namespace tinox.core.msgpack
             }
             if (tag == 0xca)
             {
-                let bits: Int64 = reader.readBE(4);
+                const bits: Int64 = reader.readBE(4);
                 if (reader.failed) { return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }; }
                 return MsgpackValue { kind: "float", stringValue: "", intValue: 0, floatValue: msgpackBitsToFloat32(bits), boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
             if (tag == 0xcb)
             {
-                let bits: Int64 = reader.readBE(8);
+                const bits: Int64 = reader.readBE(8);
                 if (reader.failed) { return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }; }
                 return MsgpackValue { kind: "float", stringValue: "", intValue: 0, floatValue: msgpackBitsToFloat64(bits), boolValue: false, arrayValue: [], objectValue: Map::new() };
             }
@@ -297,8 +297,8 @@ namespace tinox.core.msgpack
 
         fn signExtend(v: Int64, byteWidth: Int64) -> Int64
         {
-            let bits: Int64 = byteWidth * 8;
-            let signBit: Int64 = 1 << (bits - 1);
+            const bits: Int64 = byteWidth * 8;
+            const signBit: Int64 = 1 << (bits - 1);
             if ((v & signBit) != 0)
             {
                 return v - (signBit << 1);
@@ -365,8 +365,8 @@ namespace tinox.core.msgpack
                 {
                     return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
                 }
-                let keyValue: MsgpackValue = Msgpack::decodeValue(reader);
-                let value: MsgpackValue = Msgpack::decodeValue(reader);
+                const keyValue: MsgpackValue = Msgpack::decodeValue(reader);
+                const value: MsgpackValue = Msgpack::decodeValue(reader);
                 if (!keyValue.isString())
                 {
                     reader.failed = true;

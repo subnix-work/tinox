@@ -1,0 +1,27 @@
+@ApplicationComponent
+@Synchronized
+class Counter {
+    private var count: Int64 = 0;
+    private var values: List<Int64> = [];
+    fnc new() -> Counter { return Counter { count: 0, values: [] }; }
+    fn add() -> Int64 {
+        const before = this.count;
+        sleep(0);
+        this.count = before + 1;
+        this.values.push(this.count);
+        return this.read();
+    }
+    fn read() -> Int64 { return this.count; }
+    fn size() -> Int64 { return this.values.len(); }
+    fn fail() -> Nothing { throw "guarded failure"; }
+    fn hold(ready: Int64, release: Int64) -> Nothing {
+        defer { println("holder cleanup"); }
+        send ready -> 1;
+        recv release;
+    }
+    fn cancel(ready: Int64) -> Nothing {
+        defer { println("cancel cleanup"); }
+        try { send ready -> 1; sleep(10000); }
+        finally { println("cancel finally"); }
+    }
+}

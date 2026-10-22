@@ -16,7 +16,7 @@ class Main
 
     fnc main() -> Int32 {
         try {
-            let r = divide(10, 0);
+            const r = divide(10, 0);
             println("unreachable");
         }
         catch e: String {
@@ -26,7 +26,7 @@ class Main
             println("cleanup");
         }
         try {
-            let r2 = divide(10, 2);
+            const r2 = divide(10, 2);
             println("ok: " + r2.toString());
         }
         catch e: String {

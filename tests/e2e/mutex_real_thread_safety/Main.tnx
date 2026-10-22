@@ -11,17 +11,17 @@ class Main
 {
     fnc main() -> Int32
     {
-        let counter: Counter = Counter::new();
-        let perThread: Int64 = 20000;
+        const counter: Counter = Counter::new();
+        const perThread: Int64 = 20000;
 
-        let h1 = spawn Counter::incrementMany(counter, perThread);
-        let h2 = spawn Counter::incrementMany(counter, perThread);
-        let h3 = spawn Counter::incrementMany(counter, perThread);
-        let h4 = spawn Counter::incrementMany(counter, perThread);
-        let h5 = spawn Counter::incrementMany(counter, perThread);
-        let h6 = spawn Counter::incrementMany(counter, perThread);
-        let h7 = spawn Counter::incrementMany(counter, perThread);
-        let h8 = spawn Counter::incrementMany(counter, perThread);
+        const h1 = spawn Counter::incrementMany(counter, perThread);
+        const h2 = spawn Counter::incrementMany(counter, perThread);
+        const h3 = spawn Counter::incrementMany(counter, perThread);
+        const h4 = spawn Counter::incrementMany(counter, perThread);
+        const h5 = spawn Counter::incrementMany(counter, perThread);
+        const h6 = spawn Counter::incrementMany(counter, perThread);
+        const h7 = spawn Counter::incrementMany(counter, perThread);
+        const h8 = spawn Counter::incrementMany(counter, perThread);
 
         await h1;
         await h2;

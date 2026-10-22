@@ -6,7 +6,7 @@ class Main
 
     fnc main() -> Int32
     {
-        let counter = new Main();
+        const counter = new Main();
         counter.setCount(42);
         println(counter.getCount());
         return 0;

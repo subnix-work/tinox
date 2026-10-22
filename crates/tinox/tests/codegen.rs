@@ -21,14 +21,16 @@ fn runtime_src() -> PathBuf {
 /// Panics with a descriptive message on any failure.
 fn run(source: &str) -> String {
     let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let tmp = format!("/tmp/tinox_test_{}", id);
+    // PID-scoped: the counter alone collides across processes (nextest runs each test in its own).
+    let tmp = format!("/tmp/tinox_test_{}_{}", std::process::id(), id);
 
     // Pipeline
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize().unwrap_or_else(|e| panic!("lex error: {:?}", e));
 
     let mut parser = Parser::new(tokens);
-    let ast = parser.parse().unwrap_or_else(|e| panic!("parse error: {:?}", e));
+    let mut ast = parser.parse().unwrap_or_else(|e| panic!("parse error: {:?}", e));
+    tinox_parser::assign_node_ids(&mut ast);
 
     let mut tc = TypeChecker::new();
     let checked = tc.check(&ast).unwrap_or_else(|e| panic!("typecheck error: {}", e));
@@ -36,6 +38,8 @@ fn run(source: &str) -> String {
 
     let mut cg = CodeGen::new();
     cg.set_interface_info(iface_methods, class_implements);
+    cg.set_expr_value_types(tc.expr_value_types());
+    cg.set_semantic_facts(tc.semantic_facts());
     cg.gen(&checked).unwrap_or_else(|e| panic!("codegen error: {:?}", e));
     let ir = cg.into_ir();
 
@@ -46,7 +50,7 @@ fn run(source: &str) -> String {
     fs::write(&ll, &ir).expect("write IR");
 
     assert!(
-        Command::new("llc").args(["-O1", "-march=x86-64", "-filetype=obj", "-o", &obj, &ll])
+        Command::new("llc").args(["-O1", &format!("-march={}", tinox_codegen::target::Target::host().unwrap().llc_arch()), "-filetype=obj", "-o", &obj, &ll])
             .status().expect("llc").success(),
         "llc failed"
     );

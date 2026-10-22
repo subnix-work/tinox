@@ -7,7 +7,8 @@ table owns builtin diagnostic signatures. `AnnotationProcessor` owns annotation
 targets, argument-count bounds and descriptions. Neither the export nor the
 script registers a second set of types or annotations. The LSP continues to
 consume compiler parser/typechecker data; no new editor-specific registry is
-introduced. There is no `describe` command in this compiler version.
+introduced. `tinox describe` queries resolved APIs through the compiler dependency graph;
+its annotation queries use the same `AnnotationProcessor` registry.
 
 `docs/SPEC.md` and the translated HTML explanations supply human context.
 `CLAUDE.md` contains project conventions and historical debugging notes; it

@@ -1,5 +1,6 @@
 # Build artifacts
 /target
+*.tinox-build/
 **/*.rlib
 **/*.pdb
 
@@ -83,3 +84,6 @@ fuzz/*/slow-unit-*
 # Python documentation tooling
 __pycache__/
 *.pyc
+
+# Compiler query schema fingerprint build script
+!/crates/tinox-common/build.rs

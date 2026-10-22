@@ -1,0 +1,3 @@
+class Factory<T> {
+    fnc apply(factory: fnc() -> T) -> T { return factory(); }
+}
