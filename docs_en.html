@@ -1304,6 +1304,35 @@ class Api {
       a pointer to a table of function pointers.
     </p>
 
+    <h3>Absence and recoverable errors</h3>
+    <p>For new library APIs, use <code>Option&lt;T&gt;</code> for absence and
+      <code>Result&lt;T&gt;</code> for expected failures. Import
+      <code>tinox.core.option</code> and <code>tinox.core.result</code>.
+      <code>Some("")</code> means present-empty; <code>None</code> means absent.
+      Check <code>isSome()</code>/<code>isNone()</code> or choose an explicit
+      fallback with <code>unwrapOr()</code>. Do not add a nullable
+      <code>T?</code> alternative for the same lookup.</p>
+    <p><code>Result&lt;T&gt;</code> retains its String error. Use
+      <code>isOk()</code>/<code>isErr()</code> and <code>getError()</code>;
+      preserve operation, target and cause without exposing secrets. Do not
+      infer status from message contents. APIs needing stable error categories
+      should use documented domain outcome fields. A generic typed-error
+      Result and allocation changes are deferred.</p>
+    <p>Exceptions remain appropriate for documented precondition, programming
+      and setup failures. <code>Option.unwrap()</code> on None throws
+      <code>"Option is None"</code>; <code>Result.unwrap()</code> on Err throws
+      the original error. Callback exceptions propagate through combinators.
+      Use <code>finally</code> for cleanup on normal and exceptional exits.</p>
+    <p>The additive HTTP methods <code>findHeader</code>, <code>findParam</code>,
+      <code>findQuery</code> and <code>QueryString::find</code> return
+      <code>Option&lt;String&gt;</code>. Headers are case-insensitive;
+      path/query names are case-sensitive. Queries keep raw values, the last
+      duplicate, and present-empty bare keys. Existing String getters keep
+      their empty fallback without deprecation warnings. These source APIs
+      require a future HTTP package release; existing published versions do
+      not contain them. See the <a href="docs/api-contracts.md">API inventory
+      and migration guide</a> for examples and legacy I/O limitations.</p>
+
     <h3>Keyword Overview</h3>
     <table>
       <thead><tr><th>Keyword</th><th>Meaning</th></tr></thead>

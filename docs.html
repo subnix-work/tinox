@@ -1314,6 +1314,38 @@ class Api {
       einen Zeiger auf eine Tabelle von Funktionszeigern.
     </p>
 
+    <h3>Abwesenheit und behandelbare Fehler</h3>
+    <p>Neue Bibliotheks-APIs verwenden <code>Option&lt;T&gt;</code> für fehlende
+      Werte und <code>Result&lt;T&gt;</code> für erwartete Fehler. Die Imports
+      sind <code>tinox.core.option</code> und <code>tinox.core.result</code>.
+      <code>Some("")</code> bedeutet vorhanden, aber leer; <code>None</code>
+      bedeutet nicht vorhanden. Mit <code>isSome()</code>/<code>isNone()</code>
+      prüfen oder mit <code>unwrapOr()</code> einen Ersatzwert wählen. Keine
+      zusätzliche nullable <code>T?</code>-Variante derselben Suche einführen.</p>
+    <p><code>Result&lt;T&gt;</code> behält seinen String-Fehler. Status mit
+      <code>isOk()</code>/<code>isErr()</code> prüfen und Details über
+      <code>getError()</code> lesen. Operation, Ziel und Ursache ohne geheime
+      Daten erhalten; den Status nicht aus dem Meldungstext ableiten.
+      Stabile Fehlerkategorien gehören in dokumentierte Ergebnisfelder.
+      Ein generisches Result mit Fehlertyp und Änderungen der Speicherbelegung
+      bleiben separater Arbeit vorbehalten.</p>
+    <p>Exceptions bleiben für dokumentierte Vorbedingungen, Programmier- und
+      Einrichtungsfehler geeignet. <code>Option.unwrap()</code> wirft bei None
+      <code>"Option is None"</code>; <code>Result.unwrap()</code> wirft bei Err
+      den ursprünglichen Fehler. Exceptions aus Callbacks werden weitergereicht.
+      <code>finally</code> dient der Bereinigung bei normalem und fehlerhaftem
+      Verlassen eines Blocks.</p>
+    <p>Die ergänzenden HTTP-Methoden <code>findHeader</code>, <code>findParam</code>,
+      <code>findQuery</code> und <code>QueryString::find</code> liefern
+      <code>Option&lt;String&gt;</code>. Header ignorieren Groß-/Kleinschreibung,
+      Pfad- und Query-Namen unterscheiden sie. Query-Werte bleiben roh;
+      der letzte doppelte Parameter gewinnt, ein Schlüssel ohne Wert ist
+      vorhanden und leer. Bestehende String-Getter behalten ihren leeren
+      Ersatzwert ohne Deprecation-Warnungen. Die neuen Quellcode-APIs benötigen
+      eine zukünftige HTTP-Paketversion; veröffentlichte Versionen enthalten
+      sie noch nicht. Beispiele und bestehende I/O-Grenzen stehen im
+      <a href="docs/api-contracts.md">API-Inventar und Migrationsleitfaden</a>.</p>
+
     <h3>Schlüsselwort-Übersicht</h3>
     <table>
       <thead><tr><th>Keyword</th><th>Bedeutung</th></tr></thead>
