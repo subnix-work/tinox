@@ -60,7 +60,7 @@ class Main
 
         const nested: String = "nested try";
         Main::call(fn() {
-            if true
+            if (true)
             {
                 try
                 {
