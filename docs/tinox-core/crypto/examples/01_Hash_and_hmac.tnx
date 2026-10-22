@@ -4,13 +4,13 @@ class Main
 {
     fnc main() -> Int32
     {
-        let hash: String = Crypto::sha256("hello, tinox!");
+        const hash: String = Crypto::sha256("hello, tinox!");
         println(hash);
 
-        let signature: String = Crypto::hmacSha256("payload", "secret-key");
+        const signature: String = Crypto::hmacSha256("payload", "secret-key");
         println(signature);
 
-        let key: String = Crypto::generateKey(32);
+        const key: String = Crypto::generateKey(32);
         println("random key length: " + key.len().toString());
         return 0;
     }

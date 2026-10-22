@@ -12,9 +12,9 @@ namespace tinox.core.hex
             var i: Int64 = 0;
             while i < data.len()
             {
-                let byte: Int64 = data.charCodeAt(i);
-                let high: Int64 = (byte >> 4) & 15;
-                let low: Int64 = byte & 15;
+                const byte: Int64 = data.charCodeAt(i);
+                const high: Int64 = (byte >> 4) & 15;
+                const low: Int64 = byte & 15;
                 result = result + Hex::nibbleToChar(high) + Hex::nibbleToChar(low);
                 i = i + 1;
             }
@@ -45,8 +45,8 @@ namespace tinox.core.hex
             var i: Int64 = 0;
             while i < hex.len()
             {
-                let high: Int64 = Hex::charToNibble(hex.substring(i, i + 1));
-                let low: Int64 = Hex::charToNibble(hex.substring(i + 1, i + 2));
+                const high: Int64 = Hex::charToNibble(hex.substring(i, i + 1));
+                const low: Int64 = Hex::charToNibble(hex.substring(i + 1, i + 2));
                 result.push((high << 4) | low);
                 i = i + 2;
             }
@@ -64,7 +64,7 @@ namespace tinox.core.hex
 
         fn charToNibble(c: String) -> Int64
         {
-            let code: Int64 = c.charCodeAt(0);
+            const code: Int64 = c.charCodeAt(0);
             if (code >= 48 && code <= 57)
             {
                 return code - 48;
@@ -90,7 +90,7 @@ namespace tinox.core.hex
                 {
                     result = result + " ";
                 }
-                let byte: Int64 = data.charCodeAt(i);
+                const byte: Int64 = data.charCodeAt(i);
                 result = result + Hex::encode(data.substring(i, i + 1));
                 i = i + 1;
             }

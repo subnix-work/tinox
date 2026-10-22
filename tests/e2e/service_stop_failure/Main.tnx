@@ -1,0 +1,7 @@
+// expect-exit: 1
+// expect: last stop
+// expect: first stop
+// expect: tinox: service failed: OnStop Last.stop failed: stop failed
+import Last;
+@Service(2000, 1000)
+class Main { fnc main() -> Int32 { return 0; } }

@@ -22,7 +22,7 @@ parking_lot = "0.12"
 unicode-ident = "0.3"
 hashbrown = "0.15"
 rayon = "1.10"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_yaml = "0.9"
 ureq = "2"
 flate2 = "1"

@@ -1,0 +1,112 @@
+// expect: caught child failed
+// expect: after
+// expect: 6
+// expect: body done
+// expect: caught: child boom
+// expect: 42
+// expect: 11
+// expect: 3
+// expect: caught: inner child
+// expect: 5
+// expect: end
+class Main {
+    async fnc ok(n: Int64) -> Int64 { return n * 2; }
+    async fnc plain(n: Int64) -> Int64 { return n; }
+    async fnc boom(msg: String) -> Int64 { throw msg; return 0; }
+    async fnc slow(n: Int64) -> Int64 { var i = 0; while (i < 2000000) { i = i + 1; } return n; }
+
+    fnc normal() -> Int64 {
+        var total = 0;
+        scope {
+            const a = spawn Main::ok(1);
+            const b = spawn Main::ok(2);
+            total = (await a) + (await b);
+        }
+        return total;
+    }
+
+    fnc unawaitedChildFails() -> Nothing {
+        scope {
+            const a = spawn Main::ok(1);
+            const b = spawn Main::boom("child boom");
+            println("body done");
+        }
+        println("NOT REACHED");
+    }
+
+    fnc returnInside() -> Int64 {
+        scope {
+            const a = spawn Main::ok(21);
+            return await a;
+        }
+        return 0;
+    }
+
+    fnc nested() -> Int64 {
+        var total = 0;
+        scope {
+            const outer = spawn Main::slow(1);
+            scope {
+                const inner = spawn Main::slow(10);
+                total = total + (await inner);
+            }
+            total = total + (await outer);
+        }
+        return total;
+    }
+
+    fnc loopBreak() -> Int64 {
+        var total = 0;
+        var i = 0;
+        while (i < 5) {
+            scope {
+                const t = spawn Main::slow(i);
+                total = total + (await t);
+                if (i == 2) { break; }
+            }
+            i = i + 1;
+        }
+        return total;
+    }
+
+    fnc innerFailsOuterCatches() -> Nothing {
+        scope {
+            scope {
+                const b = spawn Main::boom("inner child");
+            }
+            println("NOT REACHED");
+        }
+    }
+
+    // A spawn inside a closure belongs to the closure, not the scope.
+    fnc lambdaSpawnNotOwned() -> Int64 {
+        var h = 0;
+        scope {
+            const f = fn() -> Int64 { const t = spawn Main::plain(5); return await t; };
+            h = f();
+        }
+        return h;
+    }
+
+    fnc main() -> Int32 {
+        // await re-throws a failed child's error in the awaiting thread.
+        const t = spawn Main::boom("child failed");
+        try {
+            const r = await t;
+            println("got " + r.toString());
+        } catch (e: String) {
+            println("caught " + e);
+        }
+        println("after");
+
+        println(Main::normal().toString());
+        try { Main::unawaitedChildFails(); } catch (e: String) { println("caught: " + e); }
+        println(Main::returnInside().toString());
+        println(Main::nested().toString());
+        println(Main::loopBreak().toString());
+        try { Main::innerFailsOuterCatches(); } catch (e: String) { println("caught: " + e); }
+        println(Main::lambdaSpawnNotOwned().toString());
+        println("end");
+        return 0;
+    }
+}

@@ -1,0 +1,111 @@
+{
+  "notes": "Local measurements with warm filesystem caches and concurrent make check activity. Three disabled and warm runs; one cold run. Compiler built in release mode. These measurements are not service-readiness or production-load guarantees.",
+  "debug_application": {
+    "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+    "machine": "x86_64",
+    "compiler": "/tmp/tinox-cache-target/release/tinox",
+    "compiler_sha256": "c2c74f47d8c07b55856192880f10a88b6f9988bebf28d87668e7157cd65c3491",
+    "cc": "cc (GCC) 16.2.1 20260810",
+    "application_optimization": "debug",
+    "environment": {
+      "TINOX_CFLAGS": null,
+      "TINOX_TLS": null,
+      "TINOX_HTTP3": null
+    },
+    "samples": {
+      "disabled": [
+        {
+          "seconds": 1.6751837830015575,
+          "trace": "[runtime-cache] bypass: disabled by TINOX_RUNTIME_CACHE=0"
+        },
+        {
+          "seconds": 1.6802266340018832,
+          "trace": "[runtime-cache] bypass: disabled by TINOX_RUNTIME_CACHE=0"
+        },
+        {
+          "seconds": 1.6960902089995216,
+          "trace": "[runtime-cache] bypass: disabled by TINOX_RUNTIME_CACHE=0"
+        }
+      ],
+      "cold": [
+        {
+          "seconds": 1.7152543560005142,
+          "trace": "[runtime-cache] miss 73fc3f909f19dbd74c096719c1e54d3d62cdf853ec28e6a7565ca77f999dbd4b (absent or invalid entry)"
+        }
+      ],
+      "warm": [
+        {
+          "seconds": 0.09931722399778664,
+          "trace": "[runtime-cache] hit 73fc3f909f19dbd74c096719c1e54d3d62cdf853ec28e6a7565ca77f999dbd4b"
+        },
+        {
+          "seconds": 0.09781538000243017,
+          "trace": "[runtime-cache] hit 73fc3f909f19dbd74c096719c1e54d3d62cdf853ec28e6a7565ca77f999dbd4b"
+        },
+        {
+          "seconds": 0.09997900700182072,
+          "trace": "[runtime-cache] hit 73fc3f909f19dbd74c096719c1e54d3d62cdf853ec28e6a7565ca77f999dbd4b"
+        }
+      ]
+    },
+    "median_seconds": {
+      "disabled": 1.6802266340018832,
+      "cold": 1.7152543560005142,
+      "warm": 0.09931722399778664
+    }
+  },
+  "release_application": {
+    "platform": "Linux-7.2.9-arch1-1-x86_64-with-glibc2.44",
+    "machine": "x86_64",
+    "compiler": "/tmp/tinox-cache-target/release/tinox",
+    "compiler_sha256": "ceef2018bf7d9d16904b29671acb3ebd252ece64ac27d35a701cfd2b74d96713",
+    "cc": "cc (GCC) 16.2.1 20260810",
+    "application_optimization": "release",
+    "environment": {
+      "TINOX_CFLAGS": null,
+      "TINOX_TLS": null,
+      "TINOX_HTTP3": null
+    },
+    "samples": {
+      "disabled": [
+        {
+          "seconds": 1.6376055069995346,
+          "trace": "[runtime-cache] bypass: disabled by TINOX_RUNTIME_CACHE=0"
+        },
+        {
+          "seconds": 1.7069684579983004,
+          "trace": "[runtime-cache] bypass: disabled by TINOX_RUNTIME_CACHE=0"
+        },
+        {
+          "seconds": 1.8119485589995747,
+          "trace": "[runtime-cache] bypass: disabled by TINOX_RUNTIME_CACHE=0"
+        }
+      ],
+      "cold": [
+        {
+          "seconds": 1.8174083900012192,
+          "trace": "[runtime-cache] miss 73fc3f909f19dbd74c096719c1e54d3d62cdf853ec28e6a7565ca77f999dbd4b (absent or invalid entry)"
+        }
+      ],
+      "warm": [
+        {
+          "seconds": 0.10889771000074688,
+          "trace": "[runtime-cache] hit 73fc3f909f19dbd74c096719c1e54d3d62cdf853ec28e6a7565ca77f999dbd4b"
+        },
+        {
+          "seconds": 0.1058296090013755,
+          "trace": "[runtime-cache] hit 73fc3f909f19dbd74c096719c1e54d3d62cdf853ec28e6a7565ca77f999dbd4b"
+        },
+        {
+          "seconds": 0.10481748199890717,
+          "trace": "[runtime-cache] hit 73fc3f909f19dbd74c096719c1e54d3d62cdf853ec28e6a7565ca77f999dbd4b"
+        }
+      ]
+    },
+    "median_seconds": {
+      "disabled": 1.7069684579983004,
+      "cold": 1.8174083900012192,
+      "warm": 0.1058296090013755
+    }
+  }
+}

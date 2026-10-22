@@ -8,7 +8,7 @@ class Main
         var y: Int64 = b;
         while y != 0
         {
-            let t: Int64 = y;
+            const t: Int64 = y;
             y = x % y;
             x = t;
         }

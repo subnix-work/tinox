@@ -8,11 +8,11 @@ class Main
 {
     fnc main() -> Int32
     {
-        let dynEnc: HpackDynTable = HpackDynTable::new(4096);
-        let headers: List<HpackHeader> = [];
+        const dynEnc: HpackDynTable = HpackDynTable::new(4096);
+        const headers: List<HpackHeader> = [];
         headers.push(HpackHeader::new("x-token", "secret"));
         headers.push(HpackHeader::new("x-tenant", "acme"));
-        let encoded: List<Int64> = Hpack::encode(headers, dynEnc);
+        const encoded: List<Int64> = Hpack::encode(headers, dynEnc);
         // Both non-static headers should be added to the dynamic table
         println(dynEnc.entries.len());
         println(dynEnc.entries[0].name);

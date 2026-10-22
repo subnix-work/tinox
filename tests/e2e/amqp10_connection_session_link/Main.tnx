@@ -21,15 +21,15 @@ class Main
 {
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        let sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv);
 
         // --- SASL header + negotiation ---
         httpConnReadN(sconn, 8);
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-        let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
         Amqp10::writeFrame(sconn, 1, 0, mechBody);
         Amqp10::readFrame(sconn); // sasl-init, v1 not checked (see Phase-4 test)
-        let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
+        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
         Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
 
         // --- AMQP header ---
@@ -37,8 +37,8 @@ class Main
         httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
 
         // --- open / open-ok ---
-        let fOpen = Amqp10::readFrame(sconn);
-        let pOpen = Amqp10::decodePerformative(fOpen.body);
+        const fOpen = Amqp10::readFrame(sconn);
+        const pOpen = Amqp10::decodePerformative(fOpen.body);
         var ok1: Bool = pOpen.descriptor == 0x10;
         var openFields: List<Amqp10Value> = [
             Amqp10Value::StrVal("fake-broker"),
@@ -46,12 +46,12 @@ class Main
             Amqp10Value::UIntVal(131072),
             Amqp10Value::UShortVal(2047)
         ];
-        let openOkBody = Amqp10::encodePerformative(0x10, openFields);
+        const openOkBody = Amqp10::encodePerformative(0x10, openFields);
         Amqp10::writeFrame(sconn, 0, 0, openOkBody);
 
         // --- begin / begin-ok ---
-        let fBegin = Amqp10::readFrame(sconn);
-        let pBegin = Amqp10::decodePerformative(fBegin.body);
+        const fBegin = Amqp10::readFrame(sconn);
+        const pBegin = Amqp10::decodePerformative(fBegin.body);
         var ok2: Bool = pBegin.descriptor == 0x11;
         var beginFields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin.chanId),
@@ -59,12 +59,12 @@ class Main
             Amqp10Value::UIntVal(2147483647),
             Amqp10Value::UIntVal(2147483647)
         ];
-        let beginOkBody = Amqp10::encodePerformative(0x11, beginFields);
+        const beginOkBody = Amqp10::encodePerformative(0x11, beginFields);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, beginOkBody);
 
         // --- attach / attach-ok ---
-        let fAttach = Amqp10::readFrame(sconn);
-        let pAttach = Amqp10::decodePerformative(fAttach.body);
+        const fAttach = Amqp10::readFrame(sconn);
+        const pAttach = Amqp10::decodePerformative(fAttach.body);
         var ok3: Bool = pAttach.descriptor == 0x12;
         var sawRole: Bool = false;
         var linkName: String = "";
@@ -72,28 +72,28 @@ class Main
             match pAttach.fields[0] { StrVal(s) => { linkName = s; } _ => {} }
             match pAttach.fields[2] { BoolVal(b) => { sawRole = !b; } _ => {} } // client attaches as sender (role=false)
         }
-        let attachOkBody = Amqp10::encodePerformative(0x12, pAttach.fields);
+        const attachOkBody = Amqp10::encodePerformative(0x12, pAttach.fields);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, attachOkBody);
 
         // --- detach / detach-ok ---
-        let fDetach = Amqp10::readFrame(sconn);
-        let pDetach = Amqp10::decodePerformative(fDetach.body);
+        const fDetach = Amqp10::readFrame(sconn);
+        const pDetach = Amqp10::decodePerformative(fDetach.body);
         var ok4: Bool = pDetach.descriptor == 0x16;
-        let detachOkBody = Amqp10::encodePerformative(0x16, pDetach.fields);
+        const detachOkBody = Amqp10::encodePerformative(0x16, pDetach.fields);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, detachOkBody);
 
         // --- end / end-ok ---
-        let fEnd = Amqp10::readFrame(sconn);
-        let pEnd = Amqp10::decodePerformative(fEnd.body);
+        const fEnd = Amqp10::readFrame(sconn);
+        const pEnd = Amqp10::decodePerformative(fEnd.body);
         var ok5: Bool = pEnd.descriptor == 0x17;
-        let endOkBody = Amqp10::encodePerformative(0x17, []);
+        const endOkBody = Amqp10::encodePerformative(0x17, []);
         Amqp10::writeFrame(sconn, 0, fBegin.chanId, endOkBody);
 
         // --- close / close-ok ---
-        let fClose = Amqp10::readFrame(sconn);
-        let pClose = Amqp10::decodePerformative(fClose.body);
+        const fClose = Amqp10::readFrame(sconn);
+        const pClose = Amqp10::decodePerformative(fClose.body);
         var ok6: Bool = pClose.descriptor == 0x18;
-        let closeOkBody = Amqp10::encodePerformative(0x18, []);
+        const closeOkBody = Amqp10::encodePerformative(0x18, []);
         Amqp10::writeFrame(sconn, 0, 0, closeOkBody);
 
         httpConnClose(sconn);
@@ -113,27 +113,27 @@ class Main
 
 
     fnc main() -> Int32 {
-        let srv = httpServerCreate(0);
-        let port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0);
+        const port = httpServerBoundPort(srv);
         if (srv < 0) {
             println("bind failed");
             return 1;
         }
-        let handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv);
 
-        let conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
         if (conn.conn <= 0) {
             println("connect failed: " + conn.errorMessage);
             return 1;
         }
 
-        let session = Amqp10Session::begin(conn);
+        const session = Amqp10Session::begin(conn);
         if (session.chanId <= 0) {
             println("begin failed: " + session.errorMessage);
             return 1;
         }
 
-        let link = Amqp10Link::attach(session, "test-link", false, "test-queue");
+        const link = Amqp10Link::attach(session, "test-link", false, "test-queue");
         if (link.handle < 0) {
             println("attach failed: " + link.errorMessage);
             return 1;
@@ -143,7 +143,7 @@ class Main
         session.end();
         conn.close();
 
-        let brokerOk = await handle;
+        const brokerOk = await handle;
 
         if (conn.conn > 0) {
             println("ok-connect");

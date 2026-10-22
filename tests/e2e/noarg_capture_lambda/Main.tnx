@@ -9,13 +9,13 @@ class Main
     fnc main() -> Int32 {
         // no-arg capture (by-value): captures the value at definition time
         var counter: Int64 = 1;
-        let getCounter: fnc() -> Int64 = fnc() -> Int64 { return counter; };
+        const getCounter: fnc() -> Int64 = fnc() -> Int64 { return counter; };
         counter = 99;
         println(getCounter().toString());   // 1 (by-value capture)
         // no-arg with multiple captures
-        let a: Int64 = 10;
-        let b: Int64 = 20;
-        let sum: fnc() -> Int64 = fnc() -> Int64 { return a + b; };
+        const a: Int64 = 10;
+        const b: Int64 = 20;
+        const sum: fnc() -> Int64 = fnc() -> Int64 { return a + b; };
         println(sum().toString());           // 30
         return 0;
     }

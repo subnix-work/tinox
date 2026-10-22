@@ -43,7 +43,7 @@ namespace tinox.core.msgpack
                 this.failed = true;
                 return 0;
             }
-            let b: Int64 = this.bytes[this.pos];
+            const b: Int64 = this.bytes[this.pos];
             this.pos = this.pos + 1;
             return b;
         }

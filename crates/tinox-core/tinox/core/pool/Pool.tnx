@@ -25,13 +25,13 @@ namespace tinox.core.pool
         {
             if (pool.available.len() > 0)
             {
-                let obj: T = pool.available[pool.available.len() - 1];
+                const obj: T = pool.available[pool.available.len() - 1];
                 pool.available.pop();
                 return obj;
             }
             if (pool.inUse.len() < pool.maxSize)
             {
-                let obj: T = pool.factory();
+                const obj: T = pool.factory();
                 pool.inUse.push(obj);
                 return obj;
             }

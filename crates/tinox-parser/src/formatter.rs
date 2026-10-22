@@ -268,7 +268,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
             StmtKind::Let { name, ty, value } => {
                 let ty_str = ty.as_ref().map(|t| format!(": {}", self.fmt_type(t))).unwrap_or_default();
                 let val_str = value.as_ref().map(|v| format!(" = {}", self.fmt_expr(&v.node))).unwrap_or_default();
-                format!("let {}{}{};", name, ty_str, val_str)
+                format!("const {}{}{};", name, ty_str, val_str)
             }
             StmtKind::Var { name, ty, value, .. } => {
                 let ty_str = ty.as_ref().map(|t| format!(": {}", self.fmt_type(t))).unwrap_or_default();
@@ -552,10 +552,10 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
             Type::Array(inner) => format!("Array<{}>", self.fmt_type(inner)),
             Type::Map(k, v) => format!("Map<{}, {}>", self.fmt_type(k), self.fmt_type(v)),
             Type::Mutable(inner) => format!("mut {}", self.fmt_type(inner)),
-            Type::Ref(inner) => format!("&{}", self.fmt_type(inner)),
+            Type::Ref(inner) => format!("?{}", self.fmt_type(inner)),
             Type::Fn { params, ret } => {
                 let ps: Vec<String> = params.iter().map(|t| self.fmt_type(t)).collect();
-                format!("fn({}) -> {}", ps.join(", "), self.fmt_type(ret))
+                format!("fnc({}) -> {}", ps.join(", "), self.fmt_type(ret))
             }
             Type::Tuple(types) => {
                 let ts: Vec<String> = types.iter().map(|t| self.fmt_type(t)).collect();
@@ -583,7 +583,7 @@ fn fmt_visibility(vis: &Visibility) -> &'static str {
     }
 }
 
-fn fmt_annotation_arg(arg: &AnnotationArg) -> String {
+pub(crate) fn fmt_annotation_arg(arg: &AnnotationArg) -> String {
     match arg {
         AnnotationArg::Literal(lit) => fmt_literal(lit),
         AnnotationArg::EnumValue(type_name, variant) => format!("{}.{}", type_name, variant),
@@ -757,14 +757,15 @@ mod tests {
 
     #[test]
     fn test_fmt_let_with_type() {
-        let out = fmt("fn f() { let x: Int32 = 5; }");
-        assert!(out.contains("let x: Int32 = 5;"));
+        let out = fmt("fn f() { const x: Int32 = 5; }");
+        assert!(out.contains("const x: Int32 = 5;"));
     }
 
     #[test]
     fn test_fmt_let_inferred() {
         let out = fmt("fn f() { let x = 42; }");
-        assert!(out.contains("let x = 42;"));
+        // legacy `let` is normalized to `const`
+        assert!(out.contains("const x = 42;"));
     }
 
     #[test]

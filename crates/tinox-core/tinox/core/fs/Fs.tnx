@@ -26,7 +26,7 @@ namespace tinox.core.fs
 
         fn copyFile(src: String, dest: String) -> Nothing
         {
-            let content: String = Fs::readFile(src);
+            const content: String = Fs::readFile(src);
             Fs::writeFile(dest, content);
         }
 

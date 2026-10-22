@@ -26,14 +26,14 @@ namespace tinox.core.kubernetes
                 isHttps = false;
                 rest = rest.substring(7, rest.len());
             }
-            let slashIdx: Int64 = rest.indexOf("/");
+            const slashIdx: Int64 = rest.indexOf("/");
             if (slashIdx >= 0)
             {
                 rest = rest.substring(0, slashIdx);
             }
             var host: String = rest;
             var port: Int64 = isHttps ? 443 : 80;
-            let colonIdx: Int64 = rest.indexOf(":");
+            const colonIdx: Int64 = rest.indexOf(":");
             if (colonIdx >= 0)
             {
                 host = rest.substring(0, colonIdx);

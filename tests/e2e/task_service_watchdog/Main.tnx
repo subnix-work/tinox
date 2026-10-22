@@ -1,0 +1,12 @@
+// expect-exit: 1
+// expect-contains: service shutdown request ignored for 5 seconds
+class Main {
+    fnc stop(ready: Int64) -> Nothing { recv ready; taskRequestShutdown(); }
+    fnc main() -> Int32 {
+        const ready = channel;
+        spawn Main::stop(ready);
+        send ready -> 1;
+        loop {}
+        return 0;
+    }
+}
