@@ -1,0 +1,27 @@
+// db: CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL, balance BIGINT NOT NULL);
+// db: INSERT INTO accounts VALUES (1, 'Alice', 501), (2, 'Bob', 700);
+// expect: 501
+// expect: 501
+// expect: Alice
+// expect: 700
+
+import tinox.core.db;
+import Account;
+
+class Main
+{
+    fnc directBalance(accountId: Int64) -> Int64
+    {
+        return DB::of(Account).filter(a => a.id == accountId).first().balance;
+    }
+
+    fnc main() -> Int32
+    {
+        println(Main::directBalance(1));
+        const account: Account = DB::of(Account).filter(a => a.id == 1).first();
+        println(account.balance);
+        println(DB::of(Account).first().name);
+        println(DB::of(Account).orderByDesc(a => a.balance).limit(1).offset(0).first().balance);
+        return 0;
+    }
+}
