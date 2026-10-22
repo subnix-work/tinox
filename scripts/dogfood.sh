@@ -96,7 +96,7 @@ GOOD_EXAMPLES=(
 # each install is a few seconds at most (a warm ~/.tinox/repository/ cache
 # skips the network entirely, see install_dep's cache-hit check), and every
 # build below needs its own example's install to have already landed.
-for f in "${GOOD_EXAMPLES[@]}"; do
+for f in "${GOOD_EXAMPLES[@]}" benchmarks/*/Main.tnx; do
     dir="$(dirname "$f")"
     if [ -f "$dir/tinox.toml" ]; then
         if ! (cd "$dir" && "$TINOX" install) >"$TMP/log/$(job_id "install_$f")" 2>&1; then
