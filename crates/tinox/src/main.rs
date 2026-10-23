@@ -12,6 +12,7 @@ mod callgraph;
 mod contract;
 mod dockerfile;
 mod migrate;
+mod migrate_xml;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
 mod reference;

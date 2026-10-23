@@ -460,7 +460,12 @@ fn load_file(
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string_lossy().into_owned());
     let text = std::fs::read_to_string(&canon).map_err(|e| format!("cannot read changelog {}: {e}", path.display()))?;
-    let doc: Value = serde_yaml::from_str(&text).map_err(|e| format!("{rel}: invalid YAML: {e}"))?;
+    let is_xml = canon.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml"));
+    let doc: Value = if is_xml {
+        crate::migrate_xml::parse_changelog(&text).map_err(|e| format!("{rel}: invalid XML: {e}"))?
+    } else {
+        serde_yaml::from_str(&text).map_err(|e| format!("{rel}: invalid YAML: {e}"))?
+    };
     check_keys(&doc, &["databaseChangeLog"], &rel)?;
     let items = get(&doc, "databaseChangeLog").and_then(|v| v.as_sequence())
         .ok_or_else(|| format!("{rel}: 'databaseChangeLog' must be a list"))?;

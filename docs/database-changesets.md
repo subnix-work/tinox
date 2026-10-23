@@ -47,6 +47,34 @@ Column types are neutral and mapped per driver: `bigint`, `int`, `varchar(n)`, `
 `double`, `timestamp`, `date`, `blob`. An unknown type, an unknown key, an unsafe identifier or a change a driver cannot
 perform (e.g. SQLite `addColumn` with `NOT NULL` and no default) is a **hard error naming the changeSet**.
 
+## XML changelogs
+
+A file ending in `.xml` is read as XML instead of YAML (set `changelog = "migrations/changelog.xml"`, or `include` it
+from a YAML file and vice versa; formats can be mixed freely). It is converted to the same internal model, so SQL
+generation is identical and the checksum of a changeSet equals that of the equivalent YAML changeSet whose keys are in
+the order `id`, `author`, other attributes, `comment`, `changes`.
+
+```xml
+<databaseChangeLog>
+  <include file="2026-10-person.yaml"/>
+  <changeSet id="1" author="tino">
+    <comment>person table</comment>
+    <createTable tableName="person">
+      <column name="id" type="bigint" autoIncrement="true"><constraints primaryKey="true"/></column>
+      <column name="name" type="varchar(100)"><constraints nullable="false"/></column>
+    </createTable>
+    <createIndex tableName="person" indexName="idx_person_name"><column name="name"/></createIndex>
+    <insert tableName="person"><column name="name" value="Ada"/></insert>
+    <sql dbms="postgres">UPDATE person SET name = 'x'</sql>
+    <sql><statement>DELETE FROM a</statement><statement>DELETE FROM b</statement></sql>
+  </changeSet>
+</databaseChangeLog>
+```
+
+Attribute names are the YAML keys. `true`/`false` and plain numbers in attributes (`value`, `defaultValue`, `id`) are
+typed like YAML scalars; anything else is text. `xmlns`/`xsi:` attributes on the root are ignored. Unknown elements and
+attributes are hard errors, as in YAML. DOCTYPE internal subsets are not supported.
+
 ## Behaviour
 
 - Applied changeSets are recorded in `tinox_changelog` (id, author, file, checksum, time, order). The checksum covers
