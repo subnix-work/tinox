@@ -37,7 +37,7 @@ databaseChangeLog:
 
 A changeSet is identified by `id` + `author` (unique across all files). Optional keys: `runOnChange` (re-apply when
 its content changed), `runAlways`, `dbms` (comma separated driver list; the changeSet does not exist for other drivers),
-`comment`.
+`comment`, `tag` (a name for the state after this changeSet, used by `rollback --tag`) and `rollback`.
 
 Change types: `createTable`, `dropTable`, `renameTable`, `addColumn`, `dropColumn`, `renameColumn`, `createIndex`
 (`unique: true` allowed), `dropIndex`, `insert` and `sql`. `sql` is the escape hatch: a string, a list of strings
@@ -60,7 +60,7 @@ perform (e.g. SQLite `addColumn` with `NOT NULL` and no default) is a **hard err
   `TINOX_MIGRATE_LOCK_WAIT_MS`, default 30000) and then finds nothing left to do. A lock left behind by a crashed run is
   never broken automatically: `tinox db release-lock`. Concurrent starters are verified for PostgreSQL; SQLite is a
   single-file database and not meant for several migrating processes.
-- Not implemented yet: rollback, preconditions, contexts, generating a changelog from `@Entity` classes.
+- Not implemented yet: preconditions, contexts, generating a changelog from `@Entity` classes.
 
 ## CLI
 
@@ -70,12 +70,41 @@ tinox db update-sql    # print the SQL that `update` would run
 tinox db status        # applied / pending / changed changeSets (exit 1 on a checksum mismatch)
 tinox db update        # apply pending changeSets
 tinox db baseline      # record pending changeSets as applied WITHOUT running them (adopt an existing schema)
+tinox db rollback --count N   # undo the newest N applied changeSets
+tinox db rollback --tag T     # undo everything applied after the changeSet tagged T
+tinox db validate --rollback  # additionally require every changeSet to be reversible
 tinox db release-lock  # remove a stale lock
 ```
 
 `status`, `update`, `baseline` and `release-lock` compile a tiny runner that carries the changelog and execute the same
 engine as `migrate_on_startup` (`tinox_migrate_run` in `runtime/runtime.c`); relative SQLite URLs resolve against the
 project root.
+
+## Rollback
+
+A changeSet can declare how to undo itself with an explicit `rollback:` block (a list of changes, same syntax as
+`changes:`, including `sql`). Without one, the inverse is derived for `createTable` (dropTable), `addColumn`
+(dropColumn), `createIndex` (dropIndex), `renameTable` and `renameColumn`. `dropTable`, `dropColumn`, `dropIndex`,
+`insert` and `sql` have no automatic inverse: rolling back a changeSet containing one without a `rollback:` block is a
+**hard error**, reported before anything is undone (`tinox db validate --rollback` finds them ahead of time). Neither
+`rollback` nor `tag` is part of the checksum, so they can be added to an already applied changeSet.
+
+```yaml
+- changeSet:
+    id: 7
+    author: tino
+    tag: before-cleanup
+    changes:
+      - dropColumn: { tableName: person, columnName: legacy }
+    rollback:
+      - sql: ALTER TABLE person ADD COLUMN legacy varchar(50)
+```
+
+`rollback` undoes changeSets newest first, each in its own transaction together with the removal of its history row
+(MySQL: not atomic, DDL commits implicitly). It uses the same lock as `update`. It refuses, changing nothing, when
+`--count` exceeds the applied changeSets, the tag is unknown or not applied, or a selected changeSet is irreversible,
+was modified after it was applied, or is missing from the changelog. A failing rollback statement leaves that
+changeSet applied; the ones already undone stay undone.
 
 ## Adopting an existing database
 
