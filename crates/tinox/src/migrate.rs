@@ -772,7 +772,7 @@ mod tests {
             "DROP INDEX \"i\"", "DROP TABLE \"t\""]);
         let bad = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: t}\n";
         assert!(cs(Dialect::Sqlite, bad).unwrap().unwrap().rollback.is_err());
-        let ok = format!("{bad}rollback:\n  - sql: CREATE TABLE t (a INTEGER)\n");
+        let ok = format!("{bad}rollback:\n  - sql: {{dbms: sqlite, statements: CREATE TABLE t (a INTEGER)}}\n");
         let c = cs(Dialect::Sqlite, &ok).unwrap().unwrap();
         assert_eq!(c.rollback.unwrap(), vec!["CREATE TABLE t (a INTEGER)"]);
         assert_eq!(c.checksum, cs(Dialect::Sqlite, bad).unwrap().unwrap().checksum, "rollback is not part of the checksum");
