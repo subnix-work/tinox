@@ -4,6 +4,53 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-23
+
+### Also in this release
+
+- **Typed tasks and structured concurrency** (#301): `spawn` yields `Task<T>`,
+  `await` yields `T`, and an error thrown in a spawned function is re-thrown
+  at `await`. `scope { ... }` adds child error propagation, cancellation,
+  deadlines (`taskSetDeadline`) and coordinated shutdown.
+- **Container-aware concurrency budgets and overload handling** (#302):
+  cgroup-aware CPU detection, `TINOX_*` limits, 503 + `Retry-After` when
+  overloaded, bounded queue wait, `/limits` and metrics.
+- **`@Synchronized` and safe singleton publication** (#303).
+- **Opt-in coordinated service lifecycle** with readiness and graceful
+  shutdown (#304).
+- **Structured logging, request correlation and tracing** (#305).
+- **Standardized absence and recoverable-error contracts** (#306).
+- **Typed REST responses** for dynamic status codes and API contracts (#307).
+- **Compact byte buffers and bounded streaming** across service APIs (#311),
+  with byte-exact file/stdin I/O and streaming byte primitives.
+- **Explicit Linux x86-64 / ARM64 compilation targets** (#310).
+- **Escape for a literal `${`** in string literals (#356).
+- **`TINOX_BIND_ADDRESS`** restricts all listeners to one IPv4 address (#359).
+- **Service tail-latency/memory benchmark harness** (#312), **AI coding
+  efficiency evaluations** (#315) and **generated checked references and a
+  compact AI guide** (#314); native microservice roadmap (#316).
+- Versioned compiler diagnostics for CLI and LSP, compact JSON/text
+  descriptions of resolved compiler APIs, and explained bootstrap wiring with
+  validated injection graphs.
+- Faster builds: cached runtime objects, reused validated builds and frontend
+  queries, `make check` on cargo-nextest with dogfood in parallel, split CI jobs.
+
+### Also fixed in this release
+
+- Closures did not capture variables used only inside a `try` block (#357) or
+  only as a ternary condition (#360).
+- `Map<K,V>.set` (#351) and `List<String>.contains` (#349) generated invalid
+  LLVM IR, as did pushing a bool expression into an array.
+- `await a + await b` was parsed as `await (a + await b)` (#289).
+- ORM: chained `first()` read the wrong field (#345); `tinox test` never opened
+  the ORM connection (#350); empty results printed "row number 0 is out of
+  range" on PostgreSQL (#358); inserting a never-assigned String failed
+  silently (#354).
+- `Fs::writeFile` and `Fs::createDirectory` failed silently (#353).
+- `DataGrid` rendered rows beyond the first 10 unstyled (#361/#374).
+- Recursive test discovery and collection failures; the intermittent TLS
+  concurrent-close fixture (#338); GC roots are unregistered on thread exit.
+
 ### Fixed
 
 - **`Fs::appendFile` really appends** (#352): uses the registered `fileAppendText`
