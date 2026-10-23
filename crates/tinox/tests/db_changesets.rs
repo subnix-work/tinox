@@ -192,7 +192,7 @@ const FAILING: &str = r#"
       author: tino
       changes:
         - insert: { tableName: person, values: { name: halfway } }
-        - sql: "INSERT INTO no_such_table VALUES (1)"
+        - sql: { dbms: "sqlite, postgres", statements: "INSERT INTO no_such_table VALUES (1)" }
 "#;
 
 const MAIN: &str = "class Main\n{\n    fnc main() -> Int32\n    {\n        println(\"started\");\n        return 0;\n    }\n}\n";

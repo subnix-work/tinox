@@ -40,8 +40,12 @@ its content changed), `runAlways`, `dbms` (comma separated driver list; the chan
 `comment`.
 
 Change types: `createTable`, `dropTable`, `renameTable`, `addColumn`, `dropColumn`, `renameColumn`, `createIndex`
-(`unique: true` allowed), `dropIndex`, `insert` and `sql`. `sql` is the escape hatch: a string, a list of strings
-(one statement each, no `;` inside), or `{ dbms: postgres, statements: ... }` to limit it to one driver.
+(`unique: true` allowed), `dropIndex`, `insert` and `sql`. `sql` is the escape hatch for what the declarative model
+cannot express (views, triggers, functions). It must declare its dialect explicitly:
+`sql: { dbms: postgres, statements: "..." }` (`statements` is a string or a list of strings, one statement each, no `;`
+inside; `dbms` may list several drivers). A missing `dbms` or a `dbms` that does not match the configured driver is a
+**hard error**. For per-dialect variants use separate changeSets with a changeSet-level `dbms:`. Combine with
+`runOnChange: true` to re-create a view/function whenever its definition changes.
 
 Column types are neutral and mapped per driver: `bigint`, `int`, `varchar(n)`, `char(n)`, `text`, `boolean`, `float`,
 `double`, `timestamp`, `date`, `blob`. An unknown type, an unknown key, an unsafe identifier or a change a driver cannot
