@@ -92,6 +92,7 @@ fn run() {
         },
         "search"  => pm::cmd_search(&args[2..]),
         "help" | "--help" | "-h" => print_help(),
+        "--version" | "-V" => println!("tinox {}", env!("CARGO_PKG_VERSION")),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             print_help();
@@ -132,6 +133,7 @@ fn print_help() {
     println!("  tinox package              Pack src/ into <name>-<version>.tar.gz");
     println!("  tinox publish              Pack and upload to a registry (needs [package] group + TINOX_CENTRAL_ADMIN_KEY)");
     println!("  tinox search <query>       Search a registry's package catalog");
+    println!("  tinox --version            Print the compiler version");
     println!("  tinox help                 Show this help message");
 }
 
