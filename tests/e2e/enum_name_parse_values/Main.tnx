@@ -1,0 +1,42 @@
+// A payload-free enum has .name, Enum::parse(text) and Enum::values(); a variant named like one of them wins.
+// expect: GREEN
+// expect: true
+// expect: 3
+// expect: RED GREEN parse
+// expect: parse
+// expect: area 3
+
+import Color;
+import Shape;
+
+class Main
+{
+    fnc describe(s: Shape) -> String
+    {
+        match s
+        {
+            Circle(r) => return "area " + toString(r);
+            Square(a) => return "area " + toString(a * a);
+        }
+    }
+
+    fnc main() -> Int32
+    {
+        const c = Color::GREEN;
+        println(c.name);
+        println(Color::values()[1] == Color::GREEN);
+        println(Color::values().len());
+        var line = "";
+        const all = Color::values();
+        for (let i = 0; i < all.len(); i = i + 1)
+        {
+            line = line + (i == 0 ? "" : " ") + all[i].name;
+        }
+        println(line);
+        // `Color::parse` is the variant here, not the text parser
+        const p = Color::parse;
+        println(p.name);
+        println(Main::describe(Shape::Circle(3.0)));
+        return 0;
+    }
+}

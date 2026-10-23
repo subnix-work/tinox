@@ -2868,6 +2868,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
                 is_generated: f.is_generated,
                 not_null: f.not_null,
                 field_llvm_type: f.field_llvm_type.clone(),
+                enum_name: f.enum_name.clone(),
             }).collect(),
         })
         .collect();
@@ -3224,7 +3225,95 @@ fn check_namespace_path_matches(decls: &[tinox_parser::Decl], path: &Path) -> Re
 /// synthesized methods get real node ids for the typecheck memoization
 /// table, same as every hand-written one).
 fn synthesize_accessors(ast: &mut tinox_parser::SourceFile, fallback_file: &str) -> Result<(), String> {
-    synthesize_accessors_in_decls(&mut ast.decls, fallback_file)
+    synthesize_accessors_in_decls(&mut ast.decls, fallback_file)?;
+    synthesize_enum_helpers(&mut ast.decls)
+}
+
+/// Synthesizes `__Enum_<E>` (static `name`, `parse`, `values`) next to every
+/// enum whose variants all carry no payload. `name`/`parse` fail hard on a
+/// value or text that is not a variant instead of falling back to a default.
+/// A variant called `parse`/`values` keeps its meaning as a variant, so the
+/// matching helper method is left out. Idempotent: an enum that already has a
+/// helper class in the same declaration list is skipped (the merged AST is
+/// walked after its imported parts were walked on their own).
+fn synthesize_enum_helpers(decls: &mut Vec<tinox_parser::Decl>) -> Result<(), String> {
+    fn count_enums(decls: &[tinox_parser::Decl], counts: &mut std::collections::HashMap<String, usize>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Enum(e) => *counts.entry(e.name.clone()).or_default() += 1,
+                DeclKind::Namespace(ns) => count_enums(&ns.decls, counts),
+                _ => {}
+            }
+        }
+    }
+    let mut counts = std::collections::HashMap::new();
+    count_enums(decls, &mut counts);
+    // Enum names are not module-qualified in the compiler, so two enums with the same name (e.g. the two
+    // `MediaType`s of the HTTP modules) would get colliding helpers; those enums get none.
+    let ambiguous: HashSet<String> = counts.into_iter().filter(|(_, n)| *n > 1).map(|(name, _)| name).collect();
+    synthesize_enum_helpers_in(decls, &ambiguous)
+}
+
+fn synthesize_enum_helpers_in(decls: &mut Vec<tinox_parser::Decl>, ambiguous: &HashSet<String>) -> Result<(), String> {
+    let existing: HashSet<String> = decls
+        .iter()
+        .filter_map(|d| if let DeclKind::Class(c) = &d.node { Some(c.name.clone()) } else { None })
+        .collect();
+    let mut helpers: Vec<(usize, tinox_parser::Decl)> = Vec::new();
+    for (index, decl) in decls.iter_mut().enumerate() {
+        match &mut decl.node {
+            DeclKind::Namespace(ns) => synthesize_enum_helpers_in(&mut ns.decls, ambiguous)?,
+            DeclKind::Enum(e) => {
+                let helper = format!("{}{}", tinox_parser::ENUM_HELPER_PREFIX, e.name);
+                if e.variants.is_empty() || e.variants.iter().any(|v| !v.args.is_empty()) || existing.contains(&helper) || ambiguous.contains(&e.name) {
+                    continue;
+                }
+                let has_variant = |name: &str| e.variants.iter().any(|v| v.name == name);
+                let en = &e.name;
+                let mut methods = String::new();
+                let name_arms: String = e
+                    .variants
+                    .iter()
+                    .map(|v| format!("if (v == {en}::{0}) {{ return \"{0}\"; }} ", v.name))
+                    .collect();
+                methods.push_str(&format!(
+                    "fnc name(v: {en}) -> String {{ {name_arms}throw \"{en} has no variant with this value\"; }} "
+                ));
+                if !has_variant("parse") {
+                    let parse_arms: String = e
+                        .variants
+                        .iter()
+                        .map(|v| format!("if (s == \"{0}\") {{ return {en}::{0}; }} ", v.name))
+                        .collect();
+                    methods.push_str(&format!(
+                        "fnc parse(s: String) -> {en} {{ {parse_arms}throw \"{en} has no variant named '\" + s + \"'\"; }} "
+                    ));
+                }
+                if !has_variant("values") {
+                    let all: Vec<String> = e.variants.iter().map(|v| format!("{en}::{}", v.name)).collect();
+                    methods.push_str(&format!("fnc values() -> List<{en}> {{ return [{}]; }} ", all.join(", ")));
+                }
+                let src = format!("class {helper} {{ {methods}}}");
+                let tokens = Lexer::new(&src)
+                    .tokenize()
+                    .map_err(|err| format!("internal error synthesizing enum helpers: lexer error: {err:?} (generated source: {src})"))?;
+                let mut parsed = Parser::new(tokens)
+                    .parse()
+                    .map_err(|err| format!("internal error synthesizing enum helpers: parse error: {err:?} (generated source: {src})"))?;
+                let Some(mut helper_decl) = parsed.decls.pop() else {
+                    return Err(format!("internal error synthesizing enum helpers: no declaration produced (generated source: {src})"));
+                };
+                helper_decl.span = decl.span;
+                helpers.push((index, helper_decl));
+            }
+            _ => {}
+        }
+    }
+    // inserted behind their enum, back to front so the recorded indexes stay valid
+    for (index, helper) in helpers.into_iter().rev() {
+        decls.insert(index + 1, helper);
+    }
+    Ok(())
 }
 
 fn synthesize_accessors_in_decls(decls: &mut [tinox_parser::Decl], fallback_file: &str) -> Result<(), String> {
@@ -4574,6 +4663,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
                 is_generated: f.is_generated,
                 not_null: f.not_null,
                 field_llvm_type: f.field_llvm_type.clone(),
+                enum_name: f.enum_name.clone(),
             }).collect(),
         })
         .collect();

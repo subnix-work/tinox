@@ -255,6 +255,8 @@ pub struct EntityFieldEntry {
     pub is_generated: bool,
     pub not_null: bool,
     pub field_llvm_type: String,
+    /// Payload-free enum type of the field: the column holds the variant's name.
+    pub enum_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -6810,7 +6812,8 @@ tr_done_{idx}:"#).unwrap();
                         let fields_clone = fields.to_vec();
                         if let Some(col) = orm_extract_field(lhs, param_name, &fields_clone) {
                             let col = col.to_string();
-                            let reg = self.emit_orm_param_value(rhs, ctx)?;
+                            let enum_name = orm_extract_enum(lhs, param_name, &fields_clone);
+                            let reg = self.emit_orm_param_value(rhs, enum_name.as_deref(), ctx)?;
                             Some((format!("{} {} ${}", col, sql_op, n), vec![reg]))
                         } else if let Some(col) = orm_extract_field(rhs, param_name, &fields_clone) {
                             let col = col.to_string();
@@ -6821,7 +6824,8 @@ tr_done_{idx}:"#).unwrap();
                                 BinaryOp::Ge => "<=",
                                 _ => sql_op,
                             };
-                            let reg = self.emit_orm_param_value(lhs, ctx)?;
+                            let enum_name = orm_extract_enum(rhs, param_name, &fields_clone);
+                            let reg = self.emit_orm_param_value(lhs, enum_name.as_deref(), ctx)?;
                             Some((format!("{} {} ${}", col, flipped, n), vec![reg]))
                         } else {
                             None
@@ -6905,7 +6909,19 @@ tr_done_{idx}:"#).unwrap();
     }
 
     /// Emit code to evaluate an ORM parameter expression and return an i8* register.
-    fn emit_orm_param_value(&mut self, expr: &Expr, ctx: &mut GenCtx) -> Option<String> {
+    ///
+    /// `enum_name` is set when the other side of the comparison is an enum field:
+    /// the value is an enum, stored as its variant name.
+    fn emit_orm_param_value(&mut self, expr: &Expr, enum_name: Option<&str>, ctx: &mut GenCtx) -> Option<String> {
+        if let Some(enum_name) = enum_name {
+            let (val_reg, val_ty) = self.gen_expr(expr, ctx).ok()?;
+            if val_ty != "i64" {
+                return None;
+            }
+            let reg = self.temp();
+            writeln!(&mut self.ir, "  {reg} = call i8* @{}{enum_name}_name(i64 {val_reg})", tinox_parser::ENUM_HELPER_PREFIX).unwrap();
+            return Some(reg);
+        }
         match &expr.node {
             ExprKind::Literal(Literal::String(s)) => {
                 let s_clone = s.clone();
@@ -7331,7 +7347,10 @@ tr_done_{idx}:"#).unwrap();
         for (col_idx, field) in fields.iter().enumerate() {
             let fptr = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {ptr}, i64 {col_idx}").unwrap();
-            if field.field_llvm_type == "i8*" {
+            if field.enum_name.is_some() {
+                // an enum has no empty value; 0 matches no variant
+                writeln!(&mut self.ir, "  store i64 0, i64* {fptr}").unwrap();
+            } else if field.field_llvm_type == "i8*" {
                 let label = format!("__orm_empty_{}", self.strings.len());
                 self.strings.insert(label.clone(), String::new());
                 let empty = self.temp();
@@ -7349,6 +7368,15 @@ tr_done_{idx}:"#).unwrap();
             let fptr = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* {ptr}, i64 {col_idx}").unwrap();
             match field.field_llvm_type.as_str() {
+                "i8*" if field.enum_name.is_some() => {
+                    // text column -> variant; an unknown name fails hard inside parse
+                    let enum_name = field.enum_name.as_deref().unwrap_or_default();
+                    let val = self.temp();
+                    writeln!(&mut self.ir, "  {val} = call i8* @tinox_db_getval(i8* %result, i64 %row_idx, i64 {col_idx})").unwrap();
+                    let variant = self.temp();
+                    writeln!(&mut self.ir, "  {variant} = call i64 @{}{enum_name}_parse(i8* {val})", tinox_parser::ENUM_HELPER_PREFIX).unwrap();
+                    writeln!(&mut self.ir, "  store i64 {variant}, i64* {fptr}").unwrap();
+                }
                 "i8*" => {
                     let val = self.temp();
                     writeln!(&mut self.ir, "  {val} = call i8* @tinox_db_getval(i8* %result, i64 %row_idx, i64 {col_idx})").unwrap();
@@ -7385,7 +7413,11 @@ tr_done_{idx}:"#).unwrap();
             let fval = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
             writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
-            let pstr = if field.field_llvm_type == "i8*" {
+            let pstr = if let Some(enum_name) = field.enum_name.as_deref() {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {s} = call i8* @{}{enum_name}_name(i64 {fval})", tinox_parser::ENUM_HELPER_PREFIX).unwrap();
+                s
+            } else if field.field_llvm_type == "i8*" {
                 let s = self.temp();
                 writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
                 s
@@ -7421,7 +7453,11 @@ tr_done_{idx}:"#).unwrap();
             let fval = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
             writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
-            let pstr = if field.field_llvm_type == "i8*" {
+            let pstr = if let Some(enum_name) = field.enum_name.as_deref() {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {s} = call i8* @{}{enum_name}_name(i64 {fval})", tinox_parser::ENUM_HELPER_PREFIX).unwrap();
+                s
+            } else if field.field_llvm_type == "i8*" {
                 let s = self.temp();
                 writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
                 s
@@ -7437,7 +7473,11 @@ tr_done_{idx}:"#).unwrap();
             let fval = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
             writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
-            let pstr = if field.field_llvm_type == "i8*" {
+            let pstr = if let Some(enum_name) = field.enum_name.as_deref() {
+                let s = self.temp();
+                writeln!(&mut self.ir, "  {s} = call i8* @{}{enum_name}_name(i64 {fval})", tinox_parser::ENUM_HELPER_PREFIX).unwrap();
+                s
+            } else if field.field_llvm_type == "i8*" {
                 let s = self.temp();
                 writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
                 s
@@ -11154,6 +11194,17 @@ tr_done_{idx}:"#).unwrap();
                 Ok((map_ptr, "i8*".to_string()))
             }
             ExprKind::FieldAccess { obj, field } => {
+                // `value.name` of a payload-free enum calls the synthesized helper
+                if field == "name" {
+                    if let Some(tinox_parser::Type::Named(enum_name)) = self.expression_type(obj, ctx) {
+                        if let Some(helper) = self.enum_helper_class(&enum_name, "name") {
+                            let key = format!("{helper}_name");
+                            if let Some(ret_ty) = self.method_ret_types.get(&key).cloned() {
+                                return self.emit_static_dispatch_call(&key, &ret_ty, std::slice::from_ref(obj.as_ref()), ctx);
+                            }
+                        }
+                    }
+                }
                 let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
 
                 // Fields are stored as i64; if the loaded value is i64, restore it to a ptr
@@ -11474,6 +11525,10 @@ tr_done_{idx}:"#).unwrap();
                     .get(enum_name)
                     .cloned()
                     .unwrap_or_else(|| enum_name.clone());
+
+                // `Enum::parse(..)` / `Enum::values()` live on the enum's synthesized helper class
+                let helper_name = self.enum_helper_class(enum_name, variant);
+                let enum_name = helper_name.as_ref().unwrap_or(enum_name);
 
                 // Special built-in constructors
                 if enum_name == "Map" && variant == "new" {
@@ -15322,6 +15377,16 @@ tr_done_{idx}:"#).unwrap();
     /// by the plain static-call path and the generic-class receiver-marker
     /// fallback (see `ExprKind::EnumValue`). Instance methods (`fn`) get an
     /// implicit `i64* null` self; static methods (`fnc`) don't.
+    /// The synthesized helper class (`__Enum_<Enum>`) when `member` (`name`, `parse`,
+    /// `values`) is one of its methods for the payload-free enum `enum_name`.
+    fn enum_helper_class(&self, enum_name: &str, member: &str) -> Option<String> {
+        if !matches!(member, "name" | "parse" | "values") || !self.known_enum_types.contains(enum_name) {
+            return None;
+        }
+        let helper = format!("{}{}", tinox_parser::ENUM_HELPER_PREFIX, enum_name);
+        self.method_ret_types.contains_key(&format!("{helper}_{member}")).then_some(helper)
+    }
+
     fn emit_static_dispatch_call(
         &mut self,
         key: &str,
@@ -16248,6 +16313,16 @@ fn orm_extract_field<'a>(expr: &Expr, param: &str, fields: &'a [EntityFieldEntry
             if name == param {
                 return fields.iter().find(|f| f.field_name == *field).map(|f| f.column_name.as_str());
             }
+        }
+    }
+    None
+}
+
+/// The enum type of the entity field `param.field` in a lambda body, if it is an enum field.
+fn orm_extract_enum(expr: &Expr, param: &str, fields: &[EntityFieldEntry]) -> Option<String> {
+    if let ExprKind::FieldAccess { obj, field } = &expr.node {
+        if matches!(&obj.node, ExprKind::Ident(name) if name == param) {
+            return fields.iter().find(|f| f.field_name == *field).and_then(|f| f.enum_name.clone());
         }
     }
     None

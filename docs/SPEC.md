@@ -405,6 +405,40 @@ enum Direction
 Variant values are referenced either as `EnumName::Variant` or
 `EnumName.Variant` — both forms occur in real code.
 
+An enum whose variants all carry no data also has a name and text conversion
+built in:
+
+```tinox
+enum TaskStatus { QUEUED; RUNNING; DONE; }
+
+const s = TaskStatus::parse("RUNNING");   // text -> variant; fails hard on an unknown name
+println(s.name);                          // "RUNNING"
+const all = TaskStatus::values();         // List<TaskStatus>, in declaration order
+```
+
+`value.name` fails hard for a value that is not one of the variants. A variant
+that is itself called `parse` or `values` keeps its meaning as a variant. Enums
+whose name is declared more than once (two modules) get none of these.
+Behind the scenes the compiler synthesizes a hidden `__Enum_<Name>` class.
+
+In an `@Entity`, a field of such an enum type is a text column holding the
+variant name (`where` filters compare against the name too):
+
+```tinox
+@Entity
+@Table("tasks")
+class Job
+{
+    @Id @GeneratedValue
+    var id: Int64;
+    var status: TaskStatus;
+}
+// DB::of(Job).filter(j => j.status == TaskStatus::DONE).count()
+```
+
+An unknown name in the column fails hard when the row is read. A `first()`
+that finds no row leaves the enum field at 0, which matches no variant.
+
 ### Trait Declarations
 
 `trait` is a reserved keyword recognized by the lexer/parser, but has

@@ -153,6 +153,8 @@ pub struct EntityFieldInfo {
     pub is_generated: bool,
     pub not_null: bool,
     pub field_llvm_type: String,
+    /// The enum type of a payload-free enum field: stored as the variant's name in a text column.
+    pub enum_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -317,6 +319,8 @@ pub struct MetricInfo {
 
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationProcessingResult {
+    /// Payload-free enums (those with a synthesized `__Enum_<Enum>` helper class), for enum entity fields.
+    pub name_enums: HashSet<String>,
     pub route_entries: Vec<RouteInfo>,
     pub inline_functions: HashSet<String>,
     pub inline_methods: HashSet<(String, String)>,
@@ -1078,6 +1082,7 @@ impl AnnotationProcessor {
         source: &tinox_parser::SourceFile,
     ) -> AnnotationProcessingResult {
         let mut result = AnnotationProcessingResult::default();
+        collect_name_enums(&source.decls, &mut result.name_enums);
 
         for decl in &source.decls {
             match &decl.node {
@@ -1325,13 +1330,19 @@ impl AnnotationProcessor {
                     .and_then(|a| a.args.first())
                     .and_then(|arg| if let tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s)) = arg { Some(s.clone()) } else { None })
                     .unwrap_or_else(|| f.name.clone());
+                let enum_name = match &f.field_type {
+                    Type::Named(n) if result.name_enums.contains(n) => Some(n.clone()),
+                    _ => None,
+                };
                 EntityFieldInfo {
                     field_name: f.name.clone(),
                     column_name: col_name,
                     is_id: f.annotations.iter().any(|a| a.name == "Id"),
                     is_generated: f.annotations.iter().any(|a| a.name == "GeneratedValue"),
                     not_null: f.annotations.iter().any(|a| a.name == "NotNull"),
-                    field_llvm_type: field_type_to_llvm(&f.field_type),
+                    // an enum column is text
+                    field_llvm_type: if enum_name.is_some() { "i8*".to_string() } else { field_type_to_llvm(&f.field_type) },
+                    enum_name,
                 }
             }).collect();
 
@@ -1679,6 +1690,21 @@ pub fn process_annotations(
 ) -> AnnotationProcessingResult {
     let processor = AnnotationProcessor::new();
     processor.process_source(source)
+}
+
+/// Collects the enums that got a synthesized `__Enum_<Enum>` helper class (see `ENUM_HELPER_PREFIX`).
+fn collect_name_enums(decls: &[tinox_parser::Decl], out: &mut HashSet<String>) {
+    for decl in decls {
+        match &decl.node {
+            DeclKind::Class(c) => {
+                if let Some(enum_name) = c.name.strip_prefix(tinox_parser::ENUM_HELPER_PREFIX) {
+                    out.insert(enum_name.to_string());
+                }
+            }
+            DeclKind::Namespace(ns) => collect_name_enums(&ns.decls, out),
+            _ => {}
+        }
+    }
 }
 
 fn field_type_to_cli_str(ty: &Type) -> String {
