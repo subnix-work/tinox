@@ -1,7 +1,7 @@
 //! Declarative schema changesets (issue #410): `tinox db update/status/validate/update-sql`
 //! and `migrate_on_startup`, checked from outside with an independent client (`sqlite3` /
-//! `psql`) against the real databases, not against the engine's own report. Postgres runs
-//! in docker; both parts SKIP gracefully when the needed tool is missing.
+//! `psql` / `mysql` in the container) against the real databases, not against the engine's own
+//! report. PostgreSQL and MySQL run in docker; those parts SKIP gracefully when docker is missing.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -556,4 +556,160 @@ fn changesets_migrate_on_test_is_opt_in() {
     let on = p.tinox(&["test"]);
     assert!(on.status.success(), "{}", text(&on));
     assert_eq!(sqlite(&p.dir.join("data/test.db"), "SELECT COUNT(*) FROM person"), "1");
+}
+
+struct MysqlContainer {
+    name: String,
+    port: u16,
+}
+
+impl MysqlContainer {
+    fn start() -> Self {
+        let name = format!("tinox-mysql-changesets-test-{}", std::process::id());
+        let _ = Command::new("docker").args(["rm", "-f", &name]).output();
+        let status = Command::new("docker")
+            .args([
+                "run", "-d", "--rm", "--name", &name,
+                "-e", "MYSQL_ROOT_PASSWORD=tinox",
+                "-e", "MYSQL_DATABASE=tinox",
+                "-P",
+                "mysql:8.4",
+            ])
+            .stdout(Stdio::null())
+            .status()
+            .expect("spawn docker run");
+        assert!(status.success(), "docker run mysql failed");
+        let port_out = Command::new("docker")
+            .args(["port", &name, "3306/tcp"])
+            .output()
+            .expect("docker port");
+        assert!(port_out.status.success(), "docker port failed");
+        let port_str = String::from_utf8_lossy(&port_out.stdout);
+        let port: u16 = port_str
+            .lines()
+            .next()
+            .and_then(|l| l.rsplit(':').next())
+            .and_then(|p| p.trim().parse().ok())
+            .unwrap_or_else(|| panic!("could not parse docker port output: {port_str}"));
+        let c = MysqlContainer { name, port };
+        c.wait_ready();
+        c
+    }
+
+    fn exec(&self, sql: &str) -> Option<String> {
+        // `-h 127.0.0.1` forces TCP: the image's temporary init server is skip-networking
+        // (unix socket only), so a TCP answer means the final server is up.
+        let out = Command::new("docker")
+            .args(["exec", &self.name, "mysql", "-h127.0.0.1", "-uroot", "-ptinox", "-N", "-B", "-D", "tinox", "-e", sql])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    fn wait_ready(&self) {
+        for _ in 0..180 {
+            if self.exec("SELECT 1").is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        panic!("mysql container never became ready");
+    }
+
+    fn query(&self, sql: &str) -> String {
+        self.exec(sql).unwrap_or_else(|| panic!("mysql query failed: {sql}"))
+    }
+
+    fn url(&self) -> String {
+        format!("mysql://root:tinox@127.0.0.1:{}/tinox", self.port)
+    }
+}
+
+impl Drop for MysqlContainer {
+    fn drop(&mut self) {
+        let _ = Command::new("docker").args(["rm", "-f", &self.name]).output();
+    }
+}
+
+#[test]
+fn changesets_mysql_apply_validate_partial_and_concurrent_starters() {
+    if !tool_available("docker", &["--version"]) {
+        eprintln!("SKIP changesets_mysql (docker not installed)");
+        return;
+    }
+    let my = MysqlContainer::start();
+    let p = Project::new("mysql", "mysql", &my.url(), "migrate_on_startup = true\n");
+
+    let v = p.tinox(&["db", "validate"]);
+    assert!(v.status.success(), "{}", text(&v));
+
+    let up = p.tinox(&["db", "update"]);
+    assert!(up.status.success(), "{}", text(&up));
+    assert_eq!(my.query("SELECT CONCAT(name, ':', status) FROM person"), "seeded:ACTIVE");
+    assert_eq!(my.query("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = 'tinox' AND index_name = 'idx_person_name'"), "1");
+    assert_eq!(my.query("SELECT data_type FROM information_schema.columns WHERE table_schema = 'tinox' AND table_name = 'person' AND column_name = 'id'"), "bigint");
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog"), "2");
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog_lock"), "0", "lock must be released");
+
+    // Re-running is a no-op.
+    let again = p.tinox(&["db", "update"]);
+    assert!(again.status.success(), "{}", text(&again));
+    assert_eq!(my.query("SELECT COUNT(*) FROM person"), "1");
+
+    // Checksum mismatch: nothing is applied, exit is non-zero, the lock is released.
+    p.write("migrations/more.yaml", &MORE.replace("seeded", "tampered"));
+    let bad = p.tinox(&["db", "update"]);
+    assert!(!bad.status.success(), "{}", text(&bad));
+    assert!(text(&bad).contains("modified after it was applied"), "{}", text(&bad));
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog_lock"), "0");
+    let st = p.tinox(&["db", "status"]);
+    assert!(!st.status.success() && text(&st).contains("CHANGED"), "{}", text(&st));
+    p.write("migrations/more.yaml", MORE);
+
+    // Partial application: DDL is not transactional on MySQL. The first statement's effect
+    // stays, the changeSet has no history row, and the error says so.
+    p.append(
+        "migrations/more.yaml",
+        r#"
+  - changeSet:
+      id: 3
+      author: tino
+      changes:
+        - createTable: { tableName: half_done, columns: [ { column: { name: id, type: int } } ] }
+        - sql: { dbms: mysql, statements: "INSERT INTO no_such_table VALUES (1)" }
+"#,
+    );
+    let fail = p.tinox(&["db", "update"]);
+    assert!(!fail.status.success(), "{}", text(&fail));
+    assert!(text(&fail).contains("cannot roll back DDL"), "{}", text(&fail));
+    assert_eq!(my.query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'tinox' AND table_name = 'half_done'"), "1", "partial DDL stays");
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog"), "2", "failed changeSet must not be recorded");
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog_lock"), "0");
+    p.write("migrations/more.yaml", MORE);
+
+    // Several instances starting at once on a fresh schema: every changeSet runs exactly once.
+    let build = p.tinox(&["build"]);
+    assert!(build.status.success(), "{}", text(&build));
+    let exe = p.dir.join("cs");
+    for round in 0..5 {
+        my.query("DROP TABLE IF EXISTS person, half_done, tinox_changelog, tinox_changelog_lock");
+        let kids: Vec<_> = (0..3)
+            .map(|_| {
+                Command::new(&exe)
+                    .current_dir(&p.dir)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("spawn instance")
+            })
+            .collect();
+        for mut k in kids {
+            assert!(k.wait().unwrap().success(), "round {round}: an instance failed to start");
+        }
+        assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog"), "2", "round {round}");
+        assert_eq!(my.query("SELECT COUNT(*) FROM person"), "1", "round {round}: seed row must exist exactly once");
+    }
 }

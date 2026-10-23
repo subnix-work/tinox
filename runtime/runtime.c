@@ -10808,7 +10808,18 @@ void tinox_migrate_run(const char* payload) {
                 fprintf(stderr, "migrate: changeSet '%s' by '%s' (%s) failed on: %s\n",
                         sets[i].id, sets[i].author, sets[i].file, sets[i].stmts[s]);
                 tinox_mig_unlock(conn);
+#if defined(TINOX_DB_MYSQL)
+                // MySQL commits DDL implicitly: the statements before this one are already in the
+                // database, but the changeSet has no tinox_changelog row.
+                if (s > 0)
+                    fprintf(stderr, "migrate: MySQL cannot roll back DDL: statements 1-%d of %d of changeSet '%s' by '%s' "
+                                    "stay applied and the changeSet is NOT recorded. Repair the schema by hand "
+                                    "(or `tinox db baseline` once it matches), then run the migration again\n",
+                            s, sets[i].n_stmts, sets[i].id, sets[i].author);
+                tinox_mig_die("migration failed; earlier changeSets stay applied, this changeSet may be partially applied");
+#else
                 tinox_mig_die("migration failed; this changeSet was rolled back, earlier ones stay applied");
+#endif
             }
         }
         char ms[32], ord[32];

@@ -86,7 +86,7 @@ jobs:
       - name: Install system toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 clang llvm libgc-dev libsqlite3-dev sqlite3 libpq-dev postgresql-client
+          sudo apt-get install -y python3 clang llvm libgc-dev libsqlite3-dev sqlite3 libpq-dev postgresql-client libmysqlclient-dev
 
       - name: llc/opt available?
         run: |

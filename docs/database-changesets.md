@@ -118,10 +118,13 @@ attributes are hard errors, as in YAML. DOCTYPE internal subsets are not support
   instead, or set `runOnChange: true`.
 - Each changeSet runs in its own transaction together with its history row (PostgreSQL, SQLite). A failing statement rolls
   back the whole changeSet; earlier changeSets stay applied. MySQL commits DDL implicitly, so a changeSet is not atomic
-  there.
+  there: if statement N fails, statements 1..N-1 stay applied and the changeSet gets **no** `tinox_changelog` row. The
+  error names the number of statements that already ran. Re-running would repeat them, so repair the schema by hand
+  (drop what was created, or finish the rest) and run `update` again, or `tinox db baseline` if it now matches. On MySQL
+  prefer one DDL statement per changeSet so a failure is all-or-nothing.
 - A lock row in `tinox_changelog_lock` serializes instances: a second starter waits (up to
   `TINOX_MIGRATE_LOCK_WAIT_MS`, default 30000) and then finds nothing left to do. A lock left behind by a crashed run is
-  never broken automatically: `tinox db release-lock`. Concurrent starters are verified for PostgreSQL; SQLite is a
+  never broken automatically: `tinox db release-lock`. Concurrent starters are verified for PostgreSQL and MySQL (docker); SQLite is a
   single-file database and not meant for several migrating processes.
 - Not implemented yet: contexts, generating a changelog from `@Entity` classes.
 
