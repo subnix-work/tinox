@@ -122,7 +122,7 @@ fn print_help() {
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox reference [path]     Export compiler reference metadata as JSON");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
-    println!("  tinox db <command>         Schema changelog: new, update, status, baseline, rollback, validate, update-sql, release-lock");
+    println!("  tinox db <command>         Schema changelog: new, update, status, baseline, generate, rollback, validate, update-sql, release-lock");
     println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox explain --bootstrap [file]  Explain generated wiring (--json)");
@@ -1631,7 +1631,7 @@ fn find_runtime_object() -> Option<String> {
 }
 
 /// `tinox db <update|status|validate|update-sql|release-lock>` -- the declarative schema
-/// changelog (issue #410). `validate` and `update-sql` need no database; the others compile a
+/// changelog (issue #410). `generate`, `validate` and `update-sql` need no database; the others compile a
 /// stub program that carries the changelog and run it, so the CLI and `migrate_on_startup`
 /// execute the exact same engine (`tinox_migrate_run` in runtime.c).
 fn db_command(args: &[String]) {
@@ -1640,14 +1640,14 @@ fn db_command(args: &[String]) {
         std::process::exit(1);
     };
     let Some(sub) = args.first().map(String::as_str) else {
-        fail("usage: tinox db <new|update|status|baseline|rollback|validate|update-sql|release-lock>".to_string());
+        fail("usage: tinox db <new|update|status|baseline|generate|rollback|validate|update-sql|release-lock>".to_string());
     };
     if sub == "new" {
         db_new::run(&args[1..]).unwrap_or_else(|e| fail(e));
         return;
     }
-    if !matches!(sub, "update" | "status" | "baseline" | "rollback" | "validate" | "update-sql" | "release-lock") {
-        fail(format!("unknown 'tinox db' command '{sub}' (expected new, update, status, baseline, rollback, validate, update-sql or release-lock)"));
+    if !matches!(sub, "update" | "status" | "baseline" | "generate" | "rollback" | "validate" | "update-sql" | "release-lock") {
+        fail(format!("unknown 'tinox db' command '{sub}' (expected new, update, status, baseline, generate, rollback, validate, update-sql or release-lock)"));
     }
     // `rollback --count N | --tag T`; `validate --rollback` also demands every changeSet be reversible.
     let (mut rb_count, mut rb_tag, mut validate_rollback) = (None::<String>, None::<String>, false);
@@ -1677,6 +1677,11 @@ fn db_command(args: &[String]) {
     };
     let dialect = migrate::Dialect::from_driver(&cfg.driver).unwrap_or_else(|e| fail(e));
     let path = changelog_path(&cfg);
+    if sub == "generate" {
+        let message = migrate::generate(&cfg.root, &path, dialect).unwrap_or_else(|e| fail(e));
+        println!("{message}");
+        return;
+    }
     let sets = migrate::load_changelog(&path, dialect, &project_enums(&cfg.root)).unwrap_or_else(|e| fail(e));
     match sub {
         "validate" => {

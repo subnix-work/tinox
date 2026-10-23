@@ -126,8 +126,6 @@ attributes are hard errors, as in YAML. DOCTYPE internal subsets are not support
   `TINOX_MIGRATE_LOCK_WAIT_MS`, default 30000) and then finds nothing left to do. A lock left behind by a crashed run is
   never broken automatically: `tinox db release-lock`. Concurrent starters are verified for PostgreSQL and MySQL (docker); SQLite is a
   single-file database and not meant for several migrating processes.
-- Not implemented yet: generating a changelog from `@Entity` classes.
-
 ## Contexts and labels
 
 Use `context` and/or `labels` to restrict a changeSet to selected environments or data groups:
@@ -269,3 +267,55 @@ changeSet applied; the ones already undone stay undone.
 
 If the schema already exists (created by hand or by an earlier tool), write the changelog to match it and run
 `tinox db baseline` once; later changeSets then apply normally.
+
+## Generating from entities
+
+Run `tinox db generate` from a project with a `[database]` configuration. It parses all `.tnx` files under
+`src/` recursively (including namespace blocks), creates the configured changelog if missing, or appends a new
+changeSet for new tables and columns. It does not connect to the database. Review the result with
+`tinox db update-sql`, then apply it with `tinox db update`. Repeating generation without model changes writes nothing.
+
+```tinox
+@Entity
+@Table("person")
+class Person {
+    @Id @GeneratedValue
+    id: Int64;
+    @Column("display_name") @NotNull
+    name: String;
+    state: State;
+}
+
+enum State { ACTIVE, INACTIVE }
+```
+
+`@Entity` or `@Table` marks a persistent class. The default table name is the lowercase class name; the default column
+name is the field name. `@Table("name")` and `@Column("name")` override those names. Every field is persisted.
+`@Id` generates a primary key; `@GeneratedValue` requires an integer `@Id`. `@NotNull` generates `nullable: false`;
+other columns are nullable. Field initializers are application defaults, not database defaults.
+
+| Entity type | Changelog type |
+| --- | --- |
+| Int8, Int16, Int32, UInt8, UInt16 | int |
+| Int64, UInt32 | bigint |
+| Float32 / Float64 | float / double |
+| Bool | boolean |
+| String / payload-free enum | text |
+| Char | char(1) |
+
+Enum names are stored as text, matching the ORM; changing enum variants does not require a schema change.
+Unsupported types (including UInt64, nullable wrappers, collections, references to other entities and payload enums),
+generic entities, inheritance, duplicate table/column names and composite keys are errors.
+
+The comparison replays existing declarative changes, following includes and filtering for the configured driver.
+Generated changeSets use author `tinox`, IDs `entity-<driver>-<number>` and a `dbms` filter for that driver. Generate
+separately for each driver when maintaining one changelog for multiple databases. Existing changeSets, comments,
+formatting and included files remain untouched; new entries are appended to the root block-style
+`databaseChangeLog` list. Flow-style lists (`databaseChangeLog: [...]`) and YAML document end markers cannot be
+appended to safely and produce an error.
+
+Generation is additive: existing entity columns with changed types, primary keys, generation or nullability, and
+removed columns require a manual changeSet. Extra tables may coexist with entities and are left alone. Defaults,
+unique constraints, indexes and foreign keys remain manually maintained. Raw `sql` changes prevent automatic
+comparison because their schema effects cannot be inferred reliably. Driver restrictions still apply, such as
+SQLite refusing a new `NOT NULL` column without a database default. All validation completes before writing.
