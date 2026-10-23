@@ -4,6 +4,14 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Enum names, text conversion and ORM columns** (#409): a payload-free enum has
+  `value.name`, `Enum::parse(text)` (fails hard on an unknown name) and
+  `Enum::values()`. An `@Entity` field of such an enum type is stored as a text
+  column holding the variant name; `where` filters compare by name. Enums
+  declared twice under the same name (two modules) get none of this.
+
 ## [2.5.0] - 2026-10-23
 
 ### Also in this release

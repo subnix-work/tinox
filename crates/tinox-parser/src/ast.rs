@@ -465,6 +465,12 @@ pub struct Interface {
     pub annotations: Vec<Annotation>,
 }
 
+/// Prefix of the hidden helper class synthesized next to every payload-free
+/// enum (`__Enum_<Enum>` with static `name`, `parse` and `values`). The
+/// typechecker and codegen route `Enum::parse(..)`, `Enum::values()` and
+/// `value.name` to it.
+pub const ENUM_HELPER_PREFIX: &str = "__Enum_";
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EnumVariant {
     pub name: Ident,

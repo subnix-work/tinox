@@ -2606,6 +2606,17 @@ impl TypeChecker {
         ty
     }
 
+    /// The synthesized helper class (`__Enum_<Enum>`) when `member` is one of its
+    /// methods (`name`, `parse`, `values`) for the payload-free enum `enum_name`.
+    fn enum_helper_class(&self, enum_name: &str, member: &str) -> Option<String> {
+        if !matches!(member, "name" | "parse" | "values") || !self.enums.contains_key(enum_name) {
+            return None;
+        }
+        let helper = format!("{}{}", tinox_parser::ENUM_HELPER_PREFIX, enum_name);
+        let has_method = self.symbols.functions.contains_key(&format!("{helper}_{member}"));
+        has_method.then_some(helper)
+    }
+
     /// Mirror the receiver shapes accepted by codegen's ORM interceptor.
     /// Query stubs return Any, but first() materializes this concrete entity.
     fn orm_query_entity<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
@@ -2918,6 +2929,10 @@ impl TypeChecker {
             ExprKind::FieldAccess { obj, field } => {
                 let obj_ty = self.infer_type(obj);
                 if let ValueType::Named(name, targs) = obj_ty {
+                    // `value.name` of a payload-free enum is the variant's name
+                    if field == "name" && self.enum_helper_class(&name, "name").is_some() {
+                        return ValueType::String;
+                    }
                     let full_name = format!("{}.{}", name, field);
                     if let Some(vis) = self.field_visibility.get(&full_name).cloned() {
                         self.check_member_visibility(&name, field, &vis, expr.span);
@@ -3341,6 +3356,9 @@ impl TypeChecker {
                 type_args,
                 args,
             } => {
+                // `Enum::parse(..)` / `Enum::values()` live on the enum's synthesized helper class.
+                let helper_name = self.enum_helper_class(enum_name, variant);
+                let enum_name = helper_name.as_ref().unwrap_or(enum_name);
                 // Check if this is actually a static method call: ClassName::method(args).
                 // Also covers non-static (`fn`) methods called this way with an implicit
                 // self (the codegen convention throughout the stdlib, e.g. Debug::
