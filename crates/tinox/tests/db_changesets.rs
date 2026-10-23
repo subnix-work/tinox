@@ -616,7 +616,7 @@ fn changesets_mysql_apply_validate_partial_and_concurrent_starters() {
       author: tino
       changes:
         - createTable: { tableName: half_done, columns: [ { column: { name: id, type: int } } ] }
-        - sql: "INSERT INTO no_such_table VALUES (1)"
+        - sql: { dbms: mysql, statements: "INSERT INTO no_such_table VALUES (1)" }
 "#,
     );
     let fail = p.tinox(&["db", "update"]);
