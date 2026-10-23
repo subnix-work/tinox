@@ -56,6 +56,8 @@ pub struct ChangeSet {
     /// `tag:` -- `tinox db rollback --tag T` undoes everything applied after this changeSet.
     pub tag: Option<String>,
     pub pre: Option<PreConditions>,
+    pub context: String,
+    pub labels: String,
 }
 
 /// `preConditions:` of a changeSet, evaluated by the runtime right before the changeSet would run.
@@ -353,6 +355,7 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
         quote_ident(d, &get_str(spec, key, &ctx)?, &ctx)
     };
     match kind {
+        "tag" => { tag_name(spec, &ctx)?; Ok(vec![]) }
         "createTable" => {
             check_keys(spec, &["tableName", "columns"], &ctx)?;
             let t = table(spec, "tableName")?;
@@ -591,6 +594,7 @@ fn invert_change(d: Dialect, change: &Value) -> Result<Vec<Value>, String> {
     let map = change.as_mapping().and_then(|m| m.iter().next());
     let Some((kind, spec)) = map else { return Err("malformed change".into()) };
     match kind.as_str().unwrap_or("") {
+        "tag" => Ok(vec![]),
         "createTable" => Ok(vec![mapping1("dropTable", vec![("tableName", s(spec, "tableName"))])]),
         "addColumn" => {
             let cols = get(spec, "columns").and_then(|c| c.as_sequence()).cloned().unwrap_or_default();
@@ -631,14 +635,40 @@ fn rollback_of(d: Dialect, cs: &Value, changes: &[Value], ctx: &str) -> Result<V
     Ok(out)
 }
 
+/// Comma-separated, case-sensitive names; expressions are deliberately unsupported.
+pub fn parse_contexts(text: &str) -> Result<String, String> {
+    let names: Vec<&str> = text.split(',').map(str::trim).collect();
+    if names.iter().any(|n| n.is_empty() || !n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))) {
+        return Err("contexts/labels must be a comma-separated list of names (letters, digits, _, - or .)".into());
+    }
+    Ok(names.join(","))
+}
+
+pub fn matches_contexts(cs: &ChangeSet, active: &str) -> bool {
+    [&cs.context, &cs.labels].iter().all(|names| {
+        names.is_empty() || names.split(',').any(|n| active.split(',').any(|a| a == n))
+    })
+}
+
+fn tag_name(spec: &Value, ctx: &str) -> Result<String, String> {
+    let value = if spec.is_mapping() {
+        check_keys(spec, &["tag"], ctx)?;
+        get(spec, "tag").ok_or_else(|| format!("{ctx}: missing 'tag'"))?
+    } else { spec };
+    scalar_string(value).filter(|t| !t.trim().is_empty() && !t.chars().any(char::is_control))
+        .ok_or_else(|| format!("{ctx}: 'tag' must be non-empty text without control characters"))
+}
+
 fn checksum_of(cs: &Value) -> String {
-    // 'rollback', 'tag' and 'preConditions' do not change what the changeSet did, so adding one later must not
+    // Rollback, tags, preconditions and qualifiers do not change the executed SQL, so adding metadata must not
     // invalidate the checksum of an already applied changeSet.
     let mut cs = cs.clone();
     if let Some(m) = cs.as_mapping_mut() {
         m.remove(Value::String("rollback".into()));
         m.remove(Value::String("tag".into()));
         m.remove(Value::String("preConditions".into()));
+        m.remove(Value::String("context".into()));
+        m.remove(Value::String("labels".into()));
     }
     let cs = &cs;
     // serde_yaml keeps mapping order, so the checksum follows the file's text order but not
@@ -652,7 +682,7 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
     let id = get_str(cs, "id", &format!("{file}: changeSet"))?;
     let author = get_str(cs, "author", &format!("{file}: changeSet '{id}'"))?;
     let ctx = format!("{file}: changeSet '{id}' by '{author}'");
-    check_keys(cs, &["id", "author", "changes", "runOnChange", "runAlways", "dbms", "comment", "rollback", "tag", "preConditions"], &ctx)?;
+    check_keys(cs, &["id", "author", "changes", "runOnChange", "runAlways", "dbms", "comment", "rollback", "tag", "preConditions", "context", "labels"], &ctx)?;
     if id.contains('\u{1f}') || author.contains('\u{1f}') || id.is_empty() || author.is_empty() {
         return Err(format!("{ctx}: id and author must be non-empty text"));
     }
@@ -684,15 +714,23 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
         Err(e) if get(cs, "rollback").is_some() => return Err(e),
         r => r.map_err(|e| format!("{ctx}: cannot be rolled back: {e} (add a 'rollback:' block)")),
     };
-    let tag = match get(cs, "tag") {
-        None => None,
-        Some(v) => {
-            let t = scalar_string(v).filter(|t| !t.is_empty() && !t.contains(['\u{1d}', '\u{1e}', '\u{1f}']));
-            Some(t.ok_or_else(|| format!("{ctx}: 'tag' must be non-empty text"))?)
+    let mut tag = get(cs, "tag").map(|v| tag_name(v, &ctx)).transpose()?;
+    for change in changes {
+        if let Some(spec) = get(change, "tag") {
+            if tag.is_some() { return Err(format!("{ctx}: only one tag is allowed per changeSet")); }
+            tag = Some(tag_name(spec, &ctx)?);
         }
+    }
+    let names = |key: &str| -> Result<String, String> {
+        get(cs, key).map(|v| {
+            let text = v.as_str().ok_or_else(|| format!("{ctx}: '{key}' must be text"))?;
+            parse_contexts(text).map_err(|e| format!("{ctx}: '{key}': {e}"))
+        }).unwrap_or_else(|| Ok(String::new()))
     };
     Ok(Some(ChangeSet {
         rollback,
+        context: names("context")?,
+        labels: names("labels")?,
         tag,
         id,
         author,
@@ -788,7 +826,7 @@ pub fn load_changelog(
 
 /// Wire format read by `tinox_migrate_run` in runtime.c: change sets separated by 0x1d, fields by
 /// 0x1f (id, author, file, checksum, flags, statements joined by 0x1e, rollback statements joined
-/// by 0x1e, reason the changeSet is irreversible or empty, tag or empty, preconditions). Preconditions
+/// by 0x1e, reason the changeSet is irreversible or empty, tag or empty, preconditions, context names, label names). Preconditions
 /// are empty or `onFail` followed by checks, all joined by 0x1c; a check's fields (negate 0/1, kind,
 /// a, b, description) are joined by 0x1b.
 pub fn serialize_payload(sets: &[ChangeSet]) -> String {
@@ -811,7 +849,7 @@ pub fn serialize_payload(sets: &[ChangeSet]) -> String {
                 Err(e) => (String::new(), e.clone()),
             };
             [c.id.as_str(), c.author.as_str(), c.file.as_str(), c.checksum.as_str(), flags.as_str(), &c.stmts.join("\u{1e}"),
-             rb.as_str(), why.as_str(), c.tag.as_deref().unwrap_or(""), &pre]
+             rb.as_str(), why.as_str(), c.tag.as_deref().unwrap_or(""), &pre, &c.context, &c.labels]
                 .join("\u{1f}")
         })
         .collect();
@@ -825,6 +863,26 @@ mod tests {
     fn cs(d: Dialect, yaml: &str) -> Result<Option<ChangeSet>, String> {
         let v: Value = serde_yaml::from_str(yaml).unwrap();
         parse_changeset(d, &v, "t.yaml")
+    }
+
+    #[test]
+    fn tags_and_qualifiers_validate() {
+        let base = "id: point\nauthor: a\nchanges: [{tag: {tag: release}}]\n";
+        let point = cs(Dialect::Sqlite, base).unwrap().unwrap();
+        assert_eq!(point.tag.as_deref(), Some("release"));
+        assert!(point.stmts.is_empty());
+        assert!(point.rollback.as_ref().unwrap().is_empty());
+        let qualified = cs(Dialect::Sqlite, &format!("{base}context: ' dev, test '\nlabels: seed\n")).unwrap().unwrap();
+        assert_eq!(qualified.checksum, point.checksum);
+        assert!(matches_contexts(&qualified, "test,seed"));
+        assert!(!matches_contexts(&qualified, "dev"));
+        assert!(!matches_contexts(&qualified, ""));
+        for extra in ["context: []", "context: ''", "labels: 'dev,,test'", "context: 'dev or test'", "tag: other"] {
+            assert!(cs(Dialect::Sqlite, &format!("{base}{extra}\n")).is_err(), "{extra}");
+        }
+        for change in ["{tag: ''}", "{tag: {}}", "{tag: {tag: ok, typo: x}}"] {
+            assert!(cs(Dialect::Sqlite, &format!("id: bad\nauthor: a\nchanges: [{change}]\n")).is_err(), "{change}");
+        }
     }
 
     #[test]

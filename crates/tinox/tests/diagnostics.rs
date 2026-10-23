@@ -61,6 +61,27 @@ fn parse(output: &Output) -> Value {
 }
 
 #[test]
+fn enum_string_concatenation_is_rejected_before_codegen() {
+    let project = Project::new();
+    project.write("Status.tnx", "enum Status { STARTING; FAILED; }");
+    project.write("Run.tnx", "import Status; class Run { var status: Status; }");
+    for expression in ["\"status: \" + run.status", "run.status + \"!\""] {
+        project.write("Main.tnx", &format!(
+            "import Run; class Main {{ fnc main() -> Int32 {{ const run = Run {{ status: Status::FAILED }}; println({expression}); return 0; }} }}"
+        ));
+        for action in ["check", "build"] {
+            let output = project.command(action).output().unwrap();
+            assert_eq!(output.status.code(), Some(1), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("cannot concatenate String and enum 'Status'"), "{output:?}");
+        }
+    }
+    project.write("Main.tnx", "import Run; class Main { fnc main() -> Int32 { const run = Run { status: Status::FAILED }; println(\"status: \" + run.status.name); return 0; } }");
+    let output = project.command("run").output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "status: FAILED");
+}
+
+#[test]
 fn check_and_build_share_cross_file_diagnostics_and_text_meaning() {
     let project = Project::new();
     project.write(

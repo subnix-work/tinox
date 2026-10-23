@@ -41,7 +41,7 @@ databaseChangeLog:
 
 A changeSet is identified by `id` + `author` (unique across all files). Optional keys: `runOnChange` (re-apply when
 its content changed), `runAlways`, `dbms` (comma separated driver list; the changeSet does not exist for other drivers),
-`comment`, `tag` (a name for the state after this changeSet, used by `rollback --tag`) and `rollback`.
+`context`, `labels`, `comment`, `tag` (a name for the state after this changeSet, used by `rollback --tag`) and `rollback`.
 
 Change types: `createTable`, `dropTable`, `renameTable`, `addColumn`, `dropColumn`, `renameColumn`, `modifyEnumCheck`, `createIndex`
 (`unique: true` allowed), `dropIndex`, `insert` and `sql`. `sql` is the escape hatch for what the declarative model
@@ -126,7 +126,32 @@ attributes are hard errors, as in YAML. DOCTYPE internal subsets are not support
   `TINOX_MIGRATE_LOCK_WAIT_MS`, default 30000) and then finds nothing left to do. A lock left behind by a crashed run is
   never broken automatically: `tinox db release-lock`. Concurrent starters are verified for PostgreSQL and MySQL (docker); SQLite is a
   single-file database and not meant for several migrating processes.
-- Not implemented yet: contexts.
+## Contexts and labels
+
+Use `context` and/or `labels` to restrict a changeSet to selected environments or data groups:
+
+```yaml
+- changeSet:
+    id: dev-seed
+    author: tino
+    context: dev, test
+    labels: seed
+    changes:
+      - insert: { tableName: person, values: { name: Ada } }
+```
+
+`tinox db update --contexts dev,seed` applies this seed. Names are case-sensitive, comma-separated,
+and may contain letters, digits, `_`, `-` or `.`; whitespace around names is ignored. A list matches
+when any of its names appears in `--contexts`. When both `context` and `labels` are present, both lists
+must match. Boolean expressions are not supported. Without `--contexts`, qualified changeSets are
+excluded; changeSets without either field always qualify. Excluded changeSets run no preconditions
+and receive no history row, so they remain available for a later matching update.
+
+`status`, `baseline` and `update-sql` also accept `--contexts`. Status shows excluded pending changeSets
+as `excluded` and still shows applied history. Checksum validation covers all applied changeSets even
+when excluded. Context and label metadata are excluded from checksums. Rollback uses the complete
+applied history regardless of contexts. For startup/test migrations, set the environment variable
+`TINOX_MIGRATE_CONTEXTS=dev,seed`; without it, qualified changeSets are excluded.
 
 ## Preconditions
 
@@ -200,12 +225,26 @@ project root.
 
 ## Rollback
 
+A `tag` change creates a named checkpoint after its containing changeSet. It executes no SQL,
+is recorded in history, appears in `status`, and supports `rollback --tag`. A tag-only changeSet
+can be undone by removing its history row. Tag names must be non-empty and unique across the
+changelog; each changeSet may carry at most one tag (including the changeSet-level `tag:` form).
+XML uses `<tag tag="release-1"/>`.
+
+```yaml
+- changeSet:
+    id: release-1
+    author: tino
+    changes:
+      - tag: { tag: release-1 }
+```
+
 A changeSet can declare how to undo itself with an explicit `rollback:` block (a list of changes, same syntax as
 `changes:`, including `sql`). Without one, the inverse is derived for `createTable` (dropTable), `addColumn`
 (dropColumn), `createIndex` (dropIndex), `renameTable` and `renameColumn`. `dropTable`, `dropColumn`, `dropIndex`,
 `insert` and `sql` have no automatic inverse: rolling back a changeSet containing one without a `rollback:` block is a
 **hard error**, reported before anything is undone (`tinox db validate --rollback` finds them ahead of time). Neither
-`rollback` nor `tag` is part of the checksum, so they can be added to an already applied changeSet.
+`rollback` nor changeSet-level `tag` is part of the checksum, so they can be added to an already applied changeSet.
 
 ```yaml
 - changeSet:

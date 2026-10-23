@@ -210,7 +210,7 @@ fn replay(sets: &[ChangeSet]) -> Result<Schema, String> {
                         }
                     }
                 }
-                "createIndex" | "dropIndex" | "insert" => {}
+                "createIndex" | "dropIndex" | "insert" | "tag" => {}
                 _ => return Err(format!("changeSet {}: cannot infer schema from '{kind}'; maintain this changelog manually", set.id)),
             }
         }
@@ -442,6 +442,17 @@ class Person {{
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn tag_metadata_does_not_change_generated_schema() {
+        let p = Project::new();
+        p.generate(Dialect::Sqlite).unwrap();
+        let mut original = fs::read_to_string(p.path()).unwrap();
+        original.push_str("  - changeSet:\n      id: release-marker\n      author: test\n      changes: [{tag: {tag: v1}}]\n");
+        fs::write(p.path(), &original).unwrap();
+        assert!(p.generate(Dialect::Sqlite).unwrap().contains("up to date"));
+        assert_eq!(fs::read_to_string(p.path()).unwrap(), original);
     }
 
     #[test]
