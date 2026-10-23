@@ -381,24 +381,26 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
             Ok(vec![format!("INSERT INTO {t} ({}) VALUES ({})", names.join(", "), lits.join(", "))])
         }
         "sql" => {
-            // Escape hatch. `dbms:` limits it to one driver; a change set can carry several
-            // 'sql' changes with different dbms values for dialect-specific statements.
-            let (text, only): (Value, Option<String>) = if spec.is_mapping() {
-                check_keys(spec, &["statements", "dbms"], &ctx)?;
-                (
-                    get(spec, "statements").cloned().ok_or_else(|| format!("{ctx}: missing 'statements'"))?,
-                    get(spec, "dbms").and_then(scalar_string),
-                )
-            } else {
-                (spec.clone(), None)
-            };
-            if let Some(only) = only {
-                if Dialect::from_driver(&only).is_err() {
-                    return Err(format!("{ctx}: unknown dbms '{only}'"));
-                }
-                if only != d.name() {
-                    return Ok(vec![]);
-                }
+            // Escape hatch for what the declarative model cannot express (views, triggers,
+            // functions). Raw SQL is dialect-specific, so it must name its dialect(s) and a
+            // different driver is a hard error (put per-dialect variants in separate changeSets
+            // with a changeSet-level `dbms:`).
+            if !spec.is_mapping() {
+                return Err(format!("{ctx}: 'sql' must declare its dialect: {{ dbms: postgres, statements: ... }}"));
+            }
+            check_keys(spec, &["statements", "dbms"], &ctx)?;
+            let text = get(spec, "statements").cloned().ok_or_else(|| format!("{ctx}: missing 'statements'"))?;
+            let dbms = get(spec, "dbms").and_then(scalar_string)
+                .ok_or_else(|| format!("{ctx}: 'sql' must declare its dialect with 'dbms:'"))?;
+            let wanted: Vec<&str> = dbms.split(',').map(str::trim).collect();
+            for w in &wanted {
+                Dialect::from_driver(w).map_err(|_| format!("{ctx}: unknown dbms '{w}'"))?;
+            }
+            if !wanted.contains(&d.name()) {
+                return Err(format!(
+                    "{ctx}: raw SQL is written for dbms '{dbms}' but the configured driver is '{}'",
+                    d.name()
+                ));
             }
             let stmts: Vec<String> = match &text {
                 Value::String(s) => vec![s.clone()],
@@ -782,6 +784,20 @@ mod tests {
     }
 
     #[test]
+    fn raw_sql_requires_matching_dialect() {
+        let ok = "id: 1\nauthor: a\nchanges:\n  - sql: {dbms: postgres, statements: \"CREATE VIEW v AS SELECT 1\"}\nrunOnChange: true\n";
+        let c = cs(Dialect::Postgres, ok).unwrap().unwrap();
+        assert!(c.run_on_change);
+        assert_eq!(c.stmts, vec!["CREATE VIEW v AS SELECT 1"]);
+        assert!(cs(Dialect::Sqlite, ok).unwrap_err().contains("postgres"));
+        assert!(cs(Dialect::Postgres, "id: 1\nauthor: a\nchanges:\n  - sql: \"SELECT 1\"\n").is_err());
+        assert!(cs(Dialect::Postgres, "id: 1\nauthor: a\nchanges:\n  - sql: {statements: \"SELECT 1\"}\n").is_err());
+        // changeSet-level dbms filter still skips the whole set for other drivers
+        let f = "id: 1\nauthor: a\ndbms: postgres\nchanges:\n  - sql: {dbms: postgres, statements: \"SELECT 1\"}\n";
+        assert!(cs(Dialect::Sqlite, f).unwrap().is_none());
+    }
+
+    #[test]
     fn dbms_filter_and_checksum_changes() {
         let a = "id: 1\nauthor: a\ndbms: postgres\nchanges:\n  - dropTable: {tableName: t}\n";
         assert!(cs(Dialect::Sqlite, a).unwrap().is_none());
@@ -800,7 +816,7 @@ mod tests {
             "DROP INDEX \"i\"", "DROP TABLE \"t\""]);
         let bad = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: t}\n";
         assert!(cs(Dialect::Sqlite, bad).unwrap().unwrap().rollback.is_err());
-        let ok = format!("{bad}rollback:\n  - sql: CREATE TABLE t (a INTEGER)\n");
+        let ok = format!("{bad}rollback:\n  - sql: {{dbms: sqlite, statements: CREATE TABLE t (a INTEGER)}}\n");
         let c = cs(Dialect::Sqlite, &ok).unwrap().unwrap();
         assert_eq!(c.rollback.unwrap(), vec!["CREATE TABLE t (a INTEGER)"]);
         assert_eq!(c.checksum, cs(Dialect::Sqlite, bad).unwrap().unwrap().checksum, "rollback is not part of the checksum");

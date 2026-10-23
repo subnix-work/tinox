@@ -192,7 +192,7 @@ const FAILING: &str = r#"
       author: tino
       changes:
         - insert: { tableName: person, values: { name: halfway } }
-        - sql: "INSERT INTO no_such_table VALUES (1)"
+        - sql: { dbms: "sqlite, postgres", statements: "INSERT INTO no_such_table VALUES (1)" }
 "#;
 
 const MAIN: &str = "class Main\n{\n    fnc main() -> Int32\n    {\n        println(\"started\");\n        return 0;\n    }\n}\n";
@@ -524,7 +524,7 @@ fn changesets_rollback_by_count_and_tag_refuses_irreversible() {
     // An explicit rollback block (not part of the checksum) makes it reversible.
     p.write("migrations/changelog.yaml", &base.replace(
         "        - insert: { tableName: t, values: { a: 7 } }\n",
-        "        - insert: { tableName: t, values: { a: 7 } }\n      rollback:\n        - sql: DELETE FROM t WHERE a = 7\n",
+        "        - insert: { tableName: t, values: { a: 7 } }\n      rollback:\n        - sql: { dbms: sqlite, statements: DELETE FROM t WHERE a = 7 }\n",
     ));
     let r = p.tinox(&["db", "rollback", "--tag", "base"]);
     assert!(r.status.success(), "{}", text(&r));
