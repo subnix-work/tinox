@@ -51,6 +51,26 @@ pub struct ChangeSet {
     pub rollback: Result<Vec<String>, String>,
     /// `tag:` -- `tinox db rollback --tag T` undoes everything applied after this changeSet.
     pub tag: Option<String>,
+    pub pre: Option<PreConditions>,
+}
+
+/// `preConditions:` of a changeSet, evaluated by the runtime right before the changeSet would run.
+#[derive(Debug, Clone)]
+pub struct PreConditions {
+    /// HALT | CONTINUE | MARK_RAN | WARN
+    pub on_fail: String,
+    pub checks: Vec<Check>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Check {
+    pub negate: bool,
+    /// tableExists | columnExists | indexExists | sqlCheck | const (dbms, decided at compile time)
+    pub kind: String,
+    pub a: String,
+    pub b: String,
+    /// Human readable form for messages.
+    pub desc: String,
 }
 
 fn scalar_string(v: &Value) -> Option<String> {
@@ -473,6 +493,84 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
     }
 }
 
+fn parse_check(d: Dialect, v: &Value, negate: bool, ctx: &str) -> Result<Check, String> {
+    let map = v.as_mapping().filter(|m| m.len() == 1)
+        .ok_or_else(|| format!("{ctx}: each check must be a mapping with exactly one check type"))?;
+    let (kind, spec) = map.iter().next().unwrap();
+    let kind = kind.as_str().unwrap_or("");
+    let ctx = format!("{ctx}, {kind}");
+    let name = |key: &str| -> Result<String, String> {
+        let n = get_str(spec, key, &ctx)?;
+        quote_ident(d, &n, &ctx)?; // validate only; the runtime binds the raw name as a parameter
+        Ok(n)
+    };
+    let neg = if negate { "not " } else { "" };
+    match kind {
+        "not" => {
+            if negate {
+                return Err(format!("{ctx}: 'not' cannot be nested"));
+            }
+            parse_check(d, spec, true, &ctx)
+        }
+        "tableExists" => {
+            check_keys(spec, &["tableName"], &ctx)?;
+            let t = name("tableName")?;
+            Ok(Check { negate, kind: kind.into(), desc: format!("{neg}tableExists({t})"), a: t, b: String::new() })
+        }
+        "columnExists" => {
+            check_keys(spec, &["tableName", "columnName"], &ctx)?;
+            let (t, c) = (name("tableName")?, name("columnName")?);
+            Ok(Check { negate, kind: kind.into(), desc: format!("{neg}columnExists({t}.{c})"), a: t, b: c })
+        }
+        "indexExists" => {
+            check_keys(spec, &["tableName", "indexName"], &ctx)?;
+            let (t, i) = (name("tableName")?, name("indexName")?);
+            Ok(Check { negate, kind: kind.into(), desc: format!("{neg}indexExists({i} on {t})"), a: t, b: i })
+        }
+        "sqlCheck" => {
+            check_keys(spec, &["sql", "expectedResult"], &ctx)?;
+            let sql = get_str(spec, "sql", &ctx)?.trim().trim_end_matches(';').trim().to_string();
+            if sql.is_empty() || sql.contains(';') {
+                return Err(format!("{ctx}: 'sql' must be exactly one statement"));
+            }
+            let expected = get_str(spec, "expectedResult", &ctx)?;
+            Ok(Check { negate, kind: kind.into(), desc: format!("{neg}sqlCheck({sql} = {expected})"), a: sql, b: expected })
+        }
+        "dbms" => {
+            let list = scalar_string(spec).ok_or_else(|| format!("{ctx}: expected a driver list, e.g. dbms: postgres,mysql"))?;
+            let mut hit = false;
+            for w in list.split(',').map(str::trim) {
+                Dialect::from_driver(w).map_err(|e| format!("{ctx}: {e}"))?;
+                hit |= w == d.name();
+            }
+            Ok(Check { negate, kind: "const".into(), desc: format!("{neg}dbms({list})"), a: (if hit { "1" } else { "0" }).into(), b: String::new() })
+        }
+        other => Err(format!(
+            "{ctx}: unsupported precondition '{other}' (supported: tableExists, columnExists, indexExists, sqlCheck, dbms, not)"
+        )),
+    }
+}
+
+fn parse_preconditions(d: Dialect, pc: &Value, ctx: &str) -> Result<PreConditions, String> {
+    let ctx = format!("{ctx}, preConditions");
+    check_keys(pc, &["onFail", "checks"], &ctx)?;
+    // No default-by-omission surprises: the default is HALT, written out in the docs.
+    let on_fail = match get(pc, "onFail") {
+        None => "HALT".to_string(),
+        Some(v) => scalar_string(v).unwrap_or_default(),
+    };
+    if !["HALT", "CONTINUE", "MARK_RAN", "WARN"].contains(&on_fail.as_str()) {
+        return Err(format!("{ctx}: onFail must be HALT, CONTINUE, MARK_RAN or WARN, found '{on_fail}'"));
+    }
+    let list = get(pc, "checks").and_then(|c| c.as_sequence())
+        .ok_or_else(|| format!("{ctx}: 'checks' must be a list"))?;
+    if list.is_empty() {
+        return Err(format!("{ctx}: 'checks' must not be empty"));
+    }
+    let checks = list.iter().map(|c| parse_check(d, c, false, &ctx)).collect::<Result<_, _>>()?;
+    Ok(PreConditions { on_fail, checks })
+}
+
 fn mapping1(key: &str, spec: Vec<(&str, Value)>) -> Value {
     let mut inner = serde_yaml::Mapping::new();
     for (k, v) in spec {
@@ -530,17 +628,18 @@ fn rollback_of(d: Dialect, cs: &Value, changes: &[Value], ctx: &str) -> Result<V
 }
 
 fn checksum_of(cs: &Value) -> String {
-    // 'rollback' and 'tag' do not change what the changeSet did, so adding one later must not
+    // 'rollback', 'tag' and 'preConditions' do not change what the changeSet did, so adding one later must not
     // invalidate the checksum of an already applied changeSet.
     let mut cs = cs.clone();
     if let Some(m) = cs.as_mapping_mut() {
         m.remove(Value::String("rollback".into()));
         m.remove(Value::String("tag".into()));
+        m.remove(Value::String("preConditions".into()));
     }
     let cs = &cs;
     // serde_yaml keeps mapping order, so the checksum follows the file's text order but not
     // its formatting (whitespace/comments/quoting do not change it).
-    let canonical = serde_json::to_string(cs).unwrap_or_default();
+    let canonical = serde_json::to_string(&cs).unwrap_or_default();
     let digest = Sha256::digest(canonical.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -549,7 +648,7 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
     let id = get_str(cs, "id", &format!("{file}: changeSet"))?;
     let author = get_str(cs, "author", &format!("{file}: changeSet '{id}'"))?;
     let ctx = format!("{file}: changeSet '{id}' by '{author}'");
-    check_keys(cs, &["id", "author", "changes", "runOnChange", "runAlways", "dbms", "comment", "rollback", "tag"], &ctx)?;
+    check_keys(cs, &["id", "author", "changes", "runOnChange", "runAlways", "dbms", "comment", "rollback", "tag", "preConditions"], &ctx)?;
     if id.contains('\u{1f}') || author.contains('\u{1f}') || id.is_empty() || author.is_empty() {
         return Err(format!("{ctx}: id and author must be non-empty text"));
     }
@@ -567,6 +666,10 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
     if changes.is_empty() {
         return Err(format!("{ctx}: 'changes' must not be empty"));
     }
+    let pre = match get(cs, "preConditions") {
+        Some(pc) => Some(parse_preconditions(d, pc, &ctx)?),
+        None => None,
+    };
     let mut stmts = Vec::new();
     for c in changes {
         stmts.extend(change_to_sql(d, c, &ctx)?);
@@ -594,6 +697,7 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
         run_on_change: get_bool(cs, "runOnChange", &ctx)?,
         run_always: get_bool(cs, "runAlways", &ctx)?,
         stmts,
+        pre,
     }))
 }
 
@@ -679,18 +783,30 @@ pub fn load_changelog(
 
 /// Wire format read by `tinox_migrate_run` in runtime.c: change sets separated by 0x1d, fields by
 /// 0x1f (id, author, file, checksum, flags, statements joined by 0x1e, rollback statements joined
-/// by 0x1e, reason the changeSet is irreversible or empty, tag or empty).
+/// by 0x1e, reason the changeSet is irreversible or empty, tag or empty, preconditions). Preconditions
+/// are empty or `onFail` followed by checks, all joined by 0x1c; a check's fields (negate 0/1, kind,
+/// a, b, description) are joined by 0x1b.
 pub fn serialize_payload(sets: &[ChangeSet]) -> String {
     let recs: Vec<String> = sets
         .iter()
         .map(|c| {
             let flags = format!("{}{}", if c.run_on_change { "C" } else { "" }, if c.run_always { "A" } else { "" });
+            let pre = match &c.pre {
+                None => String::new(),
+                Some(p) => {
+                    let mut parts = vec![p.on_fail.clone()];
+                    for k in &p.checks {
+                        parts.push([if k.negate { "1" } else { "0" }, &k.kind, &k.a, &k.b, &k.desc].join("\u{1b}"));
+                    }
+                    parts.join("\u{1c}")
+                }
+            };
             let (rb, why) = match &c.rollback {
                 Ok(v) => (v.join("\u{1e}"), String::new()),
                 Err(e) => (String::new(), e.clone()),
             };
             [c.id.as_str(), c.author.as_str(), c.file.as_str(), c.checksum.as_str(), flags.as_str(), &c.stmts.join("\u{1e}"),
-             rb.as_str(), why.as_str(), c.tag.as_deref().unwrap_or("")]
+             rb.as_str(), why.as_str(), c.tag.as_deref().unwrap_or(""), &pre]
                 .join("\u{1f}")
         })
         .collect();
@@ -737,6 +853,22 @@ mod tests {
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: \"x; DROP\"}\n").is_err());
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nchanges:\n  - createTable: {tableName: t, columns: [{column: {name: a, type: weird}}]}\n").is_err());
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nbogus: 1\nchanges:\n  - dropTable: {tableName: t}\n").is_err());
+    }
+
+    #[test]
+    fn preconditions_parse_and_validate() {
+        let base = "id: 1\nauthor: a\npreConditions:\n  onFail: MARK_RAN\n  checks:\n    - not: {tableExists: {tableName: person}}\n    - dbms: sqlite\nchanges:\n  - dropTable: {tableName: t}\n";
+        let c = cs(Dialect::Sqlite, base).unwrap().unwrap();
+        let pre = c.pre.unwrap();
+        assert_eq!(pre.on_fail, "MARK_RAN");
+        assert!(pre.checks[0].negate && pre.checks[0].kind == "tableExists");
+        assert_eq!(pre.checks[1].a, "1");
+        assert_eq!(cs(Dialect::Postgres, base).unwrap().unwrap().pre.unwrap().checks[1].a, "0");
+        let plain = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: t}\n";
+        assert_eq!(c.checksum, cs(Dialect::Sqlite, plain).unwrap().unwrap().checksum, "preConditions are not part of the checksum");
+        assert!(cs(Dialect::Sqlite, &base.replace("MARK_RAN", "SHRUG")).is_err());
+        assert!(cs(Dialect::Sqlite, &base.replace("tableExists", "viewExists")).is_err());
+        assert!(cs(Dialect::Sqlite, &base.replace("onFail: MARK_RAN\n  checks", "checks")).unwrap().unwrap().pre.unwrap().on_fail == "HALT");
     }
 
     #[test]

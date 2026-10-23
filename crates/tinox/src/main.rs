@@ -654,7 +654,7 @@ fn test_migration_payload(cfg: Option<&DbConfig>) -> Result<Option<String>, Stri
         return Ok(None);
     }
     let dialect = migrate::Dialect::from_driver(&cfg.driver)?;
-    let sets = migrate::load_changelog(&changelog_path(cfg), dialect)?;
+    let sets = migrate::load_changelog(&changelog_path(cfg), dialect, &project_enums(&cfg.root))?;
     Ok(Some(migrate::serialize_payload(&sets)))
 }
 
