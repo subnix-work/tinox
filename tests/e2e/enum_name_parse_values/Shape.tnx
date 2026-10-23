@@ -1,0 +1,5 @@
+enum Shape
+{
+    Circle(Float64);
+    Square(Float64);
+}
