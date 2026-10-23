@@ -12,6 +12,7 @@ mod callgraph;
 mod contract;
 mod dockerfile;
 mod migrate;
+mod schema_diff;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
 mod reference;
@@ -120,7 +121,7 @@ fn print_help() {
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox reference [path]     Export compiler reference metadata as JSON");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
-    println!("  tinox db <command>         Schema changelog: update, status, baseline, validate, update-sql, release-lock");
+    println!("  tinox db <command>         Schema changelog: update, status, baseline, diff, validate, update-sql, release-lock");
     println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox explain --bootstrap [file]  Explain generated wiring (--json)");
@@ -1570,7 +1571,7 @@ fn find_runtime_object() -> Option<String> {
     None
 }
 
-/// `tinox db <update|status|validate|update-sql|release-lock>` -- the declarative schema
+/// `tinox db <update|status|baseline|diff|validate|update-sql|release-lock>` -- the declarative schema
 /// changelog (issue #410). `validate` and `update-sql` need no database; the others compile a
 /// stub program that carries the changelog and run it, so the CLI and `migrate_on_startup`
 /// execute the exact same engine (`tinox_migrate_run` in runtime.c).
@@ -1580,10 +1581,10 @@ fn db_command(args: &[String]) {
         std::process::exit(1);
     };
     let Some(sub) = args.first().map(String::as_str) else {
-        fail("usage: tinox db <update|status|baseline|validate|update-sql|release-lock>".to_string());
+        fail("usage: tinox db <update|status|baseline|diff|validate|update-sql|release-lock>".to_string());
     };
-    if !matches!(sub, "update" | "status" | "baseline" | "validate" | "update-sql" | "release-lock") {
-        fail(format!("unknown 'tinox db' command '{sub}' (expected update, status, baseline, validate, update-sql or release-lock)"));
+    if !matches!(sub, "update" | "status" | "baseline" | "diff" | "validate" | "update-sql" | "release-lock") {
+        fail(format!("unknown 'tinox db' command '{sub}' (expected update, status, baseline, diff, validate, update-sql or release-lock)"));
     }
     let Some(cfg) = read_database_config() else {
         fail("no [database] section with a driver in tinox.toml".to_string());
@@ -1628,6 +1629,10 @@ fn db_command(args: &[String]) {
         .and_then(|out| compile_file(&stub_str, &out.to_string_lossy(), OptLevel::Release).map_err(|e| e.to_string()));
     let _ = fs::remove_dir_all(&stub_dir);
     let exe = result.unwrap_or_else(|e| fail(format!("cannot build the migration runner: {e}")));
+    if sub == "diff" {
+        let drift = schema_diff::run(&exe).unwrap_or_else(|e| fail(e));
+        std::process::exit(i32::from(drift));
+    }
     let status = Command::new(exe)
         .env("TINOX_MIGRATE_MODE", sub)
         .status()

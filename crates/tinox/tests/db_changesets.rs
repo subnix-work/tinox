@@ -404,3 +404,129 @@ fn changesets_postgres_apply_and_concurrent_starters() {
         assert_eq!(pg.psql("SELECT COUNT(*) FROM person"), "1", "round {round}: seed row must exist exactly once");
     }
 }
+
+#[test]
+fn changesets_diff_sqlite_catalog_and_read_only_live_database() {
+    assert!(tool_available("sqlite3", &["--version"]));
+    let p = Project::new("diff", "sqlite", "data/test.db", "");
+    let db = p.dir.join("data/test.db");
+    // Before baseline, no history is needed and none is created.
+    sqlite(&db, "CREATE TABLE person (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(100) NOT NULL, status VARCHAR(20) DEFAULT 'ACTIVE'); CREATE INDEX idx_person_name ON person(name);");
+    let before = std::fs::read(&db).unwrap();
+    let clean = p.tinox(&["db", "diff"]);
+    assert!(clean.status.success(), "{}", text(&clean));
+    assert!(text(&clean).contains("No schema drift"), "{}", text(&clean));
+    assert_eq!(std::fs::read(&db).unwrap(), before);
+    assert_eq!(sqlite(&db, "SELECT count(*) FROM sqlite_master WHERE name='tinox_changelog'"), "0");
+
+    sqlite(&db, "DROP INDEX idx_person_name; CREATE UNIQUE INDEX idx_person_name ON person(status DESC); ALTER TABLE person DROP COLUMN name; ALTER TABLE person ADD COLUMN extra TEXT; CREATE TABLE rogue (id INT);");
+    let drift = p.tinox(&["db", "diff"]);
+    assert_eq!(drift.status.code(), Some(1), "{}", text(&drift));
+    for needle in ["missing column person.name", "unexpected column person.extra", "unexpected table rogue", "changed index person.idx_person_name"] {
+        assert!(text(&drift).contains(needle), "expected {needle}: {}", text(&drift));
+    }
+}
+
+#[test]
+fn changesets_diff_replays_raw_sql_and_final_schema() {
+    let p = Project::new("diff-raw", "sqlite", "data/test.db", "");
+    p.write("migrations/changelog.yaml", r#"databaseChangeLog:
+  - changeSet:
+      id: 1
+      author: test
+      changes:
+        - sql: 'CREATE TABLE original (id INTEGER, value TEXT)'
+        - renameTable: {oldTableName: original, newTableName: final}
+        - renameColumn: {tableName: final, oldColumnName: value, newColumnName: label}
+        - addColumn: {tableName: final, columns: [{column: {name: removed, type: text}}]}
+        - dropColumn: {tableName: final, columnName: removed}
+        - createIndex: {tableName: final, indexName: temporary, columns: [id]}
+        - dropIndex: {indexName: temporary}
+"#);
+    let update = p.tinox(&["db", "update"]);
+    assert!(update.status.success(), "{}", text(&update));
+    let clean = p.tinox(&["db", "diff"]);
+    assert!(clean.status.success(), "{}", text(&clean));
+    let db = p.dir.join("data/test.db");
+    sqlite(&db, "ALTER TABLE final RENAME COLUMN label TO old_label; ALTER TABLE final ADD COLUMN label INTEGER;");
+    let drift = p.tinox(&["db", "diff"]);
+    assert_eq!(drift.status.code(), Some(1));
+    assert!(text(&drift).contains("changed column final.label"), "{}", text(&drift));
+    p.append("migrations/changelog.yaml", "  - changeSet: {id: 2, author: test, changes: [{sql: 'CREATE INDEX bad ON missing(id)'}]}\n");
+    let bad = p.tinox(&["db", "diff"]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(text(&bad).contains("shadow replay failed"), "{}", text(&bad));
+}
+
+/// Optional server lane: use two empty disposable databases. CI without server URLs still
+/// exercises the full diff command through SQLite; developers can run this against real servers.
+#[test]
+fn changesets_diff_server_catalogs() {
+    for driver in ["postgres", "mysql"] {
+        let prefix = format!("TINOX_TEST_DIFF_{}", driver.to_ascii_uppercase());
+        let Ok(url) = std::env::var(format!("{prefix}_URL")) else { continue; };
+        let shadow = std::env::var(format!("{prefix}_SHADOW_URL")).expect("shadow URL required");
+        let p = Project::new(&format!("diff-{driver}"), driver, &url, "");
+        let query = |url: &str, sql: &str| {
+            let mut cmd;
+            if driver == "postgres" {
+                cmd = Command::new("psql");
+                cmd.args([url, "-v", "ON_ERROR_STOP=1", "-c", sql]);
+            } else {
+                let socket = std::env::var("TINOX_TEST_DIFF_MYSQL_SOCKET").expect("MySQL test socket required");
+                let database = url.rsplit('/').next().unwrap();
+                cmd = Command::new("mariadb");
+                cmd.args(["--socket", &socket, "-u", "root", database, "-e", sql]);
+            }
+            let out = cmd.output().expect("database client");
+            assert!(out.status.success(), "{}", text(&out));
+        };
+        let diff = || Command::new(env!("CARGO_BIN_EXE_tinox"))
+            .args(["db", "diff"])
+            .env("TINOX_DB_DIFF_URL", &shadow)
+            .current_dir(&p.dir).output().unwrap();
+        let update = p.tinox(&["db", "update"]);
+        assert!(update.status.success(), "{}", text(&update));
+        let clean = diff();
+        assert!(clean.status.success(), "{}", text(&clean));
+        if driver == "mysql" {
+            query(&shadow, "DROP TABLE person");
+        }
+        query(&url, "ALTER TABLE person ADD COLUMN extra TEXT");
+        if driver == "postgres" {
+            query(&url, "ALTER TABLE person ALTER COLUMN name TYPE VARCHAR(120); DROP INDEX idx_person_name; CREATE INDEX idx_person_name ON person(name DESC)");
+        } else {
+            query(&url, "ALTER TABLE person MODIFY COLUMN name VARCHAR(120); DROP INDEX idx_person_name ON person; CREATE INDEX idx_person_name ON person(name DESC)");
+        }
+        let drift = diff();
+        assert_eq!(drift.status.code(), Some(1), "{}", text(&drift));
+        assert!(text(&drift).contains("unexpected column person.extra"), "{}", text(&drift));
+        for needle in ["changed column person.name", "changed index person.idx_person_name"] {
+            assert!(text(&drift).contains(needle), "expected {needle}: {}", text(&drift));
+        }
+        if driver == "mysql" {
+            query(&shadow, "DROP TABLE person");
+        }
+        // Never replay into a populated database, even if accidentally pointed at live.
+        let refused = Command::new(env!("CARGO_BIN_EXE_tinox"))
+            .args(["db", "diff"]).env("TINOX_DB_DIFF_URL", &url)
+            .current_dir(&p.dir).output().unwrap();
+        assert_eq!(refused.status.code(), Some(1));
+        assert!(text(&refused).contains("shadow database must be empty"), "{}", text(&refused));
+        query(&url, "DROP TABLE person; DROP TABLE tinox_changelog; DROP TABLE tinox_changelog_lock");
+    }
+}
+
+#[test]
+fn changesets_diff_reports_missing_tables_without_creating_a_database() {
+    let p = Project::new("diff-missing", "sqlite", "data/test.db", "");
+    let db = p.dir.join("data/test.db");
+    let missing_db = p.tinox(&["db", "diff"]);
+    assert_eq!(missing_db.status.code(), Some(1));
+    assert!(!db.exists(), "inspection must not create a missing database");
+    sqlite(&db, "CREATE TABLE unrelated (id INTEGER)");
+    let drift = p.tinox(&["db", "diff"]);
+    assert_eq!(drift.status.code(), Some(1));
+    assert!(text(&drift).contains("missing table person"), "{}", text(&drift));
+    assert!(text(&drift).contains("unexpected table unrelated"), "{}", text(&drift));
+}
