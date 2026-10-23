@@ -461,7 +461,7 @@ fn changesets_rollback_by_count_and_tag_refuses_irreversible() {
     // An explicit rollback block (not part of the checksum) makes it reversible.
     p.write("migrations/changelog.yaml", &base.replace(
         "        - insert: { tableName: t, values: { a: 7 } }\n",
-        "        - insert: { tableName: t, values: { a: 7 } }\n      rollback:\n        - sql: DELETE FROM t WHERE a = 7\n",
+        "        - insert: { tableName: t, values: { a: 7 } }\n      rollback:\n        - sql: { dbms: sqlite, statements: \"DELETE FROM t WHERE a = 7\" }\n",
     ));
     let r = p.tinox(&["db", "rollback", "--tag", "base"]);
     assert!(r.status.success(), "{}", text(&r));
