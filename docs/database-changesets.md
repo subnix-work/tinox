@@ -39,13 +39,40 @@ A changeSet is identified by `id` + `author` (unique across all files). Optional
 its content changed), `runAlways`, `dbms` (comma separated driver list; the changeSet does not exist for other drivers),
 `comment`, `tag` (a name for the state after this changeSet, used by `rollback --tag`) and `rollback`.
 
-Change types: `createTable`, `dropTable`, `renameTable`, `addColumn`, `dropColumn`, `renameColumn`, `createIndex`
+Change types: `createTable`, `dropTable`, `renameTable`, `addColumn`, `dropColumn`, `renameColumn`, `modifyEnumCheck`, `createIndex`
 (`unique: true` allowed), `dropIndex`, `insert` and `sql`. `sql` is the escape hatch: a string, a list of strings
 (one statement each, no `;` inside), or `{ dbms: postgres, statements: ... }` to limit it to one driver.
 
 Column types are neutral and mapped per driver: `bigint`, `int`, `varchar(n)`, `char(n)`, `text`, `boolean`, `float`,
 `double`, `timestamp`, `date`, `blob`. An unknown type, an unknown key, an unsafe identifier or a change a driver cannot
 perform (e.g. SQLite `addColumn` with `NOT NULL` and no default) is a **hard error naming the changeSet**.
+
+## Tinox enum columns
+
+A column can use `type: enum(Name)`, where `Name` is a payload-less `enum` declared in the project's `.tnx` sources
+(entity enums, #409). It is stored as `VARCHAR(255)` with a named CHECK constraint `chk_<table>_<column>` listing the
+variants, so the schema and the Tinox enum stay consistent. `defaultValue` must be one of the variants. Set
+`enumCheck: false` on the column to skip the CHECK (plain text column). An unknown enum, or one with payload variants,
+is a hard error naming the changeSet.
+
+```yaml
+- column: { name: status, type: enum(Status), defaultValue: Open, constraints: { nullable: false } }
+```
+
+Adding a variant is a normal new changeSet: add it to the Tinox enum, then re-create the constraint with
+`modifyEnumCheck` (PostgreSQL, MySQL 8.0.16+). SQLite cannot alter a CHECK constraint: use `enumCheck: false`, or rebuild
+the table with `sql:`.
+
+```yaml
+- changeSet:
+    id: 8
+    author: tino
+    changes:
+      - modifyEnumCheck: { tableName: task, columnName: status, type: enum(Status) }
+```
+
+Enums are resolved when the changelog loads, so a changeSet's generated SQL reflects the current variants (the checksum
+covers the changelog text, not the variants). `modifyEnumCheck` has no automatic rollback; give it a `rollback:` block.
 
 ## XML changelogs
 
