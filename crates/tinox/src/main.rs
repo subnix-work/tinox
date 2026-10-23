@@ -11,6 +11,8 @@ use tinox_parser::{DeclKind, Formatter, Parser};
 mod callgraph;
 mod contract;
 mod dockerfile;
+mod migrate;
+mod migrate_xml;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
 mod reference;
@@ -62,6 +64,7 @@ fn run() {
             }
         }
         "graph" => gen_call_graph(&args[2..]),
+        "db" => db_command(&args[2..]),
         "contract" => gen_api_contract(&args[2..]),
         "check"   => check(&args[2..]),
         "describe" => describe::run(&args[2..]),
@@ -118,6 +121,7 @@ fn print_help() {
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox reference [path]     Export compiler reference metadata as JSON");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
+    println!("  tinox db <command>         Schema changelog: update, status, baseline, validate, update-sql, release-lock");
     println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox explain --bootstrap [file]  Explain generated wiring (--json)");
@@ -498,6 +502,14 @@ struct DbConfig {
     driver: String,
     url: String,
     pool: usize,
+    /// `changelog` (path relative to tinox.toml); defaults to migrations/changelog.yaml (issue #410).
+    changelog: Option<String>,
+    /// Apply the changelog at program start, before `main` runs.
+    migrate_on_startup: bool,
+    /// Apply the changelog in `tinox test` binaries too (opt-in, issue #425).
+    migrate_on_test: bool,
+    /// Directory holding the tinox.toml this was read from.
+    root: PathBuf,
 }
 
 /// Read `[database]` section from the nearest `tinox.toml`, if present.
@@ -517,6 +529,9 @@ fn read_database_config() -> Option<DbConfig> {
             // code and every driver shared one single global connection
             // regardless of what it said).
             let mut pool: Option<usize> = None;
+            let mut changelog: Option<String> = None;
+            let mut migrate_on_startup = false;
+            let mut migrate_on_test = false;
             let mut found = false;
             for line in content.lines() {
                 let line = line.trim();
@@ -532,6 +547,29 @@ fn read_database_config() -> Option<DbConfig> {
                 } else if let Some(rest) = line.strip_prefix("url") {
                     let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
                     url = rest.trim_matches('"').to_string();
+                } else if let Some(rest) = line.strip_prefix("changelog") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    changelog = Some(rest.trim_matches('"').to_string());
+                } else if let Some(rest) = line.strip_prefix("migrate_on_startup") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    migrate_on_startup = match rest {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            eprintln!("error: [database] migrate_on_startup must be true or false, found '{rest}'");
+                            std::process::exit(1);
+                        }
+                    };
+                } else if let Some(rest) = line.strip_prefix("migrate_on_test") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    migrate_on_test = match rest {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            eprintln!("error: [database] migrate_on_test must be true or false, found '{rest}'");
+                            std::process::exit(1);
+                        }
+                    };
                 } else if let Some(rest) = line.strip_prefix("pool") {
                     let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
                     match rest.parse::<usize>() {
@@ -544,13 +582,80 @@ fn read_database_config() -> Option<DbConfig> {
                 }
             }
             if found && !driver.is_empty() {
-                return Some(DbConfig { driver, url, pool: pool.unwrap_or(5) });
+                return Some(DbConfig { driver, url, pool: pool.unwrap_or(5), changelog, migrate_on_startup, migrate_on_test, root: dir.clone() });
             }
             return None;
         }
         if !dir.pop() { break; }
     }
     None
+}
+
+/// Default changelog location, relative to tinox.toml.
+const DEFAULT_CHANGELOG: &str = "migrations/changelog.yaml";
+
+/// Absolute path of the project's changelog (`[database] changelog`).
+fn changelog_path(cfg: &DbConfig) -> PathBuf {
+    cfg.root.join(cfg.changelog.as_deref().unwrap_or(DEFAULT_CHANGELOG))
+}
+
+/// Payload-less Tinox enums (name -> variant names) declared in the project's `.tnx` sources, for
+/// `enum(Name)` changelog column types. Installed dependencies, `target` and hidden dirs are skipped;
+/// files that do not parse are ignored here (the build reports them). An enum with payload variants
+/// is registered with no variants so a column referencing it fails with a clear message.
+fn project_enums(root: &Path) -> std::collections::BTreeMap<String, Vec<String>> {
+    fn walk(dir: &Path, out: &mut std::collections::BTreeMap<String, Vec<String>>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                if !name.starts_with('.') && name != "target" {
+                    walk(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "tnx") {
+                let Ok(src) = fs::read_to_string(&path) else { continue };
+                let Ok(tokens) = Lexer::new(&src).tokenize() else { continue };
+                let Ok(ast) = Parser::new(tokens).parse() else { continue };
+                for d in &ast.decls {
+                    if let DeclKind::Enum(e) = &d.node {
+                        let unit = e.variants.iter().all(|v| v.args.is_empty());
+                        let vars = if unit { e.variants.iter().map(|v| v.name.to_string()).collect() } else { vec![] };
+                        out.insert(e.name.to_string(), vars);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(root, &mut out);
+    out
+}
+
+/// Serialized changelog to embed in the program when it should migrate at startup
+/// (`migrate_on_startup = true`, or `TINOX_DB_FORCE_MIGRATE=1` as used by `tinox db update`).
+/// A broken changelog is a hard error: a program that cannot migrate must not start.
+fn migration_payload(cfg: Option<&DbConfig>) -> Result<Option<String>, String> {
+    let Some(cfg) = cfg else { return Ok(None) };
+    let forced = env::var("TINOX_DB_FORCE_MIGRATE").map(|v| v == "1").unwrap_or(false);
+    if !cfg.migrate_on_startup && !forced {
+        return Ok(None);
+    }
+    let dialect = migrate::Dialect::from_driver(&cfg.driver)?;
+    let sets = migrate::load_changelog(&changelog_path(cfg), dialect, &project_enums(&cfg.root))?;
+    Ok(Some(migrate::serialize_payload(&sets)))
+}
+
+/// Like `migration_payload`, for `tinox test` binaries: only `[database] migrate_on_test = true`
+/// (or the forced CLI mode) embeds the changelog; `migrate_on_startup` alone does not.
+fn test_migration_payload(cfg: Option<&DbConfig>) -> Result<Option<String>, String> {
+    let Some(cfg) = cfg else { return Ok(None) };
+    if !cfg.migrate_on_test {
+        return Ok(None);
+    }
+    let dialect = migrate::Dialect::from_driver(&cfg.driver)?;
+    let sets = migrate::load_changelog(&changelog_path(cfg), dialect, &project_enums(&cfg.root))?;
+    Ok(Some(migrate::serialize_payload(&sets)))
 }
 
 /// Read `name` from the nearest `tinox.toml`, if present.
@@ -1522,6 +1627,98 @@ fn find_runtime_object() -> Option<String> {
         if status.success() { return Some(obj.to_string()); }
     }
     None
+}
+
+/// `tinox db <update|status|validate|update-sql|release-lock>` -- the declarative schema
+/// changelog (issue #410). `validate` and `update-sql` need no database; the others compile a
+/// stub program that carries the changelog and run it, so the CLI and `migrate_on_startup`
+/// execute the exact same engine (`tinox_migrate_run` in runtime.c).
+fn db_command(args: &[String]) {
+    let fail = |msg: String| -> ! {
+        eprintln!("error: {msg}");
+        std::process::exit(1);
+    };
+    let Some(sub) = args.first().map(String::as_str) else {
+        fail("usage: tinox db <update|status|baseline|rollback|validate|update-sql|release-lock>".to_string());
+    };
+    if !matches!(sub, "update" | "status" | "baseline" | "rollback" | "validate" | "update-sql" | "release-lock") {
+        fail(format!("unknown 'tinox db' command '{sub}' (expected update, status, baseline, rollback, validate, update-sql or release-lock)"));
+    }
+    // `rollback --count N | --tag T`; `validate --rollback` also demands every changeSet be reversible.
+    let (mut rb_count, mut rb_tag, mut validate_rollback) = (None::<String>, None::<String>, false);
+    let mut it = args[1..].iter();
+    while let Some(a) = it.next() {
+        match (sub, a.as_str()) {
+            ("rollback", "--count") => rb_count = Some(it.next().cloned().unwrap_or_else(|| fail("--count needs a number".into()))),
+            ("rollback", "--tag") => rb_tag = Some(it.next().cloned().unwrap_or_else(|| fail("--tag needs a tag name".into()))),
+            ("validate", "--rollback") => validate_rollback = true,
+            _ => fail(format!("unexpected argument '{a}' for 'tinox db {sub}'")),
+        }
+    }
+    if sub == "rollback" {
+        match (&rb_count, &rb_tag) {
+            (Some(c), None) if c.parse::<u64>().map_or(true, |n| n == 0) => fail("--count must be a positive number".into()),
+            (Some(_), None) | (None, Some(_)) => {}
+            _ => fail("usage: tinox db rollback --count N | --tag T (exactly one)".into()),
+        }
+    }
+    let Some(cfg) = read_database_config() else {
+        fail("no [database] section with a driver in tinox.toml".to_string());
+    };
+    let dialect = migrate::Dialect::from_driver(&cfg.driver).unwrap_or_else(|e| fail(e));
+    let path = changelog_path(&cfg);
+    let sets = migrate::load_changelog(&path, dialect, &project_enums(&cfg.root)).unwrap_or_else(|e| fail(e));
+    match sub {
+        "validate" => {
+            if validate_rollback {
+                let bad: Vec<&String> = sets.iter().filter_map(|c| c.rollback.as_ref().err()).collect();
+                if !bad.is_empty() {
+                    fail(bad.iter().map(|b| b.to_string()).collect::<Vec<_>>().join("\n"));
+                }
+            }
+            println!("{}: {} changeSet(s) valid for {}", path.display(), sets.len(), dialect.name());
+            return;
+        }
+        "update-sql" => {
+            for cs in &sets {
+                println!("-- changeSet {} by {} ({})", cs.id, cs.author, cs.file);
+                for st in &cs.stmts {
+                    println!("{st};");
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+    // Relative sqlite URLs resolve against the project root, as with `tinox run` from there.
+    if let Err(e) = env::set_current_dir(&cfg.root) {
+        fail(format!("cannot enter {}: {e}", cfg.root.display()));
+    }
+    let stub_dir = cfg.root.join(format!(".tinox_db_stub_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&stub_dir);
+    if let Err(e) = fs::create_dir_all(&stub_dir) {
+        fail(format!("cannot create {}: {e}", stub_dir.display()));
+    }
+    let stub = stub_dir.join("Main.tnx");
+    if let Err(e) = fs::write(&stub, "class Main\n{\n    fnc main() -> Int32\n    {\n        return 0;\n    }\n}\n") {
+        let _ = fs::remove_dir_all(&stub_dir);
+        fail(format!("cannot write {}: {e}", stub.display()));
+    }
+    env::set_var("TINOX_DB_FORCE_MIGRATE", "1");
+    let stub_str = stub.to_string_lossy().into_owned();
+    let result = build_cache::run_output(&stub_str, "Release")
+        .map_err(|e| e.to_string())
+        .and_then(|out| compile_file(&stub_str, &out.to_string_lossy(), OptLevel::Release).map_err(|e| e.to_string()));
+    let _ = fs::remove_dir_all(&stub_dir);
+    let exe = result.unwrap_or_else(|e| fail(format!("cannot build the migration runner: {e}")));
+    let mut runner = Command::new(exe);
+    runner.env("TINOX_MIGRATE_MODE", sub);
+    if let Some(c) = &rb_count { runner.env("TINOX_MIGRATE_ROLLBACK_COUNT", c); }
+    if let Some(t) = &rb_tag { runner.env("TINOX_MIGRATE_ROLLBACK_TAG", t); }
+    let status = runner
+        .status()
+        .unwrap_or_else(|e| fail(format!("cannot run the migration runner: {e}")));
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 fn run_file(args: &[String]) {
@@ -2876,6 +3073,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let db_cfg_test = read_database_config();
     cg.set_db_url(db_cfg_test.as_ref().map(|c| c.url.clone()));
     cg.set_db_pool_size(db_cfg_test.as_ref().map(|c| c.pool as i64).unwrap_or(5));
+    cg.set_migration_payload(test_migration_payload(db_cfg_test.as_ref()).map_err(|e| format!("changelog: {e}"))?);
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
 
@@ -4676,6 +4874,8 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     let db_config_for_codegen = read_database_config();
     codegen.set_db_url(db_config_for_codegen.as_ref().map(|c| c.url.clone()));
     codegen.set_db_pool_size(db_config_for_codegen.as_ref().map(|c| c.pool as i64).unwrap_or(5));
+    codegen.set_migration_payload(migration_payload(db_config_for_codegen.as_ref())
+        .map_err(|e| Failure::new("database", Some(input_path), None, format!("changelog: {e}")))?);
     if dev_config.enabled {
         codegen.set_dev_info(
             read_project_name().unwrap_or_else(|| "app".to_string()),

@@ -2739,6 +2739,21 @@ impl TypeChecker {
                 let obj_ty = self.infer_type(obj);
                 // Any-typed receiver: dynamic dispatch, no type errors
                 if obj_ty == ValueType::Any {
+                    // ORM `filter(x => ...)`: type the lambda param as the
+                    // entity so field comparisons (e.g. enum vs String) are checked.
+                    let orm_entity = if method == "filter" {
+                        self.orm_query_entity(obj).map(|e| e.to_string())
+                    } else {
+                        None
+                    };
+                    if let (Some(entity), Some(lam)) = (orm_entity, args.first()) {
+                        if matches!(&lam.node, ExprKind::Lambda { .. }) {
+                            self.infer_lambda_with_param_hints(
+                                lam,
+                                &[ValueType::Named(entity, vec![])],
+                            );
+                        }
+                    }
                     for arg in args { self.infer_type(arg); }
                     if method == "first" && args.is_empty() {
                         if let Some(entity) = self.orm_query_entity(obj) {
@@ -3785,6 +3800,17 @@ impl TypeChecker {
         }
     }
 
+    /// The enum a type denotes (`TaskStatus` or a variant type `TaskStatus.QUEUED`).
+    fn enum_of(&self, t: &ValueType) -> Option<String> {
+        if let ValueType::Named(n, _) = t {
+            let base = n.split('.').next().unwrap_or(n);
+            if self.enums.contains_key(base) {
+                return Some(base.to_string());
+            }
+        }
+        None
+    }
+
     fn check_binary_op(&mut self, op: &BinaryOp, lhs: &ValueType, rhs: &ValueType, span: Span) {
         // Enum discriminators are integers, not string pointers. Named types
         // otherwise bypass this check to allow generic operands and object
@@ -3793,13 +3819,34 @@ impl TypeChecker {
             let other = if *lhs == ValueType::String { Some(rhs) }
                 else if *rhs == ValueType::String { Some(lhs) }
                 else { None };
-            if let Some(ValueType::Named(name, _)) = other {
-                if self.enums.contains_key(name) {
-                    self.errors.push(Error::new(span, format!(
-                        "cannot concatenate String and enum '{name}'; convert the enum to a String explicitly (use .name for payload-free enums)"
-                    )));
-                    return;
-                }
+            if let Some(name) = other.and_then(|ty| self.enum_of(ty)) {
+                self.errors.push(Error::new(span, format!(
+                    "cannot concatenate String and enum '{name}'; convert the enum to a String explicitly (use .name for payload-free enums)"
+                )));
+                return;
+            }
+        }
+        // Enum values only compare with the same enum: an enum vs a String
+        // (leftover from a String-constant migration) or another enum is an error.
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+            let (le, re) = (self.enum_of(lhs), self.enum_of(rhs));
+            let mismatch = match (&le, &re) {
+                (Some(a), Some(b)) => a != b,
+                (Some(_), None) => matches!(rhs, ValueType::String),
+                (None, Some(_)) => matches!(lhs, ValueType::String),
+                (None, None) => false,
+            };
+            if mismatch {
+                self.errors.push(
+                    TypeError::BinaryOpTypeMismatch {
+                        op: format!("{:?}", op).to_lowercase(),
+                        lhs: le.unwrap_or_else(|| lhs.to_string()),
+                        rhs: re.unwrap_or_else(|| rhs.to_string()),
+                        span,
+                    }
+                    .to_error(),
+                );
+                return;
             }
         }
         // Any and Named (generic type params) are wildcards — skip checking
@@ -6471,7 +6518,7 @@ class Jogger implements Runner {
 
     #[test]
     fn test_enum_string_concat_err() {
-        for expression in ["\"status: \" + s", "s + \"!\"", "\"attempt \" + \"1: \" + s"] {
+        for expression in ["\"status: \" + s", "s + \"!\"", "\"attempt \" + \"1: \" + s", "\"status: \" + Status::FAILED", "Status::FAILED + \"!\""] {
             err_contains(
                 &format!("enum Status {{ STARTING; FAILED; }} fn f(s: Status) -> String {{ return {expression}; }}"),
                 "cannot concatenate String and enum 'Status'",
@@ -6716,6 +6763,31 @@ class Jogger implements Runner {
         err_contains(
             "class Main { fnc f() -> Int64 { try { println(\"no return\"); } finally { } } fnc main() -> Int64 { return f(); } }",
             "missing return statement",
+        );
+    }
+
+    #[test]
+    fn test_enum_compared_with_string_or_other_enum_errors() {
+        let pre = "enum S { A; B; } enum O { X; } class Main { fnc main() -> Int64 { const s: S = S::A; ";
+        for cond in ["s == \"A\"", "s != \"B\"", "\"A\" == s", "s == O::X"] {
+            err_contains(
+                &format!("{pre}if ({cond}) {{ println(\"x\"); }} return 0; }} }}"),
+                "cannot be applied",
+            );
+        }
+        ok(&format!("{pre}if (s == S::B) {{ println(\"x\"); }} return 0; }} }}"));
+    }
+
+    #[test]
+    fn test_orm_filter_enum_vs_string_errors() {
+        err_contains(
+            r#"
+            enum S { A; B; }
+            class DB { fnc of(cls: Any) -> Any { return 0; } }
+            @Entity class Job { var id: Int64; var status: S; }
+            fn f() -> Any { return DB::of(Job).filter(j => j.status == "A").first(); }
+            "#,
+            "cannot be applied",
         );
     }
 }

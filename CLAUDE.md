@@ -1901,6 +1901,31 @@ startup failure, never a silent fallback.
   clients, `taskset`, cgroup fixture trees).
 
 
+## Declarative Schema Changesets (issue #410, since 2026-10-23)
+
+`tinox db <update|status|baseline|validate|update-sql|release-lock>` and
+`[database] migrate_on_startup = true` apply a Liquibase-style YAML changelog
+(`migrations/changelog.yaml`, `changelog = ` overrides). Full user documentation:
+`docs/database-changesets.md`. Architecture worth knowing:
+
+- **Split by what needs a database.** `crates/tinox/src/migrate.rs` (parsing,
+  validation, per-dialect SQL generation, checksums, payload serialization) needs
+  none; the engine that talks to the database is C in `runtime/runtime.c`
+  (`tinox_migrate_run`) and only uses the driver ABI (`tinox_db_*`), so it is
+  identical for sqlite/postgres/mysql. The compiler embeds the already-translated
+  changelog as a constant and calls the engine from `__tinox_db_init` (the
+  `@llvm.global_ctors` entry), right after `tinox_db_pool_init`.
+- **The CLI has no DB driver of its own.** `update`/`status`/`baseline`/`release-lock`
+  compile a stub `class Main` (in `.tinox_db_stub_<pid>/`, removed afterwards) with
+  `TINOX_DB_FORCE_MIGRATE=1` and run it with `TINOX_MIGRATE_MODE=<sub>`.
+- **SQL strings handed to the SQLite driver must outlive the call**: its statement
+  cache stores the `sql` pointer, not a copy. The engine therefore never frees the
+  strings it parses out of the payload.
+- Checksums are over the changeSet's parsed YAML (as JSON), not the generated SQL,
+  so switching the driver does not invalidate history.
+- Verified against real PostgreSQL (docker) and SQLite, including 3 concurrent
+  starters x 5 rounds: `crates/tinox/tests/db_changesets.rs`.
+
 ## Shared Application State (issue #303)
 
 - Application/startup DI providers serialize construction and publication with
