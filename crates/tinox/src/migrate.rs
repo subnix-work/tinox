@@ -113,6 +113,29 @@ fn sql_literal(v: &Value, ctx: &str) -> Result<String, String> {
     }
 }
 
+thread_local! {
+    /// Tinox enums (name -> variant names) visible to `enum(Name)` column types while a changelog loads.
+    static ENUMS: std::cell::RefCell<std::collections::BTreeMap<String, Vec<String>>> = Default::default();
+}
+
+/// `enum(Name)` -> the variants of the project's Tinox enum `Name`, or a hard error.
+fn enum_variants(ty: &str, ctx: &str) -> Result<Option<(String, Vec<String>)>, String> {
+    let t = ty.trim();
+    let Some(inner) = t.strip_prefix("enum(").and_then(|r| r.strip_suffix(')')) else { return Ok(None) };
+    let name = inner.trim();
+    ENUMS.with(|e| match e.borrow().get(name) {
+        Some(v) if !v.is_empty() => Ok(Some((name.to_string(), v.clone()))),
+        Some(_) => Err(format!("{ctx}: Tinox enum '{name}' has no variants")),
+        None => Err(format!("{ctx}: unknown Tinox enum '{name}' in type '{ty}' (enum must be declared in the project's .tnx sources)")),
+    })
+}
+
+fn enum_check_expr(d: Dialect, col: &str, variants: &[String]) -> String {
+    let _ = d;
+    let list: Vec<String> = variants.iter().map(|v| format!("'{}'", v.replace('\'', "''"))).collect();
+    format!("{col} IN ({})", list.join(", "))
+}
+
 fn map_type(d: Dialect, ty: &str, ctx: &str) -> Result<String, String> {
     let lower = ty.trim().to_ascii_lowercase();
     let (base, arg) = match lower.find('(') {
@@ -164,27 +187,48 @@ struct Column {
     unique: bool,
     default: Option<String>,
     references: Option<(String, String)>,
+    /// (constraint name, CHECK expression) for `enum(Name)` columns.
+    check: Option<(String, String)>,
 }
 
-fn parse_column(d: Dialect, v: &Value, ctx: &str) -> Result<Column, String> {
+fn parse_column(d: Dialect, table: &str, v: &Value, ctx: &str) -> Result<Column, String> {
     let col = get(v, "column").ok_or_else(|| format!("{ctx}: each entry must be a 'column:' mapping"))?;
     check_keys(v, &["column"], ctx)?;
-    check_keys(col, &["name", "type", "autoIncrement", "defaultValue", "constraints"], ctx)?;
+    check_keys(col, &["name", "type", "autoIncrement", "defaultValue", "constraints", "enumCheck"], ctx)?;
     let name = get_str(col, "name", ctx)?;
     let cctx = format!("{ctx}, column '{name}'");
     let ty = get_str(col, "type", &cctx)?;
+    let enum_ty = enum_variants(&ty, &cctx)?;
+    let enum_check = match get(col, "enumCheck") {
+        None => true,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(format!("{cctx}: 'enumCheck' must be true or false")),
+    };
+    if enum_ty.is_none() && get(col, "enumCheck").is_some() {
+        return Err(format!("{cctx}: 'enumCheck' only applies to enum(Name) columns"));
+    }
     let mut c = Column {
         name: quote_ident(d, &name, &cctx)?,
-        ty: map_type(d, &ty, &cctx)?,
+        ty: if enum_ty.is_some() { "VARCHAR(255)".to_string() } else { map_type(d, &ty, &cctx)? },
         auto_increment: get_bool(col, "autoIncrement", &cctx)?,
         primary_key: false,
         not_null: false,
         unique: false,
         default: None,
         references: None,
+        check: None,
     };
     if let Some(dv) = get(col, "defaultValue") {
+        if let Some((en, vars)) = &enum_ty {
+            match dv {
+                Value::String(x) if vars.contains(x) => {}
+                _ => return Err(format!("{cctx}: defaultValue must be a variant of enum {en} ({})", vars.join(", "))),
+            }
+        }
         c.default = Some(sql_literal(dv, &cctx)?);
+    }
+    if let (Some((_, vars)), true) = (&enum_ty, enum_check) {
+        c.check = Some((enum_check_name(d, table, &name, &cctx)?, enum_check_expr(d, &c.name, vars)));
     }
     if let Some(cons) = get(col, "constraints") {
         check_keys(cons, &["primaryKey", "nullable", "unique", "references"], &cctx)?;
@@ -207,6 +251,10 @@ fn parse_column(d: Dialect, v: &Value, ctx: &str) -> Result<Column, String> {
         return Err(format!("{cctx}: autoIncrement is only supported on a primaryKey column"));
     }
     Ok(c)
+}
+
+fn enum_check_name(d: Dialect, table: &str, col: &str, ctx: &str) -> Result<String, String> {
+    quote_ident(d, &format!("chk_{table}_{col}"), ctx)
 }
 
 fn column_sql(d: Dialect, c: &Column) -> String {
@@ -238,6 +286,9 @@ fn column_sql(d: Dialect, c: &Column) -> String {
     if let Some((t, col)) = &c.references {
         s.push_str(&format!(" REFERENCES {t}({col})"));
     }
+    if let Some((n, expr)) = &c.check {
+        s.push_str(&format!(" CONSTRAINT {n} CHECK ({expr})"));
+    }
     s
 }
 
@@ -248,7 +299,8 @@ fn columns_of(d: Dialect, spec: &Value, ctx: &str) -> Result<Vec<Column>, String
     if list.is_empty() {
         return Err(format!("{ctx}: 'columns' must not be empty"));
     }
-    list.iter().map(|c| parse_column(d, c, ctx)).collect()
+    let table = get_str(spec, "tableName", ctx)?;
+    list.iter().map(|c| parse_column(d, &table, c, ctx)).collect()
 }
 
 fn name_list(d: Dialect, spec: &Value, key: &str, ctx: &str) -> Result<Vec<String>, String> {
@@ -315,6 +367,22 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
             }
             Ok(out)
         }
+        "modifyEnumCheck" => {
+            check_keys(spec, &["tableName", "columnName", "type"], &ctx)?;
+            let t = table(spec, "tableName")?;
+            let (tn, cn) = (get_str(spec, "tableName", &ctx)?, get_str(spec, "columnName", &ctx)?);
+            let col = quote_ident(d, &cn, &ctx)?;
+            let ty = get_str(spec, "type", &ctx)?;
+            let (_, vars) = enum_variants(&ty, &ctx)?
+                .ok_or_else(|| format!("{ctx}: 'type' must be enum(Name)"))?;
+            let name = enum_check_name(d, &tn, &cn, &ctx)?;
+            let add = format!("ALTER TABLE {t} ADD CONSTRAINT {name} CHECK ({})", enum_check_expr(d, &col, &vars));
+            match d {
+                Dialect::Postgres => Ok(vec![format!("ALTER TABLE {t} DROP CONSTRAINT {name}"), add]),
+                Dialect::Mysql => Ok(vec![format!("ALTER TABLE {t} DROP CHECK {name}"), add]),
+                Dialect::Sqlite => Err(format!("{ctx}: SQLite cannot alter a CHECK constraint; use enumCheck: false on the column or rebuild the table with 'sql:'")),
+            }
+        }
         "dropColumn" => {
             check_keys(spec, &["tableName", "columnName"], &ctx)?;
             Ok(vec![format!("ALTER TABLE {} DROP COLUMN {}", table(spec, "tableName")?, table(spec, "columnName")?)])
@@ -361,24 +429,26 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
             Ok(vec![format!("INSERT INTO {t} ({}) VALUES ({})", names.join(", "), lits.join(", "))])
         }
         "sql" => {
-            // Escape hatch. `dbms:` limits it to one driver; a change set can carry several
-            // 'sql' changes with different dbms values for dialect-specific statements.
-            let (text, only): (Value, Option<String>) = if spec.is_mapping() {
-                check_keys(spec, &["statements", "dbms"], &ctx)?;
-                (
-                    get(spec, "statements").cloned().ok_or_else(|| format!("{ctx}: missing 'statements'"))?,
-                    get(spec, "dbms").and_then(scalar_string),
-                )
-            } else {
-                (spec.clone(), None)
-            };
-            if let Some(only) = only {
-                if Dialect::from_driver(&only).is_err() {
-                    return Err(format!("{ctx}: unknown dbms '{only}'"));
-                }
-                if only != d.name() {
-                    return Ok(vec![]);
-                }
+            // Escape hatch for what the declarative model cannot express (views, triggers,
+            // functions). Raw SQL is dialect-specific, so it must name its dialect(s) and a
+            // different driver is a hard error (put per-dialect variants in separate changeSets
+            // with a changeSet-level `dbms:`).
+            if !spec.is_mapping() {
+                return Err(format!("{ctx}: 'sql' must declare its dialect: {{ dbms: postgres, statements: ... }}"));
+            }
+            check_keys(spec, &["statements", "dbms"], &ctx)?;
+            let text = get(spec, "statements").cloned().ok_or_else(|| format!("{ctx}: missing 'statements'"))?;
+            let dbms = get(spec, "dbms").and_then(scalar_string)
+                .ok_or_else(|| format!("{ctx}: 'sql' must declare its dialect with 'dbms:'"))?;
+            let wanted: Vec<&str> = dbms.split(',').map(str::trim).collect();
+            for w in &wanted {
+                Dialect::from_driver(w).map_err(|_| format!("{ctx}: unknown dbms '{w}'"))?;
+            }
+            if !wanted.contains(&d.name()) {
+                return Err(format!(
+                    "{ctx}: raw SQL is written for dbms '{dbms}' but the configured driver is '{}'",
+                    d.name()
+                ));
             }
             let stmts: Vec<String> = match &text {
                 Value::String(s) => vec![s.clone()],
@@ -398,7 +468,7 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
             Ok(stmts)
         }
         other => Err(format!(
-            "{ctx}: unsupported change type '{other}' (supported: createTable, dropTable, renameTable, addColumn, dropColumn, renameColumn, createIndex, dropIndex, insert, sql)"
+            "{ctx}: unsupported change type '{other}' (supported: createTable, dropTable, renameTable, addColumn, dropColumn, renameColumn, modifyEnumCheck, createIndex, dropIndex, insert, sql)"
         )),
     }
 }
@@ -544,7 +614,12 @@ fn load_file(
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string_lossy().into_owned());
     let text = std::fs::read_to_string(&canon).map_err(|e| format!("cannot read changelog {}: {e}", path.display()))?;
-    let doc: Value = serde_yaml::from_str(&text).map_err(|e| format!("{rel}: invalid YAML: {e}"))?;
+    let is_xml = canon.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml"));
+    let doc: Value = if is_xml {
+        crate::migrate_xml::parse_changelog(&text).map_err(|e| format!("{rel}: invalid XML: {e}"))?
+    } else {
+        serde_yaml::from_str(&text).map_err(|e| format!("{rel}: invalid YAML: {e}"))?
+    };
     check_keys(&doc, &["databaseChangeLog"], &rel)?;
     let items = get(&doc, "databaseChangeLog").and_then(|v| v.as_sequence())
         .ok_or_else(|| format!("{rel}: 'databaseChangeLog' must be a list"))?;
@@ -573,7 +648,12 @@ fn load_file(
 
 /// Load a changelog (following `include:`s) and translate it for `dialect`.
 /// Hard errors: duplicate id+author, anything unparseable or unsupported.
-pub fn load_changelog(path: &Path, dialect: Dialect) -> Result<Vec<ChangeSet>, String> {
+pub fn load_changelog(
+    path: &Path,
+    dialect: Dialect,
+    enums: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Result<Vec<ChangeSet>, String> {
+    ENUMS.with(|e| *e.borrow_mut() = enums.clone());
     let root_dir = path.parent().unwrap_or(Path::new("."));
     let mut out = Vec::new();
     load_file(dialect, root_dir, path, &mut Vec::new(), &mut out)?;
@@ -637,11 +717,40 @@ mod tests {
     }
 
     #[test]
+    fn enum_columns_and_modify() {
+        ENUMS.with(|e| { e.borrow_mut().insert("Status".into(), vec!["Open".into(), "Done".into()]); });
+        let y = "id: 1\nauthor: a\nchanges:\n  - createTable:\n      tableName: t\n      columns:\n        - column: {name: st, type: enum(Status), defaultValue: Open, constraints: {nullable: false}}\n        - column: {name: s2, type: enum(Status), enumCheck: false}\n";
+        let pg = cs(Dialect::Postgres, y).unwrap().unwrap();
+        assert_eq!(pg.stmts[0], "CREATE TABLE \"t\" (\"st\" VARCHAR(255) NOT NULL DEFAULT 'Open' CONSTRAINT \"chk_t_st\" CHECK (\"st\" IN ('Open', 'Done')), \"s2\" VARCHAR(255))");
+        let bad = y.replace("defaultValue: Open", "defaultValue: Nope");
+        assert!(cs(Dialect::Postgres, &bad).unwrap_err().contains("variant of enum Status"));
+        assert!(cs(Dialect::Sqlite, &y.replace("Status", "Missing")).unwrap_err().contains("unknown Tinox enum"));
+        let m = "id: 2\nauthor: a\nchanges:\n  - modifyEnumCheck: {tableName: t, columnName: st, type: enum(Status)}\n";
+        assert_eq!(cs(Dialect::Postgres, m).unwrap().unwrap().stmts.len(), 2);
+        assert!(cs(Dialect::Mysql, m).unwrap().unwrap().stmts[0].contains("DROP CHECK"));
+        assert!(cs(Dialect::Sqlite, m).is_err());
+    }
+
+    #[test]
     fn unsupported_and_unsafe_are_hard_errors() {
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nchanges:\n  - frobnicate: {}\n").is_err());
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: \"x; DROP\"}\n").is_err());
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nchanges:\n  - createTable: {tableName: t, columns: [{column: {name: a, type: weird}}]}\n").is_err());
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nbogus: 1\nchanges:\n  - dropTable: {tableName: t}\n").is_err());
+    }
+
+    #[test]
+    fn raw_sql_requires_matching_dialect() {
+        let ok = "id: 1\nauthor: a\nchanges:\n  - sql: {dbms: postgres, statements: \"CREATE VIEW v AS SELECT 1\"}\nrunOnChange: true\n";
+        let c = cs(Dialect::Postgres, ok).unwrap().unwrap();
+        assert!(c.run_on_change);
+        assert_eq!(c.stmts, vec!["CREATE VIEW v AS SELECT 1"]);
+        assert!(cs(Dialect::Sqlite, ok).unwrap_err().contains("postgres"));
+        assert!(cs(Dialect::Postgres, "id: 1\nauthor: a\nchanges:\n  - sql: \"SELECT 1\"\n").is_err());
+        assert!(cs(Dialect::Postgres, "id: 1\nauthor: a\nchanges:\n  - sql: {statements: \"SELECT 1\"}\n").is_err());
+        // changeSet-level dbms filter still skips the whole set for other drivers
+        let f = "id: 1\nauthor: a\ndbms: postgres\nchanges:\n  - sql: {dbms: postgres, statements: \"SELECT 1\"}\n";
+        assert!(cs(Dialect::Sqlite, f).unwrap().is_none());
     }
 
     #[test]
@@ -663,7 +772,7 @@ mod tests {
             "DROP INDEX \"i\"", "DROP TABLE \"t\""]);
         let bad = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: t}\n";
         assert!(cs(Dialect::Sqlite, bad).unwrap().unwrap().rollback.is_err());
-        let ok = format!("{bad}rollback:\n  - sql: CREATE TABLE t (a INTEGER)\n");
+        let ok = format!("{bad}rollback:\n  - sql: {{dbms: sqlite, statements: CREATE TABLE t (a INTEGER)}}\n");
         let c = cs(Dialect::Sqlite, &ok).unwrap().unwrap();
         assert_eq!(c.rollback.unwrap(), vec!["CREATE TABLE t (a INTEGER)"]);
         assert_eq!(c.checksum, cs(Dialect::Sqlite, bad).unwrap().unwrap().checksum, "rollback is not part of the checksum");

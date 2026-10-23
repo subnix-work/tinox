@@ -192,7 +192,7 @@ const FAILING: &str = r#"
       author: tino
       changes:
         - insert: { tableName: person, values: { name: halfway } }
-        - sql: "INSERT INTO no_such_table VALUES (1)"
+        - sql: { dbms: "sqlite, postgres", statements: "INSERT INTO no_such_table VALUES (1)" }
 "#;
 
 const MAIN: &str = "class Main\n{\n    fnc main() -> Int32\n    {\n        println(\"started\");\n        return 0;\n    }\n}\n";
@@ -461,7 +461,7 @@ fn changesets_rollback_by_count_and_tag_refuses_irreversible() {
     // An explicit rollback block (not part of the checksum) makes it reversible.
     p.write("migrations/changelog.yaml", &base.replace(
         "        - insert: { tableName: t, values: { a: 7 } }\n",
-        "        - insert: { tableName: t, values: { a: 7 } }\n      rollback:\n        - sql: DELETE FROM t WHERE a = 7\n",
+        "        - insert: { tableName: t, values: { a: 7 } }\n      rollback:\n        - sql: { dbms: sqlite, statements: \"DELETE FROM t WHERE a = 7\" }\n",
     ));
     let r = p.tinox(&["db", "rollback", "--tag", "base"]);
     assert!(r.status.success(), "{}", text(&r));
@@ -472,6 +472,27 @@ fn changesets_rollback_by_count_and_tag_refuses_irreversible() {
     assert!(p.tinox(&["db", "update"]).status.success());
     assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM t"), "1");
     assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "3");
+}
+
+#[test]
+fn changesets_migrate_on_test_is_opt_in() {
+    if !tool_available("sqlite3", &["--version"]) {
+        eprintln!("SKIP changesets_migrate_on_test (sqlite3 not installed)");
+        return;
+    }
+    const TEST_SRC: &str = "class SchemaTest\n{\n    @Test\n    fnc ok() -> Bool\n    {\n        return true;\n    }\n}\n";
+    // Default: tinox test never migrates, even with migrate_on_startup.
+    let p = Project::new("ontest-off", "sqlite", "data/test.db", "migrate_on_startup = true\n");
+    p.write("src/SchemaTest.tnx", TEST_SRC);
+    let off = p.tinox(&["test"]);
+    assert!(off.status.success(), "{}", text(&off));
+    assert!(!p.dir.join("data/test.db").exists() || sqlite(&p.dir.join("data/test.db"), "SELECT COUNT(*) FROM sqlite_master WHERE name = 'person'") == "0");
+    // Opt-in: the schema exists after the test run.
+    let p = Project::new("ontest-on", "sqlite", "data/test.db", "migrate_on_test = true\n");
+    p.write("src/SchemaTest.tnx", TEST_SRC);
+    let on = p.tinox(&["test"]);
+    assert!(on.status.success(), "{}", text(&on));
+    assert_eq!(sqlite(&p.dir.join("data/test.db"), "SELECT COUNT(*) FROM person"), "1");
 }
 
 struct MysqlContainer {

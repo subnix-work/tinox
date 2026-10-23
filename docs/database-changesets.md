@@ -12,11 +12,15 @@ driver = "postgres"
 url = "postgres://..."
 changelog = "migrations/changelog.yaml"   # optional, this is the default
 migrate_on_startup = true                 # optional, default false
+migrate_on_test = true                    # optional, default false
 ```
 
 With `migrate_on_startup = true` the program applies pending changeSets right after the database connection is up and
 before `main` runs. A failing migration stops the program with a non-zero exit code. Programs that do not opt in are
-unchanged. Messages go to stderr, stdout stays untouched. `tinox test` binaries never migrate.
+unchanged. Messages go to stderr, stdout stays untouched. `tinox test` binaries never migrate unless `migrate_on_test = true` is set (independent of `migrate_on_startup`):
+every test binary then applies pending changeSets before its test method runs, so a test run against a fresh SQLite
+file or Postgres database needs no hand-written setup script. Point `url` at a dedicated test database; the history
+table makes repeated test runs cheap no-ops, and a failing migration fails the test.
 
 ## Changelog format
 
@@ -39,13 +43,72 @@ A changeSet is identified by `id` + `author` (unique across all files). Optional
 its content changed), `runAlways`, `dbms` (comma separated driver list; the changeSet does not exist for other drivers),
 `comment`, `tag` (a name for the state after this changeSet, used by `rollback --tag`) and `rollback`.
 
-Change types: `createTable`, `dropTable`, `renameTable`, `addColumn`, `dropColumn`, `renameColumn`, `createIndex`
-(`unique: true` allowed), `dropIndex`, `insert` and `sql`. `sql` is the escape hatch: a string, a list of strings
-(one statement each, no `;` inside), or `{ dbms: postgres, statements: ... }` to limit it to one driver.
+Change types: `createTable`, `dropTable`, `renameTable`, `addColumn`, `dropColumn`, `renameColumn`, `modifyEnumCheck`, `createIndex`
+(`unique: true` allowed), `dropIndex`, `insert` and `sql`. `sql` is the escape hatch for what the declarative model
+cannot express (views, triggers, functions). It must declare its dialect explicitly:
+`sql: { dbms: postgres, statements: "..." }` (`statements` is a string or a list of strings, one statement each, no `;`
+inside; `dbms` may list several drivers). A missing `dbms` or a `dbms` that does not match the configured driver is a
+**hard error**. For per-dialect variants use separate changeSets with a changeSet-level `dbms:`. Combine with
+`runOnChange: true` to re-create a view/function whenever its definition changes.
 
 Column types are neutral and mapped per driver: `bigint`, `int`, `varchar(n)`, `char(n)`, `text`, `boolean`, `float`,
 `double`, `timestamp`, `date`, `blob`. An unknown type, an unknown key, an unsafe identifier or a change a driver cannot
 perform (e.g. SQLite `addColumn` with `NOT NULL` and no default) is a **hard error naming the changeSet**.
+
+## Tinox enum columns
+
+A column can use `type: enum(Name)`, where `Name` is a payload-less `enum` declared in the project's `.tnx` sources
+(entity enums, #409). It is stored as `VARCHAR(255)` with a named CHECK constraint `chk_<table>_<column>` listing the
+variants, so the schema and the Tinox enum stay consistent. `defaultValue` must be one of the variants. Set
+`enumCheck: false` on the column to skip the CHECK (plain text column). An unknown enum, or one with payload variants,
+is a hard error naming the changeSet.
+
+```yaml
+- column: { name: status, type: enum(Status), defaultValue: Open, constraints: { nullable: false } }
+```
+
+Adding a variant is a normal new changeSet: add it to the Tinox enum, then re-create the constraint with
+`modifyEnumCheck` (PostgreSQL, MySQL 8.0.16+). SQLite cannot alter a CHECK constraint: use `enumCheck: false`, or rebuild
+the table with `sql:`.
+
+```yaml
+- changeSet:
+    id: 8
+    author: tino
+    changes:
+      - modifyEnumCheck: { tableName: task, columnName: status, type: enum(Status) }
+```
+
+Enums are resolved when the changelog loads, so a changeSet's generated SQL reflects the current variants (the checksum
+covers the changelog text, not the variants). `modifyEnumCheck` has no automatic rollback; give it a `rollback:` block.
+
+## XML changelogs
+
+A file ending in `.xml` is read as XML instead of YAML (set `changelog = "migrations/changelog.xml"`, or `include` it
+from a YAML file and vice versa; formats can be mixed freely). It is converted to the same internal model, so SQL
+generation is identical and the checksum of a changeSet equals that of the equivalent YAML changeSet whose keys are in
+the order `id`, `author`, other attributes, `comment`, `changes`.
+
+```xml
+<databaseChangeLog>
+  <include file="2026-10-person.yaml"/>
+  <changeSet id="1" author="tino">
+    <comment>person table</comment>
+    <createTable tableName="person">
+      <column name="id" type="bigint" autoIncrement="true"><constraints primaryKey="true"/></column>
+      <column name="name" type="varchar(100)"><constraints nullable="false"/></column>
+    </createTable>
+    <createIndex tableName="person" indexName="idx_person_name"><column name="name"/></createIndex>
+    <insert tableName="person"><column name="name" value="Ada"/></insert>
+    <sql dbms="postgres">UPDATE person SET name = 'x'</sql>
+    <sql><statement>DELETE FROM a</statement><statement>DELETE FROM b</statement></sql>
+  </changeSet>
+</databaseChangeLog>
+```
+
+Attribute names are the YAML keys. `true`/`false` and plain numbers in attributes (`value`, `defaultValue`, `id`) are
+typed like YAML scalars; anything else is text. `xmlns`/`xsi:` attributes on the root are ignored. Unknown elements and
+attributes are hard errors, as in YAML. DOCTYPE internal subsets are not supported.
 
 ## Behaviour
 
