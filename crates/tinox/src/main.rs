@@ -1652,12 +1652,17 @@ fn db_command(args: &[String]) {
     }
     // `rollback --count N | --tag T`; `validate --rollback` also demands every changeSet be reversible.
     let (mut rb_count, mut rb_tag, mut validate_rollback) = (None::<String>, None::<String>, false);
+    let mut contexts = String::new();
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
         match (sub, a.as_str()) {
             ("rollback", "--count") => rb_count = Some(it.next().cloned().unwrap_or_else(|| fail("--count needs a number".into()))),
             ("rollback", "--tag") => rb_tag = Some(it.next().cloned().unwrap_or_else(|| fail("--tag needs a tag name".into()))),
             ("validate", "--rollback") => validate_rollback = true,
+            ("update" | "update-sql" | "status" | "baseline", "--contexts") => {
+                let value = it.next().unwrap_or_else(|| fail("--contexts needs a comma-separated list".into()));
+                contexts = migrate::parse_contexts(value).unwrap_or_else(|e| fail(e));
+            }
             _ => fail(format!("unexpected argument '{a}' for 'tinox db {sub}'")),
         }
     }
@@ -1691,7 +1696,7 @@ fn db_command(args: &[String]) {
             return;
         }
         "update-sql" => {
-            for cs in &sets {
+            for cs in sets.iter().filter(|cs| migrate::matches_contexts(cs, &contexts)) {
                 println!("-- changeSet {} by {} ({})", cs.id, cs.author, cs.file);
                 for st in &cs.stmts {
                     println!("{st};");
@@ -1728,6 +1733,7 @@ fn db_command(args: &[String]) {
     }
     let mut runner = Command::new(exe);
     runner.env("TINOX_MIGRATE_MODE", sub);
+    runner.env("TINOX_MIGRATE_CONTEXTS", &contexts);
     if let Some(c) = &rb_count { runner.env("TINOX_MIGRATE_ROLLBACK_COUNT", c); }
     if let Some(t) = &rb_tag { runner.env("TINOX_MIGRATE_ROLLBACK_TAG", t); }
     let status = runner
