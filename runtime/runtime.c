@@ -9770,6 +9770,16 @@ static pthread_cond_t  _tinox_pg_pool_cond = PTHREAD_COND_INITIALIZER;
 static __thread PGconn* _tinox_db_tx_conn = NULL;
 
 void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    const char* diff_mode = getenv("TINOX_MIGRATE_MODE");
+    if (diff_mode && strcmp(diff_mode, "diff-shadow") == 0) {
+#if defined(TINOX_DB_SQLITE)
+        url = ":memory:";
+#else
+        url = getenv("TINOX_DB_DIFF_URL");
+        if (!url || !*url) { fprintf(stderr, "diff: TINOX_DB_DIFF_URL must name an empty disposable shadow database\n"); exit(1); }
+#endif
+    }
+
     if (pool_size <= 0) pool_size = 1;
     if (pool_size > TINOX_DB_POOL_MAX) {
         fprintf(stderr, "DB pool size %lld exceeds maximum of %d\n",
@@ -9930,6 +9940,16 @@ typedef struct {
 } TinoxSqliteResult;
 
 void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    const char* diff_mode = getenv("TINOX_MIGRATE_MODE");
+    if (diff_mode && strcmp(diff_mode, "diff-shadow") == 0) {
+#if defined(TINOX_DB_SQLITE)
+        url = ":memory:";
+#else
+        url = getenv("TINOX_DB_DIFF_URL");
+        if (!url || !*url) { fprintf(stderr, "diff: TINOX_DB_DIFF_URL must name an empty disposable shadow database\n"); exit(1); }
+#endif
+    }
+
     // SQLite keeps its pre-#191 single-connection model -- pool_size is
     // accepted (uniform driver-layer signature, see the Postgres block
     // above) but ignored; no pooling/transactions for this driver yet,
@@ -9939,7 +9959,8 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
     const char* path = url;
     if (strncmp(path, "sqlite:///", 10) == 0) path += 9;
     else if (strncmp(path, "sqlite://", 9) == 0) path += 9;
-    if (sqlite3_open(path, &_tinox_sqlite_db) != SQLITE_OK) {
+    if (sqlite3_open_v2(path, &_tinox_sqlite_db,
+            diff_mode && !strcmp(diff_mode, "diff-live") ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
         fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(_tinox_sqlite_db));
         if (service_enabled()) { service_record_error("SQLite initialization failed", 0); return; }
         exit(1);
@@ -10168,6 +10189,16 @@ static void _parse_mysql_url(const char* url,
 }
 
 void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    const char* diff_mode = getenv("TINOX_MIGRATE_MODE");
+    if (diff_mode && strcmp(diff_mode, "diff-shadow") == 0) {
+#if defined(TINOX_DB_SQLITE)
+        url = ":memory:";
+#else
+        url = getenv("TINOX_DB_DIFF_URL");
+        if (!url || !*url) { fprintf(stderr, "diff: TINOX_DB_DIFF_URL must name an empty disposable shadow database\n"); exit(1); }
+#endif
+    }
+
     // MySQL keeps its pre-#191 single-connection model -- pool_size is
     // accepted (uniform driver-layer signature, see the Postgres block
     // above) but ignored; no pooling/transactions for this driver yet,
@@ -10624,6 +10655,86 @@ static void tinox_mig_unlock(void* conn) {
 
 typedef struct { char* id; char* author; char* checksum; } TinoxMigApplied;
 
+// Catalog rows have four fields: object kind, table, object name, definition.
+// Hex framing keeps arbitrary SQL identifiers/expressions unambiguous across processes.
+static void* tinox_diff_catalog(void* conn) {
+#if defined(TINOX_DB_SQLITE)
+    const char* sql =
+        "SELECT 'table', name, '', '' FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' "
+        "UNION ALL SELECT 'column', m.name, p.name, upper(replace(p.type,' ','')) "
+        "FROM sqlite_master m, pragma_table_xinfo(m.name) p WHERE m.type='table' AND m.name NOT GLOB 'sqlite_*' "
+        "UNION ALL SELECT 'index', m.name, i.name, "
+        "CAST(i.\"unique\" AS TEXT)||':'||i.origin||':'||x.seqno||':'||coalesce(x.name,'<expression>')||':'||x.desc||':'||coalesce(x.coll,'')||':'|| "
+        "CASE WHEN i.partial OR x.cid=-2 THEN coalesce((SELECT sql FROM sqlite_master WHERE name=i.name),'') ELSE '' END "
+        "FROM sqlite_master m, pragma_index_list(m.name) i, pragma_index_xinfo(i.name) x "
+        "WHERE m.type='table' AND m.name NOT GLOB 'sqlite_*' AND x.key=1";
+#elif defined(TINOX_DB_POSTGRES)
+    const char* sql =
+        "SELECT 'table', c.relname, '', '' FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=current_schema() AND c.relkind IN ('r','p') "
+        "UNION ALL SELECT 'column', c.relname, a.attname, format_type(a.atttypid,a.atttypmod) "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid "
+        "WHERE n.nspname=current_schema() AND c.relkind IN ('r','p') AND a.attnum>0 AND NOT a.attisdropped "
+        "UNION ALL SELECT 'index', t.relname, c.relname, "
+        "i.indisunique::text||':'||coalesce(to_jsonb(i)->>'indnullsnotdistinct','false')||':'||i.indnkeyatts::text||':'||i.indisvalid::text||':'||am.amname||':'||k::text||':'||pg_get_indexdef(i.indexrelid,k,true)||':'||coalesce(pg_get_expr(i.indpred,i.indrelid),'') "
+        "||':'||coalesce(i.indoption[k-1]::text,'')||':'||coalesce((SELECT collname FROM pg_collation WHERE oid=i.indcollation[k-1]),'') "
+        "||':'||coalesce((SELECT opcname FROM pg_opclass WHERE oid=i.indclass[k-1]),'') "
+        "FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid JOIN pg_namespace n ON n.oid=t.relnamespace "
+        "JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_am am ON am.oid=c.relam, generate_series(1,i.indnatts) k "
+        "WHERE n.nspname=current_schema()";
+#elif defined(TINOX_DB_MYSQL)
+    const char* sql =
+        "SELECT 'table', table_name, '', '' FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE' "
+        "UNION ALL SELECT 'column', table_name, column_name, column_type FROM information_schema.columns WHERE table_schema=DATABASE() "
+        "UNION ALL SELECT CASE WHEN column_name IS NULL THEN 'unsupported-index' ELSE 'index' END, table_name, index_name, "
+        "CONCAT(non_unique,':',index_type,':',seq_in_index,':',COALESCE(column_name,'<expression>'),':',COALESCE(sub_part,0),':',COALESCE(collation,'')) "
+        "FROM information_schema.statistics WHERE table_schema=DATABASE()";
+#else
+    const char* sql = "";
+#endif
+    void* r = tinox_db_exec(conn, sql, NULL, 0);
+    if (!r || tinox_db_result_failed(r)) tinox_mig_die("cannot inspect schema catalogs");
+    for (int64_t row = 0; row < tinox_db_nrows(r); row++) {
+        if (!strcmp(tinox_db_getval(r, row, 0), "unsupported-index"))
+            tinox_mig_die("MySQL functional indexes are not supported by schema diff");
+    }
+    return r;
+}
+
+static void tinox_diff_snapshot(void* conn, TinoxMigSet* sets, int n_sets, int shadow) {
+    void* r = tinox_diff_catalog(conn);
+    if (shadow) {
+        if (tinox_db_nrows(r) != 0) tinox_mig_die("shadow database must be empty; use a disposable database, never the live database");
+        tinox_db_free(r);
+#if defined(TINOX_DB_POSTGRES)
+        if (!tinox_mig_exec(conn, "BEGIN", NULL, 0)) tinox_mig_die("cannot start shadow transaction");
+#endif
+        for (int i = 0; i < n_sets; i++) {
+            for (int j = 0; j < sets[i].n_stmts; j++) {
+                if (!tinox_mig_exec(conn, sets[i].stmts[j], NULL, 0)) {
+                    fprintf(stderr, "diff: shadow replay failed in changeSet '%s' by '%s' (%s)\n", sets[i].id, sets[i].author, sets[i].file);
+                    tinox_mig_die("cannot produce expected schema");
+                }
+            }
+        }
+        r = tinox_diff_catalog(conn);
+    }
+    for (int64_t row = 0; row < tinox_db_nrows(r); row++) {
+        const char* table = tinox_db_getval(r, row, 1);
+        if (!strcmp(table, "tinox_changelog") || !strcmp(table, "tinox_changelog_lock")) continue;
+        for (int col = 0; col < 4; col++) {
+            const unsigned char* p = (const unsigned char*)tinox_db_getval(r, row, col);
+            for (; *p; p++) printf("%02x", *p);
+            putchar(col == 3 ? '\n' : '\t');
+        }
+    }
+    tinox_db_free(r);
+#if defined(TINOX_DB_POSTGRES)
+    if (shadow && !tinox_mig_exec(conn, "ROLLBACK", NULL, 0)) tinox_mig_die("cannot roll back shadow transaction");
+#endif
+    fflush(stdout);
+}
+
 // Undo the newest applied change sets (a count, or everything after a tag). Everything is
 // checked before the first statement runs; each undo is one transaction together with the
 // removal of its history row.
@@ -10703,6 +10814,13 @@ void tinox_migrate_run(const char* payload) {
     TinoxMigSet* sets = tinox_mig_parse(payload, &n_sets);
     const char* mode = getenv("TINOX_MIGRATE_MODE");
     if (!mode || !*mode) mode = "update";
+    if (!strcmp(mode, "diff-live") || !strcmp(mode, "diff-shadow")) {
+        void* conn = tinox_db_acquire_stmt_conn();
+        if (!conn) tinox_mig_die("no database connection");
+        tinox_diff_snapshot(conn, sets, n_sets, !strcmp(mode, "diff-shadow"));
+        tinox_db_release_stmt_conn(conn);
+        return;
+    }
     int status_only = strcmp(mode, "status") == 0;
     int release_only = strcmp(mode, "release-lock") == 0;
     int baseline = strcmp(mode, "baseline") == 0;

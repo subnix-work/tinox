@@ -4,6 +4,13 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Schema drift detection (`tinox db diff`)** (#420): compare the full changelog's
+  schema with live tables, columns, types and indexes, with a non-zero exit status
+  on drift. SQLite uses an in-memory replay; PostgreSQL and MySQL accept an empty
+  disposable shadow database through `TINOX_DB_DIFF_URL`.
+
 ## [2.5.1] - 2026-10-23
 
 ### Added

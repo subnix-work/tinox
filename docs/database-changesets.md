@@ -195,6 +195,7 @@ tinox db validate      # parse + check the changelog, no database needed
 tinox db update-sql    # print the SQL that `update` would run
 tinox db status        # applied / pending / changed changeSets (exit 1 on a checksum mismatch)
 tinox db update        # apply pending changeSets
+tinox db diff          # compare changelog schema with live tables, columns, types and indexes (exit 1 on drift)
 tinox db baseline      # record pending changeSets as applied WITHOUT running them (adopt an existing schema)
 tinox db rollback --count N   # undo the newest N applied changeSets
 tinox db rollback --tag T     # undo everything applied after the changeSet tagged T
@@ -267,6 +268,41 @@ changeSet applied; the ones already undone stay undone.
 
 If the schema already exists (created by hand or by an earlier tool), write the changelog to match it and run
 `tinox db baseline` once; later changeSets then apply normally.
+
+## Schema drift detection
+
+Run `tinox db diff` before or after `baseline` to check that the actual schema matches the
+**entire** changelog, including pending changeSets. It reports missing, unexpected and changed
+objects in deterministic order. Exit status is 0 for a match and 1 for drift or an inspection/replay
+error. Migration history and lock tables are excluded; no history rows or locks are written.
+The live database is only inspected, and SQLite is opened read-only (it must already exist).
+Only the current schema/database is compared. Row data, defaults, nullability, foreign keys, views
+and triggers are outside the comparison scope. MySQL functional indexes produce an unsupported
+index error rather than a potentially incomplete comparison.
+Index comparison includes names, uniqueness, ordered columns and direction. SQLite expression and
+partial indexes also compare their stored SQL text, so formatting differences can be reported.
+
+The expected schema is produced by replaying all changeSets once, in order, in isolation. This
+includes `insert` and raw `sql` changes, with the configured driver's filtering and type mappings.
+A replay failure is an error, never a successful drift check. Changes that depend on existing
+production data may need a self-contained changelog to replay successfully.
+
+SQLite uses a fresh in-memory shadow database automatically. For PostgreSQL and MySQL, supply
+`TINOX_DB_DIFF_URL` pointing to an **empty disposable database**, with permissions to replay the
+changelog. Use credentials isolated from production; raw SQL executes as written. The command
+rejects a shadow database that already contains tables. PostgreSQL replays in a transaction and
+rolls it back; MySQL DDL commits implicitly, so recreate the disposable database between checks
+(including after a failed replay). The command never creates or drops server databases itself.
+
+```sh
+TINOX_DB_DIFF_URL='postgres://localhost/tinox_shadow' tinox db diff
+```
+
+The optional server integration test `changesets_diff_server_catalogs` accepts
+`TINOX_TEST_DIFF_POSTGRES_URL` / `TINOX_TEST_DIFF_POSTGRES_SHADOW_URL` and
+`TINOX_TEST_DIFF_MYSQL_URL` / `TINOX_TEST_DIFF_MYSQL_SHADOW_URL`. These must point at empty
+disposable databases; the test creates and drops its fixture tables. For the MySQL test client,
+also set `TINOX_TEST_DIFF_MYSQL_SOCKET` to a local MariaDB server socket accessible as `root`.
 
 ## Generating from entities
 

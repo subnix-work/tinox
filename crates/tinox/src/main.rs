@@ -12,6 +12,7 @@ mod callgraph;
 mod contract;
 mod dockerfile;
 mod migrate;
+mod schema_diff;
 mod migrate_xml;
 mod db_new;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
@@ -122,7 +123,7 @@ fn print_help() {
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox reference [path]     Export compiler reference metadata as JSON");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
-    println!("  tinox db <command>         Schema changelog: new, update, status, baseline, generate, rollback, validate, update-sql, release-lock");
+    println!("  tinox db <command>         Schema changelog: new, update, status, baseline, generate, diff, rollback, validate, update-sql, release-lock");
     println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox explain --bootstrap [file]  Explain generated wiring (--json)");
@@ -1630,8 +1631,8 @@ fn find_runtime_object() -> Option<String> {
     None
 }
 
-/// `tinox db <update|status|validate|update-sql|release-lock>` -- the declarative schema
-/// changelog (issue #410). `generate`, `validate` and `update-sql` need no database; the others compile a
+/// Declarative schema changelog commands (issue #410).
+/// `new`, `generate`, `validate` and `update-sql` need no database; the others compile a
 /// stub program that carries the changelog and run it, so the CLI and `migrate_on_startup`
 /// execute the exact same engine (`tinox_migrate_run` in runtime.c).
 fn db_command(args: &[String]) {
@@ -1640,14 +1641,14 @@ fn db_command(args: &[String]) {
         std::process::exit(1);
     };
     let Some(sub) = args.first().map(String::as_str) else {
-        fail("usage: tinox db <new|update|status|baseline|generate|rollback|validate|update-sql|release-lock>".to_string());
+        fail("usage: tinox db <new|update|status|baseline|generate|diff|rollback|validate|update-sql|release-lock>".to_string());
     };
     if sub == "new" {
         db_new::run(&args[1..]).unwrap_or_else(|e| fail(e));
         return;
     }
-    if !matches!(sub, "update" | "status" | "baseline" | "generate" | "rollback" | "validate" | "update-sql" | "release-lock") {
-        fail(format!("unknown 'tinox db' command '{sub}' (expected new, update, status, baseline, generate, rollback, validate, update-sql or release-lock)"));
+    if !matches!(sub, "update" | "status" | "baseline" | "generate" | "diff" | "rollback" | "validate" | "update-sql" | "release-lock") {
+        fail(format!("unknown 'tinox db' command '{sub}' (expected new, update, status, baseline, generate, diff, rollback, validate, update-sql or release-lock)"));
     }
     // `rollback --count N | --tag T`; `validate --rollback` also demands every changeSet be reversible.
     let (mut rb_count, mut rb_tag, mut validate_rollback) = (None::<String>, None::<String>, false);
@@ -1726,6 +1727,10 @@ fn db_command(args: &[String]) {
         .and_then(|out| compile_file(&stub_str, &out.to_string_lossy(), OptLevel::Release).map_err(|e| e.to_string()));
     let _ = fs::remove_dir_all(&stub_dir);
     let exe = result.unwrap_or_else(|e| fail(format!("cannot build the migration runner: {e}")));
+    if sub == "diff" {
+        let drift = schema_diff::run(&exe).unwrap_or_else(|e| fail(e));
+        std::process::exit(i32::from(drift));
+    }
     let mut runner = Command::new(exe);
     runner.env("TINOX_MIGRATE_MODE", sub);
     runner.env("TINOX_MIGRATE_CONTEXTS", &contexts);
