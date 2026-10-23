@@ -1,7 +1,7 @@
 //! Declarative schema changesets (issue #410): `tinox db update/status/validate/update-sql`
 //! and `migrate_on_startup`, checked from outside with an independent client (`sqlite3` /
-//! `psql`) against the real databases, not against the engine's own report. Postgres runs
-//! in docker; both parts SKIP gracefully when the needed tool is missing.
+//! `psql` / `mysql` in the container) against the real databases, not against the engine's own
+//! report. PostgreSQL and MySQL run in docker; those parts SKIP gracefully when docker is missing.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -192,7 +192,7 @@ const FAILING: &str = r#"
       author: tino
       changes:
         - insert: { tableName: person, values: { name: halfway } }
-        - sql: "INSERT INTO no_such_table VALUES (1)"
+        - sql: { dbms: "sqlite, postgres", statements: "INSERT INTO no_such_table VALUES (1)" }
 "#;
 
 const MAIN: &str = "class Main\n{\n    fnc main() -> Int32\n    {\n        println(\"started\");\n        return 0;\n    }\n}\n";
@@ -402,5 +402,314 @@ fn changesets_postgres_apply_and_concurrent_starters() {
         }
         assert_eq!(pg.psql("SELECT COUNT(*) FROM tinox_changelog"), "2", "round {round}");
         assert_eq!(pg.psql("SELECT COUNT(*) FROM person"), "1", "round {round}: seed row must exist exactly once");
+    }
+}
+
+#[test]
+fn changesets_preconditions_on_fail_modes() {
+    if !tool_available("sqlite3", &["--version"]) {
+        eprintln!("SKIP changesets_preconditions (sqlite3 not installed)");
+        return;
+    }
+    let p = Project::new("precond", "sqlite", "data/test.db", "");
+    let db = p.dir.join("data/test.db");
+    sqlite(&db, "CREATE TABLE existing (id INTEGER); CREATE INDEX idx_e ON existing (id);");
+    let cl = |on_fail: &str, check: &str| {
+        format!(
+            "databaseChangeLog:\n  - changeSet:\n      id: p1\n      author: a\n      preConditions:\n        onFail: {on_fail}\n        checks:\n          - {check}\n      changes:\n        - createTable: {{tableName: made, columns: [{{column: {{name: id, type: bigint}}}}]}}\n"
+        )
+    };
+    let made = |db: &Path| sqlite(db, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'made'");
+    let logged = |db: &Path| sqlite(db, "SELECT COUNT(*) FROM tinox_changelog");
+
+    // Default is HALT with a clear message.
+    p.write("migrations/changelog.yaml", &cl("HALT", "tableExists: {tableName: nope}").replace("        onFail: HALT\n", ""));
+    let o = p.tinox(&["db", "update"]);
+    assert!(!o.status.success() && text(&o).contains("precondition failed") && text(&o).contains("tableExists(nope)"), "{}", text(&o));
+    assert_eq!((made(&db), logged(&db)), ("0".into(), "0".into()));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog_lock"), "0");
+
+    // CONTINUE: skipped, not recorded.
+    p.write("migrations/changelog.yaml", &cl("CONTINUE", "tableExists: {tableName: nope}"));
+    let o = p.tinox(&["db", "update"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!((made(&db), logged(&db)), ("0".into(), "0".into()));
+
+    // MARK_RAN: recorded, not run.
+    p.write("migrations/changelog.yaml", &cl("MARK_RAN", "tableExists: {tableName: nope}"));
+    let o = p.tinox(&["db", "update"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!((made(&db), logged(&db)), ("0".into(), "1".into()));
+    sqlite(&db, "DELETE FROM tinox_changelog");
+
+    // WARN: runs anyway.
+    p.write("migrations/changelog.yaml", &cl("WARN", "tableExists: {tableName: nope}"));
+    let o = p.tinox(&["db", "update"]);
+    assert!(o.status.success() && text(&o).contains("running it anyway"), "{}", text(&o));
+    assert_eq!((made(&db), logged(&db)), ("1".into(), "1".into()));
+    sqlite(&db, "DROP TABLE made; DELETE FROM tinox_changelog");
+
+    // Passing checks: not/columnExists/indexExists/sqlCheck/dbms all hold, so it runs under HALT.
+    let ok = "databaseChangeLog:\n  - changeSet:\n      id: p2\n      author: a\n      preConditions:\n        checks:\n          - not: {tableExists: {tableName: made}}\n          - columnExists: {tableName: existing, columnName: id}\n          - indexExists: {tableName: existing, indexName: idx_e}\n          - sqlCheck: {sql: \"SELECT COUNT(*) FROM existing\", expectedResult: 0}\n          - dbms: sqlite\n      changes:\n        - createTable: {tableName: made, columns: [{column: {name: id, type: bigint}}]}\n";
+    p.write("migrations/changelog.yaml", ok);
+    let o = p.tinox(&["db", "update"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(made(&db), "1");
+
+    // A wrong sqlCheck result halts.
+    sqlite(&db, "DROP TABLE made; DELETE FROM tinox_changelog");
+    p.write("migrations/changelog.yaml", &ok.replace("expectedResult: 0", "expectedResult: 5"));
+    let o = p.tinox(&["db", "update"]);
+    assert!(!o.status.success() && text(&o).contains("sqlCheck"), "{}", text(&o));
+
+    // Invalid onFail is rejected by validate.
+    p.write("migrations/changelog.yaml", &cl("SHRUG", "tableExists: {tableName: x}"));
+    let o = p.tinox(&["db", "validate"]);
+    assert!(!o.status.success() && text(&o).contains("onFail"), "{}", text(&o));
+}
+
+#[test]
+fn changesets_rollback_by_count_and_tag_refuses_irreversible() {
+    if !tool_available("sqlite3", &["--version"]) {
+        eprintln!("SKIP changesets_rollback (sqlite3 not installed)");
+        return;
+    }
+    let p = Project::new("rollback", "sqlite", "data/rb.db", "");
+    let db = p.dir.join("data/rb.db");
+    let base = r#"databaseChangeLog:
+  - changeSet:
+      id: 1
+      author: tino
+      tag: base
+      changes:
+        - createTable: { tableName: t, columns: [ { column: { name: a, type: int } } ] }
+  - changeSet:
+      id: 2
+      author: tino
+      changes:
+        - insert: { tableName: t, values: { a: 7 } }
+  - changeSet:
+      id: 3
+      author: tino
+      changes:
+        - addColumn: { tableName: t, columns: [ { column: { name: b, type: int } } ] }
+        - createIndex: { tableName: t, indexName: idx_t_a, columns: [a] }
+"#;
+    p.write("migrations/changelog.yaml", base);
+    let u = p.tinox(&["db", "update"]);
+    assert!(u.status.success(), "{}", text(&u));
+
+    let v = p.tinox(&["db", "validate", "--rollback"]);
+    assert!(!v.status.success() && text(&v).contains("'insert' cannot be undone"), "{}", text(&v));
+    assert!(!p.tinox(&["db", "rollback"]).status.success(), "needs --count or --tag");
+
+    // Newest changeSet: derived rollback (index + column), history row removed with it.
+    let r = p.tinox(&["db", "rollback", "--count", "1"]);
+    assert!(r.status.success(), "{}", text(&r));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_t_a'"), "0");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM pragma_table_info('t') WHERE name = 'b'"), "0");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "2");
+
+    // Back to the tag: changeSet 2 is irreversible -> hard failure, nothing touched.
+    let r = p.tinox(&["db", "rollback", "--tag", "base"]);
+    assert!(!r.status.success() && text(&r).contains("nothing was rolled back"), "{}", text(&r));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM t"), "1");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "2");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog_lock"), "0", "lock must be released");
+
+    // Too many / unknown tag are refused as well.
+    assert!(!p.tinox(&["db", "rollback", "--count", "9"]).status.success());
+    assert!(!p.tinox(&["db", "rollback", "--tag", "nope"]).status.success());
+
+    // An explicit rollback block (not part of the checksum) makes it reversible.
+    p.write("migrations/changelog.yaml", &base.replace(
+        "        - insert: { tableName: t, values: { a: 7 } }\n",
+        "        - insert: { tableName: t, values: { a: 7 } }\n      rollback:\n        - sql: { dbms: sqlite, statements: \"DELETE FROM t WHERE a = 7\" }\n",
+    ));
+    let r = p.tinox(&["db", "rollback", "--tag", "base"]);
+    assert!(r.status.success(), "{}", text(&r));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM t"), "0");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "1");
+
+    // Re-applying works after a rollback.
+    assert!(p.tinox(&["db", "update"]).status.success());
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM t"), "1");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "3");
+}
+
+#[test]
+fn changesets_migrate_on_test_is_opt_in() {
+    if !tool_available("sqlite3", &["--version"]) {
+        eprintln!("SKIP changesets_migrate_on_test (sqlite3 not installed)");
+        return;
+    }
+    const TEST_SRC: &str = "class SchemaTest\n{\n    @Test\n    fnc ok() -> Bool\n    {\n        return true;\n    }\n}\n";
+    // Default: tinox test never migrates, even with migrate_on_startup.
+    let p = Project::new("ontest-off", "sqlite", "data/test.db", "migrate_on_startup = true\n");
+    p.write("src/SchemaTest.tnx", TEST_SRC);
+    let off = p.tinox(&["test"]);
+    assert!(off.status.success(), "{}", text(&off));
+    assert!(!p.dir.join("data/test.db").exists() || sqlite(&p.dir.join("data/test.db"), "SELECT COUNT(*) FROM sqlite_master WHERE name = 'person'") == "0");
+    // Opt-in: the schema exists after the test run.
+    let p = Project::new("ontest-on", "sqlite", "data/test.db", "migrate_on_test = true\n");
+    p.write("src/SchemaTest.tnx", TEST_SRC);
+    let on = p.tinox(&["test"]);
+    assert!(on.status.success(), "{}", text(&on));
+    assert_eq!(sqlite(&p.dir.join("data/test.db"), "SELECT COUNT(*) FROM person"), "1");
+}
+
+struct MysqlContainer {
+    name: String,
+    port: u16,
+}
+
+impl MysqlContainer {
+    fn start() -> Self {
+        let name = format!("tinox-mysql-changesets-test-{}", std::process::id());
+        let _ = Command::new("docker").args(["rm", "-f", &name]).output();
+        let status = Command::new("docker")
+            .args([
+                "run", "-d", "--rm", "--name", &name,
+                "-e", "MYSQL_ROOT_PASSWORD=tinox",
+                "-e", "MYSQL_DATABASE=tinox",
+                "-P",
+                "mysql:8.4",
+            ])
+            .stdout(Stdio::null())
+            .status()
+            .expect("spawn docker run");
+        assert!(status.success(), "docker run mysql failed");
+        let port_out = Command::new("docker")
+            .args(["port", &name, "3306/tcp"])
+            .output()
+            .expect("docker port");
+        assert!(port_out.status.success(), "docker port failed");
+        let port_str = String::from_utf8_lossy(&port_out.stdout);
+        let port: u16 = port_str
+            .lines()
+            .next()
+            .and_then(|l| l.rsplit(':').next())
+            .and_then(|p| p.trim().parse().ok())
+            .unwrap_or_else(|| panic!("could not parse docker port output: {port_str}"));
+        let c = MysqlContainer { name, port };
+        c.wait_ready();
+        c
+    }
+
+    fn exec(&self, sql: &str) -> Option<String> {
+        // `-h 127.0.0.1` forces TCP: the image's temporary init server is skip-networking
+        // (unix socket only), so a TCP answer means the final server is up.
+        let out = Command::new("docker")
+            .args(["exec", &self.name, "mysql", "-h127.0.0.1", "-uroot", "-ptinox", "-N", "-B", "-D", "tinox", "-e", sql])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    fn wait_ready(&self) {
+        for _ in 0..180 {
+            if self.exec("SELECT 1").is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        panic!("mysql container never became ready");
+    }
+
+    fn query(&self, sql: &str) -> String {
+        self.exec(sql).unwrap_or_else(|| panic!("mysql query failed: {sql}"))
+    }
+
+    fn url(&self) -> String {
+        format!("mysql://root:tinox@127.0.0.1:{}/tinox", self.port)
+    }
+}
+
+impl Drop for MysqlContainer {
+    fn drop(&mut self) {
+        let _ = Command::new("docker").args(["rm", "-f", &self.name]).output();
+    }
+}
+
+#[test]
+fn changesets_mysql_apply_validate_partial_and_concurrent_starters() {
+    if !tool_available("docker", &["--version"]) {
+        eprintln!("SKIP changesets_mysql (docker not installed)");
+        return;
+    }
+    let my = MysqlContainer::start();
+    let p = Project::new("mysql", "mysql", &my.url(), "migrate_on_startup = true\n");
+
+    let v = p.tinox(&["db", "validate"]);
+    assert!(v.status.success(), "{}", text(&v));
+
+    let up = p.tinox(&["db", "update"]);
+    assert!(up.status.success(), "{}", text(&up));
+    assert_eq!(my.query("SELECT CONCAT(name, ':', status) FROM person"), "seeded:ACTIVE");
+    assert_eq!(my.query("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = 'tinox' AND index_name = 'idx_person_name'"), "1");
+    assert_eq!(my.query("SELECT data_type FROM information_schema.columns WHERE table_schema = 'tinox' AND table_name = 'person' AND column_name = 'id'"), "bigint");
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog"), "2");
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog_lock"), "0", "lock must be released");
+
+    // Re-running is a no-op.
+    let again = p.tinox(&["db", "update"]);
+    assert!(again.status.success(), "{}", text(&again));
+    assert_eq!(my.query("SELECT COUNT(*) FROM person"), "1");
+
+    // Checksum mismatch: nothing is applied, exit is non-zero, the lock is released.
+    p.write("migrations/more.yaml", &MORE.replace("seeded", "tampered"));
+    let bad = p.tinox(&["db", "update"]);
+    assert!(!bad.status.success(), "{}", text(&bad));
+    assert!(text(&bad).contains("modified after it was applied"), "{}", text(&bad));
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog_lock"), "0");
+    let st = p.tinox(&["db", "status"]);
+    assert!(!st.status.success() && text(&st).contains("CHANGED"), "{}", text(&st));
+    p.write("migrations/more.yaml", MORE);
+
+    // Partial application: DDL is not transactional on MySQL. The first statement's effect
+    // stays, the changeSet has no history row, and the error says so.
+    p.append(
+        "migrations/more.yaml",
+        r#"
+  - changeSet:
+      id: 3
+      author: tino
+      changes:
+        - createTable: { tableName: half_done, columns: [ { column: { name: id, type: int } } ] }
+        - sql: { dbms: mysql, statements: "INSERT INTO no_such_table VALUES (1)" }
+"#,
+    );
+    let fail = p.tinox(&["db", "update"]);
+    assert!(!fail.status.success(), "{}", text(&fail));
+    assert!(text(&fail).contains("cannot roll back DDL"), "{}", text(&fail));
+    assert_eq!(my.query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'tinox' AND table_name = 'half_done'"), "1", "partial DDL stays");
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog"), "2", "failed changeSet must not be recorded");
+    assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog_lock"), "0");
+    p.write("migrations/more.yaml", MORE);
+
+    // Several instances starting at once on a fresh schema: every changeSet runs exactly once.
+    let build = p.tinox(&["build"]);
+    assert!(build.status.success(), "{}", text(&build));
+    let exe = p.dir.join("cs");
+    for round in 0..5 {
+        my.query("DROP TABLE IF EXISTS person, half_done, tinox_changelog, tinox_changelog_lock");
+        let kids: Vec<_> = (0..3)
+            .map(|_| {
+                Command::new(&exe)
+                    .current_dir(&p.dir)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("spawn instance")
+            })
+            .collect();
+        for mut k in kids {
+            assert!(k.wait().unwrap().success(), "round {round}: an instance failed to start");
+        }
+        assert_eq!(my.query("SELECT COUNT(*) FROM tinox_changelog"), "2", "round {round}");
+        assert_eq!(my.query("SELECT COUNT(*) FROM person"), "1", "round {round}: seed row must exist exactly once");
     }
 }

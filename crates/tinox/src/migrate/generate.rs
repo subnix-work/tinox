@@ -218,10 +218,10 @@ fn replay(sets: &[ChangeSet]) -> Result<Schema, String> {
     Ok(schema)
 }
 
-fn equivalent(d: Dialect, old: &Value, new: &Value) -> Result<bool, String> {
+fn equivalent(d: Dialect, table: &str, old: &Value, new: &Value) -> Result<bool, String> {
     let wrap = |c: &Value| object(&[("column", c.clone())]);
-    let a = parse_column(d, &wrap(old), "existing schema")?;
-    let b = parse_column(d, &wrap(new), "entity model")?;
+    let a = parse_column(d, table, &wrap(old), "existing schema")?;
+    let b = parse_column(d, table, &wrap(new), "entity model")?;
     // Defaults, indexes and references are independently maintained by hand.
     Ok(a.ty == b.ty
         && a.auto_increment == b.auto_increment
@@ -231,6 +231,7 @@ fn equivalent(d: Dialect, old: &Value, new: &Value) -> Result<bool, String> {
 
 pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> {
     let model = entity_schema(root)?;
+    ENUMS.with(|e| *e.borrow_mut() = crate::project_enums(root));
     let original = match fs::read_to_string(path) {
         Ok(text) => Some(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -259,7 +260,7 @@ pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> 
         if let Some(old) = existing.get(table) {
             for (name, col) in cols {
                 if let Some(previous) = old.get(name) {
-                    if !equivalent(d, previous, col)? {
+                    if !equivalent(d, table, previous, col)? {
                         return Err(format!(
                             "{table}.{name}: type or constraint changed; add a manual changeSet"
                         ));
@@ -449,7 +450,7 @@ class Person {{
             let p = Project::new();
             p.generate(d).unwrap();
             let original = fs::read(p.path()).unwrap();
-            let initial = load_changelog(&p.path(), d).unwrap();
+            let initial = load_changelog(&p.path(), d, &BTreeMap::new()).unwrap();
             assert_eq!(initial.len(), 1);
             assert!(initial[0].stmts[0].contains("display_name"));
             assert!(initial[0].stmts[0].contains("state"));
@@ -459,7 +460,7 @@ class Person {{
             p.model("active: Bool;");
             p.generate(d).unwrap();
             assert!(fs::read(p.path()).unwrap().starts_with(&original));
-            let next = load_changelog(&p.path(), d).unwrap();
+            let next = load_changelog(&p.path(), d, &BTreeMap::new()).unwrap();
             assert_eq!(next.len(), 2);
             assert_eq!(next[0].checksum, initial[0].checksum);
             assert!(next[1].stmts[0].starts_with("ALTER TABLE"));
@@ -488,7 +489,7 @@ class Person {{
             .unwrap()
             .starts_with("# keep this comment\n"));
         assert_eq!(
-            load_changelog(&p.path(), Dialect::Postgres).unwrap().len(),
+            load_changelog(&p.path(), Dialect::Postgres, &BTreeMap::new()).unwrap().len(),
             2
         );
     }
@@ -498,8 +499,8 @@ class Person {{
         let p = Project::new();
         p.generate(Dialect::Sqlite).unwrap();
         p.generate(Dialect::Postgres).unwrap();
-        let sqlite = load_changelog(&p.path(), Dialect::Sqlite).unwrap();
-        let postgres = load_changelog(&p.path(), Dialect::Postgres).unwrap();
+        let sqlite = load_changelog(&p.path(), Dialect::Sqlite, &BTreeMap::new()).unwrap();
+        let postgres = load_changelog(&p.path(), Dialect::Postgres, &BTreeMap::new()).unwrap();
         assert_eq!(sqlite.len(), 1);
         assert_eq!(postgres.len(), 1);
         assert_ne!(sqlite[0].id, postgres[0].id);

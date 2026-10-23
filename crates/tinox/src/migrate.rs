@@ -50,6 +50,31 @@ pub struct ChangeSet {
     pub run_always: bool,
     pub stmts: Vec<String>,
     changes: Vec<Value>,
+    /// SQL that undoes the changeSet, or the reason it cannot be undone (checked when a
+    /// rollback is requested, never silently skipped).
+    pub rollback: Result<Vec<String>, String>,
+    /// `tag:` -- `tinox db rollback --tag T` undoes everything applied after this changeSet.
+    pub tag: Option<String>,
+    pub pre: Option<PreConditions>,
+}
+
+/// `preConditions:` of a changeSet, evaluated by the runtime right before the changeSet would run.
+#[derive(Debug, Clone)]
+pub struct PreConditions {
+    /// HALT | CONTINUE | MARK_RAN | WARN
+    pub on_fail: String,
+    pub checks: Vec<Check>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Check {
+    pub negate: bool,
+    /// tableExists | columnExists | indexExists | sqlCheck | const (dbms, decided at compile time)
+    pub kind: String,
+    pub a: String,
+    pub b: String,
+    /// Human readable form for messages.
+    pub desc: String,
 }
 
 fn scalar_string(v: &Value) -> Option<String> {
@@ -112,6 +137,29 @@ fn sql_literal(v: &Value, ctx: &str) -> Result<String, String> {
     }
 }
 
+thread_local! {
+    /// Tinox enums (name -> variant names) visible to `enum(Name)` column types while a changelog loads.
+    static ENUMS: std::cell::RefCell<std::collections::BTreeMap<String, Vec<String>>> = Default::default();
+}
+
+/// `enum(Name)` -> the variants of the project's Tinox enum `Name`, or a hard error.
+fn enum_variants(ty: &str, ctx: &str) -> Result<Option<(String, Vec<String>)>, String> {
+    let t = ty.trim();
+    let Some(inner) = t.strip_prefix("enum(").and_then(|r| r.strip_suffix(')')) else { return Ok(None) };
+    let name = inner.trim();
+    ENUMS.with(|e| match e.borrow().get(name) {
+        Some(v) if !v.is_empty() => Ok(Some((name.to_string(), v.clone()))),
+        Some(_) => Err(format!("{ctx}: Tinox enum '{name}' has no variants")),
+        None => Err(format!("{ctx}: unknown Tinox enum '{name}' in type '{ty}' (enum must be declared in the project's .tnx sources)")),
+    })
+}
+
+fn enum_check_expr(d: Dialect, col: &str, variants: &[String]) -> String {
+    let _ = d;
+    let list: Vec<String> = variants.iter().map(|v| format!("'{}'", v.replace('\'', "''"))).collect();
+    format!("{col} IN ({})", list.join(", "))
+}
+
 fn map_type(d: Dialect, ty: &str, ctx: &str) -> Result<String, String> {
     let lower = ty.trim().to_ascii_lowercase();
     let (base, arg) = match lower.find('(') {
@@ -163,27 +211,48 @@ struct Column {
     unique: bool,
     default: Option<String>,
     references: Option<(String, String)>,
+    /// (constraint name, CHECK expression) for `enum(Name)` columns.
+    check: Option<(String, String)>,
 }
 
-fn parse_column(d: Dialect, v: &Value, ctx: &str) -> Result<Column, String> {
+fn parse_column(d: Dialect, table: &str, v: &Value, ctx: &str) -> Result<Column, String> {
     let col = get(v, "column").ok_or_else(|| format!("{ctx}: each entry must be a 'column:' mapping"))?;
     check_keys(v, &["column"], ctx)?;
-    check_keys(col, &["name", "type", "autoIncrement", "defaultValue", "constraints"], ctx)?;
+    check_keys(col, &["name", "type", "autoIncrement", "defaultValue", "constraints", "enumCheck"], ctx)?;
     let name = get_str(col, "name", ctx)?;
     let cctx = format!("{ctx}, column '{name}'");
     let ty = get_str(col, "type", &cctx)?;
+    let enum_ty = enum_variants(&ty, &cctx)?;
+    let enum_check = match get(col, "enumCheck") {
+        None => true,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(format!("{cctx}: 'enumCheck' must be true or false")),
+    };
+    if enum_ty.is_none() && get(col, "enumCheck").is_some() {
+        return Err(format!("{cctx}: 'enumCheck' only applies to enum(Name) columns"));
+    }
     let mut c = Column {
         name: quote_ident(d, &name, &cctx)?,
-        ty: map_type(d, &ty, &cctx)?,
+        ty: if enum_ty.is_some() { "VARCHAR(255)".to_string() } else { map_type(d, &ty, &cctx)? },
         auto_increment: get_bool(col, "autoIncrement", &cctx)?,
         primary_key: false,
         not_null: false,
         unique: false,
         default: None,
         references: None,
+        check: None,
     };
     if let Some(dv) = get(col, "defaultValue") {
+        if let Some((en, vars)) = &enum_ty {
+            match dv {
+                Value::String(x) if vars.contains(x) => {}
+                _ => return Err(format!("{cctx}: defaultValue must be a variant of enum {en} ({})", vars.join(", "))),
+            }
+        }
         c.default = Some(sql_literal(dv, &cctx)?);
+    }
+    if let (Some((_, vars)), true) = (&enum_ty, enum_check) {
+        c.check = Some((enum_check_name(d, table, &name, &cctx)?, enum_check_expr(d, &c.name, vars)));
     }
     if let Some(cons) = get(col, "constraints") {
         check_keys(cons, &["primaryKey", "nullable", "unique", "references"], &cctx)?;
@@ -206,6 +275,10 @@ fn parse_column(d: Dialect, v: &Value, ctx: &str) -> Result<Column, String> {
         return Err(format!("{cctx}: autoIncrement is only supported on a primaryKey column"));
     }
     Ok(c)
+}
+
+fn enum_check_name(d: Dialect, table: &str, col: &str, ctx: &str) -> Result<String, String> {
+    quote_ident(d, &format!("chk_{table}_{col}"), ctx)
 }
 
 fn column_sql(d: Dialect, c: &Column) -> String {
@@ -237,6 +310,9 @@ fn column_sql(d: Dialect, c: &Column) -> String {
     if let Some((t, col)) = &c.references {
         s.push_str(&format!(" REFERENCES {t}({col})"));
     }
+    if let Some((n, expr)) = &c.check {
+        s.push_str(&format!(" CONSTRAINT {n} CHECK ({expr})"));
+    }
     s
 }
 
@@ -247,7 +323,8 @@ fn columns_of(d: Dialect, spec: &Value, ctx: &str) -> Result<Vec<Column>, String
     if list.is_empty() {
         return Err(format!("{ctx}: 'columns' must not be empty"));
     }
-    list.iter().map(|c| parse_column(d, c, ctx)).collect()
+    let table = get_str(spec, "tableName", ctx)?;
+    list.iter().map(|c| parse_column(d, &table, c, ctx)).collect()
 }
 
 fn name_list(d: Dialect, spec: &Value, key: &str, ctx: &str) -> Result<Vec<String>, String> {
@@ -314,6 +391,22 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
             }
             Ok(out)
         }
+        "modifyEnumCheck" => {
+            check_keys(spec, &["tableName", "columnName", "type"], &ctx)?;
+            let t = table(spec, "tableName")?;
+            let (tn, cn) = (get_str(spec, "tableName", &ctx)?, get_str(spec, "columnName", &ctx)?);
+            let col = quote_ident(d, &cn, &ctx)?;
+            let ty = get_str(spec, "type", &ctx)?;
+            let (_, vars) = enum_variants(&ty, &ctx)?
+                .ok_or_else(|| format!("{ctx}: 'type' must be enum(Name)"))?;
+            let name = enum_check_name(d, &tn, &cn, &ctx)?;
+            let add = format!("ALTER TABLE {t} ADD CONSTRAINT {name} CHECK ({})", enum_check_expr(d, &col, &vars));
+            match d {
+                Dialect::Postgres => Ok(vec![format!("ALTER TABLE {t} DROP CONSTRAINT {name}"), add]),
+                Dialect::Mysql => Ok(vec![format!("ALTER TABLE {t} DROP CHECK {name}"), add]),
+                Dialect::Sqlite => Err(format!("{ctx}: SQLite cannot alter a CHECK constraint; use enumCheck: false on the column or rebuild the table with 'sql:'")),
+            }
+        }
         "dropColumn" => {
             check_keys(spec, &["tableName", "columnName"], &ctx)?;
             Ok(vec![format!("ALTER TABLE {} DROP COLUMN {}", table(spec, "tableName")?, table(spec, "columnName")?)])
@@ -360,24 +453,26 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
             Ok(vec![format!("INSERT INTO {t} ({}) VALUES ({})", names.join(", "), lits.join(", "))])
         }
         "sql" => {
-            // Escape hatch. `dbms:` limits it to one driver; a change set can carry several
-            // 'sql' changes with different dbms values for dialect-specific statements.
-            let (text, only): (Value, Option<String>) = if spec.is_mapping() {
-                check_keys(spec, &["statements", "dbms"], &ctx)?;
-                (
-                    get(spec, "statements").cloned().ok_or_else(|| format!("{ctx}: missing 'statements'"))?,
-                    get(spec, "dbms").and_then(scalar_string),
-                )
-            } else {
-                (spec.clone(), None)
-            };
-            if let Some(only) = only {
-                if Dialect::from_driver(&only).is_err() {
-                    return Err(format!("{ctx}: unknown dbms '{only}'"));
-                }
-                if only != d.name() {
-                    return Ok(vec![]);
-                }
+            // Escape hatch for what the declarative model cannot express (views, triggers,
+            // functions). Raw SQL is dialect-specific, so it must name its dialect(s) and a
+            // different driver is a hard error (put per-dialect variants in separate changeSets
+            // with a changeSet-level `dbms:`).
+            if !spec.is_mapping() {
+                return Err(format!("{ctx}: 'sql' must declare its dialect: {{ dbms: postgres, statements: ... }}"));
+            }
+            check_keys(spec, &["statements", "dbms"], &ctx)?;
+            let text = get(spec, "statements").cloned().ok_or_else(|| format!("{ctx}: missing 'statements'"))?;
+            let dbms = get(spec, "dbms").and_then(scalar_string)
+                .ok_or_else(|| format!("{ctx}: 'sql' must declare its dialect with 'dbms:'"))?;
+            let wanted: Vec<&str> = dbms.split(',').map(str::trim).collect();
+            for w in &wanted {
+                Dialect::from_driver(w).map_err(|_| format!("{ctx}: unknown dbms '{w}'"))?;
+            }
+            if !wanted.contains(&d.name()) {
+                return Err(format!(
+                    "{ctx}: raw SQL is written for dbms '{dbms}' but the configured driver is '{}'",
+                    d.name()
+                ));
             }
             let stmts: Vec<String> = match &text {
                 Value::String(s) => vec![s.clone()],
@@ -397,15 +492,158 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
             Ok(stmts)
         }
         other => Err(format!(
-            "{ctx}: unsupported change type '{other}' (supported: createTable, dropTable, renameTable, addColumn, dropColumn, renameColumn, createIndex, dropIndex, insert, sql)"
+            "{ctx}: unsupported change type '{other}' (supported: createTable, dropTable, renameTable, addColumn, dropColumn, renameColumn, modifyEnumCheck, createIndex, dropIndex, insert, sql)"
         )),
     }
 }
 
+fn parse_check(d: Dialect, v: &Value, negate: bool, ctx: &str) -> Result<Check, String> {
+    let map = v.as_mapping().filter(|m| m.len() == 1)
+        .ok_or_else(|| format!("{ctx}: each check must be a mapping with exactly one check type"))?;
+    let (kind, spec) = map.iter().next().unwrap();
+    let kind = kind.as_str().unwrap_or("");
+    let ctx = format!("{ctx}, {kind}");
+    let name = |key: &str| -> Result<String, String> {
+        let n = get_str(spec, key, &ctx)?;
+        quote_ident(d, &n, &ctx)?; // validate only; the runtime binds the raw name as a parameter
+        Ok(n)
+    };
+    let neg = if negate { "not " } else { "" };
+    match kind {
+        "not" => {
+            if negate {
+                return Err(format!("{ctx}: 'not' cannot be nested"));
+            }
+            parse_check(d, spec, true, &ctx)
+        }
+        "tableExists" => {
+            check_keys(spec, &["tableName"], &ctx)?;
+            let t = name("tableName")?;
+            Ok(Check { negate, kind: kind.into(), desc: format!("{neg}tableExists({t})"), a: t, b: String::new() })
+        }
+        "columnExists" => {
+            check_keys(spec, &["tableName", "columnName"], &ctx)?;
+            let (t, c) = (name("tableName")?, name("columnName")?);
+            Ok(Check { negate, kind: kind.into(), desc: format!("{neg}columnExists({t}.{c})"), a: t, b: c })
+        }
+        "indexExists" => {
+            check_keys(spec, &["tableName", "indexName"], &ctx)?;
+            let (t, i) = (name("tableName")?, name("indexName")?);
+            Ok(Check { negate, kind: kind.into(), desc: format!("{neg}indexExists({i} on {t})"), a: t, b: i })
+        }
+        "sqlCheck" => {
+            check_keys(spec, &["sql", "expectedResult"], &ctx)?;
+            let sql = get_str(spec, "sql", &ctx)?.trim().trim_end_matches(';').trim().to_string();
+            if sql.is_empty() || sql.contains(';') {
+                return Err(format!("{ctx}: 'sql' must be exactly one statement"));
+            }
+            let expected = get_str(spec, "expectedResult", &ctx)?;
+            Ok(Check { negate, kind: kind.into(), desc: format!("{neg}sqlCheck({sql} = {expected})"), a: sql, b: expected })
+        }
+        "dbms" => {
+            let list = scalar_string(spec).ok_or_else(|| format!("{ctx}: expected a driver list, e.g. dbms: postgres,mysql"))?;
+            let mut hit = false;
+            for w in list.split(',').map(str::trim) {
+                Dialect::from_driver(w).map_err(|e| format!("{ctx}: {e}"))?;
+                hit |= w == d.name();
+            }
+            Ok(Check { negate, kind: "const".into(), desc: format!("{neg}dbms({list})"), a: (if hit { "1" } else { "0" }).into(), b: String::new() })
+        }
+        other => Err(format!(
+            "{ctx}: unsupported precondition '{other}' (supported: tableExists, columnExists, indexExists, sqlCheck, dbms, not)"
+        )),
+    }
+}
+
+fn parse_preconditions(d: Dialect, pc: &Value, ctx: &str) -> Result<PreConditions, String> {
+    let ctx = format!("{ctx}, preConditions");
+    check_keys(pc, &["onFail", "checks"], &ctx)?;
+    // No default-by-omission surprises: the default is HALT, written out in the docs.
+    let on_fail = match get(pc, "onFail") {
+        None => "HALT".to_string(),
+        Some(v) => scalar_string(v).unwrap_or_default(),
+    };
+    if !["HALT", "CONTINUE", "MARK_RAN", "WARN"].contains(&on_fail.as_str()) {
+        return Err(format!("{ctx}: onFail must be HALT, CONTINUE, MARK_RAN or WARN, found '{on_fail}'"));
+    }
+    let list = get(pc, "checks").and_then(|c| c.as_sequence())
+        .ok_or_else(|| format!("{ctx}: 'checks' must be a list"))?;
+    if list.is_empty() {
+        return Err(format!("{ctx}: 'checks' must not be empty"));
+    }
+    let checks = list.iter().map(|c| parse_check(d, c, false, &ctx)).collect::<Result<_, _>>()?;
+    Ok(PreConditions { on_fail, checks })
+}
+
+fn mapping1(key: &str, spec: Vec<(&str, Value)>) -> Value {
+    let mut inner = serde_yaml::Mapping::new();
+    for (k, v) in spec {
+        inner.insert(Value::String(k.to_string()), v);
+    }
+    let mut outer = serde_yaml::Mapping::new();
+    outer.insert(Value::String(key.to_string()), Value::Mapping(inner));
+    Value::Mapping(outer)
+}
+
+/// The change that undoes `change`, or the reason there is none.
+fn invert_change(d: Dialect, change: &Value) -> Result<Vec<Value>, String> {
+    let s = |v: &Value, k: &str| get(v, k).cloned().unwrap_or(Value::Null);
+    let map = change.as_mapping().and_then(|m| m.iter().next());
+    let Some((kind, spec)) = map else { return Err("malformed change".into()) };
+    match kind.as_str().unwrap_or("") {
+        "createTable" => Ok(vec![mapping1("dropTable", vec![("tableName", s(spec, "tableName"))])]),
+        "addColumn" => {
+            let cols = get(spec, "columns").and_then(|c| c.as_sequence()).cloned().unwrap_or_default();
+            Ok(cols.iter().rev().map(|c| {
+                let name = get(c, "column").map(|c| s(c, "name")).unwrap_or(Value::Null);
+                mapping1("dropColumn", vec![("tableName", s(spec, "tableName")), ("columnName", name)])
+            }).collect())
+        }
+        "createIndex" => Ok(vec![mapping1("dropIndex", vec![("tableName", s(spec, "tableName")), ("indexName", s(spec, "indexName"))])]),
+        "renameTable" => Ok(vec![mapping1("renameTable", vec![("oldTableName", s(spec, "newTableName")), ("newTableName", s(spec, "oldTableName"))])]),
+        "renameColumn" => Ok(vec![mapping1("renameColumn", vec![
+            ("tableName", s(spec, "tableName")),
+            ("oldColumnName", s(spec, "newColumnName")),
+            ("newColumnName", s(spec, "oldColumnName")),
+        ])]),
+        "sql" => {
+            // A 'sql' change for another dbms does nothing here, so there is nothing to undo.
+            if change_to_sql(d, change, "sql")?.is_empty() { Ok(vec![]) } else { Err("a 'sql' change cannot be undone automatically".into()) }
+        }
+        k => Err(format!("'{k}' cannot be undone automatically")),
+    }
+}
+
+fn rollback_of(d: Dialect, cs: &Value, changes: &[Value], ctx: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    if let Some(rb) = get(cs, "rollback") {
+        let list = rb.as_sequence().ok_or_else(|| format!("{ctx}: 'rollback' must be a list of changes"))?;
+        for c in list {
+            out.extend(change_to_sql(d, c, &format!("{ctx}, rollback"))?);
+        }
+        return Ok(out);
+    }
+    for c in changes.iter().rev() {
+        for inv in invert_change(d, c)? {
+            out.extend(change_to_sql(d, &inv, ctx)?);
+        }
+    }
+    Ok(out)
+}
+
 fn checksum_of(cs: &Value) -> String {
+    // 'rollback', 'tag' and 'preConditions' do not change what the changeSet did, so adding one later must not
+    // invalidate the checksum of an already applied changeSet.
+    let mut cs = cs.clone();
+    if let Some(m) = cs.as_mapping_mut() {
+        m.remove(Value::String("rollback".into()));
+        m.remove(Value::String("tag".into()));
+        m.remove(Value::String("preConditions".into()));
+    }
+    let cs = &cs;
     // serde_yaml keeps mapping order, so the checksum follows the file's text order but not
     // its formatting (whitespace/comments/quoting do not change it).
-    let canonical = serde_json::to_string(cs).unwrap_or_default();
+    let canonical = serde_json::to_string(&cs).unwrap_or_default();
     let digest = Sha256::digest(canonical.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -414,7 +652,7 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
     let id = get_str(cs, "id", &format!("{file}: changeSet"))?;
     let author = get_str(cs, "author", &format!("{file}: changeSet '{id}'"))?;
     let ctx = format!("{file}: changeSet '{id}' by '{author}'");
-    check_keys(cs, &["id", "author", "changes", "runOnChange", "runAlways", "dbms", "comment"], &ctx)?;
+    check_keys(cs, &["id", "author", "changes", "runOnChange", "runAlways", "dbms", "comment", "rollback", "tag", "preConditions"], &ctx)?;
     if id.contains('\u{1f}') || author.contains('\u{1f}') || id.is_empty() || author.is_empty() {
         return Err(format!("{ctx}: id and author must be non-empty text"));
     }
@@ -432,11 +670,30 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
     if changes.is_empty() {
         return Err(format!("{ctx}: 'changes' must not be empty"));
     }
+    let pre = match get(cs, "preConditions") {
+        Some(pc) => Some(parse_preconditions(d, pc, &ctx)?),
+        None => None,
+    };
     let mut stmts = Vec::new();
     for c in changes {
         stmts.extend(change_to_sql(d, c, &ctx)?);
     }
+    // An invalid explicit rollback block is a definition error; an inherently irreversible
+    // change only becomes an error when a rollback is requested.
+    let rollback = match rollback_of(d, cs, changes, &ctx) {
+        Err(e) if get(cs, "rollback").is_some() => return Err(e),
+        r => r.map_err(|e| format!("{ctx}: cannot be rolled back: {e} (add a 'rollback:' block)")),
+    };
+    let tag = match get(cs, "tag") {
+        None => None,
+        Some(v) => {
+            let t = scalar_string(v).filter(|t| !t.is_empty() && !t.contains(['\u{1d}', '\u{1e}', '\u{1f}']));
+            Some(t.ok_or_else(|| format!("{ctx}: 'tag' must be non-empty text"))?)
+        }
+    };
     Ok(Some(ChangeSet {
+        rollback,
+        tag,
         id,
         author,
         file: file.to_string(),
@@ -445,6 +702,7 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
         run_always: get_bool(cs, "runAlways", &ctx)?,
         stmts,
         changes: changes.clone(),
+        pre,
     }))
 }
 
@@ -465,7 +723,12 @@ fn load_file(
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string_lossy().into_owned());
     let text = std::fs::read_to_string(&canon).map_err(|e| format!("cannot read changelog {}: {e}", path.display()))?;
-    let doc: Value = serde_yaml::from_str(&text).map_err(|e| format!("{rel}: invalid YAML: {e}"))?;
+    let is_xml = canon.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml"));
+    let doc: Value = if is_xml {
+        crate::migrate_xml::parse_changelog(&text).map_err(|e| format!("{rel}: invalid XML: {e}"))?
+    } else {
+        serde_yaml::from_str(&text).map_err(|e| format!("{rel}: invalid YAML: {e}"))?
+    };
     check_keys(&doc, &["databaseChangeLog"], &rel)?;
     let items = get(&doc, "databaseChangeLog").and_then(|v| v.as_sequence())
         .ok_or_else(|| format!("{rel}: 'databaseChangeLog' must be a list"))?;
@@ -494,7 +757,12 @@ fn load_file(
 
 /// Load a changelog (following `include:`s) and translate it for `dialect`.
 /// Hard errors: duplicate id+author, anything unparseable or unsupported.
-pub fn load_changelog(path: &Path, dialect: Dialect) -> Result<Vec<ChangeSet>, String> {
+pub fn load_changelog(
+    path: &Path,
+    dialect: Dialect,
+    enums: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Result<Vec<ChangeSet>, String> {
+    ENUMS.with(|e| *e.borrow_mut() = enums.clone());
     let root_dir = path.parent().unwrap_or(Path::new("."));
     let mut out = Vec::new();
     load_file(dialect, root_dir, path, &mut Vec::new(), &mut out)?;
@@ -504,6 +772,14 @@ pub fn load_changelog(path: &Path, dialect: Dialect) -> Result<Vec<ChangeSet>, S
             return Err(format!("duplicate changeSet id '{}' by '{}' (in {})", cs.id, cs.author, cs.file));
         }
     }
+    let mut tags = HashSet::new();
+    for cs in &out {
+        if let Some(t) = &cs.tag {
+            if !tags.insert(t.clone()) {
+                return Err(format!("duplicate tag '{t}' (changeSet '{}' by '{}')", cs.id, cs.author));
+            }
+        }
+    }
     if out.is_empty() {
         return Err(format!("changelog {} contains no changeSets for driver {}", path.display(), dialect.name()));
     }
@@ -511,13 +787,31 @@ pub fn load_changelog(path: &Path, dialect: Dialect) -> Result<Vec<ChangeSet>, S
 }
 
 /// Wire format read by `tinox_migrate_run` in runtime.c: change sets separated by 0x1d, fields by
-/// 0x1f (id, author, file, checksum, flags, statements joined by 0x1e).
+/// 0x1f (id, author, file, checksum, flags, statements joined by 0x1e, rollback statements joined
+/// by 0x1e, reason the changeSet is irreversible or empty, tag or empty, preconditions). Preconditions
+/// are empty or `onFail` followed by checks, all joined by 0x1c; a check's fields (negate 0/1, kind,
+/// a, b, description) are joined by 0x1b.
 pub fn serialize_payload(sets: &[ChangeSet]) -> String {
     let recs: Vec<String> = sets
         .iter()
         .map(|c| {
             let flags = format!("{}{}", if c.run_on_change { "C" } else { "" }, if c.run_always { "A" } else { "" });
-            [c.id.as_str(), c.author.as_str(), c.file.as_str(), c.checksum.as_str(), flags.as_str(), &c.stmts.join("\u{1e}")]
+            let pre = match &c.pre {
+                None => String::new(),
+                Some(p) => {
+                    let mut parts = vec![p.on_fail.clone()];
+                    for k in &p.checks {
+                        parts.push([if k.negate { "1" } else { "0" }, &k.kind, &k.a, &k.b, &k.desc].join("\u{1b}"));
+                    }
+                    parts.join("\u{1c}")
+                }
+            };
+            let (rb, why) = match &c.rollback {
+                Ok(v) => (v.join("\u{1e}"), String::new()),
+                Err(e) => (String::new(), e.clone()),
+            };
+            [c.id.as_str(), c.author.as_str(), c.file.as_str(), c.checksum.as_str(), flags.as_str(), &c.stmts.join("\u{1e}"),
+             rb.as_str(), why.as_str(), c.tag.as_deref().unwrap_or(""), &pre]
                 .join("\u{1f}")
         })
         .collect();
@@ -544,11 +838,56 @@ mod tests {
     }
 
     #[test]
+    fn enum_columns_and_modify() {
+        ENUMS.with(|e| { e.borrow_mut().insert("Status".into(), vec!["Open".into(), "Done".into()]); });
+        let y = "id: 1\nauthor: a\nchanges:\n  - createTable:\n      tableName: t\n      columns:\n        - column: {name: st, type: enum(Status), defaultValue: Open, constraints: {nullable: false}}\n        - column: {name: s2, type: enum(Status), enumCheck: false}\n";
+        let pg = cs(Dialect::Postgres, y).unwrap().unwrap();
+        assert_eq!(pg.stmts[0], "CREATE TABLE \"t\" (\"st\" VARCHAR(255) NOT NULL DEFAULT 'Open' CONSTRAINT \"chk_t_st\" CHECK (\"st\" IN ('Open', 'Done')), \"s2\" VARCHAR(255))");
+        let bad = y.replace("defaultValue: Open", "defaultValue: Nope");
+        assert!(cs(Dialect::Postgres, &bad).unwrap_err().contains("variant of enum Status"));
+        assert!(cs(Dialect::Sqlite, &y.replace("Status", "Missing")).unwrap_err().contains("unknown Tinox enum"));
+        let m = "id: 2\nauthor: a\nchanges:\n  - modifyEnumCheck: {tableName: t, columnName: st, type: enum(Status)}\n";
+        assert_eq!(cs(Dialect::Postgres, m).unwrap().unwrap().stmts.len(), 2);
+        assert!(cs(Dialect::Mysql, m).unwrap().unwrap().stmts[0].contains("DROP CHECK"));
+        assert!(cs(Dialect::Sqlite, m).is_err());
+    }
+
+    #[test]
     fn unsupported_and_unsafe_are_hard_errors() {
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nchanges:\n  - frobnicate: {}\n").is_err());
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: \"x; DROP\"}\n").is_err());
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nchanges:\n  - createTable: {tableName: t, columns: [{column: {name: a, type: weird}}]}\n").is_err());
         assert!(cs(Dialect::Sqlite, "id: 1\nauthor: a\nbogus: 1\nchanges:\n  - dropTable: {tableName: t}\n").is_err());
+    }
+
+    #[test]
+    fn preconditions_parse_and_validate() {
+        let base = "id: 1\nauthor: a\npreConditions:\n  onFail: MARK_RAN\n  checks:\n    - not: {tableExists: {tableName: person}}\n    - dbms: sqlite\nchanges:\n  - dropTable: {tableName: t}\n";
+        let c = cs(Dialect::Sqlite, base).unwrap().unwrap();
+        let pre = c.pre.unwrap();
+        assert_eq!(pre.on_fail, "MARK_RAN");
+        assert!(pre.checks[0].negate && pre.checks[0].kind == "tableExists");
+        assert_eq!(pre.checks[1].a, "1");
+        assert_eq!(cs(Dialect::Postgres, base).unwrap().unwrap().pre.unwrap().checks[1].a, "0");
+        let plain = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: t}\n";
+        assert_eq!(c.checksum, cs(Dialect::Sqlite, plain).unwrap().unwrap().checksum, "preConditions are not part of the checksum");
+        assert!(cs(Dialect::Sqlite, &base.replace("MARK_RAN", "SHRUG")).is_err());
+        assert!(cs(Dialect::Sqlite, &base.replace("tableExists", "viewExists")).is_err());
+        assert!(cs(Dialect::Sqlite, &base.replace("onFail: MARK_RAN\n  checks", "checks")).unwrap().unwrap().pre.unwrap().on_fail == "HALT");
+    }
+
+    #[test]
+    fn raw_sql_requires_matching_dialect() {
+        let ok = "id: 1\nauthor: a\nchanges:\n  - sql: {dbms: postgres, statements: \"CREATE VIEW v AS SELECT 1\"}\nrunOnChange: true\n";
+        let c = cs(Dialect::Postgres, ok).unwrap().unwrap();
+        assert!(c.run_on_change);
+        assert_eq!(c.stmts, vec!["CREATE VIEW v AS SELECT 1"]);
+        assert!(cs(Dialect::Sqlite, ok).unwrap_err().contains("postgres"));
+        assert!(cs(Dialect::Postgres, "id: 1\nauthor: a\nchanges:\n  - sql: \"SELECT 1\"\n").is_err());
+        assert!(cs(Dialect::Postgres, "id: 1\nauthor: a\nchanges:\n  - sql: {statements: \"SELECT 1\"}\n").is_err());
+        // changeSet-level dbms filter still skips the whole set for other drivers
+        let f = "id: 1\nauthor: a\ndbms: postgres\nchanges:\n  - sql: {dbms: postgres, statements: \"SELECT 1\"}\n";
+        assert!(cs(Dialect::Sqlite, f).unwrap().is_none());
     }
 
     #[test]
@@ -559,5 +898,21 @@ mod tests {
         let b = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: t}\n";
         let c = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: u}\n";
         assert_ne!(cs(Dialect::Sqlite, b).unwrap().unwrap().checksum, cs(Dialect::Sqlite, c).unwrap().unwrap().checksum);
+    }
+
+    #[test]
+    fn rollback_derived_explicit_and_irreversible() {
+        let y = "id: 1\nauthor: a\nchanges:\n  - createTable: {tableName: t, columns: [{column: {name: a, type: int}}]}\n  - createIndex: {tableName: t, indexName: i, columns: [a]}\n  - addColumn: {tableName: t, columns: [{column: {name: b, type: int}}, {column: {name: c, type: int}}]}\n";
+        let r = cs(Dialect::Sqlite, y).unwrap().unwrap().rollback.unwrap();
+        assert_eq!(r, vec![
+            "ALTER TABLE \"t\" DROP COLUMN \"c\"", "ALTER TABLE \"t\" DROP COLUMN \"b\"",
+            "DROP INDEX \"i\"", "DROP TABLE \"t\""]);
+        let bad = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: t}\n";
+        assert!(cs(Dialect::Sqlite, bad).unwrap().unwrap().rollback.is_err());
+        let ok = format!("{bad}rollback:\n  - sql: {{dbms: sqlite, statements: CREATE TABLE t (a INTEGER)}}\n");
+        let c = cs(Dialect::Sqlite, &ok).unwrap().unwrap();
+        assert_eq!(c.rollback.unwrap(), vec!["CREATE TABLE t (a INTEGER)"]);
+        assert_eq!(c.checksum, cs(Dialect::Sqlite, bad).unwrap().unwrap().checksum, "rollback is not part of the checksum");
+        assert!(cs(Dialect::Sqlite, &format!("{bad}rollback: nope\n")).is_err());
     }
 }
