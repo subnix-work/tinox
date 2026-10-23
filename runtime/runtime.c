@@ -10347,7 +10347,7 @@ char*   tinox_db_error(void* c)                                                {
 // configured driver and passes the result here as one payload string (format: see
 // serialize_payload in crates/tinox/src/migrate.rs): change sets separated by 0x1d,
 // fields by 0x1f (id, author, file, checksum, flags, statements joined by 0x1e, rollback statements, irreversible
-// reason, tag).
+// reason, tag, preconditions, context names, label names).
 // This engine is driver-agnostic: it only uses the tinox_db_* ABI above.
 //
 // Messages go to stderr so a program's stdout stays untouched; `status` prints its
@@ -10369,6 +10369,7 @@ typedef struct {
     char** stmts; int n_stmts;
     char** rb_stmts; int n_rb_stmts;
     char* irreversible;  // reason, empty when the change set can be rolled back
+    char* context; char* labels; // comma-separated names
     char* tag;           // empty when untagged
     // preConditions: on_fail is NULL when the changeSet has none; each check is
     // { negate, kind, a, b, desc } (see serialize_payload in migrate.rs).
@@ -10428,7 +10429,7 @@ static TinoxMigSet* tinox_mig_parse(const char* payload, int* n_sets) {
     for (int i = 0; i < n; i++) {
         int nf = 0;
         char** f = tinox_mig_split(recs[i], '\x1f', &nf);
-        if (nf != 10) tinox_mig_die("corrupt changelog payload");
+        if (nf != 12) tinox_mig_die("corrupt changelog payload");
         sets[i].id = f[0]; sets[i].author = f[1]; sets[i].file = f[2]; sets[i].checksum = f[3];
         sets[i].run_on_change = strchr(f[4], 'C') != NULL;
         sets[i].run_always = strchr(f[4], 'A') != NULL;
@@ -10437,6 +10438,7 @@ static TinoxMigSet* tinox_mig_parse(const char* payload, int* n_sets) {
         sets[i].rb_stmts = tinox_mig_split(f[6], '\x1e', &sets[i].n_rb_stmts);
         if (sets[i].n_rb_stmts == 1 && sets[i].rb_stmts[0][0] == 0) sets[i].n_rb_stmts = 0;
         sets[i].irreversible = f[7]; sets[i].tag = f[8];
+        sets[i].context = f[10]; sets[i].labels = f[11];
         if (f[9][0]) {
             int np = 0;
             char** parts = tinox_mig_split(f[9], '\x1c', &np);
@@ -10452,6 +10454,28 @@ static TinoxMigSet* tinox_mig_parse(const char* payload, int* n_sets) {
     }
     *n_sets = n;
     return sets;
+}
+
+// Every non-empty qualifier list must intersect the active contexts.
+static int tinox_mig_matches(const char* names, const char* active) {
+    if (!*names) return 1;
+    if (!active || !*active) return 0;
+    for (const char* n = names; *n;) {
+        const char* end = strchr(n, ',');
+        size_t len = end ? (size_t)(end - n) : strlen(n);
+        for (const char* a = active; *a;) {
+            const char* ae = strchr(a, ',');
+            const char* stop = ae ? ae : a + strlen(a);
+            while (a < stop && isspace((unsigned char)*a)) a++;
+            while (stop > a && isspace((unsigned char)stop[-1])) stop--;
+            if ((size_t)(stop - a) == len && !strncmp(n, a, len)) return 1;
+            if (!ae) break;
+            a = ae + 1;
+        }
+        if (!end) break;
+        n = end + 1;
+    }
+    return 0;
 }
 
 static void tinox_mig_sleep_ms(long ms) {
@@ -10715,8 +10739,9 @@ void tinox_migrate_run(const char* payload) {
     }
 
     // Pass 1: classify. A changed change set that already ran is an error, before anything is applied.
-    int* state = (int*)calloc((size_t)(n_sets + 1), sizeof(int)); // 0 applied, 1 pending, 2 re-run, 3 changed
+    int* state = (int*)calloc((size_t)(n_sets + 1), sizeof(int)); // 0 applied, 1 pending, 2 re-run, 3 changed, 4 excluded
     int changed = 0, pending = 0;
+    const char* contexts = getenv("TINOX_MIGRATE_CONTEXTS");
     for (int i = 0; i < n_sets; i++) {
         int found = -1;
         for (int64_t j = 0; j < n_applied; j++)
@@ -10727,6 +10752,12 @@ void tinox_migrate_run(const char* payload) {
             else { state[i] = 3; changed++; }
         } else if (sets[i].run_always) { state[i] = 2; pending++; }
     }
+    for (int i = 0; i < n_sets; i++) {
+        if ((state[i] == 1 || state[i] == 2) &&
+            (!tinox_mig_matches(sets[i].context, contexts) || !tinox_mig_matches(sets[i].labels, contexts))) {
+            state[i] = 4; pending--;
+        }
+    }
     for (int64_t j = 0; j < n_applied; j++) {
         int known = 0;
         for (int i = 0; i < n_sets; i++)
@@ -10736,8 +10767,10 @@ void tinox_migrate_run(const char* payload) {
 
     if (status_only) {
         for (int i = 0; i < n_sets; i++) {
-            const char* label = state[i] == 0 ? "applied" : state[i] == 1 ? "pending" : state[i] == 2 ? "re-run" : "CHANGED";
-            printf("%-8s %s by %s (%s)\n", label, sets[i].id, sets[i].author, sets[i].file);
+            const char* label = state[i] == 0 ? "applied" : state[i] == 1 ? "pending" : state[i] == 2 ? "re-run" : state[i] == 4 ? "excluded" : "CHANGED";
+            printf("%-8s %s by %s (%s)", label, sets[i].id, sets[i].author, sets[i].file);
+            if (*sets[i].tag) printf(" [tag: %s]", sets[i].tag);
+            printf("\n");
         }
         printf("%d changeSet(s): %d pending, %d changed\n", n_sets, pending, changed);
         fflush(stdout);
@@ -10774,7 +10807,7 @@ void tinox_migrate_run(const char* payload) {
     int64_t order = n_applied;
     int ran = 0;
     for (int i = 0; i < n_sets; i++) {
-        if (state[i] == 0) continue;
+        if (state[i] == 0 || state[i] == 4) continue;
         int skip_stmts = baseline;
         if (!baseline && sets[i].on_fail) {
             const char* failed = tinox_mig_first_failed(conn, &sets[i]);

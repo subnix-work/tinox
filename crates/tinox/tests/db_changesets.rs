@@ -713,3 +713,83 @@ fn changesets_mysql_apply_validate_partial_and_concurrent_starters() {
         assert_eq!(my.query("SELECT COUNT(*) FROM person"), "1", "round {round}: seed row must exist exactly once");
     }
 }
+
+#[test]
+fn changesets_tags_and_contexts() {
+    assert!(tool_available("sqlite3", &["--version"]));
+    let p = Project::new("contexts", "sqlite", "data/contexts.db", "");
+    let db = p.dir.join("data/contexts.db");
+    let log = r#"databaseChangeLog:
+  - changeSet:
+      id: schema
+      author: a
+      changes:
+        - createTable: {tableName: items, columns: [{column: {name: id, type: int}}]}
+  - changeSet:
+      id: checkpoint
+      author: a
+      changes:
+        - tag: {tag: base}
+  - changeSet:
+      id: seed
+      author: a
+      context: dev, test
+      labels: seed
+      preConditions:
+        checks:
+          - tableExists: {tableName: items}
+      changes:
+        - insert: {tableName: items, values: {id: 7}}
+      rollback:
+        - sql: {dbms: sqlite, statements: DELETE FROM items}
+  - changeSet:
+      id: production
+      author: a
+      context: prod
+      changes:
+        - createTable: {tableName: production, columns: [{column: {name: id, type: int}}]}
+"#;
+    p.write("migrations/changelog.yaml", log);
+    assert!(p.tinox(&["db", "validate", "--rollback"]).status.success());
+    for args in [vec!["db", "update", "--contexts"], vec!["db", "update", "--contexts", "dev,,seed"]] {
+        assert!(!p.tinox(&args).status.success());
+    }
+    let up = p.tinox(&["db", "update"]);
+    assert!(up.status.success(), "{}", text(&up));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM items"), "0");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "2");
+    let st = p.tinox(&["db", "status"]);
+    assert!(st.status.success() && text(&st).contains("[tag: base]") && text(&st).contains("excluded"), "{}", text(&st));
+    // Both lists must match; a context alone must not enable a labelled seed.
+    assert!(p.tinox(&["db", "update", "--contexts", "dev"]).status.success());
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM items"), "0");
+    let sql = p.tinox(&["db", "update-sql", "--contexts", " test, seed "]);
+    assert!(sql.status.success() && text(&sql).contains("INSERT INTO") && !text(&sql).contains("CREATE TABLE \"production\""), "{}", text(&sql));
+    let up = p.tinox(&["db", "update", "--contexts", " test, seed "]);
+    assert!(up.status.success(), "{}", text(&up));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM items"), "1");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "3");
+    assert!(p.tinox(&["db", "update", "--contexts", "dev,seed"]).status.success());
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM items"), "1");
+    // Qualifiers are metadata and may change without invalidating applied history.
+    p.write("migrations/changelog.yaml", &log.replace("context: dev, test", "context: local"));
+    assert!(p.tinox(&["db", "status"]).status.success());
+    assert!(p.tinox(&["db", "update", "--contexts", "prod"]).status.success());
+    p.write("migrations/changelog.yaml", &log.replace("tableName: production", "tableName: tampered"));
+    let changed = p.tinox(&["db", "update", "--contexts", "dev,seed"]);
+    assert!(!changed.status.success() && text(&changed).contains("checksum validation failed"), "{}", text(&changed));
+    p.write("migrations/changelog.yaml", log);
+    // Rollback sees the whole history regardless of context selection.
+    let rb = p.tinox(&["db", "rollback", "--tag", "base"]);
+    assert!(rb.status.success(), "{}", text(&rb));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM items"), "0");
+    // A tag-only changeSet rolls back by removing its history row.
+    assert!(p.tinox(&["db", "rollback", "--count", "1"]).status.success());
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "1");
+    // XML goes through the same tag and qualifier validation.
+    p.write("migrations/changelog.yaml", "databaseChangeLog:\n  - include: {file: tagged.xml}\n");
+    p.write("migrations/tagged.xml", r#"<databaseChangeLog><changeSet id="xml" author="a" context="dev" labels="seed"><tag tag="xml-point"/></changeSet></databaseChangeLog>"#);
+    assert!(p.tinox(&["db", "validate", "--rollback"]).status.success());
+    assert!(p.tinox(&["db", "update", "--contexts", "dev,seed"]).status.success());
+    assert!(text(&p.tinox(&["db", "status"])).contains("[tag: xml-point]"));
+}
