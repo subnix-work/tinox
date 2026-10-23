@@ -506,6 +506,8 @@ struct DbConfig {
     changelog: Option<String>,
     /// Apply the changelog at program start, before `main` runs.
     migrate_on_startup: bool,
+    /// Apply the changelog in `tinox test` binaries too (opt-in, issue #425).
+    migrate_on_test: bool,
     /// Directory holding the tinox.toml this was read from.
     root: PathBuf,
 }
@@ -529,6 +531,7 @@ fn read_database_config() -> Option<DbConfig> {
             let mut pool: Option<usize> = None;
             let mut changelog: Option<String> = None;
             let mut migrate_on_startup = false;
+            let mut migrate_on_test = false;
             let mut found = false;
             for line in content.lines() {
                 let line = line.trim();
@@ -557,6 +560,16 @@ fn read_database_config() -> Option<DbConfig> {
                             std::process::exit(1);
                         }
                     };
+                } else if let Some(rest) = line.strip_prefix("migrate_on_test") {
+                    let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
+                    migrate_on_test = match rest {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            eprintln!("error: [database] migrate_on_test must be true or false, found '{rest}'");
+                            std::process::exit(1);
+                        }
+                    };
                 } else if let Some(rest) = line.strip_prefix("pool") {
                     let rest = rest.trim().strip_prefix('=').map(|s| s.trim()).unwrap_or("");
                     match rest.parse::<usize>() {
@@ -569,7 +582,7 @@ fn read_database_config() -> Option<DbConfig> {
                 }
             }
             if found && !driver.is_empty() {
-                return Some(DbConfig { driver, url, pool: pool.unwrap_or(5), changelog, migrate_on_startup, root: dir.clone() });
+                return Some(DbConfig { driver, url, pool: pool.unwrap_or(5), changelog, migrate_on_startup, migrate_on_test, root: dir.clone() });
             }
             return None;
         }
@@ -630,6 +643,18 @@ fn migration_payload(cfg: Option<&DbConfig>) -> Result<Option<String>, String> {
     }
     let dialect = migrate::Dialect::from_driver(&cfg.driver)?;
     let sets = migrate::load_changelog(&changelog_path(cfg), dialect, &project_enums(&cfg.root))?;
+    Ok(Some(migrate::serialize_payload(&sets)))
+}
+
+/// Like `migration_payload`, for `tinox test` binaries: only `[database] migrate_on_test = true`
+/// (or the forced CLI mode) embeds the changelog; `migrate_on_startup` alone does not.
+fn test_migration_payload(cfg: Option<&DbConfig>) -> Result<Option<String>, String> {
+    let Some(cfg) = cfg else { return Ok(None) };
+    if !cfg.migrate_on_test {
+        return Ok(None);
+    }
+    let dialect = migrate::Dialect::from_driver(&cfg.driver)?;
+    let sets = migrate::load_changelog(&changelog_path(cfg), dialect)?;
     Ok(Some(migrate::serialize_payload(&sets)))
 }
 
@@ -3048,6 +3073,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     let db_cfg_test = read_database_config();
     cg.set_db_url(db_cfg_test.as_ref().map(|c| c.url.clone()));
     cg.set_db_pool_size(db_cfg_test.as_ref().map(|c| c.pool as i64).unwrap_or(5));
+    cg.set_migration_payload(test_migration_payload(db_cfg_test.as_ref()).map_err(|e| format!("changelog: {e}"))?);
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
 

@@ -12,11 +12,15 @@ driver = "postgres"
 url = "postgres://..."
 changelog = "migrations/changelog.yaml"   # optional, this is the default
 migrate_on_startup = true                 # optional, default false
+migrate_on_test = true                    # optional, default false
 ```
 
 With `migrate_on_startup = true` the program applies pending changeSets right after the database connection is up and
 before `main` runs. A failing migration stops the program with a non-zero exit code. Programs that do not opt in are
-unchanged. Messages go to stderr, stdout stays untouched. `tinox test` binaries never migrate.
+unchanged. Messages go to stderr, stdout stays untouched. `tinox test` binaries never migrate unless `migrate_on_test = true` is set (independent of `migrate_on_startup`):
+every test binary then applies pending changeSets before its test method runs, so a test run against a fresh SQLite
+file or Postgres database needs no hand-written setup script. Point `url` at a dedicated test database; the history
+table makes repeated test runs cheap no-ops, and a failing migration fails the test.
 
 ## Changelog format
 
