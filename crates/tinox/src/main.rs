@@ -13,6 +13,7 @@ mod contract;
 mod dockerfile;
 mod migrate;
 mod migrate_xml;
+mod db_new;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
 mod reference;
@@ -121,7 +122,7 @@ fn print_help() {
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox reference [path]     Export compiler reference metadata as JSON");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
-    println!("  tinox db <command>         Schema changelog: update, status, baseline, validate, update-sql, release-lock");
+    println!("  tinox db <command>         Schema changelog: new, update, status, baseline, rollback, validate, update-sql, release-lock");
     println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");
     println!("  tinox check [file]         Type-check without compiling");
     println!("  tinox explain --bootstrap [file]  Explain generated wiring (--json)");
@@ -1639,10 +1640,14 @@ fn db_command(args: &[String]) {
         std::process::exit(1);
     };
     let Some(sub) = args.first().map(String::as_str) else {
-        fail("usage: tinox db <update|status|baseline|rollback|validate|update-sql|release-lock>".to_string());
+        fail("usage: tinox db <new|update|status|baseline|rollback|validate|update-sql|release-lock>".to_string());
     };
+    if sub == "new" {
+        db_new::run(&args[1..]).unwrap_or_else(|e| fail(e));
+        return;
+    }
     if !matches!(sub, "update" | "status" | "baseline" | "rollback" | "validate" | "update-sql" | "release-lock") {
-        fail(format!("unknown 'tinox db' command '{sub}' (expected update, status, baseline, rollback, validate, update-sql or release-lock)"));
+        fail(format!("unknown 'tinox db' command '{sub}' (expected new, update, status, baseline, rollback, validate, update-sql or release-lock)"));
     }
     // `rollback --count N | --tag T`; `validate --rollback` also demands every changeSet be reversible.
     let (mut rb_count, mut rb_tag, mut validate_rollback) = (None::<String>, None::<String>, false);

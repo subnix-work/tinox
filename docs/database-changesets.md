@@ -164,6 +164,8 @@ a hard error.
 ## CLI
 
 ```
+tinox db new "Create person table"     # append a skeleton; no database needed
+tinox db new "Add email" --include changes/add-email.yaml  # new file + append its include
 tinox db validate      # parse + check the changelog, no database needed
 tinox db update-sql    # print the SQL that `update` would run
 tinox db status        # applied / pending / changed changeSets (exit 1 on a checksum mismatch)
@@ -174,6 +176,23 @@ tinox db rollback --tag T     # undo everything applied after the changeSet tagg
 tinox db validate --rollback  # additionally require every changeSet to be reversible
 tinox db release-lock  # remove a stale lock
 ```
+
+`new` uses the configured changelog path (creating it and its parent directories if missing),
+generates an ID from a zero-padded Unix timestamp in nanoseconds plus the description as a slug,
+and reads the author from `git config user.name` in the project directory. Configure that name
+first; a missing name is an error. The description becomes the changeSet's `comment`.
+Generated IDs increase across the changelog and all its includes, and new entries are appended
+after existing entries. Existing changelog text, comments and changeSet checksums are preserved.
+
+`--include` takes a new `.yaml`, `.yml` or `.xml` filename relative to the changelog's directory;
+it creates parent directories and refuses to overwrite an existing file. YAML and XML may be
+mixed. Without `--include`, the skeleton uses the changelog's format. Run the command from the
+project directory or any subdirectory. It requires `[database] driver` configuration, but no
+database URL, connection or application build.
+
+The skeleton intentionally has no changes. Fill in `changes: []` (YAML) or add change elements
+inside `<changeSet>` (XML), then run `tinox db validate`. Validation and migration reject an
+unfinished skeleton rather than recording an empty migration.
 
 `status`, `update`, `baseline` and `release-lock` compile a tiny runner that carries the changelog and execute the same
 engine as `migrate_on_startup` (`tinox_migrate_run` in `runtime/runtime.c`); relative SQLite URLs resolve against the
