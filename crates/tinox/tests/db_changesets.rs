@@ -405,6 +405,75 @@ fn changesets_postgres_apply_and_concurrent_starters() {
     }
 }
 
+#[test]
+fn changesets_rollback_by_count_and_tag_refuses_irreversible() {
+    if !tool_available("sqlite3", &["--version"]) {
+        eprintln!("SKIP changesets_rollback (sqlite3 not installed)");
+        return;
+    }
+    let p = Project::new("rollback", "sqlite", "data/rb.db", "");
+    let db = p.dir.join("data/rb.db");
+    let base = r#"databaseChangeLog:
+  - changeSet:
+      id: 1
+      author: tino
+      tag: base
+      changes:
+        - createTable: { tableName: t, columns: [ { column: { name: a, type: int } } ] }
+  - changeSet:
+      id: 2
+      author: tino
+      changes:
+        - insert: { tableName: t, values: { a: 7 } }
+  - changeSet:
+      id: 3
+      author: tino
+      changes:
+        - addColumn: { tableName: t, columns: [ { column: { name: b, type: int } } ] }
+        - createIndex: { tableName: t, indexName: idx_t_a, columns: [a] }
+"#;
+    p.write("migrations/changelog.yaml", base);
+    let u = p.tinox(&["db", "update"]);
+    assert!(u.status.success(), "{}", text(&u));
+
+    let v = p.tinox(&["db", "validate", "--rollback"]);
+    assert!(!v.status.success() && text(&v).contains("'insert' cannot be undone"), "{}", text(&v));
+    assert!(!p.tinox(&["db", "rollback"]).status.success(), "needs --count or --tag");
+
+    // Newest changeSet: derived rollback (index + column), history row removed with it.
+    let r = p.tinox(&["db", "rollback", "--count", "1"]);
+    assert!(r.status.success(), "{}", text(&r));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_t_a'"), "0");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM pragma_table_info('t') WHERE name = 'b'"), "0");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "2");
+
+    // Back to the tag: changeSet 2 is irreversible -> hard failure, nothing touched.
+    let r = p.tinox(&["db", "rollback", "--tag", "base"]);
+    assert!(!r.status.success() && text(&r).contains("nothing was rolled back"), "{}", text(&r));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM t"), "1");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "2");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog_lock"), "0", "lock must be released");
+
+    // Too many / unknown tag are refused as well.
+    assert!(!p.tinox(&["db", "rollback", "--count", "9"]).status.success());
+    assert!(!p.tinox(&["db", "rollback", "--tag", "nope"]).status.success());
+
+    // An explicit rollback block (not part of the checksum) makes it reversible.
+    p.write("migrations/changelog.yaml", &base.replace(
+        "        - insert: { tableName: t, values: { a: 7 } }\n",
+        "        - insert: { tableName: t, values: { a: 7 } }\n      rollback:\n        - sql: DELETE FROM t WHERE a = 7\n",
+    ));
+    let r = p.tinox(&["db", "rollback", "--tag", "base"]);
+    assert!(r.status.success(), "{}", text(&r));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM t"), "0");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "1");
+
+    // Re-applying works after a rollback.
+    assert!(p.tinox(&["db", "update"]).status.success());
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM t"), "1");
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog"), "3");
+}
+
 struct MysqlContainer {
     name: String,
     port: u16,
