@@ -60,7 +60,40 @@ perform (e.g. SQLite `addColumn` with `NOT NULL` and no default) is a **hard err
   `TINOX_MIGRATE_LOCK_WAIT_MS`, default 30000) and then finds nothing left to do. A lock left behind by a crashed run is
   never broken automatically: `tinox db release-lock`. Concurrent starters are verified for PostgreSQL; SQLite is a
   single-file database and not meant for several migrating processes.
-- Not implemented yet: rollback, preconditions, contexts, generating a changelog from `@Entity` classes.
+- Not implemented yet: rollback, contexts, generating a changelog from `@Entity` classes.
+
+## Preconditions
+
+A changeSet may carry `preConditions`, checked against the live database right before it would run (not by
+`validate`, `update-sql`, `status` or `baseline`):
+
+```yaml
+- changeSet:
+    id: 7
+    author: tino
+    preConditions:
+      onFail: MARK_RAN          # HALT (default) | CONTINUE | MARK_RAN | WARN
+      checks:
+        - not: { tableExists: { tableName: audit_log } }
+        - dbms: postgres,sqlite
+    changes:
+      - createTable: ...
+```
+
+Checks (all must hold): `tableExists`, `columnExists` (`tableName`, `columnName`), `indexExists` (`tableName`,
+`indexName`), `sqlCheck` (`sql`: one query, `expectedResult`: compared as text with the first column of the first row),
+`dbms` (comma separated driver list) and `not:` around any one of them. A `sqlCheck` query that itself fails is always
+a hard error.
+
+`onFail` decides what happens when a check does not hold:
+
+- `HALT` (default): print which check failed, release the lock and exit non-zero; nothing further is applied.
+- `CONTINUE`: skip the changeSet for now, record nothing; it is checked again on the next run.
+- `MARK_RAN`: record the changeSet as applied without running it (the change is already there).
+- `WARN`: print a warning and run it anyway.
+
+`preConditions` are not part of the checksum, so they can be added to an already applied changeSet. Unlike a changeSet-level
+`dbms:`, a failing `dbms` precondition goes through `onFail`.
 
 ## CLI
 

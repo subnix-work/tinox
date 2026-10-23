@@ -404,3 +404,66 @@ fn changesets_postgres_apply_and_concurrent_starters() {
         assert_eq!(pg.psql("SELECT COUNT(*) FROM person"), "1", "round {round}: seed row must exist exactly once");
     }
 }
+
+#[test]
+fn changesets_preconditions_on_fail_modes() {
+    if !tool_available("sqlite3", &["--version"]) {
+        eprintln!("SKIP changesets_preconditions (sqlite3 not installed)");
+        return;
+    }
+    let p = Project::new("precond", "sqlite", "data/test.db", "");
+    let db = p.dir.join("data/test.db");
+    sqlite(&db, "CREATE TABLE existing (id INTEGER); CREATE INDEX idx_e ON existing (id);");
+    let cl = |on_fail: &str, check: &str| {
+        format!(
+            "databaseChangeLog:\n  - changeSet:\n      id: p1\n      author: a\n      preConditions:\n        onFail: {on_fail}\n        checks:\n          - {check}\n      changes:\n        - createTable: {{tableName: made, columns: [{{column: {{name: id, type: bigint}}}}]}}\n"
+        )
+    };
+    let made = |db: &Path| sqlite(db, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'made'");
+    let logged = |db: &Path| sqlite(db, "SELECT COUNT(*) FROM tinox_changelog");
+
+    // Default is HALT with a clear message.
+    p.write("migrations/changelog.yaml", &cl("HALT", "tableExists: {tableName: nope}").replace("        onFail: HALT\n", ""));
+    let o = p.tinox(&["db", "update"]);
+    assert!(!o.status.success() && text(&o).contains("precondition failed") && text(&o).contains("tableExists(nope)"), "{}", text(&o));
+    assert_eq!((made(&db), logged(&db)), ("0".into(), "0".into()));
+    assert_eq!(sqlite(&db, "SELECT COUNT(*) FROM tinox_changelog_lock"), "0");
+
+    // CONTINUE: skipped, not recorded.
+    p.write("migrations/changelog.yaml", &cl("CONTINUE", "tableExists: {tableName: nope}"));
+    let o = p.tinox(&["db", "update"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!((made(&db), logged(&db)), ("0".into(), "0".into()));
+
+    // MARK_RAN: recorded, not run.
+    p.write("migrations/changelog.yaml", &cl("MARK_RAN", "tableExists: {tableName: nope}"));
+    let o = p.tinox(&["db", "update"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!((made(&db), logged(&db)), ("0".into(), "1".into()));
+    sqlite(&db, "DELETE FROM tinox_changelog");
+
+    // WARN: runs anyway.
+    p.write("migrations/changelog.yaml", &cl("WARN", "tableExists: {tableName: nope}"));
+    let o = p.tinox(&["db", "update"]);
+    assert!(o.status.success() && text(&o).contains("running it anyway"), "{}", text(&o));
+    assert_eq!((made(&db), logged(&db)), ("1".into(), "1".into()));
+    sqlite(&db, "DROP TABLE made; DELETE FROM tinox_changelog");
+
+    // Passing checks: not/columnExists/indexExists/sqlCheck/dbms all hold, so it runs under HALT.
+    let ok = "databaseChangeLog:\n  - changeSet:\n      id: p2\n      author: a\n      preConditions:\n        checks:\n          - not: {tableExists: {tableName: made}}\n          - columnExists: {tableName: existing, columnName: id}\n          - indexExists: {tableName: existing, indexName: idx_e}\n          - sqlCheck: {sql: \"SELECT COUNT(*) FROM existing\", expectedResult: 0}\n          - dbms: sqlite\n      changes:\n        - createTable: {tableName: made, columns: [{column: {name: id, type: bigint}}]}\n";
+    p.write("migrations/changelog.yaml", ok);
+    let o = p.tinox(&["db", "update"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(made(&db), "1");
+
+    // A wrong sqlCheck result halts.
+    sqlite(&db, "DROP TABLE made; DELETE FROM tinox_changelog");
+    p.write("migrations/changelog.yaml", &ok.replace("expectedResult: 0", "expectedResult: 5"));
+    let o = p.tinox(&["db", "update"]);
+    assert!(!o.status.success() && text(&o).contains("sqlCheck"), "{}", text(&o));
+
+    // Invalid onFail is rejected by validate.
+    p.write("migrations/changelog.yaml", &cl("SHRUG", "tableExists: {tableName: x}"));
+    let o = p.tinox(&["db", "validate"]);
+    assert!(!o.status.success() && text(&o).contains("onFail"), "{}", text(&o));
+}
