@@ -12,6 +12,7 @@ mod callgraph;
 mod contract;
 mod dockerfile;
 mod migrate;
+mod migrate_xml;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
 mod reference;
@@ -1580,10 +1581,28 @@ fn db_command(args: &[String]) {
         std::process::exit(1);
     };
     let Some(sub) = args.first().map(String::as_str) else {
-        fail("usage: tinox db <update|status|baseline|validate|update-sql|release-lock>".to_string());
+        fail("usage: tinox db <update|status|baseline|rollback|validate|update-sql|release-lock>".to_string());
     };
-    if !matches!(sub, "update" | "status" | "baseline" | "validate" | "update-sql" | "release-lock") {
-        fail(format!("unknown 'tinox db' command '{sub}' (expected update, status, baseline, validate, update-sql or release-lock)"));
+    if !matches!(sub, "update" | "status" | "baseline" | "rollback" | "validate" | "update-sql" | "release-lock") {
+        fail(format!("unknown 'tinox db' command '{sub}' (expected update, status, baseline, rollback, validate, update-sql or release-lock)"));
+    }
+    // `rollback --count N | --tag T`; `validate --rollback` also demands every changeSet be reversible.
+    let (mut rb_count, mut rb_tag, mut validate_rollback) = (None::<String>, None::<String>, false);
+    let mut it = args[1..].iter();
+    while let Some(a) = it.next() {
+        match (sub, a.as_str()) {
+            ("rollback", "--count") => rb_count = Some(it.next().cloned().unwrap_or_else(|| fail("--count needs a number".into()))),
+            ("rollback", "--tag") => rb_tag = Some(it.next().cloned().unwrap_or_else(|| fail("--tag needs a tag name".into()))),
+            ("validate", "--rollback") => validate_rollback = true,
+            _ => fail(format!("unexpected argument '{a}' for 'tinox db {sub}'")),
+        }
+    }
+    if sub == "rollback" {
+        match (&rb_count, &rb_tag) {
+            (Some(c), None) if c.parse::<u64>().map_or(true, |n| n == 0) => fail("--count must be a positive number".into()),
+            (Some(_), None) | (None, Some(_)) => {}
+            _ => fail("usage: tinox db rollback --count N | --tag T (exactly one)".into()),
+        }
     }
     let Some(cfg) = read_database_config() else {
         fail("no [database] section with a driver in tinox.toml".to_string());
@@ -1593,6 +1612,12 @@ fn db_command(args: &[String]) {
     let sets = migrate::load_changelog(&path, dialect).unwrap_or_else(|e| fail(e));
     match sub {
         "validate" => {
+            if validate_rollback {
+                let bad: Vec<&String> = sets.iter().filter_map(|c| c.rollback.as_ref().err()).collect();
+                if !bad.is_empty() {
+                    fail(bad.iter().map(|b| b.to_string()).collect::<Vec<_>>().join("\n"));
+                }
+            }
             println!("{}: {} changeSet(s) valid for {}", path.display(), sets.len(), dialect.name());
             return;
         }
@@ -1628,8 +1653,11 @@ fn db_command(args: &[String]) {
         .and_then(|out| compile_file(&stub_str, &out.to_string_lossy(), OptLevel::Release).map_err(|e| e.to_string()));
     let _ = fs::remove_dir_all(&stub_dir);
     let exe = result.unwrap_or_else(|e| fail(format!("cannot build the migration runner: {e}")));
-    let status = Command::new(exe)
-        .env("TINOX_MIGRATE_MODE", sub)
+    let mut runner = Command::new(exe);
+    runner.env("TINOX_MIGRATE_MODE", sub);
+    if let Some(c) = &rb_count { runner.env("TINOX_MIGRATE_ROLLBACK_COUNT", c); }
+    if let Some(t) = &rb_tag { runner.env("TINOX_MIGRATE_ROLLBACK_TAG", t); }
+    let status = runner
         .status()
         .unwrap_or_else(|e| fail(format!("cannot run the migration runner: {e}")));
     std::process::exit(status.code().unwrap_or(1));

@@ -46,6 +46,11 @@ pub struct ChangeSet {
     pub run_on_change: bool,
     pub run_always: bool,
     pub stmts: Vec<String>,
+    /// SQL that undoes the changeSet, or the reason it cannot be undone (checked when a
+    /// rollback is requested, never silently skipped).
+    pub rollback: Result<Vec<String>, String>,
+    /// `tag:` -- `tinox db rollback --tag T` undoes everything applied after this changeSet.
+    pub tag: Option<String>,
     pub pre: Option<PreConditions>,
 }
 
@@ -496,13 +501,72 @@ fn parse_preconditions(d: Dialect, pc: &Value, ctx: &str) -> Result<PreCondition
     Ok(PreConditions { on_fail, checks })
 }
 
+fn mapping1(key: &str, spec: Vec<(&str, Value)>) -> Value {
+    let mut inner = serde_yaml::Mapping::new();
+    for (k, v) in spec {
+        inner.insert(Value::String(k.to_string()), v);
+    }
+    let mut outer = serde_yaml::Mapping::new();
+    outer.insert(Value::String(key.to_string()), Value::Mapping(inner));
+    Value::Mapping(outer)
+}
+
+/// The change that undoes `change`, or the reason there is none.
+fn invert_change(d: Dialect, change: &Value) -> Result<Vec<Value>, String> {
+    let s = |v: &Value, k: &str| get(v, k).cloned().unwrap_or(Value::Null);
+    let map = change.as_mapping().and_then(|m| m.iter().next());
+    let Some((kind, spec)) = map else { return Err("malformed change".into()) };
+    match kind.as_str().unwrap_or("") {
+        "createTable" => Ok(vec![mapping1("dropTable", vec![("tableName", s(spec, "tableName"))])]),
+        "addColumn" => {
+            let cols = get(spec, "columns").and_then(|c| c.as_sequence()).cloned().unwrap_or_default();
+            Ok(cols.iter().rev().map(|c| {
+                let name = get(c, "column").map(|c| s(c, "name")).unwrap_or(Value::Null);
+                mapping1("dropColumn", vec![("tableName", s(spec, "tableName")), ("columnName", name)])
+            }).collect())
+        }
+        "createIndex" => Ok(vec![mapping1("dropIndex", vec![("tableName", s(spec, "tableName")), ("indexName", s(spec, "indexName"))])]),
+        "renameTable" => Ok(vec![mapping1("renameTable", vec![("oldTableName", s(spec, "newTableName")), ("newTableName", s(spec, "oldTableName"))])]),
+        "renameColumn" => Ok(vec![mapping1("renameColumn", vec![
+            ("tableName", s(spec, "tableName")),
+            ("oldColumnName", s(spec, "newColumnName")),
+            ("newColumnName", s(spec, "oldColumnName")),
+        ])]),
+        "sql" => {
+            // A 'sql' change for another dbms does nothing here, so there is nothing to undo.
+            if change_to_sql(d, change, "sql")?.is_empty() { Ok(vec![]) } else { Err("a 'sql' change cannot be undone automatically".into()) }
+        }
+        k => Err(format!("'{k}' cannot be undone automatically")),
+    }
+}
+
+fn rollback_of(d: Dialect, cs: &Value, changes: &[Value], ctx: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    if let Some(rb) = get(cs, "rollback") {
+        let list = rb.as_sequence().ok_or_else(|| format!("{ctx}: 'rollback' must be a list of changes"))?;
+        for c in list {
+            out.extend(change_to_sql(d, c, &format!("{ctx}, rollback"))?);
+        }
+        return Ok(out);
+    }
+    for c in changes.iter().rev() {
+        for inv in invert_change(d, c)? {
+            out.extend(change_to_sql(d, &inv, ctx)?);
+        }
+    }
+    Ok(out)
+}
+
 fn checksum_of(cs: &Value) -> String {
-    // preConditions decide whether a changeSet runs, not what it does: adding or changing them on
-    // an applied changeSet must not invalidate its history.
+    // 'rollback', 'tag' and 'preConditions' do not change what the changeSet did, so adding one later must not
+    // invalidate the checksum of an already applied changeSet.
     let mut cs = cs.clone();
     if let Some(m) = cs.as_mapping_mut() {
+        m.remove(Value::String("rollback".into()));
+        m.remove(Value::String("tag".into()));
         m.remove(Value::String("preConditions".into()));
     }
+    let cs = &cs;
     // serde_yaml keeps mapping order, so the checksum follows the file's text order but not
     // its formatting (whitespace/comments/quoting do not change it).
     let canonical = serde_json::to_string(&cs).unwrap_or_default();
@@ -514,7 +578,7 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
     let id = get_str(cs, "id", &format!("{file}: changeSet"))?;
     let author = get_str(cs, "author", &format!("{file}: changeSet '{id}'"))?;
     let ctx = format!("{file}: changeSet '{id}' by '{author}'");
-    check_keys(cs, &["id", "author", "changes", "runOnChange", "runAlways", "dbms", "comment", "preConditions"], &ctx)?;
+    check_keys(cs, &["id", "author", "changes", "runOnChange", "runAlways", "dbms", "comment", "rollback", "tag", "preConditions"], &ctx)?;
     if id.contains('\u{1f}') || author.contains('\u{1f}') || id.is_empty() || author.is_empty() {
         return Err(format!("{ctx}: id and author must be non-empty text"));
     }
@@ -540,7 +604,22 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
     for c in changes {
         stmts.extend(change_to_sql(d, c, &ctx)?);
     }
+    // An invalid explicit rollback block is a definition error; an inherently irreversible
+    // change only becomes an error when a rollback is requested.
+    let rollback = match rollback_of(d, cs, changes, &ctx) {
+        Err(e) if get(cs, "rollback").is_some() => return Err(e),
+        r => r.map_err(|e| format!("{ctx}: cannot be rolled back: {e} (add a 'rollback:' block)")),
+    };
+    let tag = match get(cs, "tag") {
+        None => None,
+        Some(v) => {
+            let t = scalar_string(v).filter(|t| !t.is_empty() && !t.contains(['\u{1d}', '\u{1e}', '\u{1f}']));
+            Some(t.ok_or_else(|| format!("{ctx}: 'tag' must be non-empty text"))?)
+        }
+    };
     Ok(Some(ChangeSet {
+        rollback,
+        tag,
         id,
         author,
         file: file.to_string(),
@@ -569,7 +648,12 @@ fn load_file(
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string_lossy().into_owned());
     let text = std::fs::read_to_string(&canon).map_err(|e| format!("cannot read changelog {}: {e}", path.display()))?;
-    let doc: Value = serde_yaml::from_str(&text).map_err(|e| format!("{rel}: invalid YAML: {e}"))?;
+    let is_xml = canon.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml"));
+    let doc: Value = if is_xml {
+        crate::migrate_xml::parse_changelog(&text).map_err(|e| format!("{rel}: invalid XML: {e}"))?
+    } else {
+        serde_yaml::from_str(&text).map_err(|e| format!("{rel}: invalid YAML: {e}"))?
+    };
     check_keys(&doc, &["databaseChangeLog"], &rel)?;
     let items = get(&doc, "databaseChangeLog").and_then(|v| v.as_sequence())
         .ok_or_else(|| format!("{rel}: 'databaseChangeLog' must be a list"))?;
@@ -608,6 +692,14 @@ pub fn load_changelog(path: &Path, dialect: Dialect) -> Result<Vec<ChangeSet>, S
             return Err(format!("duplicate changeSet id '{}' by '{}' (in {})", cs.id, cs.author, cs.file));
         }
     }
+    let mut tags = HashSet::new();
+    for cs in &out {
+        if let Some(t) = &cs.tag {
+            if !tags.insert(t.clone()) {
+                return Err(format!("duplicate tag '{t}' (changeSet '{}' by '{}')", cs.id, cs.author));
+            }
+        }
+    }
     if out.is_empty() {
         return Err(format!("changelog {} contains no changeSets for driver {}", path.display(), dialect.name()));
     }
@@ -615,7 +707,8 @@ pub fn load_changelog(path: &Path, dialect: Dialect) -> Result<Vec<ChangeSet>, S
 }
 
 /// Wire format read by `tinox_migrate_run` in runtime.c: change sets separated by 0x1d, fields by
-/// 0x1f (id, author, file, checksum, flags, statements joined by 0x1e, preconditions). Preconditions
+/// 0x1f (id, author, file, checksum, flags, statements joined by 0x1e, rollback statements joined
+/// by 0x1e, reason the changeSet is irreversible or empty, tag or empty, preconditions). Preconditions
 /// are empty or `onFail` followed by checks, all joined by 0x1c; a check's fields (negate 0/1, kind,
 /// a, b, description) are joined by 0x1b.
 pub fn serialize_payload(sets: &[ChangeSet]) -> String {
@@ -633,7 +726,12 @@ pub fn serialize_payload(sets: &[ChangeSet]) -> String {
                     parts.join("\u{1c}")
                 }
             };
-            [c.id.as_str(), c.author.as_str(), c.file.as_str(), c.checksum.as_str(), flags.as_str(), &c.stmts.join("\u{1e}"), &pre]
+            let (rb, why) = match &c.rollback {
+                Ok(v) => (v.join("\u{1e}"), String::new()),
+                Err(e) => (String::new(), e.clone()),
+            };
+            [c.id.as_str(), c.author.as_str(), c.file.as_str(), c.checksum.as_str(), flags.as_str(), &c.stmts.join("\u{1e}"),
+             rb.as_str(), why.as_str(), c.tag.as_deref().unwrap_or(""), &pre]
                 .join("\u{1f}")
         })
         .collect();
@@ -691,5 +789,21 @@ mod tests {
         let b = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: t}\n";
         let c = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: u}\n";
         assert_ne!(cs(Dialect::Sqlite, b).unwrap().unwrap().checksum, cs(Dialect::Sqlite, c).unwrap().unwrap().checksum);
+    }
+
+    #[test]
+    fn rollback_derived_explicit_and_irreversible() {
+        let y = "id: 1\nauthor: a\nchanges:\n  - createTable: {tableName: t, columns: [{column: {name: a, type: int}}]}\n  - createIndex: {tableName: t, indexName: i, columns: [a]}\n  - addColumn: {tableName: t, columns: [{column: {name: b, type: int}}, {column: {name: c, type: int}}]}\n";
+        let r = cs(Dialect::Sqlite, y).unwrap().unwrap().rollback.unwrap();
+        assert_eq!(r, vec![
+            "ALTER TABLE \"t\" DROP COLUMN \"c\"", "ALTER TABLE \"t\" DROP COLUMN \"b\"",
+            "DROP INDEX \"i\"", "DROP TABLE \"t\""]);
+        let bad = "id: 1\nauthor: a\nchanges:\n  - dropTable: {tableName: t}\n";
+        assert!(cs(Dialect::Sqlite, bad).unwrap().unwrap().rollback.is_err());
+        let ok = format!("{bad}rollback:\n  - sql: CREATE TABLE t (a INTEGER)\n");
+        let c = cs(Dialect::Sqlite, &ok).unwrap().unwrap();
+        assert_eq!(c.rollback.unwrap(), vec!["CREATE TABLE t (a INTEGER)"]);
+        assert_eq!(c.checksum, cs(Dialect::Sqlite, bad).unwrap().unwrap().checksum, "rollback is not part of the checksum");
+        assert!(cs(Dialect::Sqlite, &format!("{bad}rollback: nope\n")).is_err());
     }
 }
