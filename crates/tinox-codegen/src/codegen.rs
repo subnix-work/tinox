@@ -507,6 +507,9 @@ pub struct CodeGen {
     /// tinox_db_pool_init alongside db_url. Ignored by the sqlite/mysql
     /// drivers (single-connection model, unchanged since before issue #191).
     db_pool_size: i64,
+    /// Serialized schema changelog (issue #410); when set, the DB init applies it right after
+    /// the pool is up and before `main` runs. See `tinox_migrate_run` in runtime.c.
+    migration_payload: Option<String>,
     /// Whether a [metrics] endpoint is enabled (path to expose on)
     metrics_path: Option<String>,
     /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
@@ -681,6 +684,7 @@ impl CodeGen {
             argument_targets: HashMap::new(),
             db_url: None,
             db_pool_size: 5,
+            migration_payload: None,
             metrics_path: None,
             test_entry: None,
             has_main: false,
@@ -806,6 +810,10 @@ impl CodeGen {
 
     pub fn set_db_pool_size(&mut self, pool_size: i64) {
         self.db_pool_size = pool_size;
+    }
+
+    pub fn set_migration_payload(&mut self, payload: Option<String>) {
+        self.migration_payload = payload;
     }
 
     /// Register a string constant and return an inline `getelementptr` expression (i8*).
@@ -1715,6 +1723,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_metrics_prometheus()").unwrap();
         // DB / ORM runtime
         writeln!(&mut self.ir, "declare void @tinox_db_pool_init(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_migrate_run(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_acquire_stmt_conn()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_db_release_stmt_conn(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_tx_begin()").unwrap();
@@ -7261,10 +7270,20 @@ tr_done_{idx}:"#).unwrap();
             let url_len = url.len() + 1;
             let escaped = Self::escape_llvm_string(&url);
             writeln!(&mut self.ir, "@__db_url = private constant [{url_len} x i8] c\"{escaped}\\00\"").unwrap();
+            if let Some(payload) = self.migration_payload.clone() {
+                let plen = payload.len() + 1;
+                let pesc = Self::escape_llvm_string(&payload);
+                writeln!(&mut self.ir, "@__db_migrations = private constant [{plen} x i8] c\"{pesc}\\00\"").unwrap();
+            }
             writeln!(&mut self.ir, "define void @__tinox_db_init() {{").unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
             writeln!(&mut self.ir, "  %url = getelementptr [{url_len} x i8], [{url_len} x i8]* @__db_url, i64 0, i64 0").unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_pool_init(i8* %url, i64 {})", self.db_pool_size).unwrap();
+            if let Some(payload) = self.migration_payload.clone() {
+                let plen = payload.len() + 1;
+                writeln!(&mut self.ir, "  %mig = getelementptr [{plen} x i8], [{plen} x i8]* @__db_migrations, i64 0, i64 0").unwrap();
+                writeln!(&mut self.ir, "  call void @tinox_migrate_run(i8* %mig)").unwrap();
+            }
             writeln!(&mut self.ir, "  ret void").unwrap();
             writeln!(&mut self.ir, "}}").unwrap();
             writeln!(&mut self.ir).unwrap();
