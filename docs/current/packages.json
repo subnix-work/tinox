@@ -1,5 +1,5 @@
 {
-  "compiler_version": "2.4.0",
+  "compiler_version": "2.5.0",
   "module_sections": [
     "mod-amqp091",
     "mod-amqp10",
