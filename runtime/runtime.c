@@ -10341,6 +10341,317 @@ char*   tinox_db_error(void* c)                                                {
 
 #endif /* DB driver */
 
+// ---- Declarative schema migrations (issue #410) ----
+//
+// The compiler parses the YAML changelog, translates every change into SQL for the
+// configured driver and passes the result here as one payload string (format: see
+// serialize_payload in crates/tinox/src/migrate.rs): change sets separated by 0x1d,
+// fields by 0x1f (id, author, file, checksum, flags, statements joined by 0x1e).
+// This engine is driver-agnostic: it only uses the tinox_db_* ABI above.
+//
+// Messages go to stderr so a program's stdout stays untouched; `status` prints its
+// table to stdout. TINOX_MIGRATE_MODE = update (default) | status | baseline | release-lock.
+// `baseline` records every pending change set as applied WITHOUT running it, to adopt a
+// database whose schema already exists.
+#include <time.h>
+
+#if defined(TINOX_DB_POSTGRES)
+#define TINOX_MIG_PH(n) "$" #n
+#else
+#define TINOX_MIG_PH(n) "?"
+#endif
+
+typedef struct {
+    char* id; char* author; char* file; char* checksum;
+    int run_on_change, run_always;
+    char** stmts; int n_stmts;
+} TinoxMigSet;
+
+static void tinox_mig_die(const char* msg) {
+    fprintf(stderr, "migrate: %s\n", msg);
+    exit(1);
+}
+
+static int tinox_mig_exec(void* conn, const char* sql, const char** params, int64_t n) {
+    void* r = tinox_db_exec(conn, sql, params, n);
+    int failed = tinox_db_result_failed(r);
+    if (r) tinox_db_free(r);
+    return !failed;
+}
+
+static int64_t tinox_mig_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static char* tinox_mig_dup(const char* s, size_t len) {
+    char* p = (char*)malloc(len + 1);
+    if (!p) tinox_mig_die("out of memory");
+    memcpy(p, s, len);
+    p[len] = 0;
+    return p;
+}
+
+// Splits `s` at every `sep`; returns a malloc'd array of malloc'd strings. Strings are
+// never freed on purpose: the SQLite driver's statement cache keeps the SQL pointer.
+static char** tinox_mig_split(const char* s, char sep, int* count) {
+    int n = 1;
+    for (const char* p = s; *p; p++) if (*p == sep) n++;
+    char** out = (char**)malloc(sizeof(char*) * (size_t)n);
+    int i = 0;
+    const char* start = s;
+    for (const char* p = s;; p++) {
+        if (*p == sep || *p == 0) {
+            out[i++] = tinox_mig_dup(start, (size_t)(p - start));
+            start = p + 1;
+            if (*p == 0) break;
+        }
+    }
+    *count = n;
+    return out;
+}
+
+static TinoxMigSet* tinox_mig_parse(const char* payload, int* n_sets) {
+    if (!payload || !*payload) { *n_sets = 0; return NULL; }
+    int n = 0;
+    char** recs = tinox_mig_split(payload, '\x1d', &n);
+    TinoxMigSet* sets = (TinoxMigSet*)calloc((size_t)n, sizeof(TinoxMigSet));
+    for (int i = 0; i < n; i++) {
+        int nf = 0;
+        char** f = tinox_mig_split(recs[i], '\x1f', &nf);
+        if (nf != 6) tinox_mig_die("corrupt changelog payload");
+        sets[i].id = f[0]; sets[i].author = f[1]; sets[i].file = f[2]; sets[i].checksum = f[3];
+        sets[i].run_on_change = strchr(f[4], 'C') != NULL;
+        sets[i].run_always = strchr(f[4], 'A') != NULL;
+        sets[i].stmts = tinox_mig_split(f[5], '\x1e', &sets[i].n_stmts);
+        if (sets[i].n_stmts == 1 && sets[i].stmts[0][0] == 0) sets[i].n_stmts = 0;
+    }
+    *n_sets = n;
+    return sets;
+}
+
+static void tinox_mig_sleep_ms(long ms) {
+    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
+static int tinox_mig_table_exists(void* conn, const char* table) {
+#if defined(TINOX_DB_SQLITE)
+    const char* sql = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?";
+#elif defined(TINOX_DB_POSTGRES)
+    const char* sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1";
+#else
+    const char* sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
+#endif
+    const char* params[1] = { table };
+    void* r = tinox_db_exec(conn, sql, params, 1);
+    int exists = (r && !tinox_db_result_failed(r)) ? tinox_db_getval_int(r, 0, 0) > 0 : 0;
+    if (r) tinox_db_free(r);
+    return exists;
+}
+
+static void tinox_mig_ensure_tables(void* conn) {
+    // Skip the CREATE when the tables exist (avoids a driver notice on every start). On PostgreSQL
+    // two instances creating them at once can still collide in the catalog, so serialize that.
+#if defined(TINOX_DB_POSTGRES)
+    tinox_mig_exec(conn, "SELECT pg_advisory_lock(727274)", NULL, 0);
+#endif
+    if (tinox_mig_table_exists(conn, "tinox_changelog") && tinox_mig_table_exists(conn, "tinox_changelog_lock")) {
+#if defined(TINOX_DB_POSTGRES)
+        tinox_mig_exec(conn, "SELECT pg_advisory_unlock(727274)", NULL, 0);
+#endif
+        return;
+    }
+    if (!tinox_mig_exec(conn,
+            "CREATE TABLE IF NOT EXISTS tinox_changelog ("
+            "changeset_id VARCHAR(190) NOT NULL, author VARCHAR(190) NOT NULL, source_file VARCHAR(255) NOT NULL, "
+            "checksum VARCHAR(64) NOT NULL, executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+            "execution_ms BIGINT NOT NULL, exec_order BIGINT NOT NULL, PRIMARY KEY (changeset_id, author))", NULL, 0))
+        tinox_mig_die("cannot create the tinox_changelog table");
+    if (!tinox_mig_exec(conn,
+            "CREATE TABLE IF NOT EXISTS tinox_changelog_lock ("
+            "id INTEGER NOT NULL PRIMARY KEY, locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, locked_by VARCHAR(255))", NULL, 0))
+        tinox_mig_die("cannot create the tinox_changelog_lock table");
+#if defined(TINOX_DB_POSTGRES)
+    tinox_mig_exec(conn, "SELECT pg_advisory_unlock(727274)", NULL, 0);
+#endif
+}
+
+// The lock is a row in tinox_changelog_lock; a second starter waits for it (bounded), a lock
+// left behind by a crashed run is NEVER broken automatically (`tinox db release-lock`).
+static void tinox_mig_lock(void* conn) {
+    long wait_ms = 30000;
+    const char* env = getenv("TINOX_MIGRATE_LOCK_WAIT_MS");
+    if (env && *env) wait_ms = atol(env);
+    char who[64];
+    snprintf(who, sizeof who, "pid %ld", (long)getpid());
+    const char* params[1] = { who };
+    long waited = 0;
+    for (;;) {
+        void* r = tinox_db_exec(conn, "SELECT COUNT(*) FROM tinox_changelog_lock", NULL, 0);
+        int64_t held = (r && !tinox_db_result_failed(r)) ? tinox_db_getval_int(r, 0, 0) : 1;
+        if (r) tinox_db_free(r);
+        if (held == 0 && tinox_mig_exec(conn,
+                "INSERT INTO tinox_changelog_lock (id, locked_by) VALUES (1, " TINOX_MIG_PH(1) ")", params, 1))
+            return;
+        if (waited >= wait_ms) {
+            tinox_mig_die("the changelog lock is held by another process. If no migration is running "
+                          "(e.g. it crashed), release it with `tinox db release-lock`");
+        }
+        tinox_mig_sleep_ms(250);
+        waited += 250;
+    }
+}
+
+static void tinox_mig_unlock(void* conn) {
+    tinox_mig_exec(conn, "DELETE FROM tinox_changelog_lock WHERE id = 1", NULL, 0);
+}
+
+#if defined(TINOX_DB_MYSQL)
+// MySQL commits DDL implicitly, so a change set is not atomic there.
+#define TINOX_MIG_BEGIN(c)    (1)
+#define TINOX_MIG_COMMIT(c)   (1)
+#define TINOX_MIG_ROLLBACK(c) ((void)0)
+#else
+#define TINOX_MIG_BEGIN(c)    tinox_mig_exec((c), "BEGIN", NULL, 0)
+#define TINOX_MIG_COMMIT(c)   tinox_mig_exec((c), "COMMIT", NULL, 0)
+#define TINOX_MIG_ROLLBACK(c) ((void)tinox_mig_exec((c), "ROLLBACK", NULL, 0))
+#endif
+
+typedef struct { char* id; char* author; char* checksum; } TinoxMigApplied;
+
+void tinox_migrate_run(const char* payload) {
+    int n_sets = 0;
+    TinoxMigSet* sets = tinox_mig_parse(payload, &n_sets);
+    const char* mode = getenv("TINOX_MIGRATE_MODE");
+    if (!mode || !*mode) mode = "update";
+    int status_only = strcmp(mode, "status") == 0;
+    int release_only = strcmp(mode, "release-lock") == 0;
+    int baseline = strcmp(mode, "baseline") == 0;
+    if (!status_only && !release_only && !baseline && strcmp(mode, "update") != 0)
+        tinox_mig_die("TINOX_MIGRATE_MODE must be update, status, baseline or release-lock");
+
+    void* conn = tinox_db_acquire_stmt_conn();
+    if (!conn) tinox_mig_die("no database connection (is [database] configured?)");
+    tinox_mig_ensure_tables(conn);
+    if (release_only) {
+        tinox_mig_unlock(conn);
+        fprintf(stderr, "migrate: changelog lock released\n");
+        tinox_db_release_stmt_conn(conn);
+        return;
+    }
+    if (!status_only) tinox_mig_lock(conn);
+
+    // What the database already ran.
+    void* r = tinox_db_exec(conn, "SELECT changeset_id, author, checksum FROM tinox_changelog ORDER BY exec_order", NULL, 0);
+    if (!r || tinox_db_result_failed(r)) tinox_mig_die("cannot read tinox_changelog");
+    int64_t n_applied = tinox_db_nrows(r);
+    TinoxMigApplied* applied = (TinoxMigApplied*)calloc((size_t)(n_applied + 1), sizeof(TinoxMigApplied));
+    for (int64_t i = 0; i < n_applied; i++) {
+        const char* a = tinox_db_getval(r, i, 0); const char* b = tinox_db_getval(r, i, 1); const char* c = tinox_db_getval(r, i, 2);
+        applied[i].id = tinox_mig_dup(a, strlen(a)); applied[i].author = tinox_mig_dup(b, strlen(b));
+        applied[i].checksum = tinox_mig_dup(c, strlen(c));
+    }
+    tinox_db_free(r);
+
+    // Pass 1: classify. A changed change set that already ran is an error, before anything is applied.
+    int* state = (int*)calloc((size_t)(n_sets + 1), sizeof(int)); // 0 applied, 1 pending, 2 re-run, 3 changed
+    int changed = 0, pending = 0;
+    for (int i = 0; i < n_sets; i++) {
+        int found = -1;
+        for (int64_t j = 0; j < n_applied; j++)
+            if (!strcmp(applied[j].id, sets[i].id) && !strcmp(applied[j].author, sets[i].author)) { found = (int)j; break; }
+        if (found < 0) { state[i] = 1; pending++; }
+        else if (strcmp(applied[found].checksum, sets[i].checksum) != 0) {
+            if (sets[i].run_on_change) { state[i] = 2; pending++; }
+            else { state[i] = 3; changed++; }
+        } else if (sets[i].run_always) { state[i] = 2; pending++; }
+    }
+    for (int64_t j = 0; j < n_applied; j++) {
+        int known = 0;
+        for (int i = 0; i < n_sets; i++)
+            if (!strcmp(applied[j].id, sets[i].id) && !strcmp(applied[j].author, sets[i].author)) { known = 1; break; }
+        if (!known) fprintf(stderr, "migrate: warning: applied changeSet '%s' by '%s' is not in the changelog\n", applied[j].id, applied[j].author);
+    }
+
+    if (status_only) {
+        for (int i = 0; i < n_sets; i++) {
+            const char* label = state[i] == 0 ? "applied" : state[i] == 1 ? "pending" : state[i] == 2 ? "re-run" : "CHANGED";
+            printf("%-8s %s by %s (%s)\n", label, sets[i].id, sets[i].author, sets[i].file);
+        }
+        printf("%d changeSet(s): %d pending, %d changed\n", n_sets, pending, changed);
+        fflush(stdout);
+        tinox_db_release_stmt_conn(conn);
+        if (changed) exit(1);
+        return;
+    }
+
+    if (changed) {
+        for (int i = 0; i < n_sets; i++)
+            if (state[i] == 3)
+                fprintf(stderr, "migrate: changeSet '%s' by '%s' (%s) was modified after it was applied "
+                                "(add 'runOnChange: true' if re-running is intended, otherwise add a new changeSet instead)\n",
+                        sets[i].id, sets[i].author, sets[i].file);
+        tinox_mig_unlock(conn);
+        tinox_mig_die("checksum validation failed, nothing was applied");
+    }
+
+    // Pass 2: apply, each change set in its own transaction together with its history row.
+    static const char* ins_sql = NULL;
+    static const char* upd_sql = NULL;
+    if (!ins_sql) {
+        ins_sql = "INSERT INTO tinox_changelog (changeset_id, author, source_file, checksum, execution_ms, exec_order) "
+                  "VALUES (" TINOX_MIG_PH(1) ", " TINOX_MIG_PH(2) ", " TINOX_MIG_PH(3) ", " TINOX_MIG_PH(4) ", "
+                  TINOX_MIG_PH(5) ", " TINOX_MIG_PH(6) ")";
+#if defined(TINOX_DB_POSTGRES)
+        upd_sql = "UPDATE tinox_changelog SET checksum = $1, execution_ms = $2, executed_at = CURRENT_TIMESTAMP "
+                  "WHERE changeset_id = $3 AND author = $4";
+#else
+        upd_sql = "UPDATE tinox_changelog SET checksum = ?, execution_ms = ?, executed_at = CURRENT_TIMESTAMP "
+                  "WHERE changeset_id = ? AND author = ?";
+#endif
+    }
+    int64_t order = n_applied;
+    int ran = 0;
+    for (int i = 0; i < n_sets; i++) {
+        if (state[i] == 0) continue;
+        int64_t t0 = tinox_mig_now_ms();
+        if (!TINOX_MIG_BEGIN(conn)) { tinox_mig_unlock(conn); tinox_mig_die("cannot start a transaction"); }
+        for (int s = 0; !baseline && s < sets[i].n_stmts; s++) {
+            if (!tinox_mig_exec(conn, sets[i].stmts[s], NULL, 0)) {
+                TINOX_MIG_ROLLBACK(conn);
+                fprintf(stderr, "migrate: changeSet '%s' by '%s' (%s) failed on: %s\n",
+                        sets[i].id, sets[i].author, sets[i].file, sets[i].stmts[s]);
+                tinox_mig_unlock(conn);
+                tinox_mig_die("migration failed; this changeSet was rolled back, earlier ones stay applied");
+            }
+        }
+        char ms[32], ord[32];
+        snprintf(ms, sizeof ms, "%lld", (long long)(tinox_mig_now_ms() - t0));
+        int ok;
+        if (state[i] == 2) {
+            const char* p[4] = { sets[i].checksum, ms, sets[i].id, sets[i].author };
+            ok = tinox_mig_exec(conn, upd_sql, p, 4);
+        } else {
+            snprintf(ord, sizeof ord, "%lld", (long long)(++order));
+            const char* p[6] = { sets[i].id, sets[i].author, sets[i].file, sets[i].checksum, ms, ord };
+            ok = tinox_mig_exec(conn, ins_sql, p, 6);
+        }
+        if (!ok || !TINOX_MIG_COMMIT(conn)) {
+            TINOX_MIG_ROLLBACK(conn);
+            tinox_mig_unlock(conn);
+            tinox_mig_die("cannot record the changeSet in tinox_changelog");
+        }
+        if (baseline) fprintf(stderr, "migrate: baselined changeSet '%s' by '%s' (not executed)\n", sets[i].id, sets[i].author);
+        else fprintf(stderr, "migrate: applied changeSet '%s' by '%s' (%s ms)\n", sets[i].id, sets[i].author, ms);
+        ran++;
+    }
+    tinox_mig_unlock(conn);
+    tinox_db_release_stmt_conn(conn);
+    if (ran == 0 && n_sets > 0) fprintf(stderr, "migrate: database is up to date (%d changeSets)\n", n_sets);
+}
+
 static void service_close_database(void) {
 #ifdef TINOX_DB_POSTGRES
     for (int i = 0; i < TINOX_DB_POOL_MAX; i++) {
