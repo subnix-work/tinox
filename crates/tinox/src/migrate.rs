@@ -5,6 +5,9 @@
 //! without a database (parsing, validation, SQL generation, checksums) lives here,
 //! so `tinox db validate` / `update-sql` need no connection.
 
+mod generate;
+pub use generate::generate;
+
 use serde_yaml::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -46,6 +49,7 @@ pub struct ChangeSet {
     pub run_on_change: bool,
     pub run_always: bool,
     pub stmts: Vec<String>,
+    changes: Vec<Value>,
 }
 
 fn scalar_string(v: &Value) -> Option<String> {
@@ -440,6 +444,7 @@ fn parse_changeset(d: Dialect, cs: &Value, file: &str) -> Result<Option<ChangeSe
         run_on_change: get_bool(cs, "runOnChange", &ctx)?,
         run_always: get_bool(cs, "runAlways", &ctx)?,
         stmts,
+        changes: changes.clone(),
     }))
 }
 
