@@ -3238,12 +3238,16 @@ impl TypeChecker {
                 target_ty
             }
             ExprKind::CompoundAssign {
-                op: _,
+                op,
                 target,
                 value,
             } => {
-                self.infer_type(target);
-                self.infer_type(value)
+                let target_ty = self.infer_type(target);
+                let value_ty = self.infer_type(value);
+                if matches!(op, tinox_parser::CompoundOp::Add) {
+                    self.check_binary_op(&BinaryOp::Add, &target_ty, &value_ty, expr.span);
+                }
+                value_ty
             }
             ExprKind::Lambda {
                 params,
@@ -3782,6 +3786,22 @@ impl TypeChecker {
     }
 
     fn check_binary_op(&mut self, op: &BinaryOp, lhs: &ValueType, rhs: &ValueType, span: Span) {
+        // Enum discriminators are integers, not string pointers. Named types
+        // otherwise bypass this check to allow generic operands and object
+        // toString(), so reject enum concatenation before that fallback.
+        if matches!(op, BinaryOp::Add) {
+            let other = if *lhs == ValueType::String { Some(rhs) }
+                else if *rhs == ValueType::String { Some(lhs) }
+                else { None };
+            if let Some(ValueType::Named(name, _)) = other {
+                if self.enums.contains_key(name) {
+                    self.errors.push(Error::new(span, format!(
+                        "cannot concatenate String and enum '{name}'; convert the enum to a String explicitly (use .name for payload-free enums)"
+                    )));
+                    return;
+                }
+            }
+        }
         // Any and Named (generic type params) are wildcards — skip checking
         if matches!(lhs, ValueType::Any | ValueType::Named(_, _))
             || matches!(rhs, ValueType::Any | ValueType::Named(_, _))
@@ -6447,6 +6467,33 @@ class Jogger implements Runner {
     #[test]
     fn test_string_plus_int_err() {
         err_contains("fn f() -> String { return \"x\" + 1; }", "cannot be applied");
+    }
+
+    #[test]
+    fn test_enum_string_concat_err() {
+        for expression in ["\"status: \" + s", "s + \"!\"", "\"attempt \" + \"1: \" + s"] {
+            err_contains(
+                &format!("enum Status {{ STARTING; FAILED; }} fn f(s: Status) -> String {{ return {expression}; }}"),
+                "cannot concatenate String and enum 'Status'",
+            );
+        }
+        err_contains(
+            "enum Status { STARTING; FAILED; } class Run { var status: Status; } fn f(run: Run) -> String { return \"status: \" + run.status; }",
+            "cannot concatenate String and enum 'Status'",
+        );
+        err_contains(
+            "enum Status { STARTING; FAILED; } fn f(s: Status) { var text = \"status: \"; text += s; }",
+            "cannot concatenate String and enum 'Status'",
+        );
+        err_contains(
+            "enum Shape { Circle(Float64); } fn f(s: Shape) -> String { return \"shape: \" + s; }",
+            "cannot concatenate String and enum 'Shape'",
+        );
+    }
+
+    #[test]
+    fn test_string_concat_object_to_string_still_ok() {
+        ok("class Label { fn toString() -> String { return \"label\"; } } fn f(label: Label) -> String { return \"[\" + label + \"]\"; }");
     }
 
     // #164: List<Int64>.join() used to segfault at runtime (no
