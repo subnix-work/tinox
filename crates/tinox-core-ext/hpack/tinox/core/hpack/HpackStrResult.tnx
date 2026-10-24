@@ -1,10 +1,10 @@
-module tinox.core.hpack;
+module tinox.core.hpack
 
 namespace tinox.core.hpack
 {
     class HpackStrResult
     {
-        var value: String;
-        var nextOffset: Int64;
+        var value: String
+        var nextOffset: Int64
     }
 }

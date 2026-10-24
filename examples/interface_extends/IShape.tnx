@@ -1,4 +1,4 @@
 interface IShape
 {
-    fn area() -> Int64;
+    fn area() -> Int64
 }

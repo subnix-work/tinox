@@ -1,5 +1,5 @@
-import Box;
-import Pair;
+import Box
+import Pair
 
 // B2 step 2 (continued): type-argument inference for generic struct
 // literals. The typecheck unifies the field initializers against the
@@ -22,27 +22,27 @@ class Main
 {
     fnc main() -> Int32 {
         // Unannotated: T=String from the initializer
-        const bs = Box { value: "hallo" };
-        println(bs.value);                    // hallo
-        println(bs.value.len().toString());  // 5
+        const bs = Box { value: "hallo" }
+        println(bs.value)                    // hallo
+        println(bs.value.len().toString())  // 5
 
         // Unannotated: T=Int64
-        const bi = Box { value: 42 };
-        println(bi.value.toString());        // 42
+        const bi = Box { value: 42 }
+        println(bi.value.toString())        // 42
 
         // Annotated (was also broken: literal path overwrote the annotation)
-        const ba: Box<String> = Box { value: "hi" };
-        println(ba.value);                    // hi
-        println(ba.value.len().toString());  // 2
+        const ba: Box<String> = Box { value: "hi" }
+        println(ba.value)                    // hi
+        println(ba.value.len().toString())  // 2
 
         // var path
-        var bv = Box { value: 7 };
-        println(bv.value.toString());        // 7
+        var bv = Box { value: 7 }
+        println(bv.value.toString())        // 7
 
         // Two type params bound independently
-        const p = Pair { a: "eins", b: 2.5 };
-        println(p.a);                         // eins
-        println(p.b.toString());             // 2.5
-        return 0;
+        const p = Pair { a: "eins", b: 2.5 }
+        println(p.a)                         // eins
+        println(p.b.toString())             // 2.5
+        return 0
     }
 }

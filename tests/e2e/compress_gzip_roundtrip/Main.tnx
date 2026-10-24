@@ -5,7 +5,7 @@
 // expect: 0
 // expect: true
 
-import tinox.core.compress;
+import tinox.core.compress
 class Main
 {
     fnc main() -> Int32
@@ -15,62 +15,62 @@ class Main
         // shrink at all -- this needs enough repetition that compression
         // clearly wins, to make the size check below meaningful rather than
         // a coin flip.
-        var msg: String = "";
-        var r: Int64 = 0;
+        var msg: String = ""
+        var r: Int64 = 0
         while r < 20
         {
-            msg = msg + "the quick brown fox jumps over the lazy dog. ";
-            r = r + 1;
+            msg = msg + "the quick brown fox jumps over the lazy dog. "
+            r = r + 1
         }
-        var bytes: List<Int64> = [];
-        var i: Int64 = 0;
+        var bytes: List<Int64> = []
+        var i: Int64 = 0
         while i < msg.len()
         {
-            bytes.push(msg.charCodeAt(i));
-            i = i + 1;
+            bytes.push(msg.charCodeAt(i))
+            i = i + 1
         }
 
         // gzip -> gunzip round trip must reproduce the original bytes and
         // report success via lastGunzipOk().
-        const packed: List<Int64> = Compress::gzip(bytes);
-        const restored: List<Int64> = Compress::gunzip(packed);
-        println(Compress::lastGunzipOk());
-        var restoredStr: String = "";
-        var j: Int64 = 0;
+        const packed: List<Int64> = Compress::gzip(bytes)
+        const restored: List<Int64> = Compress::gunzip(packed)
+        println(Compress::lastGunzipOk())
+        var restoredStr: String = ""
+        var j: Int64 = 0
         while j < restored.len()
         {
-            restoredStr = restoredStr + fromCharCode(restored[j]);
-            j = j + 1;
+            restoredStr = restoredStr + fromCharCode(restored[j])
+            j = j + 1
         }
-        println(restoredStr == msg);
+        println(restoredStr == msg)
 
         // deflateRaw -> inflateRaw round trip (RFC 1951, no gzip framing).
-        const rawPacked: List<Int64> = Compress::deflateRaw(bytes);
-        const rawRestored: List<Int64> = Compress::inflateRaw(rawPacked);
-        var rawStr: String = "";
-        var k: Int64 = 0;
+        const rawPacked: List<Int64> = Compress::deflateRaw(bytes)
+        const rawRestored: List<Int64> = Compress::inflateRaw(rawPacked)
+        var rawStr: String = ""
+        var k: Int64 = 0
         while k < rawRestored.len()
         {
-            rawStr = rawStr + fromCharCode(rawRestored[k]);
-            k = k + 1;
+            rawStr = rawStr + fromCharCode(rawRestored[k])
+            k = k + 1
         }
-        println(Compress::lastInflateOk() && rawStr == msg);
+        println(Compress::lastInflateOk() && rawStr == msg)
 
         // A truncated/malformed gzip stream (just the two magic bytes plus
         // one junk byte, no header/deflate-stream/trailer) must not be
         // silently accepted as a valid empty result -- lastGunzipOk() must
         // report false, matching this module's documented contract.
-        const corrupt: List<Int64> = [31, 139, 255];
-        const junk: List<Int64> = Compress::gunzip(corrupt);
-        println(Compress::lastGunzipOk());
-        println(junk.len());
+        const corrupt: List<Int64> = [31, 139, 255]
+        const junk: List<Int64> = Compress::gunzip(corrupt)
+        println(Compress::lastGunzipOk())
+        println(junk.len())
 
         // gzip output must actually be smaller than the raw bytes for a
         // reasonably compressible, non-trivial payload -- a no-op module
         // that just echoed input back would still pass the round-trip
         // checks above without this.
-        println(packed.len() < bytes.len());
+        println(packed.len() < bytes.len())
 
-        return 0;
+        return 0
     }
 }

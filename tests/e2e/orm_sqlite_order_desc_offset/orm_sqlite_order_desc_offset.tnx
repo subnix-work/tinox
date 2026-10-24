@@ -3,9 +3,9 @@
 class orm_sqlite_order_desc_offset
 {
     @Id @GeneratedValue
-    var id: Int64;
+    var id: Int64
     @Column("player")
-    var player: String;
+    var player: String
     @Column("points")
-    var points: Int64;
+    var points: Int64
 }

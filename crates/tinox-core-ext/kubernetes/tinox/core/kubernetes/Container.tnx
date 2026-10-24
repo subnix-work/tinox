@@ -1,6 +1,6 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
@@ -10,20 +10,20 @@ namespace tinox.core.kubernetes
     @JsonSerializable
     class Container
     {
-        var name: String;
-        var image: String;
-        var command: List<String>;
-        var args: List<String>;
-        var ports: List<ContainerPort>;
-        var env: List<EnvVar>;
-        var resources: ResourceRequirements;
+        var name: String
+        var image: String
+        var command: List<String>
+        var args: List<String>
+        var ports: List<ContainerPort>
+        var env: List<EnvVar>
+        var resources: ResourceRequirements
 
         fnc simple(name: String, image: String) -> Container
         {
             return Container {
                 name: name, image: image, command: [], args: [], ports: [], env: [],
                 resources: ResourceRequirements::empty()
-            };
+            }
         }
     }
 }

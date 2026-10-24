@@ -3,20 +3,20 @@
 // expect: 3
 // expect: 2
 
-import tinox.core.db;
+import tinox.core.db
 
-import orm_sqlite_count;
+import orm_sqlite_count
 
 class Main
 {
     fnc main() -> Int32
     {
-        const total: Int64 = DB::of(orm_sqlite_count).count();
-        println(total);
+        const total: Int64 = DB::of(orm_sqlite_count).count()
+        println(total)
         const cheap: Int64 = DB::of(orm_sqlite_count)
             .filter(p => p.price < 100)
-            .count();
-        println(cheap);
-        return 0;
+            .count()
+        println(cheap)
+        return 0
     }
 }

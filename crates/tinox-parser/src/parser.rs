@@ -20,6 +20,12 @@ pub struct Parser {
     /// nested closure does not belong to the enclosing scope.
     scope_stack: Vec<String>,
     scope_counter: usize,
+    /// `nl[i]` is true when token `i` starts on a later source line than the
+    /// token before it AND sits directly inside a `{ }` block (or at top
+    /// level). Inside `( )` / `[ ]` newlines are plain whitespace, so it is
+    /// always false there. This is the whole statement-termination story:
+    /// a statement ends at the end of its line (see `end_stmt`).
+    nl: Vec<bool>,
 }
 
 /// Maximum expression/statement nesting the parser accepts before returning a
@@ -30,14 +36,110 @@ const MAX_RECURSION_DEPTH: usize = 1000;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
+        let (tokens, nl, errors) = Self::prepare_tokens(tokens);
         Self {
             tokens,
             pos: 0,
-            errors: Vec::new(),
+            errors,
             depth: 0,
             scope_stack: Vec::new(),
             scope_counter: 0,
+            nl,
         }
+    }
+
+    /// Compute the newline-significance table and reject every `;` that is
+    /// not a `for ( init ; cond ; update )` header separator. Rejected `;`
+    /// tokens are dropped so parsing carries on and reports real problems
+    /// instead of a cascade.
+    fn prepare_tokens(tokens: Vec<Token>) -> (Vec<Token>, Vec<bool>, Vec<Error>) {
+        #[derive(PartialEq, Clone, Copy)]
+        enum Ctx {
+            Brace,
+            Paren,
+            ForHeader,
+        }
+        let mut out: Vec<Token> = Vec::with_capacity(tokens.len());
+        let mut nl: Vec<bool> = Vec::with_capacity(tokens.len());
+        let mut errors = Vec::new();
+        let mut stack: Vec<Ctx> = Vec::new();
+        for t in tokens {
+            if t.kind == TokenKind::Semicolon && stack.last() != Some(&Ctx::ForHeader) {
+                errors.push(Error::new(
+                    t.span,
+                    "semicolons were removed: a statement ends at the end of its line, delete the ';'",
+                ));
+                continue;
+            }
+            let at_block_level = matches!(stack.last(), None | Some(Ctx::Brace));
+            let newline = at_block_level
+                && out
+                    .last()
+                    .is_some_and(|prev| prev.span.end.line < t.span.start.line);
+            match t.kind {
+                TokenKind::LBrace => stack.push(Ctx::Brace),
+                TokenKind::LParen => {
+                    let is_for = matches!(
+                        out.last().map(|p| &p.kind),
+                        Some(TokenKind::Keyword(Keyword::For))
+                    );
+                    stack.push(if is_for { Ctx::ForHeader } else { Ctx::Paren });
+                }
+                TokenKind::LBracket => stack.push(Ctx::Paren),
+                TokenKind::RBrace | TokenKind::RParen | TokenKind::RBracket => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+            nl.push(newline);
+            out.push(t);
+        }
+        (out, nl, errors)
+    }
+
+    /// True if the current token starts a new line at statement level.
+    fn nl_here(&self) -> bool {
+        self.nl.get(self.pos).copied().unwrap_or(false)
+    }
+
+    /// `check` for a token that would CONTINUE the expression before it
+    /// (binary/assignment/ternary operator, `as`). On a fresh line such a
+    /// token ends the statement instead; only `.` may start a continuation
+    /// line, and that is handled in the postfix loop.
+    fn check_cont(&self, kind: TokenKind) -> bool {
+        !self.nl_here() && self.check(kind)
+    }
+
+    fn check_keyword_cont(&self, kw: Keyword) -> bool {
+        !self.nl_here() && self.check_keyword(kw)
+    }
+
+    /// End of a statement: the end of its line (or the closing `}` of the
+    /// enclosing block, or end of input). `;` only survives the token
+    /// preparation inside a `for (...)` header, where it separates the parts.
+    fn end_stmt(&mut self) -> Result<(), Error> {
+        if self.consume(TokenKind::Semicolon) {
+            return Ok(());
+        }
+        if self.check(TokenKind::RBrace) || self.is_at_end() {
+            return Ok(());
+        }
+        if self.nl_here() {
+            if matches!(
+                self.peek().kind,
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::Minus | TokenKind::Plus
+            ) {
+                return Err(self.error(
+                    "a line starting with '(', '[', '-' or '+' directly after a complete expression is ambiguous: \
+                     put the operator at the end of the previous line to continue the expression, or restructure the code",
+                ));
+            }
+            return Ok(());
+        }
+        Err(self.error(&format!(
+            "expected end of line after statement, found {:?} (several statements on one line are not allowed)",
+            self.peek().kind
+        )))
     }
 
     /// Parse a single expression from a source string (used for string interpolation)
@@ -119,7 +221,7 @@ impl Parser {
                 name.push('.');
                 name.push_str(&self.parse_ident()?);
             }
-            self.consume(TokenKind::Semicolon);
+            self.end_stmt()?;
             DeclKind::Module(name)
         } else if self.check_keyword(Keyword::Namespace) {
             let mut ns = self.parse_namespace()?;
@@ -152,7 +254,7 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RParen)?;
-        self.consume(TokenKind::Semicolon);
+        self.end_stmt()?;
         Ok(ImmutableDecl { name, fields, span, doc: None, annotations: vec![] })
     }
 
@@ -178,7 +280,7 @@ impl Parser {
             Type::Nothing
         };
 
-        self.expect(TokenKind::Semicolon)?;
+        self.end_stmt()?;
 
         Ok(DeclKind::Function(Function {
             name,
@@ -237,8 +339,9 @@ impl Parser {
             Type::Nothing
         };
 
-        let body = if self.consume(TokenKind::Semicolon) {
-            // Abstract method declaration (e.g. in interfaces): `fn foo() -> T;`
+        let body = if !self.check(TokenKind::LBrace) {
+            // Abstract method declaration (e.g. in interfaces): `fn foo() -> T`
+            self.end_stmt()?;
             let s = self.mk_span();
             Spanned::new(StmtKind::Block(vec![]), s)
         } else {
@@ -448,7 +551,7 @@ impl Parser {
         } else {
             None
         };
-        self.expect(TokenKind::Semicolon)?;
+        self.end_stmt()?;
 
         Ok(FieldDef {
             name,
@@ -525,13 +628,10 @@ impl Parser {
             let mut v = self.parse_enum_variant()?;
             v.doc = doc;
             variants.push(v);
-            if !self.check(TokenKind::RBrace) {
-                if !self.consume(TokenKind::Comma) && !self.consume(TokenKind::Semicolon) {
-                    return Err(self.error("expected ',' or ';'"));
-                }
-            } else {
-                self.consume(TokenKind::Comma);
-                self.consume(TokenKind::Semicolon);
+            if !self.check(TokenKind::RBrace) && !self.nl_here() {
+                return Err(self.error(
+                    "enum variants are separated by newlines (one variant per line), not by ',' or on the same line",
+                ));
             }
         }
 
@@ -616,7 +716,7 @@ impl Parser {
             None
         };
 
-        self.expect(TokenKind::Semicolon)?;
+        self.end_stmt()?;
 
         Ok(Import { path, alias, span })
     }
@@ -897,12 +997,12 @@ impl Parser {
             TokenKind::Keyword(Keyword::Return) => self.parse_return_stmt()?,
             TokenKind::Keyword(Keyword::Break) => {
                 self.bump();
-                self.expect(TokenKind::Semicolon)?;
+                self.end_stmt()?;
                 StmtKind::Break
             }
             TokenKind::Keyword(Keyword::Continue) => {
                 self.bump();
-                self.expect(TokenKind::Semicolon)?;
+                self.end_stmt()?;
                 StmtKind::Continue
             }
             TokenKind::Keyword(Keyword::Throw) => self.parse_throw_stmt()?,
@@ -915,10 +1015,6 @@ impl Parser {
                 self.expect(TokenKind::RBrace)?;
                 StmtKind::Block(stmts)
             }
-            TokenKind::Semicolon => {
-                self.bump();
-                StmtKind::Empty
-            }
             _ => {
                 if let TokenKind::Ident(_) = &self.peek().kind {
                     let ident_span = self.peek().span;
@@ -926,7 +1022,7 @@ impl Parser {
                     if self.check(TokenKind::Equals) {
                         self.bump();
                         let value = self.parse_expr()?;
-                        self.expect(TokenKind::Semicolon)?;
+                        self.end_stmt()?;
                         let target = Spanned::new(ExprKind::Ident(name.clone()), ident_span);
                         StmtKind::Assignment { target, value }
                     } else if self.check(TokenKind::PlusEquals)
@@ -945,7 +1041,7 @@ impl Parser {
                         };
                         self.bump();
                         let value = self.parse_expr()?;
-                        self.expect(TokenKind::Semicolon)?;
+                        self.end_stmt()?;
                         let target = Spanned::new(ExprKind::Ident(name), ident_span);
                         StmtKind::Expr(Spanned::new(
                             ExprKind::CompoundAssign {
@@ -975,7 +1071,7 @@ impl Parser {
                         if self.check(TokenKind::Equals) {
                             self.bump();
                             let value = self.parse_expr()?;
-                            self.expect(TokenKind::Semicolon)?;
+                            self.end_stmt()?;
                             StmtKind::Assignment { target, value }
                         } else if self.check(TokenKind::PlusEquals)
                             || self.check(TokenKind::MinusEquals)
@@ -993,7 +1089,7 @@ impl Parser {
                             };
                             self.bump();
                             let value = self.parse_expr()?;
-                            self.expect(TokenKind::Semicolon)?;
+                            self.end_stmt()?;
                             StmtKind::Expr(Spanned::new(
                                 ExprKind::CompoundAssign {
                                     op,
@@ -1014,7 +1110,7 @@ impl Parser {
                             // closing paren's own span.
                             let rparen_span = self.peek().span;
                             self.expect(TokenKind::RParen)?;
-                            self.expect(TokenKind::Semicolon)?;
+                            self.end_stmt()?;
                             StmtKind::Expr(Spanned::new(ExprKind::Call { func: Box::new(target), args }, ident_span.merge(rparen_span)))
                         } else {
                             let mut expr = target;
@@ -1035,14 +1131,14 @@ impl Parser {
                                 } else if self.check(TokenKind::Equals) {
                                     self.bump();
                                     let value = self.parse_expr()?;
-                                    self.expect(TokenKind::Semicolon)?;
+                                    self.end_stmt()?;
                                     let t = Spanned::new(ExprKind::FieldAccess { obj: Box::new(expr), field }, ident_span);
                                     return Ok(Spanned::new(StmtKind::Assignment { target: t, value }, span));
                                 } else {
                                     expr = Spanned::new(ExprKind::FieldAccess { obj: Box::new(expr), field }, ident_span);
                                 }
                             }
-                            self.expect(TokenKind::Semicolon)?;
+                            self.end_stmt()?;
                             StmtKind::Expr(expr)
                         }
                     } else if self.check(TokenKind::LParen) {
@@ -1058,7 +1154,7 @@ impl Parser {
                         // an empty arg list has no node owning the `()`.
                         let rparen_span = self.peek().span;
                         self.expect(TokenKind::RParen)?;
-                        self.expect(TokenKind::Semicolon)?;
+                        self.end_stmt()?;
                         StmtKind::Expr(Spanned::new(
                             ExprKind::Call {
                                 func: Box::new(Spanned::new(ExprKind::Ident(name), ident_span)),
@@ -1085,7 +1181,7 @@ impl Parser {
                             } else if self.check(TokenKind::Equals) {
                                 self.bump();
                                 let value = self.parse_expr()?;
-                                self.expect(TokenKind::Semicolon)?;
+                                self.end_stmt()?;
                                 let target = Spanned::new(ExprKind::FieldAccess { obj: Box::new(expr), field }, ident_span);
                                 return Ok(Spanned::new(StmtKind::Assignment { target, value }, span));
                             } else {
@@ -1110,7 +1206,7 @@ impl Parser {
                             if self.check(TokenKind::Equals) {
                                 self.bump();
                                 let value = self.parse_expr()?;
-                                self.expect(TokenKind::Semicolon)?;
+                                self.end_stmt()?;
                                 return Ok(Spanned::new(StmtKind::Assignment { target, value }, span));
                             }
                             // .method(args) or (args) after index chain
@@ -1136,7 +1232,7 @@ impl Parser {
                             if self.check(TokenKind::Equals) {
                                 self.bump();
                                 let value = self.parse_expr()?;
-                                self.expect(TokenKind::Semicolon)?;
+                                self.end_stmt()?;
                                 return Ok(Spanned::new(StmtKind::Assignment { target: chain_expr, value }, span));
                             }
                             if self.check(TokenKind::PlusEquals)
@@ -1155,7 +1251,7 @@ impl Parser {
                                 };
                                 self.bump();
                                 let value = self.parse_expr()?;
-                                self.expect(TokenKind::Semicolon)?;
+                                self.end_stmt()?;
                                 return Ok(Spanned::new(
                                     StmtKind::Expr(Spanned::new(
                                         ExprKind::CompoundAssign {
@@ -1168,10 +1264,10 @@ impl Parser {
                                     span,
                                 ));
                             }
-                            self.expect(TokenKind::Semicolon)?;
+                            self.end_stmt()?;
                             return Ok(Spanned::new(StmtKind::Expr(chain_expr), span));
                         }
-                        self.expect(TokenKind::Semicolon)?;
+                        self.end_stmt()?;
                         StmtKind::Expr(expr)
                     } else if self.check(TokenKind::ColonColon) {
                         // Static method call: Cache::touch(args)
@@ -1209,10 +1305,10 @@ impl Parser {
                                 }
                             }
                         }
-                        self.expect(TokenKind::Semicolon)?;
+                        self.end_stmt()?;
                         StmtKind::Expr(expr)
                     } else {
-                        self.expect(TokenKind::Semicolon)?;
+                        self.end_stmt()?;
                         StmtKind::Expr(Spanned::new(ExprKind::Ident(name), ident_span))
                     }
                 } else {
@@ -1221,10 +1317,8 @@ impl Parser {
                         expr.node,
                         ExprKind::Match { .. } | ExprKind::Block(_) | ExprKind::If { .. }
                     );
-                    if !is_block_expr && !self.check(TokenKind::RBrace) {
-                        self.expect(TokenKind::Semicolon)?;
-                    } else {
-                        self.consume(TokenKind::Semicolon);
+                    if !is_block_expr {
+                        self.end_stmt()?;
                     }
                     StmtKind::Expr(expr)
                 }
@@ -1251,7 +1345,7 @@ impl Parser {
         } else {
             None
         };
-        self.expect(TokenKind::Semicolon)?;
+        self.end_stmt()?;
         Ok(StmtKind::Let { name, ty, value })
     }
 
@@ -1268,7 +1362,7 @@ impl Parser {
         } else {
             None
         };
-        self.expect(TokenKind::Semicolon)?;
+        self.end_stmt()?;
         Ok(StmtKind::Var {
             name,
             ty,
@@ -1353,7 +1447,7 @@ impl Parser {
                 self.parse_var_stmt()?
             } else {
                 let expr = self.parse_expr()?;
-                self.expect(TokenKind::Semicolon)?;
+                self.end_stmt()?;
                 StmtKind::Expr(expr)
             };
             Some(Box::new(Spanned::new(stmt, Span::dummy())))
@@ -1368,7 +1462,7 @@ impl Parser {
             self.bump();
             None
         };
-        self.expect(TokenKind::Semicolon)?;
+        self.end_stmt()?;
 
         let update = if !self.check(TokenKind::RParen) {
             Some(self.parse_expr()?)
@@ -1395,12 +1489,11 @@ impl Parser {
 
     fn parse_return_stmt(&mut self) -> Result<StmtKind, Error> {
         self.expect_keyword(Keyword::Return)?;
-        if self.check(TokenKind::Semicolon) {
-            self.bump();
+        if self.nl_here() || self.check(TokenKind::RBrace) || self.is_at_end() {
             Ok(StmtKind::Return(None))
         } else {
             let value = self.parse_expr()?;
-            self.expect(TokenKind::Semicolon)?;
+            self.end_stmt()?;
             Ok(StmtKind::Return(Some(value)))
         }
     }
@@ -1408,7 +1501,7 @@ impl Parser {
     fn parse_throw_stmt(&mut self) -> Result<StmtKind, Error> {
         self.expect_keyword(Keyword::Throw)?;
         let expr = self.parse_expr()?;
-        self.expect(TokenKind::Semicolon)?;
+        self.end_stmt()?;
         Ok(StmtKind::Throw(expr))
     }
 
@@ -1468,7 +1561,7 @@ impl Parser {
         // Arrow lambda: `n => expr` or `(a, b) => expr`
         // Only trigger if LHS looks like lambda params (ident or tuple of idents)
         let lhs_is_lambda_param = matches!(&lhs.node, ExprKind::Ident(_) | ExprKind::Tuple(_));
-        if lhs_is_lambda_param && self.check(TokenKind::FatArrow) {
+        if lhs_is_lambda_param && self.check_cont(TokenKind::FatArrow) {
             self.bump();
             let span = lhs.span;
             let params = Self::expr_to_lambda_params(lhs)?;
@@ -1479,7 +1572,7 @@ impl Parser {
             ));
         }
 
-        if self.check(TokenKind::Equals) {
+        if self.check_cont(TokenKind::Equals) {
             self.bump();
             let rhs = self.parse_assign_expr()?;
             let span = lhs.span;
@@ -1492,11 +1585,11 @@ impl Parser {
             ));
         }
 
-        if self.check(TokenKind::PlusEquals)
-            || self.check(TokenKind::MinusEquals)
-            || self.check(TokenKind::StarEquals)
-            || self.check(TokenKind::SlashEquals)
-            || self.check(TokenKind::PercentEquals)
+        if self.check_cont(TokenKind::PlusEquals)
+            || self.check_cont(TokenKind::MinusEquals)
+            || self.check_cont(TokenKind::StarEquals)
+            || self.check_cont(TokenKind::SlashEquals)
+            || self.check_cont(TokenKind::PercentEquals)
         {
             let op = match self.peek().kind {
                 TokenKind::PlusEquals => CompoundOp::Add,
@@ -1524,7 +1617,7 @@ impl Parser {
 
     fn parse_ternary_expr(&mut self) -> Result<Expr, Error> {
         let cond = self.parse_or_expr()?;
-        if self.check(TokenKind::Question) {
+        if self.check_cont(TokenKind::Question) {
             self.bump();
             let span = cond.span;
             let then_branch = Box::new(self.parse_or_expr()?);
@@ -1541,7 +1634,7 @@ impl Parser {
     fn parse_or_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_and_expr()?;
 
-        while self.check(TokenKind::BarBar) {
+        while self.check_cont(TokenKind::BarBar) {
             self.bump();
             let rhs = self.parse_and_expr()?;
             // Issue #232: the span must cover the WHOLE binary expression
@@ -1564,7 +1657,7 @@ impl Parser {
     fn parse_and_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_bitwise_or_expr()?;
 
-        while self.check(TokenKind::AmpAmp) {
+        while self.check_cont(TokenKind::AmpAmp) {
             self.bump();
             let rhs = self.parse_bitwise_or_expr()?;
             // Issue #232: the span must cover the WHOLE binary expression
@@ -1587,7 +1680,7 @@ impl Parser {
     fn parse_bitwise_or_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_bitwise_xor_expr()?;
 
-        while self.check(TokenKind::Bar) && !self.check(TokenKind::BarBar) {
+        while self.check_cont(TokenKind::Bar) && !self.check_cont(TokenKind::BarBar) {
             self.bump();
             let rhs = self.parse_bitwise_xor_expr()?;
             // Issue #232: the span must cover the WHOLE binary expression
@@ -1610,7 +1703,7 @@ impl Parser {
     fn parse_bitwise_xor_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_bitwise_and_expr()?;
 
-        while self.check(TokenKind::Caret) {
+        while self.check_cont(TokenKind::Caret) {
             self.bump();
             let rhs = self.parse_bitwise_and_expr()?;
             // Issue #232: the span must cover the WHOLE binary expression
@@ -1633,7 +1726,7 @@ impl Parser {
     fn parse_bitwise_and_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_equality_expr()?;
 
-        while self.check(TokenKind::Ampersand) && !self.check(TokenKind::AmpAmp) {
+        while self.check_cont(TokenKind::Ampersand) && !self.check_cont(TokenKind::AmpAmp) {
             self.bump();
             let rhs = self.parse_equality_expr()?;
             // Issue #232: the span must cover the WHOLE binary expression
@@ -1656,8 +1749,8 @@ impl Parser {
     fn parse_equality_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_relational_expr()?;
 
-        while self.check(TokenKind::EqualsEquals) || self.check(TokenKind::BangEquals) {
-            let op = if self.check(TokenKind::EqualsEquals) {
+        while self.check_cont(TokenKind::EqualsEquals) || self.check_cont(TokenKind::BangEquals) {
+            let op = if self.check_cont(TokenKind::EqualsEquals) {
                 BinaryOp::Eq
             } else {
                 BinaryOp::Ne
@@ -1684,10 +1777,10 @@ impl Parser {
     fn parse_relational_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_shift_expr()?;
 
-        while self.check(TokenKind::Less)
-            || self.check(TokenKind::LessEquals)
-            || self.check(TokenKind::Greater)
-            || self.check(TokenKind::GreaterEquals)
+        while self.check_cont(TokenKind::Less)
+            || self.check_cont(TokenKind::LessEquals)
+            || self.check_cont(TokenKind::Greater)
+            || self.check_cont(TokenKind::GreaterEquals)
         {
             let op = match self.peek().kind {
                 TokenKind::Less => BinaryOp::Lt,
@@ -1718,9 +1811,9 @@ impl Parser {
     fn parse_shift_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_additive_expr()?;
 
-        while self.check(TokenKind::LessLess)
-            || self.check(TokenKind::GreaterGreater)
-            || self.check(TokenKind::GreaterGreaterGreater)
+        while self.check_cont(TokenKind::LessLess)
+            || self.check_cont(TokenKind::GreaterGreater)
+            || self.check_cont(TokenKind::GreaterGreaterGreater)
         {
             let op = match self.peek().kind {
                 TokenKind::LessLess => BinaryOp::Shl,
@@ -1750,8 +1843,8 @@ impl Parser {
     fn parse_additive_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_multiplicative_expr()?;
 
-        while self.check(TokenKind::Plus) || self.check(TokenKind::Minus) {
-            let op = if self.check(TokenKind::Plus) {
+        while self.check_cont(TokenKind::Plus) || self.check_cont(TokenKind::Minus) {
+            let op = if self.check_cont(TokenKind::Plus) {
                 BinaryOp::Add
             } else {
                 BinaryOp::Sub
@@ -1777,7 +1870,7 @@ impl Parser {
 
     fn parse_as_expr(&mut self) -> Result<Expr, Error> {
         let mut expr = self.parse_unary_expr()?;
-        while self.check_keyword(Keyword::As) {
+        while self.check_keyword_cont(Keyword::As) {
             self.bump();
             let span = expr.span;
             let ty = self.parse_type()?;
@@ -1789,9 +1882,9 @@ impl Parser {
     fn parse_multiplicative_expr(&mut self) -> Result<Expr, Error> {
         let mut lhs = self.parse_as_expr()?;
 
-        while self.check(TokenKind::Star)
-            || self.check(TokenKind::Slash)
-            || self.check(TokenKind::Percent)
+        while self.check_cont(TokenKind::Star)
+            || self.check_cont(TokenKind::Slash)
+            || self.check_cont(TokenKind::Percent)
         {
             let op = match self.peek().kind {
                 TokenKind::Star => BinaryOp::Mul,
@@ -1947,6 +2040,11 @@ impl Parser {
             chain += 1;
             if chain > MAX_RECURSION_DEPTH {
                 return Err(Error::new(self.mk_span(), "postfix chain too deep"));
+            }
+            if self.nl_here() && !self.check(TokenKind::Dot) {
+                // A fresh line that does not start with `.` ends the
+                // postfix chain (the statement-level check reports `(`/`[`).
+                break;
             }
             if self.check(TokenKind::Dot) {
                 self.bump();
@@ -2369,7 +2467,7 @@ impl Parser {
             TokenKind::Keyword(Keyword::Return) => {
                 let span = token.span;
                 self.bump();
-                let value = if self.check(TokenKind::Semicolon)
+                let value = if self.nl_here()
                     || self.check(TokenKind::RBrace)
                     || self.check(TokenKind::RParen)
                 {
@@ -2607,16 +2705,14 @@ impl Parser {
             // Block bodies don't need a trailing separator
             if !body_is_block {
                 if !self.check(TokenKind::RBrace) {
-                    if !self.consume(TokenKind::Comma) && !self.consume(TokenKind::Semicolon) {
-                        return Err(self.error("expected ',' or ';'"));
+                    if !self.consume(TokenKind::Comma) && !self.nl_here() {
+                        return Err(self.error("expected ',' or a newline between match arms"));
                     }
                 } else {
                     self.consume(TokenKind::Comma);
-                    self.consume(TokenKind::Semicolon);
                 }
             } else {
                 self.consume(TokenKind::Comma);
-                self.consume(TokenKind::Semicolon);
             }
         }
 
@@ -3393,7 +3489,7 @@ mod tests {
 
     #[test]
     fn test_parse_fn() {
-        let code = "fn main() -> Int32 { return 42; }";
+        let code = "fn main() -> Int32 { return 42 }";
         let mut lexer = Lexer::new(code);
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
@@ -3403,7 +3499,7 @@ mod tests {
 
     #[test]
     fn test_parse_class() {
-        let code = "class Foo { x: Int32; }";
+        let code = "class Foo { x: Int32 }";
         let mut lexer = Lexer::new(code);
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
@@ -3440,7 +3536,7 @@ mod tests {
 
     #[test]
     fn test_fn_with_params_and_return() {
-        let d = first_decl("fn add(a: Int32, b: Int32) -> Int32 { return a; }");
+        let d = first_decl("fn add(a: Int32, b: Int32) -> Int32 { return a }");
         let DeclKind::Function(f) = d else { panic!() };
         assert_eq!(f.name, "add");
         assert_eq!(f.params.len(), 2);
@@ -3452,7 +3548,7 @@ mod tests {
 
     #[test]
     fn test_fn_generic() {
-        let d = first_decl("fn identity<T>(x: T) -> T { return x; }");
+        let d = first_decl("fn identity<T>(x: T) -> T { return x }");
         let DeclKind::Function(f) = d else { panic!() };
         assert_eq!(f.name, "identity");
         assert_eq!(f.type_params, vec!["T"]);
@@ -3461,14 +3557,14 @@ mod tests {
 
     #[test]
     fn test_fn_multiple_type_params() {
-        let d = first_decl("fn pair<A, B>(a: A, b: B) -> A { return a; }");
+        let d = first_decl("fn pair<A, B>(a: A, b: B) -> A { return a }");
         let DeclKind::Function(f) = d else { panic!() };
         assert_eq!(f.type_params, vec!["A", "B"]);
     }
 
     #[test]
     fn test_fn_async() {
-        let d = first_decl("async fn fetch() -> String { return \"ok\"; }");
+        let d = first_decl("async fn fetch() -> String { return \"ok\" }");
         let DeclKind::Function(f) = d else { panic!() };
         assert!(f.is_async);
         assert_eq!(f.name, "fetch");
@@ -3476,7 +3572,7 @@ mod tests {
 
     #[test]
     fn test_fn_abstract_declaration() {
-        let d = first_decl("fn foo(x: Int32) -> Bool;");
+        let d = first_decl("fn foo(x: Int32) -> Bool");
         let DeclKind::Function(f) = d else { panic!() };
         assert_eq!(f.name, "foo");
         assert!(matches!(f.ret_type, Type::Bool));
@@ -3497,7 +3593,7 @@ mod tests {
 
     #[test]
     fn test_class_with_fields() {
-        let d = first_decl("class Point { x: Float64; y: Float64; }");
+        let d = first_decl("class Point { x: Float64\ny: Float64 }");
         let DeclKind::Class(c) = d else { panic!() };
         assert_eq!(c.fields.len(), 2);
         assert_eq!(c.fields[0].name, "x");
@@ -3522,7 +3618,7 @@ mod tests {
 
     #[test]
     fn test_class_generic() {
-        let d = first_decl("class Box<T> { value: T; }");
+        let d = first_decl("class Box<T> { value: T }");
         let DeclKind::Class(c) = d else { panic!() };
         assert_eq!(c.name, "Box");
         assert_eq!(c.type_params, vec!["T"]);
@@ -3539,7 +3635,7 @@ mod tests {
 
     #[test]
     fn test_class_visibility_modifiers() {
-        let d = first_decl("class Foo { public x: Int32; private y: Bool; }");
+        let d = first_decl("class Foo { public x: Int32\nprivate y: Bool }");
         let DeclKind::Class(c) = d else { panic!() };
         assert!(matches!(c.fields[0].visibility, Visibility::Public));
         assert!(matches!(c.fields[1].visibility, Visibility::Private));
@@ -3558,7 +3654,7 @@ mod tests {
 
     #[test]
     fn test_interface_with_methods() {
-        let d = first_decl("interface Shape { fn area() -> Float64; fn perimeter() -> Float64; }");
+        let d = first_decl("interface Shape { fn area() -> Float64\nfn perimeter() -> Float64 }");
         let DeclKind::Interface(i) = d else { panic!() };
         assert_eq!(i.methods.len(), 2);
         assert_eq!(i.methods[0].name, "area");
@@ -3567,7 +3663,7 @@ mod tests {
 
     #[test]
     fn test_interface_extends() {
-        let d = first_decl("interface Animal extends Living { fn speak() -> String; }");
+        let d = first_decl("interface Animal extends Living { fn speak() -> String }");
         let DeclKind::Interface(i) = d else { panic!() };
         assert_eq!(i.extends, vec!["Living"]);
     }
@@ -3576,7 +3672,7 @@ mod tests {
 
     #[test]
     fn test_enum_simple() {
-        let d = first_decl("enum Color { Red, Green, Blue }");
+        let d = first_decl("enum Color { Red\nGreen\nBlue }");
         let DeclKind::Enum(e) = d else { panic!() };
         assert_eq!(e.name, "Color");
         assert_eq!(e.variants.len(), 3);
@@ -3587,7 +3683,7 @@ mod tests {
 
     #[test]
     fn test_enum_with_args() {
-        let d = first_decl("enum Result { Ok(Int32), Err(String) }");
+        let d = first_decl("enum Result { Ok(Int32)\nErr(String) }");
         let DeclKind::Enum(e) = d else { panic!() };
         assert_eq!(e.variants.len(), 2);
         assert_eq!(e.variants[0].name, "Ok");
@@ -3599,7 +3695,7 @@ mod tests {
 
     #[test]
     fn test_import_simple() {
-        let d = first_decl("import std.io;");
+        let d = first_decl("import std.io");
         let DeclKind::Import(i) = d else { panic!() };
         assert_eq!(i.path, vec!["std", "io"]);
         assert!(i.alias.is_none());
@@ -3607,7 +3703,7 @@ mod tests {
 
     #[test]
     fn test_import_with_alias() {
-        let d = first_decl("import std.io as io;");
+        let d = first_decl("import std.io as io");
         let DeclKind::Import(i) = d else { panic!() };
         assert_eq!(i.path, vec!["std", "io"]);
         assert_eq!(i.alias.as_deref(), Some("io"));
@@ -3617,7 +3713,7 @@ mod tests {
 
     #[test]
     fn test_module_declaration() {
-        let d = first_decl("module myapp;");
+        let d = first_decl("module myapp");
         let DeclKind::Module(name) = d else { panic!() };
         assert_eq!(name, "myapp");
     }
@@ -3626,7 +3722,7 @@ mod tests {
 
     #[test]
     fn test_const_stmt() {
-        let d = first_decl("fn f() { const x: Int32 = 5; const y = 1; }");
+        let d = first_decl("fn f() { const x: Int32 = 5\nconst y = 1 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { name, ty, .. } = &stmts[0].node else { panic!() };
@@ -3645,7 +3741,7 @@ mod tests {
 
     #[test]
     fn test_let_with_type() {
-        let d = first_decl("fn f() { let x: Int32 = 5; }");
+        let d = first_decl("fn f() { let x: Int32 = 5 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::Let { .. }));
@@ -3656,7 +3752,7 @@ mod tests {
 
     #[test]
     fn test_let_type_inferred() {
-        let d = first_decl("fn f() { let x = 42; }");
+        let d = first_decl("fn f() { let x = 42 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { name, ty, .. } = &stmts[0].node else { panic!() };
@@ -3666,7 +3762,7 @@ mod tests {
 
     #[test]
     fn test_var_mutable() {
-        let d = first_decl("fn f() { var x: Int32 = 0; }");
+        let d = first_decl("fn f() { var x: Int32 = 0 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(&stmts[0].node, StmtKind::Var { mutable: true, .. }));
@@ -3711,7 +3807,7 @@ mod tests {
 
     #[test]
     fn test_return_with_value() {
-        let d = first_decl("fn f() -> Int32 { return 42; }");
+        let d = first_decl("fn f() -> Int32 { return 42 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::Return(Some(_))));
@@ -3719,7 +3815,7 @@ mod tests {
 
     #[test]
     fn test_return_void() {
-        let d = first_decl("fn f() { return; }");
+        let d = first_decl("fn f() { return }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::Return(None)));
@@ -3727,7 +3823,7 @@ mod tests {
 
     #[test]
     fn test_break_continue() {
-        let d = first_decl("fn f() { while true { break; continue; } }");
+        let d = first_decl("fn f() { while true { break\ncontinue } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(outer) = &f.body.node else { panic!() };
         let StmtKind::While { body, .. } = &outer[0].node else { panic!() };
@@ -3740,7 +3836,7 @@ mod tests {
 
     #[test]
     fn test_expr_integer_literal() {
-        let d = first_decl("fn f() { let x = 99; }");
+        let d = first_decl("fn f() { let x = 99 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3750,7 +3846,7 @@ mod tests {
     #[test]
     #[allow(clippy::approx_constant)] // 3.14 tests float parsing, not PI
     fn test_expr_float_literal() {
-        let d = first_decl("fn f() { let x = 3.14; }");
+        let d = first_decl("fn f() { let x = 3.14 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3759,7 +3855,7 @@ mod tests {
 
     #[test]
     fn test_expr_bool_literal() {
-        let d = first_decl("fn f() { let x = true; }");
+        let d = first_decl("fn f() { let x = true }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3768,7 +3864,7 @@ mod tests {
 
     #[test]
     fn test_expr_string_literal() {
-        let d = first_decl(r#"fn f() { let x = "hello"; }"#);
+        let d = first_decl(r#"fn f() { let x = "hello" }"#);
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3777,7 +3873,7 @@ mod tests {
 
     #[test]
     fn test_expr_null_literal() {
-        let d = first_decl("fn f() { let x = null; }");
+        let d = first_decl("fn f() { let x = null }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3788,7 +3884,7 @@ mod tests {
 
     #[test]
     fn test_expr_binary_add() {
-        let d = first_decl("fn f() { let x = 1 + 2; }");
+        let d = first_decl("fn f() { let x = 1 + 2 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3797,7 +3893,7 @@ mod tests {
 
     #[test]
     fn test_expr_binary_comparison() {
-        let d = first_decl("fn f() { let x = a < b; }");
+        let d = first_decl("fn f() { let x = a < b }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3806,7 +3902,7 @@ mod tests {
 
     #[test]
     fn test_expr_binary_logical_and() {
-        let d = first_decl("fn f() { let x = a && b; }");
+        let d = first_decl("fn f() { let x = a && b }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3816,7 +3912,7 @@ mod tests {
     #[test]
     fn test_expr_operator_precedence() {
         // 1 + 2 * 3 should parse as 1 + (2 * 3)
-        let d = first_decl("fn f() { let x = 1 + 2 * 3; }");
+        let d = first_decl("fn f() { let x = 1 + 2 * 3 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3828,7 +3924,7 @@ mod tests {
 
     #[test]
     fn test_expr_unary_neg() {
-        let d = first_decl("fn f() { let x = -1; }");
+        let d = first_decl("fn f() { let x = -1 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3837,7 +3933,7 @@ mod tests {
 
     #[test]
     fn test_expr_unary_not() {
-        let d = first_decl("fn f() { let x = !true; }");
+        let d = first_decl("fn f() { let x = !true }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3848,7 +3944,7 @@ mod tests {
 
     #[test]
     fn test_expr_function_call() {
-        let d = first_decl("fn f() { foo(1, 2); }");
+        let d = first_decl("fn f() { foo(1, 2) }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -3858,7 +3954,7 @@ mod tests {
 
     #[test]
     fn test_expr_method_call() {
-        let d = first_decl("fn f() { obj.method(x); }");
+        let d = first_decl("fn f() { obj.method(x) }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -3869,7 +3965,7 @@ mod tests {
 
     #[test]
     fn test_expr_field_access() {
-        let d = first_decl("fn f() { let x = obj.field; }");
+        let d = first_decl("fn f() { let x = obj.field }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3879,7 +3975,7 @@ mod tests {
 
     #[test]
     fn test_expr_index() {
-        let d = first_decl("fn f() { let x = arr[0]; }");
+        let d = first_decl("fn f() { let x = arr[0] }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3890,7 +3986,7 @@ mod tests {
 
     #[test]
     fn test_expr_new() {
-        let d = first_decl("fn f() { let x = new Foo(1, 2); }");
+        let d = first_decl("fn f() { let x = new Foo(1, 2) }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3901,7 +3997,7 @@ mod tests {
 
     #[test]
     fn test_expr_array_literal() {
-        let d = first_decl("fn f() { let x = [1, 2, 3]; }");
+        let d = first_decl("fn f() { let x = [1, 2, 3] }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3911,7 +4007,7 @@ mod tests {
 
     #[test]
     fn test_expr_tuple() {
-        let d = first_decl("fn f() { let x = (1, 2); }");
+        let d = first_decl("fn f() { let x = (1, 2) }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3944,7 +4040,7 @@ mod tests {
     #[test]
     fn test_expr_lambda() {
         // lambda syntax: \param -> body  or  (params) => body
-        let d = first_decl("fn f() { let add = (a, b) => a; }");
+        let d = first_decl("fn f() { let add = (a, b) => a }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3956,7 +4052,7 @@ mod tests {
     #[test]
     fn test_expr_lambda_backslash() {
         // backslash lambda: \x -> expr
-        let d = first_decl("fn f() { let sq = \\x -> x; }");
+        let d = first_decl("fn f() { let sq = \\x -> x }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3970,7 +4066,7 @@ mod tests {
     #[test]
     fn test_expr_cast() {
         // cast syntax: cast expr as Type
-        let d = first_decl("fn f() { let x = cast y as Int32; }");
+        let d = first_decl("fn f() { let x = cast y as Int32 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -3980,7 +4076,7 @@ mod tests {
     #[test]
     fn test_expr_is() {
         // is syntax: is expr -> Type (prefix expression)
-        let d = first_decl("fn f() { let x = is y -> Int32; }");
+        let d = first_decl("fn f() { let x = is y -> Int32 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4006,7 +4102,7 @@ mod tests {
 
     #[test]
     fn test_stmt_throw() {
-        let d = first_decl(r#"fn f() { throw new Error("oops"); }"#);
+        let d = first_decl(r#"fn f() { throw new Error("oops") }"#);
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::Throw(_)));
@@ -4014,7 +4110,7 @@ mod tests {
 
     #[test]
     fn test_stmt_try_catch() {
-        let d = first_decl("fn f() { try { foo(); } catch e: Error { } }");
+        let d = first_decl("fn f() { try { foo() } catch e: Error { } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Try { catches, .. } = &stmts[0].node else { panic!() };
@@ -4087,7 +4183,8 @@ mod tests {
 
     #[test]
     fn test_error_missing_fn_body() {
-        assert!(parse_err("fn f()"));
+        // a signature not followed by `{` is an abstract declaration and must end its line
+        assert!(parse_err("fn f() x"));
     }
 
     #[test]
@@ -4108,7 +4205,7 @@ mod tests {
 
     #[test]
     fn test_trait_with_method() {
-        let d = first_decl("trait Printable { fn print() -> String; }");
+        let d = first_decl("trait Printable { fn print() -> String }");
         let DeclKind::Trait(t) = d else { panic!() };
         assert_eq!(t.methods.len(), 1);
         assert_eq!(t.methods[0].name, "print");
@@ -4143,7 +4240,7 @@ mod tests {
 
     #[test]
     fn test_extern_fn() {
-        let d = first_decl("extern fn malloc(size: Int64) -> Int64;");
+        let d = first_decl("extern fn malloc(size: Int64) -> Int64");
         let DeclKind::Function(f) = d else { panic!() };
         assert_eq!(f.name, "malloc");
         assert_eq!(f.params.len(), 1);
@@ -4153,7 +4250,7 @@ mod tests {
 
     #[test]
     fn test_immutable_decl() {
-        let d = first_decl("immutable Point(x: Int64, y: Int64);");
+        let d = first_decl("immutable Point(x: Int64, y: Int64)");
         let DeclKind::Immutable(u) = d else { panic!() };
         assert_eq!(u.name, "Point");
         assert_eq!(u.fields.len(), 2);
@@ -4165,7 +4262,7 @@ mod tests {
 
     #[test]
     fn test_class_static_method_fnc() {
-        let d = first_decl("class Math { fnc square(x: Int64) -> Int64 { return x; } }");
+        let d = first_decl("class Math { fnc square(x: Int64) -> Int64 { return x } }");
         let DeclKind::Class(c) = d else { panic!() };
         assert_eq!(c.methods.len(), 1);
         assert!(c.methods[0].static_);
@@ -4183,7 +4280,7 @@ mod tests {
 
     #[test]
     fn test_class_async_method() {
-        let d = first_decl("class Client { async fn fetch() -> String { return \"\"; } }");
+        let d = first_decl("class Client { async fn fetch() -> String { return \"\" } }");
         let DeclKind::Class(c) = d else { panic!() };
         assert!(c.methods[0].is_async);
     }
@@ -4208,7 +4305,7 @@ mod tests {
 
     #[test]
     fn test_loop_stmt() {
-        let d = first_decl("fn f() { loop { break; } }");
+        let d = first_decl("fn f() { loop { break } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::Loop { .. }));
@@ -4216,7 +4313,7 @@ mod tests {
 
     #[test]
     fn test_defer_stmt() {
-        let d = first_decl("fn f() { defer println(0); }");
+        let d = first_decl("fn f() { defer println(0) }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::Defer(_)));
@@ -4236,7 +4333,7 @@ mod tests {
 
     #[test]
     fn test_compound_assign_plus_eq() {
-        let d = first_decl("fn f() { var x = 0; x += 1; }");
+        let d = first_decl("fn f() { var x = 0\nx += 1 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(&stmts[1].node, StmtKind::Expr(e) if matches!(&e.node, ExprKind::CompoundAssign { op: CompoundOp::Add, .. })));
@@ -4244,7 +4341,7 @@ mod tests {
 
     #[test]
     fn test_compound_assign_minus_eq() {
-        let d = first_decl("fn f() { var x = 5; x -= 2; }");
+        let d = first_decl("fn f() { var x = 5\nx -= 2 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(&stmts[1].node, StmtKind::Expr(e) if matches!(&e.node, ExprKind::CompoundAssign { op: CompoundOp::Sub, .. })));
@@ -4254,7 +4351,7 @@ mod tests {
 
     #[test]
     fn test_assignment_stmt() {
-        let d = first_decl("fn f() { var x = 0; x = 5; }");
+        let d = first_decl("fn f() { var x = 0\nx = 5 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[1].node, StmtKind::Assignment { .. }));
@@ -4265,7 +4362,7 @@ mod tests {
     #[test]
     fn test_expr_map_literal() {
         // Map literal syntax: @{ key => val, ... }
-        let d = first_decl(r#"fn f() { let m = @{"a" => 1, "b" => 2}; }"#);
+        let d = first_decl(r#"fn f() { let m = @{"a" => 1, "b" => 2} }"#);
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4275,7 +4372,7 @@ mod tests {
 
     #[test]
     fn test_expr_this() {
-        let d = first_decl("class Foo { fn bar() { let x = this; } }");
+        let d = first_decl("class Foo { fn bar() { let x = this } }");
         let DeclKind::Class(c) = d else { panic!() };
         let StmtKind::Block(stmts) = &c.methods[0].body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4285,7 +4382,7 @@ mod tests {
     #[test]
     fn test_expr_await_binds_tighter_than_binary_op() {
         // Issue #289: `await a + await b` must be `(await a) + (await b)`.
-        let d = first_decl("fn f() { let x = await a + await b; }");
+        let d = first_decl("fn f() { let x = await a + await b }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4298,7 +4395,7 @@ mod tests {
     fn test_scope_desugars_to_try_finally_and_registers_spawns() {
         // Issue #301 phase 3: `scope { }` is plain AST (no new node kind) and
         // only spawns lexically inside it are registered with the scope.
-        let d = first_decl("fn f() { scope { let a = spawn g(); let h = fn() { let b = spawn g(); }; } }");
+        let d = first_decl("fn f() { scope { let a = spawn g()\nlet h = fn() { let b = spawn g() } } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(outer) = &f.body.node else { panic!() };
         let StmtKind::Block(desugared) = &outer[0].node else { panic!("scope should desugar to a block") };
@@ -4320,13 +4417,13 @@ mod tests {
     #[test]
     fn test_scope_is_contextual_not_reserved() {
         // `scope` stays usable as an ordinary identifier.
-        let d = first_decl("fn f() { let scope = 1; let y = scope + 1; }");
+        let d = first_decl("fn f() { let scope = 1\nlet y = scope + 1 }");
         let DeclKind::Function(_) = d else { panic!() };
     }
 
     #[test]
     fn test_expr_await() {
-        let d = first_decl("fn f() { let x = await someTask; }");
+        let d = first_decl("fn f() { let x = await someTask }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4335,7 +4432,7 @@ mod tests {
 
     #[test]
     fn test_expr_spawn() {
-        let d = first_decl("fn f() { let t = spawn work(); }");
+        let d = first_decl("fn f() { let t = spawn work() }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4346,7 +4443,7 @@ mod tests {
 
     #[test]
     fn test_expr_new_with_type_args() {
-        let d = first_decl("fn f() { let b = new Box<Int64>(42); }");
+        let d = first_decl("fn f() { let b = new Box<Int64>(42) }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4417,7 +4514,7 @@ mod tests {
 
     #[test]
     fn test_chained_method_calls() {
-        let d = first_decl("fn f() { a.foo().bar().baz(); }");
+        let d = first_decl("fn f() { a.foo().bar().baz() }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -4427,7 +4524,7 @@ mod tests {
 
     #[test]
     fn test_chained_field_access() {
-        let d = first_decl("fn f() { let x = a.b.c; }");
+        let d = first_decl("fn f() { let x = a.b.c }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4439,7 +4536,7 @@ mod tests {
 
     #[test]
     fn test_precedence_mul_before_add() {
-        let d = first_decl("fn f() { let x = 2 + 3 * 4; }");
+        let d = first_decl("fn f() { let x = 2 + 3 * 4 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4449,7 +4546,7 @@ mod tests {
 
     #[test]
     fn test_precedence_parens_override() {
-        let d = first_decl("fn f() { let x = (2 + 3) * 4; }");
+        let d = first_decl("fn f() { let x = (2 + 3) * 4 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4458,7 +4555,7 @@ mod tests {
 
     #[test]
     fn test_precedence_compare_before_and() {
-        let d = first_decl("fn f() { let x = a > 0 && b < 10; }");
+        let d = first_decl("fn f() { let x = a > 0 && b < 10 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4471,7 +4568,7 @@ mod tests {
 
     #[test]
     fn test_error_unclosed_paren() {
-        assert!(parse_err("fn f() { foo(1, 2; }"));
+        assert!(parse_err("fn f() { foo(1, 2 }"));
     }
 
     #[test]
@@ -4522,7 +4619,7 @@ mod tests {
 
     #[test]
     fn test_tuple_index_access() {
-        let d = first_decl("fn f() { let t = (1, 2); let x = t.0; }");
+        let d = first_decl("fn f() { let t = (1, 2)\nlet x = t.0 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[1].node else { panic!() };
@@ -4533,7 +4630,7 @@ mod tests {
 
     #[test]
     fn test_enum_with_doc() {
-        let d = first_decl("/** Colors */ enum Color { Red, Green, Blue }");
+        let d = first_decl("/** Colors */ enum Color { Red\nGreen\nBlue }");
         let DeclKind::Enum(e) = d else { panic!() };
         assert!(e.doc.is_some());
     }
@@ -4562,7 +4659,7 @@ mod tests {
 
     #[test]
     fn test_expr_send() {
-        let d = first_decl("fn f(ch: Chan) { send ch -> 42; }");
+        let d = first_decl("fn f(ch: Chan) { send ch -> 42 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -4571,7 +4668,7 @@ mod tests {
 
     #[test]
     fn test_expr_recv() {
-        let d = first_decl("fn f(ch: Chan) { let x = recv ch; }");
+        let d = first_decl("fn f(ch: Chan) { let x = recv ch }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4580,7 +4677,7 @@ mod tests {
 
     #[test]
     fn test_expr_channel() {
-        let d = first_decl("fn f() { let ch = channel; }");
+        let d = first_decl("fn f() { let ch = channel }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4589,7 +4686,7 @@ mod tests {
 
     #[test]
     fn test_expr_spawn_v2() {
-        let d = first_decl("fn f() { let t = spawn work(); }");
+        let d = first_decl("fn f() { let t = spawn work() }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4598,7 +4695,7 @@ mod tests {
 
     #[test]
     fn test_expr_await_v2() {
-        let d = first_decl("fn f(t: Task) { let r = await t; }");
+        let d = first_decl("fn f(t: Task) { let r = await t }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4611,7 +4708,7 @@ mod tests {
 
     #[test]
     fn test_lambda_arrow_style_two_params() {
-        let d = first_decl("fn f() { let add = (a, b) => a + b; }");
+        let d = first_decl("fn f() { let add = (a, b) => a + b }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4622,12 +4719,12 @@ mod tests {
     #[test]
     fn test_lambda_zero_params_parse_bug() {
         // BUG: `() => expr` fails to parse — parser expects semicolon after `()`
-        assert!(parse_err("fn f() { let thunk = () => 42; }"), "zero-param arrow lambda should currently fail to parse");
+        assert!(parse_err("fn f() { let thunk = () => 42 }"), "zero-param arrow lambda should currently fail to parse");
     }
 
     #[test]
     fn test_lambda_backslash_single_param() {
-        let d = first_decl("fn f() { let sq = \\x -> x * x; }");
+        let d = first_decl("fn f() { let sq = \\x -> x * x }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4638,7 +4735,7 @@ mod tests {
 
     #[test]
     fn test_fnc_lambda() {
-        let d = first_decl("fn f() { let cb = fnc(x: Int64) -> Int64 { return x; }; }");
+        let d = first_decl("fn f() { let cb = fnc(x: Int64) -> Int64 { return x } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4647,7 +4744,7 @@ mod tests {
 
     #[test]
     fn test_fn_lambda() {
-        let d = first_decl("fn f() { let cb = fn(x: Int64) -> Int64 { return x; }; }");
+        let d = first_decl("fn f() { let cb = fn(x: Int64) -> Int64 { return x } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4660,7 +4757,7 @@ mod tests {
 
     #[test]
     fn test_expr_super_call() {
-        let d = first_decl("class Dog extends Animal { fn speak() -> Nothing { super.speak(); } }");
+        let d = first_decl("class Dog extends Animal { fn speak() -> Nothing { super.speak() } }");
         let DeclKind::Class(c) = d else { panic!() };
         let StmtKind::Block(stmts) = &c.methods[0].body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -4673,7 +4770,7 @@ mod tests {
 
     #[test]
     fn test_match_with_guard() {
-        let d = first_decl("fn f(x: Int64) -> Nothing { match x { n if n > 0 => return; _ => return; } }");
+        let d = first_decl("fn f(x: Int64) -> Nothing { match x { n if n > 0 => return\n_ => return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -4683,7 +4780,7 @@ mod tests {
 
     #[test]
     fn test_match_no_guard() {
-        let d = first_decl("fn f(x: Int64) -> Nothing { match x { 1 => return; _ => return; } }");
+        let d = first_decl("fn f(x: Int64) -> Nothing { match x { 1 => return\n_ => return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -4738,7 +4835,7 @@ mod tests {
 
     #[test]
     fn test_match_enum_variant_with_payload() {
-        let d = first_decl("fn f(s: Shape) -> Nothing { match s { Shape::Circle(r) => return; _ => return; } }");
+        let d = first_decl("fn f(s: Shape) -> Nothing { match s { Shape::Circle(r) => return\n_ => return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -4748,7 +4845,7 @@ mod tests {
 
     #[test]
     fn test_match_tuple_pattern_v2() {
-        let d = first_decl("fn f(t: (Int64, Int64)) -> Nothing { match t { (a, b) => return; } }");
+        let d = first_decl("fn f(t: (Int64, Int64)) -> Nothing { match t { (a, b) => return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -4762,7 +4859,7 @@ mod tests {
 
     #[test]
     fn test_stmt_defer() {
-        let d = first_decl("fn f() { defer { println(\"done\"); } }");
+        let d = first_decl("fn f() { defer { println(\"done\") } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::Defer(_)));
@@ -4775,10 +4872,10 @@ mod tests {
     #[test]
     fn test_try_multiple_catches() {
         let d = first_decl(concat!(
-            "fn f() { try { throw \"x\"; }",
-            " catch e: String { return; }",
-            " catch e: Int64 { return; }",
-            " finally { return; } }"
+            "fn f() { try { throw \"x\" }",
+            " catch e: String { return }",
+            " catch e: Int64 { return }",
+            " finally { return } }"
         ));
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
@@ -4793,7 +4890,7 @@ mod tests {
 
     #[test]
     fn test_annotation_on_field() {
-        let d = first_decl("class Foo { @Inject\nvar svc: Service; }");
+        let d = first_decl("class Foo { @Inject\nvar svc: Service }");
         let DeclKind::Class(c) = d else { panic!() };
         assert!(!c.fields[0].annotations.is_empty());
         assert_eq!(c.fields[0].annotations[0].name, "Inject");
@@ -4860,7 +4957,7 @@ mod tests {
 
     #[test]
     fn test_protected_field() {
-        let d = first_decl("class Foo { protected var x: Int64; }");
+        let d = first_decl("class Foo { protected var x: Int64 }");
         let DeclKind::Class(c) = d else { panic!() };
         assert!(matches!(c.fields[0].visibility, Visibility::Protected));
     }
@@ -4871,7 +4968,7 @@ mod tests {
 
     #[test]
     fn test_tuple_index_access_v2() {
-        let d = first_decl("fn f(t: (Int64, Int64)) -> Int64 { return t.0; }");
+        let d = first_decl("fn f(t: (Int64, Int64)) -> Int64 { return t.0 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -4880,7 +4977,7 @@ mod tests {
 
     #[test]
     fn test_array_index_expr() {
-        let d = first_decl("fn f(a: Array<Int64>) -> Int64 { return a[0]; }");
+        let d = first_decl("fn f(a: Array<Int64>) -> Int64 { return a[0] }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -4889,7 +4986,7 @@ mod tests {
 
     #[test]
     fn test_enum_value_no_args() {
-        let d = first_decl("fn f() -> Color { return Color::Red; }");
+        let d = first_decl("fn f() -> Color { return Color::Red }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -4901,7 +4998,7 @@ mod tests {
 
     #[test]
     fn test_enum_value_with_args() {
-        let d = first_decl("fn f() { let s = Shape::Circle(5.0); }");
+        let d = first_decl("fn f() { let s = Shape::Circle(5.0) }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4911,7 +5008,7 @@ mod tests {
 
     #[test]
     fn test_struct_literal_expr() {
-        let d = first_decl("fn f() -> Point { return Point { x: 1, y: 2 }; }");
+        let d = first_decl("fn f() -> Point { return Point { x: 1, y: 2 } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -4922,7 +5019,7 @@ mod tests {
 
     #[test]
     fn test_map_literal() {
-        let d = first_decl("fn f() { let m = @{\"a\" => 1, \"b\" => 2}; }");
+        let d = first_decl("fn f() { let m = @{\"a\" => 1, \"b\" => 2} }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -4937,7 +5034,7 @@ mod tests {
     #[test]
     fn test_block_with_trailing_expr() {
         // Block ending in expression without semicolon = implicit return
-        let d = first_decl("fn f() -> Int64 { let x = { 42 }; return x; }");
+        let d = first_decl("fn f() -> Int64 { let x = { 42 }\nreturn x }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         // let x = {...} should parse without error
@@ -4950,7 +5047,7 @@ mod tests {
 
     #[test]
     fn test_parse_err_missing_closing_brace() {
-        assert!(parse_err("fn f() { let x = 1;"), "unclosed brace should be a parse error");
+        assert!(parse_err("fn f() { let x = 1"), "unclosed brace should be a parse error");
     }
 
     #[test]
@@ -4985,7 +5082,7 @@ mod tests {
 
     #[test]
     fn test_interface_extends_multiple() {
-        let d = first_decl("interface C extends A, B { fn c() -> Nothing; }");
+        let d = first_decl("interface C extends A, B { fn c() -> Nothing }");
         let DeclKind::Interface(i) = d else { panic!() };
         assert_eq!(i.extends, vec!["A", "B"]);
     }
@@ -4996,7 +5093,7 @@ mod tests {
 
     #[test]
     fn test_extern_fn_no_params() {
-        let d = first_decl("extern fn getpid() -> Int64;");
+        let d = first_decl("extern fn getpid() -> Int64");
         let DeclKind::Function(f) = d else { panic!() };
         // extern fn has an empty body (StmtKind::Empty)
         assert!(matches!(f.body.node, StmtKind::Empty));
@@ -5009,7 +5106,7 @@ mod tests {
 
     #[test]
     fn test_module_declaration_v2() {
-        let ast = parse("module myapp;");
+        let ast = parse("module myapp");
         assert!(matches!(ast.decls[0].node, DeclKind::Module(_)));
     }
 
@@ -5026,7 +5123,7 @@ mod tests {
 
     #[test]
     fn test_expr_cast_node() {
-        let d = first_decl("fn f() -> Float64 { let x = 5; return x as Float64; }");
+        let d = first_decl("fn f() -> Float64 { let x = 5\nreturn x as Float64 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[1].node else { panic!() };
@@ -5036,7 +5133,7 @@ mod tests {
     #[test]
     fn test_expr_is_node() {
         // is syntax: is expr -> Type (prefix form)
-        let d = first_decl("fn f() { let r = is obj -> String; }");
+        let d = first_decl("fn f() { let r = is obj -> String }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -5063,7 +5160,7 @@ mod tests {
 
     #[test]
     fn test_expr_tuple_three_elems() {
-        let d = first_decl("fn f() { let t = (1, 2, 3); }");
+        let d = first_decl("fn f() { let t = (1, 2, 3) }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -5073,7 +5170,7 @@ mod tests {
 
     #[test]
     fn test_expr_this_in_method() {
-        let d = first_decl("class Foo { fn bar() -> Nothing { let x = this; } }");
+        let d = first_decl("class Foo { fn bar() -> Nothing { let x = this } }");
         let DeclKind::Class(c) = d else { panic!() };
         let StmtKind::Block(stmts) = &c.methods[0].body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -5082,7 +5179,7 @@ mod tests {
 
     #[test]
     fn test_expr_new_class() {
-        let d = first_decl("fn f() { let p = new Point(1, 2); }");
+        let d = first_decl("fn f() { let p = new Point(1, 2) }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -5091,7 +5188,7 @@ mod tests {
 
     #[test]
     fn test_expr_throw() {
-        let d = first_decl("fn f() { throw \"error\"; }");
+        let d = first_decl("fn f() { throw \"error\" }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::Throw(_)));
@@ -5100,7 +5197,7 @@ mod tests {
     #[test]
     fn test_expr_send_channel() {
         // send syntax: send channel -> value (uses ThinArrow)
-        let d = first_decl("fn f(ch: Chan) { send ch -> 42; }");
+        let d = first_decl("fn f(ch: Chan) { send ch -> 42 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -5109,7 +5206,7 @@ mod tests {
 
     #[test]
     fn test_expr_recv_channel() {
-        let d = first_decl("fn f(ch: Channel<Int64>) { let v = recv ch; }");
+        let d = first_decl("fn f(ch: Channel<Int64>) { let v = recv ch }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Let { value: Some(e), .. } = &stmts[0].node else { panic!() };
@@ -5122,7 +5219,7 @@ mod tests {
 
     #[test]
     fn test_stmt_loop() {
-        let d = first_decl("fn f() { loop { break; } }");
+        let d = first_decl("fn f() { loop { break } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::Loop { .. }));
@@ -5130,7 +5227,7 @@ mod tests {
 
     #[test]
     fn test_stmt_break() {
-        let d = first_decl("fn f() { loop { break; } }");
+        let d = first_decl("fn f() { loop { break } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Loop { body } = &stmts[0].node else { panic!() };
@@ -5140,7 +5237,7 @@ mod tests {
 
     #[test]
     fn test_stmt_continue() {
-        let d = first_decl("fn f() { while true { continue; } }");
+        let d = first_decl("fn f() { while true { continue } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::While { body, .. } = &stmts[0].node else { panic!() };
@@ -5150,7 +5247,7 @@ mod tests {
 
     #[test]
     fn test_stmt_if_else() {
-        let d = first_decl("fn f() -> Int64 { if (true) { return 1; } else { return 2; } }");
+        let d = first_decl("fn f() -> Int64 { if (true) { return 1 } else { return 2 } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::If { else_branch, .. } = &stmts[0].node else { panic!() };
@@ -5159,7 +5256,7 @@ mod tests {
 
     #[test]
     fn test_stmt_if_no_else() {
-        let d = first_decl("fn f() { if (true) { return; } }");
+        let d = first_decl("fn f() { if (true) { return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::If { else_branch, .. } = &stmts[0].node else { panic!() };
@@ -5168,7 +5265,7 @@ mod tests {
 
     #[test]
     fn test_stmt_while() {
-        let d = first_decl("fn f() { while x > 0 { return; } }");
+        let d = first_decl("fn f() { while x > 0 { return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::While { .. }));
@@ -5176,7 +5273,7 @@ mod tests {
 
     #[test]
     fn test_stmt_for_in() {
-        let d = first_decl("fn f() { for item in list { return; } }");
+        let d = first_decl("fn f() { for item in list { return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::For { var, .. } = &stmts[0].node else { panic!() };
@@ -5189,7 +5286,7 @@ mod tests {
 
     #[test]
     fn test_binary_bitand() {
-        let d = first_decl("fn f() -> Int64 { return 0b1100 & 0b1010; }");
+        let d = first_decl("fn f() -> Int64 { return 0b1100 & 0b1010 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5198,7 +5295,7 @@ mod tests {
 
     #[test]
     fn test_binary_bitor() {
-        let d = first_decl("fn f() -> Int64 { return 0b1100 | 0b0011; }");
+        let d = first_decl("fn f() -> Int64 { return 0b1100 | 0b0011 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5207,7 +5304,7 @@ mod tests {
 
     #[test]
     fn test_binary_xor() {
-        let d = first_decl("fn f() -> Int64 { return 5 ^ 3; }");
+        let d = first_decl("fn f() -> Int64 { return 5 ^ 3 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5216,7 +5313,7 @@ mod tests {
 
     #[test]
     fn test_binary_shl() {
-        let d = first_decl("fn f() -> Int64 { return 1 << 3; }");
+        let d = first_decl("fn f() -> Int64 { return 1 << 3 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5225,7 +5322,7 @@ mod tests {
 
     #[test]
     fn test_binary_shr() {
-        let d = first_decl("fn f() -> Int64 { return 8 >> 2; }");
+        let d = first_decl("fn f() -> Int64 { return 8 >> 2 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5234,7 +5331,7 @@ mod tests {
 
     #[test]
     fn test_binary_ne() {
-        let d = first_decl("fn f() -> Bool { return 1 != 2; }");
+        let d = first_decl("fn f() -> Bool { return 1 != 2 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5243,7 +5340,7 @@ mod tests {
 
     #[test]
     fn test_binary_le() {
-        let d = first_decl("fn f() -> Bool { return 3 <= 4; }");
+        let d = first_decl("fn f() -> Bool { return 3 <= 4 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5252,7 +5349,7 @@ mod tests {
 
     #[test]
     fn test_binary_ge() {
-        let d = first_decl("fn f() -> Bool { return 5 >= 5; }");
+        let d = first_decl("fn f() -> Bool { return 5 >= 5 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5265,7 +5362,7 @@ mod tests {
 
     #[test]
     fn test_unary_neg() {
-        let d = first_decl("fn f() -> Int64 { return -5; }");
+        let d = first_decl("fn f() -> Int64 { return -5 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5274,7 +5371,7 @@ mod tests {
 
     #[test]
     fn test_unary_not() {
-        let d = first_decl("fn f() -> Bool { return !true; }");
+        let d = first_decl("fn f() -> Bool { return !true }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5283,7 +5380,7 @@ mod tests {
 
     #[test]
     fn test_unary_bitnot() {
-        let d = first_decl("fn f() -> Int64 { return ~0; }");
+        let d = first_decl("fn f() -> Int64 { return ~0 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5296,7 +5393,7 @@ mod tests {
 
     #[test]
     fn test_compound_assign_plus() {
-        let d = first_decl("fn f() { var x = 1; x += 5; }");
+        let d = first_decl("fn f() { var x = 1\nx += 5 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
@@ -5305,7 +5402,7 @@ mod tests {
 
     #[test]
     fn test_compound_assign_minus() {
-        let d = first_decl("fn f() { var x = 10; x -= 3; }");
+        let d = first_decl("fn f() { var x = 10\nx -= 3 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
@@ -5314,7 +5411,7 @@ mod tests {
 
     #[test]
     fn test_compound_assign_mul() {
-        let d = first_decl("fn f() { var x = 3; x *= 4; }");
+        let d = first_decl("fn f() { var x = 3\nx *= 4 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
@@ -5323,7 +5420,7 @@ mod tests {
 
     #[test]
     fn test_compound_assign_div() {
-        let d = first_decl("fn f() { var x = 20; x /= 4; }");
+        let d = first_decl("fn f() { var x = 20\nx /= 4 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
@@ -5332,7 +5429,7 @@ mod tests {
 
     #[test]
     fn test_compound_assign_mod() {
-        let d = first_decl("fn f() { var x = 17; x %= 5; }");
+        let d = first_decl("fn f() { var x = 17\nx %= 5 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[1].node else { panic!() };
@@ -5345,7 +5442,7 @@ mod tests {
 
     #[test]
     fn test_literal_float() {
-        let d = first_decl("fn f() -> Float64 { return 3.14; }");
+        let d = first_decl("fn f() -> Float64 { return 3.14 }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5354,7 +5451,7 @@ mod tests {
 
     #[test]
     fn test_literal_char() {
-        let d = first_decl("fn f() -> Char { return 'z'; }");
+        let d = first_decl("fn f() -> Char { return 'z' }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5363,7 +5460,7 @@ mod tests {
 
     #[test]
     fn test_literal_string() {
-        let d = first_decl("fn f() -> String { return \"hello\"; }");
+        let d = first_decl("fn f() -> String { return \"hello\" }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5372,7 +5469,7 @@ mod tests {
 
     #[test]
     fn test_literal_null() {
-        let d = first_decl("fn f() -> String? { return null; }");
+        let d = first_decl("fn f() -> String? { return null }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Return(Some(e)) = &stmts[0].node else { panic!() };
@@ -5424,13 +5521,13 @@ mod tests {
 
     #[test]
     fn test_import_simple_v2() {
-        let ast = parse("import std.io;");
+        let ast = parse("import std.io");
         assert!(matches!(ast.decls[0].node, DeclKind::Import(_)));
     }
 
     #[test]
     fn test_import_with_alias_v2() {
-        let ast = parse("import std.collections.HashMap as Map;");
+        let ast = parse("import std.collections.HashMap as Map");
         let DeclKind::Import(i) = &ast.decls[0].node else { panic!() };
         assert!(i.alias.is_some());
         assert_eq!(i.alias.as_ref().unwrap(), "Map");
@@ -5438,7 +5535,7 @@ mod tests {
 
     #[test]
     fn test_import_path_length() {
-        let ast = parse("import a.b.c.d;");
+        let ast = parse("import a.b.c.d");
         let DeclKind::Import(i) = &ast.decls[0].node else { panic!() };
         assert_eq!(i.path.len(), 4);
     }
@@ -5460,14 +5557,14 @@ mod tests {
 
     #[test]
     fn test_enum_multiple_variants() {
-        let d = first_decl("enum Status { Ok, NotFound, ServerError }");
+        let d = first_decl("enum Status { Ok\nNotFound\nServerError }");
         let DeclKind::Enum(e) = d else { panic!() };
         assert_eq!(e.variants.len(), 3);
     }
 
     #[test]
     fn test_enum_variant_with_args() {
-        let d = first_decl("enum Result { Ok(Int64), Err(String) }");
+        let d = first_decl("enum Result { Ok(Int64)\nErr(String) }");
         let DeclKind::Enum(e) = d else { panic!() };
         assert!(!e.variants[0].args.is_empty());
     }
@@ -5478,7 +5575,7 @@ mod tests {
 
     #[test]
     fn test_class_with_constructor() {
-        let d = first_decl("class Person { var name: String; fn init(n: String) -> Nothing { this.name = n; } }");
+        let d = first_decl("class Person { var name: String\nfn init(n: String) -> Nothing { this.name = n } }");
         let DeclKind::Class(c) = d else { panic!() };
         assert_eq!(c.fields.len(), 1);
         assert_eq!(c.methods.len(), 1);
@@ -5486,14 +5583,14 @@ mod tests {
 
     #[test]
     fn test_class_multiple_methods() {
-        let d = first_decl("class Calc { fn add(a: Int64, b: Int64) -> Int64 { return a + b; } fn sub(a: Int64, b: Int64) -> Int64 { return a - b; } }");
+        let d = first_decl("class Calc { fn add(a: Int64, b: Int64) -> Int64 { return a + b } fn sub(a: Int64, b: Int64) -> Int64 { return a - b } }");
         let DeclKind::Class(c) = d else { panic!() };
         assert_eq!(c.methods.len(), 2);
     }
 
     #[test]
     fn test_class_async_method_v2() {
-        let d = first_decl("class Client { async fn fetch() -> String { return \"\"; } }");
+        let d = first_decl("class Client { async fn fetch() -> String { return \"\" } }");
         let DeclKind::Class(c) = d else { panic!() };
         assert!(c.methods[0].is_async);
     }
@@ -5504,7 +5601,7 @@ mod tests {
 
     #[test]
     fn test_interface_multiple_methods() {
-        let d = first_decl("interface Repository { fn findById(id: Int64) -> Nothing; fn save(entity: Nothing) -> Nothing; fn delete(id: Int64) -> Nothing; }");
+        let d = first_decl("interface Repository { fn findById(id: Int64) -> Nothing\nfn save(entity: Nothing) -> Nothing\nfn delete(id: Int64) -> Nothing }");
         let DeclKind::Interface(i) = d else { panic!() };
         assert_eq!(i.methods.len(), 3);
     }
@@ -5512,14 +5609,14 @@ mod tests {
     #[test]
     fn test_interface_generic_parse_bug() {
         // BUG: parser does not support generic type params on interfaces
-        assert!(parse_err("interface Container<T> { fn get() -> T; }"),
+        assert!(parse_err("interface Container<T> { fn get() -> T }"),
             "generic interface should currently fail to parse");
     }
 
     #[test]
     fn test_interface_no_type_params() {
         // Without generics, interfaces parse fine
-        let d = first_decl("interface Container { fn get() -> Nothing; fn set(v: Int64) -> Nothing; }");
+        let d = first_decl("interface Container { fn get() -> Nothing\nfn set(v: Int64) -> Nothing }");
         let DeclKind::Interface(i) = d else { panic!() };
         assert_eq!(i.methods.len(), 2);
     }
@@ -5530,7 +5627,7 @@ mod tests {
 
     #[test]
     fn test_async_fn() {
-        let d = first_decl("async fn fetchData() -> String { return \"\"; }");
+        let d = first_decl("async fn fetchData() -> String { return \"\" }");
         let DeclKind::Function(f) = d else { panic!() };
         assert!(f.is_async);
     }
@@ -5541,7 +5638,7 @@ mod tests {
 
     #[test]
     fn test_match_wildcard_only() {
-        let d = first_decl("fn f(x: Int64) -> Nothing { match x { _ => return; } }");
+        let d = first_decl("fn f(x: Int64) -> Nothing { match x { _ => return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -5551,7 +5648,7 @@ mod tests {
 
     #[test]
     fn test_match_literal_cases() {
-        let d = first_decl("fn f(x: Int64) -> Nothing { match x { 1 => return; 2 => return; _ => return; } }");
+        let d = first_decl("fn f(x: Int64) -> Nothing { match x { 1 => return\n2 => return\n_ => return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
@@ -5561,11 +5658,209 @@ mod tests {
 
     #[test]
     fn test_match_string_literal() {
-        let d = first_decl("fn f(s: String) -> Nothing { match s { \"ok\" => return; _ => return; } }");
+        let d = first_decl("fn f(s: String) -> Nothing { match s { \"ok\" => return\n_ => return } }");
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         let StmtKind::Expr(e) = &stmts[0].node else { panic!() };
         let ExprKind::Match { cases, .. } = &e.node else { panic!() };
         assert!(matches!(&cases[0].pattern, Pattern::Literal(Literal::String(_), _)));
+    }
+}
+
+/// Statement termination by newline (issue #445).
+#[cfg(test)]
+mod newline_termination_tests {
+    use super::*;
+    use tinox_lexer::Lexer;
+
+    fn parse_result(src: &str) -> Result<SourceFile, ErrorBag> {
+        let tokens = Lexer::new(src).tokenize().expect("lex error");
+        Parser::new(tokens).parse()
+    }
+
+    fn ok(src: &str) -> SourceFile {
+        parse_result(src).unwrap_or_else(|e| panic!("expected to parse:\n{src}\n{e:?}"))
+    }
+
+    fn err_msg(src: &str) -> String {
+        match parse_result(src) {
+            Ok(_) => panic!("expected a parse error:\n{src}"),
+            Err(bag) => bag.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join(" | "),
+        }
+    }
+
+    fn body_stmts(src: &str) -> Vec<StmtKind> {
+        match ok(src).decls.remove(0).node {
+            DeclKind::Function(f) => match f.body.node {
+                StmtKind::Block(stmts) => stmts.into_iter().map(|s| s.node).collect(),
+                other => panic!("not a block: {other:?}"),
+            },
+            other => panic!("not a function: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newline_ends_a_statement() {
+        let stmts = body_stmts("fn f() {\n  const a = 1\n  const b = 2\n  return b\n}");
+        assert_eq!(stmts.len(), 3);
+    }
+
+    #[test]
+    fn semicolon_terminator_is_a_hard_error() {
+        assert!(err_msg("fn f() {\n  const a = 1;\n}").contains("semicolons were removed"));
+        assert!(err_msg("fn f() {\n  return;\n}").contains("semicolons were removed"));
+        assert!(err_msg("import a.b;").contains("semicolons were removed"));
+        assert!(err_msg("class A { var x: Int64; }").contains("semicolons were removed"));
+        assert!(err_msg("enum E { A; B; }").contains("semicolons were removed"));
+        assert!(err_msg("fn f() { ; }").contains("semicolons were removed"));
+    }
+
+    #[test]
+    fn several_statements_on_one_line_are_rejected() {
+        assert!(err_msg("fn f() {\n  const a = 1 const b = 2\n}").contains("end of line"));
+        assert!(err_msg("fn f() {\n  foo() bar()\n}").contains("end of line"));
+    }
+
+    #[test]
+    fn last_statement_before_closing_brace_needs_no_newline() {
+        assert_eq!(body_stmts("fn f() { return 1 }").len(), 1);
+        assert_eq!(body_stmts("fn f() { const a = 1\nreturn a }").len(), 2);
+    }
+
+    #[test]
+    fn trailing_binary_operator_continues_the_statement() {
+        let stmts = body_stmts("fn f() {\n  const a = 1 +\n    2 +\n    3\n  return a\n}");
+        assert_eq!(stmts.len(), 2);
+        let stmts = body_stmts("fn f() {\n  const a = x &&\n    y ||\n    z\n}");
+        assert_eq!(stmts.len(), 1);
+    }
+
+    #[test]
+    fn trailing_comma_and_open_bracket_continue() {
+        assert_eq!(body_stmts("fn f() {\n  foo(1,\n    2)\n}").len(), 1);
+        assert_eq!(body_stmts("fn f() {\n  foo(\n    1\n  )\n}").len(), 1);
+        assert_eq!(body_stmts("fn f() {\n  const a = [\n    1,\n    2\n  ]\n}").len(), 1);
+    }
+
+    #[test]
+    fn leading_dot_continues_a_method_chain() {
+        let stmts = body_stmts("fn f() {\n  const a = x\n    .foo()\n    .bar()\n  return a\n}");
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn newlines_inside_parens_and_brackets_are_whitespace() {
+        // Even an operator or a `-` at the start of a line is fine inside ( ) / [ ].
+        assert_eq!(body_stmts("fn f() {\n  foo(a\n    + b,\n    -c)\n}").len(), 1);
+        assert_eq!(body_stmts("fn f() {\n  const a = [1\n    - 2]\n}").len(), 1);
+    }
+
+    #[test]
+    fn leading_binary_operator_does_not_continue() {
+        assert!(parse_result("fn f() {\n  const a = x\n    && y\n}").is_err());
+        assert!(parse_result("fn f() {\n  const a = x\n    * y\n}").is_err());
+        assert!(parse_result("fn f() {\n  const a = x\n    ? 1 : 2\n}").is_err());
+    }
+
+    #[test]
+    fn line_starting_with_paren_bracket_minus_plus_is_a_hard_error() {
+        for first in ["(b)", "[1]", "-b", "+b"] {
+            let src = format!("fn f() {{\n  foo()\n  {first}\n}}");
+            assert!(err_msg(&src).contains("ambiguous"), "{first}");
+        }
+        let src = "fn f() {\n  const a = b\n  (c)\n}";
+        assert!(err_msg(src).contains("ambiguous"));
+    }
+
+    #[test]
+    fn operator_at_line_end_makes_paren_line_a_continuation() {
+        assert_eq!(body_stmts("fn f() {\n  const a = b +\n  (c)\n}").len(), 1);
+    }
+
+    #[test]
+    fn block_statements_need_no_terminator() {
+        let src = "fn f() {\n  if (a) {\n    foo()\n  }\n  (b)\n}";
+        assert_eq!(body_stmts(src).len(), 2);
+    }
+
+    #[test]
+    fn else_catch_finally_may_start_a_line() {
+        ok("fn f() {\n  if (a) {\n    foo()\n  }\n  else {\n    bar()\n  }\n}");
+        ok("fn f() {\n  try {\n    foo()\n  }\n  catch (e: String) {\n    bar()\n  }\n  finally {\n    baz()\n  }\n}");
+    }
+
+    #[test]
+    fn return_ends_at_the_end_of_its_line() {
+        let stmts = body_stmts("fn f() -> Int64 {\n  return\n  foo()\n}");
+        assert!(matches!(stmts[0], StmtKind::Return(None)));
+        assert_eq!(stmts.len(), 2);
+        let stmts = body_stmts("fn f() -> Int64 {\n  return 1 +\n    2\n}");
+        assert!(matches!(stmts[0], StmtKind::Return(Some(_))));
+    }
+
+    #[test]
+    fn enum_variants_are_separated_by_newlines() {
+        ok("enum E {\n  A\n  B(Int64)\n  C\n}");
+        assert!(err_msg("enum E { A B }").contains("separated by newlines"));
+        assert!(err_msg("enum E { A, B }").contains("separated by newlines"));
+    }
+
+    #[test]
+    fn abstract_methods_end_at_the_end_of_the_line() {
+        ok("interface I {\n  fn a() -> Int64\n  fn b(x: Int64) -> String\n}");
+        ok("trait T {\n  fn a() -> Int64\n}");
+    }
+
+    #[test]
+    fn body_brace_may_sit_on_the_next_line() {
+        // A `{` after a signature can only be its body, so the brace style is free.
+        ok("class A {\n  fn f() -> Int64\n  {\n    return 1\n  }\n}");
+        ok("fn f()\n{\n}");
+        ok("interface I {\n  fn a() -> Int64\n  fn b() -> Int64\n}");
+    }
+
+    #[test]
+    fn annotations_may_sit_on_their_own_line() {
+        ok("class A {\n  @GET(\"/x\")\n  fn f() -> Int64 {\n    return 1\n  }\n}");
+        ok("@Foo\nclass A {\n  var x: Int64\n  var y: Int64\n}");
+    }
+
+    #[test]
+    fn class_fields_end_at_the_end_of_the_line() {
+        ok("class A {\n  var x: Int64\n  var y: List<Int64>\n  var z: String = \"a\"\n}");
+        assert!(err_msg("class A { var x: Int64 var y: Int64 }").contains("end of line"));
+    }
+
+    #[test]
+    fn imports_end_at_the_end_of_the_line() {
+        assert_eq!(ok("import a.b\nimport c.d\n").decls.len(), 2);
+        assert!(err_msg("import a.b import c.d").contains("end of line"));
+    }
+
+    #[test]
+    fn c_style_for_header_keeps_its_separators() {
+        ok("fn f() {\n  for (var i = 0; i < 3; i += 1) {\n    foo()\n  }\n}");
+        ok("fn f() {\n  for (var i = 0;\n    i < 3;\n    i += 1) {\n    foo()\n  }\n}");
+    }
+
+    #[test]
+    fn match_arms_may_be_separated_by_newlines_or_commas() {
+        ok("fn f(x: Int64) -> Int64 {\n  return match x {\n    1 => 10\n    2 => 20\n    _ => 0\n  }\n}");
+        ok("fn f(x: Int64) -> Int64 {\n  return match x {\n    1 => 10,\n    2 => 20,\n    _ => 0\n  }\n}");
+    }
+
+    #[test]
+    fn lambda_block_inside_call_args_has_statement_level_newlines() {
+        ok("fn f() {\n  foo(x => {\n    const a = 1\n    return a\n  })\n}");
+    }
+
+    #[test]
+    fn multiline_string_does_not_confuse_line_tracking() {
+        ok("fn f() {\n  const t = r#\"x\ny\"#\n  const s = 1\n  return s\n}");
+    }
+
+    #[test]
+    fn generic_close_at_line_end_ends_the_statement() {
+        ok("fn f() {\n  var xs: List<Int64>\n  var ys: List<List<Int64>>\n}");
     }
 }

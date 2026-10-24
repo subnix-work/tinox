@@ -33,7 +33,7 @@ def bugfix(work, tinox):
              (12, 4, 0), (-1, 2, 0), (2, -1, 0), (2, 4, -1), (2, 4, 101),
              (1000000, 1000, 33)]
     main = 'fnc main() -> Int32 {\n' + ''.join(
-        f'print(total({p}, {q}, {d})); print("\\n");\n' for p, q, d in cases) + 'return 0;\n}'
+        f'print(total({p}, {q}, {d}))\nprint("\\n")\n' for p, q, d in cases) + 'return 0\n}'
     (work / "Main.tnx").write_text(source[:start] + main + source[end:])
     build(work, tinox)
     result = subprocess.run([str(work / "accepted")], capture_output=True, text=True, timeout=5, check=True)

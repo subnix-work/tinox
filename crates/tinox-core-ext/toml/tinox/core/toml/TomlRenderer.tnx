@@ -1,4 +1,4 @@
-module tinox.core.toml;
+module tinox.core.toml
 
 namespace tinox.core.toml
 {
@@ -6,7 +6,7 @@ namespace tinox.core.toml
     {
         fn render(value: TomlValue) -> String
         {
-            return "";
+            return ""
         }
     }
 }

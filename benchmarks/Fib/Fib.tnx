@@ -1,8 +1,8 @@
 class Fib {
     fn compute(n: Int64) -> Int64 {
         if (n <= 1) {
-            return n;
+            return n
         }
-        return this.compute(n - 1) + this.compute(n - 2);
+        return this.compute(n - 1) + this.compute(n - 2)
     }
 }

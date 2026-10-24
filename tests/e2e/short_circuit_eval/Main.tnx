@@ -15,34 +15,34 @@
 class Main
 {
     fnc noisy() -> Bool {
-        println("  RHS-RAN");   // side effect: marks that the RHS was evaluated
-        return true;
+        println("  RHS-RAN")   // side effect: marks that the RHS was evaluated
+        return true
     }
 
 
     fnc main() -> Int32 {
         // false && X : X must not run (no "RHS-RAN")
-        const a: Bool = false && noisy();
-        if (a) { println("FAIL-and"); } else { println("se-skipped-and"); }
+        const a: Bool = false && noisy()
+        if (a) { println("FAIL-and") } else { println("se-skipped-and") }
         // true || X : X must not run
-        const b: Bool = true || noisy();
-        if (b) { println("se-skipped-or"); }
+        const b: Bool = true || noisy()
+        if (b) { println("se-skipped-or") }
 
         // Guard protects against out-of-bounds array access
-        const xs: List<Int64> = [10, 20, 30];
-        const i: Int64 = 99;
-        if (i < xs.len() && xs[i] > 0) { println("FAIL-oob"); } else { println("guard-protects-oob"); }
+        const xs: List<Int64> = [10, 20, 30]
+        const i: Int64 = 99
+        if (i < xs.len() && xs[i] > 0) { println("FAIL-oob") } else { println("guard-protects-oob") }
 
         // Guard protects against division by zero
-        const d: Int64 = 0;
-        if (d != 0 && (10 / d) > 0) { println("FAIL-div0"); } else { println("guard-protects-div0"); }
+        const d: Int64 = 0
+        if (d != 0 && (10 / d) > 0) { println("FAIL-div0") } else { println("guard-protects-div0") }
 
         // Boolean logic stays correct (cascaded + mixed)
-        const x: Int64 = 5;
-        if (x > 0 && x < 10 && x != 7 && (x < 0 || x == 5)) { println("logic-ok"); }
+        const x: Int64 = 5
+        if (x > 0 && x < 10 && x != 7 && (x < 0 || x == 5)) { println("logic-ok") }
 
         // valid bounds-checked ops
-        println("valid: " + xs[2].toString() + " " + (17 / 5).toString() + " " + (17 % 5).toString());
-        return 0;
+        println("valid: " + xs[2].toString() + " " + (17 / 5).toString() + " " + (17 % 5).toString())
+        return 0
     }
 }

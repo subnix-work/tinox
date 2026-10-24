@@ -195,7 +195,7 @@ const FAILING: &str = r#"
         - sql: { dbms: "sqlite, postgres", statements: "INSERT INTO no_such_table VALUES (1)" }
 "#;
 
-const MAIN: &str = "class Main\n{\n    fnc main() -> Int32\n    {\n        println(\"started\");\n        return 0;\n    }\n}\n";
+const MAIN: &str = "class Main\n{\n    fnc main() -> Int32\n    {\n        println(\"started\")\n        return 0\n    }\n}\n";
 
 struct Project {
     dir: PathBuf,
@@ -543,7 +543,7 @@ fn changesets_migrate_on_test_is_opt_in() {
         eprintln!("SKIP changesets_migrate_on_test (sqlite3 not installed)");
         return;
     }
-    const TEST_SRC: &str = "class SchemaTest\n{\n    @Test\n    fnc ok() -> Bool\n    {\n        return true;\n    }\n}\n";
+    const TEST_SRC: &str = "class SchemaTest\n{\n    @Test\n    fnc ok() -> Bool\n    {\n        return true\n    }\n}\n";
     // Default: tinox test never migrates, even with migrate_on_startup.
     let p = Project::new("ontest-off", "sqlite", "data/test.db", "migrate_on_startup = true\n");
     p.write("src/SchemaTest.tnx", TEST_SRC);

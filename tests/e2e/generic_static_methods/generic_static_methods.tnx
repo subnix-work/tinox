@@ -1,7 +1,7 @@
-import tinox.core.json;
+import tinox.core.json
 
 @JsonSerializable
 class generic_static_methods {
-    var id: Int64;
-    var name: String;
+    var id: Int64
+    var name: String
 }

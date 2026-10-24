@@ -1,6 +1,6 @@
-module tinox.core.http2_server;
+module tinox.core.http2_server
 
-import tinox.core.hpack;
+import tinox.core.hpack
 
 namespace tinox.core.http2_server
 {
@@ -10,13 +10,13 @@ namespace tinox.core.http2_server
      */
     class Http2Conn
     {
-        var handle: Int64;
-        var streams: Map<String, Http2Stream>;
-        var recvDynTable: HpackDynTable;
-        var sendDynTable: HpackDynTable;
-        var peerMaxFrameSize: Int64;
-        var peerInitWindowSize: Int64;
-        var lastStreamId: Int64;
+        var handle: Int64
+        var streams: Map<String, Http2Stream>
+        var recvDynTable: HpackDynTable
+        var sendDynTable: HpackDynTable
+        var peerMaxFrameSize: Int64
+        var peerInitWindowSize: Int64
+        var lastStreamId: Int64
 
         fn new(handle: Int64) -> Http2Conn
         {
@@ -28,7 +28,7 @@ namespace tinox.core.http2_server
                 peerMaxFrameSize: 16384,
                 peerInitWindowSize: 65535,
                 lastStreamId: 0
-            };
+            }
         }
     }
 }

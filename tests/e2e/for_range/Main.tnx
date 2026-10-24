@@ -4,12 +4,12 @@ class Main
 {
     fnc main() -> Int32
     {
-        var sum: Int64 = 0;
+        var sum: Int64 = 0
         for i in 1..6
         {
-            sum = sum + i;
+            sum = sum + i
         }
-        println(sum);
-        return 0;
+        println(sum)
+        return 0
     }
 }

@@ -1,4 +1,4 @@
-import IDrawable;
+import IDrawable
 
 class Circle implements IDrawable
 {
@@ -8,6 +8,6 @@ class Circle implements IDrawable
 
     package fn area() -> Int64
     {
-        return 42;
+        return 42
     }
 }

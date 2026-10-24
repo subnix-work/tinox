@@ -1,15 +1,15 @@
-import tinox.core.logger;
+import tinox.core.logger
 
 @Log
 class LoggedService
 {
     fn new() -> LoggedService
     {
-        return LoggedService {};
+        return LoggedService {}
     }
 
     fn doWork(svc: LoggedService) -> Nothing
     {
-        Logger::info(svc.log, "service doing work");
+        Logger::info(svc.log, "service doing work")
     }
 }

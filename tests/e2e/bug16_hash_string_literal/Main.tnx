@@ -5,11 +5,11 @@
 class Main
 {
     fnc main() -> Int32 {
-        const s = "# top\na: 1";
-        const lines = s.split("\n");
-        println(lines.len());
-        println(lines[0]);
-        println(lines[1]);
-        return 0;
+        const s = "# top\na: 1"
+        const lines = s.split("\n")
+        println(lines.len())
+        println(lines[0])
+        println(lines[1])
+        return 0
     }
 }

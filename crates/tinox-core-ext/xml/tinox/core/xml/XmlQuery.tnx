@@ -1,4 +1,4 @@
-module tinox.core.xml;
+module tinox.core.xml
 
 namespace tinox.core.xml
 {
@@ -6,7 +6,7 @@ namespace tinox.core.xml
     {
         fn query(node: XmlNode, xpath: String) -> List<XmlNode>
         {
-            return [node];
+            return [node]
         }
     }
 }

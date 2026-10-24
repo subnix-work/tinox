@@ -21,7 +21,7 @@ impl Project {
         );
         project.write(
             "src/Main.tnx",
-            "class Main { fnc main() -> Int32 { println(\"MAIN_MUST_NOT_RUN\"); return 0; } }",
+            "class Main { fnc main() -> Int32 { println(\"MAIN_MUST_NOT_RUN\")\nreturn 0 } }",
         );
         project
     }
@@ -92,8 +92,8 @@ fn parse(output: &Output) -> Value {
 #[test]
 fn main_scopes_injections_config_and_database_are_explained_without_backend_or_execution() {
     let project = Project::new();
-    project.write("src/Main.tnx", "import Service; class Main { fnc main() -> Int32 { println(\"MAIN_MUST_NOT_RUN\"); return 0; } }");
-    project.write("src/Service.tnx", "import Request; @Startup class Service { @Inject var request: Request; @Config(\"APP_PASSWORD\") var password: String = \"FIELD_SECRET\"; }");
+    project.write("src/Main.tnx", "import Service\nclass Main { fnc main() -> Int32 { println(\"MAIN_MUST_NOT_RUN\")\nreturn 0 } }");
+    project.write("src/Service.tnx", "import Request\n@Startup class Service { @Inject var request: Request\n@Config(\"APP_PASSWORD\") var password: String = \"FIELD_SECRET\" }");
     project.write("src/Request.tnx", "@HttpRequestScoped class Request {}");
     let manifest = fs::read_to_string(project.0.join("tinox.toml")).unwrap();
     project.write("tinox.toml", &format!("{manifest}\n[database]\ndriver=\"postgres\"\nurl=\"postgres://USER_SECRET:DB_SECRET@127.0.0.1:1/db\"\n"));
@@ -140,11 +140,11 @@ fn main_scopes_injections_config_and_database_are_explained_without_backend_or_e
 fn mixed_rest_websocket_and_amqp_registrations_are_reported_in_spawn_and_join_order() {
     let project = Project::new();
     project.install_local(&["http_server", "json", "websocket", "amqp10", "amqp091"]);
-    project.write("src/Main.tnx", "import Api; import EventsEndpoint; import Consumer; import Legacy; class Main { fnc main() -> Int32 { return 0; } }");
-    project.write("src/Api.tnx", "import tinox.core.http_server; @ApplicationComponent @Path(\"/api\") class Api { @GET(\"/hello\") fn hello() -> String { return \"hi\"; } }");
-    project.write("src/EventsEndpoint.tnx", "import tinox.core.websocket; @WebsocketEndpoint(\"/events\", 0) class EventsEndpoint { @OnMessage fn message(conn: Int64, text: String) -> Nothing {} }");
-    project.write("src/Consumer.tnx", "import tinox.core.amqp10; @Amqp10Consumer(\"localhost\", 1, \"USER_SECRET\", \"AMQP_SECRET\", \"/jobs\") class Consumer { @OnMessage fn consume(message: Amqp10Message) -> Nothing {} }");
-    project.write("src/Legacy.tnx", "import tinox.core.amqp091; @Amqp091Consumer(\"amqp://USER_SECRET:URL_SECRET@localhost\", 2, \"/\", \"USER_SECRET\", \"LEGACY_SECRET\", \"jobs\") class Legacy { @OnMessage fn consume(message: AmqpMessage091) -> Nothing {} }");
+    project.write("src/Main.tnx", "import Api\nimport EventsEndpoint\nimport Consumer\nimport Legacy\nclass Main { fnc main() -> Int32 { return 0 } }");
+    project.write("src/Api.tnx", "import tinox.core.http_server\n@ApplicationComponent @Path(\"/api\") class Api { @GET(\"/hello\") fn hello() -> String { return \"hi\" } }");
+    project.write("src/EventsEndpoint.tnx", "import tinox.core.websocket\n@WebsocketEndpoint(\"/events\", 0) class EventsEndpoint { @OnMessage fn message(conn: Int64, text: String) -> Nothing {} }");
+    project.write("src/Consumer.tnx", "import tinox.core.amqp10\n@Amqp10Consumer(\"localhost\", 1, \"USER_SECRET\", \"AMQP_SECRET\", \"/jobs\") class Consumer { @OnMessage fn consume(message: Amqp10Message) -> Nothing {} }");
+    project.write("src/Legacy.tnx", "import tinox.core.amqp091\n@Amqp091Consumer(\"amqp://USER_SECRET:URL_SECRET@localhost\", 2, \"/\", \"USER_SECRET\", \"LEGACY_SECRET\", \"jobs\") class Legacy { @OnMessage fn consume(message: AmqpMessage091) -> Nothing {} }");
     let result = project.query();
     let plan = &result["plan"];
     let tasks = plan["background_tasks"].as_array().unwrap();
@@ -195,12 +195,12 @@ fn mixed_rest_websocket_and_amqp_registrations_are_reported_in_spawn_and_join_or
 #[test]
 fn invalid_injection_graphs_fail_consistently_in_check_build_and_explain() {
     for (service, dependency, expected) in [
-        ("import Dependency; @Startup class Service { @Inject var dep: Dependency; }", "class Dependency {}", "no component scope"),
-        ("@Startup class Service { @Inject var dep: Service; }", "class Dependency {}", "Cyclic @Inject"),
-        ("import Dependency; @ApplicationComponent class Service { @Inject var dep: Dependency; }", "import Service; @HttpRequestScoped class Dependency { @Inject var service: Service; }", "Cyclic @Inject"),
+        ("import Dependency\n@Startup class Service { @Inject var dep: Dependency }", "class Dependency {}", "no component scope"),
+        ("@Startup class Service { @Inject var dep: Service }", "class Dependency {}", "Cyclic @Inject"),
+        ("import Dependency\n@ApplicationComponent class Service { @Inject var dep: Dependency }", "import Service\n@HttpRequestScoped class Dependency { @Inject var service: Service }", "Cyclic @Inject"),
     ] {
         let project = Project::new();
-        project.write("src/Main.tnx", "import Service; class Main { fnc main() -> Int32 { return 0; } }");
+        project.write("src/Main.tnx", "import Service\nclass Main { fnc main() -> Int32 { return 0 } }");
         project.write("src/Service.tnx", service);
         project.write("src/Dependency.tnx", dependency);
         let mut messages = Vec::new();
@@ -232,7 +232,7 @@ fn options_imports_and_entry_shape_fail_visibly() {
     }
     project.write(
         "src/Main.tnx",
-        "class Main { fn main() -> Int32 { return 0; } }",
+        "class Main { fn main() -> Int32 { return 0 } }",
     );
     let output = project
         .command("explain")
@@ -246,7 +246,7 @@ fn options_imports_and_entry_shape_fail_visibly() {
         .contains("fnc"));
     project.write(
         "src/Main.tnx",
-        "import Missing; class Main { fnc main() -> Int32 { return 0; } }",
+        "import Missing\nclass Main { fnc main() -> Int32 { return 0 } }",
     );
     let output = project
         .command("explain")
@@ -262,7 +262,7 @@ fn combined_database_and_startup_program_passes_real_llvm_verification() {
     let project = Project::new();
     project.write(
         "src/Main.tnx",
-        "import Service; class Main { fnc main() -> Int32 { return 0; } }",
+        "import Service\nclass Main { fnc main() -> Int32 { return 0 } }",
     );
     project.write("src/Service.tnx", "@Startup class Service {}");
     let manifest = fs::read_to_string(project.0.join("tinox.toml")).unwrap();
@@ -287,8 +287,8 @@ fn combined_database_and_startup_program_passes_real_llvm_verification() {
 #[test]
 fn managed_lifecycle_plan_exposes_order_and_budgets_without_running_hooks() {
     let project = Project::new();
-    project.write("src/Main.tnx", "import State; @Service(1200, 2300) class Main { fnc main() -> Int32 { return 0; } }");
-    project.write("src/State.tnx", "@Startup class State { @OnStart fn start() -> Nothing { println(\"HOOK_MUST_NOT_RUN\"); } @OnStop fn stop() -> Nothing {} @Readiness fn ready() -> Bool { return true; } }");
+    project.write("src/Main.tnx", "import State\n@Service(1200, 2300) class Main { fnc main() -> Int32 { return 0 } }");
+    project.write("src/State.tnx", "@Startup class State { @OnStart fn start() -> Nothing { println(\"HOOK_MUST_NOT_RUN\") } @OnStop fn stop() -> Nothing {} @Readiness fn ready() -> Bool { return true } }");
     let explanation = project.query();
     let lifecycle = &explanation["plan"]["lifecycle"];
     assert_eq!(lifecycle["enabled"], true);

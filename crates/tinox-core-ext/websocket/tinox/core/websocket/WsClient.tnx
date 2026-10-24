@@ -1,7 +1,7 @@
-module tinox.core.websocket;
+module tinox.core.websocket
 
-import tinox.core.socket;
-import tinox.core.base64;
+import tinox.core.socket
+import tinox.core.base64
 
 namespace tinox.core.websocket
 {
@@ -40,39 +40,39 @@ namespace tinox.core.websocket
          */
         fn connect(host: String, port: Int64, path: String) -> Int64
         {
-            const fd = socketCreateTcp();
+            const fd = socketCreateTcp()
             if (!socketConnect(fd, host, port)) {
-                return -1;
+                return -1
             }
-            const conn = httpConnFromFd(fd);
+            const conn = httpConnFromFd(fd)
 
-            var keyBytes: List<Int64> = [];
+            var keyBytes: List<Int64> = []
             for i in 0..16 {
-                keyBytes.push(randomInt(0, 256));
+                keyBytes.push(randomInt(0, 256))
             }
-            const key = Base64::encodeBytes(keyBytes);
-            const expectedAccept = wsAcceptKey(key);
+            const key = Base64::encodeBytes(keyBytes)
+            const expectedAccept = wsAcceptKey(key)
 
-            httpConnSendRaw(conn, "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n");
+            httpConnSendRaw(conn, "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n")
 
-            const resp = httpConnReadRequest(conn);
+            const resp = httpConnReadRequest(conn)
             if (resp.len() == 0 || !resp.contains("101")) {
-                httpConnClose(conn);
-                return -1;
+                httpConnClose(conn)
+                return -1
             }
-            var actualAccept: String = "";
-            const lines = resp.split("\r\n");
+            var actualAccept: String = ""
+            const lines = resp.split("\r\n")
             for i in 0..lines.len() {
-                const line = lines[i];
+                const line = lines[i]
                 if (line.toLowerCase().startsWith("sec-websocket-accept:")) {
-                    actualAccept = line.substring(21, line.len()).trim();
+                    actualAccept = line.substring(21, line.len()).trim()
                 }
             }
             if (actualAccept != expectedAccept) {
-                httpConnClose(conn);
-                return -1;
+                httpConnClose(conn)
+                return -1
             }
-            return conn;
+            return conn
         }
 
         /*
@@ -85,7 +85,7 @@ namespace tinox.core.websocket
          */
         fn readMessage(conn: Int64) -> WsFrame
         {
-            return Ws::readMessageGeneric(conn, false, true);
+            return Ws::readMessageGeneric(conn, false, true)
         }
 
         /*
@@ -96,37 +96,37 @@ namespace tinox.core.websocket
          */
         fn readFrame(conn: Int64) -> WsFrame
         {
-            return Ws::readFrameGeneric(conn, false);
+            return Ws::readFrameGeneric(conn, false)
         }
 
         fn text(f: WsFrame) -> String
         {
-            return Ws::text(f);
+            return Ws::text(f)
         }
 
         fn sendText(conn: Int64, s: String) -> Nothing
         {
-            Ws::writeFrameGeneric(conn, 1, Ws::textToBytes(s), true);
+            Ws::writeFrameGeneric(conn, 1, Ws::textToBytes(s), true)
         }
 
         fn sendBinary(conn: Int64, bytes: List<Int64>) -> Nothing
         {
-            Ws::writeFrameGeneric(conn, 2, bytes, true);
+            Ws::writeFrameGeneric(conn, 2, bytes, true)
         }
 
         fn sendPing(conn: Int64) -> Nothing
         {
-            Ws::writeFrameGeneric(conn, 9, [], true);
+            Ws::writeFrameGeneric(conn, 9, [], true)
         }
 
         fn sendClose(conn: Int64, code: Int64) -> Nothing
         {
-            Ws::sendCloseGeneric(conn, code, true);
+            Ws::sendCloseGeneric(conn, code, true)
         }
 
         fn close(conn: Int64) -> Nothing
         {
-            httpConnClose(conn);
+            httpConnClose(conn)
         }
     }
 }

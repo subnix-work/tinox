@@ -1,4 +1,4 @@
-module tinox.core.websocket;
+module tinox.core.websocket
 
 namespace tinox.core.websocket
 {
@@ -10,7 +10,7 @@ namespace tinox.core.websocket
     {
         fn listen(port: Int64) -> Int64
         {
-            return httpServerCreate(port);
+            return httpServerCreate(port)
         }
 
         /*
@@ -36,16 +36,16 @@ namespace tinox.core.websocket
          */
         fn accept(srv: Int64) -> Int64
         {
-            const conn = httpServerAcceptConnHandle(srv);
+            const conn = httpServerAcceptConnHandle(srv)
             if (conn <= 0) {
-                return -1;
+                return -1
             }
             if (!Ws::handshake(conn)) {
-                httpConnClose(conn);
-                return -1;
+                httpConnClose(conn)
+                return -1
             }
-            httpConnClearRecvTimeout(conn);
-            return conn;
+            httpConnClearRecvTimeout(conn)
+            return conn
         }
 
         /*
@@ -56,7 +56,7 @@ namespace tinox.core.websocket
          */
         fn listenTls(port: Int64, certPath: String, keyPath: String) -> Int64
         {
-            return httpServerCreateTls(port, certPath, keyPath);
+            return httpServerCreateTls(port, certPath, keyPath)
         }
 
         /*
@@ -68,17 +68,17 @@ namespace tinox.core.websocket
          */
         fn acceptTls(srv: Int64) -> Int64
         {
-            const conn = httpServerAcceptTls(srv);
+            const conn = httpServerAcceptTls(srv)
             if (conn <= 0) {
-                return -1;
+                return -1
             }
             if (!Ws::handshake(conn)) {
-                httpConnClose(conn);
-                return -1;
+                httpConnClose(conn)
+                return -1
             }
             // See accept()'s own doc comment on why this matters.
-            httpConnClearRecvTimeout(conn);
-            return conn;
+            httpConnClearRecvTimeout(conn)
+            return conn
         }
     }
 }

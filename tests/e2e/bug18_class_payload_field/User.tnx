@@ -1,9 +1,9 @@
-import Res;
+import Res
 
 class User {
-    var id: Int64;
-    var name: String;
+    var id: Int64
+    var name: String
     fn greet() -> String {
-        return "Hi " + this.name;
+        return "Hi " + this.name
     }
 }

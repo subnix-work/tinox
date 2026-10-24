@@ -1,11 +1,11 @@
 // Tinox Programming Language
 // Example Programs
 
-import Point;
-import Direction;
-import Drawable;
-import Circle;
-import Rectangle;
+import Point
+import Direction
+import Drawable
+import Circle
+import Rectangle
 
 class Main
 {
@@ -14,8 +14,8 @@ class Main
     // ============================================================
     fnc example_hello() -> Int32
     {
-        print("Hello, World!");
-        return 0;
+        print("Hello, World!")
+        return 0
     }
 
     // ============================================================
@@ -23,45 +23,45 @@ class Main
     // ============================================================
     fnc add(a: Int32, b: Int32) -> Int32
     {
-        return a + b;
+        return a + b
     }
 
     fnc multiply(x: Int32, y: Int32) -> Int32
     {
-        return x * y;
+        return x * y
     }
 
     fnc factorial(n: Int32) -> Int32
     {
         if (n <= 1)
         {
-            return 1;
+            return 1
         }
-        return n * factorial(n - 1);
+        return n * factorial(n - 1)
     }
 
     fnc example_arithmetic() -> Int32
     {
-        const a: Int32 = 10;
-        const b: Int32 = 20;
+        const a: Int32 = 10
+        const b: Int32 = 20
 
-        const sum: Int32 = add(a, b);
-        const product: Int32 = multiply(a, b);
-        const fact: Int32 = factorial(5);
+        const sum: Int32 = add(a, b)
+        const product: Int32 = multiply(a, b)
+        const fact: Int32 = factorial(5)
 
-        print("Sum: ");
-        print(sum);
-        print("\n");
+        print("Sum: ")
+        print(sum)
+        print("\n")
 
-        print("Product: ");
-        print(product);
-        print("\n");
+        print("Product: ")
+        print(product)
+        print("\n")
 
-        print("Factorial(5): ");
-        print(fact);
-        print("\n");
+        print("Factorial(5): ")
+        print(fact)
+        print("\n")
 
-        return 0;
+        return 0
     }
 
     // ============================================================
@@ -72,49 +72,49 @@ class Main
         // If-else
         if (x > 0)
         {
-            print("positive\n");
+            print("positive\n")
         }
         else if (x < 0)
         {
-            print("negative\n");
+            print("negative\n")
         }
         else
         {
-            print("zero\n");
+            print("zero\n")
         }
 
         // While loop
-        var counter: Int32 = 0;
+        var counter: Int32 = 0
         while counter < 5
         {
-            print(counter);
-            print(" ");
-            counter = counter + 1;
+            print(counter)
+            print(" ")
+            counter = counter + 1
         }
-        print("\n");
+        print("\n")
 
         // For loop (sum 1 to 10)
-        var sum: Int32 = 0;
+        var sum: Int32 = 0
         for i in 1..11
         {
-            sum = sum + i;
+            sum = sum + i
         }
-        print("Sum 1-10: ");
-        print(sum);
-        print("\n");
+        print("Sum 1-10: ")
+        print(sum)
+        print("\n")
 
         // Match expression
         const message: String = match x
         {
-            1 => "one";
-            2 => "two";
-            3 => "three";
-            _ => "other";
-        };
-        print(message);
-        print("\n");
+            1 => "one"
+            2 => "two"
+            3 => "three"
+            _ => "other"
+        }
+        print(message)
+        print("\n")
 
-        return 0;
+        return 0
     }
 
     // ============================================================
@@ -122,18 +122,18 @@ class Main
     // ============================================================
     fnc example_classes() -> Int32
     {
-        const p1: Point = Point::new(0.0, 0.0);
-        const p2: Point = Point::new(3.0, 4.0);
+        const p1: Point = Point::new(0.0, 0.0)
+        const p2: Point = Point::new(3.0, 4.0)
 
-        p1.describe();
-        p2.describe();
+        p1.describe()
+        p2.describe()
 
-        const dist: Float64 = p1.distanceTo(p2);
-        print("Distance: ");
-        print(dist);
-        print("\n");
+        const dist: Float64 = p1.distanceTo(p2)
+        print("Distance: ")
+        print(dist)
+        print("\n")
 
-        return 0;
+        return 0
     }
 
     // ============================================================
@@ -143,11 +143,11 @@ class Main
     {
         match d
         {
-            North    => return Point::new(0.0, steps as Float64);
-            South    => return Point::new(0.0, -(steps as Float64));
-            East     => return Point::new(steps as Float64, 0.0);
-            West     => return Point::new(-(steps as Float64), 0.0);
-            Diagonal(dx, dy) => return Point::new((dx * steps) as Float64, (dy * steps) as Float64);
+            North    => return Point::new(0.0, steps as Float64)
+            South    => return Point::new(0.0, -(steps as Float64))
+            East     => return Point::new(steps as Float64, 0.0)
+            West     => return Point::new(-(steps as Float64), 0.0)
+            Diagonal(dx, dy) => return Point::new((dx * steps) as Float64, (dy * steps) as Float64)
         }
     }
 
@@ -159,28 +159,28 @@ class Main
             Direction.East,
             Direction.West,
             Direction.Diagonal(dx: 1, dy: 1)
-        ];
+        ]
 
         for dir in dirs
         {
             match dir
             {
-                North => print("Going North\n");
-                South => print("Going South\n");
-                East  => print("Going East\n");
-                West  => print("Going West\n");
+                North => print("Going North\n")
+                South => print("Going South\n")
+                East  => print("Going East\n")
+                West  => print("Going West\n")
                 Diagonal(dx, dy) =>
                 {
-                    print("Diagonal: ");
-                    print(dx);
-                    print(", ");
-                    print(dy);
-                    print("\n");
+                    print("Diagonal: ")
+                    print(dx)
+                    print(", ")
+                    print(dy)
+                    print("\n")
                 }
             }
         }
 
-        return 0;
+        return 0
     }
 
     // ============================================================
@@ -191,17 +191,17 @@ class Main
         const shapes: List<Drawable> = [
             Circle::new(5.0),
             Rectangle::new(4.0, 3.0)
-        ];
+        ]
 
         for shape in shapes
         {
-            shape.draw();
-            print("Area: ");
-            print(shape.getArea());
-            print("\n");
+            shape.draw()
+            print("Area: ")
+            print(shape.getArea())
+            print("\n")
         }
 
-        return 0;
+        return 0
     }
 
     // ============================================================
@@ -211,32 +211,32 @@ class Main
     {
         if (b == 0)
         {
-            throw "Division by zero";
+            throw "Division by zero"
         }
-        return a / b;
+        return a / b
     }
 
     fnc example_error_handling() -> Int32
     {
         try
         {
-            const result: Int32 = divide(10, 0);
-            print("Result: ");
-            print(result);
-            print("\n");
+            const result: Int32 = divide(10, 0)
+            print("Result: ")
+            print(result)
+            print("\n")
         }
         catch e: String
         {
-            print("Error caught: ");
-            print(e);
-            print("\n");
+            print("Error caught: ")
+            print(e)
+            print("\n")
         }
         finally
         {
-            print("Cleanup done\n");
+            print("Cleanup done\n")
         }
 
-        return 0;
+        return 0
     }
 
     // ============================================================
@@ -246,21 +246,21 @@ class Main
     {
         if (n <= 1)
         {
-            return n;
+            return n
         }
-        return fibonacci(n - 1) + fibonacci(n - 2);
+        return fibonacci(n - 1) + fibonacci(n - 2)
     }
 
     fnc example_recursion() -> Int32
     {
         for i in 0..10
         {
-            const fib: Int32 = fibonacci(i);
-            print(fib);
-            print(" ");
+            const fib: Int32 = fibonacci(i)
+            print(fib)
+            print(" ")
         }
-        print("\n");
-        return 0;
+        print("\n")
+        return 0
     }
 
     // ============================================================
@@ -268,30 +268,30 @@ class Main
     // ============================================================
     fnc main() -> Int32
     {
-        print("=== Tinox Examples ===\n\n");
+        print("=== Tinox Examples ===\n\n")
 
-        print("--- Hello World ---\n");
-        example_hello();
+        print("--- Hello World ---\n")
+        example_hello()
 
-        print("\n--- Arithmetic ---\n");
-        example_arithmetic();
+        print("\n--- Arithmetic ---\n")
+        example_arithmetic()
 
-        print("\n--- Control Flow ---\n");
-        example_control_flow(5);
+        print("\n--- Control Flow ---\n")
+        example_control_flow(5)
 
-        print("\n--- Classes ---\n");
-        example_classes();
+        print("\n--- Classes ---\n")
+        example_classes()
 
-        print("\n--- Enums ---\n");
-        example_enums();
+        print("\n--- Enums ---\n")
+        example_enums()
 
-        print("\n--- Error Handling ---\n");
-        example_error_handling();
+        print("\n--- Error Handling ---\n")
+        example_error_handling()
 
-        print("\n--- Recursion ---\n");
-        example_recursion();
+        print("\n--- Recursion ---\n")
+        example_recursion()
 
-        print("\n=== Done ===\n");
-        return 0;
+        print("\n=== Done ===\n")
+        return 0
     }
 }

@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -9,16 +9,16 @@ namespace tinox.core.rest.server
     @annotation
     class PUT
     {
-        var path: String;
+        var path: String
 
         fn new(path: String) -> PUT
         {
-            return PUT { path: path };
+            return PUT { path: path }
         }
 
         fn default() -> PUT
         {
-            return PUT { path: "" };
+            return PUT { path: "" }
         }
     }
 }

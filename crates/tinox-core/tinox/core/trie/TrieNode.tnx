@@ -1,4 +1,4 @@
-module tinox.core.trie;
+module tinox.core.trie
 
 namespace tinox.core.trie
 {
@@ -6,10 +6,10 @@ namespace tinox.core.trie
     {
         fn new() -> TrieNode
         {
-            return TrieNode { children: Map::new(), isEnd: false };
+            return TrieNode { children: Map::new(), isEnd: false }
         }
 
-        children: Map<String, TrieNode>;
-        isEnd: Bool;
+        children: Map<String, TrieNode>
+        isEnd: Bool
     }
 }

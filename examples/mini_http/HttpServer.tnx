@@ -1,26 +1,26 @@
-import HttpContext;
+import HttpContext
 
 class HttpServer
 {
-    var port: Int64;
+    var port: Int64
 
     fn new(port: Int64) -> HttpServer
     {
-        return HttpServer { port: port };
+        return HttpServer { port: port }
     }
 
     fn get(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
     {
-        return this;
+        return this
     }
 
     fn post(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
     {
-        return this;
+        return this
     }
 
     fn listen() -> Nothing
     {
-        return;
+        return
     }
 }

@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -16,11 +16,11 @@ namespace tinox.core.rest.server
     @annotation
     class OIDCRolesAllowed
     {
-        var roles: List<String>;
+        var roles: List<String>
 
         fn new(roles: List<String>) -> OIDCRolesAllowed
         {
-            return OIDCRolesAllowed { roles: roles };
+            return OIDCRolesAllowed { roles: roles }
         }
     }
 }

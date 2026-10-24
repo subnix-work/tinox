@@ -1,4 +1,4 @@
-module tinox.core.time;
+module tinox.core.time
 
 namespace tinox.core.time
 {
@@ -11,10 +11,10 @@ namespace tinox.core.time
     class Timer
     {
         /** The start time in milliseconds */
-        var startTime: Int64;
+        var startTime: Int64
 
         /** The stop time in milliseconds (0 if not stopped) */
-        var endTime: Int64;
+        var endTime: Int64
 
         /**
          * Creates a new Timer (not started)
@@ -23,7 +23,7 @@ namespace tinox.core.time
          */
         fn new() -> Timer
         {
-            return Timer { startTime: 0, endTime: 0 };
+            return Timer { startTime: 0, endTime: 0 }
         }
 
         /**
@@ -31,7 +31,7 @@ namespace tinox.core.time
          */
         fn start() -> Nothing
         {
-            this.startTime = now();
+            this.startTime = now()
         }
 
         /**
@@ -39,7 +39,7 @@ namespace tinox.core.time
          */
         fn stop() -> Nothing
         {
-            this.endTime = now();
+            this.endTime = now()
         }
 
         /**
@@ -54,9 +54,9 @@ namespace tinox.core.time
         {
             if (this.endTime == 0)
             {
-                return now() - this.startTime;
+                return now() - this.startTime
             }
-            return this.endTime - this.startTime;
+            return this.endTime - this.startTime
         }
 
         /**
@@ -66,7 +66,7 @@ namespace tinox.core.time
          */
         fn elapsedSeconds() -> Int64
         {
-            return this.elapsed() / 1000;
+            return this.elapsed() / 1000
         }
     }
 }

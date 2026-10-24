@@ -85,7 +85,7 @@ class MathSuite
     @Test("addition works")
     fn testAdd() -> Nothing
     {
-        assert(1 + 1 == 2);
+        assert(1 + 1 == 2)
     }
 }
 ```
@@ -299,8 +299,8 @@ class Main
 {
     fnc main() -> Int32
     {
-        println("Hello, World!");
-        return 0;
+        println("Hello, World!")
+        return 0
     }
 }
 ```
@@ -310,10 +310,10 @@ class Main
 ### Variables
 
 ```tinox
-const x: Int64 = 42;          // immutable
-var y: Float64 = 3.14;      // mutable
-const name = "Tino";          // type inference
-const msg = "Hi ${name}!";    // string interpolation
+const x: Int64 = 42          // immutable
+var y: Float64 = 3.14      // mutable
+const name = "Tino"          // type inference
+const msg = "Hi ${name}!"    // string interpolation
 ```
 
 ### Namespaces & Static Methods
@@ -329,12 +329,12 @@ namespace math {
     class Utils {
         fnc add(a: Int64, b: Int64) -> Int64
         {
-            return a + b;
+            return a + b
         }
 
         fnc square(x: Int64) -> Int64
         {
-            return x * x;
+            return x * x
         }
     }
 }
@@ -343,9 +343,9 @@ class Main
 {
     fnc main() -> Int32
     {
-        println(Utils::add(3, 4));    // 7
-        println(Utils::square(5));    // 25
-        return 0;
+        println(Utils::add(3, 4))    // 7
+        println(Utils::square(5))    // 25
+        return 0
     }
 }
 ```
@@ -353,8 +353,8 @@ class Main
 Importing the whole namespace or a single class:
 
 ```tinox
-import math;          // all classes from math
-import math.Utils;    // only Utils
+import math          // all classes from math
+import math.Utils    // only Utils
 ```
 
 ### Classes & Inheritance
@@ -364,11 +364,11 @@ Instance methods use `fn` and have access to `this`. Constructors are defined wi
 ```tinox
 class Animal
 {
-    name: String;
+    name: String
 
     fn speak() -> String
     {
-        return "...";
+        return "..."
     }
 }
 
@@ -376,7 +376,7 @@ class Dog extends Animal
 {
     fn speak() -> String
     {
-        return "Woof! I am ${this.name}";
+        return "Woof! I am ${this.name}"
     }
 }
 ```
@@ -386,23 +386,23 @@ Classes with a constructor:
 ```tinox
 class Point
 {
-    x: Int64;
-    y: Int64;
+    x: Int64
+    y: Int64
 
     fnc new(x: Int64, y: Int64) -> Point
     {
-        return Point { x: x, y: y };
+        return Point { x: x, y: y }
     }
 
     fn distanceTo(other: Point) -> Float64
     {
-        const dx = this.x - other.x;
-        const dy = this.y - other.y;
-        return Math::sqrt((dx * dx + dy * dy).toFloat64());
+        const dx = this.x - other.x
+        const dy = this.y - other.y
+        return Math::sqrt((dx * dx + dy * dy).toFloat64())
     }
 }
 
-const p = Point::new(3, 4);
+const p = Point::new(3, 4)
 ```
 
 ### Interfaces
@@ -410,17 +410,17 @@ const p = Point::new(3, 4);
 ```tinox
 interface Printable
 {
-    fn toString() -> String;
+    fn toString() -> String
 }
 
 class Point implements Printable
 {
-    x: Int64;
-    y: Int64;
+    x: Int64
+    y: Int64
 
     fn toString() -> String
     {
-        return "(${this.x}, ${this.y})";
+        return "(${this.x}, ${this.y})"
     }
 }
 ```
@@ -430,10 +430,10 @@ class Point implements Printable
 ```tinox
 enum Direction
 {
-    North;
-    South;
-    East;
-    West;
+    North
+    South
+    East
+    West
 }
 
 namespace nav {
@@ -442,10 +442,10 @@ namespace nav {
         {
             match d
             {
-                North => return East;
-                East  => return South;
-                South => return West;
-                West  => return North;
+                North => return East
+                East  => return South
+                South => return West
+                West  => return North
             }
         }
     }
@@ -457,11 +457,11 @@ namespace nav {
 ```tinox
 class Box<T>
 {
-    value: T;
+    value: T
 
     fn get() -> T
     {
-        return this.value;
+        return this.value
     }
 }
 
@@ -469,14 +469,14 @@ class Main
 {
     fnc identity<T>(x: T) -> T
     {
-        return x;
+        return x
     }
 
     fnc main() -> Int32
     {
-        const b = new Box<Int64>(42);
-        println(b.get());
-        return 0;
+        const b = new Box<Int64>(42)
+        println(b.get())
+        return 0
     }
 }
 ```
@@ -490,14 +490,14 @@ class Main
 {
     fnc apply(x: Int64, f: fnc(Int64) -> Int64) -> Int64
     {
-        return f(x);
+        return f(x)
     }
 
     fnc main() -> Int32
     {
-        const doubled = apply(21, n => n * 2);
-        println(doubled);   // 42
-        return 0;
+        const doubled = apply(21, n => n * 2)
+        println(doubled)   // 42
+        return 0
     }
 }
 ```
@@ -505,44 +505,44 @@ class Main
 ### Tuples
 
 ```tinox
-const point = (10, 20);
-println(point.0 + point.1);
+const point = (10, 20)
+println(point.0 + point.1)
 
-const nested = ((1, 2), 3);
-println(nested.0.1);        // 2
+const nested = ((1, 2), 3)
+println(nested.0.1)        // 2
 ```
 
 ### Arrays & Builtins
 
 ```tinox
-const arr = [1, 2, 3, 4, 5];
-arr.push(6);
-println(arr.len());         // 6
-println(arr.first());       // 1
-println(arr.last());        // 6
+const arr = [1, 2, 3, 4, 5]
+arr.push(6)
+println(arr.len())         // 6
+println(arr.first())       // 1
+println(arr.last())        // 6
 
-const s = "hello";
-println(s.toUpper());       // HELLO
-println(s.contains("ell")); // true
+const s = "hello"
+println(s.toUpper())       // HELLO
+println(s.contains("ell")) // true
 
-const parts = "a,b,c".split(",");
-println(parts.len());       // 3
-println(parts.join(" - ")); // a - b - c
+const parts = "a,b,c".split(",")
+println(parts.len())       // 3
+println(parts.join(" - ")) // a - b - c
 ```
 
 ### Maps
 
 ```tinox
-const m = @{"one" => 1, "two" => 2};
-m.insert("three", 3);
-println(m.get("one"));      // 1
-println(m.contains("two")); // true
-println(m.len());           // 3
-m.remove("one");
+const m = @{"one" => 1, "two" => 2}
+m.insert("three", 3)
+println(m.get("one"))      // 1
+println(m.contains("two")) // true
+println(m.len())           // 3
+m.remove("one")
 
 // Type-annotated map
-const headers: Map<String, String> = Map::new();
-headers["Content-Type"] = "application/json";
+const headers: Map<String, String> = Map::new()
+headers["Content-Type"] = "application/json"
 ```
 
 ### Ranges & Loops
@@ -550,17 +550,17 @@ headers["Content-Type"] = "application/json";
 ```tinox
 for i in 0..5               // 0, 1, 2, 3, 4 (exclusive)
 {
-    println(i);
+    println(i)
 }
 
 for i in 0...5              // 0, 1, 2, 3, 4, 5 (inclusive)
 {
-    println(i);
+    println(i)
 }
 
 for ch in "hello"           // character iteration
 {
-    print(ch);
+    print(ch)
 }
 ```
 
@@ -571,20 +571,20 @@ class Main
 {
     async fnc fetchData(id: Int64) -> Int64
     {
-        return id * 2;
+        return id * 2
     }
 
     fnc main() -> Int32
     {
-        const handle = spawn fetchData(21);
-        const result = await handle;      // 42
-        println(result);
+        const handle = spawn fetchData(21)
+        const result = await handle      // 42
+        println(result)
 
-        const ch = channel;
-        send ch -> 99;
-        const v = recv ch;
-        println(v);
-        return 0;
+        const ch = channel
+        send ch -> 99
+        const v = recv ch
+        println(v)
+        return 0
     }
 }
 ```
@@ -593,28 +593,28 @@ class Main
 
 ```tinox
 // Writing
-const f = open("output.txt", "w");
-f.write("Hello Tinox!\n");
-f.close();
+const f = open("output.txt", "w")
+f.write("Hello Tinox!\n")
+f.close()
 
 // Reading (entire contents)
-const f = open("output.txt");
-const content = f.read();
-f.close();
-println(content);
+const f = open("output.txt")
+const content = f.read()
+f.close()
+println(content)
 
 // Reading line by line
-const f = open("log.txt");
+const f = open("log.txt")
 while !f.eof()
 {
-    const line = f.readLine();
-    println(line);
+    const line = f.readLine()
+    println(line)
 }
-f.close();
+f.close()
 
 // Helper functions
-println(fileExists("output.txt")); // true
-deleteFile("output.txt");
+println(fileExists("output.txt")) // true
+deleteFile("output.txt")
 ```
 
 Modes: `"r"` (read, default), `"w"` (write), `"a"` (append), `"rb"` / `"wb"` (binary)
@@ -626,10 +626,10 @@ class Main
 {
     fnc readFile(path: String) -> String
     {
-        const f = open(path);
-        defer { f.close(); }   // runs automatically at the end of the function
+        const f = open(path)
+        defer { f.close() }   // runs automatically at the end of the function
 
-        return f.read();
+        return f.read()
     }
 }
 ```
@@ -637,9 +637,9 @@ class Main
 Multiple `defer`s run in reverse order (LIFO):
 
 ```tinox
-defer { println("3"); }
-defer { println("2"); }
-defer { println("1"); }
+defer { println("3") }
+defer { println("2") }
+defer { println("1") }
 // Output on return: 1, 2, 3
 ```
 
@@ -648,15 +648,15 @@ defer { println("1"); }
 ```tinox
 try
 {
-    riskyOperation();
+    riskyOperation()
 }
 catch e: RuntimeError
 {
-    println("An error occurred");
+    println("An error occurred")
 }
 finally
 {
-    cleanup();
+    cleanup()
 }
 ```
 
@@ -669,9 +669,9 @@ class Main
     {
         if b == 0
         {
-            throw "Division by zero";
+            throw "Division by zero"
         }
-        return a / b;
+        return a / b
     }
 }
 ```
@@ -686,13 +686,13 @@ class Main
     @inline
     fnc fastCalc(x: Int64) -> Int64
     {
-        return x * x + 1;
+        return x * x + 1
     }
 
     @deprecated("Use newApi instead")
     fnc oldApi()
     {
-        println("legacy");
+        println("legacy")
     }
 }
 ```
@@ -740,31 +740,31 @@ class UserController
 The standard library includes an HTTP server (`http_server`) and an annotation-driven REST framework. The `mini_http` module is a lightweight in-process counterpart:
 
 ```tinox
-module mini_http;
+module mini_http
 
 class HttpRequest
 {
-    var method: String;
-    var path: String;
-    var body: String;
-    var headers: Map<String, String>;
-    var params: Map<String, String>;
+    var method: String
+    var path: String
+    var body: String
+    var headers: Map<String, String>
+    var params: Map<String, String>
 
     fnc new(method: String, path: String, ...) -> HttpRequest { ... }
 }
 
 class HttpResponse
 {
-    var statusCode: Int64;
-    var headers: Map<String, String>;
-    var body: String;
+    var statusCode: Int64
+    var headers: Map<String, String>
+    var body: String
 
     fnc new() -> HttpResponse { ... }
 }
 
 class HttpServer
 {
-    var port: Int64;
+    var port: Int64
 
     fnc new(port: Int64) -> HttpServer { ... }
 
@@ -777,7 +777,7 @@ class HttpServer
 REST controller with annotations:
 
 ```tinox
-import mini_http;
+import mini_http
 
 class UserController
 {
@@ -787,7 +787,7 @@ class UserController
     @StatusCode(200)
     fnc listUsers(ctx: HttpContext)
     {
-        ctx.response.body = "[{\"id\":1,\"name\":\"Alice\"}]";
+        ctx.response.body = "[{\"id\":1,\"name\":\"Alice\"}]"
     }
 
     @POST
@@ -796,15 +796,15 @@ class UserController
     @StatusCode(201)
     fnc createUser(ctx: HttpContext)
     {
-        ctx.response.body = "{\"id\":2}";
+        ctx.response.body = "{\"id\":2}"
     }
 
     @GET
     @Path("/users/:id")
     fnc getUser(ctx: HttpContext)
     {
-        const id: String = ctx.request.params["id"];
-        ctx.response.body = "{\"id\":${id}}";
+        const id: String = ctx.request.params["id"]
+        ctx.response.body = "{\"id\":${id}}"
     }
 
     @DELETE
@@ -813,7 +813,7 @@ class UserController
     @StatusCode(204)
     fnc deleteUser(ctx: HttpContext)
     {
-        ctx.response.statusCode = 204;
+        ctx.response.statusCode = 204
     }
 }
 ```
@@ -823,23 +823,23 @@ class UserController
 The standard library includes an RFC 6455 WebSocket server (`websocket`), built on top of the HTTP server's connection-handle layer. v1 is an explicit loop-based API (no lambda handler), serving one connection at a time:
 
 ```tinox
-import tinox.core.websocket;
+import tinox.core.websocket
 
-const srv: Int64 = WsServer::listen(8790);
+const srv: Int64 = WsServer::listen(8790)
 
 while true {
-    const conn: Int64 = WsServer::accept(srv);   // includes handshake
-    if conn <= 0 { continue; }
+    const conn: Int64 = WsServer::accept(srv)   // includes handshake
+    if conn <= 0 { continue }
 
     while true {
-        const f: WsFrame = Ws::readMessage(conn); // ping/pong + close handled automatically
+        const f: WsFrame = Ws::readMessage(conn) // ping/pong + close handled automatically
         if f.opcode == 1 {
-            Ws::sendText(conn, "echo: " + Ws::text(f));
-            continue;
+            Ws::sendText(conn, "echo: " + Ws::text(f))
+            continue
         }
-        break; // close (8), EOF (-1), or protocol error (-2)
+        break // close (8), EOF (-1), or protocol error (-2)
     }
-    Ws::close(conn);
+    Ws::close(conn)
 }
 ```
 
@@ -848,14 +848,14 @@ Known v1 gaps: no fragmentation, no client, no permessage-deflate.
 `wss://` (TLS) is also supported via `WsServer::listenTls(port, certPath, keyPath)` + `WsServer::acceptTls(srv)` (otherwise identical API). OpenSSL is linked by default, no extra flag required (opt out with `TINOX_TLS=0` if OpenSSL isn't available):
 
 ```tinox
-const srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
-const conn = WsServer::acceptTls(srv);   // includes TLS + WS handshake
+const srv = WsServer::listenTls(8791, "cert.pem", "key.pem")
+const conn = WsServer::acceptTls(srv)   // includes TLS + WS handshake
 ```
 
 Alternatively, annotation-driven (`@WebsocketEndpoint`/`@OnOpen`/`@OnMessage`/`@OnClose`): the compiler generates the entire loop as `main` — no handshake/readMessage code needed. Only applies when the file has no `main` of its own and contains exactly one `@WebsocketEndpoint` class (more than one is a compile error):
 
 ```tinox
-import tinox.core.websocket;
+import tinox.core.websocket
 
 @WebsocketEndpoint("/echo", 8793)
 class EchoEndpoint
@@ -863,7 +863,7 @@ class EchoEndpoint
     @OnMessage
     fn onMessage(conn: Int64, msg: String) -> Nothing
     {
-        Ws::sendText(conn, "echo: " + msg);
+        Ws::sendText(conn, "echo: " + msg)
     }
 }
 ```
@@ -873,36 +873,36 @@ class EchoEndpoint
 The standard library includes an AMQP-0-9-1 **client** (`amqp091`, no broker) for message queue brokers such as RabbitMQ. v1 is an explicit publish/consume API (no lambda handler), with a fixed channel per connection. `amqps://` (TLS) is supported:
 
 ```tinox
-import tinox.core.amqp091;
+import tinox.core.amqp091
 
-const conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
-const ch = AmqpChannel091::open(conn);
-const queueName = ch.declareQueue("my-queue", true, false, false);
+const conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest")
+const ch = AmqpChannel091::open(conn)
+const queueName = ch.declareQueue("my-queue", true, false, false)
 
-var body: List<Int64> = [];
-for i in 0..3 { body.push("abc".charCodeAt(i)); }
-ch.publish("", queueName, body, "text/plain");
+var body: List<Int64> = []
+for i in 0..3 { body.push("abc".charCodeAt(i)) }
+ch.publish("", queueName, body, "text/plain")
 
-ch.consume(queueName);
-const m = ch.nextMessage();       // blocking pull
+ch.consume(queueName)
+const m = ch.nextMessage()       // blocking pull
 if m.ok {
-    ch.ack(m.deliveryTag);
+    ch.ack(m.deliveryTag)
 }
-conn.close();
+conn.close()
 ```
 
 `amqps://` (TLS) uses `AmqpConnection091::connectTls(host, port, vhost, user, pass, verify)` instead of `connect` (otherwise identical API). OpenSSL is linked by default, no extra flag required; `verify=true` checks the broker's certificate chain and hostname against the system CA stores, `verify=false` is a deliberate opt-out for self-signed test certificates:
 
 ```tinox
-const conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true);
+const conn = AmqpConnection091::connectTls("broker.example.com", 5671, "/", "guest", "guest", true)
 ```
 
 Heartbeats (§4.2.7) can be sent on a background thread, same explicit-opt-in pattern as `amqp10` — `conn.heartbeat` is the broker's proposed interval in seconds (from `connection.tune`, informational only until you start sending):
 
 ```tinox
-conn.startHeartbeat(20000);   // send a heartbeat frame every 20s, in the background
+conn.startHeartbeat(20000)   // send a heartbeat frame every 20s, in the background
 // ...
-conn.stopHeartbeat();         // or just conn.close(), which stops it for you
+conn.stopHeartbeat()         // or just conn.close(), which stops it for you
 ```
 
 Known v1 gaps: no multi-channel, no `exchange.declare` (only the default exchange plus broker-predefined exchanges), no publisher confirms, no annotation-driven consumer API, no auto-reconnect. AMQP 1.0 is a separate, later roadmap phase (different type system) — details and architecture in the [GitHub issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-0-9-1-Client%22) (feature history, marked done there).
@@ -912,24 +912,24 @@ Known v1 gaps: no multi-channel, no `exchange.declare` (only the default exchang
 The standard library additionally includes a standalone AMQP-1.0 **client** (`amqp10`, no shared code with `amqp091` — a completely different type system and a three-tier Connection→Session→Link hierarchy with credit-based flow control instead of 0-9-1's Connection→Channel model):
 
 ```tinox
-import tinox.core.amqp10;
+import tinox.core.amqp10
 
-const conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
-const session = Amqp10Session::begin(conn);
-var sender = Amqp10Link::attach(session, "my-sender", false, "/queues/my-queue");
+const conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest")
+const session = Amqp10Session::begin(conn)
+var sender = Amqp10Link::attach(session, "my-sender", false, "/queues/my-queue")
 
-var body: List<Int64> = [];
-for i in 0..3 { body.push("abc".charCodeAt(i)); }
-sender.publish(body, "text/plain");
-sender.detach();
+var body: List<Int64> = []
+for i in 0..3 { body.push("abc".charCodeAt(i)) }
+sender.publish(body, "text/plain")
+sender.detach()
 
-var receiver = Amqp10Link::attach(session, "my-receiver", true, "/queues/my-queue");
-receiver.grantCredit(10);
-const m = receiver.nextMessage();       // blocking pull, waits for a transfer
+var receiver = Amqp10Link::attach(session, "my-receiver", true, "/queues/my-queue")
+receiver.grantCredit(10)
+const m = receiver.nextMessage()       // blocking pull, waits for a transfer
 if m.ok {
-    receiver.ack(m.deliveryId);
+    receiver.ack(m.deliveryId)
 }
-conn.close();
+conn.close()
 ```
 
 Beyond the base client, `amqp10` also supports multiple sessions/links per connection, SASL SCRAM-SHA-256 (in addition to PLAIN), delivery states beyond `accepted` (`rejected`/`released`/`modified`), transactions (`txn-id` declare/discharge), link recovery/resumption, and heartbeat/auto-reconnect. Details and architecture in the [GitHub issues](https://github.com/subnix-work/tinox/issues?q=is%3Aissue+%22AMQP-1.0-Client%22) (feature history, marked done there).
@@ -937,7 +937,7 @@ Beyond the base client, `amqp10` also supports multiple sessions/links per conne
 An annotation-driven consumer API is also available, analogous to the WebSocket module's `@OnMessage`: the compiler generates the connect/begin/attach/grantCredit/nextMessage/ack loop as `main`. Only valid when the file defines no `main` and has exactly one `@Amqp10Consumer` class:
 
 ```tinox
-import tinox.core.amqp10;
+import tinox.core.amqp10
 
 @Amqp10Consumer("127.0.0.1", 5672, "guest", "guest", "/queues/my-queue")
 class MyConsumer
@@ -945,7 +945,7 @@ class MyConsumer
     @OnMessage
     fn onMessage(msg: Amqp10Message) -> Nothing
     {
-        println(msg.body);
+        println(msg.body)
     }
 }
 ```

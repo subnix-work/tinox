@@ -1,5 +1,5 @@
-import Customer;
-import tinox.core.db;
+import Customer
+import tinox.core.db
 
 // Every Tinox program still needs its own class Main as the mandatory
 // entry point (since 2026-08-09) -- this is the required sibling file
@@ -8,16 +8,16 @@ class Main
 {
     fnc main() -> Int32
     {
-        const customers: List<Customer> = DB::of(Customer).list();
+        const customers: List<Customer> = DB::of(Customer).list()
 
-        const customer: Customer = DB::of(Customer).filter(c => c.id == 1).first();
-        println(customer.name);
+        const customer: Customer = DB::of(Customer).filter(c => c.id == 1).first()
+        println(customer.name)
 
-        const active: List<Customer> = DB::of(Customer).orderBy(c => c.name).limit(10).list();
+        const active: List<Customer> = DB::of(Customer).orderBy(c => c.name).limit(10).list()
 
-        DB::of(Customer).save(customer);
-        DB::of(Customer).delete(customer);
+        DB::of(Customer).save(customer)
+        DB::of(Customer).delete(customer)
 
-        return 0;
+        return 0
     }
 }

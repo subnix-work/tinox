@@ -1,42 +1,42 @@
-module tinox.core.asm;
+module tinox.core.asm
 
 namespace tinox.core.asm
 {
-    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String
 
     class Assembler
     {
-        var bytecode: List<Int64>;
-        var labels: Map<String, Int64>;
+        var bytecode: List<Int64>
+        var labels: Map<String, Int64>
 
         fn new() -> Assembler
         {
-            return Assembler { bytecode: [], labels: Map::new() };
+            return Assembler { bytecode: [], labels: Map::new() }
         }
 
         fn emit(asm: Assembler, op: Int64) -> Nothing
         {
-            asm.bytecode.push(op);
+            asm.bytecode.push(op)
         }
 
         fn emitInt(asm: Assembler, value: Int64) -> Nothing
         {
-            var i: Int64 = 0;
+            var i: Int64 = 0
             while i < 8
             {
-                asm.bytecode.push((value >> (i * 8)) & 255);
-                i = i + 1;
+                asm.bytecode.push((value >> (i * 8)) & 255)
+                i = i + 1
             }
         }
 
         fn emitLabel(asm: Assembler, name: String) -> Nothing
         {
-            asm.labels[name] = asm.bytecode.len();
+            asm.labels[name] = asm.bytecode.len()
         }
 
         fn resolveLabels(asm: Assembler) -> List<Int64>
         {
-            return asm.bytecode;
+            return asm.bytecode
         }
 
         fn toBytes(asm: Assembler) -> String
@@ -44,7 +44,7 @@ namespace tinox.core.asm
             // tinoxBytesToString does the byte->char conversion in one
             // pass instead of `result = result + fromCharCode(...)` in a
             // loop, which is O(n^2) over the bytecode length (issue #167).
-            return tinoxBytesToString(asm.bytecode);
+            return tinoxBytesToString(asm.bytecode)
         }
     }
 }

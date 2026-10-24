@@ -1,4 +1,4 @@
-module tinox.core.oauth2;
+module tinox.core.oauth2
 
 namespace tinox.core.oauth2
 {
@@ -11,16 +11,16 @@ namespace tinox.core.oauth2
      */
     class OAuth2TokenResponse
     {
-        var accessToken: String;
-        var refreshToken: String;
-        var tokenType: String;
-        var expiresIn: Int64;
+        var accessToken: String
+        var refreshToken: String
+        var tokenType: String
+        var expiresIn: Int64
         // Issue #138: the token endpoint's "id_token" field, if present
         // (OIDC providers include it when "openid" was in the requested
         // scope). "" if absent -- OAuth2Client itself does not verify it
         // (no issuer/audience context here); see tinox.core.oidc.OidcClient.
-        var idToken: String;
-        var ok: Bool;
-        var errorMessage: String;
+        var idToken: String
+        var ok: Bool
+        var errorMessage: String
     }
 }

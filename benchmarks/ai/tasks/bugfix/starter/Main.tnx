@@ -2,13 +2,13 @@ class Main
 {
     fnc total(price: Int64, quantity: Int64, discount: Int64) -> Int64
     {
-        return price * quantity - discount;
+        return price * quantity - discount
     }
 
     fnc main() -> Int32
     {
-        print(total(100, 2, 10));
-        print("\n");
-        return 0;
+        print(total(100, 2, 10))
+        print("\n")
+        return 0
     }
 }

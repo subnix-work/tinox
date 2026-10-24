@@ -8,15 +8,15 @@ class Main
 {
     fnc main() -> Int32 {
         // no-arg capture (by-value): captures the value at definition time
-        var counter: Int64 = 1;
-        const getCounter: fnc() -> Int64 = fnc() -> Int64 { return counter; };
-        counter = 99;
-        println(getCounter().toString());   // 1 (by-value capture)
+        var counter: Int64 = 1
+        const getCounter: fnc() -> Int64 = fnc() -> Int64 { return counter }
+        counter = 99
+        println(getCounter().toString())   // 1 (by-value capture)
         // no-arg with multiple captures
-        const a: Int64 = 10;
-        const b: Int64 = 20;
-        const sum: fnc() -> Int64 = fnc() -> Int64 { return a + b; };
-        println(sum().toString());           // 30
-        return 0;
+        const a: Int64 = 10
+        const b: Int64 = 20
+        const sum: fnc() -> Int64 = fnc() -> Int64 { return a + b }
+        println(sum().toString())           // 30
+        return 0
     }
 }

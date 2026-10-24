@@ -1,6 +1,6 @@
-import CounterDemoApp;
-import tinox.core.fs;
-import tinox.core.http_server;
+import CounterDemoApp
+import tinox.core.fs
+import tinox.core.http_server
 
 class Main
 {
@@ -9,13 +9,13 @@ class Main
     // extra custom routes -- see CounterDemoApp's own doc comment.
     fnc main() -> Int32
     {
-        const widgetJs: String = Fs::readFile("assets/tinox-counter.js");
-        const server: HttpServer = HttpServer::new(8082);
+        const widgetJs: String = Fs::readFile("assets/tinox-counter.js")
+        const server: HttpServer = HttpServer::new(8082)
         server.get("/tinox-counter.js", ctx => {
             ctx.response.content(widgetJs, "application/javascript; charset=utf-8")
-                .header("Access-Control-Allow-Origin", "*");
-        });
-        server.listen();
-        return 0;
+                .header("Access-Control-Allow-Origin", "*")
+        })
+        server.listen()
+        return 0
     }
 }

@@ -1,4 +1,4 @@
-module tinox.core.io;
+module tinox.core.io
 
 namespace tinox.core.io
 {
@@ -11,10 +11,10 @@ namespace tinox.core.io
     class File
     {
         /** The file path */
-        path: String;
+        path: String
 
         /** The file handle (0 if not open) */
-        handle: Int64;
+        handle: Int64
 
         /**
          * Creates a new File instance (not yet opened)
@@ -24,7 +24,7 @@ namespace tinox.core.io
          */
         fn new(path: String) -> File
         {
-            return File { path: path, handle: 0 };
+            return File { path: path, handle: 0 }
         }
 
         /**
@@ -34,7 +34,7 @@ namespace tinox.core.io
          */
         fn getPath() -> String
         {
-            return this.path;
+            return this.path
         }
 
         /**
@@ -44,8 +44,8 @@ namespace tinox.core.io
         {
             if (this.handle != 0)
             {
-                fileClose(this.handle);
-                this.handle = 0;
+                fileClose(this.handle)
+                this.handle = 0
             }
         }
 
@@ -57,7 +57,7 @@ namespace tinox.core.io
          */
         fn exists(path: String) -> Bool
         {
-            return fileExists(path);
+            return fileExists(path)
         }
     }
 }

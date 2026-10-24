@@ -6,9 +6,9 @@ description = ""
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.0.3"
+version = "1.1.0"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.0.0"
+version = "1.1.0"

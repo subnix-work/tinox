@@ -16,10 +16,10 @@
 // captures its own independent copy of a scalar at registration time,
 // see issue #144's fix), which is why nextTaskId() below derives the
 // next id from `tasks` itself instead of a separately captured counter.
-import tinox.core.http3_server;
-import tinox.core.http_server;
-import tinox.core.json;
-import TodoItem;
+import tinox.core.http3_server
+import tinox.core.http_server
+import tinox.core.json
+import TodoItem
 
 class Main
 {
@@ -30,31 +30,31 @@ class Main
     // `main`, see `gen_lambda`).
     fnc findTaskIndex(tasks: List<TodoItem>, id: Int64) -> Int64
     {
-        var i: Int64 = 0;
+        var i: Int64 = 0
         while i < tasks.len()
         {
             if (tasks[i].id == id)
             {
-                return i;
+                return i
             }
-            i = i + 1;
+            i = i + 1
         }
-        return -1;
+        return -1
     }
 
     fnc nextTaskId(tasks: List<TodoItem>) -> Int64
     {
-        var maxId: Int64 = 0;
-        var i: Int64 = 0;
+        var maxId: Int64 = 0
+        var i: Int64 = 0
         while i < tasks.len()
         {
             if (tasks[i].id > maxId)
             {
-                maxId = tasks[i].id;
+                maxId = tasks[i].id
             }
-            i = i + 1;
+            i = i + 1
         }
-        return maxId + 1;
+        return maxId + 1
     }
 
     // Removes the element at `index` in place (shift-down + pop) rather
@@ -63,18 +63,18 @@ class Main
     // closures sharing the same original handle, only in-place mutation is.
     fnc removeTaskAt(tasks: List<TodoItem>, index: Int64) -> Nothing
     {
-        var i: Int64 = index;
+        var i: Int64 = index
         while i < tasks.len() - 1
         {
-            tasks[i] = tasks[i + 1];
-            i = i + 1;
+            tasks[i] = tasks[i + 1]
+            i = i + 1
         }
-        tasks.pop();
+        tasks.pop()
     }
 
     fnc notFound(ctx: HttpContext) -> Nothing
     {
-        ctx.response.status(404).json("{\"error\":\"task not found\"}");
+        ctx.response.status(404).json("{\"error\":\"task not found\"}")
     }
 
     fnc main() -> Int32
@@ -82,78 +82,78 @@ class Main
         const tasks: List<TodoItem> = [
             TodoItem { id: 1, title: "Try tinox.core.http3_server", done: false },
             TodoItem { id: 2, title: "curl --http3-only this API", done: false }
-        ];
+        ]
 
-        const server: Http3Server = Http3Server::new(8843, "cert.pem", "key.pem");
+        const server: Http3Server = Http3Server::new(8843, "cert.pem", "key.pem")
 
         server.use(ctx => {
-            print(ctx.request.method + " " + ctx.request.path);
-            return true;
-        });
+            print(ctx.request.method + " " + ctx.request.path)
+            return true
+        })
 
         server.get("/tasks", ctx => {
-            ctx.response.json(Json::serialize(tasks));
-        });
+            ctx.response.json(Json::serialize(tasks))
+        })
 
         server.get("/tasks/:id", ctx => {
-            const id: Int64 = ctx.request.getParam("id").toInt();
-            const idx: Int64 = findTaskIndex(tasks, id);
+            const id: Int64 = ctx.request.getParam("id").toInt()
+            const idx: Int64 = findTaskIndex(tasks, id)
             if (idx < 0)
             {
-                notFound(ctx);
-                return;
+                notFound(ctx)
+                return
             }
-            ctx.response.json(Json::serialize(tasks[idx]));
-        });
+            ctx.response.json(Json::serialize(tasks[idx]))
+        })
 
         server.post("/tasks", ctx => {
-            const incoming: TodoItem = Json::deserialize<TodoItem>(ctx.request.body);
-            incoming.id = nextTaskId(tasks);
-            tasks.push(incoming);
-            ctx.response.status(201).json(Json::serialize(incoming));
-        });
+            const incoming: TodoItem = Json::deserialize<TodoItem>(ctx.request.body)
+            incoming.id = nextTaskId(tasks)
+            tasks.push(incoming)
+            ctx.response.status(201).json(Json::serialize(incoming))
+        })
 
         server.put("/tasks/:id", ctx => {
-            const id: Int64 = ctx.request.getParam("id").toInt();
-            const idx: Int64 = findTaskIndex(tasks, id);
+            const id: Int64 = ctx.request.getParam("id").toInt()
+            const idx: Int64 = findTaskIndex(tasks, id)
             if (idx < 0)
             {
-                notFound(ctx);
-                return;
+                notFound(ctx)
+                return
             }
-            const updated: TodoItem = Json::deserialize<TodoItem>(ctx.request.body);
-            updated.id = id;
-            tasks[idx] = updated;
-            ctx.response.json(Json::serialize(updated));
-        });
+            const updated: TodoItem = Json::deserialize<TodoItem>(ctx.request.body)
+            updated.id = id
+            tasks[idx] = updated
+            ctx.response.json(Json::serialize(updated))
+        })
 
         server.patch("/tasks/:id/done", ctx => {
-            const id: Int64 = ctx.request.getParam("id").toInt();
-            const idx: Int64 = findTaskIndex(tasks, id);
+            const id: Int64 = ctx.request.getParam("id").toInt()
+            const idx: Int64 = findTaskIndex(tasks, id)
             if (idx < 0)
             {
-                notFound(ctx);
-                return;
+                notFound(ctx)
+                return
             }
-            tasks[idx].done = !tasks[idx].done;
-            ctx.response.json(Json::serialize(tasks[idx]));
-        });
+            tasks[idx].done = !tasks[idx].done
+            ctx.response.json(Json::serialize(tasks[idx]))
+        })
 
         server.delete("/tasks/:id", ctx => {
-            const id: Int64 = ctx.request.getParam("id").toInt();
-            const idx: Int64 = findTaskIndex(tasks, id);
+            const id: Int64 = ctx.request.getParam("id").toInt()
+            const idx: Int64 = findTaskIndex(tasks, id)
             if (idx < 0)
             {
-                notFound(ctx);
-                return;
+                notFound(ctx)
+                return
             }
-            removeTaskAt(tasks, idx);
-            ctx.response.status(204).text("");
-        });
+            removeTaskAt(tasks, idx)
+            ctx.response.status(204).text("")
+        })
 
-        print("HTTP/3 tasks API listening on https://localhost:8843 (try: curl --http3-only -k https://localhost:8843/tasks)");
-        server.listen();
+        print("HTTP/3 tasks API listening on https://localhost:8843 (try: curl --http3-only -k https://localhost:8843/tasks)")
+        server.listen()
 
-        return 0;
+        return 0
     }
 }

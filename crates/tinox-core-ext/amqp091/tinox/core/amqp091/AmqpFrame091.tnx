@@ -1,6 +1,6 @@
-module tinox.core.amqp091;
+module tinox.core.amqp091
 
-import tinox.core.socket;
+import tinox.core.socket
 
 /*
  * AMQP-0-9-1 client on top of the HTTP server's conn-handle architecture
@@ -28,8 +28,8 @@ namespace tinox.core.amqp091
      */
     class AmqpFrame091
     {
-        var frameType: Int64;
-        var chanId: Int64;
-        var payload: List<Int64>;
+        var frameType: Int64
+        var chanId: Int64
+        var payload: List<Int64>
     }
 }

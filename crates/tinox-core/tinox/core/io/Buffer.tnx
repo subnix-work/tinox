@@ -1,4 +1,4 @@
-module tinox.core.io;
+module tinox.core.io
 
 namespace tinox.core.io
 {
@@ -11,7 +11,7 @@ namespace tinox.core.io
     class Buffer
     {
         /** The accumulated string data */
-        var data: String;
+        var data: String
 
         /**
          * Creates a new empty Buffer
@@ -20,7 +20,7 @@ namespace tinox.core.io
          */
         fn new() -> Buffer
         {
-            return Buffer { data: "" };
+            return Buffer { data: "" }
         }
 
         /**
@@ -30,7 +30,7 @@ namespace tinox.core.io
          */
         fn append(s: String) -> Nothing
         {
-            this.data = this.data + s;
+            this.data = this.data + s
         }
 
         /**
@@ -40,7 +40,7 @@ namespace tinox.core.io
          */
         fn appendInt(n: Int64) -> Nothing
         {
-            this.data = this.data + n.toString();
+            this.data = this.data + n.toString()
         }
 
         /**
@@ -50,7 +50,7 @@ namespace tinox.core.io
          */
         fn appendLine(s: String) -> Nothing
         {
-            this.data = this.data + s + "\n";
+            this.data = this.data + s + "\n"
         }
 
         /**
@@ -58,7 +58,7 @@ namespace tinox.core.io
          */
         fn clear() -> Nothing
         {
-            this.data = "";
+            this.data = ""
         }
 
         /**
@@ -68,7 +68,7 @@ namespace tinox.core.io
          */
         fn toString() -> String
         {
-            return this.data;
+            return this.data
         }
 
         /**
@@ -78,7 +78,7 @@ namespace tinox.core.io
          */
         fn isEmpty() -> Bool
         {
-            return this.data.len() == 0;
+            return this.data.len() == 0
         }
     }
 }

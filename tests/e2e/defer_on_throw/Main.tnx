@@ -19,41 +19,41 @@
 class Main
 {
     fnc risky() -> Nothing {
-        defer { println("cleanup risky"); }
-        println("before throw");
-        throw "error";
+        defer { println("cleanup risky") }
+        println("before throw")
+        throw "error"
     }
 
 
     fnc worker() -> Nothing {
-        defer { println("close resource"); }   // function scope
-        var i: Int64 = 0;
+        defer { println("close resource") }   // function scope
+        var i: Int64 = 0
         while i < 5 {
-            if (i == 2) { throw "loop"; }         // throw from loop scope
-            println("i=" + i.toString());
-            i = i + 1;
+            if (i == 2) { throw "loop" }         // throw from loop scope
+            println("i=" + i.toString())
+            i = i + 1
         }
     }
 
 
     fnc multi() -> Nothing {
-        defer { println("defer A"); }   // registered first -> runs last
-        defer { println("defer B"); }   // registered last -> runs first
-        throw "x";
+        defer { println("defer A") }   // registered first -> runs last
+        defer { println("defer B") }   // registered last -> runs first
+        throw "x"
     }
 
 
     fnc ok() -> Int64 {
-        defer { println("normal cleanup"); }
-        return 42;
+        defer { println("normal cleanup") }
+        return 42
     }
 
 
     fnc main() -> Int32 {
-        try { risky(); } catch e: String { println("caught: " + e); }
-        try { worker(); } catch e: String { println("caught: " + e); }
-        try { multi(); } catch e: String { println("catch"); }
-        println(ok().toString());
-        return 0;
+        try { risky() } catch e: String { println("caught: " + e) }
+        try { worker() } catch e: String { println("caught: " + e) }
+        try { multi() } catch e: String { println("catch") }
+        println(ok().toString())
+        return 0
     }
 }

@@ -87,11 +87,11 @@ Import `tinox.core.logger`. These functions are also available for message
 boundaries and custom operations:
 
 ```tinox
-const token = telemetryBegin("message.process", receivedTraceparent, receivedRequestId);
+const token = telemetryBegin("message.process", receivedTraceparent, receivedRequestId)
 // Application work; spawn and outgoing HTTP inherit this context.
-const outgoingParent = telemetryTraceparent();
-const requestId = telemetryRequestId();
-telemetryEnd(token);
+const outgoingParent = telemetryTraceparent()
+const requestId = telemetryRequestId()
+telemetryEnd(token)
 ```
 
 Names use the bounded ASCII token character set, with `operation` as a

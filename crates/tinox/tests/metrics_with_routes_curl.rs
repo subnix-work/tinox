@@ -55,13 +55,13 @@ fn metrics_enabled_with_real_routes_compiles_and_serves() {
 
     std::fs::write(
         workdir.join("Ctrl.tnx"),
-        r#"import tinox.core.http_server;
+        r#"import tinox.core.http_server
 
 class Ctrl
 {
     @GET
     @Path("/hello")
-    fn hello() -> String { return "hi"; }
+    fn hello() -> String { return "hi" }
 }
 "#,
     )
@@ -69,13 +69,13 @@ class Ctrl
 
     std::fs::write(
         workdir.join("Main.tnx"),
-        r#"import Ctrl;
+        r#"import Ctrl
 
 class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }
 "#,

@@ -1,4 +1,4 @@
-module tinox.core.yaml;
+module tinox.core.yaml
 
 namespace tinox.core.yaml
 {
@@ -6,12 +6,12 @@ namespace tinox.core.yaml
     {
         fn parse(content: String) -> YamlValue
         {
-            return YamlParser::parse(content);
+            return YamlParser::parse(content)
         }
 
         fn stringify(value: YamlValue) -> String
         {
-            return YamlRenderer::render(value, 0);
+            return YamlRenderer::render(value, 0)
         }
     }
 }

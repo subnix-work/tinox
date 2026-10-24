@@ -1,4 +1,4 @@
-module tinox.core.validation;
+module tinox.core.validation
 
 namespace tinox.core.validation
 {
@@ -6,58 +6,58 @@ namespace tinox.core.validation
     {
         fn isEmail(s: String) -> Bool
         {
-            const pattern: String = "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}";
-            return regexIsMatch(pattern, s);
+            const pattern: String = "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+            return regexIsMatch(pattern, s)
         }
 
         fn isUrl(s: String) -> Bool
         {
-            const pattern: String = "https?://[a-zA-Z0-9.-]+";
-            return regexIsMatch(pattern, s);
+            const pattern: String = "https?://[a-zA-Z0-9.-]+"
+            return regexIsMatch(pattern, s)
         }
 
         fn isNumeric(s: String) -> Bool
         {
-            const pattern: String = "^[0-9]+$";
-            return regexIsMatch(pattern, s);
+            const pattern: String = "^[0-9]+$"
+            return regexIsMatch(pattern, s)
         }
 
         fn isAlpha(s: String) -> Bool
         {
-            const pattern: String = "^[a-zA-Z]+$";
-            return regexIsMatch(pattern, s);
+            const pattern: String = "^[a-zA-Z]+$"
+            return regexIsMatch(pattern, s)
         }
 
         fn isAlphanumeric(s: String) -> Bool
         {
-            const pattern: String = "^[a-zA-Z0-9]+$";
-            return regexIsMatch(pattern, s);
+            const pattern: String = "^[a-zA-Z0-9]+$"
+            return regexIsMatch(pattern, s)
         }
 
         fn isPhone(s: String) -> Bool
         {
-            const pattern: String = "^[0-9+\\-\\s()]+$";
-            return regexIsMatch(pattern, s);
+            const pattern: String = "^[0-9+\\-\\s()]+$"
+            return regexIsMatch(pattern, s)
         }
 
         fn minLength(s: String, min: Int64) -> Bool
         {
-            return s.len() >= min;
+            return s.len() >= min
         }
 
         fn maxLength(s: String, max: Int64) -> Bool
         {
-            return s.len() <= max;
+            return s.len() <= max
         }
 
         fn isInRange(n: Int64, min: Int64, max: Int64) -> Bool
         {
-            return n >= min && n <= max;
+            return n >= min && n <= max
         }
 
         fn matchesPattern(s: String, pattern: String) -> Bool
         {
-            return regexIsMatch(pattern, s);
+            return regexIsMatch(pattern, s)
         }
     }
 }

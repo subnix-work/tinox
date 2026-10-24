@@ -1,0 +1,16 @@
+import tinox.core.csv
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let content: String = "name,age\nAlice,30\nBob,25"
+        let rows: List<List<String>> = Csv::parse(content)
+        println("row count: " + rows.len().toString())
+        println("first data row: " + rows[1][0] + " is " + rows[1][1])
+
+        let backToCsv: String = Csv::toString(rows)
+        println(backToCsv)
+        return 0
+    }
+}

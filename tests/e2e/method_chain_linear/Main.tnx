@@ -6,12 +6,12 @@
 // result — the chain still produces the expected value unchanged.
 // expect: 42
 
-import method_chain_linear;
+import method_chain_linear
 
 class Main
 {
     fnc main() -> Int32 {
-        const c: method_chain_linear = method_chain_linear::make(42);
+        const c: method_chain_linear = method_chain_linear::make(42)
         // 60-deep method chain — previously exponential in the typecheck
         const r: Int64 = c.self_().self_().self_().self_().self_().self_().self_().self_()
                         .self_().self_().self_().self_().self_().self_().self_().self_()
@@ -20,8 +20,8 @@ class Main
                         .self_().self_().self_().self_().self_().self_().self_().self_()
                         .self_().self_().self_().self_().self_().self_().self_().self_()
                         .self_().self_().self_().self_().self_().self_().self_().self_()
-                        .self_().self_().self_().self_().get();
-        println(r.toString());
-        return 0;
+                        .self_().self_().self_().self_().get()
+        println(r.toString())
+        return 0
     }
 }

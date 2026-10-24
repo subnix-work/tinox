@@ -2130,23 +2130,23 @@ mod tests {
             "@Service class Other {}",
             "class Plain { @OnStart fn start() -> Nothing {} }",
             "@Startup class State { @OnStop fnc stop() -> Nothing {} }",
-            "@Startup class State { @Readiness fn ready() -> Int64 { return 1; } }",
-            "@Startup class State { @Liveness fn live(value: Bool) -> Bool { return value; } }",
+            "@Startup class State { @Readiness fn ready() -> Int64 { return 1 } }",
+            "@Startup class State { @Liveness fn live(value: Bool) -> Bool { return value } }",
         ] {
             assert!(!valid(source).is_empty(), "unexpectedly accepted: {source}");
         }
-        assert!(valid("@Service(1000, 2000) class Main {} @Startup class State { @OnStart fn start() -> Nothing {} @OnStop fn stop() -> Nothing {} @Readiness fn ready() -> Bool { return true; } @Liveness fn live() -> Bool { return true; } }").is_empty());
+        assert!(valid("@Service(1000, 2000) class Main {} @Startup class State { @OnStart fn start() -> Nothing {} @OnStop fn stop() -> Nothing {} @Readiness fn ready() -> Bool { return true } @Liveness fn live() -> Bool { return true } }").is_empty());
     }
 
     #[test]
     fn synchronized_requires_concrete_singleton_instance_methods() {
-        assert!(valid("@ApplicationComponent @Synchronized class Counter { fn read() -> Int64 { return 0; } }").is_empty());
-        assert!(valid("@Startup class Counter { @Synchronized fn read() -> Int64 { return 0; } }").is_empty());
+        assert!(valid("@ApplicationComponent @Synchronized class Counter { fn read() -> Int64 { return 0 } }").is_empty());
+        assert!(valid("@Startup class Counter { @Synchronized fn read() -> Int64 { return 0 } }").is_empty());
         for source in [
             "@Synchronized class Counter {}",
             "@HttpRequestScoped @Synchronized class Counter {}",
-            "@ApplicationComponent class Counter { @Synchronized fnc read() -> Int64 { return 0; } }",
-            "@ApplicationComponent class Counter { @Synchronized fn read<T>(x: T) -> T { return x; } }",
+            "@ApplicationComponent class Counter { @Synchronized fnc read() -> Int64 { return 0 } }",
+            "@ApplicationComponent class Counter { @Synchronized fn read<T>(x: T) -> T { return x } }",
             "@ApplicationComponent @Synchronized class Counter<T> {}",
             "class Base {} @ApplicationComponent @Synchronized class Counter extends Base {}",
         ] {
@@ -2156,13 +2156,13 @@ mod tests {
 
     #[test]
     fn shared_state_diagnostics_are_narrow_and_cover_captive_request_state() {
-        let unsafe_state = proc("@ApplicationComponent class Counter { var value: Int64; fn read() -> Int64 { return 0; } }");
+        let unsafe_state = proc("@ApplicationComponent class Counter { var value: Int64\nfn read() -> Int64 { return 0 } }");
         assert!(unsafe_state.shared_state_warnings.iter().any(|w| w.contains("mutable shared fields")));
-        let guarded = proc("@ApplicationComponent @Synchronized class Counter { private var value: Int64; fn read() -> Int64 { return 0; } }");
+        let guarded = proc("@ApplicationComponent @Synchronized class Counter { private var value: Int64\nfn read() -> Int64 { return 0 } }");
         assert!(guarded.shared_state_warnings.is_empty());
-        let exposed = proc("@ApplicationComponent @Synchronized class Counter { var value: Int64; }");
+        let exposed = proc("@ApplicationComponent @Synchronized class Counter { var value: Int64 }");
         assert!(exposed.shared_state_warnings.iter().any(|w| w.contains("bypass method locks")));
-        let captive = proc("@HttpRequestScoped class Request {} @ApplicationComponent class Middle { @Inject var request: Request; } @Startup class Service { @Inject var middle: Middle; }");
+        let captive = proc("@HttpRequestScoped class Request {} @ApplicationComponent class Middle { @Inject var request: Request } @Startup class Service { @Inject var middle: Middle }");
         assert!(captive.shared_state_warnings.iter().any(|w| w.contains("Service.middle -> Middle.request -> Request")));
     }
 
@@ -2190,7 +2190,7 @@ mod tests {
 
     #[test]
     fn test_validate_get_on_method_ok() {
-        let errors = valid("class Ctrl { @GET\nfn list(@HttpContext ctx: HttpContext) -> HttpContext { return ctx; } }");
+        let errors = valid("class Ctrl { @GET\nfn list(@HttpContext ctx: HttpContext) -> HttpContext { return ctx } }");
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
     }
 
@@ -2199,21 +2199,21 @@ mod tests {
     #[test]
     fn test_route_param_unannotated_err() {
         // No backward compatibility: a bare, unannotated ctx param is a hard error now.
-        let errors = valid("class Ctrl { @GET\nfn list(ctx: HttpContext) -> HttpContext { return ctx; } }");
+        let errors = valid("class Ctrl { @GET\nfn list(ctx: HttpContext) -> HttpContext { return ctx } }");
         assert!(!errors.is_empty());
         assert!(errors.iter().any(|e| e.message.contains("needs exactly one of")));
     }
 
     #[test]
     fn test_route_param_multiple_bindings_err() {
-        let errors = valid("class Ctrl { @GET\nfn list(@PathParam @QueryParam id: Int64) -> HttpContext { return HttpContext::new(); } }");
+        let errors = valid("class Ctrl { @GET\nfn list(@PathParam @QueryParam id: Int64) -> HttpContext { return HttpContext::new() } }");
         assert!(!errors.is_empty());
         assert!(errors.iter().any(|e| e.message.contains("more than one binding annotation")));
     }
 
     #[test]
     fn test_route_pathparam_wrong_type_err() {
-        let errors = valid("class Ctrl { @GET\nfn list(@PathParam id: Ctx) -> HttpContext { return HttpContext::new(); } }");
+        let errors = valid("class Ctrl { @GET\nfn list(@PathParam id: Ctx) -> HttpContext { return HttpContext::new() } }");
         assert!(!errors.is_empty());
         assert!(errors.iter().any(|e| e.message.contains("must be String/Int64/Int32/Bool/Float64/Float32")));
     }
@@ -2221,7 +2221,7 @@ mod tests {
     #[test]
     fn test_route_postparam_wrong_type_err() {
         // Person isn't @JsonSerializable here, so @PostParam on it is rejected.
-        let errors = valid("class Person { var id: Int64; }\nclass Ctrl { @POST\nfn create(@PostParam p: Person) -> Person { return p; } }");
+        let errors = valid("class Person { var id: Int64 }\nclass Ctrl { @POST\nfn create(@PostParam p: Person) -> Person { return p } }");
         assert!(!errors.is_empty());
         assert!(errors.iter().any(|e| e.message.contains("must be a class marked @JsonSerializable")));
     }
@@ -2233,13 +2233,13 @@ mod tests {
         // parses the snippet directly with no import resolution, so a
         // custom annotation must be defined in-snippet to be "known"
         // (see test_validate_custom_annotation_usable_after_registration).
-        let errors = valid("@annotation\nclass JsonSerializable {}\n@JsonSerializable\nclass Person { var id: Int64; }\nclass Ctrl { @POST\nfn create(@PostParam p: Person) -> Person { return p; } }");
+        let errors = valid("@annotation\nclass JsonSerializable {}\n@JsonSerializable\nclass Person { var id: Int64 }\nclass Ctrl { @POST\nfn create(@PostParam p: Person) -> Person { return p } }");
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
     }
 
     #[test]
     fn test_route_return_type_not_serializable_err() {
-        let errors = valid("class Ctrl { @GET\nfn list() -> Ctx { return Ctx::new(); } }");
+        let errors = valid("class Ctrl { @GET\nfn list() -> Ctx { return Ctx::new() } }");
         assert!(!errors.is_empty());
         assert!(errors.iter().any(|e| e.message.contains("cannot auto-serialize return type")));
     }
@@ -2247,7 +2247,7 @@ mod tests {
     #[test]
     fn typed_response_annotation_contract() {
         for ty in ["String", "Int64", "Int32", "Bool", "Person", "List<Person>"] {
-            let src = format!("@annotation class JsonSerializable {{}}\n@JsonSerializable class Person {{ var name: String; }}\nclass Ctrl {{ @GET @Produces(\"application/json\") @StatusCode(201) fn get() -> Response<{ty}> {{}} }}");
+            let src = format!("@annotation class JsonSerializable {{}}\n@JsonSerializable class Person {{ var name: String }}\nclass Ctrl {{ @GET @Produces(\"application/json\") @StatusCode(201) fn get() -> Response<{ty}> {{}} }}");
             assert!(valid(&src).is_empty(), "{ty}: {:?}", valid(&src));
             let routes = proc(&src).route_entries;
             assert!(response_body_type(&routes[0].return_type).is_some());
@@ -2268,7 +2268,7 @@ mod tests {
 
     #[test]
     fn test_route_return_list_of_json_serializable_ok() {
-        let errors = valid("@annotation\nclass JsonSerializable {}\n@JsonSerializable\nclass Person { var id: Int64; }\nclass Ctrl { @GET\nfn list() -> List<Person> { return []; } }");
+        let errors = valid("@annotation\nclass JsonSerializable {}\n@JsonSerializable\nclass Person { var id: Int64 }\nclass Ctrl { @GET\nfn list() -> List<Person> { return [] } }");
         assert!(errors.is_empty(), "{:?}", errors.iter().map(|e| &e.message).collect::<Vec<_>>());
     }
 
@@ -2295,7 +2295,7 @@ mod tests {
 
     #[test]
     fn test_validate_inject_on_field_ok() {
-        let errors = valid("class A { @Inject\nvar svc: SomeService; }");
+        let errors = valid("class A { @Inject\nvar svc: SomeService }");
         assert!(errors.is_empty());
     }
 
@@ -2555,7 +2555,7 @@ class Ctrl {}"#);
 @ApplicationComponent
 class UserService {
     @Inject
-    var repo: UserRepository;
+    var repo: UserRepository
 }
 "#);
         let comp = &result.di_components[0];
@@ -2578,9 +2578,9 @@ class UserService {
     fn test_process_sensitive_field() {
         let result = proc(r#"
 class User {
-    var name: String;
+    var name: String
     @Sensitive
-    var password: String;
+    var password: String
 }
 "#);
         assert_eq!(result.sensitive_fields.len(), 1);
@@ -2593,9 +2593,9 @@ class User {
     fn test_process_masked_field() {
         let result = proc(r#"
 class User {
-    var name: String;
+    var name: String
     @Masked
-    var email: String;
+    var email: String
 }
 "#);
         assert_eq!(result.masked_fields.len(), 1);
@@ -2608,11 +2608,11 @@ class User {
     fn test_process_sensitive_and_masked_fields() {
         let result = proc(r#"
 class Payment {
-    var amount: Int64;
+    var amount: Int64
     @Sensitive
-    var cardNumber: String;
+    var cardNumber: String
     @Masked
-    var email: String;
+    var email: String
 }
 "#);
         assert_eq!(result.sensitive_fields.len(), 1);
@@ -2645,9 +2645,9 @@ class Bad {}
     fn test_process_do_not_serialize_field() {
         let result = proc(r#"
 class User {
-    var name: String;
+    var name: String
     @DoNotSerialize
-    var internalToken: String;
+    var internalToken: String
 }
 "#);
         assert_eq!(result.do_not_serialize_fields.len(), 1);
@@ -2661,11 +2661,11 @@ class User {
     fn test_process_multiple_do_not_serialize_fields() {
         let result = proc(r#"
 class Order {
-    var id: Int64;
+    var id: Int64
     @DoNotSerialize
-    var internalRef: String;
+    var internalRef: String
     @DoNotSerialize
-    var debugInfo: String;
+    var debugInfo: String
 }
 "#);
         assert_eq!(result.do_not_serialize_fields.len(), 2);
@@ -2698,11 +2698,11 @@ class Foo {
     fn test_do_not_serialize_combined_with_sensitive() {
         let result = proc(r#"
 class Payment {
-    var amount: Int64;
+    var amount: Int64
     @Sensitive
-    var cardNumber: String;
+    var cardNumber: String
     @DoNotSerialize
-    var internalId: String;
+    var internalId: String
 }
 "#);
         assert_eq!(result.sensitive_fields.len(), 1);
@@ -2715,14 +2715,14 @@ class Payment {
     fn test_do_not_serialize_multiple_classes() {
         let result = proc(r#"
 class User {
-    var name: String;
+    var name: String
     @DoNotSerialize
-    var sessionToken: String;
+    var sessionToken: String
 }
 class Product {
-    var title: String;
+    var title: String
     @DoNotSerialize
-    var warehouseCode: String;
+    var warehouseCode: String
 }
 "#);
         assert_eq!(result.do_not_serialize_fields.len(), 2);
@@ -2745,8 +2745,8 @@ class Product {
 class JsonSerializable {}
 @JsonSerializable
 class User {
-    var id: Int64;
-    var name: String;
+    var id: Int64
+    var name: String
 }
 "#);
         assert!(result.json_serializable_classes.contains(&"User".to_string()));
@@ -2759,10 +2759,10 @@ class User {
 class JsonSerializable {}
 @JsonSerializable
 class Product {
-    var id: Int64;
-    var name: String;
+    var id: Int64
+    var name: String
     @DoNotSerialize
-    var internalCode: String;
+    var internalCode: String
 }
 "#);
         assert!(result.json_serializable_classes.contains(&"Product".to_string()));
@@ -2774,7 +2774,7 @@ class Product {
     fn test_non_json_serializable_class_not_collected() {
         let result = proc(r#"
 class Plain {
-    var x: Int64;
+    var x: Int64
 }
 "#);
         assert!(result.json_serializable_classes.is_empty());
@@ -2787,7 +2787,7 @@ class Plain {
         let result = proc(r#"
 class App {
     @Config("server.port")
-    var port: Int64;
+    var port: Int64
 }
 "#);
         assert_eq!(result.config_fields.len(), 1);
@@ -2843,7 +2843,7 @@ class MyTests {
 @Command("greet", "greet someone")
 class GreetCmd {
     @Option("--name,-n", "recipient name")
-    var name: String;
+    var name: String
 }
 "#);
         let cmd = &result.cli_commands[0];
@@ -2859,7 +2859,7 @@ class GreetCmd {
 @Command("run", "run it")
 class RunCmd {
     @Option("--file,-f", "file path", true)
-    var file: String;
+    var file: String
 }
 "#);
         assert!(result.cli_commands[0].options[0].required);
@@ -2871,7 +2871,7 @@ class RunCmd {
 @Command("convert", "convert file")
 class ConvertCmd {
     @Argument(0, "input file")
-    var input: String;
+    var input: String
 }
 "#);
         let cmd = &result.cli_commands[0];

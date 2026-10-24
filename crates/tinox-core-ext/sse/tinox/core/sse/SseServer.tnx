@@ -1,4 +1,4 @@
-module tinox.core.sse;
+module tinox.core.sse
 
 namespace tinox.core.sse
 {
@@ -15,7 +15,7 @@ namespace tinox.core.sse
     {
         fn listen(port: Int64) -> Int64
         {
-            return httpServerCreate(port);
+            return httpServerCreate(port)
         }
 
         /*
@@ -26,35 +26,35 @@ namespace tinox.core.sse
          */
         fn accept(srv: Int64) -> Int64
         {
-            const conn = httpServerAcceptConnHandle(srv);
+            const conn = httpServerAcceptConnHandle(srv)
             if (conn <= 0) {
-                return -1;
+                return -1
             }
             if (!Sse::handshake(conn)) {
-                httpConnClose(conn);
-                return -1;
+                httpConnClose(conn)
+                return -1
             }
-            return conn;
+            return conn
         }
 
         // https:// variant of listen() — mirrors WsServer::listenTls.
         fn listenTls(port: Int64, certPath: String, keyPath: String) -> Int64
         {
-            return httpServerCreateTls(port, certPath, keyPath);
+            return httpServerCreateTls(port, certPath, keyPath)
         }
 
         // TLS variant of accept() — mirrors WsServer::acceptTls.
         fn acceptTls(srv: Int64) -> Int64
         {
-            const conn = httpServerAcceptTls(srv);
+            const conn = httpServerAcceptTls(srv)
             if (conn <= 0) {
-                return -1;
+                return -1
             }
             if (!Sse::handshake(conn)) {
-                httpConnClose(conn);
-                return -1;
+                httpConnClose(conn)
+                return -1
             }
-            return conn;
+            return conn
         }
     }
 }

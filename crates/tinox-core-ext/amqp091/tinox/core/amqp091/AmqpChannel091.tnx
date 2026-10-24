@@ -1,6 +1,6 @@
-module tinox.core.amqp091;
+module tinox.core.amqp091
 
-import tinox.core.socket;
+import tinox.core.socket
 
 namespace tinox.core.amqp091
 {
@@ -16,44 +16,44 @@ namespace tinox.core.amqp091
      */
     class AmqpChannel091
     {
-        var conn: Int64;
-        var chanId: Int64;
-        var frameMax: Int64;
-        var errorMessage: String;
-        var confirmsEnabled: Bool;
-        var lastDeliveryTag: Int64;
-        var inbox: Channel<AmqpFrame091>;
+        var conn: Int64
+        var chanId: Int64
+        var frameMax: Int64
+        var errorMessage: String
+        var confirmsEnabled: Bool
+        var lastDeliveryTag: Int64
+        var inbox: Channel<AmqpFrame091>
 
         fn open(connection: AmqpConnection091) -> AmqpChannel091
         {
             if (connection.conn <= 0) {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "connection not established: " + connection.errorMessage, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "connection not established: " + connection.errorMessage, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel }
             }
-            const chanId = connection.allocateChanId();
-            const inbox: Channel<AmqpFrame091> = channel;
+            const chanId = connection.allocateChanId()
+            const inbox: Channel<AmqpFrame091> = channel
             // MUST happen before writeFrame: otherwise channel.open-ok
             // could arrive before the dispatcher knows where to route it
             // (see AmqpConnection091::registerChannelInbox).
-            connection.registerChannelInbox(chanId, inbox);
+            connection.registerChannelInbox(chanId, inbox)
 
-            const w = AmqpWriter091::new();
-            w.shortstr(""); // reserved-1 (out-of-band, deprecated)
-            const openPayload = Amqp091::encodeMethodPayload(20, 10, w.bytes);
-            Amqp091::writeFrame(connection.conn, 1, chanId, openPayload);
+            const w = AmqpWriter091::new()
+            w.shortstr("") // reserved-1 (out-of-band, deprecated)
+            const openPayload = Amqp091::encodeMethodPayload(20, 10, w.bytes)
+            Amqp091::writeFrame(connection.conn, 1, chanId, openPayload)
 
-            const f = recv inbox;
+            const f = recv inbox
             if (f.frameType != 1) {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed (frameType=" + f.frameType.toString() + ")", confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed (frameType=" + f.frameType.toString() + ")", confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel }
             }
-            const mf = Amqp091::decodeMethodPayload(f.payload);
+            const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
-                const msg = Amqp091::describeAndAckClose(connection.conn, chanId, mf, 41);
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed: " + msg, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
+                const msg = Amqp091::describeAndAckClose(connection.conn, chanId, mf, 41)
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed: " + msg, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel }
             }
             if (mf.classId != 20 || mf.methodId != 11) {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "expected channel.open-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel };
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "expected channel.open-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel }
             }
-            return AmqpChannel091 { conn: connection.conn, chanId: chanId, frameMax: connection.frameMax, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox };
+            return AmqpChannel091 { conn: connection.conn, chanId: chanId, frameMax: connection.frameMax, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox }
         }
 
         /*
@@ -64,45 +64,45 @@ namespace tinox.core.amqp091
          */
         fn declareQueue(name: String, durable: Bool, exclusive: Bool, autoDelete: Bool) -> String
         {
-            const w = AmqpWriter091::new();
-            w.short(0); // reserved-1 (ticket, deprecated)
-            w.shortstr(name);
-            var flags: Int64 = 0; // bit 0 (passive) always 0 in v1
+            const w = AmqpWriter091::new()
+            w.short(0) // reserved-1 (ticket, deprecated)
+            w.shortstr(name)
+            var flags: Int64 = 0 // bit 0 (passive) always 0 in v1
             if (durable) {
-                flags = flags | 2;
+                flags = flags | 2
             }
             if (exclusive) {
-                flags = flags | 4;
+                flags = flags | 4
             }
             if (autoDelete) {
-                flags = flags | 8;
+                flags = flags | 8
             }
-            w.octet(flags); // bit 4 (no-wait) always 0 in v1
-            var emptyArgs: Map<String, AmqpFieldValue091> = Map::new();
-            w.fieldTable(emptyArgs);
+            w.octet(flags) // bit 4 (no-wait) always 0 in v1
+            var emptyArgs: Map<String, AmqpFieldValue091> = Map::new()
+            w.fieldTable(emptyArgs)
             if (w.hasError()) {
-                this.errorMessage = "queue name too long (max 255 bytes, shortstr): " + name.len().toString() + " bytes";
-                return "";
+                this.errorMessage = "queue name too long (max 255 bytes, shortstr): " + name.len().toString() + " bytes"
+                return ""
             }
-            const payload = Amqp091::encodeMethodPayload(50, 10, w.bytes);
-            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+            const payload = Amqp091::encodeMethodPayload(50, 10, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
 
-            const f = recv this.inbox;
+            const f = recv this.inbox
             if (f.frameType != 1) {
-                this.errorMessage = "queue.declare failed (frameType=" + f.frameType.toString() + ")";
-                return "";
+                this.errorMessage = "queue.declare failed (frameType=" + f.frameType.toString() + ")"
+                return ""
             }
-            const mf = Amqp091::decodeMethodPayload(f.payload);
+            const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
-                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
-                return "";
+                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+                return ""
             }
             if (mf.classId != 50 || mf.methodId != 11) {
-                this.errorMessage = "expected queue.declare-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
-                return "";
+                this.errorMessage = "expected queue.declare-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString()
+                return ""
             }
-            const r = AmqpReader091::new(mf.args);
-            return r.shortstr();
+            const r = AmqpReader091::new(mf.args)
+            return r.shortstr()
         }
 
         /*
@@ -116,42 +116,42 @@ namespace tinox.core.amqp091
          */
         fn declareExchange(name: String, exchangeType: String, durable: Bool, autoDelete: Bool) -> Bool
         {
-            const w = AmqpWriter091::new();
-            w.short(0); // reserved-1 (ticket, deprecated)
-            w.shortstr(name);
-            w.shortstr(exchangeType);
-            var flags: Int64 = 0; // bit 0 (passive) always 0 in v1
+            const w = AmqpWriter091::new()
+            w.short(0) // reserved-1 (ticket, deprecated)
+            w.shortstr(name)
+            w.shortstr(exchangeType)
+            var flags: Int64 = 0 // bit 0 (passive) always 0 in v1
             if (durable) {
-                flags = flags | 2;
+                flags = flags | 2
             }
             if (autoDelete) {
-                flags = flags | 4;
+                flags = flags | 4
             }
-            w.octet(flags); // bit 3 (internal), bit 4 (no-wait) always 0 in v1
-            var emptyArgs: Map<String, AmqpFieldValue091> = Map::new();
-            w.fieldTable(emptyArgs);
+            w.octet(flags) // bit 3 (internal), bit 4 (no-wait) always 0 in v1
+            var emptyArgs: Map<String, AmqpFieldValue091> = Map::new()
+            w.fieldTable(emptyArgs)
             if (w.hasError()) {
-                this.errorMessage = "exchange name/type too long (max 255 bytes, shortstr): " + name.len().toString() + " bytes";
-                return false;
+                this.errorMessage = "exchange name/type too long (max 255 bytes, shortstr): " + name.len().toString() + " bytes"
+                return false
             }
-            const payload = Amqp091::encodeMethodPayload(40, 10, w.bytes);
-            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+            const payload = Amqp091::encodeMethodPayload(40, 10, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
 
-            const f = recv this.inbox;
+            const f = recv this.inbox
             if (f.frameType != 1) {
-                this.errorMessage = "exchange.declare failed (frameType=" + f.frameType.toString() + ")";
-                return false;
+                this.errorMessage = "exchange.declare failed (frameType=" + f.frameType.toString() + ")"
+                return false
             }
-            const mf = Amqp091::decodeMethodPayload(f.payload);
+            const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
-                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
-                return false;
+                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+                return false
             }
             if (mf.classId != 40 || mf.methodId != 11) {
-                this.errorMessage = "expected exchange.declare-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
-                return false;
+                this.errorMessage = "expected exchange.declare-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString()
+                return false
             }
-            return true;
+            return true
         }
 
         /*
@@ -161,36 +161,36 @@ namespace tinox.core.amqp091
          */
         fn bindQueue(queue: String, exchange: String, routingKey: String) -> Bool
         {
-            const w = AmqpWriter091::new();
-            w.short(0); // reserved-1
-            w.shortstr(queue);
-            w.shortstr(exchange);
-            w.shortstr(routingKey);
-            w.octet(0); // no-wait
-            var emptyArgs: Map<String, AmqpFieldValue091> = Map::new();
-            w.fieldTable(emptyArgs);
+            const w = AmqpWriter091::new()
+            w.short(0) // reserved-1
+            w.shortstr(queue)
+            w.shortstr(exchange)
+            w.shortstr(routingKey)
+            w.octet(0) // no-wait
+            var emptyArgs: Map<String, AmqpFieldValue091> = Map::new()
+            w.fieldTable(emptyArgs)
             if (w.hasError()) {
-                this.errorMessage = "queue/exchange/routing-key name too long (max 255 bytes, shortstr)";
-                return false;
+                this.errorMessage = "queue/exchange/routing-key name too long (max 255 bytes, shortstr)"
+                return false
             }
-            const payload = Amqp091::encodeMethodPayload(50, 20, w.bytes);
-            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+            const payload = Amqp091::encodeMethodPayload(50, 20, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
 
-            const f = recv this.inbox;
+            const f = recv this.inbox
             if (f.frameType != 1) {
-                this.errorMessage = "queue.bind failed (frameType=" + f.frameType.toString() + ")";
-                return false;
+                this.errorMessage = "queue.bind failed (frameType=" + f.frameType.toString() + ")"
+                return false
             }
-            const mf = Amqp091::decodeMethodPayload(f.payload);
+            const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
-                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
-                return false;
+                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+                return false
             }
             if (mf.classId != 50 || mf.methodId != 21) {
-                this.errorMessage = "expected queue.bind-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
-                return false;
+                this.errorMessage = "expected queue.bind-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString()
+                return false
             }
-            return true;
+            return true
         }
 
         /*
@@ -200,28 +200,28 @@ namespace tinox.core.amqp091
          */
         fn qos(prefetchCount: Int64) -> Bool
         {
-            const w = AmqpWriter091::new();
-            w.long(0); // prefetch-size: 0 = no byte limit
-            w.short(prefetchCount);
-            w.octet(0); // global = false (this consumer only)
-            const payload = Amqp091::encodeMethodPayload(60, 10, w.bytes);
-            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+            const w = AmqpWriter091::new()
+            w.long(0) // prefetch-size: 0 = no byte limit
+            w.short(prefetchCount)
+            w.octet(0) // global = false (this consumer only)
+            const payload = Amqp091::encodeMethodPayload(60, 10, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
 
-            const f = recv this.inbox;
+            const f = recv this.inbox
             if (f.frameType != 1) {
-                this.errorMessage = "basic.qos failed (frameType=" + f.frameType.toString() + ")";
-                return false;
+                this.errorMessage = "basic.qos failed (frameType=" + f.frameType.toString() + ")"
+                return false
             }
-            const mf = Amqp091::decodeMethodPayload(f.payload);
+            const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
-                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
-                return false;
+                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+                return false
             }
             if (mf.classId != 60 || mf.methodId != 11) {
-                this.errorMessage = "expected basic.qos-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
-                return false;
+                this.errorMessage = "expected basic.qos-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString()
+                return false
             }
-            return true;
+            return true
         }
 
         /*
@@ -237,28 +237,28 @@ namespace tinox.core.amqp091
          */
         fn confirmSelect() -> Bool
         {
-            const w = AmqpWriter091::new();
-            w.octet(0); // nowait = false
-            const payload = Amqp091::encodeMethodPayload(85, 10, w.bytes);
-            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+            const w = AmqpWriter091::new()
+            w.octet(0) // nowait = false
+            const payload = Amqp091::encodeMethodPayload(85, 10, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
 
-            const f = recv this.inbox;
+            const f = recv this.inbox
             if (f.frameType != 1) {
-                this.errorMessage = "confirm.select failed (frameType=" + f.frameType.toString() + ")";
-                return false;
+                this.errorMessage = "confirm.select failed (frameType=" + f.frameType.toString() + ")"
+                return false
             }
-            const mf = Amqp091::decodeMethodPayload(f.payload);
+            const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
-                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
-                return false;
+                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+                return false
             }
             if (mf.classId != 85 || mf.methodId != 11) {
-                this.errorMessage = "expected confirm.select-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
-                return false;
+                this.errorMessage = "expected confirm.select-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString()
+                return false
             }
-            this.confirmsEnabled = true;
-            this.lastDeliveryTag = 0;
-            return true;
+            this.confirmsEnabled = true
+            this.lastDeliveryTag = 0
+            return true
         }
 
         /*
@@ -275,66 +275,66 @@ namespace tinox.core.amqp091
          */
         fn publish(exchange: String, routingKey: String, body: List<Int64>, contentType: String) -> Int64
         {
-            const w = AmqpWriter091::new();
-            w.short(0); // reserved-1
-            w.shortstr(exchange);
-            w.shortstr(routingKey);
-            w.octet(0); // mandatory=false, immediate=false
+            const w = AmqpWriter091::new()
+            w.short(0) // reserved-1
+            w.shortstr(exchange)
+            w.shortstr(routingKey)
+            w.octet(0) // mandatory=false, immediate=false
             if (w.hasError()) {
-                this.errorMessage = "exchange/routing-key name too long (max 255 bytes, shortstr) -- basic.publish NOT sent";
-                return 0;
+                this.errorMessage = "exchange/routing-key name too long (max 255 bytes, shortstr) -- basic.publish NOT sent"
+                return 0
             }
 
-            var flags: Int64 = 0;
-            const pw = AmqpWriter091::new();
+            var flags: Int64 = 0
+            const pw = AmqpWriter091::new()
             if (contentType.len() > 0) {
-                flags = flags | 32768; // bit 15: content-type
-                pw.shortstr(contentType);
+                flags = flags | 32768 // bit 15: content-type
+                pw.shortstr(contentType)
             }
-            flags = flags | 4096; // bit 12: delivery-mode
-            pw.octet(2); // persistent
+            flags = flags | 4096 // bit 12: delivery-mode
+            pw.octet(2) // persistent
             if (pw.hasError()) {
-                this.errorMessage = "content-type too long (max 255 bytes, shortstr) -- basic.publish NOT sent";
-                return 0;
+                this.errorMessage = "content-type too long (max 255 bytes, shortstr) -- basic.publish NOT sent"
+                return 0
             }
 
-            var assignedTag: Int64 = 0;
+            var assignedTag: Int64 = 0
             if (this.confirmsEnabled) {
-                this.lastDeliveryTag = this.lastDeliveryTag + 1;
-                assignedTag = this.lastDeliveryTag;
+                this.lastDeliveryTag = this.lastDeliveryTag + 1
+                assignedTag = this.lastDeliveryTag
             }
 
-            const payload = Amqp091::encodeMethodPayload(60, 40, w.bytes);
-            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+            const payload = Amqp091::encodeMethodPayload(60, 40, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
 
-            const hw = AmqpWriter091::new();
-            hw.short(60); // class-id
-            hw.short(0);  // weight (unused)
-            hw.longlong(body.len());
-            hw.short(flags);
-            hw.rawBytes(pw.bytes);
-            Amqp091::writeFrame(this.conn, 2, this.chanId, hw.bytes);
+            const hw = AmqpWriter091::new()
+            hw.short(60) // class-id
+            hw.short(0)  // weight (unused)
+            hw.longlong(body.len())
+            hw.short(flags)
+            hw.rawBytes(pw.bytes)
+            Amqp091::writeFrame(this.conn, 2, this.chanId, hw.bytes)
 
-            var frameOverhead: Int64 = 8;
-            var chunkSize: Int64 = this.frameMax - frameOverhead;
+            var frameOverhead: Int64 = 8
+            var chunkSize: Int64 = this.frameMax - frameOverhead
             if (chunkSize <= 0) {
-                chunkSize = 4096;
+                chunkSize = 4096
             }
-            var offset: Int64 = 0;
-            const n = body.len();
+            var offset: Int64 = 0
+            const n = body.len()
             while offset < n {
-                var end: Int64 = offset + chunkSize;
+                var end: Int64 = offset + chunkSize
                 if (end > n) {
-                    end = n;
+                    end = n
                 }
-                var chunk: List<Int64> = [];
+                var chunk: List<Int64> = []
                 for i in offset..end {
-                    chunk.push(body[i]);
+                    chunk.push(body[i])
                 }
-                Amqp091::writeFrame(this.conn, 3, this.chanId, chunk);
-                offset = end;
+                Amqp091::writeFrame(this.conn, 3, this.chanId, chunk)
+                offset = end
             }
-            return assignedTag;
+            return assignedTag
         }
 
         /*
@@ -346,36 +346,36 @@ namespace tinox.core.amqp091
          */
         fn consume(queue: String) -> String
         {
-            const w = AmqpWriter091::new();
-            w.short(0); // reserved-1
-            w.shortstr(queue);
-            w.shortstr(""); // consumer-tag: server-generated
-            w.octet(0); // no-local=false, no-ack=false, exclusive=false, no-wait=false
-            var emptyArgs: Map<String, AmqpFieldValue091> = Map::new();
-            w.fieldTable(emptyArgs);
+            const w = AmqpWriter091::new()
+            w.short(0) // reserved-1
+            w.shortstr(queue)
+            w.shortstr("") // consumer-tag: server-generated
+            w.octet(0) // no-local=false, no-ack=false, exclusive=false, no-wait=false
+            var emptyArgs: Map<String, AmqpFieldValue091> = Map::new()
+            w.fieldTable(emptyArgs)
             if (w.hasError()) {
-                this.errorMessage = "queue name too long (max 255 bytes, shortstr): " + queue.len().toString() + " bytes";
-                return "";
+                this.errorMessage = "queue name too long (max 255 bytes, shortstr): " + queue.len().toString() + " bytes"
+                return ""
             }
-            const payload = Amqp091::encodeMethodPayload(60, 20, w.bytes);
-            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+            const payload = Amqp091::encodeMethodPayload(60, 20, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
 
-            const f = recv this.inbox;
+            const f = recv this.inbox
             if (f.frameType != 1) {
-                this.errorMessage = "basic.consume failed (frameType=" + f.frameType.toString() + ")";
-                return "";
+                this.errorMessage = "basic.consume failed (frameType=" + f.frameType.toString() + ")"
+                return ""
             }
-            const mf = Amqp091::decodeMethodPayload(f.payload);
+            const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
-                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
-                return "";
+                this.errorMessage = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+                return ""
             }
             if (mf.classId != 60 || mf.methodId != 21) {
-                this.errorMessage = "expected basic.consume-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString();
-                return "";
+                this.errorMessage = "expected basic.consume-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString()
+                return ""
             }
-            const r = AmqpReader091::new(mf.args);
-            return r.shortstr();
+            const r = AmqpReader091::new(mf.args)
+            return r.shortstr()
         }
 
         /*
@@ -392,74 +392,74 @@ namespace tinox.core.amqp091
          */
         fn nextMessage() -> AmqpMessage091
         {
-            const f1 = recv this.inbox;
+            const f1 = recv this.inbox
             if (f1.frameType != 1) {
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver (frameType=" + f1.frameType.toString() + ")" };
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver (frameType=" + f1.frameType.toString() + ")" }
             }
-            const mf = Amqp091::decodeMethodPayload(f1.payload);
+            const mf = Amqp091::decodeMethodPayload(f1.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
-                const msg = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: msg };
+                const msg = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: msg }
             }
             if (mf.classId != 60 || mf.methodId != 60) {
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString() };
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString() }
             }
-            const r = AmqpReader091::new(mf.args);
-            r.shortstr(); // consumer-tag (unused in v1)
-            const deliveryTag = r.longlong();
-            r.octet(); // redelivered (its own bit byte)
-            const exchange = r.shortstr();
-            const routingKey = r.shortstr();
+            const r = AmqpReader091::new(mf.args)
+            r.shortstr() // consumer-tag (unused in v1)
+            const deliveryTag = r.longlong()
+            r.octet() // redelivered (its own bit byte)
+            const exchange = r.shortstr()
+            const routingKey = r.shortstr()
 
-            const f2 = recv this.inbox;
+            const f2 = recv this.inbox
             if (f2.frameType != 2) {
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected content-header frame (frameType=" + f2.frameType.toString() + ")" };
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected content-header frame (frameType=" + f2.frameType.toString() + ")" }
             }
-            const hr = AmqpReader091::new(f2.payload);
-            hr.short(); // class-id (60, not checked)
-            hr.short(); // weight (unused)
-            const bodySize = hr.longlong();
-            const flags = hr.short();
-            var contentType: String = "";
+            const hr = AmqpReader091::new(f2.payload)
+            hr.short() // class-id (60, not checked)
+            hr.short() // weight (unused)
+            const bodySize = hr.longlong()
+            const flags = hr.short()
+            var contentType: String = ""
             if ((flags & 32768) != 0) {
-                contentType = hr.shortstr();
+                contentType = hr.shortstr()
             }
-            if ((flags & 16384) != 0) { hr.longstr(); }      // content-encoding
-            if ((flags & 8192) != 0) { hr.fieldTable(); }    // headers
-            if ((flags & 4096) != 0) { hr.octet(); }         // delivery-mode
-            if ((flags & 2048) != 0) { hr.octet(); }         // priority
-            if ((flags & 1024) != 0) { hr.shortstr(); }      // correlation-id
-            if ((flags & 512) != 0) { hr.shortstr(); }       // reply-to
-            if ((flags & 256) != 0) { hr.shortstr(); }       // expiration
-            if ((flags & 128) != 0) { hr.shortstr(); }       // message-id
-            if ((flags & 64) != 0) { hr.longlong(); }        // timestamp
-            if ((flags & 32) != 0) { hr.shortstr(); }        // type
-            if ((flags & 16) != 0) { hr.shortstr(); }        // user-id
-            if ((flags & 8) != 0) { hr.shortstr(); }         // app-id
-            if ((flags & 4) != 0) { hr.shortstr(); }         // cluster-id
+            if ((flags & 16384) != 0) { hr.longstr() }      // content-encoding
+            if ((flags & 8192) != 0) { hr.fieldTable() }    // headers
+            if ((flags & 4096) != 0) { hr.octet() }         // delivery-mode
+            if ((flags & 2048) != 0) { hr.octet() }         // priority
+            if ((flags & 1024) != 0) { hr.shortstr() }      // correlation-id
+            if ((flags & 512) != 0) { hr.shortstr() }       // reply-to
+            if ((flags & 256) != 0) { hr.shortstr() }       // expiration
+            if ((flags & 128) != 0) { hr.shortstr() }       // message-id
+            if ((flags & 64) != 0) { hr.longlong() }        // timestamp
+            if ((flags & 32) != 0) { hr.shortstr() }        // type
+            if ((flags & 16) != 0) { hr.shortstr() }        // user-id
+            if ((flags & 8) != 0) { hr.shortstr() }         // app-id
+            if ((flags & 4) != 0) { hr.shortstr() }         // cluster-id
 
-            var body: List<Int64> = [];
+            var body: List<Int64> = []
             while body.len() < bodySize {
-                const f3 = recv this.inbox;
+                const f3 = recv this.inbox
                 if (f3.frameType != 3) {
-                    return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected body frame (frameType=" + f3.frameType.toString() + ")" };
+                    return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected body frame (frameType=" + f3.frameType.toString() + ")" }
                 }
                 for i in 0..f3.payload.len() {
-                    body.push(f3.payload[i]);
+                    body.push(f3.payload[i])
                 }
             }
 
-            return AmqpMessage091 { deliveryTag: deliveryTag, exchange: exchange, routingKey: routingKey, contentType: contentType, body: body, ok: true, errorMessage: "" };
+            return AmqpMessage091 { deliveryTag: deliveryTag, exchange: exchange, routingKey: routingKey, contentType: contentType, body: body, ok: true, errorMessage: "" }
         }
 
         /* `basic.ack` (no `-ok`, asynchronous per spec). */
         fn ack(deliveryTag: Int64) -> Nothing
         {
-            const w = AmqpWriter091::new();
-            w.longlong(deliveryTag);
-            w.octet(0); // multiple = false
-            const payload = Amqp091::encodeMethodPayload(60, 80, w.bytes);
-            Amqp091::writeFrame(this.conn, 1, this.chanId, payload);
+            const w = AmqpWriter091::new()
+            w.longlong(deliveryTag)
+            w.octet(0) // multiple = false
+            const payload = Amqp091::encodeMethodPayload(60, 80, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
         }
 
         /*
@@ -478,24 +478,24 @@ namespace tinox.core.amqp091
          */
         fn waitForConfirm() -> AmqpConfirmResult091
         {
-            const f = recv this.inbox;
+            const f = recv this.inbox
             if (f.frameType != 1) {
-                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "expected basic.ack/basic.nack (frameType=" + f.frameType.toString() + ")" };
+                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "expected basic.ack/basic.nack (frameType=" + f.frameType.toString() + ")" }
             }
-            const mf = Amqp091::decodeMethodPayload(f.payload);
+            const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
-                const msg = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41);
-                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: msg };
+                const msg = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: msg }
             }
             if (mf.classId != 60 || (mf.methodId != 80 && mf.methodId != 120)) {
-                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "expected basic.ack/basic.nack, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString() };
+                return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "expected basic.ack/basic.nack, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString() }
             }
-            const r = AmqpReader091::new(mf.args);
-            const deliveryTag = r.longlong();
-            const bits = r.octet();
-            const multiple = (bits & 1) != 0;
-            const ack = mf.methodId == 80;
-            return AmqpConfirmResult091 { deliveryTag: deliveryTag, multiple: multiple, ack: ack, ok: true, errorMessage: "" };
+            const r = AmqpReader091::new(mf.args)
+            const deliveryTag = r.longlong()
+            const bits = r.octet()
+            const multiple = (bits & 1) != 0
+            const ack = mf.methodId == 80
+            return AmqpConfirmResult091 { deliveryTag: deliveryTag, multiple: multiple, ack: ack, ok: true, errorMessage: "" }
         }
     }
 }

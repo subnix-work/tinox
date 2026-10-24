@@ -1,10 +1,10 @@
-module tinox.core.tpl;
+module tinox.core.tpl
 
 namespace tinox.core.tpl
 {
     class CompiledTemplate
     {
-        source: String;
-        sections: List<TemplateSection>;
+        source: String
+        sections: List<TemplateSection>
     }
 }

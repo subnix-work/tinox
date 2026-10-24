@@ -4,22 +4,22 @@ class Main
 {
     fnc fib(n: Int64) -> Int64
     {
-        var a: Int64 = 0;
-        var b: Int64 = 1;
-        var i: Int64 = 0;
+        var a: Int64 = 0
+        var b: Int64 = 1
+        var i: Int64 = 0
         while i < n
         {
-            const t: Int64 = b;
-            b = a + b;
-            a = t;
-            i = i + 1;
+            const t: Int64 = b
+            b = a + b
+            a = t
+            i = i + 1
         }
-        return a;
+        return a
     }
 
     fnc main() -> Int32
     {
-        println(fib(20));
-        return 0;
+        println(fib(20))
+        return 0
     }
 }

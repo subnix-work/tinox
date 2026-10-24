@@ -1,23 +1,23 @@
-import tinox.core.jwt;
-import tinox.core.json;
+import tinox.core.jwt
+import tinox.core.json
 
 class Main
 {
     fnc main() -> Int32
     {
-        const secret: String = "super-secret-key";
+        const secret: String = "super-secret-key"
 
-        const payload: Map<String, JsonValue> = Map::new();
-        payload["sub"] = Json::parse("\"user-42\"");
+        const payload: Map<String, JsonValue> = Map::new()
+        payload["sub"] = Json::parse("\"user-42\"")
 
-        const token: String = Jwt::encode(payload, secret);
-        println(token);
+        const token: String = Jwt::encode(payload, secret)
+        println(token)
 
-        const ok: Bool = Jwt::verify(token, secret);
-        println("valid: " + ok.toString());
+        const ok: Bool = Jwt::verify(token, secret)
+        println("valid: " + ok.toString())
 
-        const decoded: Map<String, JsonValue> = Jwt::decode(token, secret);
-        println(decoded["sub"].getString());
-        return 0;
+        const decoded: Map<String, JsonValue> = Jwt::decode(token, secret)
+        println(decoded["sub"].getString())
+        return 0
     }
 }

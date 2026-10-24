@@ -1,4 +1,4 @@
-module tinox.core.oauth2;
+module tinox.core.oauth2
 
 namespace tinox.core.oauth2
 {
@@ -17,8 +17,8 @@ namespace tinox.core.oauth2
      */
     class OAuth2AuthorizeRequest
     {
-        var url: String;
-        var state: String;
-        var codeVerifier: String;
+        var url: String
+        var state: String
+        var codeVerifier: String
     }
 }

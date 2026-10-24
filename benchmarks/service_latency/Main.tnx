@@ -1,12 +1,12 @@
 // Entry point for the service-latency benchmark (#312). The workloads
 // themselves are the annotation-driven routes in BenchController; Main
 // only exists because every program needs `class Main`. See README.md.
-import BenchController;
+import BenchController
 
 class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }

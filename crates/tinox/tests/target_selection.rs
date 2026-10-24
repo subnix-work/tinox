@@ -7,7 +7,7 @@ fn tinox() -> Command {
 
 fn hello(dir: &std::path::Path) -> std::path::PathBuf {
     let src = dir.join("Main.tnx");
-    std::fs::write(&src, "class Main { fnc main() -> Int32 { println(\"hi\"); return 0; } }\n").unwrap();
+    std::fs::write(&src, "class Main { fnc main() -> Int32 { println(\"hi\")\nreturn 0 } }\n").unwrap();
     src
 }
 

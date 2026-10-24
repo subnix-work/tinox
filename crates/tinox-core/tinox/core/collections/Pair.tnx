@@ -1,4 +1,4 @@
-module tinox.core.collections;
+module tinox.core.collections
 
 namespace tinox.core.collections
 {
@@ -7,22 +7,22 @@ namespace tinox.core.collections
      */
     class Pair<T, U>
     {
-        first: T;
-        second: U;
+        first: T
+        second: U
 
         fn new(first: T, second: U) -> Pair<T, U>
         {
-            return Pair<T, U> { first: first, second: second };
+            return Pair<T, U> { first: first, second: second }
         }
 
         fn getFirst() -> T
         {
-            return this.first;
+            return this.first
         }
 
         fn getSecond() -> U
         {
-            return this.second;
+            return this.second
         }
     }
 }

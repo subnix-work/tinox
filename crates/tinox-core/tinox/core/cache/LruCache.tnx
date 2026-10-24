@@ -1,26 +1,26 @@
-module tinox.core.cache;
+module tinox.core.cache
 
-import tinox.core.option;
+import tinox.core.option
 
 namespace tinox.core.cache
 {
     class LruCache<K, V>
     {
-        var cache: Cache<K, V>;
+        var cache: Cache<K, V>
 
         fn new(maxSize: Int64) -> LruCache<K, V>
         {
-            return LruCache<K, V> { cache: Cache::new(maxSize) };
+            return LruCache<K, V> { cache: Cache::new(maxSize) }
         }
 
         fn get(cache: LruCache<K, V>, key: K) -> Option<V>
         {
-            return Cache::get(cache.cache, key);
+            return Cache::get(cache.cache, key)
         }
 
         fn set(cache: LruCache<K, V>, key: K, value: V) -> Nothing
         {
-            Cache::set(cache.cache, key, value);
+            Cache::set(cache.cache, key, value)
         }
     }
 }

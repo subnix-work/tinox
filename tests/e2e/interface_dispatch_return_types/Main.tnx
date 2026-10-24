@@ -18,24 +18,24 @@
 // expect: true
 // expect: 7
 // expect: true
-import IChecker;
-import CheckerImpl;
+import IChecker
+import CheckerImpl
 
 class Main
 {
     fnc main() -> Int32
     {
-        const impl: CheckerImpl = CheckerImpl { touched: false };
-        const c: IChecker = impl;
+        const impl: CheckerImpl = CheckerImpl { touched: false }
+        const c: IChecker = impl
 
-        println(c.label());
-        println(c.isOk());
-        println(c.count());
+        println(c.label())
+        println(c.isOk())
+        println(c.count())
 
-        c.touch();
+        c.touch()
         // A checked field read retains Bool instead of its raw i64 slot.
-        println(impl.touched);
+        println(impl.touched)
 
-        return 0;
+        return 0
     }
 }

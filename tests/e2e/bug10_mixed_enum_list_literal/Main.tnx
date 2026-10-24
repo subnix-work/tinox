@@ -3,15 +3,15 @@
 // expect: lit:x
 // expect: fld:foo
 // expect: id
-import bug10_mixed_enum_list_literal;
+import bug10_mixed_enum_list_literal
 
 class Main
 {
     fnc show(f: bug10_mixed_enum_list_literal) -> Nothing {
         match f {
-            Identity => println("id");
-            LiteralStr(s) => println("lit:" + s);
-            FieldAccess(n) => println("fld:" + n);
+            Identity => println("id")
+            LiteralStr(s) => println("lit:" + s)
+            FieldAccess(n) => println("fld:" + n)
         }
     }
 
@@ -22,12 +22,12 @@ class Main
             bug10_mixed_enum_list_literal::LiteralStr("x"),
             bug10_mixed_enum_list_literal::FieldAccess("foo"),
             bug10_mixed_enum_list_literal::Identity,
-        ];
-        var i = 0;
+        ]
+        var i = 0
         while i < args.len() {
-            show(args[i]);
-            i += 1;
+            show(args[i])
+            i += 1
         }
-        return 0;
+        return 0
     }
 }

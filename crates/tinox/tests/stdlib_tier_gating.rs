@@ -27,7 +27,7 @@ fn core_module_import_resolves_with_zero_tinox_toml() {
     let dir = workdir("core");
     fs::write(
         dir.join("Main.tnx"),
-        "import tinox.core.string;\nclass Main {\n    fnc main() -> Int32 {\n        println(Strings::toUpperCase(\"hi\"));\n        return 0;\n    }\n}\n",
+        "import tinox.core.string\nclass Main {\n    fnc main() -> Int32 {\n        println(Strings::toUpperCase(\"hi\"))\n        return 0\n    }\n}\n",
     )
     .unwrap();
 
@@ -56,7 +56,7 @@ fn extended_module_import_with_no_tinox_toml_fails_with_declare_it_error() {
     let dir = workdir("undeclared");
     fs::write(
         dir.join("Main.tnx"),
-        "import tinox.core.json;\nclass Main {\n    fnc main() -> Int32 {\n        let v: JsonValue = Json::parse(\"1\");\n        println(v.getInt());\n        return 0;\n    }\n}\n",
+        "import tinox.core.json\nclass Main {\n    fnc main() -> Int32 {\n        let v: JsonValue = Json::parse(\"1\")\n        println(v.getInt())\n        return 0\n    }\n}\n",
     )
     .unwrap();
 
@@ -82,12 +82,12 @@ fn extended_module_declared_but_not_installed_fails_with_run_install_error() {
     let dir = workdir("declared-not-installed");
     fs::write(
         dir.join("tinox.toml"),
-        "[package]\nname = \"gatetest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.0.0\"\n",
+        "[package]\nname = \"gatetest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.1.0\"\n",
     )
     .unwrap();
     fs::write(
         dir.join("Main.tnx"),
-        "import tinox.core.json;\nclass Main {\n    fnc main() -> Int32 {\n        let v: JsonValue = Json::parse(\"1\");\n        println(v.getInt());\n        return 0;\n    }\n}\n",
+        "import tinox.core.json\nclass Main {\n    fnc main() -> Int32 {\n        let v: JsonValue = Json::parse(\"1\")\n        println(v.getInt())\n        return 0\n    }\n}\n",
     )
     .unwrap();
 
@@ -104,7 +104,7 @@ fn extended_module_declared_but_not_installed_fails_with_run_install_error() {
         .expect("spawn build");
     assert!(!out.status.success(), "should fail: dependency declared but never installed");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("tinox.toml declares tinox.core:json:1.0.0"), "{stderr}");
+    assert!(stderr.contains("tinox.toml declares tinox.core:json:1.1.0"), "{stderr}");
     assert!(stderr.contains("isn't installed"), "{stderr}");
     assert!(stderr.contains("tinox install"), "{stderr}");
     // Must NOT be conflated with the "never declared" message from the

@@ -1,4 +1,4 @@
 interface IDrawable
 {
-    fn draw() -> Int64;
+    fn draw() -> Int64
 }

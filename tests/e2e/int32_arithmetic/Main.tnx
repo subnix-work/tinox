@@ -7,34 +7,34 @@
 class Main
 {
     fnc add32(a: Int32, b: Int32) -> Int32 {
-        return a + b;
+        return a + b
     }
 
 
     fnc factorial(n: Int32) -> Int32 {
-        if (n <= 1) { return 1; }
-        return n * factorial(n - 1);
+        if (n <= 1) { return 1 }
+        return n * factorial(n - 1)
     }
 
 
     fnc main() -> Int32 {
-        const s: Int32 = add32(10, 20);
-        print(s);
-        print("\n");
-        print(factorial(5));
-        print("\n");
-        var sum: Int32 = 0;
+        const s: Int32 = add32(10, 20)
+        print(s)
+        print("\n")
+        print(factorial(5))
+        print("\n")
+        var sum: Int32 = 0
         for i in 1..11 {
-            sum = sum + i;
+            sum = sum + i
         }
-        print(sum);
-        print("\n");
-        var counter: Int32 = 0;
+        print(sum)
+        print("\n")
+        var counter: Int32 = 0
         while counter < 5 {
-            counter = counter + 1;
+            counter = counter + 1
         }
-        print(counter);
-        print("\n");
-        return 0;
+        print(counter)
+        print("\n")
+        return 0
     }
 }

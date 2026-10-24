@@ -87,22 +87,22 @@ fn http_server_survives_heavy_allocation_load() {
     // path, isolating the GC-root issue itself.
     std::fs::write(
         workdir.join("Ctrl.tnx"),
-        r#"import tinox.core.http_server;
+        r#"import tinox.core.http_server
 
 class Ctrl
 {
     @GET("/heavy")
     fnc heavy(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        var s: String = "";
-        var i: Int64 = 0;
+        var s: String = ""
+        var i: Int64 = 0
         while i < 3000
         {
-            s = s + fromCharCode(65 + (i % 26));
-            i = i + 1;
+            s = s + fromCharCode(65 + (i % 26))
+            i = i + 1
         }
-        ctx.response.status(200).json("{\"len\":" + s.len().toString() + "}");
-        return ctx;
+        ctx.response.status(200).json("{\"len\":" + s.len().toString() + "}")
+        return ctx
     }
 }
 "#,
@@ -111,13 +111,13 @@ class Ctrl
 
     std::fs::write(
         workdir.join("Main.tnx"),
-        r#"import Ctrl;
+        r#"import Ctrl
 
 class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }
 "#,

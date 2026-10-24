@@ -1,18 +1,18 @@
 // expect: 25
 
-import struct_field_access;
+import struct_field_access
 
 class Main
 {
     fnc distance(p: struct_field_access) -> Int64
     {
-        return p.x * p.x + p.y * p.y;
+        return p.x * p.x + p.y * p.y
     }
 
     fnc main() -> Int32
     {
-        const p: struct_field_access = struct_field_access { x: 3, y: 4 };
-        println(distance(p));
-        return 0;
+        const p: struct_field_access = struct_field_access { x: 3, y: 4 }
+        println(distance(p))
+        return 0
     }
 }

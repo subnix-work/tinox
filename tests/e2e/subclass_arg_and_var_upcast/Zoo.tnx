@@ -1,11 +1,11 @@
-import Animal;
+import Animal
 
 class Zoo
 {
-    var count: Int64;
+    var count: Int64
 
     fn addAnimal(a: Animal) -> Nothing
     {
-        this.count = this.count + 1;
+        this.count = this.count + 1
     }
 }

@@ -1,7 +1,7 @@
-import Cell;
-import Tools;
-import Scalar;
-import Reading;
+import Cell
+import Tools
+import Scalar
+import Reading
 // expect: 256
 // expect: 3.5
 // expect: 127
@@ -35,62 +35,62 @@ import Reading;
 // expect: 255
 class Main {
     fnc main() -> Int32 {
-        const byte: UInt8 = 255;
-        const negative: Int8 = -1;
-        const small: Float32 = 1.5;
-        println(byte + 1);
-        println(small + 2);
-        println((byte / (2 as UInt8)) as Int64);
-        println(byte > (2 as UInt8));
-        const unsigned = Cell::of(byte);
-        const signed = Cell::of(negative);
-        const text = Cell::of("text");
-        println(unsigned.get() as Int64);
-        println(signed.get() as Int64);
-        println(text.get());
-        const nested = Cell::of(Cell::of("nested"));
-        println(nested.get().get());
-        println(Tools::identity(byte) as Int64);
-        println(Tools::numeric(2));
-        const values: List<Float32> = [small];
-        println(values[0] as Float64);
-        values[0] = (2.5 as Float32);
-        println(values[0] as Float64);
-        const table: Map<String, Float32> = Map::new();
-        table["value"] = (2.5 as Float32);
-        println(table["value"] as Float64);
-        println(unsigned.map(n => n + 1).get());
-        println(true ? small : 2.5);
-        println(false ? small : 2);
-        const contextual: List<Float32> = [1.5];
-        println(contextual[0] as Float64);
-        println(byte);
-        println(small);
-        contextual.push(3.5);
-        println(contextual.last());
-        table.insert("value", 4.5);
-        println(table.get("value"));
-        const field = Scalar { value: 4.5 };
-        println(field.value);
-        contextual[0] += 2;
-        println(contextual[0]);
-        table["value"] += 3;
-        println(table.get("value"));
-        const inbox: Channel<Float32> = channel;
-        send inbox -> 6.5;
-        println(recv inbox);
-        println(Tools::byteFromFloat());
-        const reading = Reading::Single(1.5);
-        const decoded = match reading { Reading::Single(value) => value };
-        println(decoded);
-        const start: UInt8 = 1;
-        const end: UInt8 = 2;
-        println("abc".substring(start, end));
-        println(contextual[0 as UInt8]);
-        const typed: Task<UInt8> = spawn Tools::takeByte(255);
-        println(Tools::join(Tools::identity(typed)));
-        const converted = spawn Tools::takeByte(255.0);
-        println(await converted);
-        return 0;
+        const byte: UInt8 = 255
+        const negative: Int8 = -1
+        const small: Float32 = 1.5
+        println(byte + 1)
+        println(small + 2)
+        println((byte / (2 as UInt8)) as Int64)
+        println(byte > (2 as UInt8))
+        const unsigned = Cell::of(byte)
+        const signed = Cell::of(negative)
+        const text = Cell::of("text")
+        println(unsigned.get() as Int64)
+        println(signed.get() as Int64)
+        println(text.get())
+        const nested = Cell::of(Cell::of("nested"))
+        println(nested.get().get())
+        println(Tools::identity(byte) as Int64)
+        println(Tools::numeric(2))
+        const values: List<Float32> = [small]
+        println(values[0] as Float64)
+        values[0] = (2.5 as Float32)
+        println(values[0] as Float64)
+        const table: Map<String, Float32> = Map::new()
+        table["value"] = (2.5 as Float32)
+        println(table["value"] as Float64)
+        println(unsigned.map(n => n + 1).get())
+        println(true ? small : 2.5)
+        println(false ? small : 2)
+        const contextual: List<Float32> = [1.5]
+        println(contextual[0] as Float64)
+        println(byte)
+        println(small)
+        contextual.push(3.5)
+        println(contextual.last())
+        table.insert("value", 4.5)
+        println(table.get("value"))
+        const field = Scalar { value: 4.5 }
+        println(field.value)
+        contextual[0] += 2
+        println(contextual[0])
+        table["value"] += 3
+        println(table.get("value"))
+        const inbox: Channel<Float32> = channel
+        send inbox -> 6.5
+        println(recv inbox)
+        println(Tools::byteFromFloat())
+        const reading = Reading::Single(1.5)
+        const decoded = match reading { Reading::Single(value) => value }
+        println(decoded)
+        const start: UInt8 = 1
+        const end: UInt8 = 2
+        println("abc".substring(start, end))
+        println(contextual[0 as UInt8])
+        const typed: Task<UInt8> = spawn Tools::takeByte(255)
+        println(Tools::join(Tools::identity(typed)))
+        const converted = spawn Tools::takeByte(255.0)
+        println(await converted)
+        return 0
     }
 }

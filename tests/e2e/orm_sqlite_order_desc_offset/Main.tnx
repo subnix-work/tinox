@@ -4,9 +4,9 @@
 // expect: Carol
 // expect: Dave
 
-import tinox.core.db;
+import tinox.core.db
 
-import orm_sqlite_order_desc_offset;
+import orm_sqlite_order_desc_offset
 
 class Main
 {
@@ -16,10 +16,10 @@ class Main
             .orderByDesc(s => s.points)
             .offset(1)
             .limit(2)
-            .list();
-        println(ranked.len());
-        println(ranked[0].player);
-        println(ranked[1].player);
-        return 0;
+            .list()
+        println(ranked.len())
+        println(ranked[0].player)
+        println(ranked[1].player)
+        return 0
     }
 }

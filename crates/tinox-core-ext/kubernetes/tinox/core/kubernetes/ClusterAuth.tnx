@@ -1,4 +1,4 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
 namespace tinox.core.kubernetes
 {
@@ -12,12 +12,12 @@ namespace tinox.core.kubernetes
     // SSL_CTX_load_verify_locations/SSL_CTX_use_certificate_file API.
     class ClusterAuth
     {
-        var serverUrl: String;
-        var caCertPath: String;
-        var clientCertPath: String;
-        var clientKeyPath: String;
-        var bearerToken: String;
-        var namespace: String;
-        var insecureSkipTlsVerify: Bool;
+        var serverUrl: String
+        var caCertPath: String
+        var clientCertPath: String
+        var clientKeyPath: String
+        var bearerToken: String
+        var namespace: String
+        var insecureSkipTlsVerify: Bool
     }
 }

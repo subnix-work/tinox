@@ -1,26 +1,26 @@
 class Point
 {
-    var x: Float64;
-    var y: Float64;
+    var x: Float64
+    var y: Float64
 
     fn new(x: Float64, y: Float64) -> Point
     {
-        return Point { x: x, y: y };
+        return Point { x: x, y: y }
     }
 
     fn distanceTo(other: Point) -> Float64
     {
-        const dx: Float64 = this.x - other.x;
-        const dy: Float64 = this.y - other.y;
-        return ((dx * dx) + (dy * dy)).sqrt();
+        const dx: Float64 = this.x - other.x
+        const dy: Float64 = this.y - other.y
+        return ((dx * dx) + (dy * dy)).sqrt()
     }
 
     fn describe() -> Nothing
     {
-        print("Point(");
-        print(this.x);
-        print(", ");
-        print(this.y);
-        print(")\n");
+        print("Point(")
+        print(this.x)
+        print(", ")
+        print(this.y)
+        print(")\n")
     }
 }

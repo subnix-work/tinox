@@ -4,10 +4,10 @@ class Main
 {
     fnc main() -> Int32
     {
-        var m: Map<String, Int64> = Map::new();
-        m["one"] = 1;
-        m["two"] = 2;
-        println(m["one"] + m["two"]);
-        return 0;
+        var m: Map<String, Int64> = Map::new()
+        m["one"] = 1
+        m["two"] = 2
+        println(m["one"] + m["two"])
+        return 0
     }
 }

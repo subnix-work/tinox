@@ -1,24 +1,24 @@
-module tinox.core.hex;
+module tinox.core.hex
 
 namespace tinox.core.hex
 {
-    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String
 
     class Hex
     {
         fn encode(data: String) -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
+            var result: String = ""
+            var i: Int64 = 0
             while i < data.len()
             {
-                const byte: Int64 = data.charCodeAt(i);
-                const high: Int64 = (byte >> 4) & 15;
-                const low: Int64 = byte & 15;
-                result = result + Hex::nibbleToChar(high) + Hex::nibbleToChar(low);
-                i = i + 1;
+                const byte: Int64 = data.charCodeAt(i)
+                const high: Int64 = (byte >> 4) & 15
+                const low: Int64 = byte & 15
+                result = result + Hex::nibbleToChar(high) + Hex::nibbleToChar(low)
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         fn decode(hex: String) -> String
@@ -27,7 +27,7 @@ namespace tinox.core.hex
             // byte->char conversion) instead of `result = result +
             // fromCharCode(...)` in the loop, which is O(n^2) over the
             // decoded length (issue #167).
-            return tinoxBytesToString(Hex::decodeBytes(hex));
+            return tinoxBytesToString(Hex::decodeBytes(hex))
         }
 
         // Like decode(), but returns the raw bytes as List<Int64> instead
@@ -41,60 +41,60 @@ namespace tinox.core.hex
         // decode()+fromCharCode.
         fn decodeBytes(hex: String) -> List<Int64>
         {
-            var result: List<Int64> = [];
-            var i: Int64 = 0;
+            var result: List<Int64> = []
+            var i: Int64 = 0
             while i < hex.len()
             {
-                const high: Int64 = Hex::charToNibble(hex.substring(i, i + 1));
-                const low: Int64 = Hex::charToNibble(hex.substring(i + 1, i + 2));
-                result.push((high << 4) | low);
-                i = i + 2;
+                const high: Int64 = Hex::charToNibble(hex.substring(i, i + 1))
+                const low: Int64 = Hex::charToNibble(hex.substring(i + 1, i + 2))
+                result.push((high << 4) | low)
+                i = i + 2
             }
-            return result;
+            return result
         }
 
         fn nibbleToChar(n: Int64) -> String
         {
             if (n < 10)
             {
-                return fromCharCode(n + 48);
+                return fromCharCode(n + 48)
             }
-            return fromCharCode(n + 87);
+            return fromCharCode(n + 87)
         }
 
         fn charToNibble(c: String) -> Int64
         {
-            const code: Int64 = c.charCodeAt(0);
+            const code: Int64 = c.charCodeAt(0)
             if (code >= 48 && code <= 57)
             {
-                return code - 48;
+                return code - 48
             }
             if (code >= 97 && code <= 102)
             {
-                return code - 87;
+                return code - 87
             }
             if (code >= 65 && code <= 70)
             {
-                return code - 55;
+                return code - 55
             }
-            return 0;
+            return 0
         }
 
         fn dump(data: String) -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
+            var result: String = ""
+            var i: Int64 = 0
             while i < data.len()
             {
                 if (i > 0)
                 {
-                    result = result + " ";
+                    result = result + " "
                 }
-                const byte: Int64 = data.charCodeAt(i);
-                result = result + Hex::encode(data.substring(i, i + 1));
-                i = i + 1;
+                const byte: Int64 = data.charCodeAt(i)
+                result = result + Hex::encode(data.substring(i, i + 1))
+                i = i + 1
             }
-            return result;
+            return result
         }
     }
 }

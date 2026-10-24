@@ -17,49 +17,49 @@
 // expect: 1
 // expect: 6
 // expect: 0
-import array_filter_lambda;
+import array_filter_lambda
 
 class Main
 {
     fnc main() -> Int32 {
         // Int64
-        const xs = [1, 2, 3];
-        const evens = xs.filter(x => x % 2 == 0);
-        println(evens.len().toString());
-        println(evens[0].toString());
+        const xs = [1, 2, 3]
+        const evens = xs.filter(x => x % 2 == 0)
+        println(evens.len().toString())
+        println(evens[0].toString())
 
         // Float64
-        const fs = [1.0, 2.5, 3.0];
-        const big = fs.filter(x => x > 2.0);
-        println(big.len().toString());
-        println(big[0].toString());
-        println(big[1].toString());
+        const fs = [1.0, 2.5, 3.0]
+        const big = fs.filter(x => x > 2.0)
+        println(big.len().toString())
+        println(big[0].toString())
+        println(big[1].toString())
 
         // String: marker is preserved, result stays method-capable
-        const ws = ["hi", "world", "ok"].filter(s => s.len() <= 2);
-        println(ws.len().toString());
-        println(ws[0]);
-        println(ws[1]);
+        const ws = ["hi", "world", "ok"].filter(s => s.len() <= 2)
+        println(ws.len().toString())
+        println(ws[0])
+        println(ws[1])
 
         // Objects: field access in the predicate, method call afterward
-        const ps = [array_filter_lambda { x: 1, y: 2 }, array_filter_lambda { x: 3, y: 4 }];
-        const bigp = ps.filter(p => p.x > 2);
-        println(bigp.len().toString());
-        println(bigp[0].sum().toString());
+        const ps = [array_filter_lambda { x: 1, y: 2 }, array_filter_lambda { x: 3, y: 4 }]
+        const bigp = ps.filter(p => p.x > 2)
+        println(bigp.len().toString())
+        println(bigp[0].sum().toString())
 
         // capturing predicate
-        const limit = 3;
-        const below = xs.filter(x => x < limit);
-        println(below.len().toString());
-        println(below[0].toString());
+        const limit = 3
+        const below = xs.filter(x => x < limit)
+        println(below.len().toString())
+        println(below[0].toString())
 
         // Chaining filter -> map
-        const r = xs.filter(x => x >= 2).map(x => x * 2);
-        println(r[1].toString());
+        const r = xs.filter(x => x >= 2).map(x => x * 2)
+        println(r[1].toString())
 
         // empty array
-        const e: List<Int64> = [];
-        println(e.filter(x => x > 0).len().toString());
-        return 0;
+        const e: List<Int64> = []
+        println(e.filter(x => x > 0).len().toString())
+        return 0
     }
 }

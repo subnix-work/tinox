@@ -1,5 +1,5 @@
-import tinox.core.http_server;
-import Work;
+import tinox.core.http_server
+import Work
 
 class Probe
 {
@@ -9,7 +9,7 @@ class Probe
     @Counted("probe")
     fnc probe() -> String
     {
-        const work = Work::new();
-        return work.run();
+        const work = Work::new()
+        return work.run()
     }
 }

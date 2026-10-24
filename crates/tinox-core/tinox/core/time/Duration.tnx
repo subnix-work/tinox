@@ -1,4 +1,4 @@
-module tinox.core.time;
+module tinox.core.time
 
 namespace tinox.core.time
 {
@@ -11,7 +11,7 @@ namespace tinox.core.time
     class Duration
     {
         /** The duration in seconds */
-        seconds: Int64;
+        seconds: Int64
 
         /**
          * Creates a Duration from seconds
@@ -21,7 +21,7 @@ namespace tinox.core.time
          */
         fn new(seconds: Int64) -> Duration
         {
-            return Duration { seconds: seconds };
+            return Duration { seconds: seconds }
         }
 
         /**
@@ -32,7 +32,7 @@ namespace tinox.core.time
          */
         fn fromMinutes(minutes: Int64) -> Duration
         {
-            return Duration { seconds: minutes * 60 };
+            return Duration { seconds: minutes * 60 }
         }
 
         /**
@@ -43,7 +43,7 @@ namespace tinox.core.time
          */
         fn fromHours(hours: Int64) -> Duration
         {
-            return Duration { seconds: hours * 3600 };
+            return Duration { seconds: hours * 3600 }
         }
 
         /**
@@ -53,7 +53,7 @@ namespace tinox.core.time
          */
         fn getSeconds() -> Int64
         {
-            return this.seconds;
+            return this.seconds
         }
 
         /**
@@ -63,7 +63,7 @@ namespace tinox.core.time
          */
         fn getMinutes() -> Int64
         {
-            return this.seconds / 60;
+            return this.seconds / 60
         }
 
         /**
@@ -73,7 +73,7 @@ namespace tinox.core.time
          */
         fn getHours() -> Int64
         {
-            return this.seconds / 3600;
+            return this.seconds / 3600
         }
 
         /**
@@ -84,7 +84,7 @@ namespace tinox.core.time
          */
         fn add(other: Duration) -> Duration
         {
-            return Duration { seconds: this.seconds + other.seconds };
+            return Duration { seconds: this.seconds + other.seconds }
         }
 
         /**
@@ -95,7 +95,7 @@ namespace tinox.core.time
          */
         fn sub(other: Duration) -> Duration
         {
-            return Duration { seconds: this.seconds - other.seconds };
+            return Duration { seconds: this.seconds - other.seconds }
         }
     }
 }

@@ -5,16 +5,16 @@
 class Main
 {
     fnc compare(a: String, b: String) -> Int64 {
-        if (a < b) { return -1; }
-        if (a > b) { return 1; }
-        return 0;
+        if (a < b) { return -1 }
+        if (a > b) { return 1 }
+        return 0
     }
 
 
     fnc main() -> Int32 {
-        println(compare("apple", "banana"));
-        println(compare("pear", "apple"));
-        println(compare("kiwi", "kiwi"));
-        return 0;
+        println(compare("apple", "banana"))
+        println(compare("pear", "apple"))
+        println(compare("kiwi", "kiwi"))
+        return 0
     }
 }

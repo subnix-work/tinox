@@ -1,0 +1,21 @@
+import tinox.core.hpack
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let encodeTable: HpackDynTable = HpackDynTable::new(4096)
+        let headers: List<HpackHeader> = [
+            HpackHeader::new(":method", "GET"),
+            HpackHeader::new("x-request-id", "abc-123")
+        ]
+        let encoded: List<Int64> = Hpack::encode(headers, encodeTable)
+        println("encoded " + encoded.len().toString() + " bytes")
+
+        let decodeTable: HpackDynTable = HpackDynTable::new(4096)
+        let decoded: List<HpackHeader> = Hpack::decode(encoded, decodeTable)
+        println(decoded[0].name + ": " + decoded[0].value)
+        println(decoded[1].name + ": " + decoded[1].value)
+        return 0
+    }
+}

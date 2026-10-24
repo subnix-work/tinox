@@ -14,76 +14,77 @@
 // expect: Task deadline exceeded
 class Main {
     fnc work(ready: Int64) -> String {
-        defer { println("child cleanup"); }
-        send ready -> 1;
-        sleep(10000);
-        return "finished";
+        defer { println("child cleanup") }
+        send ready -> 1
+        sleep(10000)
+        return "finished"
     }
-    fnc fail() -> Int64 { throw "scope failure"; }
-    fnc quick() -> Nothing { defer { println("child cleanup"); } }
+    fnc fail() -> Int64 { throw "scope failure" }
+    fnc quick() -> Nothing { defer { println("child cleanup") } }
     fnc joined() -> String {
         scope {
-            spawn Main::quick();
-            if (true) { return "joined"; }
-            return "unreachable";
+            spawn Main::quick()
+            if (true) { return "joined" }
+            return "unreachable"
         }
     }
     fnc failedScope() -> Nothing {
-        scope { spawn Main::fail();
+        scope { spawn Main::fail()
         }
     }
     fnc deadline(ready: Int64) -> Nothing {
         scope {
-            const worker = spawn Main::work(ready);
-            recv(ready);
-            taskSetDeadline(30);
-            await worker;
+            const worker = spawn Main::work(ready)
+            recv(ready)
+            taskSetDeadline(30)
+            await worker
         }
     }
     fnc inherited() -> Nothing {
         scope {
-            taskSetDeadline(30);
-            spawn Main::blockedChannel();
+            taskSetDeadline(30)
+            spawn Main::blockedChannel()
         }
     }
     fnc blockedChannel() -> Nothing {
-        const ch = channel;
-        recv(ch);
+        const ch = channel
+        recv(ch)
     }
     fnc originalError(ready: Int64) -> Nothing {
         scope {
-            defer { println("body cleanup"); }
-            spawn Main::work(ready);
-            recv(ready);
-            throw "original failure";
+            defer { println("body cleanup") }
+            spawn Main::work(ready)
+            recv(ready)
+            throw "original failure"
         }
     }
     fnc blockedIo(fd: Int64, ready: Int64) -> Nothing {
-        defer { httpServerClose(fd); println("io cleanup"); }
-        send ready -> 1;
-        taskWaitReadable(fd);
+        defer { httpServerClose(fd)
+        println("io cleanup") }
+        send ready -> 1
+        taskWaitReadable(fd)
     }
     fnc ioDeadline(ready: Int64) -> Nothing {
         scope {
-            const fd = httpServerCreate(0);
-            spawn Main::blockedIo(fd, ready);
-            recv(ready);
-            taskSetDeadline(30);
+            const fd = httpServerCreate(0)
+            spawn Main::blockedIo(fd, ready)
+            recv(ready)
+            taskSetDeadline(30)
         }
     }
     fnc main() -> Int32 {
-        println(Main::joined());
-        try { Main::failedScope(); } catch (e: String) { println(e); }
-        const ready = channel;
-        const worker = spawn Main::work(ready);
-        recv(ready);
-        taskCancel(worker);
-        try { println(await worker); } catch (e: String) { println(e); }
-        try { Main::deadline(ready); } catch (e: String) { println(e); }
-        println("after deadline");
-        try { Main::inherited(); } catch (e: String) { println("inherited deadline"); }
-        try { Main::originalError(ready); } catch (e: String) { println(e); }
-        try { Main::ioDeadline(ready); } catch (e: String) { println(e); }
-        return 0;
+        println(Main::joined())
+        try { Main::failedScope() } catch (e: String) { println(e) }
+        const ready = channel
+        const worker = spawn Main::work(ready)
+        recv(ready)
+        taskCancel(worker)
+        try { println(await worker) } catch (e: String) { println(e) }
+        try { Main::deadline(ready) } catch (e: String) { println(e) }
+        println("after deadline")
+        try { Main::inherited() } catch (e: String) { println("inherited deadline") }
+        try { Main::originalError(ready) } catch (e: String) { println(e) }
+        try { Main::ioDeadline(ready) } catch (e: String) { println(e) }
+        return 0
     }
 }

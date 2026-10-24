@@ -1,0 +1,18 @@
+import tinox.core.metrics
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let m: MetricsRegistry = MetricsRegistry { }
+        m.incCounter("requests_total")
+        m.setGauge("queue_depth", 3)
+
+        let sw: MetricsStopwatch = MetricsStopwatch::start()
+        // ... do some work ...
+        MetricsStopwatch::recordTo(sw, "work_duration_ns")
+
+        println(m.prometheusFormat())
+        return 0
+    }
+}

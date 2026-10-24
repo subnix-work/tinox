@@ -23,7 +23,7 @@
 class Main
 {
     fnc risky() -> Nothing {
-        throw "boom";
+        throw "boom"
     }
 
 
@@ -31,11 +31,11 @@ class Main
     // first executed), even when the jump to the catch stays local.
     fnc multiDefer() -> Nothing {
         try {
-            defer { println("A1"); }
-            defer { println("A2"); }
-            risky();
+            defer { println("A1") }
+            defer { println("A2") }
+            risky()
         } catch e: String {
-            println("A-caught");
+            println("A-caught")
         }
     }
 
@@ -44,14 +44,14 @@ class Main
     // prematurely -- only the try-internal defer should run before the
     // catch, the outer one only at the actual end of the function.
     fnc outerDeferNotEarly() -> Nothing {
-        defer { println("B-outer-defer"); }
+        defer { println("B-outer-defer") }
         try {
-            defer { println("B-inner-defer"); }
-            risky();
+            defer { println("B-inner-defer") }
+            risky()
         } catch e: String {
-            println("B-caught");
+            println("B-caught")
         }
-        println("B-after-try");
+        println("B-after-try")
     }
 
 
@@ -59,13 +59,13 @@ class Main
     // the catch, innermost first.
     fnc nestedBlocks() -> Nothing {
         try {
-            defer { println("C-try-defer"); }
+            defer { println("C-try-defer") }
             {
-                defer { println("C-nested-defer"); }
-                risky();
+                defer { println("C-nested-defer") }
+                risky()
             }
         } catch e: String {
-            println("C-caught");
+            println("C-caught")
         }
     }
 
@@ -76,22 +76,22 @@ class Main
     fnc nestedTryFinally() -> Nothing {
         try {
             try {
-                defer { println("D-inner-defer"); }
-                risky();
+                defer { println("D-inner-defer") }
+                risky()
             } finally {
-                println("D-finally");
+                println("D-finally")
             }
         } catch e: String {
-            println("D-outer-caught");
+            println("D-outer-caught")
         }
     }
 
 
     fnc main() -> Int32 {
-        multiDefer();
-        outerDeferNotEarly();
-        nestedBlocks();
-        nestedTryFinally();
-        return 0;
+        multiDefer()
+        outerDeferNotEarly()
+        nestedBlocks()
+        nestedTryFinally()
+        return 0
     }
 }

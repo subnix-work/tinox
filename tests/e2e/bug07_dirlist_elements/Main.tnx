@@ -4,19 +4,19 @@
 class Main
 {
     fnc main() -> Int32 {
-        dirCreate("d");
-        fileWriteAllText("d/a.txt", "x");
-        fileWriteAllText("d/b.txt", "y");
-        const entries = dirList("d");
-        println(entries.len());
-        var found = 0;
-        var i = 0;
+        dirCreate("d")
+        fileWriteAllText("d/a.txt", "x")
+        fileWriteAllText("d/b.txt", "y")
+        const entries = dirList("d")
+        println(entries.len())
+        var found = 0
+        var i = 0
         while i < entries.len() {
-            if (entries[i] == "a.txt") { found += 1; }
-            if (entries[i] == "b.txt") { found += 1; }
-            i += 1;
+            if (entries[i] == "a.txt") { found += 1 }
+            if (entries[i] == "b.txt") { found += 1 }
+            i += 1
         }
-        println(found);
-        return 0;
+        println(found)
+        return 0
     }
 }

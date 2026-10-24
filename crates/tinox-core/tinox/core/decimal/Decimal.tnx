@@ -1,110 +1,110 @@
-module tinox.core.decimal;
+module tinox.core.decimal
 
-import tinox.core.string;
+import tinox.core.string
 
 namespace tinox.core.decimal
 {
     class Decimal
     {
-        var value: String;
-        var scale: Int64;
+        var value: String
+        var scale: Int64
 
         fn new(value: String) -> Decimal
         {
-            return Decimal { value: value, scale: 0 };
+            return Decimal { value: value, scale: 0 }
         }
 
         fn fromInt(value: Int64) -> Decimal
         {
-            return Decimal { value: value.toString(), scale: 0 };
+            return Decimal { value: value.toString(), scale: 0 }
         }
 
         fn fromFloat(value: Float64) -> Decimal
         {
-            return Decimal { value: value.toString(), scale: 10 };
+            return Decimal { value: value.toString(), scale: 10 }
         }
 
         fn add(a: Decimal, b: Decimal) -> Decimal
         {
-            const scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale;
-            const aScaled: String = Decimal::scaleValue(a.value, scale - a.scale);
-            const bScaled: String = Decimal::scaleValue(b.value, scale - b.scale);
-            const result: String = Decimal::addStrings(aScaled, bScaled);
-            return Decimal { value: result, scale: scale };
+            const scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale
+            const aScaled: String = Decimal::scaleValue(a.value, scale - a.scale)
+            const bScaled: String = Decimal::scaleValue(b.value, scale - b.scale)
+            const result: String = Decimal::addStrings(aScaled, bScaled)
+            return Decimal { value: result, scale: scale }
         }
 
         fn subtract(a: Decimal, b: Decimal) -> Decimal
         {
-            const scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale;
-            const aScaled: String = Decimal::scaleValue(a.value, scale - a.scale);
-            const bScaled: String = Decimal::scaleValue(b.value, scale - b.scale);
-            const result: String = Decimal::subtractStrings(aScaled, bScaled);
-            return Decimal { value: result, scale: scale };
+            const scale: Int64 = (a.scale > b.scale) ? a.scale : b.scale
+            const aScaled: String = Decimal::scaleValue(a.value, scale - a.scale)
+            const bScaled: String = Decimal::scaleValue(b.value, scale - b.scale)
+            const result: String = Decimal::subtractStrings(aScaled, bScaled)
+            return Decimal { value: result, scale: scale }
         }
 
         fn multiply(a: Decimal, b: Decimal) -> Decimal
         {
-            const scale: Int64 = a.scale + b.scale;
-            return Decimal { value: Decimal::multiplyStrings(a.value, b.value), scale: scale };
+            const scale: Int64 = a.scale + b.scale
+            return Decimal { value: Decimal::multiplyStrings(a.value, b.value), scale: scale }
         }
 
         fn divide(a: Decimal, b: Decimal, precision: Int64) -> Decimal
         {
-            return Decimal { value: "0", scale: precision };
+            return Decimal { value: "0", scale: precision }
         }
 
         fn scaleValue(value: String, digits: Int64) -> String
         {
             if (digits == 0)
             {
-                return value;
+                return value
             }
-            var result: String = value;
-            var i: Int64 = 0;
+            var result: String = value
+            var i: Int64 = 0
             while i < digits
             {
-                result = result + "0";
-                i = i + 1;
+                result = result + "0"
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         fn addStrings(a: String, b: String) -> String
         {
-            const aInt: Int64 = (Int64)a;
-            const bInt: Int64 = (Int64)b;
-            return (aInt + bInt).toString();
+            const aInt: Int64 = (Int64)a
+            const bInt: Int64 = (Int64)b
+            return (aInt + bInt).toString()
         }
 
         fn subtractStrings(a: String, b: String) -> String
         {
-            const aInt: Int64 = (Int64)a;
-            const bInt: Int64 = (Int64)b;
-            return (aInt - bInt).toString();
+            const aInt: Int64 = (Int64)a
+            const bInt: Int64 = (Int64)b
+            return (aInt - bInt).toString()
         }
 
         fn multiplyStrings(a: String, b: String) -> String
         {
-            const aInt: Int64 = (Int64)a;
-            const bInt: Int64 = (Int64)b;
-            return (aInt * bInt).toString();
+            const aInt: Int64 = (Int64)a
+            const bInt: Int64 = (Int64)b
+            return (aInt * bInt).toString()
         }
 
         fn toString(d: Decimal) -> String
         {
             if (d.scale == 0)
             {
-                return d.value;
+                return d.value
             }
             if (d.value.len() <= d.scale)
             {
-                const zeros: String = "0";
-                const leading: String = Strings::repeat(zeros, d.scale - d.value.len() + 1);
-                return "0." + leading + d.value;
+                const zeros: String = "0"
+                const leading: String = Strings::repeat(zeros, d.scale - d.value.len() + 1)
+                return "0." + leading + d.value
             }
-            const intPart: String = d.value.substring(0, d.value.len() - d.scale);
-            const fracPart: String = d.value.substring(d.value.len() - d.scale, d.value.len());
-            return intPart + "." + fracPart;
+            const intPart: String = d.value.substring(0, d.value.len() - d.scale)
+            const fracPart: String = d.value.substring(d.value.len() - d.scale, d.value.len())
+            return intPart + "." + fracPart
         }
     }
 }

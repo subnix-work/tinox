@@ -1,8 +1,8 @@
-module tinox.core.oidc;
+module tinox.core.oidc
 
-import tinox.core.oauth2;
-import tinox.core.jwt;
-import tinox.core.json;
+import tinox.core.oauth2
+import tinox.core.jwt
+import tinox.core.json
 
 namespace tinox.core.oidc
 {
@@ -27,49 +27,49 @@ namespace tinox.core.oidc
      */
     class OidcClient
     {
-        var issuer: String;
-        var jwksUri: String;
-        var clientId: String;
-        var oauth: OAuth2Client;
+        var issuer: String
+        var jwksUri: String
+        var clientId: String
+        var oauth: OAuth2Client
 
         fn new(issuer: String, authorizeUrl: String, tokenUrl: String, jwksUri: String, clientId: String, clientSecret: String, redirectUri: String) -> OidcClient
         {
-            const oauth: OAuth2Client = OAuth2Client::new(authorizeUrl, tokenUrl, clientId, clientSecret, redirectUri);
-            return OidcClient { issuer: issuer, jwksUri: jwksUri, clientId: clientId, oauth: oauth };
+            const oauth: OAuth2Client = OAuth2Client::new(authorizeUrl, tokenUrl, clientId, clientSecret, redirectUri)
+            return OidcClient { issuer: issuer, jwksUri: jwksUri, clientId: clientId, oauth: oauth }
         }
 
         fn buildAuthorizeUrl(scope: String) -> OAuth2AuthorizeRequest
         {
-            const parts: List<String> = scope.split(" ");
-            var hasOpenid: Bool = false;
-            var i: Int64 = 0;
+            const parts: List<String> = scope.split(" ")
+            var hasOpenid: Bool = false
+            var i: Int64 = 0
             while i < parts.len()
             {
                 if (parts[i] == "openid")
                 {
-                    hasOpenid = true;
+                    hasOpenid = true
                 }
-                i = i + 1;
+                i = i + 1
             }
             if (!hasOpenid)
             {
-                throw "OidcClient::buildAuthorizeUrl: scope must include \"openid\" (no id_token will be issued otherwise)";
+                throw "OidcClient::buildAuthorizeUrl: scope must include \"openid\" (no id_token will be issued otherwise)"
             }
-            return this.oauth.buildAuthorizeUrl(scope);
+            return this.oauth.buildAuthorizeUrl(scope)
         }
 
         fn exchangeCode(code: String, codeVerifier: String) -> OidcTokenResponse
         {
-            const tr: OAuth2TokenResponse = this.oauth.exchangeCode(code, codeVerifier);
+            const tr: OAuth2TokenResponse = this.oauth.exchangeCode(code, codeVerifier)
             if (!tr.ok)
             {
-                return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: tr.errorMessage };
+                return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: tr.errorMessage }
             }
             if (tr.idToken == "")
             {
-                return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: "token endpoint response has no id_token field (was \"openid\" included in the requested scope?)" };
+                return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: "token endpoint response has no id_token field (was \"openid\" included in the requested scope?)" }
             }
-            return this.verifyAndWrap(tr);
+            return this.verifyAndWrap(tr)
         }
 
         /*
@@ -79,37 +79,37 @@ namespace tinox.core.oidc
          */
         fn refresh(refreshToken: String) -> OidcTokenResponse
         {
-            const tr: OAuth2TokenResponse = this.oauth.refresh(refreshToken);
+            const tr: OAuth2TokenResponse = this.oauth.refresh(refreshToken)
             if (!tr.ok)
             {
-                return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: tr.errorMessage };
+                return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: tr.errorMessage }
             }
             if (tr.idToken == "")
             {
-                return OidcTokenResponse { accessToken: tr.accessToken, refreshToken: tr.refreshToken, tokenType: tr.tokenType, expiresIn: tr.expiresIn, idToken: "", claims: Map::new(), ok: true, errorMessage: "" };
+                return OidcTokenResponse { accessToken: tr.accessToken, refreshToken: tr.refreshToken, tokenType: tr.tokenType, expiresIn: tr.expiresIn, idToken: "", claims: Map::new(), ok: true, errorMessage: "" }
             }
-            return this.verifyAndWrap(tr);
+            return this.verifyAndWrap(tr)
         }
 
         fn verifyAndWrap(tr: OAuth2TokenResponse) -> OidcTokenResponse
         {
-            var claims: Map<String, JsonValue> = Map::new();
-            var verifyError: String = "";
+            var claims: Map<String, JsonValue> = Map::new()
+            var verifyError: String = ""
             try
             {
-                claims = this.verifyIdToken(tr.idToken);
+                claims = this.verifyIdToken(tr.idToken)
             }
             catch e: String
             {
-                verifyError = e;
+                verifyError = e
             }
 
             if (verifyError != "")
             {
-                return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: "id_token verification failed: " + verifyError };
+                return OidcTokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", claims: Map::new(), ok: false, errorMessage: "id_token verification failed: " + verifyError }
             }
 
-            return OidcTokenResponse { accessToken: tr.accessToken, refreshToken: tr.refreshToken, tokenType: tr.tokenType, expiresIn: tr.expiresIn, idToken: tr.idToken, claims: claims, ok: true, errorMessage: "" };
+            return OidcTokenResponse { accessToken: tr.accessToken, refreshToken: tr.refreshToken, tokenType: tr.tokenType, expiresIn: tr.expiresIn, idToken: tr.idToken, claims: claims, ok: true, errorMessage: "" }
         }
 
         /*
@@ -120,53 +120,53 @@ namespace tinox.core.oidc
          */
         fn verifyIdToken(idToken: String) -> Map<String, JsonValue>
         {
-            const header: Map<String, JsonValue> = Jwt::extractHeader(idToken);
+            const header: Map<String, JsonValue> = Jwt::extractHeader(idToken)
             if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
-                throw "unsupported id_token alg (expected RS256)";
+                throw "unsupported id_token alg (expected RS256)"
             }
-            var kid: String = "";
+            var kid: String = ""
             if (header.contains("kid"))
             {
-                kid = header["kid"].getString();
+                kid = header["kid"].getString()
             }
 
-            const key: Map<String, String> = Jwks::fetchRsaKey(this.jwksUri, kid);
-            const claims: Map<String, JsonValue> = Jwt::decodeRs256(idToken, key["n"], key["e"]);
+            const key: Map<String, String> = Jwks::fetchRsaKey(this.jwksUri, kid)
+            const claims: Map<String, JsonValue> = Jwt::decodeRs256(idToken, key["n"], key["e"])
 
             if (!claims.contains("iss") || claims["iss"].getString() != this.issuer)
             {
-                throw "id_token iss claim does not match expected issuer \"" + this.issuer + "\"";
+                throw "id_token iss claim does not match expected issuer \"" + this.issuer + "\""
             }
 
             if (!claims.contains("aud"))
             {
-                throw "id_token missing aud claim";
+                throw "id_token missing aud claim"
             }
-            var audMatches: Bool = false;
+            var audMatches: Bool = false
             if (claims["aud"].isString())
             {
-                audMatches = claims["aud"].getString() == this.clientId;
+                audMatches = claims["aud"].getString() == this.clientId
             }
             else if (claims["aud"].isArray())
             {
-                const auds: List<JsonValue> = claims["aud"].asList();
-                var i: Int64 = 0;
+                const auds: List<JsonValue> = claims["aud"].asList()
+                var i: Int64 = 0
                 while i < auds.len()
                 {
                     if (auds[i].getString() == this.clientId)
                     {
-                        audMatches = true;
+                        audMatches = true
                     }
-                    i = i + 1;
+                    i = i + 1
                 }
             }
             if (!audMatches)
             {
-                throw "id_token aud claim does not include this client_id";
+                throw "id_token aud claim does not include this client_id"
             }
 
-            return claims;
+            return claims
         }
     }
 }

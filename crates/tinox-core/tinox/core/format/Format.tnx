@@ -1,4 +1,4 @@
-module tinox.core.format;
+module tinox.core.format
 
 namespace tinox.core.format
 {
@@ -6,84 +6,84 @@ namespace tinox.core.format
     {
         fn padLeft(s: String, width: Int64, char: String) -> String
         {
-            const len: Int64 = s.len();
+            const len: Int64 = s.len()
             if (width <= len)
             {
-                return s;
+                return s
             }
-            const padLen: Int64 = width - len;
-            var padding: String = "";
-            var i: Int64 = 0;
+            const padLen: Int64 = width - len
+            var padding: String = ""
+            var i: Int64 = 0
             while i < padLen
             {
-                padding = padding + char;
-                i = i + 1;
+                padding = padding + char
+                i = i + 1
             }
-            return padding + s;
+            return padding + s
         }
 
         fn padRight(s: String, width: Int64, char: String) -> String
         {
-            const len: Int64 = s.len();
+            const len: Int64 = s.len()
             if (width <= len)
             {
-                return s;
+                return s
             }
-            const padLen: Int64 = width - len;
-            var padding: String = "";
-            var i: Int64 = 0;
+            const padLen: Int64 = width - len
+            var padding: String = ""
+            var i: Int64 = 0
             while i < padLen
             {
-                padding = padding + char;
-                i = i + 1;
+                padding = padding + char
+                i = i + 1
             }
-            return s + padding;
+            return s + padding
         }
 
         fn intToBinary(n: Int64) -> String
         {
             if (n == 0)
             {
-                return "0";
+                return "0"
             }
-            var result: String = "";
-            var value: Int64 = n;
+            var result: String = ""
+            var value: Int64 = n
             while value > 0
             {
                 if ((value & 1) == 1)
                 {
-                    result = "1" + result;
+                    result = "1" + result
                 }
                 else
                 {
-                    result = "0" + result;
+                    result = "0" + result
                 }
-                value = value >> 1;
+                value = value >> 1
             }
-            return result;
+            return result
         }
 
         fn intToHex(n: Int64) -> String
         {
             if (n == 0)
             {
-                return "0";
+                return "0"
             }
-            var result: String = "";
-            var value: Int64 = n;
-            const digits: String = "0123456789abcdef";
+            var result: String = ""
+            var value: Int64 = n
+            const digits: String = "0123456789abcdef"
             while value > 0
             {
-                const digit: Int64 = value & 15;
-                result = digits.substring(digit, digit + 1) + result;
-                value = value >> 4;
+                const digit: Int64 = value & 15
+                result = digits.substring(digit, digit + 1) + result
+                value = value >> 4
             }
-            return result;
+            return result
         }
 
         fn formatInt(n: Int64, width: Int64) -> String
         {
-            return Format::padLeft(n.toString(), width, " ");
+            return Format::padLeft(n.toString(), width, " ")
         }
     }
 }

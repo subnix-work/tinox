@@ -1,10 +1,10 @@
-module tinox.core.graph;
+module tinox.core.graph
 
 namespace tinox.core.graph
 {
     class GraphEdge
     {
-        to: String;
-        weight: Float64;
+        to: String
+        weight: Float64
     }
 }

@@ -1,21 +1,21 @@
 // Bug 14: s.contains() auf match-gebundenen Strings ging durch Map-Dispatch
 // expect: yes
 // expect: no
-import bug14_match_string_contains;
+import bug14_match_string_contains
 
 class Main
 {
     fnc has(v: bug14_match_string_contains, needle: String) -> Bool {
         match v {
-            Str(s) => return s.contains(needle);
-            _ => return false;
+            Str(s) => return s.contains(needle)
+            _ => return false
         }
     }
 
 
     fnc main() -> Int32 {
-        if (has(bug14_match_string_contains::Str("say hello!"), "hello")) { println("yes"); } else { println("-"); }
-        if (has(bug14_match_string_contains::Str("say hello!"), "xyz")) { println("-"); } else { println("no"); }
-        return 0;
+        if (has(bug14_match_string_contains::Str("say hello!"), "hello")) { println("yes") } else { println("-") }
+        if (has(bug14_match_string_contains::Str("say hello!"), "xyz")) { println("-") } else { println("no") }
+        return 0
     }
 }

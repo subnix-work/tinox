@@ -1,5 +1,5 @@
 @Startup
 class First {
  @OnStop
- fn stop() -> Nothing { println("first stop"); }
+ fn stop() -> Nothing { println("first stop") }
 }

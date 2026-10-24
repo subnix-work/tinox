@@ -1,6 +1,6 @@
-module tinox.core.http_server;
+module tinox.core.http_server
 
-import tinox.core.option;
+import tinox.core.option
 
 namespace tinox.core.http_server
 {
@@ -17,50 +17,50 @@ namespace tinox.core.http_server
          */
         fn parse(qs: String) -> Map<String, String>
         {
-            const params: Map<String, String> = Map::new();
+            const params: Map<String, String> = Map::new()
             if (qs.len() == 0)
             {
-                return params;
+                return params
             }
 
-            var i: Int64 = 0;
-            var key: String = "";
-            var value: String = "";
-            var inKey: Bool = true;
+            var i: Int64 = 0
+            var key: String = ""
+            var value: String = ""
+            var inKey: Bool = true
 
             while i < qs.len()
             {
-                const ch: String = qs.substring(i, i + 1);
+                const ch: String = qs.substring(i, i + 1)
                 if (ch == "&")
                 {
                     if (key.len() > 0)
                     {
-                        params[key] = value;
+                        params[key] = value
                     }
-                    key = "";
-                    value = "";
-                    inKey = true;
+                    key = ""
+                    value = ""
+                    inKey = true
                 }
                 else if (ch == "=" && inKey)
                 {
-                    inKey = false;
+                    inKey = false
                 }
                 else if (inKey)
                 {
-                    key = key + ch;
+                    key = key + ch
                 }
                 else
                 {
-                    value = value + ch;
+                    value = value + ch
                 }
-                i = i + 1;
+                i = i + 1
             }
 
             if (key.len() > 0)
             {
-                params[key] = value;
+                params[key] = value
             }
-            return params;
+            return params
         }
 
         /**
@@ -72,7 +72,7 @@ namespace tinox.core.http_server
          */
         fn get(qs: String, name: String) -> String
         {
-            return QueryString::find(qs, name).unwrapOr("");
+            return QueryString::find(qs, name).unwrapOr("")
         }
 
         /**
@@ -83,12 +83,12 @@ namespace tinox.core.http_server
          */
         fn find(qs: String, name: String) -> Option<String>
         {
-            const params: Map<String, String> = QueryString::parse(qs);
+            const params: Map<String, String> = QueryString::parse(qs)
             if (params.contains(name))
             {
-                return Option<String>::some(params[name]);
+                return Option<String>::some(params[name])
             }
-            return Option<String>::none();
+            return Option<String>::none()
         }
     }
 }

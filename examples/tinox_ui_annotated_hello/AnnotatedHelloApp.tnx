@@ -16,12 +16,12 @@
 // `@TinoxUIApp` itself -- see `implied_import_paths_for` in
 // crates/tinox/src/main.rs for exactly which annotations/modules qualify
 // and why.
-import tinox.core.ui;
+import tinox.core.ui
 
 @TinoxUIApp(8286, 8287)
 class AnnotatedHelloApp
 {
-    var clicks: Int64;
+    var clicks: Int64
 
     @View
     fn render() -> Component
@@ -29,11 +29,11 @@ class AnnotatedHelloApp
         // Same `this` capture caveat as tinox_ui_hello's build() --
         // aliased to `app` first since a nested lambda can't reference
         // `this` directly (issue #217).
-        const app: AnnotatedHelloApp = this;
+        const app: AnnotatedHelloApp = this
         return Component::vbox([
             Component::label("Tinox-UI Annotated Hello"),
             Component::label("Clicks: " + this.clicks.toString()),
-            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1; })
-        ]);
+            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1 })
+        ])
     }
 }

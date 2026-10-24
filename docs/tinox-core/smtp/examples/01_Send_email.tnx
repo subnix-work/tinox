@@ -1,0 +1,30 @@
+import tinox.core.smtp
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let client: SmtpClient = SmtpClient::connect("smtp.example.org", 587)
+        if (client.conn <= 0)
+        {
+            println("connect failed: " + client.errorMessage)
+            return 1
+        }
+
+        if (!client.startTls())
+        {
+            println("STARTTLS failed")
+            return 1
+        }
+
+        if (!client.authPlain("user", "pass"))
+        {
+            println("auth failed")
+            return 1
+        }
+
+        client.send("me@example.org", ["you@example.org"], "Hi", "Hello from Tinox!")
+        client.close()
+        return 0
+    }
+}

@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -22,25 +22,25 @@ namespace tinox.core.rest.server
         {
             if (base.len() == 0)
             {
-                return path;
+                return path
             }
             if (path.len() == 0)
             {
-                return base;
+                return base
             }
             if (base == "/")
             {
-                return path;
+                return path
             }
             if (base.endsWith("/") && path.startsWith("/"))
             {
-                return base.substring(0, base.len() - 1) + path;
+                return base.substring(0, base.len() - 1) + path
             }
             if (base.endsWith("/") || path.startsWith("/"))
             {
-                return base + path;
+                return base + path
             }
-            return base + "/" + path;
+            return base + "/" + path
         }
     }
 }

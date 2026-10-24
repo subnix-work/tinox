@@ -10,22 +10,22 @@ class Main
 {
     fnc deep() -> Int64 {
         // 40-fold parenthesized expression — legitimate, must pass
-        return ((((((((((((((((((((((((((((((((((((((((7))))))))))))))))))))))))))))))))))))))));
+        return ((((((((((((((((((((((((((((((((((((((((7))))))))))))))))))))))))))))))))))))))))
     }
 
 
     fnc nested(n: Int64) -> String {
         // nested if chain
         if (n == 1) { if (n == 1) { if (n == 1) { if (n == 1) { if (n == 1) {
-            return "nested if ok";
+            return "nested if ok"
         } } } } }
-        return "?";
+        return "?"
     }
 
 
     fnc main() -> Int32 {
-        println("deep: " + deep().toString());
-        println(nested(1));
-        return 0;
+        println("deep: " + deep().toString())
+        println(nested(1))
+        return 0
     }
 }

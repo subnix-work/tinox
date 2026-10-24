@@ -6,19 +6,19 @@ description = "REST endpoint protected by a role in an OIDC access token, verifi
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.0.3"
+version = "1.1.0"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.0.0"
+version = "1.1.0"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "oidc"
-version = "1.0.2"
+version = "1.1.0"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "rest"
-version = "1.0.3"
+version = "1.1.0"

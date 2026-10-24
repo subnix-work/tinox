@@ -1264,7 +1264,7 @@ class UserController {
     fn test_this_dot_completion() {
         let src = r#"
 class UserService {
-    var repo: UserRepository;
+    var repo: UserRepository
     fn save() -> Nothing {
     }
 }
@@ -1288,7 +1288,7 @@ class UserRepository {
         let src = r#"
 class Foo {
     fn bar() -> Nothing {
-        let svc = new UserService();
+        let svc = new UserService()
     }
 }
 class UserService {
@@ -1313,7 +1313,7 @@ class UserService {
     #[test]
     fn test_import_dot_completion() {
         // Exact scenario: import + ctx.re should suggest response
-        let src = r#"import tinox.core.http_server;
+        let src = r#"import tinox.core.http_server
 
 class UserController
 {
@@ -1446,7 +1446,7 @@ class UserController
 
     #[test]
     fn test_fn_signature_with_params() {
-        let ast = parse_src("fn add(a: Int32, b: Int32) -> Int32 { return a + b; }");
+        let ast = parse_src("fn add(a: Int32, b: Int32) -> Int32 { return a + b }");
         let DeclKind::Function(f) = &ast.decls[0].node else { panic!() };
         let sig = fn_signature(f);
         assert!(sig.contains("fn add("));
@@ -1489,7 +1489,7 @@ class UserController
 
     #[test]
     fn test_completions_includes_user_functions() {
-        let ast = parse_src("fn myFunc(x: Int32) -> Int32 { return x; }");
+        let ast = parse_src("fn myFunc(x: Int32) -> Int32 { return x }");
         let items = completions(&ast);
         let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"myFunc"));
@@ -1505,7 +1505,7 @@ class UserController
 
     #[test]
     fn test_completions_includes_enum_and_variants() {
-        let ast = parse_src("enum Color { Red, Green, Blue }");
+        let ast = parse_src("enum Color { Red\nGreen\nBlue }");
         let items = completions(&ast);
         let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"Color"));
@@ -1515,7 +1515,7 @@ class UserController
 
     #[test]
     fn test_completions_includes_interface() {
-        let ast = parse_src("interface Runnable { fn run() -> Nothing; }");
+        let ast = parse_src("interface Runnable { fn run() -> Nothing }");
         let items = completions(&ast);
         let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"Runnable"));
@@ -1535,8 +1535,8 @@ class UserController
     fn test_registry_class_with_fields_and_methods() {
         let ast = parse_src(r#"
 class Person {
-    var name: String;
-    var age: Int32;
+    var name: String
+    var age: Int32
     fn greet() -> Nothing {}
 }
 "#);
@@ -1562,7 +1562,7 @@ class Person {
         let ast = parse_src(r#"
 namespace net {
     class Socket {
-        var port: Int32;
+        var port: Int32
     }
 }
 "#);
@@ -1600,7 +1600,7 @@ class Animal {
 
     #[test]
     fn test_document_symbols_enum_has_variant_children() {
-        let ast = parse_src("enum Dir { North, South, East, West }");
+        let ast = parse_src("enum Dir { North\nSouth\nEast\nWest }");
         let syms = document_symbols(&ast);
         assert_eq!(syms.len(), 1);
         assert_eq!(syms[0].name, "Dir");
@@ -1613,7 +1613,8 @@ class Animal {
         let ast = parse_src(r#"
 fn helper() -> Nothing {}
 class Main {}
-enum Status { Ok, Err }
+enum Status { Ok
+Err }
 "#);
         let syms = document_symbols(&ast);
         assert_eq!(syms.len(), 3);
@@ -1698,7 +1699,7 @@ enum Status { Ok, Err }
 
     #[test]
     fn test_hover_function_before_body() {
-        let src = "fn add(a: Int32) -> Int32 { return a; }";
+        let src = "fn add(a: Int32) -> Int32 { return a }";
         let ast = parse_src(src);
         // offset 0 = start of `fn` keyword, definitely before the body `{`
         let result = hover_at(&ast, 0);
@@ -1742,7 +1743,7 @@ mod api_signature_tests {
     use super::*;
     #[test]
     fn completion_and_hover_share_lossless_generic_api_signatures() {
-        let source = tinox_parser::parse_source_cached("class Box<T> { fn map<U>(callback: fnc(T) -> U) -> U { return callback(this.value); } var value: T; }").unwrap();
+        let source = tinox_parser::parse_source_cached("class Box<T> { fn map<U>(callback: fnc(T) -> U) -> U { return callback(this.value) } var value: T }").unwrap();
         let DeclKind::Class(class) = &source.decls[0].node else { panic!("class") };
         let expected = tinox_parser::api::method_signature(&class.methods[0]);
         assert!(expected.contains("map<U>(callback: fnc(T) -> U) -> U"));

@@ -40,7 +40,7 @@
  *   app.register(new UserController());
  *   app.start();
  */
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -53,13 +53,13 @@ namespace tinox.core.rest.server
      */
     enum MediaType
     {
-        None;
-        Json;
-        Xml;
-        FormUrlencoded;
-        TextPlain;
-        TextHtml;
-        TextCsv;
-        MultipartFormData;
+        None
+        Json
+        Xml
+        FormUrlencoded
+        TextPlain
+        TextHtml
+        TextCsv
+        MultipartFormData
     }
 }

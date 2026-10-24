@@ -11,12 +11,12 @@ namespace tinox.core.process
      */
     class InteractiveProcess
     {
-        var handle: Int64;
+        var handle: Int64
 
         /** argv[0] is the program (resolved via PATH like execvp), argv[1..] its arguments -- same argv-based, no-shell contract as Process::run(). Named start(), not spawn(): `spawn` is a reserved keyword (the language's own thread-spawn construct). */
         fn start(argv: List<String>) -> InteractiveProcess
         {
-            return InteractiveProcess { handle: processSpawnInteractive(argv) };
+            return InteractiveProcess { handle: processSpawnInteractive(argv) }
         }
 
         /**
@@ -28,13 +28,13 @@ namespace tinox.core.process
          */
         fn startPiped(argv: List<String>, cwd: String, env: List<String>) -> InteractiveProcess
         {
-            return InteractiveProcess { handle: processSpawnPiped(argv, cwd, env) };
+            return InteractiveProcess { handle: processSpawnPiped(argv, cwd, env) }
         }
 
         /** Closes pipe stdin to deliver EOF. Idempotent; no effect on PTYs. */
         fn closeStdin(proc: InteractiveProcess) -> Nothing
         {
-            processCloseStdin(proc.handle);
+            processCloseStdin(proc.handle)
         }
 
         /**
@@ -46,25 +46,25 @@ namespace tinox.core.process
          */
         fn readLine(proc: InteractiveProcess, timeoutMs: Int64) -> String
         {
-            return processReadLine(proc.handle, timeoutMs);
+            return processReadLine(proc.handle, timeoutMs)
         }
 
         /** Reads available pipe stderr; timeout/EOF returns "". */
         fn readStderr(proc: InteractiveProcess, timeoutMs: Int64) -> String
         {
-            return processReadStderr(proc.handle, timeoutMs);
+            return processReadStderr(proc.handle, timeoutMs)
         }
 
         /** Exit status, -signal if killed, or -9223372036854775808 while running. */
         fn exitCode(proc: InteractiveProcess) -> Int64
         {
-            return processExitCode(proc.handle);
+            return processExitCode(proc.handle)
         }
 
         /** Writes to the process's stdin. Best-effort: silently stops writing if the process has already exited -- check isAlive() to detect that. */
         fn writeStdin(proc: InteractiveProcess, data: String) -> Nothing
         {
-            processWriteStdin(proc.handle, data);
+            processWriteStdin(proc.handle, data)
         }
 
         /**
@@ -75,18 +75,18 @@ namespace tinox.core.process
          */
         fn readOutput(proc: InteractiveProcess, timeoutMs: Int64) -> String
         {
-            return processReadOutput(proc.handle, timeoutMs);
+            return processReadOutput(proc.handle, timeoutMs)
         }
 
         fn isAlive(proc: InteractiveProcess) -> Bool
         {
-            return processIsAlive(proc.handle) != 0;
+            return processIsAlive(proc.handle) != 0
         }
 
         /** Kills the process (if still running) and closes its pipes. Safe to call even if it already exited. */
         fn kill(proc: InteractiveProcess) -> Nothing
         {
-            processKillInteractive(proc.handle);
+            processKillInteractive(proc.handle)
         }
     }
 }

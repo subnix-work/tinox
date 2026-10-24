@@ -1,16 +1,16 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class ClusterRole
     {
-        var apiVersion: String;
-        var kind: String;
-        var metadata: ObjectMeta;
-        var rules: List<PolicyRule>;
+        var apiVersion: String
+        var kind: String
+        var metadata: ObjectMeta
+        var rules: List<PolicyRule>
 
         fnc create(name: String, rules: List<PolicyRule>) -> ClusterRole
         {
@@ -18,7 +18,7 @@ namespace tinox.core.kubernetes
                 apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole",
                 metadata: ObjectMeta::withName(name),
                 rules: rules
-            };
+            }
         }
     }
 }

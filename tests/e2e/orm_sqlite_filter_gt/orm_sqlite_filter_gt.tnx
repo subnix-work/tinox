@@ -3,9 +3,9 @@
 class orm_sqlite_filter_gt
 {
     @Id @GeneratedValue
-    var id: Int64;
+    var id: Int64
     @Column("name")
-    var name: String;
+    var name: String
     @Column("age")
-    var age: Int64;
+    var age: Int64
 }

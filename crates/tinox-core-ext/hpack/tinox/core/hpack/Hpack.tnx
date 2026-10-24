@@ -1,8 +1,8 @@
-module tinox.core.hpack;
+module tinox.core.hpack
 
 namespace tinox.core.hpack
 {
-    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String
 
     /**
      * HPACK encoder/decoder
@@ -17,68 +17,68 @@ namespace tinox.core.hpack
          */
         fn staticName(index: Int64) -> String
         {
-            if (index == 1)  { return ":authority"; }
-            if (index == 2)  { return ":method"; }
-            if (index == 3)  { return ":method"; }
-            if (index == 4)  { return ":path"; }
-            if (index == 5)  { return ":path"; }
-            if (index == 6)  { return ":scheme"; }
-            if (index == 7)  { return ":scheme"; }
-            if (index == 8)  { return ":status"; }
-            if (index == 9)  { return ":status"; }
-            if (index == 10) { return ":status"; }
-            if (index == 11) { return ":status"; }
-            if (index == 12) { return ":status"; }
-            if (index == 13) { return ":status"; }
-            if (index == 14) { return ":status"; }
-            if (index == 15) { return "accept-charset"; }
-            if (index == 16) { return "accept-encoding"; }
-            if (index == 17) { return "accept-language"; }
-            if (index == 18) { return "accept-ranges"; }
-            if (index == 19) { return "accept"; }
-            if (index == 20) { return "access-control-allow-origin"; }
-            if (index == 21) { return "age"; }
-            if (index == 22) { return "allow"; }
-            if (index == 23) { return "authorization"; }
-            if (index == 24) { return "cache-control"; }
-            if (index == 25) { return "content-disposition"; }
-            if (index == 26) { return "content-encoding"; }
-            if (index == 27) { return "content-language"; }
-            if (index == 28) { return "content-length"; }
-            if (index == 29) { return "content-location"; }
-            if (index == 30) { return "content-range"; }
-            if (index == 31) { return "content-type"; }
-            if (index == 32) { return "cookie"; }
-            if (index == 33) { return "date"; }
-            if (index == 34) { return "etag"; }
-            if (index == 35) { return "expect"; }
-            if (index == 36) { return "expires"; }
-            if (index == 37) { return "from"; }
-            if (index == 38) { return "host"; }
-            if (index == 39) { return "if-match"; }
-            if (index == 40) { return "if-modified-since"; }
-            if (index == 41) { return "if-none-match"; }
-            if (index == 42) { return "if-range"; }
-            if (index == 43) { return "if-unmodified-since"; }
-            if (index == 44) { return "last-modified"; }
-            if (index == 45) { return "link"; }
-            if (index == 46) { return "location"; }
-            if (index == 47) { return "max-forwards"; }
-            if (index == 48) { return "proxy-authenticate"; }
-            if (index == 49) { return "proxy-authorization"; }
-            if (index == 50) { return "range"; }
-            if (index == 51) { return "referer"; }
-            if (index == 52) { return "refresh"; }
-            if (index == 53) { return "retry-after"; }
-            if (index == 54) { return "server"; }
-            if (index == 55) { return "set-cookie"; }
-            if (index == 56) { return "strict-transport-security"; }
-            if (index == 57) { return "transfer-encoding"; }
-            if (index == 58) { return "user-agent"; }
-            if (index == 59) { return "vary"; }
-            if (index == 60) { return "via"; }
-            if (index == 61) { return "www-authenticate"; }
-            return "";
+            if (index == 1)  { return ":authority" }
+            if (index == 2)  { return ":method" }
+            if (index == 3)  { return ":method" }
+            if (index == 4)  { return ":path" }
+            if (index == 5)  { return ":path" }
+            if (index == 6)  { return ":scheme" }
+            if (index == 7)  { return ":scheme" }
+            if (index == 8)  { return ":status" }
+            if (index == 9)  { return ":status" }
+            if (index == 10) { return ":status" }
+            if (index == 11) { return ":status" }
+            if (index == 12) { return ":status" }
+            if (index == 13) { return ":status" }
+            if (index == 14) { return ":status" }
+            if (index == 15) { return "accept-charset" }
+            if (index == 16) { return "accept-encoding" }
+            if (index == 17) { return "accept-language" }
+            if (index == 18) { return "accept-ranges" }
+            if (index == 19) { return "accept" }
+            if (index == 20) { return "access-control-allow-origin" }
+            if (index == 21) { return "age" }
+            if (index == 22) { return "allow" }
+            if (index == 23) { return "authorization" }
+            if (index == 24) { return "cache-control" }
+            if (index == 25) { return "content-disposition" }
+            if (index == 26) { return "content-encoding" }
+            if (index == 27) { return "content-language" }
+            if (index == 28) { return "content-length" }
+            if (index == 29) { return "content-location" }
+            if (index == 30) { return "content-range" }
+            if (index == 31) { return "content-type" }
+            if (index == 32) { return "cookie" }
+            if (index == 33) { return "date" }
+            if (index == 34) { return "etag" }
+            if (index == 35) { return "expect" }
+            if (index == 36) { return "expires" }
+            if (index == 37) { return "from" }
+            if (index == 38) { return "host" }
+            if (index == 39) { return "if-match" }
+            if (index == 40) { return "if-modified-since" }
+            if (index == 41) { return "if-none-match" }
+            if (index == 42) { return "if-range" }
+            if (index == 43) { return "if-unmodified-since" }
+            if (index == 44) { return "last-modified" }
+            if (index == 45) { return "link" }
+            if (index == 46) { return "location" }
+            if (index == 47) { return "max-forwards" }
+            if (index == 48) { return "proxy-authenticate" }
+            if (index == 49) { return "proxy-authorization" }
+            if (index == 50) { return "range" }
+            if (index == 51) { return "referer" }
+            if (index == 52) { return "refresh" }
+            if (index == 53) { return "retry-after" }
+            if (index == 54) { return "server" }
+            if (index == 55) { return "set-cookie" }
+            if (index == 56) { return "strict-transport-security" }
+            if (index == 57) { return "transfer-encoding" }
+            if (index == 58) { return "user-agent" }
+            if (index == 59) { return "vary" }
+            if (index == 60) { return "via" }
+            if (index == 61) { return "www-authenticate" }
+            return ""
         }
 
         /**
@@ -86,21 +86,21 @@ namespace tinox.core.hpack
          */
         fn staticValue(index: Int64) -> String
         {
-            if (index == 2)  { return "GET"; }
-            if (index == 3)  { return "POST"; }
-            if (index == 4)  { return "/"; }
-            if (index == 5)  { return "/index.html"; }
-            if (index == 6)  { return "http"; }
-            if (index == 7)  { return "https"; }
-            if (index == 8)  { return "200"; }
-            if (index == 9)  { return "204"; }
-            if (index == 10) { return "206"; }
-            if (index == 11) { return "304"; }
-            if (index == 12) { return "400"; }
-            if (index == 13) { return "404"; }
-            if (index == 14) { return "500"; }
-            if (index == 16) { return "gzip, deflate"; }
-            return "";
+            if (index == 2)  { return "GET" }
+            if (index == 3)  { return "POST" }
+            if (index == 4)  { return "/" }
+            if (index == 5)  { return "/index.html" }
+            if (index == 6)  { return "http" }
+            if (index == 7)  { return "https" }
+            if (index == 8)  { return "200" }
+            if (index == 9)  { return "204" }
+            if (index == 10) { return "206" }
+            if (index == 11) { return "304" }
+            if (index == 12) { return "400" }
+            if (index == 13) { return "404" }
+            if (index == 14) { return "500" }
+            if (index == 16) { return "gzip, deflate" }
+            return ""
         }
 
         /**
@@ -110,14 +110,14 @@ namespace tinox.core.hpack
         {
             if (index >= 1 && index <= 61)
             {
-                return HpackHeader::new(Hpack::staticName(index), Hpack::staticValue(index));
+                return HpackHeader::new(Hpack::staticName(index), Hpack::staticValue(index))
             }
-            const dynIndex: Int64 = index - 62;
+            const dynIndex: Int64 = index - 62
             if (dynIndex >= 0 && dynIndex < dynTable.entries.len())
             {
-                return dynTable.entries[dynIndex];
+                return dynTable.entries[dynIndex]
             }
-            return HpackHeader::new("", "");
+            return HpackHeader::new("", "")
         }
 
         /**
@@ -137,32 +137,32 @@ namespace tinox.core.hpack
             // process, not just this connection.
             if (offset < 0 || offset >= data.len())
             {
-                return HpackIntResult { value: 0, nextOffset: data.len() };
+                return HpackIntResult { value: 0, nextOffset: data.len() }
             }
-            const mask: Int64 = (1 << prefixBits) - 1;
-            var value: Int64 = data[offset] & mask;
-            var pos: Int64 = offset + 1;
+            const mask: Int64 = (1 << prefixBits) - 1
+            var value: Int64 = data[offset] & mask
+            var pos: Int64 = offset + 1
             if (value < mask)
             {
-                return HpackIntResult { value: value, nextOffset: pos };
+                return HpackIntResult { value: value, nextOffset: pos }
             }
-            var m: Int64 = 0;
+            var m: Int64 = 0
             // RFC 7541 §5.1 continuation bytes are unbounded on the wire;
             // cap at m < 63 (9 continuation bytes — enough for the largest
             // value an Int64 can hold) so a hostile run of 0x80-prefixed
             // bytes can't shift `m` up to/past 64 and hit shift-overflow.
             while pos < data.len() && m < 63
             {
-                const b: Int64 = data[pos];
-                pos = pos + 1;
-                value = value + ((b & 127) << m);
-                m = m + 7;
+                const b: Int64 = data[pos]
+                pos = pos + 1
+                value = value + ((b & 127) << m)
+                m = m + 7
                 if ((b & 128) == 0)
                 {
-                    break;
+                    break
                 }
             }
-            return HpackIntResult { value: value, nextOffset: pos };
+            return HpackIntResult { value: value, nextOffset: pos }
         }
 
         /**
@@ -175,11 +175,11 @@ namespace tinox.core.hpack
          */
         fn decodeStr(data: List<Int64>, offset: Int64) -> HpackStrResult
         {
-            const lenResult: HpackIntResult = Hpack::decodeInt(data, offset, 7);
-            const strLen: Int64 = lenResult.value;
-            const pos: Int64 = lenResult.nextOffset;
-            var bytes: List<Int64> = [];
-            var i: Int64 = 0;
+            const lenResult: HpackIntResult = Hpack::decodeInt(data, offset, 7)
+            const strLen: Int64 = lenResult.value
+            const pos: Int64 = lenResult.nextOffset
+            var bytes: List<Int64> = []
+            var i: Int64 = 0
             // strLen comes straight off the wire (decodeInt) and can claim
             // far more bytes than are actually left in `data` — stop at the
             // buffer end instead of reading past it (was: unconditional
@@ -192,10 +192,10 @@ namespace tinox.core.hpack
             // in the loop, which is O(n^2) over the string length (issue #167).
             while i < strLen && (pos + i) < data.len()
             {
-                bytes.push(data[pos + i]);
-                i = i + 1;
+                bytes.push(data[pos + i])
+                i = i + 1
             }
-            return HpackStrResult { value: tinoxBytesToString(bytes), nextOffset: pos + i };
+            return HpackStrResult { value: tinoxBytesToString(bytes), nextOffset: pos + i }
         }
 
         /**
@@ -213,70 +213,70 @@ namespace tinox.core.hpack
          */
         fn decode(data: List<Int64>, dynTable: HpackDynTable) -> List<HpackHeader>
         {
-            const headers: List<HpackHeader> = [];
-            var offset: Int64 = 0;
+            const headers: List<HpackHeader> = []
+            var offset: Int64 = 0
             while offset < data.len()
             {
-                const b: Int64 = data[offset];
+                const b: Int64 = data[offset]
                 if ((b & 128) != 0)
                 {
                     // §6.1 Indexed header field representation
-                    const result: HpackIntResult = Hpack::decodeInt(data, offset, 7);
-                    const header: HpackHeader = Hpack::lookupHeader(dynTable, result.value);
-                    headers.push(header);
-                    offset = result.nextOffset;
+                    const result: HpackIntResult = Hpack::decodeInt(data, offset, 7)
+                    const header: HpackHeader = Hpack::lookupHeader(dynTable, result.value)
+                    headers.push(header)
+                    offset = result.nextOffset
                 }
                 else if ((b & 64) != 0)
                 {
                     // §6.2.1 Literal with incremental indexing
-                    const nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 6);
-                    offset = nameResult.nextOffset;
-                    var name: String = "";
+                    const nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 6)
+                    offset = nameResult.nextOffset
+                    var name: String = ""
                     if (nameResult.value == 0)
                     {
-                        const nameStr: HpackStrResult = Hpack::decodeStr(data, offset);
-                        name = nameStr.value;
-                        offset = nameStr.nextOffset;
+                        const nameStr: HpackStrResult = Hpack::decodeStr(data, offset)
+                        name = nameStr.value
+                        offset = nameStr.nextOffset
                     }
                     else
                     {
-                        name = Hpack::lookupHeader(dynTable, nameResult.value).name;
+                        name = Hpack::lookupHeader(dynTable, nameResult.value).name
                     }
-                    const valStr: HpackStrResult = Hpack::decodeStr(data, offset);
-                    offset = valStr.nextOffset;
-                    const header: HpackHeader = HpackHeader::new(name, valStr.value);
-                    dynTable.add(header);
-                    headers.push(header);
+                    const valStr: HpackStrResult = Hpack::decodeStr(data, offset)
+                    offset = valStr.nextOffset
+                    const header: HpackHeader = HpackHeader::new(name, valStr.value)
+                    dynTable.add(header)
+                    headers.push(header)
                 }
                 else if ((b & 32) != 0)
                 {
                     // §6.3 Dynamic table size update
-                    const result: HpackIntResult = Hpack::decodeInt(data, offset, 5);
-                    dynTable.setMaxSize(result.value);
-                    offset = result.nextOffset;
+                    const result: HpackIntResult = Hpack::decodeInt(data, offset, 5)
+                    dynTable.setMaxSize(result.value)
+                    offset = result.nextOffset
                 }
                 else
                 {
                     // §6.2.2 / §6.2.3 Literal without indexing / never indexed
-                    const nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 4);
-                    offset = nameResult.nextOffset;
-                    var name: String = "";
+                    const nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 4)
+                    offset = nameResult.nextOffset
+                    var name: String = ""
                     if (nameResult.value == 0)
                     {
-                        const nameStr: HpackStrResult = Hpack::decodeStr(data, offset);
-                        name = nameStr.value;
-                        offset = nameStr.nextOffset;
+                        const nameStr: HpackStrResult = Hpack::decodeStr(data, offset)
+                        name = nameStr.value
+                        offset = nameStr.nextOffset
                     }
                     else
                     {
-                        name = Hpack::lookupHeader(dynTable, nameResult.value).name;
+                        name = Hpack::lookupHeader(dynTable, nameResult.value).name
                     }
-                    const valStr: HpackStrResult = Hpack::decodeStr(data, offset);
-                    offset = valStr.nextOffset;
-                    headers.push(HpackHeader::new(name, valStr.value));
+                    const valStr: HpackStrResult = Hpack::decodeStr(data, offset)
+                    offset = valStr.nextOffset
+                    headers.push(HpackHeader::new(name, valStr.value))
                 }
             }
-            return headers;
+            return headers
         }
 
         /**
@@ -284,22 +284,22 @@ namespace tinox.core.hpack
          */
         fn encodeInt(value: Int64, prefixBits: Int64, firstByteMask: Int64) -> List<Int64>
         {
-            const result: List<Int64> = [];
-            const maxPrefix: Int64 = (1 << prefixBits) - 1;
+            const result: List<Int64> = []
+            const maxPrefix: Int64 = (1 << prefixBits) - 1
             if (value < maxPrefix)
             {
-                result.push(firstByteMask | value);
-                return result;
+                result.push(firstByteMask | value)
+                return result
             }
-            result.push(firstByteMask | maxPrefix);
-            var remaining: Int64 = value - maxPrefix;
+            result.push(firstByteMask | maxPrefix)
+            var remaining: Int64 = value - maxPrefix
             while remaining >= 128
             {
-                result.push((remaining % 128) + 128);
-                remaining = remaining / 128;
+                result.push((remaining % 128) + 128)
+                remaining = remaining / 128
             }
-            result.push(remaining);
-            return result;
+            result.push(remaining)
+            return result
         }
 
         /**
@@ -307,21 +307,21 @@ namespace tinox.core.hpack
          */
         fn encodeStr(s: String) -> List<Int64>
         {
-            const result: List<Int64> = [];
-            const lenBytes: List<Int64> = Hpack::encodeInt(s.len(), 7, 0);
-            var i: Int64 = 0;
+            const result: List<Int64> = []
+            const lenBytes: List<Int64> = Hpack::encodeInt(s.len(), 7, 0)
+            var i: Int64 = 0
             while i < lenBytes.len()
             {
-                result.push(lenBytes[i]);
-                i = i + 1;
+                result.push(lenBytes[i])
+                i = i + 1
             }
-            i = 0;
+            i = 0
             while i < s.len()
             {
-                result.push(s.charCodeAt(i));
-                i = i + 1;
+                result.push(s.charCodeAt(i))
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -331,24 +331,24 @@ namespace tinox.core.hpack
          */
         fn findStatic(name: String, value: String) -> Int64
         {
-            var nameMatch: Int64 = -1;
-            var i: Int64 = 1;
+            var nameMatch: Int64 = -1
+            var i: Int64 = 1
             while i <= 61
             {
                 if (Hpack::staticName(i) == name)
                 {
                     if (Hpack::staticValue(i) == value)
                     {
-                        return i;
+                        return i
                     }
                     if (nameMatch == -1)
                     {
-                        nameMatch = i;
+                        nameMatch = i
                     }
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return nameMatch;
+            return nameMatch
         }
 
         /**
@@ -364,60 +364,60 @@ namespace tinox.core.hpack
          */
         fn encode(headers: List<HpackHeader>, dynTable: HpackDynTable) -> List<Int64>
         {
-            const result: List<Int64> = [];
-            var i: Int64 = 0;
+            const result: List<Int64> = []
+            var i: Int64 = 0
             while i < headers.len()
             {
-                const h: HpackHeader = headers[i];
-                const staticIdx: Int64 = Hpack::findStatic(h.name, h.value);
+                const h: HpackHeader = headers[i]
+                const staticIdx: Int64 = Hpack::findStatic(h.name, h.value)
                 if (staticIdx > 0 && Hpack::staticValue(staticIdx) == h.value)
                 {
                     // §6.1 Indexed header field — full static table hit
-                    const encoded: List<Int64> = Hpack::encodeInt(staticIdx, 7, 128);
-                    var j: Int64 = 0;
+                    const encoded: List<Int64> = Hpack::encodeInt(staticIdx, 7, 128)
+                    var j: Int64 = 0
                     while j < encoded.len()
                     {
-                        result.push(encoded[j]);
-                        j = j + 1;
+                        result.push(encoded[j])
+                        j = j + 1
                     }
                 }
                 else
                 {
                     // §6.2.1 Literal with incremental indexing
-                    var nameIdx: Int64 = 0;
+                    var nameIdx: Int64 = 0
                     if (staticIdx > 0)
                     {
-                        nameIdx = staticIdx;
+                        nameIdx = staticIdx
                     }
-                    const nameEncoded: List<Int64> = Hpack::encodeInt(nameIdx, 6, 64);
-                    var j: Int64 = 0;
+                    const nameEncoded: List<Int64> = Hpack::encodeInt(nameIdx, 6, 64)
+                    var j: Int64 = 0
                     while j < nameEncoded.len()
                     {
-                        result.push(nameEncoded[j]);
-                        j = j + 1;
+                        result.push(nameEncoded[j])
+                        j = j + 1
                     }
                     if (nameIdx == 0)
                     {
-                        const nameBytes: List<Int64> = Hpack::encodeStr(h.name);
-                        j = 0;
+                        const nameBytes: List<Int64> = Hpack::encodeStr(h.name)
+                        j = 0
                         while j < nameBytes.len()
                         {
-                            result.push(nameBytes[j]);
-                            j = j + 1;
+                            result.push(nameBytes[j])
+                            j = j + 1
                         }
                     }
-                    const valBytes: List<Int64> = Hpack::encodeStr(h.value);
-                    j = 0;
+                    const valBytes: List<Int64> = Hpack::encodeStr(h.value)
+                    j = 0
                     while j < valBytes.len()
                     {
-                        result.push(valBytes[j]);
-                        j = j + 1;
+                        result.push(valBytes[j])
+                        j = j + 1
                     }
-                    dynTable.add(h);
+                    dynTable.add(h)
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return result;
+            return result
         }
     }
 }

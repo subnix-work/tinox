@@ -246,7 +246,7 @@ fn graph(
 fn matches(symbol: &Symbol, query: &str) -> bool {
     symbol.name == query
         || symbol.qualified_name == query
-        || symbol.required_import.as_deref() == Some(format!("import {query};").as_str())
+        || symbol.required_import.as_deref() == Some(format!("import {query}").as_str())
 }
 fn lookup<'a>(graph: &'a Graph, query: &str) -> Vec<&'a Symbol> {
     graph

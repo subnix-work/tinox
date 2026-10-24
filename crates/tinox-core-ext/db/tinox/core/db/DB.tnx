@@ -1,4 +1,4 @@
-module tinox.core.db;
+module tinox.core.db
 
 namespace tinox.core.db
 {
@@ -6,7 +6,7 @@ namespace tinox.core.db
     {
         fnc of(cls: Any) -> Any
         {
-            return EntityQuery {};
+            return EntityQuery {}
         }
     }
 }

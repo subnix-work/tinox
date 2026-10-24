@@ -5,8 +5,8 @@
 class bug17_test_harness_bool {
     @Test("must fail")
     fn t() -> Bool {
-        var xs: List<Int64> = [];
-        xs.push(1);
-        return xs.len() == 999;
+        var xs: List<Int64> = []
+        xs.push(1)
+        return xs.len() == 999
     }
 }

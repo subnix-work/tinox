@@ -1,29 +1,29 @@
-module tinox.core.heap;
+module tinox.core.heap
 
 namespace tinox.core.heap
 {
     class MinHeap<T>
     {
-        var heap: Heap<T>;
+        var heap: Heap<T>
 
         fn new() -> MinHeap<T>
         {
-            return MinHeap<T> { heap: Heap::new() };
+            return MinHeap<T> { heap: Heap::new() }
         }
 
         fn push(h: MinHeap<T>, item: T) -> Nothing
         {
-            Heap::push(h.heap, item);
+            Heap::push(h.heap, item)
         }
 
         fn pop(h: MinHeap<T>) -> T
         {
-            return Heap::pop(h.heap);
+            return Heap::pop(h.heap)
         }
 
         fn peek(h: MinHeap<T>) -> T
         {
-            return Heap::peek(h.heap);
+            return Heap::peek(h.heap)
         }
     }
 }

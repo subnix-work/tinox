@@ -1,4 +1,4 @@
-module tinox.core.io;
+module tinox.core.io
 
 namespace tinox.core.io
 {
@@ -15,12 +15,12 @@ namespace tinox.core.io
          */
         fn getExtension(filename: String) -> String
         {
-            var dotIndex: Int64 = filename.lastIndexOf(".");
+            var dotIndex: Int64 = filename.lastIndexOf(".")
             if (dotIndex == -1)
             {
-                return "";
+                return ""
             }
-            return filename.substring(dotIndex + 1, filename.len());
+            return filename.substring(dotIndex + 1, filename.len())
         }
 
         /**
@@ -31,12 +31,12 @@ namespace tinox.core.io
          */
         fn getFileName(filePath: String) -> String
         {
-            var lastSlash: Int64 = filePath.lastIndexOf("/");
+            var lastSlash: Int64 = filePath.lastIndexOf("/")
             if (lastSlash == -1)
             {
-                return filePath;
+                return filePath
             }
-            return filePath.substring(lastSlash + 1, filePath.len());
+            return filePath.substring(lastSlash + 1, filePath.len())
         }
 
         /**
@@ -47,12 +47,12 @@ namespace tinox.core.io
          */
         fn getDirectory(filePath: String) -> String
         {
-            var lastSlash: Int64 = filePath.lastIndexOf("/");
+            var lastSlash: Int64 = filePath.lastIndexOf("/")
             if (lastSlash == -1)
             {
-                return "";
+                return ""
             }
-            return filePath.substring(0, lastSlash);
+            return filePath.substring(0, lastSlash)
         }
 
         /**
@@ -64,7 +64,7 @@ namespace tinox.core.io
          */
         fn join(dir: String, file: String) -> String
         {
-            return dir + "/" + file;
+            return dir + "/" + file
         }
     }
 }

@@ -27,7 +27,7 @@
  *     stream from the caller's perspective).
  *   - No `retry:` field (client reconnection-interval hint).
  */
-module tinox.core.sse;
+module tinox.core.sse
 
 namespace tinox.core.sse
 {
@@ -43,13 +43,13 @@ namespace tinox.core.sse
          */
         fn handshake(conn: Int64) -> Bool
         {
-            const req = httpConnReadRequest(conn);
+            const req = httpConnReadRequest(conn)
             if (req.len() == 0) {
-                return false;
+                return false
             }
-            const response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-            httpConnSendRaw(conn, response);
-            return true;
+            const response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n"
+            httpConnSendRaw(conn, response)
+            return true
         }
 
         /*
@@ -61,17 +61,17 @@ namespace tinox.core.sse
          */
         fn sendEvent(conn: Int64, event: String, data: String) -> Nothing
         {
-            var out: String = "event: " + event + "\n";
-            const lines = data.split("\n");
+            var out: String = "event: " + event + "\n"
+            const lines = data.split("\n")
             for i in 0..lines.len() {
-                var line = lines[i];
+                var line = lines[i]
                 if (line.endsWith("\r")) {
-                    line = line.substring(0, line.len() - 1);
+                    line = line.substring(0, line.len() - 1)
                 }
-                out = out + "data: " + line + "\n";
+                out = out + "data: " + line + "\n"
             }
-            out = out + "\n";
-            httpConnSendRaw(conn, out);
+            out = out + "\n"
+            httpConnSendRaw(conn, out)
         }
 
         /*
@@ -82,12 +82,12 @@ namespace tinox.core.sse
          */
         fn sendComment(conn: Int64) -> Nothing
         {
-            httpConnSendRaw(conn, ": keepalive\n\n");
+            httpConnSendRaw(conn, ": keepalive\n\n")
         }
 
         fn close(conn: Int64) -> Nothing
         {
-            httpConnClose(conn);
+            httpConnClose(conn)
         }
     }
 }

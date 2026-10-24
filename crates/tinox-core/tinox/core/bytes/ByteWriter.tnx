@@ -1,38 +1,38 @@
-module tinox.core.bytes;
+module tinox.core.bytes
 
 namespace tinox.core.bytes
 {
-    extern fn tinoxFileOpenBytes(path: String, mode: String) -> Int64;
-    extern fn tinoxFileCloseBytes(handle: Int64);
-    extern fn tinoxBufWriteChunk(handle: Int64, h: Int64);
+    extern fn tinoxFileOpenBytes(path: String, mode: String) -> Int64
+    extern fn tinoxFileCloseBytes(handle: Int64)
+    extern fn tinoxBufWriteChunk(handle: Int64, h: Int64)
 
     /** Streaming writer: chunks go straight to the file, no accumulation */
     class ByteWriter
     {
-        var fd: Int64;
+        var fd: Int64
 
         /** Opens (truncating) a file for writing; failure is a hard error */
         fn open(path: String) -> ByteWriter
         {
-            const fd: Int64 = tinoxFileOpenBytes(path, "wb");
+            const fd: Int64 = tinoxFileOpenBytes(path, "wb")
             if (fd == 0)
             {
-                println("runtime error: cannot open file for writing: " + path);
-                exit(1);
+                println("runtime error: cannot open file for writing: " + path)
+                exit(1)
             }
-            return ByteWriter { fd: fd };
+            return ByteWriter { fd: fd }
         }
 
         /** Appends a chunk */
         fn write(b: Bytes) -> Nothing
         {
-            tinoxBufWriteChunk(this.fd, b.handle);
+            tinoxBufWriteChunk(this.fd, b.handle)
         }
 
         /** Flushes and closes; a failed flush is a hard error */
         fn close() -> Nothing
         {
-            tinoxFileCloseBytes(this.fd);
+            tinoxFileCloseBytes(this.fd)
         }
     }
 }

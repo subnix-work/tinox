@@ -6,8 +6,8 @@
 // expect: parse
 // expect: area 3
 
-import Color;
-import Shape;
+import Color
+import Shape
 
 class Main
 {
@@ -15,28 +15,28 @@ class Main
     {
         match s
         {
-            Circle(r) => return "area " + toString(r);
-            Square(a) => return "area " + toString(a * a);
+            Circle(r) => return "area " + toString(r)
+            Square(a) => return "area " + toString(a * a)
         }
     }
 
     fnc main() -> Int32
     {
-        const c = Color::GREEN;
-        println(c.name);
-        println(Color::values()[1] == Color::GREEN);
-        println(Color::values().len());
-        var line = "";
-        const all = Color::values();
+        const c = Color::GREEN
+        println(c.name)
+        println(Color::values()[1] == Color::GREEN)
+        println(Color::values().len())
+        var line = ""
+        const all = Color::values()
         for (let i = 0; i < all.len(); i = i + 1)
         {
-            line = line + (i == 0 ? "" : " ") + all[i].name;
+            line = line + (i == 0 ? "" : " ") + all[i].name
         }
-        println(line);
+        println(line)
         // `Color::parse` is the variant here, not the text parser
-        const p = Color::parse;
-        println(p.name);
-        println(Main::describe(Shape::Circle(3.0)));
-        return 0;
+        const p = Color::parse
+        println(p.name)
+        println(Main::describe(Shape::Circle(3.0)))
+        return 0
     }
 }

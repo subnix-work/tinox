@@ -1,5 +1,5 @@
 class Person
 {
-    var name: String;
-    var age: Int64;
+    var name: String
+    var age: Int64
 }

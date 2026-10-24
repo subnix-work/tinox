@@ -1,4 +1,4 @@
-module tinox.core.xml;
+module tinox.core.xml
 
 namespace tinox.core.xml
 {
@@ -6,17 +6,17 @@ namespace tinox.core.xml
     {
         fn parse(text: String) -> XmlNode
         {
-            return XmlParser::parse(text);
+            return XmlParser::parse(text)
         }
 
         fn stringify(node: XmlNode) -> String
         {
-            return XmlRenderer::render(node);
+            return XmlRenderer::render(node)
         }
 
         fn query(node: XmlNode, xpath: String) -> List<XmlNode>
         {
-            return XmlQuery::query(node, xpath);
+            return XmlQuery::query(node, xpath)
         }
     }
 }

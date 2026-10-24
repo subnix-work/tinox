@@ -1,111 +1,111 @@
-module tinox.core.bitmap;
+module tinox.core.bitmap
 
-import tinox.core.mathf;
+import tinox.core.mathf
 
 namespace tinox.core.bitmap
 {
     class Bitmap
     {
-        var width: Int64;
-        var height: Int64;
-        var pixels: List<Int64>;
+        var width: Int64
+        var height: Int64
+        var pixels: List<Int64>
 
         fn create(width: Int64, height: Int64, color: Int64) -> Bitmap
         {
-            var pixels: List<Int64> = [];
-            var i: Int64 = 0;
+            var pixels: List<Int64> = []
+            var i: Int64 = 0
             while i < width * height
             {
-                pixels.push(color);
-                i = i + 1;
+                pixels.push(color)
+                i = i + 1
             }
-            return Bitmap { width: width, height: height, pixels: pixels };
+            return Bitmap { width: width, height: height, pixels: pixels }
         }
 
         fn getPixel(bitmap: Bitmap, x: Int64, y: Int64) -> Int64
         {
             if (x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height)
             {
-                return 0;
+                return 0
             }
-            return bitmap.pixels[y * bitmap.width + x];
+            return bitmap.pixels[y * bitmap.width + x]
         }
 
         fn setPixel(bitmap: Bitmap, x: Int64, y: Int64, color: Int64) -> Nothing
         {
             if (x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height)
             {
-                return;
+                return
             }
-            bitmap.pixels[y * bitmap.width + x] = color;
+            bitmap.pixels[y * bitmap.width + x] = color
         }
 
         fn fillRect(bitmap: Bitmap, x: Int64, y: Int64, w: Int64, h: Int64, color: Int64) -> Nothing
         {
-            var j: Int64 = y;
+            var j: Int64 = y
             while j < y + h
             {
-                var i: Int64 = x;
+                var i: Int64 = x
                 while i < x + w
                 {
-                    Bitmap::setPixel(bitmap, i, j, color);
-                    i = i + 1;
+                    Bitmap::setPixel(bitmap, i, j, color)
+                    i = i + 1
                 }
-                j = j + 1;
+                j = j + 1
             }
         }
 
         fn drawLine(bitmap: Bitmap, x0: Int64, y0: Int64, x1: Int64, y1: Int64, color: Int64) -> Nothing
         {
-            const dx: Int64 = Mathf::abs(x1 - x0);
-            const dy: Int64 = Mathf::abs(y1 - y0);
-            const sx: Int64 = (x0 < x1) ? 1 : -1;
-            const sy: Int64 = (y0 < y1) ? 1 : -1;
-            var err: Int64 = dx - dy;
-            var x: Int64 = x0;
-            var y: Int64 = y0;
+            const dx: Int64 = Mathf::abs(x1 - x0)
+            const dy: Int64 = Mathf::abs(y1 - y0)
+            const sx: Int64 = (x0 < x1) ? 1 : -1
+            const sy: Int64 = (y0 < y1) ? 1 : -1
+            var err: Int64 = dx - dy
+            var x: Int64 = x0
+            var y: Int64 = y0
             while true
             {
-                Bitmap::setPixel(bitmap, x, y, color);
+                Bitmap::setPixel(bitmap, x, y, color)
                 if (x == x1 && y == y1)
                 {
-                    break;
+                    break
                 }
-                const e2: Int64 = 2 * err;
+                const e2: Int64 = 2 * err
                 if (e2 > -dy)
                 {
-                    err = err - dy;
-                    x = x + sx;
+                    err = err - dy
+                    x = x + sx
                 }
                 if (e2 < dx)
                 {
-                    err = err + dx;
-                    y = y + sy;
+                    err = err + dx
+                    y = y + sy
                 }
             }
         }
 
         fn drawCircle(bitmap: Bitmap, cx: Int64, cy: Int64, radius: Int64, color: Int64) -> Nothing
         {
-            var x: Int64 = radius;
-            var y: Int64 = 0;
-            var err: Int64 = 0;
+            var x: Int64 = radius
+            var y: Int64 = 0
+            var err: Int64 = 0
             while x >= y
             {
-                Bitmap::setPixel(bitmap, cx + x, cy + y, color);
-                Bitmap::setPixel(bitmap, cx + y, cy + x, color);
-                Bitmap::setPixel(bitmap, cx - y, cy + x, color);
-                Bitmap::setPixel(bitmap, cx - x, cy + y, color);
-                Bitmap::setPixel(bitmap, cx - x, cy - y, color);
-                Bitmap::setPixel(bitmap, cx - y, cy - x, color);
-                Bitmap::setPixel(bitmap, cx + y, cy - x, color);
-                Bitmap::setPixel(bitmap, cx + x, cy - y, color);
-                y = y + 1;
-                err = err + 1 + 2 * y;
+                Bitmap::setPixel(bitmap, cx + x, cy + y, color)
+                Bitmap::setPixel(bitmap, cx + y, cy + x, color)
+                Bitmap::setPixel(bitmap, cx - y, cy + x, color)
+                Bitmap::setPixel(bitmap, cx - x, cy + y, color)
+                Bitmap::setPixel(bitmap, cx - x, cy - y, color)
+                Bitmap::setPixel(bitmap, cx - y, cy - x, color)
+                Bitmap::setPixel(bitmap, cx + y, cy - x, color)
+                Bitmap::setPixel(bitmap, cx + x, cy - y, color)
+                y = y + 1
+                err = err + 1 + 2 * y
                 if (2 * (err - x) + 1 > 0)
                 {
-                    x = x - 1;
-                    err = err - 2 * x;
+                    x = x - 1
+                    err = err - 2 * x
                 }
             }
         }

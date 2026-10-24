@@ -1,5 +1,5 @@
-import tinox.core.rest.server;
-import tinox.core.json;
+import tinox.core.rest.server
+import tinox.core.json
 
 // Annotation-driven: no explicit main()/RestApi anywhere in the program —
 // the compiler discovers @ApplicationComponent classes and generates the
@@ -13,7 +13,7 @@ class GreetController
     @Produces("application/json")
     fn hello(@PathParam name: String, @HttpContext ctx: HttpContext) -> HttpContext
     {
-        ctx.response.json("{\"message\":\"Hello, " + name + "!\"}");
-        return ctx;
+        ctx.response.json("{\"message\":\"Hello, " + name + "!\"}")
+        return ctx
     }
 }

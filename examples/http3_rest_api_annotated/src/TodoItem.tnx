@@ -1,9 +1,9 @@
-import tinox.core.json;
+import tinox.core.json
 
 @JsonSerializable
 class TodoItem
 {
-    var id: Int64;
-    var title: String;
-    var done: Bool;
+    var id: Int64
+    var title: String
+    var done: Bool
 }

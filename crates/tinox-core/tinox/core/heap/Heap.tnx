@@ -1,123 +1,123 @@
-module tinox.core.heap;
+module tinox.core.heap
 
 namespace tinox.core.heap
 {
     class Heap<T>
     {
-        var items: List<T>;
-        var comparator: fnc(T, T) -> Bool;
+        var items: List<T>
+        var comparator: fnc(T, T) -> Bool
 
         fn new() -> Heap<T>
         {
-            return Heap<T> { items: [], comparator: fnc(a: T, b: T) -> Bool { return a < b; } };
+            return Heap<T> { items: [], comparator: fnc(a: T, b: T) -> Bool { return a < b } }
         }
 
         fn newWithCompare(comparator: fnc(T, T) -> Bool) -> Heap<T>
         {
-            return Heap<T> { items: [], comparator: comparator };
+            return Heap<T> { items: [], comparator: comparator }
         }
 
         fn push(heap: Heap<T>, item: T) -> Nothing
         {
-            heap.items.push(item);
-            Heap::siftUp(heap, heap.items.len() - 1);
+            heap.items.push(item)
+            Heap::siftUp(heap, heap.items.len() - 1)
         }
 
         fn pop(heap: Heap<T>) -> T
         {
             if (heap.items.len() == 0)
             {
-                throw "Heap is empty";
+                throw "Heap is empty"
             }
-            const result: T = heap.items[0];
-            const last: T = heap.items[heap.items.len() - 1];
-            heap.items.pop();
+            const result: T = heap.items[0]
+            const last: T = heap.items[heap.items.len() - 1]
+            heap.items.pop()
             if (heap.items.len() > 0)
             {
-                heap.items[0] = last;
-                Heap::siftDown(heap, 0);
+                heap.items[0] = last
+                Heap::siftDown(heap, 0)
             }
-            return result;
+            return result
         }
 
         fn peek(heap: Heap<T>) -> T
         {
             if (heap.items.len() == 0)
             {
-                throw "Heap is empty";
+                throw "Heap is empty"
             }
-            return heap.items[0];
+            return heap.items[0]
         }
 
         fn siftUp(heap: Heap<T>, startIndex: Int64) -> Nothing
         {
-            var index: Int64 = startIndex;
+            var index: Int64 = startIndex
             while index > 0
             {
-                const parent: Int64 = (index - 1) / 2;
+                const parent: Int64 = (index - 1) / 2
                 if (heap.comparator(heap.items[index], heap.items[parent]))
                 {
-                    const temp: T = heap.items[index];
-                    heap.items[index] = heap.items[parent];
-                    heap.items[parent] = temp;
-                    index = parent;
+                    const temp: T = heap.items[index]
+                    heap.items[index] = heap.items[parent]
+                    heap.items[parent] = temp
+                    index = parent
                 }
                 else
                 {
-                    break;
+                    break
                 }
             }
         }
 
         fn siftDown(heap: Heap<T>, startIndex: Int64) -> Nothing
         {
-            var index: Int64 = startIndex;
-            const len: Int64 = heap.items.len();
+            var index: Int64 = startIndex
+            const len: Int64 = heap.items.len()
             while true
             {
-                const left: Int64 = 2 * index + 1;
-                const right: Int64 = 2 * index + 2;
-                var smallest: Int64 = index;
+                const left: Int64 = 2 * index + 1
+                const right: Int64 = 2 * index + 2
+                var smallest: Int64 = index
                 if (left < len && heap.comparator(heap.items[left], heap.items[smallest]))
                 {
-                    smallest = left;
+                    smallest = left
                 }
                 if (right < len && heap.comparator(heap.items[right], heap.items[smallest]))
                 {
-                    smallest = right;
+                    smallest = right
                 }
                 if (smallest != index)
                 {
-                    const temp: T = heap.items[index];
-                    heap.items[index] = heap.items[smallest];
-                    heap.items[smallest] = temp;
-                    index = smallest;
+                    const temp: T = heap.items[index]
+                    heap.items[index] = heap.items[smallest]
+                    heap.items[smallest] = temp
+                    index = smallest
                 }
                 else
                 {
-                    break;
+                    break
                 }
             }
         }
 
         fn isEmpty(heap: Heap<T>) -> Bool
         {
-            return heap.items.len() == 0;
+            return heap.items.len() == 0
         }
 
         fn size(heap: Heap<T>) -> Int64
         {
-            return heap.items.len();
+            return heap.items.len()
         }
 
         fn buildHeap(heap: Heap<T>, items: List<T>) -> Nothing
         {
-            heap.items = items;
-            var i: Int64 = (heap.items.len() / 2) - 1;
+            heap.items = items
+            var i: Int64 = (heap.items.len() / 2) - 1
             while i >= 0
             {
-                Heap::siftDown(heap, i);
-                i = i - 1;
+                Heap::siftDown(heap, i)
+                i = i - 1
             }
         }
     }

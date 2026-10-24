@@ -1,6 +1,6 @@
-module tinox.core.amqp091;
+module tinox.core.amqp091
 
-import tinox.core.socket;
+import tinox.core.socket
 
 namespace tinox.core.amqp091
 {
@@ -12,15 +12,15 @@ namespace tinox.core.amqp091
          */
         fn dial(host: String, port: Int64) -> Int64
         {
-            const fd = socketCreateTcp();
+            const fd = socketCreateTcp()
             if (!socketConnect(fd, host, port)) {
                 // Bug 90: used to leak `fd` on every failed connect — a
                 // reconnect loop against an unreachable/refusing broker
                 // could exhaust the process fd limit over time.
-                socketClose(fd);
-                return -1;
+                socketClose(fd)
+                return -1
             }
-            return httpConnFromFd(fd);
+            return httpConnFromFd(fd)
         }
 
         /*
@@ -34,13 +34,13 @@ namespace tinox.core.amqp091
          */
         fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
         {
-            const fd = socketCreateTcp();
+            const fd = socketCreateTcp()
             if (!socketConnect(fd, host, port)) {
                 // Bug 90: same fd leak as dial() above.
-                socketClose(fd);
-                return -1;
+                socketClose(fd)
+                return -1
             }
-            return httpConnFromFdTls(fd, host, verify);
+            return httpConnFromFdTls(fd, host, verify)
         }
 
         /*
@@ -49,8 +49,8 @@ namespace tinox.core.amqp091
          */
         fn sendProtocolHeader(conn: Int64) -> Nothing
         {
-            const header: List<Int64> = [65, 77, 81, 80, 0, 0, 9, 1];
-            httpConnWriteBytes(conn, header);
+            const header: List<Int64> = [65, 77, 81, 80, 0, 0, 9, 1]
+            httpConnWriteBytes(conn, header)
         }
 
         /*
@@ -64,11 +64,11 @@ namespace tinox.core.amqp091
          */
         fn checkHandshakeResponse(conn: Int64) -> Bool
         {
-            const resp = httpConnReadN(conn, 1);
+            const resp = httpConnReadN(conn, 1)
             if (resp.len() < 1) {
-                return false;
+                return false
             }
-            return resp[0] == 1;
+            return resp[0] == 1
         }
 
         /*
@@ -79,33 +79,33 @@ namespace tinox.core.amqp091
          */
         fn readFrame(conn: Int64) -> AmqpFrame091
         {
-            const bad = AmqpFrame091 { frameType: -1, chanId: 0, payload: [] };
-            const hdr = httpConnReadN(conn, 7);
+            const bad = AmqpFrame091 { frameType: -1, chanId: 0, payload: [] }
+            const hdr = httpConnReadN(conn, 7)
             if (hdr.len() < 7) {
-                return bad;
+                return bad
             }
-            const frameType = hdr[0];
-            const chanId = (hdr[1] << 8) | hdr[2];
-            const size = (hdr[3] << 24) | (hdr[4] << 16) | (hdr[5] << 8) | hdr[6];
+            const frameType = hdr[0]
+            const chanId = (hdr[1] << 8) | hdr[2]
+            const size = (hdr[3] << 24) | (hdr[4] << 16) | (hdr[5] << 8) | hdr[6]
             if (size < 0 || size > 16777216) {
-                return AmqpFrame091 { frameType: -2, chanId: chanId, payload: [] };
+                return AmqpFrame091 { frameType: -2, chanId: chanId, payload: [] }
             }
-            var payload: List<Int64> = [];
+            var payload: List<Int64> = []
             if (size > 0) {
-                const raw = httpConnReadN(conn, size);
+                const raw = httpConnReadN(conn, size)
                 if (raw.len() < size) {
-                    return bad;
+                    return bad
                 }
-                payload = raw;
+                payload = raw
             }
-            const end = httpConnReadN(conn, 1);
+            const end = httpConnReadN(conn, 1)
             if (end.len() < 1) {
-                return bad;
+                return bad
             }
             if (end[0] != 0xCE) {
-                return AmqpFrame091 { frameType: -2, chanId: chanId, payload: [] };
+                return AmqpFrame091 { frameType: -2, chanId: chanId, payload: [] }
             }
-            return AmqpFrame091 { frameType: frameType, chanId: chanId, payload: payload };
+            return AmqpFrame091 { frameType: frameType, chanId: chanId, payload: payload }
         }
 
         /*
@@ -113,13 +113,13 @@ namespace tinox.core.amqp091
          */
         fn writeFrame(conn: Int64, frameType: Int64, chanId: Int64, payload: List<Int64>) -> Nothing
         {
-            const w = AmqpWriter091::new();
-            w.octet(frameType);
-            w.short(chanId);
-            w.long(payload.len());
-            w.rawBytes(payload);
-            w.octet(0xCE);
-            httpConnWriteBytes(conn, w.bytes);
+            const w = AmqpWriter091::new()
+            w.octet(frameType)
+            w.short(chanId)
+            w.long(payload.len())
+            w.rawBytes(payload)
+            w.octet(0xCE)
+            httpConnWriteBytes(conn, w.bytes)
         }
 
         /*
@@ -129,11 +129,11 @@ namespace tinox.core.amqp091
          */
         fn encodeMethodPayload(classId: Int64, methodId: Int64, args: List<Int64>) -> List<Int64>
         {
-            const w = AmqpWriter091::new();
-            w.short(classId);
-            w.short(methodId);
-            w.rawBytes(args);
-            return w.bytes;
+            const w = AmqpWriter091::new()
+            w.short(classId)
+            w.short(methodId)
+            w.rawBytes(args)
+            return w.bytes
         }
 
         /*
@@ -143,14 +143,14 @@ namespace tinox.core.amqp091
          */
         fn decodeMethodPayload(payload: List<Int64>) -> AmqpMethodFrame091
         {
-            const r = AmqpReader091::new(payload);
-            const classId = r.short();
-            const methodId = r.short();
-            var args: List<Int64> = [];
+            const r = AmqpReader091::new(payload)
+            const classId = r.short()
+            const methodId = r.short()
+            var args: List<Int64> = []
             while r.remaining() > 0 {
-                args.push(r.octet());
+                args.push(r.octet())
             }
-            return AmqpMethodFrame091 { classId: classId, methodId: methodId, args: args };
+            return AmqpMethodFrame091 { classId: classId, methodId: methodId, args: args }
         }
 
         /*
@@ -161,16 +161,16 @@ namespace tinox.core.amqp091
          */
         fn saslPlainResponse(user: String, pass: String) -> List<Int64>
         {
-            var bytes: List<Int64> = [];
-            bytes.push(0);
+            var bytes: List<Int64> = []
+            bytes.push(0)
             for i in 0..user.len() {
-                bytes.push(user.charCodeAt(i) & 0xFF);
+                bytes.push(user.charCodeAt(i) & 0xFF)
             }
-            bytes.push(0);
+            bytes.push(0)
             for i in 0..pass.len() {
-                bytes.push(pass.charCodeAt(i) & 0xFF);
+                bytes.push(pass.charCodeAt(i) & 0xFF)
             }
-            return bytes;
+            return bytes
         }
 
         /*
@@ -182,12 +182,12 @@ namespace tinox.core.amqp091
          */
         fn describeAndAckClose(conn: Int64, chanId: Int64, mf: AmqpMethodFrame091, closeOkMethodId: Int64) -> String
         {
-            const r = AmqpReader091::new(mf.args);
-            const replyCode = r.short();
-            const replyText = r.shortstr();
-            const closeOkPayload = Amqp091::encodeMethodPayload(mf.classId, closeOkMethodId, []);
-            Amqp091::writeFrame(conn, 1, chanId, closeOkPayload);
-            return "broker closed with code " + replyCode.toString() + ": " + replyText;
+            const r = AmqpReader091::new(mf.args)
+            const replyCode = r.short()
+            const replyText = r.shortstr()
+            const closeOkPayload = Amqp091::encodeMethodPayload(mf.classId, closeOkMethodId, [])
+            Amqp091::writeFrame(conn, 1, chanId, closeOkPayload)
+            return "broker closed with code " + replyCode.toString() + ": " + replyText
         }
     }
 }

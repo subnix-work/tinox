@@ -1,0 +1,17 @@
+import tinox.core.xml
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let node: XmlNode = Xml::parse("<user id=\"42\">Alice</user>")
+
+        println(node.tagName)
+        println(node.attr("id"))
+        println(node.textContent())
+
+        println(Xml::stringify(node))
+
+        return 0
+    }
+}

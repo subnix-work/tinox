@@ -1,17 +1,17 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class PersistentVolumeClaim
     {
-        var apiVersion: String;
-        var kind: String;
-        var metadata: ObjectMeta;
-        var spec: PersistentVolumeClaimSpec;
-        var status: PersistentVolumeClaimStatus;
+        var apiVersion: String
+        var kind: String
+        var metadata: ObjectMeta
+        var spec: PersistentVolumeClaimSpec
+        var status: PersistentVolumeClaimStatus
 
         // accessMode is typically "ReadWriteOnce"/"ReadOnlyMany"/"ReadWriteMany";
         // storageClassName "" lets the cluster's default storage class apply.
@@ -22,7 +22,7 @@ namespace tinox.core.kubernetes
                 metadata: ObjectMeta::withNameAndNamespace(name, namespace),
                 spec: PersistentVolumeClaimSpec::create(accessMode, storageRequest, storageClassName),
                 status: PersistentVolumeClaimStatus { phase: "" }
-            };
+            }
         }
     }
 }

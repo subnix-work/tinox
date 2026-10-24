@@ -1,72 +1,72 @@
-module tinox.core.uuid;
+module tinox.core.uuid
 
-import tinox.core.random;
+import tinox.core.random
 
 namespace tinox.core.uuid
 {
     class Uuid
     {
-        var value: String;
+        var value: String
 
         fn nibbleToHex(n: Int64) -> String
         {
             if (n < 10)
             {
-                return fromCharCode(n + 48);
+                return fromCharCode(n + 48)
             }
-            return fromCharCode(n + 87);
+            return fromCharCode(n + 87)
         }
 
         fn byteToHex(b: Int64) -> String
         {
-            const hi: Int64 = (b >> 4) & 15;
-            const lo: Int64 = b & 15;
-            return Uuid::nibbleToHex(hi) + Uuid::nibbleToHex(lo);
+            const hi: Int64 = (b >> 4) & 15
+            const lo: Int64 = b & 15
+            return Uuid::nibbleToHex(hi) + Uuid::nibbleToHex(lo)
         }
 
         fn generate() -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
+            var result: String = ""
+            var i: Int64 = 0
             while i < 16
             {
-                var byteVal: Int64 = Random::nextInt(256);
+                var byteVal: Int64 = Random::nextInt(256)
                 if (i == 6)
                 {
-                    byteVal = (byteVal & 15) | 64; // version 4
+                    byteVal = (byteVal & 15) | 64 // version 4
                 }
                 if (i == 8)
                 {
-                    byteVal = (byteVal & 63) | 128; // variant 10xx
+                    byteVal = (byteVal & 63) | 128 // variant 10xx
                 }
-                result = result + Uuid::byteToHex(byteVal);
+                result = result + Uuid::byteToHex(byteVal)
                 if (i == 3 || i == 5 || i == 7 || i == 9)
                 {
-                    result = result + "-";
+                    result = result + "-"
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         fn fromString(s: String) -> Uuid
         {
-            return Uuid { value: s };
+            return Uuid { value: s }
         }
 
         fn toString() -> String
         {
-            return this.value;
+            return this.value
         }
 
         fn isValid(s: String) -> Bool
         {
             if (s.len() != 36)
             {
-                return false;
+                return false
             }
-            const pattern: String = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-            return regexIsMatch(pattern, s);
+            const pattern: String = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+            return regexIsMatch(pattern, s)
         }
     }
 }

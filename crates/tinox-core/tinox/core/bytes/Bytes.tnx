@@ -1,25 +1,25 @@
-module tinox.core.bytes;
+module tinox.core.bytes
 
 namespace tinox.core.bytes
 {
-    extern fn tinoxBufNew(len: Int64) -> Int64;
-    extern fn tinoxBufLen(h: Int64) -> Int64;
-    extern fn tinoxBufGet(h: Int64, i: Int64) -> Int64;
-    extern fn tinoxBufSet(h: Int64, i: Int64, v: Int64);
-    extern fn tinoxBufSlice(h: Int64, start: Int64, end: Int64) -> Int64;
-    extern fn tinoxBufConcat(a: Int64, b: Int64) -> Int64;
-    extern fn tinoxBufEquals(a: Int64, b: Int64) -> Bool;
-    extern fn tinoxBufFromString(s: String) -> Int64;
-    extern fn tinoxBufToString(h: Int64) -> String;
-    extern fn tinoxBufFromList(l: List<Int64>) -> Int64;
-    extern fn tinoxBufToList(h: Int64) -> List<Int64>;
-    extern fn tinoxBufReadFile(path: String) -> Int64;
-    extern fn tinoxBufWriteFile(path: String, h: Int64);
-    extern fn tinoxBufStdinReadAll() -> Int64;
-    extern fn tinoxBufFromRequestBody(body: String) -> Int64;
-    extern fn tinoxBufAsResponseBody(h: Int64) -> String;
-    extern fn httpConnReadBuf(conn: Int64, n: Int64) -> Int64;
-    extern fn httpConnWriteBuf(conn: Int64, h: Int64) -> Int64;
+    extern fn tinoxBufNew(len: Int64) -> Int64
+    extern fn tinoxBufLen(h: Int64) -> Int64
+    extern fn tinoxBufGet(h: Int64, i: Int64) -> Int64
+    extern fn tinoxBufSet(h: Int64, i: Int64, v: Int64)
+    extern fn tinoxBufSlice(h: Int64, start: Int64, end: Int64) -> Int64
+    extern fn tinoxBufConcat(a: Int64, b: Int64) -> Int64
+    extern fn tinoxBufEquals(a: Int64, b: Int64) -> Bool
+    extern fn tinoxBufFromString(s: String) -> Int64
+    extern fn tinoxBufToString(h: Int64) -> String
+    extern fn tinoxBufFromList(l: List<Int64>) -> Int64
+    extern fn tinoxBufToList(h: Int64) -> List<Int64>
+    extern fn tinoxBufReadFile(path: String) -> Int64
+    extern fn tinoxBufWriteFile(path: String, h: Int64)
+    extern fn tinoxBufStdinReadAll() -> Int64
+    extern fn tinoxBufFromRequestBody(body: String) -> Int64
+    extern fn tinoxBufAsResponseBody(h: Int64) -> String
+    extern fn httpConnReadBuf(conn: Int64, n: Int64) -> Int64
+    extern fn httpConnWriteBuf(conn: Int64, h: Int64) -> Int64
 
     /**
      * A compact, fixed-length byte buffer: one heap byte per logical byte
@@ -35,36 +35,36 @@ namespace tinox.core.bytes
     class Bytes
     {
         /** Opaque runtime handle to the pointer-free payload block */
-        var handle: Int64;
+        var handle: Int64
 
         /** Creates a zero-filled buffer of the given length */
         fn new(len: Int64) -> Bytes
         {
-            return Bytes { handle: tinoxBufNew(len) };
+            return Bytes { handle: tinoxBufNew(len) }
         }
 
         /** Copies the characters of a String (UTF-8) into a buffer */
         fn fromText(s: String) -> Bytes
         {
-            return Bytes { handle: tinoxBufFromString(s) };
+            return Bytes { handle: tinoxBufFromString(s) }
         }
 
         /** Adapter from the legacy List<Int64> (each element must be 0..255) */
         fn fromList(l: List<Int64>) -> Bytes
         {
-            return Bytes { handle: tinoxBufFromList(l) };
+            return Bytes { handle: tinoxBufFromList(l) }
         }
 
         /** Reads a whole file byte-exactly, straight into the compact payload */
         fn readFile(path: String) -> Bytes
         {
-            return Bytes { handle: tinoxBufReadFile(path) };
+            return Bytes { handle: tinoxBufReadFile(path) }
         }
 
         /** Reads all of stdin byte-exactly */
         fn readStdin() -> Bytes
         {
-            return Bytes { handle: tinoxBufStdinReadAll() };
+            return Bytes { handle: tinoxBufStdinReadAll() }
         }
 
         /**
@@ -73,7 +73,7 @@ namespace tinox.core.bytes
          */
         fn readFromConn(conn: Int64, n: Int64) -> Bytes
         {
-            return Bytes { handle: httpConnReadBuf(conn, n) };
+            return Bytes { handle: httpConnReadBuf(conn, n) }
         }
 
         /**
@@ -83,7 +83,7 @@ namespace tinox.core.bytes
          */
         fn fromRequestBody(body: String) -> Bytes
         {
-            return Bytes { handle: tinoxBufFromRequestBody(body) };
+            return Bytes { handle: tinoxBufFromRequestBody(body) }
         }
 
         /**
@@ -93,43 +93,43 @@ namespace tinox.core.bytes
          */
         fn asResponseBody() -> String
         {
-            return tinoxBufAsResponseBody(this.handle);
+            return tinoxBufAsResponseBody(this.handle)
         }
 
         /** Number of bytes */
         fn len() -> Int64
         {
-            return tinoxBufLen(this.handle);
+            return tinoxBufLen(this.handle)
         }
 
         /** Byte at index i as 0..255 (hard error when out of bounds) */
         fn get(i: Int64) -> Int64
         {
-            return tinoxBufGet(this.handle, i);
+            return tinoxBufGet(this.handle, i)
         }
 
         /** Stores v (0..255) at index i (hard error when out of range) */
         fn set(i: Int64, v: Int64) -> Nothing
         {
-            tinoxBufSet(this.handle, i, v);
+            tinoxBufSet(this.handle, i, v)
         }
 
         /** Copy of the bytes in [start, end) */
         fn slice(start: Int64, end: Int64) -> Bytes
         {
-            return Bytes { handle: tinoxBufSlice(this.handle, start, end) };
+            return Bytes { handle: tinoxBufSlice(this.handle, start, end) }
         }
 
         /** New buffer holding this buffer's bytes followed by other's */
         fn concat(other: Bytes) -> Bytes
         {
-            return Bytes { handle: tinoxBufConcat(this.handle, other.handle) };
+            return Bytes { handle: tinoxBufConcat(this.handle, other.handle) }
         }
 
         /** True when both buffers have identical length and content */
         fn equals(other: Bytes) -> Bool
         {
-            return tinoxBufEquals(this.handle, other.handle);
+            return tinoxBufEquals(this.handle, other.handle)
         }
 
         /**
@@ -138,25 +138,25 @@ namespace tinox.core.bytes
          */
         fn toText() -> String
         {
-            return tinoxBufToString(this.handle);
+            return tinoxBufToString(this.handle)
         }
 
         /** Adapter to the legacy List<Int64> (8x the memory) */
         fn toList() -> List<Int64>
         {
-            return tinoxBufToList(this.handle);
+            return tinoxBufToList(this.handle)
         }
 
         /** Writes the buffer to a file byte-exactly */
         fn writeFile(path: String) -> Nothing
         {
-            tinoxBufWriteFile(path, this.handle);
+            tinoxBufWriteFile(path, this.handle)
         }
 
         /** Writes the whole buffer to a connection; returns bytes written (-1 = invalid conn) */
         fn writeToConn(conn: Int64) -> Int64
         {
-            return httpConnWriteBuf(conn, this.handle);
+            return httpConnWriteBuf(conn, this.handle)
         }
     }
 }

@@ -1,17 +1,17 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class ClusterRoleBinding
     {
-        var apiVersion: String;
-        var kind: String;
-        var metadata: ObjectMeta;
-        var subjects: List<Subject>;
-        var roleRef: RoleRef;
+        var apiVersion: String
+        var kind: String
+        var metadata: ObjectMeta
+        var subjects: List<Subject>
+        var roleRef: RoleRef
 
         fnc create(name: String, subjects: List<Subject>, roleRef: RoleRef) -> ClusterRoleBinding
         {
@@ -19,7 +19,7 @@ namespace tinox.core.kubernetes
                 apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding",
                 metadata: ObjectMeta::withName(name),
                 subjects: subjects, roleRef: roleRef
-            };
+            }
         }
     }
 }

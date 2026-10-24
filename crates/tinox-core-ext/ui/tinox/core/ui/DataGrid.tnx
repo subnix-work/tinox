@@ -1,4 +1,4 @@
-module tinox.core.ui;
+module tinox.core.ui
 
 namespace tinox.core.ui
 {
@@ -16,46 +16,46 @@ namespace tinox.core.ui
     {
         fnc of(items: List<T>, columns: List<GridColumn<T>>) -> Component
         {
-            var headerCells: List<Component> = [];
-            var ci: Int64 = 0;
+            var headerCells: List<Component> = []
+            var ci: Int64 = 0
             while ci < columns.len()
             {
-                const col: GridColumn<T> = columns[ci];
-                headerCells.push(Component::gridCell(col.header, true));
-                ci = ci + 1;
+                const col: GridColumn<T> = columns[ci]
+                headerCells.push(Component::gridCell(col.header, true))
+                ci = ci + 1
             }
-            var rows: List<Component> = [Component::gridRow(headerCells)];
+            var rows: List<Component> = [Component::gridRow(headerCells)]
 
-            var ri: Int64 = 0;
+            var ri: Int64 = 0
             while ri < items.len()
             {
-                const item: T = items[ri];
-                var cells: List<Component> = [];
-                var cj: Int64 = 0;
+                const item: T = items[ri]
+                var cells: List<Component> = []
+                var cj: Int64 = 0
                 while cj < columns.len()
                 {
-                    const col: GridColumn<T> = columns[cj];
+                    const col: GridColumn<T> = columns[cj]
                     // See GridColumn.tnx's own doc comment (issue #219) --
                     // these `const`-typed locals are load-bearing, not
                     // stylistic: they're what makes each closure call's
                     // result usable as a real String/Component afterward.
                     if (col.isComponent)
                     {
-                        const cellComponent: Component = col.componentAccessor(item);
-                        cells.push(Component::gridCellComponent(cellComponent, false));
+                        const cellComponent: Component = col.componentAccessor(item)
+                        cells.push(Component::gridCellComponent(cellComponent, false))
                     }
                     else
                     {
-                        const cellText: String = col.accessor(item);
-                        cells.push(Component::gridCell(cellText, false));
+                        const cellText: String = col.accessor(item)
+                        cells.push(Component::gridCell(cellText, false))
                     }
-                    cj = cj + 1;
+                    cj = cj + 1
                 }
-                rows.push(Component::gridRow(cells));
-                ri = ri + 1;
+                rows.push(Component::gridRow(cells))
+                ri = ri + 1
             }
 
-            return Component { id: "", type: "DataGrid", text: "", props: Map::new(), children: rows, visible: true, onEvent: fn(v: String) { } };
+            return Component { id: "", type: "DataGrid", text: "", props: Map::new(), children: rows, visible: true, onEvent: fn(v: String) { } }
         }
     }
 }

@@ -80,8 +80,8 @@ fn run(source: &str) -> String {
 fn test_hello_world() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    println("Hello, World!");
-    return 0;
+    println("Hello, World!")
+    return 0
 }
 "#), "Hello, World!");
 }
@@ -92,10 +92,10 @@ fn main() -> Int64 {
 fn test_variables_int() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let x: Int64 = 42;
-    let y = 8;
-    println(x + y);
-    return 0;
+    let x: Int64 = 42
+    let y = 8
+    println(x + y)
+    return 0
 }
 "#), "50");
 }
@@ -104,11 +104,11 @@ fn main() -> Int64 {
 fn test_variables_float() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let pi: Float64 = 3.14;
-    let r: Float64 = 2.0;
-    let area = pi * r * r;
-    println(area);
-    return 0;
+    let pi: Float64 = 3.14
+    let r: Float64 = 2.0
+    let area = pi * r * r
+    println(area)
+    return 0
 }
 "#), "12.56");
 }
@@ -117,11 +117,11 @@ fn main() -> Int64 {
 fn test_variables_bool() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let t = true;
-    let f = false;
-    println(t);
-    println(f);
-    return 0;
+    let t = true
+    let f = false
+    println(t)
+    println(f)
+    return 0
 }
 "#), "true\nfalse");
 }
@@ -132,10 +132,10 @@ fn main() -> Int64 {
 fn test_string_interpolation() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let name = "Tino";
-    let n = 42;
-    println("Hello ${name}, answer is ${n}!");
-    return 0;
+    let name = "Tino"
+    let n = 42
+    println("Hello ${name}, answer is ${n}!")
+    return 0
 }
 "#), "Hello Tino, answer is 42!");
 }
@@ -146,13 +146,13 @@ fn main() -> Int64 {
 fn test_if_else() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let x = 10;
+    let x = 10
     if (x > 5) {
-        println("big");
+        println("big")
     } else {
-        println("small");
+        println("small")
     }
-    return 0;
+    return 0
 }
 "#), "big");
 }
@@ -161,14 +161,14 @@ fn main() -> Int64 {
 fn test_while_loop() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    var i = 0;
-    var sum = 0;
+    var i = 0
+    var sum = 0
     while i < 5 {
-        sum = sum + i;
-        i = i + 1;
+        sum = sum + i
+        i = i + 1
     }
-    println(sum);
-    return 0;
+    println(sum)
+    return 0
 }
 "#), "10");
 }
@@ -177,12 +177,12 @@ fn main() -> Int64 {
 fn test_for_range_exclusive() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    var sum = 0;
+    var sum = 0
     for i in 0..5 {
-        sum = sum + i;
+        sum = sum + i
     }
-    println(sum);
-    return 0;
+    println(sum)
+    return 0
 }
 "#), "10");
 }
@@ -191,12 +191,12 @@ fn main() -> Int64 {
 fn test_for_range_inclusive() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    var sum = 0;
+    var sum = 0
     for i in 1...5 {
-        sum = sum + i;
+        sum = sum + i
     }
-    println(sum);
-    return 0;
+    println(sum)
+    return 0
 }
 "#), "15");
 }
@@ -209,13 +209,13 @@ fn test_function_call() {
 namespace math {
     class Ops {
         fnc add(a: Int64, b: Int64) -> Int64 {
-            return a + b;
+            return a + b
         }
     }
 }
 fn main() -> Int64 {
-    println(Ops::add(3, 4));
-    return 0;
+    println(Ops::add(3, 4))
+    return 0
 }
 "#), "7");
 }
@@ -227,15 +227,15 @@ namespace math {
     class Seq {
         fnc fib(n: Int64) -> Int64 {
             if (n <= 1) {
-                return n;
+                return n
             }
-            return Seq::fib(n - 1) + Seq::fib(n - 2);
+            return Seq::fib(n - 1) + Seq::fib(n - 2)
         }
     }
 }
 fn main() -> Int64 {
-    println(Seq::fib(10));
-    return 0;
+    println(Seq::fib(10))
+    return 0
 }
 "#), "55");
 }
@@ -246,10 +246,10 @@ fn main() -> Int64 {
 fn test_int_array_literal_and_index() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let arr = [10, 20, 30, 40, 50];
-    println(arr[0]);
-    println(arr[4]);
-    return 0;
+    let arr = [10, 20, 30, 40, 50]
+    println(arr[0])
+    println(arr[4])
+    return 0
 }
 "#), "10\n50");
 }
@@ -258,9 +258,9 @@ fn main() -> Int64 {
 fn test_int_array_method_len() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let arr = [1, 2, 3, 4, 5];
-    println(arr.len());
-    return 0;
+    let arr = [1, 2, 3, 4, 5]
+    println(arr.len())
+    return 0
 }
 "#), "5");
 }
@@ -269,11 +269,11 @@ fn main() -> Int64 {
 fn test_int_array_push_pop() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    var arr = [1, 2, 3];
-    arr = arr.push(4);
-    println(arr.len());
-    println(arr.last());
-    return 0;
+    var arr = [1, 2, 3]
+    arr = arr.push(4)
+    println(arr.len())
+    println(arr.last())
+    return 0
 }
 "#), "4\n4");
 }
@@ -282,13 +282,13 @@ fn main() -> Int64 {
 fn test_for_loop_over_array() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let arr = [1, 2, 3, 4, 5];
-    var sum = 0;
+    let arr = [1, 2, 3, 4, 5]
+    var sum = 0
     for x in arr {
-        sum = sum + x;
+        sum = sum + x
     }
-    println(sum);
-    return 0;
+    println(sum)
+    return 0
 }
 "#), "15");
 }
@@ -297,10 +297,10 @@ fn main() -> Int64 {
 fn test_string_array_index() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let names: Array<String> = ["alice", "bob", "carol"];
-    println(names[0]);
-    println(names[2]);
-    return 0;
+    let names: Array<String> = ["alice", "bob", "carol"]
+    println(names[0])
+    println(names[2])
+    return 0
 }
 "#), "alice\ncarol");
 }
@@ -309,11 +309,11 @@ fn main() -> Int64 {
 fn test_string_array_for_loop() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let words = ["hello", "world"];
+    let words = ["hello", "world"]
     for w in words {
-        println(w);
+        println(w)
     }
-    return 0;
+    return 0
 }
 "#), "hello\nworld");
 }
@@ -322,9 +322,9 @@ fn main() -> Int64 {
 fn test_string_array_len() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let arr: Array<String> = ["a", "b", "c", "d"];
-    println(arr.len());
-    return 0;
+    let arr: Array<String> = ["a", "b", "c", "d"]
+    println(arr.len())
+    return 0
 }
 "#), "4");
 }
@@ -335,9 +335,9 @@ fn main() -> Int64 {
 fn test_tuple_basic() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let p = (10, 20);
-    println(p.0 + p.1);
-    return 0;
+    let p = (10, 20)
+    println(p.0 + p.1)
+    return 0
 }
 "#), "30");
 }
@@ -346,9 +346,9 @@ fn main() -> Int64 {
 fn test_tuple_nested() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let t = ((1, 2), 3);
-    println(t.0.1);
-    return 0;
+    let t = ((1, 2), 3)
+    println(t.0.1)
+    return 0
 }
 "#), "2");
 }
@@ -359,10 +359,10 @@ fn main() -> Int64 {
 fn test_map_set_get() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let m = @{ "x" => 10, "y" => 20 };
-    println(m.get("x"));
-    println(m.get("y"));
-    return 0;
+    let m = @{ "x" => 10, "y" => 20 }
+    println(m.get("x"))
+    println(m.get("y"))
+    return 0
 }
 "#), "10\n20");
 }
@@ -373,25 +373,25 @@ fn test_map_set_alias() {
     assert_eq!(run(r#"
 class Main {
     fnc main() -> Int32 {
-        var m: Map<String, String> = Map::new();
-        m.set("k", "v");
-        println(m.get("k"));
-        m.set("k", "updated");
-        println(m.get("k"));
-        m.insert("other", "inserted");
-        println(m.get("other"));
-        println(m.len());
+        var m: Map<String, String> = Map::new()
+        m.set("k", "v")
+        println(m.get("k"))
+        m.set("k", "updated")
+        println(m.get("k"))
+        m.insert("other", "inserted")
+        println(m.get("other"))
+        println(m.len())
 
-        var ints: Map<String, Int64> = Map::new();
-        ints.set("n", 42);
-        println(ints.get("n"));
-        var floats: Map<String, Float64> = Map::new();
-        floats.set("n", 1.5);
-        println(floats.get("n"));
-        var bools: Map<String, Bool> = Map::new();
-        bools.set("b", true);
-        println(bools.get("b"));
-        return 0;
+        var ints: Map<String, Int64> = Map::new()
+        ints.set("n", 42)
+        println(ints.get("n"))
+        var floats: Map<String, Float64> = Map::new()
+        floats.set("n", 1.5)
+        println(floats.get("n"))
+        var bools: Map<String, Bool> = Map::new()
+        bools.set("b", true)
+        println(bools.get("b"))
+        return 0
     }
 }
 "#), "v\nupdated\ninserted\n2\n42\n1.5\ntrue");
@@ -401,11 +401,11 @@ class Main {
 fn test_map_len_remove() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let m = @{ "a" => 1, "b" => 2, "c" => 3 };
-    println(m.len());
-    m.remove("b");
-    println(m.len());
-    return 0;
+    let m = @{ "a" => 1, "b" => 2, "c" => 3 }
+    println(m.len())
+    m.remove("b")
+    println(m.len())
+    return 0
 }
 "#), "3\n2");
 }
@@ -414,16 +414,16 @@ fn main() -> Int64 {
 fn test_map_contains() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let m = @{ "key" => 42 };
+    let m = @{ "key" => 42 }
     if (m.contains("key")) {
-        println("found");
+        println("found")
     }
     if (m.contains("missing")) {
-        println("wrong");
+        println("wrong")
     } else {
-        println("not found");
+        println("not found")
     }
-    return 0;
+    return 0
 }
 "#), "found\nnot found");
 }
@@ -434,9 +434,9 @@ fn main() -> Int64 {
 fn test_lambda_basic() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let double = fn(x: Int64) -> Int64 { return x * 2; };
-    println(double(21));
-    return 0;
+    let double = fn(x: Int64) -> Int64 { return x * 2 }
+    println(double(21))
+    return 0
 }
 "#), "42");
 }
@@ -445,10 +445,10 @@ fn main() -> Int64 {
 fn test_lambda_capture() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let base = 10;
-    let add_base = fn(x: Int64) -> Int64 { return x + base; };
-    println(add_base(5));
-    return 0;
+    let base = 10
+    let add_base = fn(x: Int64) -> Int64 { return x + base }
+    println(add_base(5))
+    return 0
 }
 "#), "15");
 }
@@ -459,16 +459,16 @@ fn main() -> Int64 {
 fn test_class_fields_and_methods() {
     assert_eq!(run(r#"
 class Point {
-    x: Int64;
-    y: Int64;
+    x: Int64
+    y: Int64
     fn sum() -> Int64 {
-        return this.x + this.y;
+        return this.x + this.y
     }
 }
 fn main() -> Int64 {
-    let p = new Point(3, 4);
-    println(p.sum());
-    return 0;
+    let p = new Point(3, 4)
+    println(p.sum())
+    return 0
 }
 "#), "7");
 }
@@ -477,20 +477,20 @@ fn main() -> Int64 {
 fn test_class_inheritance() {
     assert_eq!(run(r#"
 class Animal {
-    name: String;
+    name: String
     fn kind() -> String {
-        return "animal";
+        return "animal"
     }
 }
 class Dog extends Animal {
     fn kind() -> String {
-        return "dog";
+        return "dog"
     }
 }
 fn main() -> Int64 {
-    let d = new Dog("Rex");
-    println(d.kind());
-    return 0;
+    let d = new Dog("Rex")
+    println(d.kind())
+    return 0
 }
 "#), "dog");
 }
@@ -501,26 +501,26 @@ fn main() -> Int64 {
 fn test_interface_dispatch() {
     assert_eq!(run(r#"
 interface Shape {
-    fn area() -> Int64 { return 0; }
+    fn area() -> Int64 { return 0 }
 }
 class Square implements Shape {
-    side: Int64;
+    side: Int64
     fn area() -> Int64 {
-        return this.side * this.side;
+        return this.side * this.side
     }
 }
 namespace shapes {
     class ShapeUtils {
         fnc print_area(s: Shape) -> Int64 {
-            println(s.area());
-            return 0;
+            println(s.area())
+            return 0
         }
     }
 }
 fn main() -> Int64 {
-    let sq = new Square(5);
-    ShapeUtils::print_area(sq);
-    return 0;
+    let sq = new Square(5)
+    ShapeUtils::print_area(sq)
+    return 0
 }
 "#), "25");
 }
@@ -530,23 +530,26 @@ fn main() -> Int64 {
 #[test]
 fn test_enum_match() {
     assert_eq!(run(r#"
-enum Dir { North; South; East; West; }
+enum Dir { North
+South
+East
+West }
 namespace dir {
     class DirUtils {
         fnc label(d: Dir) -> String {
             match d {
-                North => return "N";
-                South => return "S";
-                East  => return "E";
-                West  => return "W";
+                North => return "N"
+                South => return "S"
+                East  => return "E"
+                West  => return "W"
             }
         }
     }
 }
 fn main() -> Int64 {
-    println(DirUtils::label(Dir::North));
-    println(DirUtils::label(Dir::West));
-    return 0;
+    println(DirUtils::label(Dir::North))
+    println(DirUtils::label(Dir::West))
+    return 0
 }
 "#), "N\nW");
 }
@@ -557,11 +560,11 @@ fn main() -> Int64 {
 fn test_generic_function() {
     assert_eq!(run(r#"
 fn identity<T>(x: T) -> T {
-    return x;
+    return x
 }
 fn main() -> Int64 {
-    println(identity(99));
-    return 0;
+    println(identity(99))
+    return 0
 }
 "#), "99");
 }
@@ -570,15 +573,15 @@ fn main() -> Int64 {
 fn test_generic_class() {
     assert_eq!(run(r#"
 class Box<T> {
-    value: T;
+    value: T
     fn get() -> T {
-        return this.value;
+        return this.value
     }
 }
 fn main() -> Int64 {
-    let b = new Box<Int64>(42);
-    println(b.get());
-    return 0;
+    let b = new Box<Int64>(42)
+    println(b.get())
+    return 0
 }
 "#), "42");
 }
@@ -589,10 +592,10 @@ fn main() -> Int64 {
 fn test_math_builtins() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    println(abs(-7));
-    println(min(3, 5));
-    println(max(3, 5));
-    return 0;
+    println(abs(-7))
+    println(min(3, 5))
+    println(max(3, 5))
+    return 0
 }
 "#), "7\n3\n5");
 }
@@ -601,11 +604,11 @@ fn main() -> Int64 {
 fn test_string_methods() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let s = "Hello";
-    println(s.toUpper());
-    println(s.toLower());
-    println(s.len());
-    return 0;
+    let s = "Hello"
+    println(s.toUpper())
+    println(s.toLower())
+    println(s.len())
+    return 0
 }
 "#), "HELLO\nhello\n5");
 }
@@ -614,11 +617,11 @@ fn main() -> Int64 {
 fn test_string_contains_starts_ends() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let s = "Hello World";
-    println(s.contains("World"));
-    println(s.startsWith("Hello"));
-    println(s.endsWith("World"));
-    return 0;
+    let s = "Hello World"
+    println(s.contains("World"))
+    println(s.startsWith("Hello"))
+    println(s.endsWith("World"))
+    return 0
 }
 "#), "true\ntrue\ntrue");
 }
@@ -630,13 +633,13 @@ fn test_try_catch() {
     assert_eq!(run(r#"
 fn main() -> Int64 {
     try {
-        println("try");
+        println("try")
     } catch e: Int64 {
-        println("catch");
+        println("catch")
     } finally {
-        println("finally");
+        println("finally")
     }
-    return 0;
+    return 0
 }
 "#), "try\nfinally");
 }
@@ -648,14 +651,14 @@ fn test_multiple_functions() {
     assert_eq!(run(r#"
 namespace math {
     class MathUtils {
-        fnc square(x: Int64) -> Int64 { return x * x; }
-        fnc cube(x: Int64) -> Int64 { return x * x * x; }
+        fnc square(x: Int64) -> Int64 { return x * x }
+        fnc cube(x: Int64) -> Int64 { return x * x * x }
     }
 }
 fn main() -> Int64 {
-    println(MathUtils::square(4));
-    println(MathUtils::cube(3));
-    return 0;
+    println(MathUtils::square(4))
+    println(MathUtils::cube(3))
+    return 0
 }
 "#), "16\n27");
 }
@@ -667,13 +670,13 @@ fn test_gc_many_string_allocations() {
     // 100k string allocations without explicit free — GC must not crash or OOM
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    var i: Int64 = 0;
+    var i: Int64 = 0
     while (i < 100000) {
-        let s: String = "item-" + i.toString();
-        i = i + 1;
+        let s: String = "item-" + i.toString()
+        i = i + 1
     }
-    println("ok");
-    return 0;
+    println("ok")
+    return 0
 }
 "#), "ok");
 }
@@ -683,18 +686,18 @@ fn test_gc_list_churn() {
     // Repeated list creation — ensures GC collects unreachable list objects
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    var round: Int64 = 0;
+    var round: Int64 = 0
     while (round < 1000) {
-        var nums: List<Int64> = [];
-        var j: Int64 = 0;
+        var nums: List<Int64> = []
+        var j: Int64 = 0
         while (j < 100) {
-            nums.push(j);
-            j = j + 1;
+            nums.push(j)
+            j = j + 1
         }
-        round = round + 1;
+        round = round + 1
     }
-    println("ok");
-    return 0;
+    println("ok")
+    return 0
 }
 "#), "ok");
 }
@@ -724,45 +727,45 @@ fn test_independent_generic_specializations_dont_collide_on_lambda_names() {
     // bodies wired to the wrong names.
     assert_eq!(run(r#"
 class Person {
-    var name: String;
+    var name: String
 }
 
 class Box<T> {
-    var accessor: fnc(T) -> String;
+    var accessor: fnc(T) -> String
     fnc make(accessor: fnc(T) -> String) -> Box<T> {
-        return Box<T> { accessor: accessor };
+        return Box<T> { accessor: accessor }
     }
     fnc makeDummy() -> Box<T> {
-        return Box<T> { accessor: fn(item: T) { return "box-dummy"; } };
+        return Box<T> { accessor: fn(item: T) { return "box-dummy" } }
     }
 }
 
 class Bag<T> {
-    var accessor: fnc(T) -> String;
+    var accessor: fnc(T) -> String
     fnc make(accessor: fnc(T) -> String) -> Bag<T> {
-        return Bag<T> { accessor: accessor };
+        return Bag<T> { accessor: accessor }
     }
     fnc makeDummy() -> Bag<T> {
-        return Bag<T> { accessor: fn(item: T) { return "bag-dummy"; } };
+        return Bag<T> { accessor: fn(item: T) { return "bag-dummy" } }
     }
 }
 
 fn main() -> Int64 {
-    let p: Person = Person { name: "Ada" };
-    let b1: Box<Person> = Box::make(fn(person: Person) { return "box:" + person.name; });
-    let b2: Bag<Person> = Bag::make(fn(person: Person) { return "bag:" + person.name; });
-    let d1: Box<Person> = Box::makeDummy();
-    let d2: Bag<Person> = Bag::makeDummy();
+    let p: Person = Person { name: "Ada" }
+    let b1: Box<Person> = Box::make(fn(person: Person) { return "box:" + person.name })
+    let b2: Bag<Person> = Bag::make(fn(person: Person) { return "bag:" + person.name })
+    let d1: Box<Person> = Box::makeDummy()
+    let d2: Bag<Person> = Bag::makeDummy()
 
-    let r1: String = b1.accessor(p);
-    let r2: String = b2.accessor(p);
-    let r3: String = d1.accessor(p);
-    let r4: String = d2.accessor(p);
-    println(r1);
-    println(r2);
-    println(r3);
-    println(r4);
-    return 0;
+    let r1: String = b1.accessor(p)
+    let r2: String = b2.accessor(p)
+    let r3: String = d1.accessor(p)
+    let r4: String = d2.accessor(p)
+    println(r1)
+    println(r2)
+    println(r3)
+    println(r4)
+    return 0
 }
 "#), "box:Ada\nbag:Ada\nbox-dummy\nbag-dummy");
 }
@@ -785,13 +788,13 @@ fn test_float64_to_int_method_call() {
     // Quantity.tnx CPU-quantity parser).
     assert_eq!(run(r#"
 fn main() -> Int64 {
-    let f: Float64 = 2.5;
-    let a: Int64 = f.toInt();
-    println(a.toString());
+    let f: Float64 = 2.5
+    let a: Int64 = f.toInt()
+    println(a.toString())
 
-    let b: Int64 = (f * 1000.0).toInt();
-    println(b.toString());
-    return 0;
+    let b: Int64 = (f * 1000.0).toInt()
+    println(b.toString())
+    return 0
 }
 "#), "2\n2500");
 }
@@ -809,13 +812,13 @@ fn test_indirect_closure_call_return_type_issue_219() {
     // instead of the real string. Minimal repro straight from the issue.
     assert_eq!(run(r#"
 class Col2 {
-    var header: String;
-    var accessor: fnc(Int64) -> String;
+    var header: String
+    var accessor: fnc(Int64) -> String
 }
 fn main() -> Int64 {
-    let c: Col2 = Col2 { header: "Age", accessor: fn(x: Int64) { return x.toString(); } };
-    println(c.accessor(42));
-    return 0;
+    let c: Col2 = Col2 { header: "Age", accessor: fn(x: Int64) { return x.toString() } }
+    println(c.accessor(42))
+    return 0
 }
 "#), "42");
 }
@@ -825,21 +828,21 @@ fn test_gc_objects_survive_collection() {
     // Objects that are still reachable must NOT be collected
     assert_eq!(run(r#"
 class Counter {
-    var value: Int64;
+    var value: Int64
     fn increment() -> Nothing {
-        this.value = this.value + 1;
+        this.value = this.value + 1
     }
 }
 fn main() -> Int64 {
-    let c: Counter = Counter { value: 0 };
-    var i: Int64 = 0;
+    let c: Counter = Counter { value: 0 }
+    var i: Int64 = 0
     while (i < 10000) {
-        let noise: String = "noise-" + i.toString();
-        c.increment();
-        i = i + 1;
+        let noise: String = "noise-" + i.toString()
+        c.increment()
+        i = i + 1
     }
-    println(c.value.toString());
-    return 0;
+    println(c.value.toString())
+    return 0
 }
 "#), "10000");
 }

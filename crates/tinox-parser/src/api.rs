@@ -344,7 +344,7 @@ pub fn symbols(source: &SourceFile, file: &str, import_prefix: &str) -> Vec<Symb
                 required_import: if import_prefix.is_empty() {
                     None
                 } else {
-                    Some(format!("import {import_prefix};"))
+                    Some(format!("import {import_prefix}"))
                 },
                 package: None,
                 type_parameters,

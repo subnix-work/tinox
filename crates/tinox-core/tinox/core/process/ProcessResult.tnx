@@ -12,20 +12,20 @@ namespace tinox.core.process
      */
     class ProcessResult
     {
-        var stdout: String;
-        var stderr: String;
-        var exitCode: Int64;
-        var timedOut: Bool;
+        var stdout: String
+        var stderr: String
+        var exitCode: Int64
+        var timedOut: Bool
 
         fn new(stdout: String, stderr: String, exitCode: Int64, timedOut: Bool) -> ProcessResult
         {
-            return ProcessResult { stdout: stdout, stderr: stderr, exitCode: exitCode, timedOut: timedOut };
+            return ProcessResult { stdout: stdout, stderr: stderr, exitCode: exitCode, timedOut: timedOut }
         }
 
         /** True if the process ran to completion with exit code 0. */
         fn success() -> Bool
         {
-            return this.exitCode == 0 && !this.timedOut;
+            return this.exitCode == 0 && !this.timedOut
         }
     }
 }

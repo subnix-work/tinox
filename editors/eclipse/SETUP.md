@@ -94,12 +94,12 @@ In the second Eclipse window:
 
 ```tinox
 fn add(a: Int64, b: Int64) -> Int64 {
-    return a + b;
+    return a + b
 }
 
 fn main() -> Int64 {
-    const x = add(1, 2);
-    return x;
+    const x = add(1, 2)
+    return x
 }
 ```
 

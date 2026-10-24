@@ -1,15 +1,15 @@
-import tinox.core.http;
+import tinox.core.http
 
 class Main
 {
     fnc main() -> Int32
     {
-        Http::setHeader("Accept", "application/json");
-        const resp: HttpClientResponse = Http::get("http://localhost:8080/api/v1/packages");
-        Http::clearHeaders();
+        Http::setHeader("Accept", "application/json")
+        const resp: HttpClientResponse = Http::get("http://localhost:8080/api/v1/packages")
+        Http::clearHeaders()
 
-        println("status: " + httpStatusCode(resp).toString());
-        println("body: " + httpBody(resp));
-        return 0;
+        println("status: " + httpStatusCode(resp).toString())
+        println("body: " + httpBody(resp))
+        return 0
     }
 }

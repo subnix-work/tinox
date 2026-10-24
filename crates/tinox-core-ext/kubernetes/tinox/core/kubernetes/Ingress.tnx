@@ -1,16 +1,16 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class Ingress
     {
-        var apiVersion: String;
-        var kind: String;
-        var metadata: ObjectMeta;
-        var spec: IngressSpec;
+        var apiVersion: String
+        var kind: String
+        var metadata: ObjectMeta
+        var spec: IngressSpec
 
         // ingressClassName is REQUIRED, not optional -- an empty string is
         // invalid per the API server's own validation ("must be a
@@ -24,7 +24,7 @@ namespace tinox.core.kubernetes
                 apiVersion: "networking.k8s.io/v1", kind: "Ingress",
                 metadata: ObjectMeta::withNameAndNamespace(name, namespace),
                 spec: IngressSpec { ingressClassName: ingressClassName, rules: rules, tls: [] }
-            };
+            }
         }
     }
 }

@@ -1,7 +1,7 @@
-module tinox.core.ui;
+module tinox.core.ui
 
-import tinox.core.json;
-import tinox.core.websocket;
+import tinox.core.json
+import tinox.core.websocket
 
 namespace tinox.core.ui
 {
@@ -29,34 +29,34 @@ namespace tinox.core.ui
         // unique WITHIN one render).
         fnc buildHandlers(root: Component) -> Map<String, fnc(String) -> Nothing>
         {
-            const handlers: Map<String, fnc(String) -> Nothing> = Map::new();
-            const counter: List<Int64> = [0];
-            TinoxUIRuntime::assignIds(root, handlers, counter);
-            return handlers;
+            const handlers: Map<String, fnc(String) -> Nothing> = Map::new()
+            const counter: List<Int64> = [0]
+            TinoxUIRuntime::assignIds(root, handlers, counter)
+            return handlers
         }
 
         fnc assignIds(node: Component, handlers: Map<String, fnc(String) -> Nothing>, counter: List<Int64>) -> Nothing
         {
-            const id: String = "c" + counter[0].toString();
-            counter[0] = counter[0] + 1;
-            node.id = id;
-            handlers.insert(id, node.onEvent);
-            var i: Int64 = 0;
+            const id: String = "c" + counter[0].toString()
+            counter[0] = counter[0] + 1
+            node.id = id
+            handlers.insert(id, node.onEvent)
+            var i: Int64 = 0
             while i < node.children.len()
             {
-                TinoxUIRuntime::assignIds(node.children[i], handlers, counter);
-                i = i + 1;
+                TinoxUIRuntime::assignIds(node.children[i], handlers, counter)
+                i = i + 1
             }
         }
 
         fnc sendInit(conn: Int64, root: Component) -> Nothing
         {
-            Ws::sendText(conn, "{\"kind\":\"init\",\"root\":" + Json::serialize(root) + "}");
+            Ws::sendText(conn, "{\"kind\":\"init\",\"root\":" + Json::serialize(root) + "}")
         }
 
         fnc sendUpdate(conn: Int64, root: Component) -> Nothing
         {
-            Ws::sendText(conn, "{\"kind\":\"update\",\"root\":" + Json::serialize(root) + "}");
+            Ws::sendText(conn, "{\"kind\":\"update\",\"root\":" + Json::serialize(root) + "}")
         }
 
         // ---- v2 diff-based rendering (Phase 3) ----
@@ -85,9 +85,9 @@ namespace tinox.core.ui
         {
             if (old.type != new_.type || old.visible != new_.visible)
             {
-                TinoxUIRuntime::assignIdsOnly(new_, counter);
-                ops.push(TinoxUIPatchOp { op: "replace", id: old.id, text: "", props: Map::new(), node: new_, parentId: "", index: 0 });
-                return;
+                TinoxUIRuntime::assignIdsOnly(new_, counter)
+                ops.push(TinoxUIPatchOp { op: "replace", id: old.id, text: "", props: Map::new(), node: new_, parentId: "", index: 0 })
+                return
             }
 
             // Same type/visibility at this position -- reuse the OLD id
@@ -96,43 +96,43 @@ namespace tinox.core.ui
             // across renders when diffing is used, despite
             // assignIds/buildHandlers's own ids never being stable on
             // their own -- see Component.tnx's doc comment).
-            new_.id = old.id;
+            new_.id = old.id
 
             if (old.text != new_.text || !TinoxUIRuntime::propsEqual(old.props, new_.props))
             {
-                ops.push(TinoxUIPatchOp { op: "update", id: new_.id, text: new_.text, props: new_.props, node: Component::none(), parentId: "", index: 0 });
+                ops.push(TinoxUIPatchOp { op: "update", id: new_.id, text: new_.text, props: new_.props, node: Component::none(), parentId: "", index: 0 })
             }
 
-            var i: Int64 = 0;
-            const oldLen: Int64 = old.children.len();
-            const newLen: Int64 = new_.children.len();
+            var i: Int64 = 0
+            const oldLen: Int64 = old.children.len()
+            const newLen: Int64 = new_.children.len()
             while i < oldLen && i < newLen
             {
-                TinoxUIRuntime::diff(old.children[i], new_.children[i], counter, ops);
-                i = i + 1;
+                TinoxUIRuntime::diff(old.children[i], new_.children[i], counter, ops)
+                i = i + 1
             }
             while i < newLen
             {
-                TinoxUIRuntime::assignIdsOnly(new_.children[i], counter);
-                ops.push(TinoxUIPatchOp { op: "insert", id: "", text: "", props: Map::new(), node: new_.children[i], parentId: new_.id, index: i });
-                i = i + 1;
+                TinoxUIRuntime::assignIdsOnly(new_.children[i], counter)
+                ops.push(TinoxUIPatchOp { op: "insert", id: "", text: "", props: Map::new(), node: new_.children[i], parentId: new_.id, index: i })
+                i = i + 1
             }
             while i < oldLen
             {
-                ops.push(TinoxUIPatchOp { op: "remove", id: old.children[i].id, text: "", props: Map::new(), node: Component::none(), parentId: "", index: 0 });
-                i = i + 1;
+                ops.push(TinoxUIPatchOp { op: "remove", id: old.children[i].id, text: "", props: Map::new(), node: Component::none(), parentId: "", index: 0 })
+                i = i + 1
             }
         }
 
         fnc assignIdsOnly(node: Component, counter: List<Int64>) -> Nothing
         {
-            node.id = "c" + counter[0].toString();
-            counter[0] = counter[0] + 1;
-            var i: Int64 = 0;
+            node.id = "c" + counter[0].toString()
+            counter[0] = counter[0] + 1
+            var i: Int64 = 0
             while i < node.children.len()
             {
-                TinoxUIRuntime::assignIdsOnly(node.children[i], counter);
-                i = i + 1;
+                TinoxUIRuntime::assignIdsOnly(node.children[i], counter)
+                i = i + 1
             }
         }
 
@@ -143,12 +143,12 @@ namespace tinox.core.ui
         // and shouldn't reassign them a second time.
         fnc collectHandlers(node: Component, handlers: Map<String, fnc(String) -> Nothing>) -> Nothing
         {
-            handlers.insert(node.id, node.onEvent);
-            var i: Int64 = 0;
+            handlers.insert(node.id, node.onEvent)
+            var i: Int64 = 0
             while i < node.children.len()
             {
-                TinoxUIRuntime::collectHandlers(node.children[i], handlers);
-                i = i + 1;
+                TinoxUIRuntime::collectHandlers(node.children[i], handlers)
+                i = i + 1
             }
         }
 
@@ -156,29 +156,29 @@ namespace tinox.core.ui
         {
             if (a.len() != b.len())
             {
-                return false;
+                return false
             }
-            const keys: List<String> = a.keys();
-            var i: Int64 = 0;
+            const keys: List<String> = a.keys()
+            var i: Int64 = 0
             while i < keys.len()
             {
                 if (!b.contains(keys[i]))
                 {
-                    return false;
+                    return false
                 }
                 if (a.get(keys[i]) != b.get(keys[i]))
                 {
-                    return false;
+                    return false
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return true;
+            return true
         }
 
         fnc sendPatch(conn: Int64, ops: List<TinoxUIPatchOp>) -> Nothing
         {
-            const message: TinoxUIPatchMessage = TinoxUIPatchMessage { kind: "patch", ops: ops };
-            Ws::sendText(conn, Json::serialize(message));
+            const message: TinoxUIPatchMessage = TinoxUIPatchMessage { kind: "patch", ops: ops }
+            Ws::sendText(conn, Json::serialize(message))
         }
 
         // Parses a client event message ({"kind":"event","id":...,"value":...})
@@ -189,13 +189,13 @@ namespace tinox.core.ui
         // the module's own docs on reconnect/staleness handling.
         fnc dispatchEvent(handlers: Map<String, fnc(String) -> Nothing>, msg: String) -> Nothing
         {
-            const event: JsonValue = Json::parse(msg);
-            const id: String = event.getField("id").getString();
-            const value: String = event.getField("value").getString();
+            const event: JsonValue = Json::parse(msg)
+            const id: String = event.getField("id").getString()
+            const value: String = event.getField("value").getString()
             if (handlers.contains(id))
             {
-                const handler: fnc(String) -> Nothing = handlers.get(id);
-                handler(value);
+                const handler: fnc(String) -> Nothing = handlers.get(id)
+                handler(value)
             }
         }
     }

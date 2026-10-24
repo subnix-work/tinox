@@ -1,12 +1,12 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class PersistentVolumeClaimStatus
     {
-        var phase: String;
+        var phase: String
     }
 }

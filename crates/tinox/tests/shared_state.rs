@@ -13,11 +13,11 @@ fn concurrent_first_access_publishes_one_initialized_dependency_graph() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = std::env::temp_dir().join(format!("tinox-singleton-publication-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
-    fs::write(directory.join("Main.tnx"), "import Service; import Eager; class Main { fnc main() -> Int32 { return 0; } }").unwrap();
-    fs::write(directory.join("Leaf.tnx"), "@ApplicationComponent class Leaf { var ready: Int64 = 17; }").unwrap();
-    fs::write(directory.join("Eager.tnx"), "import Leaf; @Startup class Eager { @Inject var leaf: Leaf; var ready: Int64 = 29; }").unwrap();
-    let fields: String = (0..2000).map(|i| format!("var field{i}: Int64 = 17;\n")).collect();
-    fs::write(directory.join("Service.tnx"), format!("import Leaf; @ApplicationComponent class Service {{ {fields} @Inject var leaf: Leaf; }}")).unwrap();
+    fs::write(directory.join("Main.tnx"), "import Service\nimport Eager\nclass Main { fnc main() -> Int32 { return 0 } }").unwrap();
+    fs::write(directory.join("Leaf.tnx"), "@ApplicationComponent class Leaf { var ready: Int64 = 17 }").unwrap();
+    fs::write(directory.join("Eager.tnx"), "import Leaf\n@Startup class Eager { @Inject var leaf: Leaf\nvar ready: Int64 = 29 }").unwrap();
+    let fields: String = (0..2000).map(|i| format!("var field{i}: Int64 = 17\n")).collect();
+    fs::write(directory.join("Service.tnx"), format!("import Leaf\n@ApplicationComponent class Service {{ {fields} @Inject var leaf: Leaf }}")).unwrap();
     success(Command::new(env!("CARGO_BIN_EXE_tinox")).current_dir(&directory).args(["build", "Main.tnx", "-o", "program"]));
     let ir = fs::read_to_string(directory.join("program.ll")).unwrap();
     assert!(ir.contains("define i32 @tinox_main("));
@@ -101,24 +101,26 @@ fn concurrent_http_clients_share_a_guarded_counter_and_collection() {
         copy_tree(&modules.join(module).join("tinox"), &directory.join(format!(".tinox/repository/central/tinox.core/{module}/9.9.9/tinox")));
     }
     fs::write(directory.join("tinox.toml"), manifest).unwrap();
-    fs::write(directory.join("Main.tnx"), "import Api; class Main { fnc main() -> Int32 { return 0; } }").unwrap();
+    fs::write(directory.join("Main.tnx"), "import Api\nclass Main { fnc main() -> Int32 { return 0 } }").unwrap();
     fs::write(directory.join("Counter.tnx"), r#"
 @ApplicationComponent @Synchronized class Counter {
-    private var count: Int64 = 0;
-    private var entries: List<Int64> = [];
-    fn add() -> Int64 { this.count = this.count + 1; this.entries.push(this.count); return this.read(); }
-    fn read() -> Int64 { return this.count; }
-    fn size() -> Int64 { return this.entries.len(); }
+    private var count: Int64 = 0
+    private var entries: List<Int64> = []
+    fn add() -> Int64 { this.count = this.count + 1
+    this.entries.push(this.count)
+    return this.read() }
+    fn read() -> Int64 { return this.count }
+    fn size() -> Int64 { return this.entries.len() }
 }
 "#).unwrap();
     fs::write(directory.join("Api.tnx"), r#"
-import tinox.core.http_server;
-import Counter;
+import tinox.core.http_server
+import Counter
 @HttpRequestScoped @Path("/counter") class Api {
-    @Inject var counter: Counter;
-    @GET @Path("/next") fn next() -> Int64 { return this.counter.add(); }
-    @GET @Path("/count") fn count() -> Int64 { return this.counter.read(); }
-    @GET @Path("/size") fn size() -> Int64 { return this.counter.size(); }
+    @Inject var counter: Counter
+    @GET @Path("/next") fn next() -> Int64 { return this.counter.add() }
+    @GET @Path("/count") fn count() -> Int64 { return this.counter.read() }
+    @GET @Path("/size") fn size() -> Int64 { return this.counter.size() }
 }
 "#).unwrap();
     // Reserve an OS-assigned port throughout compilation, then release it for

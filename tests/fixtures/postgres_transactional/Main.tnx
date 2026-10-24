@@ -1,71 +1,71 @@
-import tinox.core.db;
-import Account;
-import BankService;
+import tinox.core.db
+import Account
+import BankService
 
 class Main
 {
     fnc cancelledChange(svc: BankService, ready: Int64) -> Nothing {
-        svc.cancelledChange(1, ready);
+        svc.cancelledChange(1, ready)
     }
     fnc main() -> Int32
     {
         // Issue #358: empty ORM queries must return defaults without
         // libpq warnings, including repeated polling of the same query.
         for pollIndex in 0..3 {
-            const none: Account = DB::of(Account).filter(a => a.name == "does-not-exist").first();
-            println("missing: " + none.id.toString() + ":" + none.name + ":" + none.balance.toString());
-            const rows: List<Account> = DB::of(Account).filter(a => a.name == "does-not-exist").list();
-            println("missing list: " + rows.len().toString());
-            println("missing count: " + DB::of(Account).filter(a => a.name == "does-not-exist").count().toString());
+            const none: Account = DB::of(Account).filter(a => a.name == "does-not-exist").first()
+            println("missing: " + none.id.toString() + ":" + none.name + ":" + none.balance.toString())
+            const rows: List<Account> = DB::of(Account).filter(a => a.name == "does-not-exist").list()
+            println("missing list: " + rows.len().toString())
+            println("missing count: " + DB::of(Account).filter(a => a.name == "does-not-exist").count().toString())
         }
         // Issue #358: empty ORM queries must not read row zero in libpq.
-        const missing: Account = DB::of(Account).filter(a => a.name == "does-not-exist").first();
-        println("missing id: " + missing.id.toString());
-        println("missing name: [" + missing.name + "]");
-        println("missing balance: " + missing.balance.toString());
-        const empty: List<Account> = DB::of(Account).filter(a => a.name == "does-not-exist").list();
-        println("empty list: " + empty.len().toString());
-        println("empty count: " + DB::of(Account).filter(a => a.name == "does-not-exist").count().toString());
+        const missing: Account = DB::of(Account).filter(a => a.name == "does-not-exist").first()
+        println("missing id: " + missing.id.toString())
+        println("missing name: [" + missing.name + "]")
+        println("missing balance: " + missing.balance.toString())
+        const empty: List<Account> = DB::of(Account).filter(a => a.name == "does-not-exist").list()
+        println("empty list: " + empty.len().toString())
+        println("empty count: " + DB::of(Account).filter(a => a.name == "does-not-exist").count().toString())
 
-        const svc = new BankService();
+        const svc = new BankService()
 
         // Succeeds -- commits, real balance change expected in Postgres.
-        svc.transfer(1, 2, 500);
-        println("transfer1 done");
+        svc.transfer(1, 2, 500)
+        println("transfer1 done")
 
         // Overdraws the sender -- must roll back BOTH saves inside the
         // same @Transactional call, not just leave the throwing statement's
         // own effect undone.
         try {
-            svc.transfer(1, 2, 999999);
-            println("transfer2 should have thrown");
+            svc.transfer(1, 2, 999999)
+            println("transfer2 should have thrown")
         } catch (e: String) {
-            println("transfer2 rolled back: " + e);
+            println("transfer2 rolled back: " + e)
         }
 
         // Regression check for the explicit-return-skips-commit bug --
         // must actually commit account 1's +1 balance bump.
-        const newBalance: Int64 = svc.getBalanceAndTouch(1);
-        println("balance after touch: " + newBalance.toString());
+        const newBalance: Int64 = svc.getBalanceAndTouch(1)
+        println("balance after touch: " + newBalance.toString())
 
         // Repeat against real Postgres; the Rust test verifies the final
         // balances independently through psql after every task has joined.
-        const ready = channel;
-        var i = 0;
+        const ready = channel
+        var i = 0
         while (i < 20) {
             scope {
-                const task = spawn Main::cancelledChange(svc, ready);
-                recv ready;
-                taskCancel(task);
-                try { await task; } catch (e: String) {
-                    println("cancelled rollback: " + e);
+                const task = spawn Main::cancelledChange(svc, ready)
+                recv ready
+                taskCancel(task)
+                try { await task } catch (e: String) {
+                    println("cancelled rollback: " + e)
                 }
             }
             // This protected call must succeed only after rollback and unlock.
-            println("guard released: " + svc.readBalance(1).toString());
-            i = i + 1;
+            println("guard released: " + svc.readBalance(1).toString())
+            i = i + 1
         }
 
-        return 0;
+        return 0
     }
 }

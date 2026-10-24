@@ -1,6 +1,6 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
@@ -15,12 +15,12 @@ namespace tinox.core.kubernetes
     @JsonSerializable
     class ResourceRequirements
     {
-        var requests: Map<String, String>;
-        var limits: Map<String, String>;
+        var requests: Map<String, String>
+        var limits: Map<String, String>
 
         fnc empty() -> ResourceRequirements
         {
-            return ResourceRequirements { requests: Map::new(), limits: Map::new() };
+            return ResourceRequirements { requests: Map::new(), limits: Map::new() }
         }
     }
 }

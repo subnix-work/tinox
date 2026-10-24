@@ -1,0 +1,19 @@
+import tinox.core.yaml
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let name: YamlValue = YamlValue { kind: "string", stringValue: "tinox-central", intValue: 0, floatValue: 0.0, boolValue: false, listValue: [], mapValue: Map::new() }
+        let port: YamlValue = YamlValue { kind: "int", stringValue: "", intValue: 8080, floatValue: 0.0, boolValue: false, listValue: [], mapValue: Map::new() }
+
+        let root: Map<String, YamlValue> = Map::new()
+        root["name"] = name
+        root["port"] = port
+        let doc: YamlValue = YamlValue { kind: "map", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, listValue: [], mapValue: root }
+
+        println(Yaml::stringify(doc))
+
+        return 0
+    }
+}

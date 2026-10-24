@@ -6,12 +6,12 @@ class Main
 {
     fnc main() -> Int32
     {
-        const events: List<String> = ["a", "b"];
-        const k: String = "a" + "";
-        println(events.contains(k).toString());
-        println(events.contains("zz").toString());
-        println(events.indexOf("b").toString());
-        println(events.indexOf("q").toString());
-        return 0;
+        const events: List<String> = ["a", "b"]
+        const k: String = "a" + ""
+        println(events.contains(k).toString())
+        println(events.contains("zz").toString())
+        println(events.indexOf("b").toString())
+        println(events.indexOf("q").toString())
+        return 0
     }
 }

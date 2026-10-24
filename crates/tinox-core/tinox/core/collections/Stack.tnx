@@ -1,4 +1,4 @@
-module tinox.core.collections;
+module tinox.core.collections
 
 namespace tinox.core.collections
 {
@@ -7,48 +7,48 @@ namespace tinox.core.collections
      */
     class Stack<T>
     {
-        var data: List<T>;
+        var data: List<T>
 
         fn new() -> Stack<T>
         {
-            return Stack<T> { data: [] };
+            return Stack<T> { data: [] }
         }
 
         fn push(value: T) -> Nothing
         {
-            this.data.push(value);
+            this.data.push(value)
         }
 
         fn pop() -> T
         {
-            const len: Int64 = this.data.len();
+            const len: Int64 = this.data.len()
             if (len == 0)
             {
-                throw "Stack is empty";
+                throw "Stack is empty"
             }
-            const value: T = this.data[len - 1];
-            this.data.pop();
-            return value;
+            const value: T = this.data[len - 1]
+            this.data.pop()
+            return value
         }
 
         fn peek() -> T
         {
-            const len: Int64 = this.data.len();
+            const len: Int64 = this.data.len()
             if (len == 0)
             {
-                throw "Stack is empty";
+                throw "Stack is empty"
             }
-            return this.data[len - 1];
+            return this.data[len - 1]
         }
 
         fn isEmpty() -> Bool
         {
-            return this.data.len() == 0;
+            return this.data.len() == 0
         }
 
         fn size() -> Int64
         {
-            return this.data.len();
+            return this.data.len()
         }
     }
 }

@@ -1,26 +1,26 @@
-import tinox.core.rest.client;
+import tinox.core.rest.client
 
 class Main
 {
     fnc main() -> Int32
     {
-        const client: RestClient = RestClient::new("https://api.example.com");
-        client.bearerAuth("my-token");
+        const client: RestClient = RestClient::new("https://api.example.com")
+        client.bearerAuth("my-token")
 
-        const response: RestResponse = client.get("/users/42");
+        const response: RestResponse = client.get("/users/42")
         if (response.isOk())
         {
-            println("body: " + response.text());
+            println("body: " + response.text())
         }
         else
         {
-            println("request failed with status " + response.status().toString());
+            println("request failed with status " + response.status().toString())
         }
 
-        const created: RestResponse = client.post("/users", "{\"name\":\"Ada\"}");
-        created.ensureSuccess();
-        println("created: " + created.text());
+        const created: RestResponse = client.post("/users", "{\"name\":\"Ada\"}")
+        created.ensureSuccess()
+        println("created: " + created.text())
 
-        return 0;
+        return 0
     }
 }

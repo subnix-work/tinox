@@ -1,4 +1,4 @@
-module tinox.core.hash;
+module tinox.core.hash
 
 namespace tinox.core.hash
 {
@@ -6,32 +6,32 @@ namespace tinox.core.hash
     {
         fn hashString(s: String) -> Int64
         {
-            var hash: Int64 = 5381;
-            var i: Int64 = 0;
+            var hash: Int64 = 5381
+            var i: Int64 = 0
             while i < s.len()
             {
-                hash = (hash << 5) + hash + s.charCodeAt(i);
-                i = i + 1;
+                hash = (hash << 5) + hash + s.charCodeAt(i)
+                i = i + 1
             }
-            return hash;
+            return hash
         }
 
         fn hashInt(n: Int64) -> Int64
         {
-            var h: Int64 = n;
-            h = h + (h << 10);
-            h = h ^ (h >> 6);
-            h = h + (h << 3);
-            h = h ^ (h >> 11);
-            h = h + (h << 15);
-            return h;
+            var h: Int64 = n
+            h = h + (h << 10)
+            h = h ^ (h >> 6)
+            h = h + (h << 3)
+            h = h ^ (h >> 11)
+            h = h + (h << 15)
+            return h
         }
 
         fn combine(h1: Int64, h2: Int64) -> Int64
         {
-            var h: Int64 = h1;
-            h = h + (h << 5) + h2;
-            return h;
+            var h: Int64 = h1
+            h = h + (h << 5) + h2
+            return h
         }
     }
 }

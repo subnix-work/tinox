@@ -21,78 +21,78 @@
 // expect: ok-short-declared-frame
 // expect: ok-huge-declared-size-rejected
 
-import tinox.core.amqp091;
-import tinox.core.socket;
+import tinox.core.amqp091
+import tinox.core.socket
 
 class Main
 {
 
     async fnc feederShort(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv)
         // Header declares a 1MB payload, but the connection is closed right
         // after sending just the 7-byte header — no payload bytes follow.
-        const w = AmqpWriter091::new();
-        w.octet(1);       // frameType
-        w.short(0);       // chanId
-        w.long(1000000);  // declared size: 1MB, never actually sent
-        httpConnWriteBytes(sconn, w.bytes);
-        httpConnClose(sconn);
-        return 0;
+        const w = AmqpWriter091::new()
+        w.octet(1)       // frameType
+        w.short(0)       // chanId
+        w.long(1000000)  // declared size: 1MB, never actually sent
+        httpConnWriteBytes(sconn, w.bytes)
+        httpConnClose(sconn)
+        return 0
     }
 
 
 
     async fnc feederHuge(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
-        const w = AmqpWriter091::new();
-        w.octet(1);
-        w.short(0);
-        w.long(16777217); // 1 byte over readFrame's own 16MB cap
-        httpConnWriteBytes(sconn, w.bytes);
-        httpConnClose(sconn);
-        return 0;
+        const sconn = httpServerAcceptConnHandle(srv)
+        const w = AmqpWriter091::new()
+        w.octet(1)
+        w.short(0)
+        w.long(16777217) // 1 byte over readFrame's own 16MB cap
+        httpConnWriteBytes(sconn, w.bytes)
+        httpConnClose(sconn)
+        return 0
     }
 
 
     fnc main() -> Int32 {
-        const srv1 = httpServerCreate(0);
-        const port1 = httpServerBoundPort(srv1);
+        const srv1 = httpServerCreate(0)
+        const port1 = httpServerBoundPort(srv1)
         if (srv1 < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle1 = spawn feederShort(srv1);
+        const handle1 = spawn feederShort(srv1)
 
-        const cfd1 = socketCreateTcp();
-        socketConnect(cfd1, "127.0.0.1", port1);
-        const cconn1 = httpConnFromFd(cfd1);
-        const f1 = Amqp091::readFrame(cconn1);
+        const cfd1 = socketCreateTcp()
+        socketConnect(cfd1, "127.0.0.1", port1)
+        const cconn1 = httpConnFromFd(cfd1)
+        const f1 = Amqp091::readFrame(cconn1)
         if (f1.frameType == -1) {
-            println("ok-short-declared-frame");
+            println("ok-short-declared-frame")
         }
-        httpConnClose(cconn1);
-        await handle1;
-        httpServerClose(srv1);
+        httpConnClose(cconn1)
+        await handle1
+        httpServerClose(srv1)
 
-        const srv2 = httpServerCreate(0);
-        const port2 = httpServerBoundPort(srv2);
+        const srv2 = httpServerCreate(0)
+        const port2 = httpServerBoundPort(srv2)
         if (srv2 < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle2 = spawn feederHuge(srv2);
+        const handle2 = spawn feederHuge(srv2)
 
-        const cfd2 = socketCreateTcp();
-        socketConnect(cfd2, "127.0.0.1", port2);
-        const cconn2 = httpConnFromFd(cfd2);
-        const f2 = Amqp091::readFrame(cconn2);
+        const cfd2 = socketCreateTcp()
+        socketConnect(cfd2, "127.0.0.1", port2)
+        const cconn2 = httpConnFromFd(cfd2)
+        const f2 = Amqp091::readFrame(cconn2)
         if (f2.frameType == -2) {
-            println("ok-huge-declared-size-rejected");
+            println("ok-huge-declared-size-rejected")
         }
-        httpConnClose(cconn2);
-        await handle2;
-        httpServerClose(srv2);
+        httpConnClose(cconn2)
+        await handle2
+        httpServerClose(srv2)
 
-        return 0;
+        return 0
     }
 }

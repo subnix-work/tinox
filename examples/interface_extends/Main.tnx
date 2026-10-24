@@ -1,15 +1,15 @@
-import IShape;
-import IDrawable;
-import Circle;
+import IShape
+import IDrawable
+import Circle
 
 class Main
 {
     fnc main() -> Int32
     {
-        const c = Circle {};
-        const d: IDrawable = c;
-        d.draw();
-        println(d.area());
-        return 0;
+        const c = Circle {}
+        const d: IDrawable = c
+        d.draw()
+        println(d.area())
+        return 0
     }
 }

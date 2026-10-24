@@ -1,7 +1,7 @@
-import Box;
+import Box
 
 class Pair<A, B> {
-    var a: A;
-    var b: B;
-    fn make(a: A, b: B) -> Pair<A, B> { return Pair { a: a, b: b }; }
+    var a: A
+    var b: B
+    fn make(a: A, b: B) -> Pair<A, B> { return Pair { a: a, b: b } }
 }

@@ -1,7 +1,7 @@
-module tinox.core.amqp10;
+module tinox.core.amqp10
 
-import tinox.core.socket;
-import tinox.core.base64;
+import tinox.core.socket
+import tinox.core.base64
 
 namespace tinox.core.amqp10
 {
@@ -33,37 +33,37 @@ namespace tinox.core.amqp10
      */
     class Amqp10Session
     {
-        var conn: Int64;
-        var chanId: Int64;
-        var maxFrameSize: Int64;
-        var errorMessage: String;
+        var conn: Int64
+        var chanId: Int64
+        var maxFrameSize: Int64
+        var errorMessage: String
         // Issue 76: the next link-handle number to assign within this
         // session (analogous to Amqp10Connection.nextChannelId).
-        var nextLinkHandle: Int64;
+        var nextLinkHandle: Int64
 
         fn begin(connection: Amqp10Connection) -> Amqp10Session
         {
-            const chanId = connection.nextChannelId;
-            connection.nextChannelId = connection.nextChannelId + 1;
+            const chanId = connection.nextChannelId
+            connection.nextChannelId = connection.nextChannelId + 1
 
             var beginFields: List<Amqp10Value> = [
                 Amqp10Value::NullVal,             // remote-channel (only set in responses)
                 Amqp10Value::UIntVal(0),           // next-outgoing-id
                 Amqp10Value::UIntVal(2147483647),  // incoming-window
                 Amqp10Value::UIntVal(2147483647)   // outgoing-window
-            ];
-            const beginBody = Amqp10::encodePerformative(0x11, beginFields);
-            Amqp10::writeFrame(connection.conn, 0, chanId, beginBody);
+            ]
+            const beginBody = Amqp10::encodePerformative(0x11, beginFields)
+            Amqp10::writeFrame(connection.conn, 0, chanId, beginBody)
 
-            const f = Amqp10::readFrame(connection.conn);
+            const f = Amqp10::readFrame(connection.conn)
             if (f.frameType != 0) {
-                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), nextLinkHandle: 0 };
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), nextLinkHandle: 0 }
             }
-            const p = Amqp10::decodePerformative(f.body);
+            const p = Amqp10::decodePerformative(f.body)
             if (p.descriptor != 0x11) {
-                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected begin (0x11), got descriptor=" + p.descriptor.toString(), nextLinkHandle: 0 };
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected begin (0x11), got descriptor=" + p.descriptor.toString(), nextLinkHandle: 0 }
             }
-            return Amqp10Session { conn: connection.conn, chanId: chanId, maxFrameSize: connection.maxFrameSize, errorMessage: "", nextLinkHandle: 0 };
+            return Amqp10Session { conn: connection.conn, chanId: chanId, maxFrameSize: connection.maxFrameSize, errorMessage: "", nextLinkHandle: 0 }
         }
 
         /*
@@ -72,9 +72,9 @@ namespace tinox.core.amqp10
          */
         fn end() -> Nothing
         {
-            const endBody = Amqp10::encodePerformative(0x17, []);
-            Amqp10::writeFrame(this.conn, 0, this.chanId, endBody);
-            Amqp10::readFrame(this.conn);
+            const endBody = Amqp10::encodePerformative(0x17, [])
+            Amqp10::writeFrame(this.conn, 0, this.chanId, endBody)
+            Amqp10::readFrame(this.conn)
         }
     }
 }

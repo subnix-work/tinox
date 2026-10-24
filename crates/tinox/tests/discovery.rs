@@ -46,7 +46,7 @@ fn summary(out: &Output) -> String {
     )
 }
 fn nested(passes: bool) -> String {
-    format!("namespace acme {{ class Suite {{ @Test(\"nested\") fn test() -> Bool {{ return {passes}; }} }} }}")
+    format!("namespace acme {{ class Suite {{ @Test(\"nested\") fn test() -> Bool {{ return {passes} }} }} }}")
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn sorted_recursive_scan_skips_generated_and_symlinked_files() {
     p.write("src/acme/Suite.tnx", &nested(true));
     p.write(
         "tests/Flat.tnx",
-        "class Flat { @Test fn flat() -> Bool { return true; } }",
+        "class Flat { @Test fn flat() -> Bool { return true } }",
     );
     for dir in [".tinox", "target", "build", "dist", "node_modules"] {
         p.write(&format!("tests/{dir}/Broken.tnx"), "invalid source");

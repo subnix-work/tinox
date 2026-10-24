@@ -4,20 +4,20 @@ class Main
 {
     fnc gcd(a: Int64, b: Int64) -> Int64
     {
-        var x: Int64 = a;
-        var y: Int64 = b;
+        var x: Int64 = a
+        var y: Int64 = b
         while y != 0
         {
-            const t: Int64 = y;
-            y = x % y;
-            x = t;
+            const t: Int64 = y
+            y = x % y
+            x = t
         }
-        return x;
+        return x
     }
 
     fnc main() -> Int32
     {
-        println(gcd(48, 18));
-        return 0;
+        println(gcd(48, 18))
+        return 0
     }
 }

@@ -1,12 +1,12 @@
-import Inner;
+import Inner
 
 class Outer {
-    var fx: Float64;
-    var fy: Float64;
-    var name: String;
-    var flag: Bool;
-    var inner: Inner;
+    var fx: Float64
+    var fy: Float64
+    var name: String
+    var flag: Bool
+    var inner: Inner
     fn make() -> Outer {
-        return Outer { fx: 3.5, fy: 4.0, name: "hallo", flag: true, inner: Inner::make(42) };
+        return Outer { fx: 3.5, fy: 4.0, name: "hallo", flag: true, inner: Inner::make(42) }
     }
 }

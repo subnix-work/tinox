@@ -1,0 +1,24 @@
+import tinox.core.compress
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        var data: List<Int64> = []
+        let text: String = "hello, tinox! hello, tinox!"
+        var i: Int64 = 0
+        while (i < text.len())
+        {
+            data.push(text.charCodeAt(i))
+            i = i + 1
+        }
+
+        let compressed: List<Int64> = Compress::gzip(data)
+        println("compressed size: " + compressed.len().toString())
+
+        let restored: List<Int64> = Compress::gunzip(compressed)
+        println("gunzip ok: " + Compress::lastGunzipOk().toString())
+        println("restored size: " + restored.len().toString())
+        return 0
+    }
+}

@@ -1,4 +1,4 @@
-module tinox.core.xml;
+module tinox.core.xml
 
 namespace tinox.core.xml
 {
@@ -6,31 +6,31 @@ namespace tinox.core.xml
     {
         fn render(node: XmlNode) -> String
         {
-            var result: String = "<" + node.tagName;
-            const keys: List<String> = node.attrs.keys();
-            var i: Int64 = 0;
+            var result: String = "<" + node.tagName
+            const keys: List<String> = node.attrs.keys()
+            var i: Int64 = 0
             while i < keys.len()
             {
-                result = result + " " + keys[i] + "=\"" + node.attrs[keys[i]] + "\"";
-                i = i + 1;
+                result = result + " " + keys[i] + "=\"" + node.attrs[keys[i]] + "\""
+                i = i + 1
             }
             if (node.children.len() == 0 && node.text == "")
             {
-                return result + "/>";
+                return result + "/>"
             }
-            result = result + ">";
+            result = result + ">"
             if (node.text != "")
             {
-                result = result + node.text;
+                result = result + node.text
             }
-            var j: Int64 = 0;
+            var j: Int64 = 0
             while j < node.children.len()
             {
-                result = result + XmlRenderer::render(node.children[j]);
-                j = j + 1;
+                result = result + XmlRenderer::render(node.children[j])
+                j = j + 1
             }
-            result = result + "</" + node.tagName + ">";
-            return result;
+            result = result + "</" + node.tagName + ">"
+            return result
         }
     }
 }

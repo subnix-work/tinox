@@ -1,5 +1,5 @@
-import tinox.core.oidc;
-import tinox.core.http_server;
+import tinox.core.oidc
+import tinox.core.http_server
 
 class Main
 {
@@ -13,22 +13,22 @@ class Main
             "my-client-id",
             "my-client-secret",
             "https://myapp.example.com/callback"
-        );
-        const webApp: OidcWebApp = OidcWebApp::new(client, "a-long-random-cookie-sealing-secret");
+        )
+        const webApp: OidcWebApp = OidcWebApp::new(client, "a-long-random-cookie-sealing-secret")
 
-        const server: HttpServer = HttpServer::new(8080);
-        webApp.install(server); // registers /login and /callback
+        const server: HttpServer = HttpServer::new(8080)
+        webApp.install(server) // registers /login and /callback
 
         server.get("/", ctx => {
             if (!webApp.requireLogin(ctx))
             {
-                return; // already redirected to /login
+                return // already redirected to /login
             }
-            const user: Map<String, JsonValue> = webApp.currentUser(ctx);
-            ctx.response.text("Welcome, " + user["email"].getString());
-        });
+            const user: Map<String, JsonValue> = webApp.currentUser(ctx)
+            ctx.response.text("Welcome, " + user["email"].getString())
+        })
 
-        server.listen();
-        return 0;
+        server.listen()
+        return 0
     }
 }

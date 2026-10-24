@@ -1,7 +1,7 @@
-import tinox.core.http_server;
-import tinox.core.json;
-import tinox.core.debug;
-import Item;
+import tinox.core.http_server
+import tinox.core.json
+import tinox.core.debug
+import Item
 
 // Workload endpoints for benchmarks/service (#312). One process serves all
 // profiles so the load harness can drive each of them against a fresh
@@ -22,8 +22,8 @@ import Item;
 @ApplicationComponent
 class BenchController
 {
-    var cache: List<String>;
-    var initialized: Bool;
+    var cache: List<String>
+    var initialized: Bool
 
     @GET
     @Path("/hello")
@@ -31,7 +31,7 @@ class BenchController
     @StatusCode(200)
     fn hello() -> Item
     {
-        return Item { id: 1, name: "hello", score: 1.5, active: true };
+        return Item { id: 1, name: "hello", score: 1.5, active: true }
     }
 
     @GET
@@ -39,14 +39,14 @@ class BenchController
     @Produces("application/json")
     fn items(@PathParam n: Int64) -> List<Item>
     {
-        var out: List<Item> = [];
-        var i: Int64 = 0;
+        var out: List<Item> = []
+        var i: Int64 = 0
         while i < n
         {
-            out.push(Item { id: i, name: "item-" + i.toString(), score: 0.5, active: true });
-            i = i + 1;
+            out.push(Item { id: i, name: "item-" + i.toString(), score: 0.5, active: true })
+            i = i + 1
         }
-        return out;
+        return out
     }
 
     @GET
@@ -55,16 +55,16 @@ class BenchController
     {
         if (this.initialized == false)
         {
-            this.cache = [];
-            this.initialized = true;
+            this.cache = []
+            this.initialized = true
         }
-        var i: Int64 = 0;
+        var i: Int64 = 0
         while i < n
         {
-            this.cache.push("cache-entry-" + this.cache.len().toString() + "-payload-0000000000");
-            i = i + 1;
+            this.cache.push("cache-entry-" + this.cache.len().toString() + "-payload-0000000000")
+            i = i + 1
         }
-        return this.cache.len();
+        return this.cache.len()
     }
 
     @GET
@@ -73,15 +73,15 @@ class BenchController
     {
         if (this.initialized == false)
         {
-            return 0;
+            return 0
         }
-        return this.cache.len();
+        return this.cache.len()
     }
 
     @GET
     @Path("/stats")
     fn stats() -> Int64
     {
-        return Debug::memoryUsage();
+        return Debug::memoryUsage()
     }
 }

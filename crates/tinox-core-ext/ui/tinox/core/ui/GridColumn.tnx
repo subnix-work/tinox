@@ -1,4 +1,4 @@
-module tinox.core.ui;
+module tinox.core.ui
 
 namespace tinox.core.ui
 {
@@ -33,19 +33,19 @@ namespace tinox.core.ui
     // "simplify" it away.
     class GridColumn<T>
     {
-        var header: String;
-        var accessor: fnc(T) -> String;
-        var componentAccessor: fnc(T) -> Component;
-        var isComponent: Bool;
+        var header: String
+        var accessor: fnc(T) -> String
+        var componentAccessor: fnc(T) -> Component
+        var isComponent: Bool
 
         fnc of(header: String, accessor: fnc(T) -> String) -> GridColumn<T>
         {
             return GridColumn<T> {
                 header: header,
                 accessor: accessor,
-                componentAccessor: fn(item: T) { return Component::none(); },
+                componentAccessor: fn(item: T) { return Component::none() },
                 isComponent: false
-            };
+            }
         }
 
         // For rich cell content -- status pills, action buttons,
@@ -56,10 +56,10 @@ namespace tinox.core.ui
         {
             return GridColumn<T> {
                 header: header,
-                accessor: fn(item: T) { return ""; },
+                accessor: fn(item: T) { return "" },
                 componentAccessor: componentAccessor,
                 isComponent: true
-            };
+            }
         }
     }
 }

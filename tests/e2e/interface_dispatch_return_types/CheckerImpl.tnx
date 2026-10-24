@@ -1,24 +1,24 @@
 class CheckerImpl implements IChecker
 {
-    var touched: Bool;
+    var touched: Bool
 
     fn label() -> String
     {
-        return "checker-label";
+        return "checker-label"
     }
 
     fn isOk() -> Bool
     {
-        return true;
+        return true
     }
 
     fn count() -> Int64
     {
-        return 7;
+        return 7
     }
 
     fn touch() -> Nothing
     {
-        this.touched = true;
+        this.touched = true
     }
 }

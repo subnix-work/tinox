@@ -4,8 +4,8 @@ class Main
 {
     fnc main() -> Int32
     {
-        const s: String = "foo" + "bar" + "baz";
-        println(s);
-        return 0;
+        const s: String = "foo" + "bar" + "baz"
+        println(s)
+        return 0
     }
 }

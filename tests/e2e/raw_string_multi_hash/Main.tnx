@@ -12,12 +12,12 @@ class Main
 {
     fnc main() -> Int32
     {
-        const one = r#"has "quotes" inside"#;
-        const two = r##"needs "# inside"##;
-        const three = r###"needs "## inside"###;
-        println(one);
-        println(two);
-        println(three);
-        return 0;
+        const one = r#"has "quotes" inside"#
+        const two = r##"needs "# inside"##
+        const three = r###"needs "## inside"###
+        println(one)
+        println(two)
+        println(three)
+        return 0
     }
 }

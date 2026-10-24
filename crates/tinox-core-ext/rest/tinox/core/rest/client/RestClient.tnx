@@ -3,10 +3,10 @@
  * RESTful client implementation for building and executing
  * HTTP requests with JSON support, headers, and error handling
  */
-module tinox.core.rest.client;
+module tinox.core.rest.client
 
-import tinox.core.http;
-import tinox.core.base64;
+import tinox.core.http
+import tinox.core.base64
 
 namespace tinox.core.rest.client
 {
@@ -19,13 +19,13 @@ namespace tinox.core.rest.client
     class RestClient
     {
         /** The base URL for all requests */
-        var baseUrl: String;
+        var baseUrl: String
 
         /** Default headers applied to every request */
-        var headers: List<String>;
+        var headers: List<String>
 
         /** Request timeout in milliseconds */
-        var timeout: Int64;
+        var timeout: Int64
 
         /**
          * Creates a new RestClient with the given base URL
@@ -35,7 +35,7 @@ namespace tinox.core.rest.client
          */
         fn new(baseUrl: String) -> RestClient
         {
-            return RestClient { baseUrl: baseUrl, headers: [], timeout: 30000 };
+            return RestClient { baseUrl: baseUrl, headers: [], timeout: 30000 }
         }
 
         /**
@@ -47,7 +47,7 @@ namespace tinox.core.rest.client
          */
         fn newWithHeaders(baseUrl: String, defaultHeaders: List<String>) -> RestClient
         {
-            return RestClient { baseUrl: baseUrl, headers: defaultHeaders, timeout: 30000 };
+            return RestClient { baseUrl: baseUrl, headers: defaultHeaders, timeout: 30000 }
         }
 
         /**
@@ -57,7 +57,7 @@ namespace tinox.core.rest.client
          */
         fn setTimeout(timeoutMs: Int64) -> Nothing
         {
-            this.timeout = timeoutMs;
+            this.timeout = timeoutMs
         }
 
         /**
@@ -68,7 +68,7 @@ namespace tinox.core.rest.client
          */
         fn addHeader(name: String, value: String) -> Nothing
         {
-            this.headers.push(name + ": " + value);
+            this.headers.push(name + ": " + value)
         }
 
         /**
@@ -76,7 +76,7 @@ namespace tinox.core.rest.client
          */
         fn clearHeaders() -> Nothing
         {
-            this.headers = [];
+            this.headers = []
         }
 
         /**
@@ -87,20 +87,20 @@ namespace tinox.core.rest.client
          */
         fn get(path: String) -> RestResponse
         {
-            const url: String = Url::build(this.baseUrl, path);
-            var i: Int64 = 0;
+            const url: String = Url::build(this.baseUrl, path)
+            var i: Int64 = 0
             while i < this.headers.len()
             {
-                const header: String = this.headers[i];
-                const colonPos: Int64 = header.indexOf(":");
-                const name: String = header.substring(0, colonPos).trim();
-                const value: String = header.substring(colonPos + 1, header.len()).trim();
-                Http::setHeader(name, value);
-                i = i + 1;
+                const header: String = this.headers[i]
+                const colonPos: Int64 = header.indexOf(":")
+                const name: String = header.substring(0, colonPos).trim()
+                const value: String = header.substring(colonPos + 1, header.len()).trim()
+                Http::setHeader(name, value)
+                i = i + 1
             }
-            const response: HttpClientResponse = Http::get(url);
-            Http::clearHeaders();
-            return RestResponse::fromHttp(response);
+            const response: HttpClientResponse = Http::get(url)
+            Http::clearHeaders()
+            return RestResponse::fromHttp(response)
         }
 
         /**
@@ -112,20 +112,20 @@ namespace tinox.core.rest.client
          */
         fn getWithParams(path: String, params: Map<String, String>) -> RestResponse
         {
-            const url: String = Url::buildWithParams(this.baseUrl, path, params);
-            var i: Int64 = 0;
+            const url: String = Url::buildWithParams(this.baseUrl, path, params)
+            var i: Int64 = 0
             while i < this.headers.len()
             {
-                const header: String = this.headers[i];
-                const colonPos: Int64 = header.indexOf(":");
-                const name: String = header.substring(0, colonPos).trim();
-                const value: String = header.substring(colonPos + 1, header.len()).trim();
-                Http::setHeader(name, value);
-                i = i + 1;
+                const header: String = this.headers[i]
+                const colonPos: Int64 = header.indexOf(":")
+                const name: String = header.substring(0, colonPos).trim()
+                const value: String = header.substring(colonPos + 1, header.len()).trim()
+                Http::setHeader(name, value)
+                i = i + 1
             }
-            const response: HttpClientResponse = Http::get(url);
-            Http::clearHeaders();
-            return RestResponse::fromHttp(response);
+            const response: HttpClientResponse = Http::get(url)
+            Http::clearHeaders()
+            return RestResponse::fromHttp(response)
         }
 
         /**
@@ -137,21 +137,21 @@ namespace tinox.core.rest.client
          */
         fn post(path: String, body: String) -> RestResponse
         {
-            const url: String = Url::build(this.baseUrl, path);
-            Http::setHeader("Content-Type", "application/json");
-            var i: Int64 = 0;
+            const url: String = Url::build(this.baseUrl, path)
+            Http::setHeader("Content-Type", "application/json")
+            var i: Int64 = 0
             while i < this.headers.len()
             {
-                const header: String = this.headers[i];
-                const colonPos: Int64 = header.indexOf(":");
-                const name: String = header.substring(0, colonPos).trim();
-                const value: String = header.substring(colonPos + 1, header.len()).trim();
-                Http::setHeader(name, value);
-                i = i + 1;
+                const header: String = this.headers[i]
+                const colonPos: Int64 = header.indexOf(":")
+                const name: String = header.substring(0, colonPos).trim()
+                const value: String = header.substring(colonPos + 1, header.len()).trim()
+                Http::setHeader(name, value)
+                i = i + 1
             }
-            const response: HttpClientResponse = Http::post(url, body);
-            Http::clearHeaders();
-            return RestResponse::fromHttp(response);
+            const response: HttpClientResponse = Http::post(url, body)
+            Http::clearHeaders()
+            return RestResponse::fromHttp(response)
         }
 
         /**
@@ -163,21 +163,21 @@ namespace tinox.core.rest.client
          */
         fn put(path: String, body: String) -> RestResponse
         {
-            const url: String = Url::build(this.baseUrl, path);
-            Http::setHeader("Content-Type", "application/json");
-            var i: Int64 = 0;
+            const url: String = Url::build(this.baseUrl, path)
+            Http::setHeader("Content-Type", "application/json")
+            var i: Int64 = 0
             while i < this.headers.len()
             {
-                const header: String = this.headers[i];
-                const colonPos: Int64 = header.indexOf(":");
-                const name: String = header.substring(0, colonPos).trim();
-                const value: String = header.substring(colonPos + 1, header.len()).trim();
-                Http::setHeader(name, value);
-                i = i + 1;
+                const header: String = this.headers[i]
+                const colonPos: Int64 = header.indexOf(":")
+                const name: String = header.substring(0, colonPos).trim()
+                const value: String = header.substring(colonPos + 1, header.len()).trim()
+                Http::setHeader(name, value)
+                i = i + 1
             }
-            const response: HttpClientResponse = Http::put(url, body);
-            Http::clearHeaders();
-            return RestResponse::fromHttp(response);
+            const response: HttpClientResponse = Http::put(url, body)
+            Http::clearHeaders()
+            return RestResponse::fromHttp(response)
         }
 
         /**
@@ -189,21 +189,21 @@ namespace tinox.core.rest.client
          */
         fn patch(path: String, body: String) -> RestResponse
         {
-            const url: String = Url::build(this.baseUrl, path);
-            Http::setHeader("Content-Type", "application/json");
-            var i: Int64 = 0;
+            const url: String = Url::build(this.baseUrl, path)
+            Http::setHeader("Content-Type", "application/json")
+            var i: Int64 = 0
             while i < this.headers.len()
             {
-                const header: String = this.headers[i];
-                const colonPos: Int64 = header.indexOf(":");
-                const name: String = header.substring(0, colonPos).trim();
-                const value: String = header.substring(colonPos + 1, header.len()).trim();
-                Http::setHeader(name, value);
-                i = i + 1;
+                const header: String = this.headers[i]
+                const colonPos: Int64 = header.indexOf(":")
+                const name: String = header.substring(0, colonPos).trim()
+                const value: String = header.substring(colonPos + 1, header.len()).trim()
+                Http::setHeader(name, value)
+                i = i + 1
             }
-            const response: HttpClientResponse = Http::patch(url, body);
-            Http::clearHeaders();
-            return RestResponse::fromHttp(response);
+            const response: HttpClientResponse = Http::patch(url, body)
+            Http::clearHeaders()
+            return RestResponse::fromHttp(response)
         }
 
         /**
@@ -214,20 +214,20 @@ namespace tinox.core.rest.client
          */
         fn delete(path: String) -> RestResponse
         {
-            const url: String = Url::build(this.baseUrl, path);
-            var i: Int64 = 0;
+            const url: String = Url::build(this.baseUrl, path)
+            var i: Int64 = 0
             while i < this.headers.len()
             {
-                const header: String = this.headers[i];
-                const colonPos: Int64 = header.indexOf(":");
-                const name: String = header.substring(0, colonPos).trim();
-                const value: String = header.substring(colonPos + 1, header.len()).trim();
-                Http::setHeader(name, value);
-                i = i + 1;
+                const header: String = this.headers[i]
+                const colonPos: Int64 = header.indexOf(":")
+                const name: String = header.substring(0, colonPos).trim()
+                const value: String = header.substring(colonPos + 1, header.len()).trim()
+                Http::setHeader(name, value)
+                i = i + 1
             }
-            const response: HttpClientResponse = Http::delete(url);
-            Http::clearHeaders();
-            return RestResponse::fromHttp(response);
+            const response: HttpClientResponse = Http::delete(url)
+            Http::clearHeaders()
+            return RestResponse::fromHttp(response)
         }
 
         /**
@@ -237,7 +237,7 @@ namespace tinox.core.rest.client
          */
         fn bearerAuth(token: String) -> Nothing
         {
-            this.addHeader("Authorization", "Bearer " + token);
+            this.addHeader("Authorization", "Bearer " + token)
         }
 
         /**
@@ -248,8 +248,8 @@ namespace tinox.core.rest.client
          */
         fn basicAuth(username: String, password: String) -> Nothing
         {
-            const credentials: String = Base64::encode(username + ":" + password);
-            this.addHeader("Authorization", "Basic " + credentials);
+            const credentials: String = Base64::encode(username + ":" + password)
+            this.addHeader("Authorization", "Basic " + credentials)
         }
     }
 }

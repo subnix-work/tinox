@@ -7,26 +7,26 @@
 // (assets/tinox-counter.js) on a companion port, the same shape
 // tinox-k8s-ui's Main.tnx already uses for its Logs/Exec viewer JS,
 // since @TinoxUIApp's generated server can't take extra custom routes.
-import CounterDemoApp;
-import tinox.core.fs;
-import tinox.core.http_server;
+import CounterDemoApp
+import tinox.core.fs
+import tinox.core.http_server
 
 class Main
 {
     fnc main() -> Int32
     {
-        const widgetJs: String = Fs::readFile("assets/tinox-counter.js");
+        const widgetJs: String = Fs::readFile("assets/tinox-counter.js")
 
-        const server: HttpServer = HttpServer::new(8290);
+        const server: HttpServer = HttpServer::new(8290)
         server.get("/tinox-counter.js", ctx => {
             // Dynamic import() of a cross-origin module is a real CORS
             // fetch (even for two ports on the same machine) -- see
             // Component::jsComponent's own doc comment on why this header
             // is required for the ":port/path" cross-port moduleUrl form.
             ctx.response.content(widgetJs, "application/javascript; charset=utf-8")
-                .header("Access-Control-Allow-Origin", "*");
-        });
-        server.listen();
-        return 0;
+                .header("Access-Control-Allow-Origin", "*")
+        })
+        server.listen()
+        return 0
     }
 }

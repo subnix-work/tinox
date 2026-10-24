@@ -1,6 +1,10 @@
 // expect-exit: 1
 // expect-contains: Uncaught error: child failure
 class Main {
-    fnc fail(ready: Int64) -> Int64 { send ready -> 1; throw "child failure"; }
-    fnc main() -> Int32 { const ready = channel; spawn Main::fail(ready); recv ready; return 0; }
+    fnc fail(ready: Int64) -> Int64 { send ready -> 1
+    throw "child failure" }
+    fnc main() -> Int32 { const ready = channel
+    spawn Main::fail(ready)
+    recv ready
+    return 0 }
 }

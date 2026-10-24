@@ -1,6 +1,6 @@
 enum TaskStatus
 {
-    QUEUED;
-    RUNNING;
-    DONE;
+    QUEUED
+    RUNNING
+    DONE
 }

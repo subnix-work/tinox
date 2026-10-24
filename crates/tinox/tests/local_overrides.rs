@@ -9,7 +9,7 @@ impl Project {
         fs::create_dir_all(&root).unwrap();
         let p = Self(root);
         p.write("tinox.toml", "[package]\nname=\"consumer\"\nversion=\"1.0.0\"\ngroup=\"demo\"\nentry=\"src/Main.tnx\"\n[[dependencies]]\ngroup=\"demo\"\nartifactId=\"counter\"\nversion=\"1.0.0\"\nurl=\"https://invalid.example/counter.tar.gz\"\n");
-        p.write("src/Main.tnx", "import demo.counter; class Main { fnc main() -> Int32 { println(Counter::value()); return 0; } }");
+        p.write("src/Main.tnx", "import demo.counter\nclass Main { fnc main() -> Int32 { println(Counter::value())\nreturn 0 } }");
         p.package("local", "counter", 2);
         p.package(".tinox/deps/demo/counter/1.0.0", "counter", 1);
         p.enable();
@@ -22,7 +22,7 @@ impl Project {
     }
     fn package(&self, path: &str, name: &str, value: i32) {
         self.write(&format!("{path}/tinox.toml"), &format!("[package]\ngroup=\"demo\"\nname=\"{name}\"\nversion=\"1.0.0\"\n"));
-        self.write(&format!("{path}/src/demo/{name}/Counter.tnx"), &format!("namespace demo.{name} {{ class Counter {{ fnc value() -> Int64 {{ return {value}; }} }} }}"));
+        self.write(&format!("{path}/src/demo/{name}/Counter.tnx"), &format!("namespace demo.{name} {{ class Counter {{ fnc value() -> Int64 {{ return {value} }} }} }}"));
         if path.starts_with(".tinox") {
             let src = self.0.join(format!("{path}/src/demo"));
             fs::rename(src, self.0.join(format!("{path}/demo"))).unwrap();
@@ -129,9 +129,9 @@ fn conflicting_requested_versions_are_rejected_and_publication_is_blocked() {
 fn contract_generation_uses_local_sources_and_propagates_override_errors() {
     let p = Project::new();
     p.write("local/src/demo/counter/Counter.tnx",
-        "namespace demo.counter { class Counter { fnc unpublished() -> Int64 { return 42; } } }");
+        "namespace demo.counter { class Counter { fnc unpublished() -> Int64 { return 42 } } }");
     p.write("src/Main.tnx",
-        "import demo.counter; class Main { fnc main() -> Int32 { println(Counter::unpublished()); return 0; } }");
+        "import demo.counter\nclass Main { fnc main() -> Int32 { println(Counter::unpublished())\nreturn 0 } }");
     let out = p.cli(&["contract", "src/Main.tnx"], true);
     assert!(String::from_utf8_lossy(&out.stdout).contains("openapi:"));
     p.write("tinox.overrides.yaml", "overrides:\n  'demo:counter:1.0.0': missing\n");

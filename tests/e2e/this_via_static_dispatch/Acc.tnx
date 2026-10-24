@@ -1,8 +1,9 @@
-import IntBox;
-import Box;
+import IntBox
+import Box
 
 class Acc {
-    var total: Int64;
-    fn make() -> Acc { return Acc { total: 0 }; }
-    fn addAndGet(delta: Int64) -> Int64 { this.total = this.total + delta; return this.total; }
+    var total: Int64
+    fn make() -> Acc { return Acc { total: 0 } }
+    fn addAndGet(delta: Int64) -> Int64 { this.total = this.total + delta
+    return this.total }
 }

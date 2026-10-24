@@ -1,7 +1,7 @@
-module tinox.core.http_server;
+module tinox.core.http_server
 
-import tinox.core.json;
-import tinox.core.option;
+import tinox.core.json
+import tinox.core.option
 
 namespace tinox.core.http_server
 {
@@ -14,22 +14,22 @@ namespace tinox.core.http_server
     class HttpRequest
     {
         /** The HTTP method (GET, POST, PUT, PATCH, DELETE) */
-        var method: String;
+        var method: String
 
         /** The request path (e.g., "/users/42") */
-        var path: String;
+        var path: String
 
         /** The raw request body */
-        var body: String;
+        var body: String
 
         /** Request headers as key-value pairs */
-        var headers: Map<String, String>;
+        var headers: Map<String, String>
 
         /** The raw query string (e.g., "page=1&limit=10") */
-        var queryString: String;
+        var queryString: String
 
         /** Path parameters extracted from route patterns */
-        var params: Map<String, String>;
+        var params: Map<String, String>
 
         /**
          * True if this request arrived as TLS 1.3 0-RTT early data
@@ -40,7 +40,7 @@ namespace tinox.core.http_server
          * replaying a captured ClientHello+request), so handlers that
          * check this should avoid non-idempotent side effects when true.
          */
-        var wasEarlyData: Bool;
+        var wasEarlyData: Bool
 
         /**
          * Creates a new HttpRequest
@@ -54,7 +54,7 @@ namespace tinox.core.http_server
          */
         fn new(method: String, path: String, queryString: String, headers: Map<String, String>, body: String) -> HttpRequest
         {
-            return HttpRequest { method: method, path: path, queryString: queryString, headers: headers, body: body, params: Map::new(), wasEarlyData: false };
+            return HttpRequest { method: method, path: path, queryString: queryString, headers: headers, body: body, params: Map::new(), wasEarlyData: false }
         }
 
         /**
@@ -66,7 +66,7 @@ namespace tinox.core.http_server
          */
         fn getHeader(name: String) -> String
         {
-            return this.findHeader(name).unwrapOr("");
+            return this.findHeader(name).unwrapOr("")
         }
 
         /**
@@ -78,20 +78,20 @@ namespace tinox.core.http_server
         {
             if (this.headers.contains(name))
             {
-                return Option<String>::some(this.headers[name]);
+                return Option<String>::some(this.headers[name])
             }
-            const lower: String = name.toLowerCase();
-            var key: Int64 = 0;
-            const keys: List<String> = this.headers.keys();
+            const lower: String = name.toLowerCase()
+            var key: Int64 = 0
+            const keys: List<String> = this.headers.keys()
             while key < keys.len()
             {
                 if (keys[key].toLowerCase() == lower)
                 {
-                    return Option<String>::some(this.headers[keys[key]]);
+                    return Option<String>::some(this.headers[keys[key]])
                 }
-                key = key + 1;
+                key = key + 1
             }
-            return Option<String>::none();
+            return Option<String>::none()
         }
 
         /**
@@ -103,7 +103,7 @@ namespace tinox.core.http_server
          */
         fn getParam(name: String) -> String
         {
-            return this.findParam(name).unwrapOr("");
+            return this.findParam(name).unwrapOr("")
         }
 
         /** Finds a case-sensitive path parameter, preserving empty values. */
@@ -111,9 +111,9 @@ namespace tinox.core.http_server
         {
             if (this.params.contains(name))
             {
-                return Option<String>::some(this.params[name]);
+                return Option<String>::some(this.params[name])
             }
-            return Option<String>::none();
+            return Option<String>::none()
         }
 
         /**
@@ -125,7 +125,7 @@ namespace tinox.core.http_server
          */
         fn getQuery(name: String) -> String
         {
-            return QueryString::get(this.queryString, name);
+            return QueryString::get(this.queryString, name)
         }
 
         /**
@@ -135,7 +135,7 @@ namespace tinox.core.http_server
          */
         fn findQuery(name: String) -> Option<String>
         {
-            return QueryString::find(this.queryString, name);
+            return QueryString::find(this.queryString, name)
         }
 
         /**
@@ -145,7 +145,7 @@ namespace tinox.core.http_server
          */
         fn json() -> JsonValue
         {
-            return Json::parse(this.body);
+            return Json::parse(this.body)
         }
 
         /**
@@ -159,7 +159,7 @@ namespace tinox.core.http_server
          */
         fn bodyAs<T>() -> T
         {
-            return Json::deserialize<T>(this.body);
+            return Json::deserialize<T>(this.body)
         }
 
         /**
@@ -169,7 +169,7 @@ namespace tinox.core.http_server
          */
         fn text() -> String
         {
-            return this.body;
+            return this.body
         }
 
         /**
@@ -179,7 +179,7 @@ namespace tinox.core.http_server
          */
         fn setParams(params: Map<String, String>) -> Nothing
         {
-            this.params = params;
+            this.params = params
         }
 
         /**
@@ -190,8 +190,8 @@ namespace tinox.core.http_server
          */
         fn isContentType(contentType: String) -> Bool
         {
-            const ct: String = this.getHeader("Content-Type");
-            return ct.startsWith(contentType);
+            const ct: String = this.getHeader("Content-Type")
+            return ct.startsWith(contentType)
         }
     }
 }

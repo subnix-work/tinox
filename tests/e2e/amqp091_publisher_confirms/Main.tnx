@@ -9,153 +9,153 @@
 // expect: ok-ack
 // expect: ok-nack
 
-import tinox.core.amqp091;
-import tinox.core.socket;
+import tinox.core.amqp091
+import tinox.core.socket
 
 class Main
 {
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn, 8); // protocol header
+        const sconn = httpServerAcceptConnHandle(srv)
+        httpConnReadN(sconn, 8) // protocol header
 
-        const w1 = AmqpWriter091::new();
-        w1.octet(0);
-        w1.octet(9);
-        var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
-        w1.fieldTable(emptyProps);
-        w1.longstr("PLAIN");
-        w1.longstr("en_US");
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes));
-        Amqp091::readFrame(sconn); // start-ok
+        const w1 = AmqpWriter091::new()
+        w1.octet(0)
+        w1.octet(9)
+        var emptyProps: Map<String, AmqpFieldValue091> = Map::new()
+        w1.fieldTable(emptyProps)
+        w1.longstr("PLAIN")
+        w1.longstr("en_US")
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes))
+        Amqp091::readFrame(sconn) // start-ok
 
-        const w2 = AmqpWriter091::new();
-        w2.short(2047);
-        w2.long(131072);
-        w2.short(60);
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 30, w2.bytes));
-        Amqp091::readFrame(sconn); // tune-ok
-        Amqp091::readFrame(sconn); // open
+        const w2 = AmqpWriter091::new()
+        w2.short(2047)
+        w2.long(131072)
+        w2.short(60)
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 30, w2.bytes))
+        Amqp091::readFrame(sconn) // tune-ok
+        Amqp091::readFrame(sconn) // open
 
-        const w3 = AmqpWriter091::new();
-        w3.shortstr("");
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes));
+        const w3 = AmqpWriter091::new()
+        w3.shortstr("")
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes))
 
-        Amqp091::readFrame(sconn); // channel.open
-        const w4 = AmqpWriter091::new();
-        w4.longstr("");
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
+        Amqp091::readFrame(sconn) // channel.open
+        const w4 = AmqpWriter091::new()
+        w4.longstr("")
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes))
 
         // --- confirm.select -> confirm.select-ok ---
-        const fSel = Amqp091::readFrame(sconn);
-        const mSel = Amqp091::decodeMethodPayload(fSel.payload);
-        var ok1: Bool = mSel.classId == 85 && mSel.methodId == 10;
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(85, 11, []));
+        const fSel = Amqp091::readFrame(sconn)
+        const mSel = Amqp091::decodeMethodPayload(fSel.payload)
+        var ok1: Bool = mSel.classId == 85 && mSel.methodId == 10
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(85, 11, []))
 
         // --- first publish (method + content-header + body) -> basic.ack ---
-        Amqp091::readFrame(sconn); // basic.publish
-        const fHdr1 = Amqp091::readFrame(sconn);
-        const hr1 = AmqpReader091::new(fHdr1.payload);
-        hr1.short();
-        hr1.short();
-        const bodySize1 = hr1.longlong();
-        var read1: Int64 = 0;
+        Amqp091::readFrame(sconn) // basic.publish
+        const fHdr1 = Amqp091::readFrame(sconn)
+        const hr1 = AmqpReader091::new(fHdr1.payload)
+        hr1.short()
+        hr1.short()
+        const bodySize1 = hr1.longlong()
+        var read1: Int64 = 0
         while read1 < bodySize1 {
-            const fb1 = Amqp091::readFrame(sconn);
-            read1 = read1 + fb1.payload.len();
+            const fb1 = Amqp091::readFrame(sconn)
+            read1 = read1 + fb1.payload.len()
         }
-        const wAck = AmqpWriter091::new();
-        wAck.longlong(1);
-        wAck.octet(0); // multiple = false
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 80, wAck.bytes));
+        const wAck = AmqpWriter091::new()
+        wAck.longlong(1)
+        wAck.octet(0) // multiple = false
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 80, wAck.bytes))
 
         // --- second publish -> basic.nack ---
-        Amqp091::readFrame(sconn); // basic.publish
-        const fHdr2 = Amqp091::readFrame(sconn);
-        const hr2 = AmqpReader091::new(fHdr2.payload);
-        hr2.short();
-        hr2.short();
-        const bodySize2 = hr2.longlong();
-        var read2: Int64 = 0;
+        Amqp091::readFrame(sconn) // basic.publish
+        const fHdr2 = Amqp091::readFrame(sconn)
+        const hr2 = AmqpReader091::new(fHdr2.payload)
+        hr2.short()
+        hr2.short()
+        const bodySize2 = hr2.longlong()
+        var read2: Int64 = 0
         while read2 < bodySize2 {
-            const fb2 = Amqp091::readFrame(sconn);
-            read2 = read2 + fb2.payload.len();
+            const fb2 = Amqp091::readFrame(sconn)
+            read2 = read2 + fb2.payload.len()
         }
-        const wNack = AmqpWriter091::new();
-        wNack.longlong(2);
-        wNack.octet(0); // multiple = false, requeue = false
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 120, wNack.bytes));
+        const wNack = AmqpWriter091::new()
+        wNack.longlong(2)
+        wNack.octet(0) // multiple = false, requeue = false
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 120, wNack.bytes))
 
-        httpConnClose(sconn);
+        httpConnClose(sconn)
 
         if (ok1) {
-            return 1;
+            return 1
         }
-        return 0;
+        return 0
     }
 
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv)
 
-        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
-        const ch = AmqpChannel091::open(c);
+        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest")
+        const ch = AmqpChannel091::open(c)
 
-        const selected = ch.confirmSelect();
+        const selected = ch.confirmSelect()
         if (selected) {
-            println("ok-confirm-select");
+            println("ok-confirm-select")
         }
 
-        var body1: List<Int64> = [];
-        const msg1 = "first";
+        var body1: List<Int64> = []
+        const msg1 = "first"
         for i in 0..msg1.len() {
-            body1.push(msg1.charCodeAt(i) & 0xFF);
+            body1.push(msg1.charCodeAt(i) & 0xFF)
         }
-        const tag1 = ch.publish("amq.direct", "rk", body1, "text/plain");
+        const tag1 = ch.publish("amq.direct", "rk", body1, "text/plain")
 
-        var body2: List<Int64> = [];
-        const msg2 = "second";
+        var body2: List<Int64> = []
+        const msg2 = "second"
         for i in 0..msg2.len() {
-            body2.push(msg2.charCodeAt(i) & 0xFF);
+            body2.push(msg2.charCodeAt(i) & 0xFF)
         }
-        const tag2 = ch.publish("amq.direct", "rk", body2, "text/plain");
+        const tag2 = ch.publish("amq.direct", "rk", body2, "text/plain")
 
         if (tag1 == 1) {
             if (tag2 == 2) {
-                println("ok-publish-tags");
+                println("ok-publish-tags")
             }
         }
 
-        const c1 = ch.waitForConfirm();
+        const c1 = ch.waitForConfirm()
         if (c1.ok) {
             if (c1.ack) {
                 if (c1.deliveryTag == 1) {
-                    println("ok-ack");
+                    println("ok-ack")
                 }
             }
         }
 
-        const c2 = ch.waitForConfirm();
+        const c2 = ch.waitForConfirm()
         if (c2.ok) {
             if (!c2.ack) {
                 if (c2.deliveryTag == 2) {
-                    println("ok-nack");
+                    println("ok-nack")
                 }
             }
         }
 
-        const brokerOk = await handle;
+        const brokerOk = await handle
         if (brokerOk != 1) {
-            println("broker-mismatch");
+            println("broker-mismatch")
         }
 
-        httpServerClose(srv);
-        return 0;
+        httpServerClose(srv)
+        return 0
     }
 }

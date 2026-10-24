@@ -1,14 +1,14 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class DaemonSetStatus
     {
-        var desiredNumberScheduled: Int64;
-        var currentNumberScheduled: Int64;
-        var numberReady: Int64;
+        var desiredNumberScheduled: Int64
+        var currentNumberScheduled: Int64
+        var numberReady: Int64
     }
 }

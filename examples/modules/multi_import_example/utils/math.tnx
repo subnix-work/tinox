@@ -2,6 +2,6 @@ class math
 {
     fnc square(x: Int64) -> Int64
     {
-        return x * x;
+        return x * x
     }
 }

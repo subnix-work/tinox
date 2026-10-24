@@ -9,20 +9,20 @@ class Main
     fnc main() -> Int32 {
         // doubly nested
         const outer: fnc(Int64) -> Int64 = fnc(x: Int64) -> Int64 {
-            const inner: fnc(Int64) -> Int64 = fnc(y: Int64) -> Int64 { return y * 2; };
-            return inner(x) + 1;
-        };
-        println(outer(10).toString());   // inner(10)=20, +1 = 21
+            const inner: fnc(Int64) -> Int64 = fnc(y: Int64) -> Int64 { return y * 2 }
+            return inner(x) + 1
+        }
+        println(outer(10).toString())   // inner(10)=20, +1 = 21
 
         // triply nested
         const a: fnc() -> Int64 = fnc() -> Int64 {
             const b: fnc() -> Int64 = fnc() -> Int64 {
-                const c: fnc() -> Int64 = fnc() -> Int64 { return 7; };
-                return c() + 10;
-            };
-            return b() + 100;
-        };
-        println(a().toString());          // 7 -> 17 -> 117
-        return 0;
+                const c: fnc() -> Int64 = fnc() -> Int64 { return 7 }
+                return c() + 10
+            }
+            return b() + 100
+        }
+        println(a().toString())          // 7 -> 17 -> 117
+        return 0
     }
 }

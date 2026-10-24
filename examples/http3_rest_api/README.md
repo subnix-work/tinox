@@ -89,13 +89,13 @@ one can't also be named `Main.tnx` in the same directory:
 @Http3RestController(8843, "cert.pem", "key.pem")
 class TaskController
 {
-    var tasks: List<TodoItem>;
+    var tasks: List<TodoItem>
 
     @GET
     @Path("/tasks")
     fn listTasks(ctx: HttpContext) -> Nothing
     {
-        ctx.response.json(Json::serialize(this.tasks));
+        ctx.response.json(Json::serialize(this.tasks))
     }
     // ...
 }

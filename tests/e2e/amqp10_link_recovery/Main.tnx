@@ -12,81 +12,81 @@
 // expect: ok-recovery-tag-not-reoffered
 // expect: ok-broker-saw-unsettled-map
 
-import tinox.core.amqp10;
-import tinox.core.socket;
+import tinox.core.amqp10
+import tinox.core.socket
 
 class Main
 {
 
     async fnc recoveryBroker(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv)
 
         // --- SASL header + negotiation (PLAIN) ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
-        Amqp10::writeFrame(sconn, 1, 0, mechBody);
-        Amqp10::readFrame(sconn);
-        Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]));
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0])
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])])
+        Amqp10::writeFrame(sconn, 1, 0, mechBody)
+        Amqp10::readFrame(sconn)
+        Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]))
 
         // --- AMQP header ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0])
 
         // --- open / open-ok ---
-        Amqp10::readFrame(sconn);
+        Amqp10::readFrame(sconn)
         var openFields: List<Amqp10Value> = [
             Amqp10Value::StrVal("fake-broker"), Amqp10Value::NullVal,
             Amqp10Value::UIntVal(131072), Amqp10Value::UShortVal(2047)
-        ];
-        Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields))
 
         // --- begin / begin-ok ---
-        const fBegin = Amqp10::readFrame(sconn);
+        const fBegin = Amqp10::readFrame(sconn)
         var beginFields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin.chanId), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields))
 
         // --- attach 1: plain attach() without recovery — the unsettled field
         // MUST be NullVal (position 7), unchanged behavior. ---
-        const fAttach1 = Amqp10::readFrame(sconn);
-        const pAttach1 = Amqp10::decodePerformative(fAttach1.body);
-        var plainNoUnsettled: Bool = false;
+        const fAttach1 = Amqp10::readFrame(sconn)
+        const pAttach1 = Amqp10::decodePerformative(fAttach1.body)
+        var plainNoUnsettled: Bool = false
         if (pAttach1.fields.len() > 7) {
-            match pAttach1.fields[7] { NullVal => { plainNoUnsettled = true; } _ => {} }
+            match pAttach1.fields[7] { NullVal => { plainNoUnsettled = true } _ => {} }
         }
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach1.fields));
-        const fDetach1 = Amqp10::readFrame(sconn);
-        const pDetach1 = Amqp10::decodePerformative(fDetach1.body);
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x16, pDetach1.fields));
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach1.fields))
+        const fDetach1 = Amqp10::readFrame(sconn)
+        const pDetach1 = Amqp10::decodePerformative(fDetach1.body)
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x16, pDetach1.fields))
 
         // --- attach 2: attachWithRecovery() with TWO reported tags. The
         // broker confirms tag A (still open) and rejects tag B (already
         // settled from the broker's point of view) — tests BOTH
         // reconciliation cases in a single attach cycle. ---
-        const fAttach2 = Amqp10::readFrame(sconn);
-        const pAttach2 = Amqp10::decodePerformative(fAttach2.body);
-        var sawTagA: Bool = false;
-        var sawTagB: Bool = false;
-        var unsettledPairCount: Int64 = 0;
+        const fAttach2 = Amqp10::readFrame(sconn)
+        const pAttach2 = Amqp10::decodePerformative(fAttach2.body)
+        var sawTagA: Bool = false
+        var sawTagB: Bool = false
+        var unsettledPairCount: Int64 = 0
         if (pAttach2.fields.len() > 7) {
             match pAttach2.fields[7] {
                 MapVal(pairs) => {
-                    unsettledPairCount = pairs.len() / 2;
-                    var i: Int64 = 0;
+                    unsettledPairCount = pairs.len() / 2
+                    var i: Int64 = 0
                     while i + 1 < pairs.len() {
                         match pairs[i] {
                             BinaryVal(tag) => {
                                 if (tag.len() == 1) {
-                                    if (tag[0] == 65) { sawTagA = true; }
-                                    if (tag[0] == 66) { sawTagB = true; }
+                                    if (tag[0] == 65) { sawTagA = true }
+                                    if (tag[0] == 66) { sawTagB = true }
                                 }
                             }
                             _ => {}
                         }
-                        i = i + 2;
+                        i = i + 2
                     }
                 }
                 _ => {}
@@ -94,72 +94,72 @@ class Main
         }
         // Broker response: only tag A in its own unsettled field (tag B is
         // considered long settled and is NOT re-offered).
-        var respFields: List<Amqp10Value> = [];
+        var respFields: List<Amqp10Value> = []
         for i in 0..pAttach2.fields.len() {
-            respFields.push(pAttach2.fields[i]);
+            respFields.push(pAttach2.fields[i])
         }
-        respFields[7] = Amqp10Value::MapVal([Amqp10Value::BinaryVal([65]), Amqp10Value::NullVal]);
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, respFields));
+        respFields[7] = Amqp10Value::MapVal([Amqp10Value::BinaryVal([65]), Amqp10Value::NullVal])
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, respFields))
 
-        httpConnClose(sconn);
+        httpConnClose(sconn)
 
-        var result: Int64 = 0;
+        var result: Int64 = 0
         if (plainNoUnsettled) { if (sawTagA) { if (sawTagB) { if (unsettledPairCount == 2) {
-            result = 1;
+            result = 1
         } } } }
-        return result;
+        return result
     }
 
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle = spawn recoveryBroker(srv);
+        const handle = spawn recoveryBroker(srv)
 
-        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest")
         if (conn.conn <= 0) {
-            println("connect failed: " + conn.errorMessage);
-            return 1;
+            println("connect failed: " + conn.errorMessage)
+            return 1
         }
-        const session = Amqp10Session::begin(conn);
+        const session = Amqp10Session::begin(conn)
 
         // --- Plain attach() without recovery ---
-        const link1 = Amqp10Link::attach(session, "plain-link", true, "queue-a");
+        const link1 = Amqp10Link::attach(session, "plain-link", true, "queue-a")
         if (link1.recoveredUnsettledTags.len() == 0) {
-            println("ok-plain-attach-no-unsettled");
+            println("ok-plain-attach-no-unsettled")
         }
-        link1.detach();
+        link1.detach()
 
         // --- attachWithRecovery() with two previously-unsettled reported tags ---
-        var priorTags: List<List<Int64>> = [[65], [66]];
-        const link2 = Amqp10Link::attachWithRecovery(session, "recovery-link", true, "queue-a", priorTags);
-        var tagAConfirmed: Bool = false;
-        var tagBReoffered: Bool = false;
+        var priorTags: List<List<Int64>> = [[65], [66]]
+        const link2 = Amqp10Link::attachWithRecovery(session, "recovery-link", true, "queue-a", priorTags)
+        var tagAConfirmed: Bool = false
+        var tagBReoffered: Bool = false
         for i in 0..link2.recoveredUnsettledTags.len() {
-            const tag = link2.recoveredUnsettledTags[i];
+            const tag = link2.recoveredUnsettledTags[i]
             if (tag.len() == 1) {
-                if (tag[0] == 65) { tagAConfirmed = true; }
-                if (tag[0] == 66) { tagBReoffered = true; }
+                if (tag[0] == 65) { tagAConfirmed = true }
+                if (tag[0] == 66) { tagBReoffered = true }
             }
         }
         if (tagAConfirmed) {
-            println("ok-recovery-tag-confirmed");
+            println("ok-recovery-tag-confirmed")
         }
         if (!tagBReoffered) {
-            println("ok-recovery-tag-not-reoffered");
+            println("ok-recovery-tag-not-reoffered")
         }
 
-        const brokerOk = await handle;
+        const brokerOk = await handle
         if (brokerOk == 1) {
-            println("ok-broker-saw-unsettled-map");
+            println("ok-broker-saw-unsettled-map")
         }
 
-        conn.close();
-        httpServerClose(srv);
-        return 0;
+        conn.close()
+        httpServerClose(srv)
+        return 0
     }
 }

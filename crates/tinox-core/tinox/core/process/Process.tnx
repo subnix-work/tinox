@@ -1,4 +1,4 @@
-module tinox.core.process;
+module tinox.core.process
 
 namespace tinox.core.process
 {
@@ -6,32 +6,32 @@ namespace tinox.core.process
     {
         fn exit(code: Int64) -> Nothing
         {
-            processExit(code);
+            processExit(code)
         }
 
         fn sleep(ms: Int64) -> Nothing
         {
-            sleep_ms(ms);
+            sleep_ms(ms)
         }
 
         fn pid() -> Int64
         {
-            return processId();
+            return processId()
         }
 
         fn args() -> List<String>
         {
-            return processArgs();
+            return processArgs()
         }
 
         fn env(name: String) -> String
         {
-            return envGet(name);
+            return envGet(name)
         }
 
         fn setEnv(name: String, value: String) -> Nothing
         {
-            envSet(name, value);
+            envSet(name, value)
         }
 
         /**
@@ -57,8 +57,8 @@ namespace tinox.core.process
          */
         fn run(argv: List<String>, timeoutMs: Int64, stdin: String) -> ProcessResult
         {
-            const env: List<String> = [];
-            return Process::runWithOptions(argv, timeoutMs, stdin, "", env);
+            const env: List<String> = []
+            return Process::runWithOptions(argv, timeoutMs, stdin, "", env)
         }
 
         /**
@@ -71,12 +71,12 @@ namespace tinox.core.process
          */
         fn runWithOptions(argv: List<String>, timeoutMs: Int64, stdin: String, cwd: String, env: List<String>) -> ProcessResult
         {
-            const handle: Int64 = processRunWithOptions(argv, timeoutMs, stdin, cwd, env);
-            const out: String = processResultStdout(handle);
-            const err: String = processResultStderr(handle);
-            const code: Int64 = processResultExitCode(handle);
-            const to: Int64 = processResultTimedOut(handle);
-            return ProcessResult::new(out, err, code, to != 0);
+            const handle: Int64 = processRunWithOptions(argv, timeoutMs, stdin, cwd, env)
+            const out: String = processResultStdout(handle)
+            const err: String = processResultStderr(handle)
+            const code: Int64 = processResultExitCode(handle)
+            const to: Int64 = processResultTimedOut(handle)
+            return ProcessResult::new(out, err, code, to != 0)
         }
     }
 }

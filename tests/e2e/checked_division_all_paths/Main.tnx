@@ -14,17 +14,17 @@ class Main
 {
     fnc main() -> Int32 {
         // Binary op, i32
-        const a: Int32 = 100;
-        println((a / 7).toString());        // 14
-        println((a % 7).toString());        // 2
+        const a: Int32 = 100
+        println((a / 7).toString())        // 14
+        println((a % 7).toString())        // 2
 
         // Binary op, i64
-        println((100 / 8).toString() + "," + (100 % 7).toString());  // 12,2
+        println((100 / 8).toString() + "," + (100 % 7).toString())  // 12,2
 
         // CompoundAssign, i64 + i32
-        var x: Int64 = 17;
-        x /= 3;                              // 5
-        println(x.toString());               // 5
-        return 0;
+        var x: Int64 = 17
+        x /= 3                              // 5
+        println(x.toString())               // 5
+        return 0
     }
 }

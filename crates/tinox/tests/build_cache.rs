@@ -30,7 +30,7 @@ impl Project {
             "tinox.toml",
             "[package]\nname = \"cache\"\nversion = \"0.1.0\"\n",
         );
-        p.write("Main.tnx", "import Value; class Main { fnc main() -> Int32 { println(Value::get().toString()); return 0; } }");
+        p.write("Main.tnx", "import Value\nclass Main { fnc main() -> Int32 { println(Value::get().toString())\nreturn 0 } }");
         p.value(42);
         for tool in ["cc", "opt", "llc"] {
             let real = Command::new("sh")
@@ -61,7 +61,7 @@ impl Project {
     fn value(&self, value: i32) {
         self.write(
             "Value.tnx",
-            &format!("class Value {{ fnc get() -> Int64 {{ return {value}; }} }}"),
+            &format!("class Value {{ fnc get() -> Int64 {{ return {value} }} }}"),
         );
     }
     fn command(&self, args: &[&str]) -> Command {
@@ -225,10 +225,10 @@ fn installed_dependency_replacement_changes_output() {
     p.write("tinox.toml", "[package]\nname = \"cache\"\nversion = \"0.1.0\"\n[[dependencies]]\ngroup = \"example\"\nartifactId = \"dep\"\nversion = \"1.0.0\"\nurl = \"https://example.invalid/dep.tar.gz\"\n");
     fs::remove_file(p.root.join("Value.tnx")).unwrap();
     let source = ".tinox/deps/example/dep/1.0.0/Value.tnx";
-    p.write(source, "class Value { fnc get() -> Int64 { return 7; } }");
+    p.write(source, "class Value { fnc get() -> Int64 { return 7 } }");
     success(&p.build());
     p.output("7");
-    p.write(source, "class Value { fnc get() -> Int64 { return 8; } }");
+    p.write(source, "class Value { fnc get() -> Int64 { return 8 } }");
     let count = p.count();
     success(&p.build());
     assert!(p.count() > count);

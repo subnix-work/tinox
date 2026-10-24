@@ -3,9 +3,9 @@
 class orm_sqlite_count
 {
     @Id @GeneratedValue
-    var id: Int64;
+    var id: Int64
     @Column("name")
-    var name: String;
+    var name: String
     @Column("price")
-    var price: Int64;
+    var price: Int64
 }

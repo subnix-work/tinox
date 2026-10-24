@@ -1,8 +1,8 @@
 class bug19_static_void_call {
     fn mk() -> bug19_static_void_call {
-        return bug19_static_void_call {};
+        return bug19_static_void_call {}
     }
     fn voidy(c: bug19_static_void_call, x: Int64) -> Nothing {
-        println(x);
+        println(x)
     }
 }

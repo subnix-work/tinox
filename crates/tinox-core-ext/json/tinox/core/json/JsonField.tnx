@@ -1,4 +1,4 @@
-module tinox.core.json;
+module tinox.core.json
 
 namespace tinox.core.json
 {
@@ -13,11 +13,11 @@ namespace tinox.core.json
     @annotation
     class JsonField
     {
-        var name: String;
+        var name: String
 
         fn new(name: String) -> JsonField
         {
-            return JsonField { name: name };
+            return JsonField { name: name }
         }
     }
 }

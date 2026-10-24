@@ -1,5 +1,5 @@
 class array_map_lambda {
-    var x: Int64;
-    var y: Int64;
-    fn sum() -> Int64 { return this.x + this.y; }
+    var x: Int64
+    var y: Int64
+    fn sum() -> Int64 { return this.x + this.y }
 }

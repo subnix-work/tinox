@@ -1,4 +1,4 @@
 enum bug14_match_string_contains {
-    Str(String),
-    Num(Int64),
+    Str(String)
+    Num(Int64)
 }

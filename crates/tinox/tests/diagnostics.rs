@@ -22,7 +22,7 @@ impl Project {
         );
         project.write(
             "Main.tnx",
-            "class Main { fnc main() -> Int32 { return 0; } }",
+            "class Main { fnc main() -> Int32 { return 0 } }",
         );
         project
     }
@@ -63,11 +63,11 @@ fn parse(output: &Output) -> Value {
 #[test]
 fn enum_string_concatenation_is_rejected_before_codegen() {
     let project = Project::new();
-    project.write("Status.tnx", "enum Status { STARTING; FAILED; }");
-    project.write("Run.tnx", "import Status; class Run { var status: Status; }");
+    project.write("Status.tnx", "enum Status { STARTING\nFAILED }");
+    project.write("Run.tnx", "import Status\nclass Run { var status: Status }");
     for expression in ["\"status: \" + run.status", "run.status + \"!\""] {
         project.write("Main.tnx", &format!(
-            "import Run; class Main {{ fnc main() -> Int32 {{ const run = Run {{ status: Status::FAILED }}; println({expression}); return 0; }} }}"
+            "import Run\nclass Main {{ fnc main() -> Int32 {{ const run = Run {{ status: Status::FAILED }}\nprintln({expression})\nreturn 0 }} }}"
         ));
         for action in ["check", "build"] {
             let output = project.command(action).output().unwrap();
@@ -75,7 +75,7 @@ fn enum_string_concatenation_is_rejected_before_codegen() {
             assert!(String::from_utf8_lossy(&output.stderr).contains("cannot concatenate String and enum 'Status'"), "{output:?}");
         }
     }
-    project.write("Main.tnx", "import Run; class Main { fnc main() -> Int32 { const run = Run { status: Status::FAILED }; println(\"status: \" + run.status.name); return 0; } }");
+    project.write("Main.tnx", "import Run\nclass Main { fnc main() -> Int32 { const run = Run { status: Status::FAILED }\nprintln(\"status: \" + run.status.name)\nreturn 0 } }");
     let output = project.command("run").output().unwrap();
     assert!(output.status.success(), "{output:?}");
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "status: FAILED");
@@ -86,21 +86,21 @@ fn check_and_build_share_cross_file_diagnostics_and_text_meaning() {
     let project = Project::new();
     project.write(
         "Main.tnx",
-        "import Helper; class Main { fnc main() -> Int32 { return 0; } }",
+        "import Helper\nclass Main { fnc main() -> Int32 { return 0 } }",
     );
     for (source, category) in [
         ("class Helper { fnc value( }", "syntax"),
         ("class Helper { fnc value() -> Int64 { return `; } }", "lex"),
         (
-            "class Helper { fnc value() -> Int64 { return \"wrong\"; } }",
+            "class Helper { fnc value() -> Int64 { return \"wrong\" } }",
             "type",
         ),
         ("@DoesNotExist class Helper {}", "annotation"),
         (
-            "class Helper { @Transactional fn value() -> Int64 { return 0; } }",
+            "class Helper { @Transactional fn value() -> Int64 { return 0 } }",
             "annotation",
         ),
-        ("import Missing; class Helper {}", "import"),
+        ("import Missing\nclass Helper {}", "import"),
     ] {
         project.write("Helper.tnx", source);
         let check = project.json("check", false);
@@ -224,9 +224,9 @@ fn nested_source_identity_and_distinct_ranges_survive_graph_merging() {
     let project = Project::new();
     project.write(
         "Main.tnx",
-        "import model.Helper; class Main { fnc main() -> Int32 { return 0; } }",
+        "import model.Helper\nclass Main { fnc main() -> Int32 { return 0 } }",
     );
-    project.write("model/Helper.tnx", "namespace model {\nclass Helper {\nfnc one() -> Int64 { return firstMissing; }\nfnc two() -> Int64 { return secondMissing; }\n}\n}\n");
+    project.write("model/Helper.tnx", "namespace model {\nclass Helper {\nfnc one() -> Int64 { return firstMissing }\nfnc two() -> Int64 { return secondMissing }\n}\n}\n");
     let report = project.json("check", false);
     let diagnostics = report["diagnostics"].as_array().unwrap();
     assert_eq!(diagnostics.len(), 2);

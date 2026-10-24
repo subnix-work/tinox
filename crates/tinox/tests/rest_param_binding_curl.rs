@@ -57,13 +57,13 @@ fn rest_param_binding_end_to_end() {
 
     std::fs::write(
         workdir.join("Greeting.tnx"),
-        r#"import tinox.core.json;
+        r#"import tinox.core.json
 
 @JsonSerializable
 class Greeting
 {
-    var message: String;
-    var loud: Bool;
+    var message: String
+    var loud: Bool
 }
 "#,
     )
@@ -71,13 +71,13 @@ class Greeting
 
     std::fs::write(
         workdir.join("Item.tnx"),
-        r#"import tinox.core.json;
+        r#"import tinox.core.json
 
 @JsonSerializable
 class Item
 {
-    var id: Int64;
-    var name: String;
+    var id: Int64
+    var name: String
 }
 "#,
     )
@@ -85,10 +85,10 @@ class Item
 
     std::fs::write(
         workdir.join("Ctrl.tnx"),
-        r#"import tinox.core.http_server;
-import tinox.core.json;
-import Greeting;
-import Item;
+        r#"import tinox.core.http_server
+import tinox.core.json
+import Greeting
+import Item
 
 class Ctrl
 {
@@ -99,9 +99,9 @@ class Ctrl
     {
         if (loud)
         {
-            return Greeting { message: "HELLO, " + name + "!", loud: true };
+            return Greeting { message: "HELLO, " + name + "!", loud: true }
         }
-        return Greeting { message: "Hello, " + name, loud: false };
+        return Greeting { message: "Hello, " + name, loud: false }
     }
 
     // No bound params at all -- auto-serialize List<class> return.
@@ -109,7 +109,7 @@ class Ctrl
     @Path("/items")
     fn items() -> List<Item>
     {
-        return [Item { id: 1, name: "widget" }, Item { id: 2, name: "gadget" }];
+        return [Item { id: 1, name: "widget" }, Item { id: 2, name: "gadget" }]
     }
 
     // @PostParam + auto-serialize class return.
@@ -118,7 +118,7 @@ class Ctrl
     @StatusCode(201)
     fn createItem(@PostParam item: Item) -> Item
     {
-        return item;
+        return item
     }
 
     // Int64 @PathParam + @HttpContext, manual mode (dynamic 200 vs 404 --
@@ -129,11 +129,11 @@ class Ctrl
     {
         if (id == 42)
         {
-            ctx.response.status(200).json("{\"found\":true}");
-            return ctx;
+            ctx.response.status(200).json("{\"found\":true}")
+            return ctx
         }
-        ctx.response.status(404).json("{\"found\":false}");
-        return ctx;
+        ctx.response.status(404).json("{\"found\":false}")
+        return ctx
     }
 }
 "#,
@@ -142,13 +142,13 @@ class Ctrl
 
     std::fs::write(
         workdir.join("Main.tnx"),
-        r#"import Ctrl;
+        r#"import Ctrl
 
 class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }
 "#,

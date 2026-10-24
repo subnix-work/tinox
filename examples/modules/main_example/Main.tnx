@@ -1,13 +1,13 @@
-import math_lib;
+import math_lib
 
 class Main
 {
     fnc main() -> Int32
     {
-        const x = math_lib::add(3, 4);
-        println(x);
-        const y = math_lib::mul(3, 4);
-        println(y);
-        return 0;
+        const x = math_lib::add(3, 4)
+        println(x)
+        const y = math_lib::mul(3, 4)
+        println(y)
+        return 0
     }
 }

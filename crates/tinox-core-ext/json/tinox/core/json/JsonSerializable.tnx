@@ -1,4 +1,4 @@
-module tinox.core.json;
+module tinox.core.json
 
 namespace tinox.core.json
 {

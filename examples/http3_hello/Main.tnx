@@ -4,24 +4,24 @@
 // returns (listen() blocks forever), so this can't be a golden e2e test --
 // the Rust test spawns it as a background process and drives it with a
 // real `curl --http3-only`.
-import tinox.core.http3_server;
-import tinox.core.http_server;
+import tinox.core.http3_server
+import tinox.core.http_server
 
 class Main
 {
     fnc main() -> Int32
     {
-        const server: Http3Server = Http3Server::new(8493, "tls_cert.pem", "tls_key.pem");
+        const server: Http3Server = Http3Server::new(8493, "tls_cert.pem", "tls_key.pem")
 
         server.get("/hello", ctx => {
-            ctx.response.text("hi from h3");
-        });
+            ctx.response.text("hi from h3")
+        })
 
         server.post("/echo", ctx => {
-            ctx.response.text("echo:" + ctx.request.body);
-        });
+            ctx.response.text("echo:" + ctx.request.body)
+        })
 
-        server.listen();
-        return 0;
+        server.listen()
+        return 0
     }
 }

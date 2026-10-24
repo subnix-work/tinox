@@ -11,57 +11,57 @@
 // expect-contains: empty-roundtrip:true
 // expect-contains: empty-cipher-len:56
 
-import tinox.core.crypto;
+import tinox.core.crypto
 
 class Main
 {
     fnc main() -> Int32 {
-        const plaintext: String = "Hello, AES-256-GCM! This plaintext is longer than one AES block (16 bytes) to exercise multi-block GCM.";
-        const key: String = "correct horse battery staple";
+        const plaintext: String = "Hello, AES-256-GCM! This plaintext is longer than one AES block (16 bytes) to exercise multi-block GCM."
+        const key: String = "correct horse battery staple"
 
-        const ciphertext: String = Crypto::aesEncrypt(plaintext, key);
-        const decrypted: String = Crypto::aesDecrypt(ciphertext, key);
-        println("match:" + (decrypted == plaintext).toString());
+        const ciphertext: String = Crypto::aesEncrypt(plaintext, key)
+        const decrypted: String = Crypto::aesDecrypt(ciphertext, key)
+        println("match:" + (decrypted == plaintext).toString())
 
         // Two encryptions of the same plaintext must differ (random nonce per call).
-        const ciphertext2: String = Crypto::aesEncrypt(plaintext, key);
-        println("nonces-differ:" + (ciphertext != ciphertext2).toString());
+        const ciphertext2: String = Crypto::aesEncrypt(plaintext, key)
+        println("nonces-differ:" + (ciphertext != ciphertext2).toString())
 
         // Wrong key must fail loudly (GCM auth tag mismatch), never silently
         // return wrong plaintext.
-        var wrongKeyThrew: Bool = false;
+        var wrongKeyThrew: Bool = false
         try {
-            Crypto::aesDecrypt(ciphertext, "a completely different key");
+            Crypto::aesDecrypt(ciphertext, "a completely different key")
         } catch e: String {
-            wrongKeyThrew = true;
+            wrongKeyThrew = true
         }
-        println("wrong-key-throws:" + wrongKeyThrew.toString());
+        println("wrong-key-throws:" + wrongKeyThrew.toString())
 
         // A single flipped hex nibble in the ciphertext must also fail loudly.
         // Flip to a value guaranteed to differ from the original (not a fixed
         // "0" — that would coincidentally match ~1/16 of the time and defeat
         // the test) instead of overwriting with a constant.
-        var tamperedThrew: Bool = false;
-        const firstNibble: String = ciphertext.substring(0, 1);
-        var flipped: String = "0";
+        var tamperedThrew: Bool = false
+        const firstNibble: String = ciphertext.substring(0, 1)
+        var flipped: String = "0"
         if (firstNibble == "0") {
-            flipped = "1";
+            flipped = "1"
         }
-        const tampered: String = flipped + ciphertext.substring(1, ciphertext.len());
+        const tampered: String = flipped + ciphertext.substring(1, ciphertext.len())
         try {
-            Crypto::aesDecrypt(tampered, key);
+            Crypto::aesDecrypt(tampered, key)
         } catch e: String {
-            tamperedThrew = true;
+            tamperedThrew = true
         }
-        println("tampered-throws:" + tamperedThrew.toString());
+        println("tampered-throws:" + tamperedThrew.toString())
 
         // Empty-plaintext boundary case: the decrypted result is itself an empty
         // string, which must not be confused with the internal error sentinel.
-        const emptyCipher: String = Crypto::aesEncrypt("", key);
-        const emptyPlain: String = Crypto::aesDecrypt(emptyCipher, key);
-        println("empty-roundtrip:" + (emptyPlain == "").toString());
-        println("empty-cipher-len:" + emptyCipher.len().toString());
+        const emptyCipher: String = Crypto::aesEncrypt("", key)
+        const emptyPlain: String = Crypto::aesDecrypt(emptyCipher, key)
+        println("empty-roundtrip:" + (emptyPlain == "").toString())
+        println("empty-cipher-len:" + emptyCipher.len().toString())
 
-        return 0;
+        return 0
     }
 }
