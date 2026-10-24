@@ -4,6 +4,8 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-24
+
 ### Changed (breaking)
 
 - **Statements end at the end of the line; `;` is gone** (#445). A `;` that
