@@ -16,8 +16,8 @@ import tinox.core.socket;
 class Main
 {
 
-    async fnc runServer() -> Int64 {
-        const server: HttpServer = HttpServer::new(47700);
+    async fnc runServer(port: Int64) -> Int64 {
+        const server: HttpServer = HttpServer::new(port);
         server.get("/hello", ctx => {
             ctx.response.text("Hello over TLS!");
         });
@@ -45,11 +45,17 @@ class Main
 
     fnc main() -> Int32 {
         // This fixture intentionally ends with the TLS server still listening.
-        const serverTask = spawn runServer();
+        // listenTls() binds internally, so it cannot report an OS-assigned port:
+        // ask the kernel for a free one first (a fixed literal sits inside the
+        // ephemeral range and collided with other tests' dynamic ports).
+        const probe: Int64 = httpServerCreate(0);
+        const port: Int64 = httpServerBoundPort(probe);
+        httpServerClose(probe);
+        const serverTask = spawn runServer(port);
         taskDetach(serverTask);
 
         // --- Positive path: verify=false accepts the self-signed test cert ---
-        const fd: Int64 = dialRetry(47700);
+        const fd: Int64 = dialRetry(port);
         if (fd < 0) {
             println("connect failed");
             return 1;
@@ -70,7 +76,7 @@ class Main
         httpConnClose(conn);
 
         // --- Negative path: verify=true must reject the self-signed cert ---
-        const fd2: Int64 = dialRetry(47700);
+        const fd2: Int64 = dialRetry(port);
         if (fd2 < 0) {
             println("connect2 failed");
             return 1;
