@@ -8,29 +8,29 @@
 // expect: elapsed-after-stop-nonzero=true
 // expect: elapsed-frozen-after-second-check=true
 
-import tinox.core.time;
+import tinox.core.time
 
 class Main
 {
     fnc main() -> Int32
     {
-        const fresh = Time::newStopwatch();
-        println("not-running-before-start=${fresh.elapsed()}");
+        const fresh = Time::newStopwatch()
+        println("not-running-before-start=${fresh.elapsed()}")
 
-        const sw = Time::newStopwatch();
-        sw.start();
-        Time::sleep(20);
-        sw.stop();
+        const sw = Time::newStopwatch()
+        sw.start()
+        Time::sleep(20)
+        sw.stop()
 
-        const firstRead: Int64 = sw.elapsed();
-        println("elapsed-after-stop-nonzero=${firstRead > 0}");
+        const firstRead: Int64 = sw.elapsed()
+        println("elapsed-after-stop-nonzero=${firstRead > 0}")
 
         // elapsed() must keep returning the same frozen value on repeated
         // calls after stop(), not silently reset to 0 or keep advancing.
-        Time::sleep(20);
-        const secondRead: Int64 = sw.elapsed();
-        println("elapsed-frozen-after-second-check=${secondRead == firstRead}");
+        Time::sleep(20)
+        const secondRead: Int64 = sw.elapsed()
+        println("elapsed-frozen-after-second-check=${secondRead == firstRead}")
 
-        return 0;
+        return 0
     }
 }

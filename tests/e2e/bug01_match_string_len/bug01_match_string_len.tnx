@@ -1,4 +1,4 @@
 enum bug01_match_string_len {
-    Str(String),
-    Num(Int64),
+    Str(String)
+    Num(Int64)
 }

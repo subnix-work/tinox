@@ -23,7 +23,7 @@ fn cli_reuses_runtime_and_separates_compiler_flags_and_disabled_builds() {
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(
         dir.join("Main.tnx"),
-        "class Main { fnc main() -> Int32 { println(\"cache works\"); return 0; } }",
+        "class Main { fnc main() -> Int32 { println(\"cache works\")\nreturn 0 } }",
     )
     .unwrap();
     let path = std::env::join_paths(

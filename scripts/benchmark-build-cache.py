@@ -37,10 +37,10 @@ def main():
         root = Path(temporary)
         methods = []
         for index in range(args.methods):
-            body = "var value: Int64 = n; " + "value = value * 31 + 7; " * 30
-            methods.append(f"fnc method{index}(n: Int64) -> Int64 {{ {body} return value; }}")
-        source = 'class Main { fnc main() -> Int32 { println("42"); return 0; } '
-        source += " ".join(methods) + " }\n"
+            body = "var value: Int64 = n\n" + "value = value * 31 + 7\n" * 30
+            methods.append(f"fnc method{index}(n: Int64) -> Int64 {{\n{body}return value\n}}")
+        source = 'class Main {\nfnc main() -> Int32 {\nprintln("42")\nreturn 0\n}\n'
+        source += "\n".join(methods) + "\n}\n"
         (root / "Main.tnx").write_text(source)
         env = os.environ.copy()
         env["TINOX_RUNTIME_CACHE_DIR"] = str(root / "cache")

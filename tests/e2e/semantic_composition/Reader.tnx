@@ -1,1 +1,1 @@
-interface Reader { fn read(value: Float64) -> Float64; }
+interface Reader { fn read(value: Float64) -> Float64 }

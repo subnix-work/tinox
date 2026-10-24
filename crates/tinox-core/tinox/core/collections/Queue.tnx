@@ -1,4 +1,4 @@
-module tinox.core.collections;
+module tinox.core.collections
 
 namespace tinox.core.collections
 {
@@ -7,47 +7,47 @@ namespace tinox.core.collections
      */
     class Queue<T>
     {
-        var data: List<T>;
+        var data: List<T>
 
         fn new() -> Queue<T>
         {
-            return Queue<T> { data: [] };
+            return Queue<T> { data: [] }
         }
 
         fn enqueue(value: T) -> Nothing
         {
-            this.data.push(value);
+            this.data.push(value)
         }
 
         fn dequeue() -> T
         {
-            const len: Int64 = this.data.len();
+            const len: Int64 = this.data.len()
             if (len == 0)
             {
-                throw "Queue is empty";
+                throw "Queue is empty"
             }
-            const value: T = this.data[0];
-            this.data.removeAt(0);
-            return value;
+            const value: T = this.data[0]
+            this.data.removeAt(0)
+            return value
         }
 
         fn peek() -> T
         {
             if (this.data.len() == 0)
             {
-                throw "Queue is empty";
+                throw "Queue is empty"
             }
-            return this.data[0];
+            return this.data[0]
         }
 
         fn isEmpty() -> Bool
         {
-            return this.data.len() == 0;
+            return this.data.len() == 0
         }
 
         fn size() -> Int64
         {
-            return this.data.len();
+            return this.data.len()
         }
     }
 }

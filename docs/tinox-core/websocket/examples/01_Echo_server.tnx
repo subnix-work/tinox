@@ -1,23 +1,23 @@
-import tinox.core.websocket;
+import tinox.core.websocket
 
 class Main
 {
     fnc main() -> Int32
     {
-        const srv: Int64 = WsServer::listen(8080);
-        const conn: Int64 = WsServer::accept(srv);
+        const srv: Int64 = WsServer::listen(8080)
+        const conn: Int64 = WsServer::accept(srv)
 
         while true
         {
-            const f: WsFrame = Ws::readMessage(conn);
+            const f: WsFrame = Ws::readMessage(conn)
             if (f.opcode != 1)
             {
-                break;
+                break
             }
-            Ws::sendText(conn, Ws::text(f));
+            Ws::sendText(conn, Ws::text(f))
         }
 
-        Ws::close(conn);
-        return 0;
+        Ws::close(conn)
+        return 0
     }
 }

@@ -8,22 +8,22 @@ class Main
 {
     fnc addOne(xs: List<Int64>) -> Int64
     {
-        xs.push(99);
-        return xs.len();
+        xs.push(99)
+        return xs.len()
     }
 
 
     fnc main() -> Int32
     {
-        var a: List<Int64> = [1, 2];
-        const b = a;
-        a.push(3);
-        println(b.len());
-        println(b[2]);
-        println(addOne(a));
-        println(a.len());
-        a.pop();
-        println(b.len());
-        return 0;
+        var a: List<Int64> = [1, 2]
+        const b = a
+        a.push(3)
+        println(b.len())
+        println(b[2])
+        println(addOne(a))
+        println(a.len())
+        a.pop()
+        println(b.len())
+        return 0
     }
 }

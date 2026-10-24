@@ -1,5 +1,5 @@
 enum bug10_mixed_enum_list_literal {
-    Identity,
-    LiteralStr(String),
-    FieldAccess(String),
+    Identity
+    LiteralStr(String)
+    FieldAccess(String)
 }

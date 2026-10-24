@@ -1,4 +1,4 @@
-import Animal;
+import Animal
 
 class Dog extends Animal
 {

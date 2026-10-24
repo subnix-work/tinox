@@ -10,7 +10,7 @@
 // reach @OnMessage; anything else (binary, close, EOF, protocol error) ends
 // the connection.
 
-import tinox.core.websocket;
+import tinox.core.websocket
 
 @WebsocketEndpoint("/echo", 8793)
 class EchoEndpoint
@@ -18,19 +18,19 @@ class EchoEndpoint
     @OnOpen
     fn onOpen(conn: Int64) -> Nothing
     {
-        println("client connected");
+        println("client connected")
     }
 
     @OnMessage
     fn onMessage(conn: Int64, msg: String) -> Nothing
     {
-        println("received: " + msg);
-        Ws::sendText(conn, "echo: " + msg);
+        println("received: " + msg)
+        Ws::sendText(conn, "echo: " + msg)
     }
 
     @OnClose
     fn onClose(conn: Int64) -> Nothing
     {
-        println("client disconnected");
+        println("client disconnected")
     }
 }

@@ -1,4 +1,4 @@
-module tinox.core.debug;
+module tinox.core.debug
 
 namespace tinox.core.debug
 {
@@ -8,33 +8,33 @@ namespace tinox.core.debug
         {
             if (condition == false)
             {
-                Debug::panic(message);
+                Debug::panic(message)
             }
         }
 
         fn panic(message: String) -> Nothing
         {
-            throw "Assertion failed: " + message;
+            throw "Assertion failed: " + message
         }
 
         fn printStackTrace() -> Nothing
         {
-            printStackTrace();
+            printStackTrace()
         }
 
         fn typeName() -> String
         {
-            return "unknown";
+            return "unknown"
         }
 
         fn memoryUsage() -> Int64
         {
-            return memoryUsage();
+            return memoryUsage()
         }
 
         fn gcCollect() -> Nothing
         {
-            gcCollect();
+            gcCollect()
         }
     }
 }

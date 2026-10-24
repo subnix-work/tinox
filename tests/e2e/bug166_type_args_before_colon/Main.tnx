@@ -18,32 +18,32 @@
 // expect: true
 // expect: 42
 
-import tinox.core.result;
-import tinox.core.option;
+import tinox.core.result
+import tinox.core.option
 
 class Main {
     fnc main() -> Int32 {
         // The original bug repro: no intermediate let, T only ever
         // appears in the explicit <Int64> the user wrote.
-        println(Result<Int64>::err("bad").getError());
+        println(Result<Int64>::err("bad").getError())
 
         // Same call shape via an intermediate let annotation -- was
         // already working before this fix, must keep working.
-        const r: Result<Int64> = Result<Int64>::err("bad2");
-        println(r.getError());
+        const r: Result<Int64> = Result<Int64>::err("bad2")
+        println(r.getError())
 
         // A different generic class, chained without a let.
-        println(Option<Int64>::none().isNone().toString());
+        println(Option<Int64>::none().isNone().toString())
 
         // Nested generic type arg before :: (>> tokenization).
-        const nested: Result<List<Int64>> = Result<List<Int64>>::err("nested");
-        println(nested.getError());
-        println(nested.isErr().toString());
+        const nested: Result<List<Int64>> = Result<List<Int64>>::err("nested")
+        println(nested.getError())
+        println(nested.isErr().toString())
 
         // Explicit type arg AND value-based inference both apply here
         // (Result::ok's `value: T` param) -- must agree, not conflict.
-        println(Result<Int64>::ok(42).unwrap().toString());
+        println(Result<Int64>::ok(42).unwrap().toString())
 
-        return 0;
+        return 0
     }
 }

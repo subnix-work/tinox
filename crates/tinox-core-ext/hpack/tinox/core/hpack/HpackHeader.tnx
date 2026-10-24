@@ -6,7 +6,7 @@
  * the static header table (61 entries), and a dynamic table
  * with configurable max size for full encoder/decoder support.
  */
-module tinox.core.hpack;
+module tinox.core.hpack
 
 namespace tinox.core.hpack
 {
@@ -15,12 +15,12 @@ namespace tinox.core.hpack
      */
     class HpackHeader
     {
-        var name: String;
-        var value: String;
+        var name: String
+        var value: String
 
         fn new(name: String, value: String) -> HpackHeader
         {
-            return HpackHeader { name: name, value: value };
+            return HpackHeader { name: name, value: value }
         }
     }
 }

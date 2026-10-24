@@ -21,11 +21,11 @@
 // enforce its own authorization rule (hasRole). See README.md for the
 // full walkthrough.
 
-import tinox.core.http_server;
-import tinox.core.oidc;
-import tinox.core.json;
-import tinox.core.env;
-import tinox.core.process;
+import tinox.core.http_server
+import tinox.core.oidc
+import tinox.core.json
+import tinox.core.env
+import tinox.core.process
 
 class Main
 {
@@ -34,91 +34,91 @@ class Main
     // main's `server.get(...)` route-closure lambdas) exactly as before.
     fnc requiredEnv(name: String) -> String
     {
-        const value: String = Env::getVar(name);
+        const value: String = Env::getVar(name)
         if (value == "")
         {
-            println("Missing required environment variable: " + name);
-            Process::exit(1);
+            println("Missing required environment variable: " + name)
+            Process::exit(1)
         }
-        return value;
+        return value
     }
 
     fnc hasRole(claims: Map<String, JsonValue>, role: String) -> Bool
     {
         if (!claims.contains("realm_access"))
         {
-            return false;
+            return false
         }
-        const realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable();
+        const realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable()
         if (!realmAccess.contains("roles"))
         {
-            return false;
+            return false
         }
-        const roles: List<JsonValue> = realmAccess["roles"].asList();
-        var i: Int64 = 0;
+        const roles: List<JsonValue> = realmAccess["roles"].asList()
+        var i: Int64 = 0
         while i < roles.len()
         {
             if (roles[i].getString() == role)
             {
-                return true;
+                return true
             }
-            i = i + 1;
+            i = i + 1
         }
-        return false;
+        return false
     }
 
     fnc main() -> Int32
     {
-        const issuer: String = requiredEnv("OIDC_ISSUER");
-        const authorizeUrl: String = requiredEnv("OIDC_AUTHORIZE_URL");
-        const tokenUrl: String = requiredEnv("OIDC_TOKEN_URL");
-        const jwksUri: String = requiredEnv("OIDC_JWKS_URI");
-        const clientId: String = requiredEnv("OIDC_CLIENT_ID");
-        const redirectUri: String = requiredEnv("OIDC_REDIRECT_URI");
-        const requiredRole: String = requiredEnv("OIDC_REQUIRED_ROLE");
+        const issuer: String = requiredEnv("OIDC_ISSUER")
+        const authorizeUrl: String = requiredEnv("OIDC_AUTHORIZE_URL")
+        const tokenUrl: String = requiredEnv("OIDC_TOKEN_URL")
+        const jwksUri: String = requiredEnv("OIDC_JWKS_URI")
+        const clientId: String = requiredEnv("OIDC_CLIENT_ID")
+        const redirectUri: String = requiredEnv("OIDC_REDIRECT_URI")
+        const requiredRole: String = requiredEnv("OIDC_REQUIRED_ROLE")
         // Seals the session/pending-login cookies (AES-256-GCM) -- a real
         // deployment must keep this stable across restarts (or every
         // existing session/in-flight login breaks) and secret (whoever holds
         // it can forge sessions).
-        const cookieSecret: String = requiredEnv("OIDC_COOKIE_SECRET");
+        const cookieSecret: String = requiredEnv("OIDC_COOKIE_SECRET")
         // Public client (no client secret) -- OidcClient still needs a value
         // to pass through to OAuth2Client, Keycloak just ignores it for a
         // client whose authentication method is "none".
-        const clientSecret: String = Env::getVar("OIDC_CLIENT_SECRET");
+        const clientSecret: String = Env::getVar("OIDC_CLIENT_SECRET")
 
-        var port: Int64 = 8096;
-        const portEnv: String = Env::getVar("PORT");
+        var port: Int64 = 8096
+        const portEnv: String = Env::getVar("PORT")
         if (portEnv != "")
         {
-            port = portEnv.toInt();
+            port = portEnv.toInt()
         }
 
-        const client: OidcClient = OidcClient::new(issuer, authorizeUrl, tokenUrl, jwksUri, clientId, clientSecret, redirectUri);
-        const app: OidcWebApp = OidcWebApp::new(client, cookieSecret);
+        const client: OidcClient = OidcClient::new(issuer, authorizeUrl, tokenUrl, jwksUri, clientId, clientSecret, redirectUri)
+        const app: OidcWebApp = OidcWebApp::new(client, cookieSecret)
 
-        const server: HttpServer = HttpServer::new(port);
-        app.install(server);
+        const server: HttpServer = HttpServer::new(port)
+        app.install(server)
 
         server.get("/", ctx => {
             if (!app.requireLogin(ctx))
             {
-                return;
+                return
             }
-            const claims: Map<String, JsonValue> = app.currentUser(ctx);
+            const claims: Map<String, JsonValue> = app.currentUser(ctx)
             if (!hasRole(claims, requiredRole))
             {
-                ctx.response.status(403).html("<p>Logged in as <b>" + claims["sub"].getString() + "</b>, but missing required role \"" + requiredRole + "\". <a href=\"/logout\">Log out</a></p>");
-                return;
+                ctx.response.status(403).html("<p>Logged in as <b>" + claims["sub"].getString() + "</b>, but missing required role \"" + requiredRole + "\". <a href=\"/logout\">Log out</a></p>")
+                return
             }
-            ctx.response.html("<p>Welcome, <b>" + claims["sub"].getString() + "</b> -- you have the \"" + requiredRole + "\" role. <a href=\"/logout\">Log out</a></p>");
-        });
+            ctx.response.html("<p>Welcome, <b>" + claims["sub"].getString() + "</b> -- you have the \"" + requiredRole + "\" role. <a href=\"/logout\">Log out</a></p>")
+        })
 
         server.get("/logout", ctx => {
-            app.logout(ctx);
-        });
+            app.logout(ctx)
+        })
 
-        println("Web login demo listening on http://localhost:" + port.toString());
-        server.listen();
-        return 0;
+        println("Web login demo listening on http://localhost:" + port.toString())
+        server.listen()
+        return 0
     }
 }

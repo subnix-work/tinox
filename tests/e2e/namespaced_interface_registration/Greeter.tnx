@@ -4,7 +4,7 @@ namespace ns
     {
         fn greetNum() -> Int64
         {
-            return 42;
+            return 42
         }
     }
 }

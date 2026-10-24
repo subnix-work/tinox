@@ -88,23 +88,23 @@ fn http_fixture(name: &str) -> (PathBuf, PathBuf, u16) {
     let dir = workdir(name);
     std::fs::write(
         dir.join("Ctrl.tnx"),
-        r#"import tinox.core.http_server;
+        r#"import tinox.core.http_server
 
 class Ctrl
 {
     @GET("/fast")
     fnc fast(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        ctx.response.status(200).json("{\"ok\":true}");
-        return ctx;
+        ctx.response.status(200).json("{\"ok\":true}")
+        return ctx
     }
 
     @GET("/slow")
     fnc slow(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        sleep_ms(200);
-        ctx.response.status(200).json("{\"ok\":true}");
-        return ctx;
+        sleep_ms(200)
+        ctx.response.status(200).json("{\"ok\":true}")
+        return ctx
     }
 }
 "#,
@@ -112,7 +112,7 @@ class Ctrl
     .unwrap();
     std::fs::write(
         dir.join("Main.tnx"),
-        "import Ctrl;\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        return 0;\n    }\n}\n",
+        "import Ctrl\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        return 0\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
@@ -409,25 +409,31 @@ fn spawn_over_task_budget_rejects_instead_of_growing_threads() {
     std::fs::write(
         dir.join("Main.tnx"),
         r#"class Main {
-    async fnc hold(n: Int64) -> Int64 { sleep_ms(300); return n; }
+    async fnc hold(n: Int64) -> Int64 { sleep_ms(300)
+    return n }
 
     fnc main() -> Int32 {
-        var ok = 0;
-        var rejected = 0;
-        const t1 = spawn Main::hold(1);
-        const t2 = spawn Main::hold(2);
-        const t3 = spawn Main::hold(3);
-        const t4 = spawn Main::hold(4);
-        try { await t1; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t2; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t3; ok = ok + 1; } catch (e: String) { println(e); rejected = rejected + 1; }
-        try { await t4; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        println("ok=" + ok.toString() + " rejected=" + rejected.toString());
+        var ok = 0
+        var rejected = 0
+        const t1 = spawn Main::hold(1)
+        const t2 = spawn Main::hold(2)
+        const t3 = spawn Main::hold(3)
+        const t4 = spawn Main::hold(4)
+        try { await t1
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t2
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t3
+        ok = ok + 1 } catch (e: String) { println(e)
+        rejected = rejected + 1 }
+        try { await t4
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        println("ok=" + ok.toString() + " rejected=" + rejected.toString())
 
         // Budget is released once the running tasks finish: healthy again.
-        const t5 = spawn Main::hold(5);
-        println("after=" + (await t5).toString());
-        return 0;
+        const t5 = spawn Main::hold(5)
+        println("after=" + (await t5).toString())
+        return 0
     }
 }
 "#,
@@ -510,21 +516,26 @@ fn queued_spawn_waits_for_a_slot_within_the_deadline() {
     std::fs::write(
         dir.join("Main.tnx"),
         r#"class Main {
-    async fnc hold(n: Int64) -> Int64 { sleep_ms(300); return n; }
+    async fnc hold(n: Int64) -> Int64 { sleep_ms(300)
+    return n }
 
     fnc main() -> Int32 {
-        var ok = 0;
-        var rejected = 0;
-        const t1 = spawn Main::hold(1);
-        const t2 = spawn Main::hold(2);
-        const t3 = spawn Main::hold(3);
-        const t4 = spawn Main::hold(4);
-        try { await t1; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t2; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t3; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t4; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        println("ok=" + ok.toString() + " rejected=" + rejected.toString());
-        return 0;
+        var ok = 0
+        var rejected = 0
+        const t1 = spawn Main::hold(1)
+        const t2 = spawn Main::hold(2)
+        const t3 = spawn Main::hold(3)
+        const t4 = spawn Main::hold(4)
+        try { await t1
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t2
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t3
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t4
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        println("ok=" + ok.toString() + " rejected=" + rejected.toString())
+        return 0
     }
 }
 "#,

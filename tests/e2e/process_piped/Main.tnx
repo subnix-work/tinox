@@ -1,4 +1,4 @@
-import tinox.core.process;
+import tinox.core.process
 // expect: true
 // expect: true
 // expect: true
@@ -23,65 +23,65 @@ import tinox.core.process;
 class Main
 {
     fnc main() -> Int32 {
-        Process::setEnv("TINOX_PIPE_REMOVE", "parent");
-        const env: List<String> = ["TINOX_PIPE_VALUE=a b=$;", "TINOX_PIPE_REMOVE"];
-        const args: List<String> = ["sh", "-c", "test ! -t 0 && test ! -t 1 && test ! -t 2 || exit 90; printf '%s\\n' \"$PWD\" \"$TINOX_PIPE_VALUE\" \"\${TINOX_PIPE_REMOVE-unset}\"; read -r line; printf '%s\\n' \"$line\"; printf 'diagnostic' >&2; cat; printf 'last'; exit 7"];
-        const p = InteractiveProcess::startPiped(args, "/tmp", env);
-        println(InteractiveProcess::isAlive(p));
-        println(InteractiveProcess::readLine(p, 5000) == "/tmp\n");
-        println(InteractiveProcess::readLine(p, 5000) == "a b=$;\n");
-        println(InteractiveProcess::readLine(p, 5000) == "unset\n");
-        println(InteractiveProcess::readLine(p, 10) == "");
-        InteractiveProcess::writeStdin(p, "{\"hello\":1}\n");
-        println(InteractiveProcess::readLine(p, 5000) == "{\"hello\":1}\n");
-        println(InteractiveProcess::readStderr(p, 5000) == "diagnostic");
-        InteractiveProcess::closeStdin(p);
-        InteractiveProcess::closeStdin(p);
-        println(InteractiveProcess::readLine(p, 5000) == "last");
-        while InteractiveProcess::isAlive(p) { Process::sleep(1); }
-        println(InteractiveProcess::exitCode(p) == 7);
-        InteractiveProcess::kill(p);
-        InteractiveProcess::kill(p);
-        println(InteractiveProcess::exitCode(p) == 7);
-        println(Process::env("TINOX_PIPE_REMOVE") == "parent");
-        const runArgs: List<String> = ["sh", "-c", "printf '%s:%s:%s' \"$PWD\" \"$TINOX_PIPE_VALUE\" \"\${TINOX_PIPE_REMOVE-unset}\""];
-        const r = Process::runWithOptions(runArgs, 5000, "", "/tmp", env);
-        println(r.stdout == "/tmp:a b=$;:unset");
-        const invalid = Process::runWithOptions(runArgs, 5000, "", "/this-directory-does-not-exist-tinox", env);
-        println(invalid.exitCode == 127);
-        const missingArgs: List<String> = ["this-program-does-not-exist-tinox"];
-        const missing = InteractiveProcess::startPiped(missingArgs, "", env);
-        println(InteractiveProcess::exitCode(missing) == 127);
-        InteractiveProcess::kill(missing);
-        const partialArgs: List<String> = ["sh", "-c", "printf 'part'; read -r go; printf 'ial\\nnext\\n'; head -c 131072 /dev/zero | tr '\\000' x >&2; printf 'done\\n'"];
-        const partial = InteractiveProcess::startPiped(partialArgs, "", env);
-        InteractiveProcess::readLine(partial, 20);
-        InteractiveProcess::writeStdin(partial, "go\n");
-        println(InteractiveProcess::readLine(partial, 5000) == "partial\n");
-        println(InteractiveProcess::readLine(partial, 5000) == "next\n" && InteractiveProcess::readLine(partial, 5000) == "done\n");
-        var diagnostics: String = InteractiveProcess::readStderr(partial, 5000);
-        var chunk: String = InteractiveProcess::readStderr(partial, 5000);
+        Process::setEnv("TINOX_PIPE_REMOVE", "parent")
+        const env: List<String> = ["TINOX_PIPE_VALUE=a b=$;", "TINOX_PIPE_REMOVE"]
+        const args: List<String> = ["sh", "-c", "test ! -t 0 && test ! -t 1 && test ! -t 2 || exit 90; printf '%s\\n' \"$PWD\" \"$TINOX_PIPE_VALUE\" \"\${TINOX_PIPE_REMOVE-unset}\"; read -r line; printf '%s\\n' \"$line\"; printf 'diagnostic' >&2; cat; printf 'last'; exit 7"]
+        const p = InteractiveProcess::startPiped(args, "/tmp", env)
+        println(InteractiveProcess::isAlive(p))
+        println(InteractiveProcess::readLine(p, 5000) == "/tmp\n")
+        println(InteractiveProcess::readLine(p, 5000) == "a b=$;\n")
+        println(InteractiveProcess::readLine(p, 5000) == "unset\n")
+        println(InteractiveProcess::readLine(p, 10) == "")
+        InteractiveProcess::writeStdin(p, "{\"hello\":1}\n")
+        println(InteractiveProcess::readLine(p, 5000) == "{\"hello\":1}\n")
+        println(InteractiveProcess::readStderr(p, 5000) == "diagnostic")
+        InteractiveProcess::closeStdin(p)
+        InteractiveProcess::closeStdin(p)
+        println(InteractiveProcess::readLine(p, 5000) == "last")
+        while InteractiveProcess::isAlive(p) { Process::sleep(1) }
+        println(InteractiveProcess::exitCode(p) == 7)
+        InteractiveProcess::kill(p)
+        InteractiveProcess::kill(p)
+        println(InteractiveProcess::exitCode(p) == 7)
+        println(Process::env("TINOX_PIPE_REMOVE") == "parent")
+        const runArgs: List<String> = ["sh", "-c", "printf '%s:%s:%s' \"$PWD\" \"$TINOX_PIPE_VALUE\" \"\${TINOX_PIPE_REMOVE-unset}\""]
+        const r = Process::runWithOptions(runArgs, 5000, "", "/tmp", env)
+        println(r.stdout == "/tmp:a b=$;:unset")
+        const invalid = Process::runWithOptions(runArgs, 5000, "", "/this-directory-does-not-exist-tinox", env)
+        println(invalid.exitCode == 127)
+        const missingArgs: List<String> = ["this-program-does-not-exist-tinox"]
+        const missing = InteractiveProcess::startPiped(missingArgs, "", env)
+        println(InteractiveProcess::exitCode(missing) == 127)
+        InteractiveProcess::kill(missing)
+        const partialArgs: List<String> = ["sh", "-c", "printf 'part'; read -r go; printf 'ial\\nnext\\n'; head -c 131072 /dev/zero | tr '\\000' x >&2; printf 'done\\n'"]
+        const partial = InteractiveProcess::startPiped(partialArgs, "", env)
+        InteractiveProcess::readLine(partial, 20)
+        InteractiveProcess::writeStdin(partial, "go\n")
+        println(InteractiveProcess::readLine(partial, 5000) == "partial\n")
+        println(InteractiveProcess::readLine(partial, 5000) == "next\n" && InteractiveProcess::readLine(partial, 5000) == "done\n")
+        var diagnostics: String = InteractiveProcess::readStderr(partial, 5000)
+        var chunk: String = InteractiveProcess::readStderr(partial, 5000)
         while chunk != "" {
-            diagnostics = diagnostics + chunk;
-            chunk = InteractiveProcess::readStderr(partial, 5000);
+            diagnostics = diagnostics + chunk
+            chunk = InteractiveProcess::readStderr(partial, 5000)
         }
-        println(diagnostics.len() == 131072);
-        InteractiveProcess::kill(partial);
-        const sleepArgs: List<String> = ["sleep", "30"];
-        const sleeping = InteractiveProcess::startPiped(sleepArgs, "", env);
-        println(InteractiveProcess::exitCode(sleeping) < -1000);
-        InteractiveProcess::kill(sleeping);
-        println(InteractiveProcess::exitCode(sleeping) == -9);
-        InteractiveProcess::writeStdin(sleeping, "ignored");
-        const signalArgs: List<String> = ["sh", "-c", "kill -TERM $$"];
-        const signaled = InteractiveProcess::startPiped(signalArgs, "", env);
-        while InteractiveProcess::isAlive(signaled) { Process::sleep(1); }
-        println(InteractiveProcess::exitCode(signaled) == -15);
-        InteractiveProcess::kill(signaled);
-        const ttyArgs: List<String> = ["sh", "-c", "test -t 0 && printf 'tty-ok'"];
-        const tty = InteractiveProcess::start(ttyArgs);
-        println(InteractiveProcess::readOutput(tty, 5000) == "tty-ok");
-        InteractiveProcess::kill(tty);
-        return 0;
+        println(diagnostics.len() == 131072)
+        InteractiveProcess::kill(partial)
+        const sleepArgs: List<String> = ["sleep", "30"]
+        const sleeping = InteractiveProcess::startPiped(sleepArgs, "", env)
+        println(InteractiveProcess::exitCode(sleeping) < -1000)
+        InteractiveProcess::kill(sleeping)
+        println(InteractiveProcess::exitCode(sleeping) == -9)
+        InteractiveProcess::writeStdin(sleeping, "ignored")
+        const signalArgs: List<String> = ["sh", "-c", "kill -TERM $$"]
+        const signaled = InteractiveProcess::startPiped(signalArgs, "", env)
+        while InteractiveProcess::isAlive(signaled) { Process::sleep(1) }
+        println(InteractiveProcess::exitCode(signaled) == -15)
+        InteractiveProcess::kill(signaled)
+        const ttyArgs: List<String> = ["sh", "-c", "test -t 0 && printf 'tty-ok'"]
+        const tty = InteractiveProcess::start(ttyArgs)
+        println(InteractiveProcess::readOutput(tty, 5000) == "tty-ok")
+        InteractiveProcess::kill(tty)
+        return 0
     }
 }

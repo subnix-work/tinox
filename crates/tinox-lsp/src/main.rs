@@ -761,17 +761,17 @@ mod tests {
         std::fs::write(root.join("tinox.toml"), "[package]\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
         std::fs::write(
             root.join("demo/model/Person.tnx"),
-            "namespace demo.model {\n    class Person {\n        var id: Int64;\n    }\n}\n",
+            "namespace demo.model {\n    class Person {\n        var id: Int64\n    }\n}\n",
         )
         .unwrap();
         std::fs::write(
             root.join("demo/dao/PersonDao.tnx"),
-            "import demo.model.Person;\n\nnamespace demo.dao {\n    interface PersonDao {\n        fn findAll() -> List<Person>;\n    }\n}\n",
+            "import demo.model.Person\n\nnamespace demo.dao {\n    interface PersonDao {\n        fn findAll() -> List<Person>\n    }\n}\n",
         )
         .unwrap();
         std::fs::write(
             root.join("demo/dao/PersonDaoImpl.tnx"),
-            "import demo.dao.PersonDao;\nimport demo.model.Person;\n\nnamespace demo.dao {\n    class PersonDaoImpl implements PersonDao {\n        fn findAll() -> List<Person> {\n            return [];\n        }\n    }\n}\n",
+            "import demo.dao.PersonDao\nimport demo.model.Person\n\nnamespace demo.dao {\n    class PersonDaoImpl implements PersonDao {\n        fn findAll() -> List<Person> {\n            return []\n        }\n    }\n}\n",
         )
         .unwrap();
     }
@@ -836,16 +836,18 @@ mod diagnostic_tests {
 
     #[test]
     fn shared_codes_details_and_utf16_ranges_reach_lsp() {
-        let source = "class Main { fnc main() -> Int32 { println(\"😀\"); return absent; } }";
+        let source = "class Main { fnc main() -> Int32 { println(\"😀\")\nreturn absent } }";
         let diagnostics = compile(source, Some("/tmp/Main.tnx"), &[], |_| {});
         let diagnostic = diagnostics.iter().find(|d| d.message.contains("undefined variable")).unwrap();
         assert_eq!(diagnostic.code, Some(NumberOrString::String("TINOX-TYPE".into())));
         let data = diagnostic.data.as_ref().unwrap();
         assert_eq!(data["schema_version"], 1);
         assert_eq!(data["diagnostic"]["file"], "/tmp/Main.tnx");
-        let prefix = &source[..source.find("absent").unwrap()];
+        let second_line = source.lines().nth(1).unwrap();
+        let prefix = &second_line[..second_line.find("absent").unwrap()];
+        assert_eq!(diagnostic.range.start.line, 1);
         assert_eq!(diagnostic.range.start.character, prefix.encode_utf16().count() as u32);
-        let diagnostics = compile("class Main { fnc main() -> Int32 { return \"wrong\"; } }", None, &[], |_| {});
+        let diagnostics = compile("class Main { fnc main() -> Int32 { return \"wrong\" } }", None, &[], |_| {});
         let data = diagnostics[0].data.as_ref().unwrap();
         assert_eq!(data["diagnostic"]["expected"], "Int32");
         assert_eq!(data["diagnostic"]["actual"], "String");
@@ -869,10 +871,10 @@ mod diagnostic_tests {
         std::fs::write(root.join("package/tinox.toml"), "[package]\nname=\"json\"\nversion=\"1.0.0\"\n").unwrap();
         std::fs::write(root.join("tinox.overrides.yaml"), "overrides:\n  'tinox.core:json:1.0.0': package\n").unwrap();
         let entry = root.join("Main.tnx");
-        let source = "import tinox.core.json.LocalJson; class Main { fnc main() -> Int32 { const n: Int64 = LocalJson::unpublished(); return 0; } }";
+        let source = "import tinox.core.json.LocalJson\nclass Main { fnc main() -> Int32 { const n: Int64 = LocalJson::unpublished()\nreturn 0 } }";
         std::fs::write(&entry, source).unwrap();
-        std::fs::write(local.join("LocalJson.tnx"), "namespace tinox.core.json { class LocalJson { fnc unpublished() -> Int64 { return Helper::value(); } } }").unwrap();
-        std::fs::write(local.join("Helper.tnx"), "namespace tinox.core.json { class Helper { fnc value() -> Int64 { return 42; } } }").unwrap();
+        std::fs::write(local.join("LocalJson.tnx"), "namespace tinox.core.json { class LocalJson { fnc unpublished() -> Int64 { return Helper::value() } } }").unwrap();
+        std::fs::write(local.join("Helper.tnx"), "namespace tinox.core.json { class Helper { fnc value() -> Int64 { return 42 } } }").unwrap();
         let ast = tinox_parser::parse_source_cached(source).unwrap();
         let (dirs, provenance) = package_context(&entry).unwrap();
         let cli_dirs = tinox::pm::dependency_dirs(&root, &tinox::pm::read_manifest(&root).unwrap()).unwrap().0;
@@ -882,7 +884,7 @@ mod diagnostic_tests {
         let packages = load_package_preludes(&ast, &entry, &dirs).unwrap();
         let preludes: Vec<_> = packages.iter().collect();
         assert!(compile(source, entry.to_str(), &preludes, |_| {}).is_empty());
-        std::fs::write(local.join("LocalJson.tnx"), "namespace tinox.core.json { class LocalJson { fnc changed() -> Int64 { return 43; } } }").unwrap();
+        std::fs::write(local.join("LocalJson.tnx"), "namespace tinox.core.json { class LocalJson { fnc changed() -> Int64 { return 43 } } }").unwrap();
         let packages = load_package_preludes(&ast, &entry, &dirs).unwrap();
         let preludes: Vec<_> = packages.iter().collect();
         assert!(!compile(source, entry.to_str(), &preludes, |_| {}).is_empty());

@@ -1,12 +1,12 @@
-import tinox.core.http2_server;
+import tinox.core.http2_server
 
 class Http2Driver
 {
     fnc tinoxHttp2ReadFrame(conn: Int64) -> Int64
     {
-        const server = Http2Server::new(0);
-        const c = Http2Conn::new(conn);
-        const f = server.readFrame(c);
-        return f.type;
+        const server = Http2Server::new(0)
+        const c = Http2Conn::new(conn)
+        const f = server.readFrame(c)
+        return f.type
     }
 }

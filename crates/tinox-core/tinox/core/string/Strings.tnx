@@ -2,7 +2,7 @@
  * Tinox Standard Library - String Module
  * String manipulation and utility functions
  */
-module tinox.core.string;
+module tinox.core.string
 
 namespace tinox.core.string
 {
@@ -20,7 +20,7 @@ namespace tinox.core.string
          */
         fn length(s: String) -> Int64
         {
-            return s.len();
+            return s.len()
         }
 
         /**
@@ -31,7 +31,7 @@ namespace tinox.core.string
          */
         fn isEmpty(s: String) -> Bool
         {
-            return s.len() == 0;
+            return s.len() == 0
         }
 
         /**
@@ -42,7 +42,7 @@ namespace tinox.core.string
          */
         fn toUpperCase(s: String) -> String
         {
-            return s.toUpper();
+            return s.toUpper()
         }
 
         /**
@@ -53,7 +53,7 @@ namespace tinox.core.string
          */
         fn toLowerCase(s: String) -> String
         {
-            return s.toLower();
+            return s.toLower()
         }
 
         /**
@@ -64,7 +64,7 @@ namespace tinox.core.string
          */
         fn trim(s: String) -> String
         {
-            return s.trim();
+            return s.trim()
         }
 
         /**
@@ -76,7 +76,7 @@ namespace tinox.core.string
          */
         fn contains(haystack: String, needle: String) -> Bool
         {
-            return haystack.contains(needle);
+            return haystack.contains(needle)
         }
 
         /**
@@ -88,7 +88,7 @@ namespace tinox.core.string
          */
         fn startsWith(s: String, prefix: String) -> Bool
         {
-            return s.startsWith(prefix);
+            return s.startsWith(prefix)
         }
 
         /**
@@ -100,7 +100,7 @@ namespace tinox.core.string
          */
         fn endsWith(s: String, suffix: String) -> Bool
         {
-            return s.endsWith(suffix);
+            return s.endsWith(suffix)
         }
 
         /**
@@ -113,7 +113,7 @@ namespace tinox.core.string
          */
         fn substring(s: String, start: Int64, end: Int64) -> String
         {
-            return s.substring(start, end);
+            return s.substring(start, end)
         }
 
         /**
@@ -125,14 +125,14 @@ namespace tinox.core.string
          */
         fn repeat(s: String, count: Int64) -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
+            var result: String = ""
+            var i: Int64 = 0
             while i < count
             {
-                result = result + s;
-                i = i + 1;
+                result = result + s
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -145,7 +145,7 @@ namespace tinox.core.string
          */
         fn replace(s: String, old: String, repl: String) -> String
         {
-            return s.replace(old, repl);
+            return s.replace(old, repl)
         }
 
         /**
@@ -156,7 +156,7 @@ namespace tinox.core.string
          */
         fn reverse(s: String) -> String
         {
-            return s.reverse();
+            return s.reverse()
         }
 
         /**
@@ -168,7 +168,7 @@ namespace tinox.core.string
          */
         fn split(s: String, delimiter: String) -> List<String>
         {
-            return s.split(delimiter);
+            return s.split(delimiter)
         }
 
         /**
@@ -180,18 +180,18 @@ namespace tinox.core.string
          */
         fn join(parts: List<String>, separator: String) -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
+            var result: String = ""
+            var i: Int64 = 0
             while i < parts.len()
             {
                 if (i > 0)
                 {
-                    result = result + separator;
+                    result = result + separator
                 }
-                result = result + parts[i];
-                i = i + 1;
+                result = result + parts[i]
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -202,7 +202,7 @@ namespace tinox.core.string
          */
         fn intToString(n: Int64) -> String
         {
-            return n.toString();
+            return n.toString()
         }
 
         /**
@@ -213,7 +213,7 @@ namespace tinox.core.string
          */
         fn floatToString(f: Float64) -> String
         {
-            return f.toString();
+            return f.toString()
         }
     }
 }

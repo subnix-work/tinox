@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn qualified_type_collisions_are_preserved_and_shared_native_linkage_is_allowed() {
-        let tokens = tinox_lexer::Lexer::new("namespace first { class Value { var n: Int64; } } namespace second { class Value { var n: String; } }").tokenize().unwrap();
+        let tokens = tinox_lexer::Lexer::new("namespace first { class Value { var n: Int64 } } namespace second { class Value { var n: String } }").tokenize().unwrap();
         let mut source = tinox_parser::Parser::new(tokens).parse().unwrap();
         tinox_parser::assign_node_ids(&mut source);
         let mut checker = TypeChecker::new();
@@ -810,12 +810,12 @@ mod tests {
             checker.semantic_facts().ambiguous_declarations["type:Value"].len(),
             2
         );
-        check("namespace first { extern fn nativeShared(value: Int64) -> Int64; } namespace second { extern fn nativeShared(value: Int64) -> Int64; }");
+        check("namespace first { extern fn nativeShared(value: Int64) -> Int64 } namespace second { extern fn nativeShared(value: Int64) -> Int64 }");
     }
 
     #[test]
     fn generic_calls_export_concrete_bindings_and_full_returns() {
-        let checker = check("class Cell<T> { var value: T; fnc of(value: T) -> Cell<T> { return Cell { value: value }; } fn get() -> T { return this.value; } } class Main { fnc use() -> String { return Cell::of(Cell::of(\"nested\")).get().get(); } }");
+        let checker = check("class Cell<T> { var value: T\nfnc of(value: T) -> Cell<T> { return Cell { value: value } } fn get() -> T { return this.value } } class Main { fnc use() -> String { return Cell::of(Cell::of(\"nested\")).get().get() } }");
         let facts = checker.semantic_facts();
         assert!(facts
             .calls
@@ -828,7 +828,7 @@ mod tests {
 
     #[test]
     fn qualified_declaration_identity_survives_the_checked_boundary() {
-        let checker = check("namespace demo.library { class Reader { fnc read() -> Int32 { return 7; } } } class Main { fnc use() -> Int32 { return Reader::read(); } }");
+        let checker = check("namespace demo.library { class Reader { fnc read() -> Int32 { return 7 } } } class Main { fnc use() -> Int32 { return Reader::read() } }");
         let facts = checker.semantic_facts();
         let call = facts
             .calls
@@ -843,7 +843,7 @@ mod tests {
 
     #[test]
     fn numeric_operations_export_promotions_without_changing_sources() {
-        let checker = check("fn compare(byte: UInt8, small: Float32) -> Float64 { const larger = byte > (2 as UInt8); return byte + small; }");
+        let checker = check("fn compare(byte: UInt8, small: Float32) -> Float64 { const larger = byte > (2 as UInt8)\nreturn byte + small }");
         let facts = checker.semantic_facts();
         assert!(facts
             .numeric_operations
@@ -859,11 +859,11 @@ mod tests {
 
     #[test]
     fn scalar_identity_does_not_forbid_numeric_value_comparisons() {
-        check("fn compare(a: Int32, b: UInt8) -> Bool { return a == 0 && b != 0; }");
+        check("fn compare(a: Int32, b: UInt8) -> Bool { return a == 0 && b != 0 }");
     }
     #[test]
     fn factory_results_bind_class_arguments_before_field_resolution() {
-        let checker = check("class Box<T> { var value: T; fn make(v: T) -> Box<T> { return Box { value: v }; } } class Main { fnc read() -> String { return Box::make(\"ok\").value; } }");
+        let checker = check("class Box<T> { var value: T\nfn make(v: T) -> Box<T> { return Box { value: v } } } class Main { fnc read() -> String { return Box::make(\"ok\").value } }");
         assert!(checker
             .semantic_facts()
             .fields
@@ -875,7 +875,7 @@ mod tests {
     }
     #[test]
     fn callable_field_contract_substitutes_the_receiver_arguments() {
-        let checker = check("class Holder<T> { var factory: fnc(T) -> T; } class Main { fnc invoke(holder: Holder<String>) -> String { return holder.factory(\"ok\"); } }");
+        let checker = check("class Holder<T> { var factory: fnc(T) -> T } class Main { fnc invoke(holder: Holder<String>) -> String { return holder.factory(\"ok\") } }");
         let facts = checker.semantic_facts();
         let call = facts
             .calls
@@ -887,7 +887,7 @@ mod tests {
     }
     #[test]
     fn receiving_annotation_binds_a_factory_without_value_arguments() {
-        let checker = check("class Box<T> { var values: List<T>; fnc make() -> Box<T> { return Box { values: [] }; } } class Main { fnc use() -> Nothing { const box: Box<String> = Box::make(); } }");
+        let checker = check("class Box<T> { var values: List<T>\nfnc make() -> Box<T> { return Box { values: [] } } } class Main { fnc use() -> Nothing { const box: Box<String> = Box::make() } }");
         assert!(checker
             .semantic_facts()
             .calls
@@ -955,7 +955,7 @@ mod tests {
     }
     #[test]
     fn checked_calls_fields_and_conversions_have_explicit_semantic_contracts() {
-        let checker = check("interface Reader { fn read() -> Float64; } class Packet { var byte: UInt8; } class Main { fnc invoke(callback: fnc(UInt8) -> Float32, packet: Packet, reader: Reader) -> Float64 { callback(packet.byte); reader.read(); return packet.byte as Float64; } }");
+        let checker = check("interface Reader { fn read() -> Float64 } class Packet { var byte: UInt8 } class Main { fnc invoke(callback: fnc(UInt8) -> Float32, packet: Packet, reader: Reader) -> Float64 { callback(packet.byte)\nreader.read()\nreturn packet.byte as Float64 } }");
         let facts = checker.semantic_facts();
         let callback = facts
             .calls
@@ -998,7 +998,7 @@ mod tests {
     }
     #[test]
     fn nested_generic_substitution_and_lambda_returns_keep_concrete_identity() {
-        let checker = check("class Box<T> { var value: T; fnc make(value: T) -> Box<T> { return Box { value: value }; } } class Main { fnc convert(f: fnc(Int64) -> Box<String>) -> Box<String> { return f(1); } fnc use() -> Nothing { const result = Main::convert(x => { return Box::make(\"ok\"); }); } }");
+        let checker = check("class Box<T> { var value: T\nfnc make(value: T) -> Box<T> { return Box { value: value } } } class Main { fnc convert(f: fnc(Int64) -> Box<String>) -> Box<String> { return f(1) } fnc use() -> Nothing { const result = Main::convert(x => { return Box::make(\"ok\") }) } }");
         assert!(checker
             .semantic_facts()
             .calls

@@ -49,16 +49,16 @@ changelog = "schema/changes.yaml"
 @Table("people")
 class Person {
     @Id @GeneratedValue
-    id: Int64;
+    id: Int64
     @Column("full_name") @NotNull
-    name: String;
-    state: State;
+    name: String
+    state: State
 }
 "#;
     fs::write(&entity, model).unwrap();
     fs::write(
         root.join("src/models/State.tnx"),
-        "enum State { ACTIVE, INACTIVE }",
+        "enum State { ACTIVE\nINACTIVE }",
     )
     .unwrap();
     assert!(success(tinox(&root, "generate")).contains("generated changeSet"));
@@ -70,7 +70,7 @@ class Person {
     let initial_sql = success(tinox(&root, "update-sql"));
     fs::write(
         &entity,
-        model.replace("state: State;", "state: State;\n    email: String;"),
+        model.replace("state: State", "state: State\n    email: String"),
     )
     .unwrap();
     success(tinox(&root, "generate"));

@@ -13,7 +13,7 @@
 // serializes as real JSON true/false, verified separately) -- only affects
 // this specific println(<direct field access>) debug-print path. Out of
 // scope to fix here; worked around instead of blocking on it.
-import tinox.core.process;
+import tinox.core.process
 // expect: hello world
 // expect: 0
 // expect: true
@@ -30,47 +30,47 @@ import tinox.core.process;
 class Main
 {
     fnc main() -> Int32 {
-        const echoArgs: List<String> = ["echo", "hello", "world"];
-        const r1 = Process::run(echoArgs, 5000, "");
-        const r1TimedOut: Bool = r1.timedOut;
-        println(r1.stdout.trim());
-        println(r1.exitCode);
-        println(r1.success());
-        println(r1TimedOut);
+        const echoArgs: List<String> = ["echo", "hello", "world"]
+        const r1 = Process::run(echoArgs, 5000, "")
+        const r1TimedOut: Bool = r1.timedOut
+        println(r1.stdout.trim())
+        println(r1.exitCode)
+        println(r1.success())
+        println(r1TimedOut)
 
-        const lsArgs: List<String> = ["ls", "/this-path-does-not-exist-xyz"];
-        const r2 = Process::run(lsArgs, 5000, "");
-        println(r2.exitCode > 0);
-        println(r2.stderr.len() > 0);
-        println(r2.success());
+        const lsArgs: List<String> = ["ls", "/this-path-does-not-exist-xyz"]
+        const r2 = Process::run(lsArgs, 5000, "")
+        println(r2.exitCode > 0)
+        println(r2.stderr.len() > 0)
+        println(r2.success())
 
-        const sleepArgs: List<String> = ["sleep", "2"];
-        const r3 = Process::run(sleepArgs, 100, "");
-        const r3TimedOut: Bool = r3.timedOut;
-        println(r3TimedOut);
-        println(r3.success());
+        const sleepArgs: List<String> = ["sleep", "2"]
+        const r3 = Process::run(sleepArgs, 100, "")
+        const r3TimedOut: Bool = r3.timedOut
+        println(r3TimedOut)
+        println(r3.success())
 
-        const missingArgs: List<String> = ["this-binary-does-not-exist-xyz"];
-        const r4 = Process::run(missingArgs, 5000, "");
-        println(r4.exitCode);
-        println(r4.success());
+        const missingArgs: List<String> = ["this-binary-does-not-exist-xyz"]
+        const r4 = Process::run(missingArgs, 5000, "")
+        println(r4.exitCode)
+        println(r4.success())
 
         // stdin, echoed back via `cat` -- also exercises the concurrent
         // write-stdin/read-stdout path with a payload well past a typical
         // 64KB pipe buffer, so it can't accidentally pass by coincidence
         // for only-small-inputs (that's exactly the deadlock this
         // implementation has to avoid, see runtime.c's processRun comment).
-        var big: String = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        var doublings: Int64 = 0;
+        var big: String = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        var doublings: Int64 = 0
         while doublings < 11 {
-            big = big + big;
-            doublings = doublings + 1;
+            big = big + big
+            doublings = doublings + 1
         }
-        const catArgs: List<String> = ["cat"];
-        const r5 = Process::run(catArgs, 5000, big);
-        println(r5.stdout == big);
-        println(r5.success());
+        const catArgs: List<String> = ["cat"]
+        const r5 = Process::run(catArgs, 5000, big)
+        println(r5.stdout == big)
+        println(r5.success())
 
-        return 0;
+        return 0
     }
 }

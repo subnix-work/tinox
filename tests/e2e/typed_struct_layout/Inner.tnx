@@ -1,7 +1,7 @@
-import Outer;
+import Outer
 
 class Inner {
-    var value: Int64;
-    var neg: Int64;
-    fn make(v: Int64) -> Inner { return Inner { value: v, neg: 0 - 3 }; }
+    var value: Int64
+    var neg: Int64
+    fn make(v: Int64) -> Inner { return Inner { value: v, neg: 0 - 3 } }
 }

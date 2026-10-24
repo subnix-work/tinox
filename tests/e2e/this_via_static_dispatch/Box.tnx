@@ -1,9 +1,10 @@
-import IntBox;
-import Acc;
+import IntBox
+import Acc
 
 class Box<T> {
-    var value: T;
-    fn wrap(v: T) -> Box<T> { return Box { value: v }; }
-    fn get() -> T { return this.value; }
-    fn setAndGet(v: T) -> T { this.value = v; return this.value; }
+    var value: T
+    fn wrap(v: T) -> Box<T> { return Box { value: v } }
+    fn get() -> T { return this.value }
+    fn setAndGet(v: T) -> T { this.value = v
+    return this.value }
 }

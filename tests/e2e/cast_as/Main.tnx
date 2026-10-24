@@ -4,9 +4,9 @@ class Main
 {
     fnc main() -> Int32
     {
-        const x: Float64 = 3.9;
-        const y: Int64 = x as Int64;
-        println(y);
-        return 0;
+        const x: Float64 = 3.9
+        const y: Int64 = x as Int64
+        println(y)
+        return 0
     }
 }

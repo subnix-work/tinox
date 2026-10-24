@@ -1,14 +1,14 @@
-import tinox.core.msgpack;
+import tinox.core.msgpack
 
 class MsgpackDriver
 {
     fnc tinoxMsgpackDecode(bytes: List<Int64>) -> Int64
     {
-        const value: MsgpackValue = Msgpack::decode(bytes);
+        const value: MsgpackValue = Msgpack::decode(bytes)
         if (value.isNull())
         {
-            return 0;
+            return 0
         }
-        return 1;
+        return 1
     }
 }

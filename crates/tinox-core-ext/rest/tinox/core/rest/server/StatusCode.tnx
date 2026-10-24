@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -9,11 +9,11 @@ namespace tinox.core.rest.server
     @annotation
     class StatusCode
     {
-        var value: Int64;
+        var value: Int64
 
         fn new(value: Int64) -> StatusCode
         {
-            return StatusCode { value: value };
+            return StatusCode { value: value }
         }
     }
 }

@@ -1,6 +1,6 @@
 enum bug09_nested_enum_payloads {
-    Identity,
-    FieldAccess(String),
-    Pipe(bug09_nested_enum_payloads, bug09_nested_enum_payloads),
-    Reduce(bug09_nested_enum_payloads, String, bug09_nested_enum_payloads, bug09_nested_enum_payloads),
+    Identity
+    FieldAccess(String)
+    Pipe(bug09_nested_enum_payloads, bug09_nested_enum_payloads)
+    Reduce(bug09_nested_enum_payloads, String, bug09_nested_enum_payloads, bug09_nested_enum_payloads)
 }

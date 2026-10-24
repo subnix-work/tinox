@@ -1,4 +1,4 @@
-module tinox.core.time;
+module tinox.core.time
 
 namespace tinox.core.time
 {
@@ -11,13 +11,13 @@ namespace tinox.core.time
     class Stopwatch
     {
         /** The time when start() was called */
-        var startTime: Int64;
+        var startTime: Int64
 
         /** The time when stop() was called (0 if never stopped) */
-        var stopTime: Int64;
+        var stopTime: Int64
 
         /** Whether the stopwatch is currently running */
-        var running: Bool;
+        var running: Bool
 
         /**
          * Creates a new Stopwatch (not running)
@@ -26,7 +26,7 @@ namespace tinox.core.time
          */
         fn new() -> Stopwatch
         {
-            return Stopwatch { startTime: 0, stopTime: 0, running: false };
+            return Stopwatch { startTime: 0, stopTime: 0, running: false }
         }
 
         /**
@@ -34,8 +34,8 @@ namespace tinox.core.time
          */
         fn start() -> Nothing
         {
-            this.startTime = now();
-            this.running = true;
+            this.startTime = now()
+            this.running = true
         }
 
         /**
@@ -44,8 +44,8 @@ namespace tinox.core.time
          */
         fn stop() -> Nothing
         {
-            this.stopTime = now();
-            this.running = false;
+            this.stopTime = now()
+            this.running = false
         }
 
         /**
@@ -55,7 +55,7 @@ namespace tinox.core.time
          */
         fn isRunning() -> Bool
         {
-            return this.running;
+            return this.running
         }
 
         /**
@@ -72,9 +72,9 @@ namespace tinox.core.time
         {
             if (this.running)
             {
-                return now() - this.startTime;
+                return now() - this.startTime
             }
-            return this.stopTime - this.startTime;
+            return this.stopTime - this.startTime
         }
     }
 }

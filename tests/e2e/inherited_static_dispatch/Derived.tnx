@@ -1,6 +1,6 @@
-import Base;
+import Base
 
 class Derived extends Base {
-    fn makeD() -> Derived { return Derived { n: 7 }; }
-    fn label() -> String { return "derived"; }   // override
+    fn makeD() -> Derived { return Derived { n: 7 } }
+    fn label() -> String { return "derived" }   // override
 }

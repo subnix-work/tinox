@@ -1,6 +1,6 @@
-module tinox.core.http_server;
+module tinox.core.http_server
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.http_server
 {
@@ -13,13 +13,13 @@ namespace tinox.core.http_server
     class HttpResponse
     {
         /** The HTTP status code */
-        var statusCode: Int64;
+        var statusCode: Int64
 
         /** Response headers */
-        var headers: Map<String, String>;
+        var headers: Map<String, String>
 
         /** The response body */
-        var body: String;
+        var body: String
 
         /**
          * Creates a new HttpResponse with default status 200
@@ -28,7 +28,7 @@ namespace tinox.core.http_server
          */
         fn new() -> HttpResponse
         {
-            return HttpResponse { statusCode: 200, headers: Map::new(), body: "" };
+            return HttpResponse { statusCode: 200, headers: Map::new(), body: "" }
         }
 
         /**
@@ -39,8 +39,8 @@ namespace tinox.core.http_server
          */
         fn status(code: Int64) -> HttpResponse
         {
-            this.statusCode = code;
-            return this;
+            this.statusCode = code
+            return this
         }
 
         /**
@@ -52,8 +52,8 @@ namespace tinox.core.http_server
          */
         fn header(name: String, value: String) -> HttpResponse
         {
-            this.headers[name] = value;
-            return this;
+            this.headers[name] = value
+            return this
         }
 
         /**
@@ -64,9 +64,9 @@ namespace tinox.core.http_server
          */
         fn text(text: String) -> HttpResponse
         {
-            this.headers["Content-Type"] = "text/plain; charset=utf-8";
-            this.body = text;
-            return this;
+            this.headers["Content-Type"] = "text/plain; charset=utf-8"
+            this.body = text
+            return this
         }
 
         /**
@@ -77,9 +77,9 @@ namespace tinox.core.http_server
          */
         fn json(json: String) -> HttpResponse
         {
-            this.headers["Content-Type"] = "application/json; charset=utf-8";
-            this.body = json;
-            return this;
+            this.headers["Content-Type"] = "application/json; charset=utf-8"
+            this.body = json
+            return this
         }
 
         /**
@@ -94,9 +94,9 @@ namespace tinox.core.http_server
          */
         fn jsonObject<T>(obj: T) -> HttpResponse
         {
-            this.headers["Content-Type"] = "application/json; charset=utf-8";
-            this.body = Json::serialize(obj);
-            return this;
+            this.headers["Content-Type"] = "application/json; charset=utf-8"
+            this.body = Json::serialize(obj)
+            return this
         }
 
         /**
@@ -107,9 +107,9 @@ namespace tinox.core.http_server
          */
         fn html(html: String) -> HttpResponse
         {
-            this.headers["Content-Type"] = "text/html; charset=utf-8";
-            this.body = html;
-            return this;
+            this.headers["Content-Type"] = "text/html; charset=utf-8"
+            this.body = html
+            return this
         }
 
         /**
@@ -121,9 +121,9 @@ namespace tinox.core.http_server
          */
         fn content(content: String, contentType: String) -> HttpResponse
         {
-            this.headers["Content-Type"] = contentType;
-            this.body = content;
-            return this;
+            this.headers["Content-Type"] = contentType
+            this.body = content
+            return this
         }
 
         /**
@@ -134,10 +134,10 @@ namespace tinox.core.http_server
          */
         fn notFound(message: String) -> HttpResponse
         {
-            this.statusCode = 404;
-            this.headers["Content-Type"] = "text/plain; charset=utf-8";
-            this.body = message;
-            return this;
+            this.statusCode = 404
+            this.headers["Content-Type"] = "text/plain; charset=utf-8"
+            this.body = message
+            return this
         }
 
         /**
@@ -148,10 +148,10 @@ namespace tinox.core.http_server
          */
         fn badRequest(message: String) -> HttpResponse
         {
-            this.statusCode = 400;
-            this.headers["Content-Type"] = "text/plain; charset=utf-8";
-            this.body = message;
-            return this;
+            this.statusCode = 400
+            this.headers["Content-Type"] = "text/plain; charset=utf-8"
+            this.body = message
+            return this
         }
 
         /**
@@ -162,10 +162,10 @@ namespace tinox.core.http_server
          */
         fn internalError(message: String) -> HttpResponse
         {
-            this.statusCode = 500;
-            this.headers["Content-Type"] = "text/plain; charset=utf-8";
-            this.body = message;
-            return this;
+            this.statusCode = 500
+            this.headers["Content-Type"] = "text/plain; charset=utf-8"
+            this.body = message
+            return this
         }
 
         /**
@@ -176,10 +176,10 @@ namespace tinox.core.http_server
          */
         fn created(json: String) -> HttpResponse
         {
-            this.statusCode = 201;
-            this.headers["Content-Type"] = "application/json; charset=utf-8";
-            this.body = json;
-            return this;
+            this.statusCode = 201
+            this.headers["Content-Type"] = "application/json; charset=utf-8"
+            this.body = json
+            return this
         }
 
         /**
@@ -189,9 +189,9 @@ namespace tinox.core.http_server
          */
         fn noContent() -> HttpResponse
         {
-            this.statusCode = 204;
-            this.body = "";
-            return this;
+            this.statusCode = 204
+            this.body = ""
+            return this
         }
 
         /**
@@ -202,9 +202,9 @@ namespace tinox.core.http_server
          */
         fn redirect(url: String) -> HttpResponse
         {
-            this.statusCode = 302;
-            this.headers["Location"] = url;
-            return this;
+            this.statusCode = 302
+            this.headers["Location"] = url
+            return this
         }
 
         /**
@@ -215,10 +215,10 @@ namespace tinox.core.http_server
          */
         fn cors(origin: String) -> HttpResponse
         {
-            this.headers["Access-Control-Allow-Origin"] = origin;
-            this.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
-            this.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
-            return this;
+            this.headers["Access-Control-Allow-Origin"] = origin
+            this.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            this.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+            return this
         }
     }
 }

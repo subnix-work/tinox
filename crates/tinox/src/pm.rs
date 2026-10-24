@@ -2900,7 +2900,7 @@ mod tests {
         fs::create_dir_all(&src_dir).unwrap();
         fs::write(
             src_dir.join("TinoxUIRuntime.tnx"),
-            "class TinoxUIRuntime { fnc noop() -> Int64 { return 0; } }\n",
+            "class TinoxUIRuntime { fnc noop() -> Int64 { return 0 } }\n",
         )
         .unwrap();
         fs::write(

@@ -1,11 +1,11 @@
 class HttpResponse
 {
-    var statusCode: Int64;
-    var headers: Map<String, String>;
-    var body: String;
+    var statusCode: Int64
+    var headers: Map<String, String>
+    var body: String
 
     fn new() -> HttpResponse
     {
-        return HttpResponse { statusCode: 200, headers: Map::new(), body: "" };
+        return HttpResponse { statusCode: 200, headers: Map::new(), body: "" }
     }
 }

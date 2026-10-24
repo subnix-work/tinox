@@ -5,25 +5,25 @@
 // expect: x-request-id
 // expect: abc-123
 
-import tinox.core.hpack;
+import tinox.core.hpack
 class Main
 {
     fnc main() -> Int32
     {
-        const dynEnc: HpackDynTable = HpackDynTable::new(4096);
-        const dynDec: HpackDynTable = HpackDynTable::new(4096);
-        const headers: List<HpackHeader> = [];
-        headers.push(HpackHeader::new(":status", "200"));
-        headers.push(HpackHeader::new("content-type", "application/json; charset=utf-8"));
-        headers.push(HpackHeader::new("x-request-id", "abc-123"));
-        const encoded: List<Int64> = Hpack::encode(headers, dynEnc);
-        const decoded: List<HpackHeader> = Hpack::decode(encoded, dynDec);
-        println(decoded.len());
-        println(decoded[0].name);
-        println(decoded[0].value);
-        println(decoded[1].name);
-        println(decoded[2].name);
-        println(decoded[2].value);
-        return 0;
+        const dynEnc: HpackDynTable = HpackDynTable::new(4096)
+        const dynDec: HpackDynTable = HpackDynTable::new(4096)
+        const headers: List<HpackHeader> = []
+        headers.push(HpackHeader::new(":status", "200"))
+        headers.push(HpackHeader::new("content-type", "application/json; charset=utf-8"))
+        headers.push(HpackHeader::new("x-request-id", "abc-123"))
+        const encoded: List<Int64> = Hpack::encode(headers, dynEnc)
+        const decoded: List<HpackHeader> = Hpack::decode(encoded, dynDec)
+        println(decoded.len())
+        println(decoded[0].name)
+        println(decoded[0].value)
+        println(decoded[1].name)
+        println(decoded[2].name)
+        println(decoded[2].value)
+        return 0
     }
 }

@@ -57,78 +57,78 @@ impl Drop for KillOnDrop {
 // Port must match the literal baked into @Amqp10Consumer(...) in
 // examples/amqp10_consumer_annotated/DemoConsumer.tnx.
 const FAKE_BROKER_SRC: &str = r#"
-import tinox.core.amqp10;
-import tinox.core.socket;
+import tinox.core.amqp10
+import tinox.core.socket
 
 class Main
 {
 fnc main() -> Int32 {
-    let srv = httpServerCreate(5873);
+    let srv = httpServerCreate(5873)
     if (srv < 0) {
-        println("bind failed");
-        return 1;
+        println("bind failed")
+        return 1
     }
-    let sconn = httpServerAcceptConnHandle(srv);
+    let sconn = httpServerAcceptConnHandle(srv)
 
-    httpConnReadN(sconn, 8);
-    httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-    let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
-    Amqp10::writeFrame(sconn, 1, 0, mechBody);
-    Amqp10::readFrame(sconn);
-    let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
-    Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
+    httpConnReadN(sconn, 8)
+    httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0])
+    let mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])])
+    Amqp10::writeFrame(sconn, 1, 0, mechBody)
+    Amqp10::readFrame(sconn)
+    let outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)])
+    Amqp10::writeFrame(sconn, 1, 0, outcomeBody)
 
-    httpConnReadN(sconn, 8);
-    httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
+    httpConnReadN(sconn, 8)
+    httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0])
 
-    Amqp10::readFrame(sconn);
+    Amqp10::readFrame(sconn)
     var openFields: List<Amqp10Value> = [
         Amqp10Value::StrVal("fake-broker"),
         Amqp10Value::NullVal,
         Amqp10Value::UIntVal(4294967295),
         Amqp10Value::UShortVal(65535)
-    ];
-    Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
+    ]
+    Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields))
 
-    let fBegin = Amqp10::readFrame(sconn);
+    let fBegin = Amqp10::readFrame(sconn)
     var beginFields: List<Amqp10Value> = [
         Amqp10Value::UShortVal(fBegin.chanId), Amqp10Value::UIntVal(0),
         Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
-    ];
-    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
+    ]
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields))
 
-    let fAttach = Amqp10::readFrame(sconn);
-    let pAttach = Amqp10::decodePerformative(fAttach.body);
-    var linkHandle: Int64 = 0;
+    let fAttach = Amqp10::readFrame(sconn)
+    let pAttach = Amqp10::decodePerformative(fAttach.body)
+    var linkHandle: Int64 = 0
     if (pAttach.fields.len() > 1) {
-        match pAttach.fields[1] { UIntVal(n) => { linkHandle = n; } _ => {} }
+        match pAttach.fields[1] { UIntVal(n) => { linkHandle = n } _ => {} }
     }
-    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach.fields));
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach.fields))
 
     // flow from the client (credit grant for grantCredit(1))
-    Amqp10::readFrame(sconn);
+    Amqp10::readFrame(sconn)
 
-    let replyMsg = Amqp10::encodeMessageBody([65, 66, 67], "text/plain");
+    let replyMsg = Amqp10::encodeMessageBody([65, 66, 67], "text/plain")
     var transferFields: List<Amqp10Value> = [
         Amqp10Value::UIntVal(linkHandle), Amqp10Value::UIntVal(0),
         Amqp10Value::BinaryVal([1]), Amqp10Value::UIntVal(0),
         Amqp10Value::BoolVal(true), Amqp10Value::BoolVal(false)
-    ];
-    let transferBody = Amqp10::encodePerformative(0x14, transferFields);
-    var frame: List<Int64> = [];
-    for i in 0..transferBody.len() { frame.push(transferBody[i]); }
-    for i in 0..replyMsg.len() { frame.push(replyMsg[i]); }
-    Amqp10::writeFrame(sconn, 0, fBegin.chanId, frame);
+    ]
+    let transferBody = Amqp10::encodePerformative(0x14, transferFields)
+    var frame: List<Int64> = []
+    for i in 0..transferBody.len() { frame.push(transferBody[i]) }
+    for i in 0..replyMsg.len() { frame.push(replyMsg[i]) }
+    Amqp10::writeFrame(sconn, 0, fBegin.chanId, frame)
 
-    let fDisp = Amqp10::readFrame(sconn);
-    let pDisp = Amqp10::decodePerformative(fDisp.body);
+    let fDisp = Amqp10::readFrame(sconn)
+    let pDisp = Amqp10::decodePerformative(fDisp.body)
     if (pDisp.descriptor == 0x15) {
-        println("ok-broker-saw-ack");
+        println("ok-broker-saw-ack")
     }
 
-    httpConnClose(sconn);
-    httpServerClose(srv);
-    return 0;
+    httpConnClose(sconn)
+    httpServerClose(srv)
+    return 0
 }
 }
 "#;

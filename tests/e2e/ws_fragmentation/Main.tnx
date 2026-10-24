@@ -9,56 +9,56 @@
 // expect: ok-bare-continuation
 // expect: ok-new-message-mid-fragment
 
-import tinox.core.websocket;
-import tinox.core.socket;
+import tinox.core.websocket
+import tinox.core.socket
 
 class Main
 {
     fnc main() -> Int32 {
-        const srv = WsServer::listen(0);
+        const srv = WsServer::listen(0)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
 
-        const port = httpServerBoundPort(srv);
-        const cfd = socketCreateTcp();
-        socketConnect(cfd, "127.0.0.1", port);
-        const cconn = httpConnFromFd(cfd);
-        httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
-        const conn = WsServer::accept(srv);
-        const resp = httpConnReadRequest(cconn);
+        const port = httpServerBoundPort(srv)
+        const cfd = socketCreateTcp()
+        socketConnect(cfd, "127.0.0.1", port)
+        const cconn = httpConnFromFd(cfd)
+        httpConnSendRaw(cconn, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        const conn = WsServer::accept(srv)
+        const resp = httpConnReadRequest(cconn)
         if (resp.contains("101")) {
-            println("ok-accept");
+            println("ok-accept")
         }
 
         // --- Three-fragment text message "Hello!" = "He" + "ll" + "o!" ---
         // Start frame: FIN=0, opcode=1 (text), masked "He" with mask [1,1,1,1]
-        httpConnWriteBytes(cconn, [1, 130, 1, 1, 1, 1, 73, 100]);
+        httpConnWriteBytes(cconn, [1, 130, 1, 1, 1, 1, 73, 100])
         // Continuation: FIN=0, opcode=0, masked "ll" with mask [2,2,2,2]
-        httpConnWriteBytes(cconn, [0, 130, 2, 2, 2, 2, 110, 110]);
+        httpConnWriteBytes(cconn, [0, 130, 2, 2, 2, 2, 110, 110])
         // Final continuation: FIN=1, opcode=0, masked "o!" with mask [3,3,3,3]
-        httpConnWriteBytes(cconn, [128, 130, 3, 3, 3, 3, 108, 34]);
-        const f1 = Ws::readMessage(conn);
-        println(f1.opcode.toString());
-        println(Ws::text(f1));
+        httpConnWriteBytes(cconn, [128, 130, 3, 3, 3, 3, 108, 34])
+        const f1 = Ws::readMessage(conn)
+        println(f1.opcode.toString())
+        println(Ws::text(f1))
 
         // --- A Ping frame injected mid-fragmentation must not disturb assembly ---
         // Start frame: FIN=0, opcode=2 (binary), masked [9] with mask [0,0,0,0]
-        httpConnWriteBytes(cconn, [2, 129, 0, 0, 0, 0, 9]);
+        httpConnWriteBytes(cconn, [2, 129, 0, 0, 0, 0, 9])
         // Ping in between: FIN=1, opcode=9, masked "" (empty payload)
-        httpConnWriteBytes(cconn, [137, 128, 0, 0, 0, 0]);
+        httpConnWriteBytes(cconn, [137, 128, 0, 0, 0, 0])
         // Final continuation: FIN=1, opcode=0, masked [8] with mask [0,0,0,0]
-        httpConnWriteBytes(cconn, [128, 129, 0, 0, 0, 0, 8]);
-        const f2 = Ws::readMessage(conn);
-        const pong = httpConnReadN(cconn, 2);
+        httpConnWriteBytes(cconn, [128, 129, 0, 0, 0, 0, 8])
+        const f2 = Ws::readMessage(conn)
+        const pong = httpConnReadN(cconn, 2)
         if (f2.opcode == 2) {
             if (f2.payload.len() == 2) {
                 if (f2.payload[0] == 9) {
                     if (f2.payload[1] == 8) {
                         if (pong[0] == 138) {
                             if (pong[1] == 0) {
-                                println("ok-ping-mid-fragment");
+                                println("ok-ping-mid-fragment")
                             }
                         }
                     }
@@ -68,48 +68,48 @@ class Main
 
         // --- A bare continuation frame with no preceding start frame is a
         //     protocol error: Close(1002) + readMessage returns opcode -2 ---
-        httpConnWriteBytes(cconn, [128, 128, 0, 0, 0, 0]);
-        const f3 = Ws::readMessage(conn);
-        const closeFrame1 = httpConnReadN(cconn, 4);
+        httpConnWriteBytes(cconn, [128, 128, 0, 0, 0, 0])
+        const f3 = Ws::readMessage(conn)
+        const closeFrame1 = httpConnReadN(cconn, 4)
         if (f3.opcode == -2) {
             if (closeFrame1[0] == 136) {
                 if (closeFrame1[2] == 3) {
                     if (closeFrame1[3] == 234) {
-                        println("ok-bare-continuation");
+                        println("ok-bare-continuation")
                     }
                 }
             }
         }
-        Ws::close(conn);
-        httpConnClose(cconn);
+        Ws::close(conn)
+        httpConnClose(cconn)
 
         // --- A new Text frame arriving mid-fragmentation (before the previous
         //     message's final continuation) is also a protocol error ---
-        const cfd2 = socketCreateTcp();
-        socketConnect(cfd2, "127.0.0.1", port);
-        const cconn2 = httpConnFromFd(cfd2);
-        httpConnSendRaw(cconn2, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
-        const conn2 = WsServer::accept(srv);
-        httpConnReadRequest(cconn2);
+        const cfd2 = socketCreateTcp()
+        socketConnect(cfd2, "127.0.0.1", port)
+        const cconn2 = httpConnFromFd(cfd2)
+        httpConnSendRaw(cconn2, "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        const conn2 = WsServer::accept(srv)
+        httpConnReadRequest(cconn2)
         // Start frame: FIN=0, opcode=1 (text)
-        httpConnWriteBytes(cconn2, [1, 129, 0, 0, 0, 0, 65]);
+        httpConnWriteBytes(cconn2, [1, 129, 0, 0, 0, 0, 65])
         // Another start frame instead of a continuation: FIN=0, opcode=1
-        httpConnWriteBytes(cconn2, [1, 129, 0, 0, 0, 0, 66]);
-        const f4 = Ws::readMessage(conn2);
-        const closeFrame2 = httpConnReadN(cconn2, 4);
+        httpConnWriteBytes(cconn2, [1, 129, 0, 0, 0, 0, 66])
+        const f4 = Ws::readMessage(conn2)
+        const closeFrame2 = httpConnReadN(cconn2, 4)
         if (f4.opcode == -2) {
             if (closeFrame2[0] == 136) {
                 if (closeFrame2[2] == 3) {
                     if (closeFrame2[3] == 234) {
-                        println("ok-new-message-mid-fragment");
+                        println("ok-new-message-mid-fragment")
                     }
                 }
             }
         }
-        Ws::close(conn2);
-        httpConnClose(cconn2);
+        Ws::close(conn2)
+        httpConnClose(cconn2)
 
-        httpServerClose(srv);
-        return 0;
+        httpServerClose(srv)
+        return 0
     }
 }

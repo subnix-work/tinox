@@ -1,9 +1,9 @@
-import Derived;
+import Derived
 
 class Base {
-    var n: Int64;
-    fn make() -> Base { return Base { n: 1 }; }
-    fn getN() -> Int64 { return this.n; }
-    fn add(x: Int64) -> Int64 { return this.n + x; }
-    fn label() -> String { return "base"; }
+    var n: Int64
+    fn make() -> Base { return Base { n: 1 } }
+    fn getN() -> Int64 { return this.n }
+    fn add(x: Int64) -> Int64 { return this.n + x }
+    fn label() -> String { return "base" }
 }

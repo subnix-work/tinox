@@ -9,68 +9,68 @@
 // error on the default exchange), consumes them back, and acks each one
 // individually.
 
-import tinox.core.amqp091;
+import tinox.core.amqp091
 
 class Main
 {
     fnc main() -> Int32 {
-        const conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest");
+        const conn = AmqpConnection091::connect("127.0.0.1", 5672, "/", "guest", "guest")
         if (conn.conn <= 0) {
-            println("connect failed: " + conn.errorMessage);
-            return 1;
+            println("connect failed: " + conn.errorMessage)
+            return 1
         }
 
-        const ch = AmqpChannel091::open(conn);
+        const ch = AmqpChannel091::open(conn)
         if (ch.chanId <= 0) {
-            println("channel failed: " + ch.errorMessage);
-            return 1;
+            println("channel failed: " + ch.errorMessage)
+            return 1
         }
 
-        const queueName = ch.declareQueue("tinox-demo-queue", true, false, false);
+        const queueName = ch.declareQueue("tinox-demo-queue", true, false, false)
         if (queueName.len() == 0) {
-            println("queue.declare failed: " + ch.errorMessage);
-            return 1;
+            println("queue.declare failed: " + ch.errorMessage)
+            return 1
         }
-        println("queue: " + queueName);
+        println("queue: " + queueName)
 
-        ch.qos(10);
+        ch.qos(10)
 
-        var i: Int64 = 0;
+        var i: Int64 = 0
         while i < 3 {
-            var body: List<Int64> = [];
-            const text = "message #" + i.toString();
+            var body: List<Int64> = []
+            const text = "message #" + i.toString()
             for j in 0..text.len() {
-                body.push(text.charCodeAt(j) & 0xFF);
+                body.push(text.charCodeAt(j) & 0xFF)
             }
-            ch.publish("", queueName, body, "text/plain");
-            println("sent: " + text);
-            i = i + 1;
+            ch.publish("", queueName, body, "text/plain")
+            println("sent: " + text)
+            i = i + 1
         }
 
-        const consumerTag = ch.consume(queueName);
+        const consumerTag = ch.consume(queueName)
         if (consumerTag.len() == 0) {
-            println("basic.consume failed: " + ch.errorMessage);
-            return 1;
+            println("basic.consume failed: " + ch.errorMessage)
+            return 1
         }
 
-        var received: Int64 = 0;
+        var received: Int64 = 0
         while received < 3 {
-            const m = ch.nextMessage();
+            const m = ch.nextMessage()
             if (!m.ok) {
-                println("receive failed: " + m.errorMessage);
-                return 1;
+                println("receive failed: " + m.errorMessage)
+                return 1
             }
-            var text: String = "";
+            var text: String = ""
             for j in 0..m.body.len() {
-                text = text + fromCharCode(m.body[j]);
+                text = text + fromCharCode(m.body[j])
             }
-            println("received: " + text + " (tag " + m.deliveryTag.toString() + ")");
-            ch.ack(m.deliveryTag);
-            received = received + 1;
+            println("received: " + text + " (tag " + m.deliveryTag.toString() + ")")
+            ch.ack(m.deliveryTag)
+            received = received + 1
         }
 
-        conn.close();
-        println("done");
-        return 0;
+        conn.close()
+        println("done")
+        return 0
     }
 }

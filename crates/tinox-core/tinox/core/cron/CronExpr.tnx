@@ -1,13 +1,13 @@
-module tinox.core.cron;
+module tinox.core.cron
 
 namespace tinox.core.cron
 {
     class CronExpr
     {
-        minute: String;
-        hour: String;
-        dayOfMonth: String;
-        month: String;
-        dayOfWeek: String;
+        minute: String
+        hour: String
+        dayOfMonth: String
+        month: String
+        dayOfWeek: String
     }
 }

@@ -1,17 +1,17 @@
 class fromcharcode_side_effect
 {
-    var bytes: List<Int64>;
-    var pos: Int64;
+    var bytes: List<Int64>
+    var pos: Int64
 
     fn new(bytes: List<Int64>) -> fromcharcode_side_effect
     {
-        return fromcharcode_side_effect { bytes: bytes, pos: 0 };
+        return fromcharcode_side_effect { bytes: bytes, pos: 0 }
     }
 
     fn next() -> Int64
     {
-        const v = this.bytes[this.pos];
-        this.pos = this.pos + 1;
-        return v;
+        const v = this.bytes[this.pos]
+        this.pos = this.pos + 1
+        return v
     }
 }

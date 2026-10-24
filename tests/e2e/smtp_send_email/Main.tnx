@@ -19,131 +19,131 @@
 // expect: send ok: true
 // expect: body match: true
 
-import tinox.core.smtp;
-import tinox.core.base64;
-import tinox.core.socket;
+import tinox.core.smtp
+import tinox.core.base64
+import tinox.core.socket
 
 class Main
 {
     async fnc fakeServer(srv: Int64) -> Int64 {
-        const conn = httpServerAcceptConnHandle(srv);
+        const conn = httpServerAcceptConnHandle(srv)
         if (conn <= 0) {
-            return 0;
+            return 0
         }
-        httpConnSendRaw(conn, "220 fake.smtp.test ESMTP\r\n");
-        httpConnReadLine(conn); // EHLO localhost
-        httpConnSendRaw(conn, "250-fake.smtp.test\r\n250 AUTH PLAIN\r\n");
+        httpConnSendRaw(conn, "220 fake.smtp.test ESMTP\r\n")
+        httpConnReadLine(conn) // EHLO localhost
+        httpConnSendRaw(conn, "250-fake.smtp.test\r\n250 AUTH PLAIN\r\n")
 
         // --- AUTH PLAIN: reject wrong credentials, accept right ones ---
         // The server always validates against the one correct
         // ("testuser"/"testpass") — the first client attempt deliberately
         // sends the wrong password, so it must be rejected; the second
         // sends the right one and must be accepted.
-        const authLine1 = httpConnReadLine(conn); // "AUTH PLAIN <base64>"
-        const payload1 = authLine1.substring(11, authLine1.len());
-        const decoded1 = Base64::decodeBytes(payload1);
+        const authLine1 = httpConnReadLine(conn) // "AUTH PLAIN <base64>"
+        const payload1 = authLine1.substring(11, authLine1.len())
+        const decoded1 = Base64::decodeBytes(payload1)
         if (Main::checkAuth(decoded1, "testuser", "testpass")) {
-            httpConnSendRaw(conn, "235 OK\r\n");
+            httpConnSendRaw(conn, "235 OK\r\n")
         } else {
-            httpConnSendRaw(conn, "535 Authentication failed\r\n");
+            httpConnSendRaw(conn, "535 Authentication failed\r\n")
         }
 
-        const authLine2 = httpConnReadLine(conn);
-        const payload2 = authLine2.substring(11, authLine2.len());
-        const decoded2 = Base64::decodeBytes(payload2);
+        const authLine2 = httpConnReadLine(conn)
+        const payload2 = authLine2.substring(11, authLine2.len())
+        const decoded2 = Base64::decodeBytes(payload2)
         if (Main::checkAuth(decoded2, "testuser", "testpass")) {
-            httpConnSendRaw(conn, "235 OK\r\n");
+            httpConnSendRaw(conn, "235 OK\r\n")
         } else {
-            httpConnSendRaw(conn, "535 Authentication failed\r\n");
+            httpConnSendRaw(conn, "535 Authentication failed\r\n")
         }
 
         // --- MAIL FROM / RCPT TO / DATA ---
-        httpConnReadLine(conn); // MAIL FROM:<...>
-        httpConnSendRaw(conn, "250 OK\r\n");
-        httpConnReadLine(conn); // RCPT TO:<...>
-        httpConnSendRaw(conn, "250 OK\r\n");
-        httpConnReadLine(conn); // DATA
-        httpConnSendRaw(conn, "354 End data with <CR><LF>.<CR><LF>\r\n");
+        httpConnReadLine(conn) // MAIL FROM:<...>
+        httpConnSendRaw(conn, "250 OK\r\n")
+        httpConnReadLine(conn) // RCPT TO:<...>
+        httpConnSendRaw(conn, "250 OK\r\n")
+        httpConnReadLine(conn) // DATA
+        httpConnSendRaw(conn, "354 End data with <CR><LF>.<CR><LF>\r\n")
 
-        var received: String = "";
-        var done: Bool = false;
+        var received: String = ""
+        var done: Bool = false
         while !done {
-            const line = httpConnReadLine(conn);
+            const line = httpConnReadLine(conn)
             if (line == ".") {
-                done = true;
+                done = true
             } else {
-                var actual = line;
+                var actual = line
                 if (line.startsWith("..")) {
-                    actual = line.substring(1, line.len());
+                    actual = line.substring(1, line.len())
                 }
-                received = received + actual + "\n";
+                received = received + actual + "\n"
             }
         }
-        httpConnSendRaw(conn, "250 OK: queued\r\n");
-        httpConnClose(conn);
+        httpConnSendRaw(conn, "250 OK: queued\r\n")
+        httpConnClose(conn)
 
-        const expected = "From: sender@example.org\nTo: recipient@example.org\nSubject: Dot Test\n\nline one\n.dotline\nline three\n";
+        const expected = "From: sender@example.org\nTo: recipient@example.org\nSubject: Dot Test\n\nline one\n.dotline\nline three\n"
         if (received == expected) {
-            return 1;
+            return 1
         }
-        return 0;
+        return 0
     }
 
     fnc checkAuth(decoded: List<Int64>, user: String, pass: String) -> Bool {
-        var expected: List<Int64> = [];
-        expected.push(0);
-        var i: Int64 = 0;
+        var expected: List<Int64> = []
+        expected.push(0)
+        var i: Int64 = 0
         while i < user.len() {
-            expected.push(user.charCodeAt(i));
-            i = i + 1;
+            expected.push(user.charCodeAt(i))
+            i = i + 1
         }
-        expected.push(0);
-        var j: Int64 = 0;
+        expected.push(0)
+        var j: Int64 = 0
         while j < pass.len() {
-            expected.push(pass.charCodeAt(j));
-            j = j + 1;
+            expected.push(pass.charCodeAt(j))
+            j = j + 1
         }
         if (decoded.len() != expected.len()) {
-            return false;
+            return false
         }
-        var k: Int64 = 0;
+        var k: Int64 = 0
         while k < decoded.len() {
             if (decoded[k] != expected[k]) {
-                return false;
+                return false
             }
-            k = k + 1;
+            k = k + 1
         }
-        return true;
+        return true
     }
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle = spawn fakeServer(srv);
+        const handle = spawn fakeServer(srv)
 
-        const client: SmtpClient = SmtpClient::connect("127.0.0.1", port);
+        const client: SmtpClient = SmtpClient::connect("127.0.0.1", port)
         if (client.conn <= 0) {
-            println("connect failed: " + client.errorMessage);
-            return 1;
+            println("connect failed: " + client.errorMessage)
+            return 1
         }
-        println("connected");
+        println("connected")
 
-        const badAuth: Bool = client.authPlain("testuser", "wrongpass");
-        println("bad auth ok (should be false): " + badAuth.toString());
+        const badAuth: Bool = client.authPlain("testuser", "wrongpass")
+        println("bad auth ok (should be false): " + badAuth.toString())
 
-        const goodAuth: Bool = client.authPlain("testuser", "testpass");
-        println("good auth ok (should be true): " + goodAuth.toString());
+        const goodAuth: Bool = client.authPlain("testuser", "testpass")
+        println("good auth ok (should be true): " + goodAuth.toString())
 
-        const ok: Bool = client.send("sender@example.org", ["recipient@example.org"], "Dot Test", "line one\n.dotline\nline three");
-        println("send ok: " + ok.toString());
-        client.close();
+        const ok: Bool = client.send("sender@example.org", ["recipient@example.org"], "Dot Test", "line one\n.dotline\nline three")
+        println("send ok: " + ok.toString())
+        client.close()
 
-        const bodyMatch = await handle;
-        println("body match: " + (bodyMatch == 1).toString());
-        return 0;
+        const bodyMatch = await handle
+        println("body match: " + (bodyMatch == 1).toString())
+        return 0
     }
 }

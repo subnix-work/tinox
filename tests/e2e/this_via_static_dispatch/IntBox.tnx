@@ -1,8 +1,8 @@
-import Acc;
-import Box;
+import Acc
+import Box
 
 class IntBox {
-    var value: Int64;
-    fn wrap(v: Int64) -> IntBox { return IntBox { value: v }; }
-    fn get() -> Int64 { return this.value; }
+    var value: Int64
+    fn wrap(v: Int64) -> IntBox { return IntBox { value: v } }
+    fn get() -> Int64 { return this.value }
 }

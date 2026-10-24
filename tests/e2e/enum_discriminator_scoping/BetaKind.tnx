@@ -1,4 +1,4 @@
 enum BetaKind {
-    Foo,
-    Bar(String),
+    Foo
+    Bar(String)
 }

@@ -12,24 +12,24 @@
 // generated a method the private-field-access check didn't recognize as
 // "inside its own class", this program wouldn't compile at all.
 
-import Person;
-import Widget;
+import Person
+import Widget
 
 class Main
 {
     fnc main() -> Int32
     {
-        const p: Person = Person { name: "Ada", age: 36 };
-        println(p.getName());
-        println(p.getAge().toString());
-        p.setName("Grace");
-        println(p.getName());
-        p.setAge(85);
-        println(p.getAge().toString());
+        const p: Person = Person { name: "Ada", age: 36 }
+        println(p.getName())
+        println(p.getAge().toString())
+        p.setName("Grace")
+        println(p.getName())
+        p.setAge(85)
+        println(p.getAge().toString())
 
-        const w: Widget = Widget { label: "hi", internalCounter: 0 };
-        println(w.getLabel());
+        const w: Widget = Widget { label: "hi", internalCounter: 0 }
+        println(w.getLabel())
 
-        return 0;
+        return 0
     }
 }

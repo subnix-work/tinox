@@ -129,12 +129,12 @@ fn signals_drain_http_and_websocket_work_before_disposal() {
 #[test]
 fn common_deadlines_bound_unready_startup_and_blocked_cleanup() {
     for (name, source, expected_error) in [
-        ("startup", "@Service(150, 1000) class Main { fnc main() -> Int32 { serviceAwaitShutdown(); return 0; } }", "startup/readiness deadline exceeded"),
-        ("shutdown", "@Service(1000, 150) class Main { fnc main() -> Int32 { return 0; } }", "shutdown deadline exceeded"),
+        ("startup", "@Service(150, 1000) class Main { fnc main() -> Int32 { serviceAwaitShutdown()\nreturn 0 } }", "startup/readiness deadline exceeded"),
+        ("shutdown", "@Service(1000, 150) class Main { fnc main() -> Int32 { return 0 } }", "shutdown deadline exceeded"),
     ] {
         let directory = project(name, &[]);
-        fs::write(directory.join("Main.tnx"), format!("import State; {source}")).unwrap();
-        let hook = if name == "startup" { "@Readiness fn ready() -> Bool { return false; }" } else { "@OnStop fn stop() -> Nothing { while (true) { sleep(10); } }" };
+        fs::write(directory.join("Main.tnx"), format!("import State\n{source}")).unwrap();
+        let hook = if name == "startup" { "@Readiness fn ready() -> Bool { return false }" } else { "@OnStop fn stop() -> Nothing { while (true) { sleep(10) } }" };
         fs::write(directory.join("State.tnx"), format!("@Startup class State {{ {hook} }}")).unwrap();
         build(&directory);
         for _ in 0..20 {
@@ -154,8 +154,8 @@ fn common_deadlines_bound_unready_startup_and_blocked_cleanup() {
 fn blocked_health_hook_cannot_delay_the_signal_deadline() {
     use std::io::{BufRead, BufReader};
     let directory = project("blocked-health", &[]);
-    fs::write(directory.join("Main.tnx"), "import State; @Service(5000, 150) class Main { fnc main() -> Int32 { serviceAwaitShutdown(); return 0; } }").unwrap();
-    fs::write(directory.join("State.tnx"), "@Startup class State { @Readiness fn ready() -> Bool { println(\"checking\"); while (true) {} return false; } }").unwrap();
+    fs::write(directory.join("Main.tnx"), "import State\n@Service(5000, 150) class Main { fnc main() -> Int32 { serviceAwaitShutdown()\nreturn 0 } }").unwrap();
+    fs::write(directory.join("State.tnx"), "@Startup class State { @Readiness fn ready() -> Bool { println(\"checking\")\nwhile (true) {} return false } }").unwrap();
     build(&directory);
     for _ in 0..20 {
         let mut child = Command::new(directory.join("service"))
@@ -188,7 +188,7 @@ fn hooks_without_managed_entrypoint_fail_visibly() {
     let directory = project("unmanaged-hooks", &[]);
     fs::write(
         directory.join("Main.tnx"),
-        "import State; class Main { fnc main() -> Int32 { return 0; } }",
+        "import State\nclass Main { fnc main() -> Int32 { return 0 } }",
     )
     .unwrap();
     fs::write(
@@ -218,7 +218,7 @@ fn database_initialization_failure_prevents_main_and_reports_service_failure() {
         directory.display()
     );
     fs::write(directory.join("tinox.toml"), manifest).unwrap();
-    fs::write(directory.join("Main.tnx"), "@Service(2000, 1000) class Main { fnc main() -> Int32 { println(\"Main must not run\"); return 0; } }").unwrap();
+    fs::write(directory.join("Main.tnx"), "@Service(2000, 1000) class Main { fnc main() -> Int32 { println(\"Main must not run\")\nreturn 0 } }").unwrap();
     build(&directory);
     for _ in 0..20 {
         let output = Command::new(directory.join("service")).output().unwrap();

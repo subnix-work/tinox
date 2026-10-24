@@ -1,5 +1,5 @@
-import Base;
-import Derived;
+import Base
+import Derived
 
 // Inherited method via `Class::method(obj)` (Bug 44): Derived::getN(d) previously
 // called a non-emitted @Derived_getN (only @Base_getN exists) -> invalid
@@ -13,10 +13,10 @@ import Derived;
 class Main
 {
     fnc main() -> Int32 {
-        const d: Derived = Derived::makeD();
-        println(Derived::getN(d).toString());      // inherited -> 7
-        println(Derived::add(d, 8).toString());    // inherited with param -> 7+8=15
-        println(Derived::label(d));                // override -> derived
-        return 0;
+        const d: Derived = Derived::makeD()
+        println(Derived::getN(d).toString())      // inherited -> 7
+        println(Derived::add(d, 8).toString())    // inherited with param -> 7+8=15
+        println(Derived::label(d))                // override -> derived
+        return 0
     }
 }

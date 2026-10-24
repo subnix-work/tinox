@@ -19,8 +19,8 @@
 // any file with @GET/@POST/etc.-annotated routes (see tinox run/build's
 // TINOX_PORT env var to pick a listen port at build time).
 
-import tinox.core.http_server;
-import tinox.core.rest.server;
+import tinox.core.http_server
+import tinox.core.rest.server
 
 class HelloController
 {
@@ -28,7 +28,7 @@ class HelloController
     @OIDCRolesAllowed(["api-user"])
     fnc hello(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        ctx.response.status(200).json("{\"message\":\"Hello, you are authorized!\"}");
-        return ctx;
+        ctx.response.status(200).json("{\"message\":\"Hello, you are authorized!\"}")
+        return ctx
     }
 }

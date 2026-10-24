@@ -1,13 +1,13 @@
-module tinox.core.logger;
+module tinox.core.logger
 
 namespace tinox.core.logger
 {
     // Empty parent continues the active context; pass a W3C traceparent to
     // begin a message boundary. Always end successful tokens in LIFO order.
     // A zero token means disabled mode or the bounded scope limit was reached.
-    extern fn telemetryBegin(name: String, parent: String, requestId: String) -> Int64;
-    extern fn telemetryEnd(token: Int64) -> Int64;
-    extern fn telemetryTraceparent() -> String;
-    extern fn telemetryRequestId() -> String;
-    extern fn telemetryFlush() -> Int64;
+    extern fn telemetryBegin(name: String, parent: String, requestId: String) -> Int64
+    extern fn telemetryEnd(token: Int64) -> Int64
+    extern fn telemetryTraceparent() -> String
+    extern fn telemetryRequestId() -> String
+    extern fn telemetryFlush() -> Int64
 }

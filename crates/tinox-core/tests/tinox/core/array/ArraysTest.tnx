@@ -1,4 +1,4 @@
-import tinox.core.array;
+import tinox.core.array
 
 namespace tinox.core.array
 {
@@ -7,17 +7,17 @@ namespace tinox.core.array
         @Test("containsInt finds a present value")
         fn containsIntFindsPresentValue() -> Bool
         {
-            const arr: List<Int64> = [1, 2, 3];
-            const arrays = new Arrays();
-            return arrays.containsInt(arr, 2);
+            const arr: List<Int64> = [1, 2, 3]
+            const arrays = new Arrays()
+            return arrays.containsInt(arr, 2)
         }
 
         @Test("containsInt rejects an absent value")
         fn containsIntRejectsAbsentValue() -> Bool
         {
-            const arr: List<Int64> = [1, 2, 3];
-            const arrays = new Arrays();
-            return !arrays.containsInt(arr, 42);
+            const arr: List<Int64> = [1, 2, 3]
+            const arrays = new Arrays()
+            return !arrays.containsInt(arr, 42)
         }
     }
 }

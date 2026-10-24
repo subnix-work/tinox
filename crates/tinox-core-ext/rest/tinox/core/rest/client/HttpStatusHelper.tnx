@@ -1,4 +1,4 @@
-module tinox.core.rest.client;
+module tinox.core.rest.client
 
 namespace tinox.core.rest.client
 {
@@ -17,29 +17,29 @@ namespace tinox.core.rest.client
         {
             match code
             {
-                100 => return HttpStatus::Continue;
-                101 => return HttpStatus::SwitchingProtocols;
-                200 => return HttpStatus::Ok;
-                201 => return HttpStatus::Created;
-                202 => return HttpStatus::Accepted;
-                204 => return HttpStatus::NoContent;
-                301 => return HttpStatus::MovedPermanently;
-                302 => return HttpStatus::Found;
-                304 => return HttpStatus::NotModified;
-                400 => return HttpStatus::BadRequest;
-                401 => return HttpStatus::Unauthorized;
-                403 => return HttpStatus::Forbidden;
-                404 => return HttpStatus::NotFound;
-                405 => return HttpStatus::MethodNotAllowed;
-                409 => return HttpStatus::Conflict;
-                422 => return HttpStatus::UnprocessableEntity;
-                429 => return HttpStatus::TooManyRequests;
-                500 => return HttpStatus::InternalServerError;
-                502 => return HttpStatus::BadGateway;
-                503 => return HttpStatus::ServiceUnavailable;
-                504 => return HttpStatus::GatewayTimeout;
+                100 => return HttpStatus::Continue
+                101 => return HttpStatus::SwitchingProtocols
+                200 => return HttpStatus::Ok
+                201 => return HttpStatus::Created
+                202 => return HttpStatus::Accepted
+                204 => return HttpStatus::NoContent
+                301 => return HttpStatus::MovedPermanently
+                302 => return HttpStatus::Found
+                304 => return HttpStatus::NotModified
+                400 => return HttpStatus::BadRequest
+                401 => return HttpStatus::Unauthorized
+                403 => return HttpStatus::Forbidden
+                404 => return HttpStatus::NotFound
+                405 => return HttpStatus::MethodNotAllowed
+                409 => return HttpStatus::Conflict
+                422 => return HttpStatus::UnprocessableEntity
+                429 => return HttpStatus::TooManyRequests
+                500 => return HttpStatus::InternalServerError
+                502 => return HttpStatus::BadGateway
+                503 => return HttpStatus::ServiceUnavailable
+                504 => return HttpStatus::GatewayTimeout
             }
-            return HttpStatus::NotFound;
+            return HttpStatus::NotFound
         }
 
         /**
@@ -52,27 +52,27 @@ namespace tinox.core.rest.client
         {
             match status
             {
-                Continue => return 100;
-                SwitchingProtocols => return 101;
-                Ok => return 200;
-                Created => return 201;
-                Accepted => return 202;
-                NoContent => return 204;
-                MovedPermanently => return 301;
-                Found => return 302;
-                NotModified => return 304;
-                BadRequest => return 400;
-                Unauthorized => return 401;
-                Forbidden => return 403;
-                NotFound => return 404;
-                MethodNotAllowed => return 405;
-                Conflict => return 409;
-                UnprocessableEntity => return 422;
-                TooManyRequests => return 429;
-                InternalServerError => return 500;
-                BadGateway => return 502;
-                ServiceUnavailable => return 503;
-                GatewayTimeout => return 504;
+                Continue => return 100
+                SwitchingProtocols => return 101
+                Ok => return 200
+                Created => return 201
+                Accepted => return 202
+                NoContent => return 204
+                MovedPermanently => return 301
+                Found => return 302
+                NotModified => return 304
+                BadRequest => return 400
+                Unauthorized => return 401
+                Forbidden => return 403
+                NotFound => return 404
+                MethodNotAllowed => return 405
+                Conflict => return 409
+                UnprocessableEntity => return 422
+                TooManyRequests => return 429
+                InternalServerError => return 500
+                BadGateway => return 502
+                ServiceUnavailable => return 503
+                GatewayTimeout => return 504
             }
         }
 
@@ -84,7 +84,7 @@ namespace tinox.core.rest.client
          */
         fn isSuccess(code: Int64) -> Bool
         {
-            return code >= 200 && code < 300;
+            return code >= 200 && code < 300
         }
 
         /**
@@ -95,7 +95,7 @@ namespace tinox.core.rest.client
          */
         fn isClientError(code: Int64) -> Bool
         {
-            return code >= 400 && code < 500;
+            return code >= 400 && code < 500
         }
 
         /**
@@ -106,7 +106,7 @@ namespace tinox.core.rest.client
          */
         fn isServerError(code: Int64) -> Bool
         {
-            return code >= 500 && code < 600;
+            return code >= 500 && code < 600
         }
     }
 }

@@ -1,17 +1,17 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class Deployment
     {
-        var apiVersion: String;
-        var kind: String;
-        var metadata: ObjectMeta;
-        var spec: DeploymentSpec;
-        var status: DeploymentStatus;
+        var apiVersion: String
+        var kind: String
+        var metadata: ObjectMeta
+        var spec: DeploymentSpec
+        var status: DeploymentStatus
 
         // `labels` is used both as the Deployment's own metadata labels
         // AND as the pod template's labels/selector.matchLabels -- the
@@ -21,8 +21,8 @@ namespace tinox.core.kubernetes
         // is the common-case-safe default, not just a shortcut).
         fnc create(name: String, namespace: String, replicas: Int64, labels: Map<String, String>, containers: List<Container>) -> Deployment
         {
-            var meta: ObjectMeta = ObjectMeta::withNameAndNamespace(name, namespace);
-            meta.labels = labels;
+            var meta: ObjectMeta = ObjectMeta::withNameAndNamespace(name, namespace)
+            meta.labels = labels
             return Deployment {
                 apiVersion: "apps/v1", kind: "Deployment",
                 metadata: meta,
@@ -32,7 +32,7 @@ namespace tinox.core.kubernetes
                     template: PodTemplateSpec::create(labels, containers)
                 },
                 status: DeploymentStatus { replicas: 0, readyReplicas: 0, availableReplicas: 0, updatedReplicas: 0 }
-            };
+            }
         }
     }
 }

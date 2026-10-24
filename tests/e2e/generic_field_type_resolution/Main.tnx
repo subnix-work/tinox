@@ -9,29 +9,29 @@
 // expect: welt
 // expect: 1
 
-import generic_field_type_resolution;
+import generic_field_type_resolution
 
 class Main
 {
     fnc main() -> Int32 {
         // T=Int64: .toString() on T-field must be resolved
-        const bi: generic_field_type_resolution<Int64> = generic_field_type_resolution::make(42, 1);
-        println(bi.value.toString());        // 42
+        const bi: generic_field_type_resolution<Int64> = generic_field_type_resolution::make(42, 1)
+        println(bi.value.toString())        // 42
 
         // T=String: direct T-field read (println(String))
-        const bs: generic_field_type_resolution<String> = generic_field_type_resolution::make("hi", 2);
-        println(bs.value);                    // hi
+        const bs: generic_field_type_resolution<String> = generic_field_type_resolution::make("hi", 2)
+        println(bs.value)                    // hi
 
         // T=Float64
-        const bf: generic_field_type_resolution<Float64> = generic_field_type_resolution::make(3.5, 3);
-        println(bf.value.toString());        // 3.5
+        const bf: generic_field_type_resolution<Float64> = generic_field_type_resolution::make(3.5, 3)
+        println(bf.value.toString())        // 3.5
 
         // T-field assignment: literal must match the resolved T (String)
-        bs.value = "welt";
-        println(bs.value);                    // welt
+        bs.value = "welt"
+        println(bs.value)                    // welt
 
         // Non-T-field (Int64) stays correct
-        println(bi.tag.toString());          // 1
-        return 0;
+        println(bi.tag.toString())          // 1
+        return 0
     }
 }

@@ -11,11 +11,11 @@
 class Main
 {
     fnc main() -> Int32 {
-        println("ABC".charCodeAt(0).toString());     // 65 (A)
-        println("ABC".charCodeAt(2).toString());     // 67 (C)
-        println("ABC".charCodeAt(100).toString());   // -1 (out of bounds, was garbage)
-        println("ABC".charCodeAt(0 - 1).toString()); // -1 (negative)
-        println("".charCodeAt(0).toString());        // -1 (empty string)
-        return 0;
+        println("ABC".charCodeAt(0).toString())     // 65 (A)
+        println("ABC".charCodeAt(2).toString())     // 67 (C)
+        println("ABC".charCodeAt(100).toString())   // -1 (out of bounds, was garbage)
+        println("ABC".charCodeAt(0 - 1).toString()) // -1 (negative)
+        println("".charCodeAt(0).toString())        // -1 (empty string)
+        return 0
     }
 }

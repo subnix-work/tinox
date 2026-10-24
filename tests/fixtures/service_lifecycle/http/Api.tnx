@@ -1,16 +1,19 @@
-import tinox.core.http_server;
-import State;
+import tinox.core.http_server
+import State
 @HttpRequestScoped
 class Api {
  @Inject
- private state: State;
+ private state: State
  @POST
  @Path("/enable")
- fn enable() -> String { this.state.enable(); return "enabled"; }
+ fn enable() -> String { this.state.enable()
+ return "enabled" }
  @GET
  @Path("/slow")
- fn slow() -> String { println("handling"); sleep(500); return "complete"; }
+ fn slow() -> String { println("handling")
+ sleep(500)
+ return "complete" }
  @GET
  @Path("/fast")
- fn fast() -> String { return "fast"; }
+ fn fast() -> String { return "fast" }
 }

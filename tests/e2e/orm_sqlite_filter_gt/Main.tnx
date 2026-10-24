@@ -3,9 +3,9 @@
 // expect: 2
 // expect: Alice
 
-import tinox.core.db;
+import tinox.core.db
 
-import orm_sqlite_filter_gt;
+import orm_sqlite_filter_gt
 
 class Main
 {
@@ -13,9 +13,9 @@ class Main
     {
         const adults: List<orm_sqlite_filter_gt> = DB::of(orm_sqlite_filter_gt)
             .filter(u => u.age > 25)
-            .list();
-        println(adults.len());
-        println(adults[0].name);
-        return 0;
+            .list()
+        println(adults.len())
+        println(adults[0].name)
+        return 0
     }
 }

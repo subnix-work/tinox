@@ -1,4 +1,4 @@
 class HttpContext
 {
-    var x: Int64;
+    var x: Int64
 }

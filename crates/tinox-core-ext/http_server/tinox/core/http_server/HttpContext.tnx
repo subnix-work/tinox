@@ -1,4 +1,4 @@
-module tinox.core.http_server;
+module tinox.core.http_server
 
 namespace tinox.core.http_server
 {
@@ -11,10 +11,10 @@ namespace tinox.core.http_server
     class HttpContext
     {
         /** The incoming HTTP request */
-        var request: HttpRequest;
+        var request: HttpRequest
 
         /** The outgoing HTTP response */
-        var response: HttpResponse;
+        var response: HttpResponse
 
         /**
          * Creates a new HttpContext
@@ -25,7 +25,7 @@ namespace tinox.core.http_server
          */
         fn new(request: HttpRequest, response: HttpResponse) -> HttpContext
         {
-            return HttpContext { request: request, response: response };
+            return HttpContext { request: request, response: response }
         }
 
         /**
@@ -36,7 +36,7 @@ namespace tinox.core.http_server
          */
         fn fromRequest(request: HttpRequest) -> HttpContext
         {
-            return HttpContext { request: request, response: HttpResponse::new() };
+            return HttpContext { request: request, response: HttpResponse::new() }
         }
     }
 }

@@ -1,5 +1,5 @@
 class small_int_field_store {
-    var n: Int32;
-    var m: Int16;
-    fn make(a: Int32, b: Int16) -> small_int_field_store { return small_int_field_store { n: a, m: b }; }
+    var n: Int32
+    var m: Int16
+    fn make(a: Int32, b: Int16) -> small_int_field_store { return small_int_field_store { n: a, m: b } }
 }

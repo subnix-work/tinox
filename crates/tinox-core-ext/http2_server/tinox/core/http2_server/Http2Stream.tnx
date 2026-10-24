@@ -1,4 +1,4 @@
-module tinox.core.http2_server;
+module tinox.core.http2_server
 
 namespace tinox.core.http2_server
 {
@@ -10,13 +10,13 @@ namespace tinox.core.http2_server
      */
     class Http2Stream
     {
-        var id: Int64;
+        var id: Int64
         /** "open" | "half_closed_remote" | "closed" */
-        var state: String;
-        var headerBlock: List<Int64>;
-        var body: List<Int64>;
-        var endStream: Bool;
-        var expectingContinuation: Bool;
+        var state: String
+        var headerBlock: List<Int64>
+        var body: List<Int64>
+        var endStream: Bool
+        var expectingContinuation: Bool
 
         fn new(id: Int64) -> Http2Stream
         {
@@ -27,7 +27,7 @@ namespace tinox.core.http2_server
                 body: [],
                 endStream: false,
                 expectingContinuation: false
-            };
+            }
         }
     }
 }

@@ -413,11 +413,11 @@ namespace demo {{
 @Table("people")
 class Person {{
     @Id @GeneratedValue
-    id: Int64;
+    id: Int64
     @Column("display_name") @NotNull
-    name: String;
+    name: String
     @Column
-    state: State;
+    state: State
     {extra}
 }}
 }}
@@ -427,7 +427,7 @@ class Person {{
             .unwrap();
             fs::write(
                 self.0.join("src/State.tnx"),
-                "namespace demo { enum State { ACTIVE, INACTIVE } }",
+                "namespace demo { enum State { ACTIVE\nINACTIVE } }",
             )
             .unwrap();
         }
@@ -468,7 +468,7 @@ class Person {{
             assert!(initial[0].stmts[0].contains("TEXT"));
             p.generate(d).unwrap();
             assert_eq!(fs::read(p.path()).unwrap(), original);
-            p.model("active: Bool;");
+            p.model("active: Bool");
             p.generate(d).unwrap();
             assert!(fs::read(p.path()).unwrap().starts_with(&original));
             let next = load_changelog(&p.path(), d, &BTreeMap::new()).unwrap();
@@ -493,7 +493,7 @@ class Person {{
             "# keep this comment\ndatabaseChangeLog:\n- include: { file: initial.yaml }\n",
         )
         .unwrap();
-        p.model("email: String;");
+        p.model("email: String");
         p.generate(Dialect::Postgres).unwrap();
         assert_eq!(fs::read(&included).unwrap(), bytes);
         assert!(fs::read_to_string(p.path())
@@ -547,9 +547,9 @@ class Person {{
         p.generate(Dialect::Sqlite).unwrap();
         let original = fs::read(p.path()).unwrap();
         for extra in [
-            "@NotNull email: String;",
-            "data: Any;",
-            "@GeneratedValue counter: Int64;",
+            "@NotNull email: String",
+            "data: Any",
+            "@GeneratedValue counter: Int64",
         ] {
             p.model(extra);
             assert!(p.generate(Dialect::Sqlite).is_err());
@@ -561,7 +561,7 @@ class Person {{
         fs::write(&source, model.replace("name: String", "name: Int64")).unwrap();
         assert!(p.generate(Dialect::Sqlite).unwrap_err().contains("changed"));
         assert_eq!(fs::read(p.path()).unwrap(), original);
-        fs::write(&source, model.replace("@Column\n    state: State;", "")).unwrap();
+        fs::write(&source, model.replace("@Column\n    state: State", "")).unwrap();
         assert!(p.generate(Dialect::Sqlite).unwrap_err().contains("removed"));
         assert_eq!(fs::read(p.path()).unwrap(), original);
     }

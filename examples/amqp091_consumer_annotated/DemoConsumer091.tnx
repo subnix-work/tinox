@@ -10,16 +10,16 @@
 // body decoding stays on the user, same as the existing manual receiver
 // loop in examples/amqp_publish_consume.tnx.
 
-import tinox.core.amqp091;
+import tinox.core.amqp091
 
 @Amqp091Consumer("localhost", 5672, "/", "guest", "guest", "tinox-demo-queue")
 class DemoConsumer091 {
     @OnMessage
     fn onMessage(msg: AmqpMessage091) -> Nothing {
-        var text: String = "";
+        var text: String = ""
         for i in 0..msg.body.len() {
-            text = text + fromCharCode(msg.body[i]);
+            text = text + fromCharCode(msg.body[i])
         }
-        println("received (" + msg.contentType + "): " + text);
+        println("received (" + msg.contentType + "): " + text)
     }
 }

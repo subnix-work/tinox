@@ -1,10 +1,10 @@
-import tinox.core.json;
+import tinox.core.json
 
 @JsonSerializable
 class Item
 {
-    var id: Int64;
-    var name: String;
-    var tags: String;
-    var score: Float64;
+    var id: Int64
+    var name: String
+    var tags: String
+    var score: Float64
 }

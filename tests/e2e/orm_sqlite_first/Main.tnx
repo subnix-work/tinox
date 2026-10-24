@@ -6,9 +6,9 @@
 // expect: 0
 // expect: 0
 
-import tinox.core.db;
+import tinox.core.db
 
-import orm_sqlite_first;
+import orm_sqlite_first
 
 class Main
 {
@@ -16,16 +16,16 @@ class Main
     {
         const u: orm_sqlite_first = DB::of(orm_sqlite_first)
             .filter(u => u.name == "Carol")
-            .first();
-        println(u.name);
-        println(u.age);
+            .first()
+        println(u.name)
+        println(u.age)
         let none: orm_sqlite_first = DB::of(orm_sqlite_first)
-            .filter(u => u.name == "does-not-exist").first();
-        println("missing: " + none.id.toString() + ":" + none.name + ":" + none.age.toString());
+            .filter(u => u.name == "does-not-exist").first()
+        println("missing: " + none.id.toString() + ":" + none.name + ":" + none.age.toString())
         let rows: List<orm_sqlite_first> = DB::of(orm_sqlite_first)
-            .filter(u => u.name == "does-not-exist").list();
-        println(rows.len());
-        println(DB::of(orm_sqlite_first).filter(u => u.name == "does-not-exist").count());
-        return 0;
+            .filter(u => u.name == "does-not-exist").list()
+        println(rows.len())
+        println(DB::of(orm_sqlite_first).filter(u => u.name == "does-not-exist").count())
+        return 0
     }
 }

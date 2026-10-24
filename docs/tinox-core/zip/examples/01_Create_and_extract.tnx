@@ -1,17 +1,17 @@
-import tinox.core.zip;
+import tinox.core.zip
 
 class Main
 {
     fnc main() -> Int32
     {
-        const archive: ZipArchive = Zip::create("/tmp/example.zip");
-        Zip::addFile(archive, "hello.txt", "Hello, ZIP!");
+        const archive: ZipArchive = Zip::create("/tmp/example.zip")
+        Zip::addFile(archive, "hello.txt", "Hello, ZIP!")
 
-        const reopened: ZipArchive = Zip::open("/tmp/example.zip");
-        println(reopened.entries.len().toString());
-        println(Zip::extractFile(reopened, "hello.txt"));
+        const reopened: ZipArchive = Zip::open("/tmp/example.zip")
+        println(reopened.entries.len().toString())
+        println(Zip::extractFile(reopened, "hello.txt"))
 
-        Zip::close(reopened);
-        return 0;
+        Zip::close(reopened)
+        return 0
     }
 }

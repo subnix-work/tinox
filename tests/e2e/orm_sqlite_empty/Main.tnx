@@ -11,28 +11,28 @@
 // expect: 1
 // expect: 1
 
-import tinox.core.db;
-import Item;
+import tinox.core.db
+import Item
 
 class Main
 {
     fnc main() -> Int32
     {
-        const missing: Item = DB::of(Item).filter(i => i.name == "does-not-exist").first();
-        println(missing.id);
-        println("[" + missing.name + "]");
-        println("[" + missing.note + "]");
-        const empty: List<Item> = DB::of(Item).filter(i => i.name == "does-not-exist").list();
-        println(empty.len());
-        println(DB::of(Item).filter(i => i.name == "does-not-exist").count());
+        const missing: Item = DB::of(Item).filter(i => i.name == "does-not-exist").first()
+        println(missing.id)
+        println("[" + missing.name + "]")
+        println("[" + missing.note + "]")
+        const empty: List<Item> = DB::of(Item).filter(i => i.name == "does-not-exist").list()
+        println(empty.len())
+        println(DB::of(Item).filter(i => i.name == "does-not-exist").count())
 
-        const found: Item = DB::of(Item).filter(i => i.name == "present").first();
-        println(found.id);
-        println(found.name);
-        println("[" + found.note + "]");
-        const rows: List<Item> = DB::of(Item).list();
-        println(rows.len());
-        println(DB::of(Item).count());
-        return 0;
+        const found: Item = DB::of(Item).filter(i => i.name == "present").first()
+        println(found.id)
+        println(found.name)
+        println("[" + found.note + "]")
+        const rows: List<Item> = DB::of(Item).list()
+        println(rows.len())
+        println(DB::of(Item).count())
+        return 0
     }
 }

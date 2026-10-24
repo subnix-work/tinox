@@ -1,4 +1,4 @@
-import tinox.core.crypto;
+import tinox.core.crypto
 
 namespace tinox.core.crypto
 {
@@ -7,15 +7,15 @@ namespace tinox.core.crypto
         @Test("md5 matches the known test vector for 'abc'")
         fn md5MatchesKnownVector() -> Bool
         {
-            const crypto = new Crypto();
-            return crypto.md5("abc") == "900150983cd24fb0d6963f7d28e17f72";
+            const crypto = new Crypto()
+            return crypto.md5("abc") == "900150983cd24fb0d6963f7d28e17f72"
         }
 
         @Test("sha256 matches the known test vector for 'abc'")
         fn sha256MatchesKnownVector() -> Bool
         {
-            const crypto = new Crypto();
-            return crypto.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+            const crypto = new Crypto()
+            return crypto.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         }
     }
 }

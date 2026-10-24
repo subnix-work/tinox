@@ -1,4 +1,4 @@
-module tinox.core.http;
+module tinox.core.http
 
 namespace tinox.core.http
 {
@@ -9,17 +9,17 @@ namespace tinox.core.http
     {
         fn statusCode() -> Int64
         {
-            return httpStatusCode(this);
+            return httpStatusCode(this)
         }
 
         fn body() -> String
         {
-            return httpBody(this);
+            return httpBody(this)
         }
 
         fn header(name: String) -> String
         {
-            return httpHeader(this, name);
+            return httpHeader(this, name)
         }
     }
 }

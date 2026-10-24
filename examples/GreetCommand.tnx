@@ -2,17 +2,17 @@
 class GreetCommand
 {
     @Option("--name,-n", "Name to greet")
-    var name: String;
+    var name: String
 
     @Option("--count,-c", "How many times to greet")
-    var count: Int64;
+    var count: Int64
 
     @Option("--loud,-l", "Use uppercase output")
-    var loud: Bool;
+    var loud: Bool
 
     fn run() -> Int64
     {
-        println("Hello, " + this.name + "!");
-        return 0;
+        println("Hello, " + this.name + "!")
+        return 0
     }
 }

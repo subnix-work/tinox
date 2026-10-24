@@ -1,5 +1,5 @@
 interface Drawable
 {
-    fn draw() -> Nothing;
-    fn getArea() -> Float64;
+    fn draw() -> Nothing
+    fn getArea() -> Float64
 }

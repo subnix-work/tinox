@@ -6,22 +6,22 @@
 //
 // Start: tinox run examples/tinox_ui_hello/Main.tnx
 // Open:  http://localhost:8280/
-import tinox.core.ui;
-import tinox.core.http_server;
-import HelloApp;
+import tinox.core.ui
+import tinox.core.http_server
+import HelloApp
 
 class Main
 {
     fnc main() -> Int32
     {
-        const srv: HttpServer = HttpServer::new(8280);
+        const srv: HttpServer = HttpServer::new(8280)
         srv.get("/", ctx => {
-            ctx.response.html(Assets::shellHtml(8281));
-        });
+            ctx.response.html(Assets::shellHtml(8281))
+        })
         srv.get("/ui.js", ctx => {
-            ctx.response.content(Assets::clientJs(), "application/javascript");
-        });
-        srv.listen();
-        return 0;
+            ctx.response.content(Assets::clientJs(), "application/javascript")
+        })
+        srv.listen()
+        return 0
     }
 }

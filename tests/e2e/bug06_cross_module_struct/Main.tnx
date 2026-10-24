@@ -1,18 +1,18 @@
 // Bug 6: enum fields in structs across module boundaries were corrupted
 // expect: 42
 // expect: hi
-import _bug06_mod;
+import _bug06_mod
 
 class Main
 {
     fnc main() -> Int32 {
-        const r = Wrapped::makeWrapped();
-        println(r.tag);
+        const r = Wrapped::makeWrapped()
+        println(r.tag)
         match r.value {
-            SVal(s) => println(s);
-            NullVal => println("null");
-            _ => println("-");
+            SVal(s) => println(s)
+            NullVal => println("null")
+            _ => println("-")
         }
-        return 0;
+        return 0
     }
 }

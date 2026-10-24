@@ -1,4 +1,4 @@
-module tinox.core.http_server;
+module tinox.core.http_server
 
 namespace tinox.core.http_server
 {
@@ -22,8 +22,8 @@ namespace tinox.core.http_server
          */
         fn matches(pattern: String, path: String) -> Bool
         {
-            const patternParts: List<String> = RouteMatcher::splitPath(pattern);
-            const pathParts: List<String> = RouteMatcher::splitPath(path);
+            const patternParts: List<String> = RouteMatcher::splitPath(pattern)
+            const pathParts: List<String> = RouteMatcher::splitPath(path)
 
             if (patternParts.len() != pathParts.len())
             {
@@ -31,31 +31,31 @@ namespace tinox.core.http_server
                 {
                     if (pathParts.len() >= patternParts.len() - 1)
                     {
-                        return true;
+                        return true
                     }
                 }
-                return false;
+                return false
             }
 
-            var i: Int64 = 0;
+            var i: Int64 = 0
             while i < patternParts.len()
             {
-                const pPart: String = patternParts[i];
-                const pathPart: String = pathParts[i];
+                const pPart: String = patternParts[i]
+                const pathPart: String = pathParts[i]
 
                 if (pPart.startsWith(":") || pPart == "*")
                 {
-                    i = i + 1;
-                    continue;
+                    i = i + 1
+                    continue
                 }
 
                 if (pPart != pathPart)
                 {
-                    return false;
+                    return false
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return true;
+            return true
         }
 
         /**
@@ -67,22 +67,22 @@ namespace tinox.core.http_server
          */
         fn extractParams(pattern: String, path: String) -> Map<String, String>
         {
-            const params: Map<String, String> = Map::new();
-            const patternParts: List<String> = RouteMatcher::splitPath(pattern);
-            const pathParts: List<String> = RouteMatcher::splitPath(path);
+            const params: Map<String, String> = Map::new()
+            const patternParts: List<String> = RouteMatcher::splitPath(pattern)
+            const pathParts: List<String> = RouteMatcher::splitPath(path)
 
-            var i: Int64 = 0;
+            var i: Int64 = 0
             while i < patternParts.len() && i < pathParts.len()
             {
-                const pPart: String = patternParts[i];
+                const pPart: String = patternParts[i]
                 if (pPart.startsWith(":"))
                 {
-                    const paramName: String = pPart.substring(1, pPart.len());
-                    params[paramName] = pathParts[i];
+                    const paramName: String = pPart.substring(1, pPart.len())
+                    params[paramName] = pathParts[i]
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return params;
+            return params
         }
 
         /**
@@ -100,12 +100,12 @@ namespace tinox.core.http_server
          */
         fn param(pattern: String, path: String, name: String) -> String
         {
-            const params: Map<String, String> = RouteMatcher::extractParams(pattern, path);
+            const params: Map<String, String> = RouteMatcher::extractParams(pattern, path)
             if (params.contains(name))
             {
-                return params.get(name);
+                return params.get(name)
             }
-            return "";
+            return ""
         }
 
         /**
@@ -116,31 +116,31 @@ namespace tinox.core.http_server
          */
         fn splitPath(path: String) -> List<String>
         {
-            const parts: List<String> = [];
-            var current: String = "";
-            var i: Int64 = 0;
+            const parts: List<String> = []
+            var current: String = ""
+            var i: Int64 = 0
             while i < path.len()
             {
-                const ch: String = path.substring(i, i + 1);
+                const ch: String = path.substring(i, i + 1)
                 if (ch == "/")
                 {
                     if (current.len() > 0)
                     {
-                        parts.push(current);
-                        current = "";
+                        parts.push(current)
+                        current = ""
                     }
                 }
                 else
                 {
-                    current = current + ch;
+                    current = current + ch
                 }
-                i = i + 1;
+                i = i + 1
             }
             if (current.len() > 0)
             {
-                parts.push(current);
+                parts.push(current)
             }
-            return parts;
+            return parts
         }
     }
 }

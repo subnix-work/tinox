@@ -1,14 +1,14 @@
 class HttpRequest
 {
-    var method: String;
-    var path: String;
-    var body: String;
-    var headers: Map<String, String>;
-    var queryString: String;
-    var params: Map<String, String>;
+    var method: String
+    var path: String
+    var body: String
+    var headers: Map<String, String>
+    var queryString: String
+    var params: Map<String, String>
 
     fn new(method: String, path: String, queryString: String, headers: Map<String, String>, body: String) -> HttpRequest
     {
-        return HttpRequest { method: method, path: path, queryString: queryString, headers: headers, body: body, params: Map::new() };
+        return HttpRequest { method: method, path: path, queryString: queryString, headers: headers, body: body, params: Map::new() }
     }
 }

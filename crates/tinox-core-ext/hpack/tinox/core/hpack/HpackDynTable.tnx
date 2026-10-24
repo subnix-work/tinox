@@ -1,4 +1,4 @@
-module tinox.core.hpack;
+module tinox.core.hpack
 
 namespace tinox.core.hpack
 {
@@ -10,39 +10,39 @@ namespace tinox.core.hpack
      */
     class HpackDynTable
     {
-        var entries: List<HpackHeader>;
-        var maxSize: Int64;
-        var currentSize: Int64;
+        var entries: List<HpackHeader>
+        var maxSize: Int64
+        var currentSize: Int64
 
         fn new(maxSize: Int64) -> HpackDynTable
         {
-            return HpackDynTable { entries: [], maxSize: maxSize, currentSize: 0 };
+            return HpackDynTable { entries: [], maxSize: maxSize, currentSize: 0 }
         }
 
         fn add(header: HpackHeader) -> Nothing
         {
-            const entrySize: Int64 = header.name.len() + header.value.len() + 32;
+            const entrySize: Int64 = header.name.len() + header.value.len() + 32
             while this.currentSize + entrySize > this.maxSize && this.entries.len() > 0
             {
-                const last: HpackHeader = this.entries[this.entries.len() - 1];
-                this.currentSize = this.currentSize - (last.name.len() + last.value.len() + 32);
-                this.entries.removeAt(this.entries.len() - 1);
+                const last: HpackHeader = this.entries[this.entries.len() - 1]
+                this.currentSize = this.currentSize - (last.name.len() + last.value.len() + 32)
+                this.entries.removeAt(this.entries.len() - 1)
             }
             if (entrySize <= this.maxSize)
             {
-                this.entries.insert(0, header);
-                this.currentSize = this.currentSize + entrySize;
+                this.entries.insert(0, header)
+                this.currentSize = this.currentSize + entrySize
             }
         }
 
         fn setMaxSize(newSize: Int64) -> Nothing
         {
-            this.maxSize = newSize;
+            this.maxSize = newSize
             while this.currentSize > this.maxSize && this.entries.len() > 0
             {
-                const last: HpackHeader = this.entries[this.entries.len() - 1];
-                this.currentSize = this.currentSize - (last.name.len() + last.value.len() + 32);
-                this.entries.removeAt(this.entries.len() - 1);
+                const last: HpackHeader = this.entries[this.entries.len() - 1]
+                this.currentSize = this.currentSize - (last.name.len() + last.value.len() + 32)
+                this.entries.removeAt(this.entries.len() - 1)
             }
         }
     }

@@ -1,15 +1,15 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class StatefulSetSpec
     {
-        var replicas: Int64;
-        var selector: LabelSelector;
-        var serviceName: String;
-        var template: PodTemplateSpec;
+        var replicas: Int64
+        var selector: LabelSelector
+        var serviceName: String
+        var template: PodTemplateSpec
     }
 }

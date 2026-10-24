@@ -1,8 +1,8 @@
-module tinox.core.jwt;
+module tinox.core.jwt
 
-import tinox.core.base64;
-import tinox.core.json;
-import tinox.core.time;
+import tinox.core.base64
+import tinox.core.json
+import tinox.core.time
 
 namespace tinox.core.jwt
 {
@@ -12,8 +12,8 @@ namespace tinox.core.jwt
     // verification). Backed by OpenSSL's EVP_PKEY_fromdata (OSSL3 API, no
     // deprecated legacy RSA_* calls) in runtime.c, gated behind TINOX_TLS
     // like the rest of the OpenSSL-backed crypto in this codebase.
-    extern fn rsaVerifySha256(message: List<Int64>, signature: List<Int64>, modulus: List<Int64>, exponent: List<Int64>) -> Bool;
-    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+    extern fn rsaVerifySha256(message: List<Int64>, signature: List<Int64>, modulus: List<Int64>, exponent: List<Int64>) -> Bool
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String
 
     class Jwt
     {
@@ -34,77 +34,77 @@ namespace tinox.core.jwt
          */
         fn encode(payload: Map<String, JsonValue>, secret: String) -> String
         {
-            const headerB64: String = Base64::encodeUrlBytes(Jwt::stringToBytes("{\"alg\":\"HS256\",\"typ\":\"JWT\"}"));
-            const payloadJson: String = Json::stringify(Json::fromMap(payload));
-            const payloadB64: String = Base64::encodeUrlBytes(Jwt::stringToBytes(payloadJson));
-            const message: String = headerB64 + "." + payloadB64;
-            const sigBytes: List<Int64> = hmacSha256Bytes(Jwt::stringToBytes(message), Jwt::stringToBytes(secret));
-            const signature: String = Base64::encodeUrlBytes(sigBytes);
-            return message + "." + signature;
+            const headerB64: String = Base64::encodeUrlBytes(Jwt::stringToBytes("{\"alg\":\"HS256\",\"typ\":\"JWT\"}"))
+            const payloadJson: String = Json::stringify(Json::fromMap(payload))
+            const payloadB64: String = Base64::encodeUrlBytes(Jwt::stringToBytes(payloadJson))
+            const message: String = headerB64 + "." + payloadB64
+            const sigBytes: List<Int64> = hmacSha256Bytes(Jwt::stringToBytes(message), Jwt::stringToBytes(secret))
+            const signature: String = Base64::encodeUrlBytes(sigBytes)
+            return message + "." + signature
         }
 
         fn decode(token: String, secret: String) -> Map<String, JsonValue>
         {
-            const parts: List<String> = token.split(".");
+            const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                throw "Invalid JWT format";
+                throw "Invalid JWT format"
             }
             // Alg-confusion hardening: now that Jwt also supports RS256
             // (issue #138), decode() must reject anything but the alg it
             // was actually asked to verify -- otherwise a token signed
             // with a different/weaker scheme (or "none") could slip past
             // a signature check whose secret happens to still validate it.
-            const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0]);
+            const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0])
             if (!header.contains("alg") || header["alg"].getString() != "HS256")
             {
-                throw "Unexpected alg header (expected HS256)";
+                throw "Unexpected alg header (expected HS256)"
             }
-            const message: String = parts[0] + "." + parts[1];
-            const expectedSigBytes: List<Int64> = hmacSha256Bytes(Jwt::stringToBytes(message), Jwt::stringToBytes(secret));
-            const expectedSig: String = Base64::encodeUrlBytes(expectedSigBytes);
+            const message: String = parts[0] + "." + parts[1]
+            const expectedSigBytes: List<Int64> = hmacSha256Bytes(Jwt::stringToBytes(message), Jwt::stringToBytes(secret))
+            const expectedSig: String = Base64::encodeUrlBytes(expectedSigBytes)
             if (expectedSig != parts[2])
             {
-                throw "Invalid signature";
+                throw "Invalid signature"
             }
-            const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1]);
+            const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1])
             // Bug 105: a correctly-signed token was accepted regardless of
             // its exp/nbf claims -- isExpired() existed but neither verify()
             // nor decode() (the two actual authentication gates) called it.
-            Jwt::checkTemporalClaims(payload);
-            return payload;
+            Jwt::checkTemporalClaims(payload)
+            return payload
         }
 
         fn verify(token: String, secret: String) -> Bool
         {
-            const parts: List<String> = token.split(".");
+            const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                return false;
+                return false
             }
-            const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0]);
+            const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0])
             if (!header.contains("alg") || header["alg"].getString() != "HS256")
             {
-                return false;
+                return false
             }
-            const message: String = parts[0] + "." + parts[1];
-            const expectedSigBytes: List<Int64> = hmacSha256Bytes(Jwt::stringToBytes(message), Jwt::stringToBytes(secret));
-            const expectedSig: String = Base64::encodeUrlBytes(expectedSigBytes);
+            const message: String = parts[0] + "." + parts[1]
+            const expectedSigBytes: List<Int64> = hmacSha256Bytes(Jwt::stringToBytes(message), Jwt::stringToBytes(secret))
+            const expectedSig: String = Base64::encodeUrlBytes(expectedSigBytes)
             if (expectedSig != parts[2])
             {
-                return false;
+                return false
             }
-            const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1]);
-            const now: Int64 = Time::now() / 1000;
+            const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1])
+            const now: Int64 = Time::now() / 1000
             if (payload.contains("exp") && now > payload["exp"].asInt())
             {
-                return false;
+                return false
             }
             if (payload.contains("nbf") && now < payload["nbf"].asInt())
             {
-                return false;
+                return false
             }
-            return true;
+            return true
         }
 
         /*
@@ -117,60 +117,60 @@ namespace tinox.core.jwt
          */
         fn decodeRs256(token: String, n: String, e: String) -> Map<String, JsonValue>
         {
-            const parts: List<String> = token.split(".");
+            const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                throw "Invalid JWT format";
+                throw "Invalid JWT format"
             }
-            const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0]);
+            const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0])
             if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
-                throw "Unexpected alg header (expected RS256)";
+                throw "Unexpected alg header (expected RS256)"
             }
-            const message: String = parts[0] + "." + parts[1];
-            const sigBytes: List<Int64> = Base64::decodeUrlBytes(parts[2]);
-            const nBytes: List<Int64> = Base64::decodeUrlBytes(n);
-            const eBytes: List<Int64> = Base64::decodeUrlBytes(e);
+            const message: String = parts[0] + "." + parts[1]
+            const sigBytes: List<Int64> = Base64::decodeUrlBytes(parts[2])
+            const nBytes: List<Int64> = Base64::decodeUrlBytes(n)
+            const eBytes: List<Int64> = Base64::decodeUrlBytes(e)
             if (!rsaVerifySha256(Jwt::stringToBytes(message), sigBytes, nBytes, eBytes))
             {
-                throw "Invalid signature";
+                throw "Invalid signature"
             }
-            const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1]);
-            Jwt::checkTemporalClaims(payload);
-            return payload;
+            const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1])
+            Jwt::checkTemporalClaims(payload)
+            return payload
         }
 
         fn verifyRs256(token: String, n: String, e: String) -> Bool
         {
-            const parts: List<String> = token.split(".");
+            const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                return false;
+                return false
             }
-            const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0]);
+            const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0])
             if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
-                return false;
+                return false
             }
-            const message: String = parts[0] + "." + parts[1];
-            const sigBytes: List<Int64> = Base64::decodeUrlBytes(parts[2]);
-            const nBytes: List<Int64> = Base64::decodeUrlBytes(n);
-            const eBytes: List<Int64> = Base64::decodeUrlBytes(e);
+            const message: String = parts[0] + "." + parts[1]
+            const sigBytes: List<Int64> = Base64::decodeUrlBytes(parts[2])
+            const nBytes: List<Int64> = Base64::decodeUrlBytes(n)
+            const eBytes: List<Int64> = Base64::decodeUrlBytes(e)
             if (!rsaVerifySha256(Jwt::stringToBytes(message), sigBytes, nBytes, eBytes))
             {
-                return false;
+                return false
             }
-            const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1]);
-            const now: Int64 = Time::now() / 1000;
+            const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1])
+            const now: Int64 = Time::now() / 1000
             if (payload.contains("exp") && now > payload["exp"].asInt())
             {
-                return false;
+                return false
             }
             if (payload.contains("nbf") && now < payload["nbf"].asInt())
             {
-                return false;
+                return false
             }
-            return true;
+            return true
         }
 
         /*
@@ -180,14 +180,14 @@ namespace tinox.core.jwt
          */
         fn checkTemporalClaims(payload: Map<String, JsonValue>) -> Nothing
         {
-            const now: Int64 = Time::now() / 1000;
+            const now: Int64 = Time::now() / 1000
             if (payload.contains("exp") && now > payload["exp"].asInt())
             {
-                throw "Token expired";
+                throw "Token expired"
             }
             if (payload.contains("nbf") && now < payload["nbf"].asInt())
             {
-                throw "Token not yet valid (nbf)";
+                throw "Token not yet valid (nbf)"
             }
         }
 
@@ -195,8 +195,8 @@ namespace tinox.core.jwt
         // (both are JSON objects per RFC 7515 §3).
         fn decodeSegment(part: String) -> Map<String, JsonValue>
         {
-            const json: String = Jwt::bytesToString(Base64::decodeUrlBytes(part));
-            return Json::parse(json).asTable();
+            const json: String = Jwt::bytesToString(Base64::decodeUrlBytes(part))
+            return Json::parse(json).asTable()
         }
 
         // Issue #138: OidcClient needs the header (for "alg"/"kid") before
@@ -206,34 +206,34 @@ namespace tinox.core.jwt
         // yet at this point in the OIDC flow).
         fn extractHeader(token: String) -> Map<String, JsonValue>
         {
-            const parts: List<String> = token.split(".");
+            const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                throw "Invalid JWT format";
+                throw "Invalid JWT format"
             }
-            return Jwt::decodeSegment(parts[0]);
+            return Jwt::decodeSegment(parts[0])
         }
 
         fn extractPayload(token: String) -> Map<String, JsonValue>
         {
-            const parts: List<String> = token.split(".");
+            const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                throw "Invalid JWT format";
+                throw "Invalid JWT format"
             }
-            return Jwt::decodeSegment(parts[1]);
+            return Jwt::decodeSegment(parts[1])
         }
 
         fn isExpired(token: String) -> Bool
         {
-            const payload: Map<String, JsonValue> = Jwt::extractPayload(token);
+            const payload: Map<String, JsonValue> = Jwt::extractPayload(token)
             if (payload.contains("exp"))
             {
-                const exp: Int64 = payload["exp"].asInt();
-                const now: Int64 = Time::now() / 1000;
-                return now > exp;
+                const exp: Int64 = payload["exp"].asInt()
+                const now: Int64 = Time::now() / 1000
+                return now > exp
             }
-            return false;
+            return false
         }
 
         // ASCII/UTF-8 bytes of a string -- JWS header/payload JSON never
@@ -243,14 +243,14 @@ namespace tinox.core.jwt
         // comment for the general hazard).
         fn stringToBytes(s: String) -> List<Int64>
         {
-            var bytes: List<Int64> = [];
-            var i: Int64 = 0;
+            var bytes: List<Int64> = []
+            var i: Int64 = 0
             while i < s.len()
             {
-                bytes.push(s.charCodeAt(i) & 0xFF);
-                i = i + 1;
+                bytes.push(s.charCodeAt(i) & 0xFF)
+                i = i + 1
             }
-            return bytes;
+            return bytes
         }
 
         fn bytesToString(b: List<Int64>) -> String
@@ -258,7 +258,7 @@ namespace tinox.core.jwt
             // tinoxBytesToString does the byte->char conversion in one
             // pass instead of `s = s + fromCharCode(...)` in a loop, which
             // is O(n^2) over the string length (issue #167).
-            return tinoxBytesToString(b);
+            return tinoxBytesToString(b)
         }
     }
 }

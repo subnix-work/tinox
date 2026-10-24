@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn explanation_matches_real_generated_spawns_joins_routes_and_injection_calls() {
-        let source = "class Main { fnc main() -> Int32 { return 0; } } class Api { fn hello() -> String { return \"hello\"; } } class Events { fn message(conn: Int64, text: String) -> Nothing {} } class WsFrame { var opcode: Int64; } class Amqp10Message {} class AmqpMessage091 {} class Consumer {} class Legacy {} class Request {} class Service { var request: Request; }";
+        let source = "class Main { fnc main() -> Int32 { return 0 } } class Api { fn hello() -> String { return \"hello\" } } class Events { fn message(conn: Int64, text: String) -> Nothing {} } class WsFrame { var opcode: Int64 } class Amqp10Message {} class AmqpMessage091 {} class Consumer {} class Legacy {} class Request {} class Service { var request: Request }";
         let tokens = tinox_lexer::Lexer::new(source).tokenize().unwrap();
         let ast = Parser::new(tokens).parse().unwrap();
         let mut codegen = CodeGen::new();
@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn database_and_startup_share_one_llvm_constructor_table_with_preserved_priorities() {
         let tokens = tinox_lexer::Lexer::new(
-            "class Main { fnc main() -> Int32 { return 0; } } class Service {}",
+            "class Main { fnc main() -> Int32 { return 0 } } class Service {}",
         )
         .tokenize()
         .unwrap();

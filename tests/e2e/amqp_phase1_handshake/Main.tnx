@@ -14,31 +14,31 @@
 // expect: ok-handshake-mismatch
 // expect: ok-handshake-eof
 
-import tinox.core.amqp091;
-import tinox.core.socket;
+import tinox.core.amqp091
+import tinox.core.socket
 
 class Main
 {
     fnc main() -> Int32 {
         // --- dial() against a port with no listener: fast, hard failure ---
-        const refused = Amqp091::dial("127.0.0.1", 39218);
+        const refused = Amqp091::dial("127.0.0.1", 39218)
         if (refused == -1) {
-            println("ok-dial-refused");
+            println("ok-dial-refused")
         }
 
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
 
         // --- Success path: fake broker responds with byte 1 (start of a
         // METHOD frame, like a real connection.start) ---
-        const conn1 = Amqp091::dial("127.0.0.1", port);
-        Amqp091::sendProtocolHeader(conn1);
-        const sconn1 = httpServerAcceptConnHandle(srv);
-        const hdr1 = httpConnReadN(sconn1, 8);
+        const conn1 = Amqp091::dial("127.0.0.1", port)
+        Amqp091::sendProtocolHeader(conn1)
+        const sconn1 = httpServerAcceptConnHandle(srv)
+        const hdr1 = httpConnReadN(sconn1, 8)
         if (hdr1.len() == 8) {
             if (hdr1[0] == 65) {
                 if (hdr1[1] == 77) {
@@ -48,7 +48,7 @@ class Main
                                 if (hdr1[5] == 0) {
                                     if (hdr1[6] == 9) {
                                         if (hdr1[7] == 1) {
-                                            println("ok-header-bytes");
+                                            println("ok-header-bytes")
                                         }
                                     }
                                 }
@@ -58,38 +58,38 @@ class Main
                 }
             }
         }
-        httpConnWriteBytes(sconn1, [1]);
+        httpConnWriteBytes(sconn1, [1])
         if (Amqp091::checkHandshakeResponse(conn1)) {
-            println("ok-handshake-success");
+            println("ok-handshake-success")
         }
-        httpConnClose(conn1);
-        httpConnClose(sconn1);
+        httpConnClose(conn1)
+        httpConnClose(sconn1)
 
         // --- Mismatch path: fake broker echoes the protocol header back
         // (first byte 'A' = 65, no frame-type octet) ---
-        const conn2 = Amqp091::dial("127.0.0.1", port);
-        Amqp091::sendProtocolHeader(conn2);
-        const sconn2 = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn2, 8);
-        httpConnWriteBytes(sconn2, [65, 77, 81, 80, 0, 0, 9, 1]);
+        const conn2 = Amqp091::dial("127.0.0.1", port)
+        Amqp091::sendProtocolHeader(conn2)
+        const sconn2 = httpServerAcceptConnHandle(srv)
+        httpConnReadN(sconn2, 8)
+        httpConnWriteBytes(sconn2, [65, 77, 81, 80, 0, 0, 9, 1])
         if (!Amqp091::checkHandshakeResponse(conn2)) {
-            println("ok-handshake-mismatch");
+            println("ok-handshake-mismatch")
         }
-        httpConnClose(conn2);
-        httpConnClose(sconn2);
+        httpConnClose(conn2)
+        httpConnClose(sconn2)
 
         // --- EOF path: fake broker closes immediately without responding ---
-        const conn3 = Amqp091::dial("127.0.0.1", port);
-        Amqp091::sendProtocolHeader(conn3);
-        const sconn3 = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn3, 8);
-        httpConnClose(sconn3);
+        const conn3 = Amqp091::dial("127.0.0.1", port)
+        Amqp091::sendProtocolHeader(conn3)
+        const sconn3 = httpServerAcceptConnHandle(srv)
+        httpConnReadN(sconn3, 8)
+        httpConnClose(sconn3)
         if (!Amqp091::checkHandshakeResponse(conn3)) {
-            println("ok-handshake-eof");
+            println("ok-handshake-eof")
         }
-        httpConnClose(conn3);
+        httpConnClose(conn3)
 
-        httpServerClose(srv);
-        return 0;
+        httpServerClose(srv)
+        return 0
     }
 }

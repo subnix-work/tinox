@@ -54,36 +54,38 @@ fn check_no_hang(src: &str) {
 
 /// A valid program that touches on every language construct — the basis for mutations.
 const VALID_BASE: &str = r#"
-import tinox.core.json;
+import tinox.core.json
 
-enum Shape { Circle(Float64), Rect(Float64, Float64), Dot }
+enum Shape { Circle(Float64)
+Rect(Float64, Float64)
+Dot }
 
-interface Area { fn area() -> Float64; }
+interface Area { fn area() -> Float64 }
 
 class Box implements Area {
-    var w: Float64;
-    var items: List<List<String>>;
-    fn area() -> Float64 { return this.w * 2.0; }
+    var w: Float64
+    var items: List<List<String>>
+    fn area() -> Float64 { return this.w * 2.0 }
 }
 
 fn describe(s: Shape) -> String {
     match s {
-        Circle(r) => return "c" + r.toString();
-        Rect(w, h) => { return "r"; }
-        _ => return "d";
+        Circle(r) => return "c" + r.toString()
+        Rect(w, h) => { return "r" }
+        _ => return "d"
     }
 }
 
 fn main() -> Int32 {
-    var xs: List<Int64> = [1, 2, 3,];
-    xs.push(4);
-    let m: Map<String, Int64> = Map::new();
-    for x in xs { println(x); }
-    let f = y => y * 2;
-    try { throw "e"; } catch e: String { println(e); } finally { println("f"); }
-    let s = "a\nb#\"quoted\"";
-    println(f(21));
-    return 0;
+    var xs: List<Int64> = [1, 2, 3,]
+    xs.push(4)
+    let m: Map<String, Int64> = Map::new()
+    for x in xs { println(x) }
+    let f = y => y * 2
+    try { throw "e" } catch e: String { println(e) } finally { println("f") }
+    let s = "a\nb#\"quoted\""
+    println(f(21))
+    return 0
 }
 "#;
 

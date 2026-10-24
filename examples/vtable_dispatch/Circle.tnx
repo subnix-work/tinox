@@ -1,11 +1,11 @@
-import IDrawable;
+import IDrawable
 
 class Circle implements IDrawable
 {
-    radius: Int64;
+    radius: Int64
 
     fn draw() -> Int64
     {
-        return this.radius;
+        return this.radius
     }
 }

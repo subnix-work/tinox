@@ -1,4 +1,4 @@
-import tinox.core.json;
+import tinox.core.json
 
 @Entity
 @Table("customers")
@@ -7,16 +7,16 @@ class Customer
 {
     @Id
     @GeneratedValue
-    var id: Int64;
+    var id: Int64
 
     @Column("name")
     @NotNull
-    var name: String;
+    var name: String
 
     @Column("email")
     @NotNull
-    var email: String;
+    var email: String
 
     @Column("phone")
-    var phone: String;
+    var phone: String
 }

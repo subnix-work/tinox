@@ -14,32 +14,34 @@ class Main
 {
     fnc pure(n: Int64) -> Int64 {
         // never throws → caller gets no throw check
-        if (n <= 0) { return 0; }
-        return n + pure(n - 1);
+        if (n <= 0) { return 0 }
+        return n + pure(n - 1)
     }
 
 
-    fnc c() -> Nothing { throw "deep"; }
+    fnc c() -> Nothing { throw "deep" }
 
-    fnc b() -> Nothing { c(); println("b (never)"); }
+    fnc b() -> Nothing { c()
+    println("b (never)") }
 
-    fnc a() -> Nothing { b(); println("a (never)"); }
+    fnc a() -> Nothing { b()
+    println("a (never)") }
 
 
     fnc mixed() -> Nothing {
         // calls BOTH: a non-throwing (pure) and a throwing chain (a)
-        const s: Int64 = pure(4);            // 0+1+2+3+4 = 10, no check needed
-        println("pure in mixed: " + s.toString());
-        a();                               // throws → must propagate
-        println("after a in mixed (never)");
+        const s: Int64 = pure(4)            // 0+1+2+3+4 = 10, no check needed
+        println("pure in mixed: " + s.toString())
+        a()                               // throws → must propagate
+        println("after a in mixed (never)")
     }
 
 
     fnc main() -> Int32 {
-        println("pure: " + pure(7).toString());    // 0..7 = 28, pure path, no throw
-        try { a(); } catch e: String { println("c throws, caught: " + e); }
-        try { mixed(); } catch e: String { println("after mixed"); }
-        println("end");
-        return 0;
+        println("pure: " + pure(7).toString())    // 0..7 = 28, pure path, no throw
+        try { a() } catch e: String { println("c throws, caught: " + e) }
+        try { mixed() } catch e: String { println("after mixed") }
+        println("end")
+        return 0
     }
 }

@@ -1,6 +1,6 @@
-module tinox.core.amqp091;
+module tinox.core.amqp091
 
-import tinox.core.socket;
+import tinox.core.socket
 
 namespace tinox.core.amqp091
 {
@@ -14,14 +14,14 @@ namespace tinox.core.amqp091
      */
     enum AmqpFieldValue091
     {
-        BoolVal(Bool);
-        Int32Val(Int64);
-        Int64Val(Int64);
-        StrVal(String);
-        TimestampVal(Int64);
-        TableVal(Map<String, AmqpFieldValue091>);
-        ArrayVal(List<AmqpFieldValue091>);
-        VoidVal;
-        ErrorVal(String);
+        BoolVal(Bool)
+        Int32Val(Int64)
+        Int64Val(Int64)
+        StrVal(String)
+        TimestampVal(Int64)
+        TableVal(Map<String, AmqpFieldValue091>)
+        ArrayVal(List<AmqpFieldValue091>)
+        VoidVal
+        ErrorVal(String)
     }
 }

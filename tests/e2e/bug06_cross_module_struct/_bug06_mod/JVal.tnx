@@ -1,5 +1,5 @@
 enum JVal {
-    SVal(String),
-    NullVal,
-    IVal(Int64),
+    SVal(String)
+    NullVal
+    IVal(Int64)
 }

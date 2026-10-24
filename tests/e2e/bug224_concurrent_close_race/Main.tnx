@@ -22,23 +22,23 @@
 // expect-contains: ok-no-crash
 // tls-fixture
 
-import tinox.core.socket;
+import tinox.core.socket
 
 // httpConnReadLine isn't a compiler builtin (unlike httpConnFromFdTls et
 // al.) -- it's only exposed via a local `extern fn` in the few modules
 // that need it (redis/kubernetes/smtp). Same pattern here.
-extern fn httpConnReadLine(conn: Int64) -> String;
+extern fn httpConnReadLine(conn: Int64) -> String
 
 class Main
 {
     async fnc runServer(server: Int64) -> Int64 {
-        const conn: Int64 = httpServerAcceptTls(server);
-        socketClose(server);
+        const conn: Int64 = httpServerAcceptTls(server)
+        socketClose(server)
         if (conn > 0) {
-            httpConnReadRequest(conn);
-            httpConnClose(conn);
+            httpConnReadRequest(conn)
+            httpConnClose(conn)
         }
-        return 1;
+        return 1
     }
 
     // The reader half of the race: never sends a request, so the server
@@ -49,63 +49,63 @@ class Main
     // -- matches every other spawn/await pair in this test suite, e.g.
     // bug68_eintr_short_read's fakeBroker) rather than the string itself.
     async fnc blockedReader(conn: Int64) -> Int64 {
-        const line: String = httpConnReadLine(conn);
-        return line.len();
+        const line: String = httpConnReadLine(conn)
+        return line.len()
     }
 
     fnc main() -> Int32 {
         // Bind before spawning so the OS reserves an isolated port for this run.
-        const server: Int64 = httpServerCreateTls(0, "tls_cert.pem", "tls_key.pem");
+        const server: Int64 = httpServerCreateTls(0, "tls_cert.pem", "tls_key.pem")
         if (server < 0) {
-            println("TLS server setup failed");
-            return 1;
+            println("TLS server setup failed")
+            return 1
         }
-        const port: Int64 = httpServerBoundPort(server);
+        const port: Int64 = httpServerBoundPort(server)
         if (port <= 0) {
-            socketClose(server);
-            println("TLS server bound port lookup failed");
-            return 1;
+            socketClose(server)
+            println("TLS server bound port lookup failed")
+            return 1
         }
-        const serverTask = spawn runServer(server);
-        taskDetach(serverTask);
+        const serverTask = spawn runServer(server)
+        taskDetach(serverTask)
 
         // CreateTls has already called listen(): TCP connect can queue before
         // the spawned thread reaches accept. No startup sleep/retry is needed.
-        const fd: Int64 = socketCreateTcp();
+        const fd: Int64 = socketCreateTcp()
         if (fd < 0) {
-            println("socket creation failed");
-            return 1;
+            println("socket creation failed")
+            return 1
         }
         if (!socketConnect(fd, "127.0.0.1", port)) {
-            socketClose(fd);
-            println("connect failed");
-            return 1;
+            socketClose(fd)
+            println("connect failed")
+            return 1
         }
-        const conn: Int64 = httpConnFromFdTls(fd, "localhost", false);
+        const conn: Int64 = httpConnFromFdTls(fd, "localhost", false)
         if (conn < 0) {
-            println("tls handshake failed");
-            return 1;
+            println("tls handshake failed")
+            return 1
         }
-        println("ok-status");
+        println("ok-status")
 
-        const readerHandle = spawn blockedReader(conn);
+        const readerHandle = spawn blockedReader(conn)
 
         // Give the reader time to actually enter SSL_read before racing it --
         // the bug needs a genuinely in-flight read, not one that never started.
-        sleep_ms(200);
+        sleep_ms(200)
 
         // Close from THIS (main) thread while the spawned thread above is
         // still blocked inside conn_recv on the SAME conn handle -- the exact
         // cross-thread close-vs-read race from the issue.
-        httpConnClose(conn);
+        httpConnClose(conn)
 
-        const readLen: Int64 = await readerHandle;
-        println("ok-reader-unblocked");
+        const readLen: Int64 = await readerHandle
+        println("ok-reader-unblocked")
         if (readLen == 0) {
-            println("ok-reader-empty");
+            println("ok-reader-empty")
         }
 
-        println("ok-no-crash");
-        return 0;
+        println("ok-no-crash")
+        return 0
     }
 }

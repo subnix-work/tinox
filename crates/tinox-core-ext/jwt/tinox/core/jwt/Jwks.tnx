@@ -1,7 +1,7 @@
-module tinox.core.jwt;
+module tinox.core.jwt
 
-import tinox.core.http;
-import tinox.core.json;
+import tinox.core.http
+import tinox.core.json
 
 namespace tinox.core.jwt
 {
@@ -29,60 +29,60 @@ namespace tinox.core.jwt
          */
         fn fetchRsaKey(jwksUri: String, kid: String) -> Map<String, String>
         {
-            const resp = Http::get(jwksUri);
+            const resp = Http::get(jwksUri)
             if (resp.statusCode() == 0)
             {
-                throw "network error fetching JWKS from " + jwksUri + " (connection failed or TLS/certificate error)";
+                throw "network error fetching JWKS from " + jwksUri + " (connection failed or TLS/certificate error)"
             }
             if (resp.statusCode() < 200 || resp.statusCode() >= 300)
             {
-                throw "JWKS endpoint " + jwksUri + " returned HTTP " + resp.statusCode().toString();
+                throw "JWKS endpoint " + jwksUri + " returned HTTP " + resp.statusCode().toString()
             }
 
-            const doc: Map<String, JsonValue> = Json::parse(resp.body()).asTable();
+            const doc: Map<String, JsonValue> = Json::parse(resp.body()).asTable()
             if (!doc.contains("keys"))
             {
-                throw "JWKS document from " + jwksUri + " has no 'keys' field";
+                throw "JWKS document from " + jwksUri + " has no 'keys' field"
             }
-            const keys: List<JsonValue> = doc["keys"].asList();
+            const keys: List<JsonValue> = doc["keys"].asList()
 
-            var foundN: String = "";
-            var foundE: String = "";
-            var matches: Int64 = 0;
-            var i: Int64 = 0;
+            var foundN: String = ""
+            var foundE: String = ""
+            var matches: Int64 = 0
+            var i: Int64 = 0
             while i < keys.len()
             {
-                const entry: Map<String, JsonValue> = keys[i].asTable();
+                const entry: Map<String, JsonValue> = keys[i].asTable()
                 if (entry.contains("kty") && entry["kty"].getString() == "RSA" && entry.contains("n") && entry.contains("e"))
                 {
-                    var entryKid: String = "";
+                    var entryKid: String = ""
                     if (entry.contains("kid"))
                     {
-                        entryKid = entry["kid"].getString();
+                        entryKid = entry["kid"].getString()
                     }
                     if (kid == "" || entryKid == kid)
                     {
-                        foundN = entry["n"].getString();
-                        foundE = entry["e"].getString();
-                        matches = matches + 1;
+                        foundN = entry["n"].getString()
+                        foundE = entry["e"].getString()
+                        matches = matches + 1
                     }
                 }
-                i = i + 1;
+                i = i + 1
             }
 
             if (matches == 0)
             {
-                throw "no matching RSA key found in JWKS (" + jwksUri + ") for kid \"" + kid + "\"";
+                throw "no matching RSA key found in JWKS (" + jwksUri + ") for kid \"" + kid + "\""
             }
             if (matches > 1)
             {
-                throw "ambiguous JWKS (" + jwksUri + "): multiple RSA keys match kid \"" + kid + "\"";
+                throw "ambiguous JWKS (" + jwksUri + "): multiple RSA keys match kid \"" + kid + "\""
             }
 
-            var result: Map<String, String> = Map::new();
-            result.insert("n", foundN);
-            result.insert("e", foundE);
-            return result;
+            var result: Map<String, String> = Map::new()
+            result.insert("n", foundN)
+            result.insert("e", foundE)
+            return result
         }
     }
 }

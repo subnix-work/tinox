@@ -192,7 +192,8 @@ mod tests {
     fn schemas_and_alternatives_follow_route_metadata() {
         let source = r#"
 @annotation class JsonSerializable {}
-@JsonSerializable class User { var name: String; @DoNotSerialize var secret: String; }
+@JsonSerializable class User { var name: String
+@DoNotSerialize var secret: String }
 class Ctrl {
     @GET @Path("/users/:id") @StatusCode(201)
     fn get(@PathParam id: Int64) -> Response<User> {}

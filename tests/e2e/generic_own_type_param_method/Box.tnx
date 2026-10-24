@@ -1,7 +1,7 @@
 class Box<T> {
-    var value: T;
-    fn get() -> T { return this.value; }
+    var value: T
+    fn get() -> T { return this.value }
     fn transform<U>(f: fnc(T) -> U) -> Box<U> {
-        return Box<U> { value: f(this.value) };
+        return Box<U> { value: f(this.value) }
     }
 }

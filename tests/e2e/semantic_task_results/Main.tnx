@@ -3,19 +3,19 @@
 // expect: 255
 // expect: done
 class Main {
-    async fnc doubleValue() -> Float64 { return 1.5; }
-    async fnc singleValue() -> Float32 { return 2.5 as Float32; }
-    async fnc byteValue() -> UInt8 { return 255; }
-    async fnc textValue() -> String { return "done"; }
+    async fnc doubleValue() -> Float64 { return 1.5 }
+    async fnc singleValue() -> Float32 { return 2.5 as Float32 }
+    async fnc byteValue() -> UInt8 { return 255 }
+    async fnc textValue() -> String { return "done" }
     fnc main() -> Int32 {
-        const d = spawn Main::doubleValue();
-        const f = spawn Main::singleValue();
-        const b = spawn Main::byteValue();
-        const s = spawn Main::textValue();
-        println(await d);
-        println((await f) as Float64);
-        println((await b) as Int64);
-        println(await s);
-        return 0;
+        const d = spawn Main::doubleValue()
+        const f = spawn Main::singleValue()
+        const b = spawn Main::byteValue()
+        const s = spawn Main::textValue()
+        println(await d)
+        println((await f) as Float64)
+        println((await b) as Int64)
+        println(await s)
+        return 0
     }
 }

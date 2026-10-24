@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -9,11 +9,11 @@ namespace tinox.core.rest.server
     @annotation
     class Path
     {
-        var value: String;
+        var value: String
 
         fn new(value: String) -> Path
         {
-            return Path { value: value };
+            return Path { value: value }
         }
     }
 }

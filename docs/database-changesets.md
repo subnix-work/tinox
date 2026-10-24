@@ -316,13 +316,17 @@ changeSet for new tables and columns. It does not connect to the database. Revie
 @Table("person")
 class Person {
     @Id @GeneratedValue
-    id: Int64;
+    id: Int64
     @Column("display_name") @NotNull
-    name: String;
-    state: State;
+    name: String
+    state: State
 }
 
-enum State { ACTIVE, INACTIVE }
+enum State
+{
+    ACTIVE
+    INACTIVE
+}
 ```
 
 `@Entity` or `@Table` marks a persistent class. The default table name is the lowercase class name; the default column

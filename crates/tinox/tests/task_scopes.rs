@@ -7,26 +7,27 @@ use std::process::Command;
 
 const SOURCE: &str = r#"
 class Main {
-    async fnc boom(msg: String) -> Int64 { throw msg; return 0; }
+    async fnc boom(msg: String) -> Int64 { throw msg
+    return 0 }
 
     fnc bodyAndChildFail() -> Nothing {
         scope {
-            const b = spawn Main::boom("child second");
-            throw "body first";
+            const b = spawn Main::boom("child second")
+            throw "body first"
         }
     }
 
     fnc twoChildrenFail() -> Nothing {
         scope {
-            const a = spawn Main::boom("first child");
-            const b = spawn Main::boom("second child");
+            const a = spawn Main::boom("first child")
+            const b = spawn Main::boom("second child")
         }
     }
 
     fnc main() -> Int32 {
-        try { Main::bodyAndChildFail(); } catch (e: String) { println("caught: " + e); }
-        try { Main::twoChildrenFail(); } catch (e: String) { println("caught: " + e); }
-        return 0;
+        try { Main::bodyAndChildFail() } catch (e: String) { println("caught: " + e) }
+        try { Main::twoChildrenFail() } catch (e: String) { println("caught: " + e) }
+        return 0
     }
 }
 "#;

@@ -1,4 +1,4 @@
-module tinox.core.metrics;
+module tinox.core.metrics
 
 namespace tinox.core.metrics
 {
@@ -13,22 +13,22 @@ namespace tinox.core.metrics
     // design gap (#170) left open.
     class MetricsStopwatch
     {
-        var startNs: Int64;
+        var startNs: Int64
 
         fn start() -> MetricsStopwatch
         {
-            return MetricsStopwatch { startNs: tinox_clock_nanos() };
+            return MetricsStopwatch { startNs: tinox_clock_nanos() }
         }
 
         fn elapsedNs(sw: MetricsStopwatch) -> Int64
         {
-            return tinox_clock_nanos() - sw.startNs;
+            return tinox_clock_nanos() - sw.startNs
         }
 
         fn recordTo(sw: MetricsStopwatch, metricName: String) -> Nothing
         {
-            const elapsed: Int64 = tinox_clock_nanos() - sw.startNs;
-            tinox_histogram_record(metricName, elapsed);
+            const elapsed: Int64 = tinox_clock_nanos() - sw.startNs
+            tinox_histogram_record(metricName, elapsed)
         }
     }
 }

@@ -1,6 +1,6 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
-import tinox.core.http_server;
+import tinox.core.http_server
 
 namespace tinox.core.rest.server
 {
@@ -11,53 +11,53 @@ namespace tinox.core.rest.server
     class RouteEntry
     {
         /** HTTP method (GET, POST, PUT, PATCH, DELETE) */
-        var method: String;
+        var method: String
 
         /** Full URL path pattern */
-        var path: String;
+        var path: String
 
         /** Handler function */
-        var handler: fnc(HttpContext) -> Nothing;
+        var handler: fnc(HttpContext) -> Nothing
 
         /** Default status code from @StatusCode annotation */
-        var statusCode: Int64;
+        var statusCode: Int64
 
         /** Response content type from @Produces annotation */
-        var produces: MediaType;
+        var produces: MediaType
 
         /** Request content type from @Consumes annotation */
-        var consumes: MediaType;
+        var consumes: MediaType
 
         /** Auth type from @Auth annotation ("bearer", "basic", or empty) */
-        var authType: String;
+        var authType: String
 
         fn new(method: String, path: String, handler: fnc(HttpContext) -> Nothing) -> RouteEntry
         {
-            return RouteEntry { method: method, path: path, handler: handler, statusCode: 200, produces: MediaType::None, consumes: MediaType::None, authType: "" };
+            return RouteEntry { method: method, path: path, handler: handler, statusCode: 200, produces: MediaType::None, consumes: MediaType::None, authType: "" }
         }
 
         fn withStatus(code: Int64) -> RouteEntry
         {
-            this.statusCode = code;
-            return this;
+            this.statusCode = code
+            return this
         }
 
         fn withProduces(mediaType: MediaType) -> RouteEntry
         {
-            this.produces = mediaType;
-            return this;
+            this.produces = mediaType
+            return this
         }
 
         fn withConsumes(mediaType: MediaType) -> RouteEntry
         {
-            this.consumes = mediaType;
-            return this;
+            this.consumes = mediaType
+            return this
         }
 
         fn withAuth(authType: String) -> RouteEntry
         {
-            this.authType = authType;
-            return this;
+            this.authType = authType
+            return this
         }
     }
 }

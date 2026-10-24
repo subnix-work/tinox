@@ -1,12 +1,12 @@
-import tinox.core.http_server;
-import Resources;
+import tinox.core.http_server
+import Resources
 
 @HttpRequestScoped
 class Api {
-    @Inject private var resources: Resources;
+    @Inject private var resources: Resources
     @GET
     @Path("/hello")
     fn hello() -> String {
-        return "Service resource readiness: " + toString(this.resources.ready());
+        return "Service resource readiness: " + toString(this.resources.ready())
     }
 }

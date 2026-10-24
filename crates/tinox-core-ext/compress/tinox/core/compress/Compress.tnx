@@ -24,47 +24,47 @@
  * empty-but-"successful" result — check it immediately after calling
  * inflateRaw()/gunzip().
  */
-module tinox.core.compress;
+module tinox.core.compress
 
 namespace tinox.core.compress
 {
-    extern fn tinoxDeflateRaw(bytes: List<Int64>) -> List<Int64>;
-    extern fn tinoxInflateRaw(bytes: List<Int64>) -> List<Int64>;
-    extern fn wsLastInflateOk() -> Bool;
-    extern fn tinoxGzip(bytes: List<Int64>) -> List<Int64>;
-    extern fn tinoxGunzip(bytes: List<Int64>) -> List<Int64>;
-    extern fn tinoxLastGunzipOk() -> Bool;
+    extern fn tinoxDeflateRaw(bytes: List<Int64>) -> List<Int64>
+    extern fn tinoxInflateRaw(bytes: List<Int64>) -> List<Int64>
+    extern fn wsLastInflateOk() -> Bool
+    extern fn tinoxGzip(bytes: List<Int64>) -> List<Int64>
+    extern fn tinoxGunzip(bytes: List<Int64>) -> List<Int64>
+    extern fn tinoxLastGunzipOk() -> Bool
 
     class Compress
     {
         fnc gzip(bytes: List<Int64>) -> List<Int64>
         {
-            return tinoxGzip(bytes);
+            return tinoxGzip(bytes)
         }
 
         fnc gunzip(bytes: List<Int64>) -> List<Int64>
         {
-            return tinoxGunzip(bytes);
+            return tinoxGunzip(bytes)
         }
 
         fnc lastGunzipOk() -> Bool
         {
-            return tinoxLastGunzipOk();
+            return tinoxLastGunzipOk()
         }
 
         fnc deflateRaw(bytes: List<Int64>) -> List<Int64>
         {
-            return tinoxDeflateRaw(bytes);
+            return tinoxDeflateRaw(bytes)
         }
 
         fnc inflateRaw(bytes: List<Int64>) -> List<Int64>
         {
-            return tinoxInflateRaw(bytes);
+            return tinoxInflateRaw(bytes)
         }
 
         fnc lastInflateOk() -> Bool
         {
-            return wsLastInflateOk();
+            return wsLastInflateOk()
         }
     }
 }

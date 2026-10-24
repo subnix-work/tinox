@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -10,11 +10,11 @@ namespace tinox.core.rest.server
     @annotation
     class Auth
     {
-        var value: String;
+        var value: String
 
         fn new(value: String) -> Auth
         {
-            return Auth { value: value };
+            return Auth { value: value }
         }
     }
 }

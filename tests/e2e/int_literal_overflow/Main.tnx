@@ -15,14 +15,14 @@
 class Main
 {
     fnc main() -> Int32 {
-        println((9223372036854775807).toString());   // i64-max
-        println((0xFF).toString());                    // hex -> 255
-        println((0b1010).toString());                  // binary -> 10
-        println((0o755).toString());                   // octal -> 493
-        println((1_000_000).toString());               // underscores
-        println((-9223372036854775807).toString());    // i64::MIN+1
-        const f: Float64 = 3.14f64;                       // float with suffix
-        println(f.toString());
-        return 0;
+        println((9223372036854775807).toString())   // i64-max
+        println((0xFF).toString())                    // hex -> 255
+        println((0b1010).toString())                  // binary -> 10
+        println((0o755).toString())                   // octal -> 493
+        println((1_000_000).toString())               // underscores
+        println((-9223372036854775807).toString())    // i64::MIN+1
+        const f: Float64 = 3.14f64                       // float with suffix
+        println(f.toString())
+        return 0
     }
 }

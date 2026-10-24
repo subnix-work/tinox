@@ -1,9 +1,9 @@
-import TaskController;
+import TaskController
 
 class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }

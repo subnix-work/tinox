@@ -10,61 +10,62 @@
 // expect: caught nested: boom-a
 // expect: done
 
-import throw_substatement_unwinding;
+import throw_substatement_unwinding
 
 class Main
 {
-    fnc a() -> Int64 { throw "boom-a"; }
-    fnc b() -> Int64 { println("b ran (should NOT happen)"); return 1; }
+    fnc a() -> Int64 { throw "boom-a" }
+    fnc b() -> Int64 { println("b ran (should NOT happen)")
+    return 1 }
 
-    fnc sum(x: Int64, y: Int64) -> Int64 { return x + y; }
+    fnc sum(x: Int64, y: Int64) -> Int64 { return x + y }
 
     fnc main() -> Int32 {
         // Binary expression: a() throws, b() must not run anymore.
         try {
-            const r: Int64 = a() + b();
-            println("unreached:" + r.toString());
+            const r: Int64 = a() + b()
+            println("unreached:" + r.toString())
         } catch e: String {
-            println("caught binary: " + e);
+            println("caught binary: " + e)
         }
 
         // Function arguments: a() as the first argument throws, b() (the second
         // argument) must not be evaluated anymore.
         try {
-            const r: Int64 = sum(a(), b());
-            println("unreached:" + r.toString());
+            const r: Int64 = sum(a(), b())
+            println("unreached:" + r.toString())
         } catch e: String {
-            println("caught call-args: " + e);
+            println("caught call-args: " + e)
         }
 
         // Array literal: same rule for elements after a throwing element.
         try {
-            const xs: List<Int64> = [a(), b()];
-            println("unreached:" + xs.len().toString());
+            const xs: List<Int64> = [a(), b()]
+            println("unreached:" + xs.len().toString())
         } catch e: String {
-            println("caught array-lit: " + e);
+            println("caught array-lit: " + e)
         }
 
         // Method-call arguments.
         try {
-            const acc: throw_substatement_unwinding = throw_substatement_unwinding { total: 0 };
-            const r: Int64 = acc.add(a(), b());
-            println("unreached:" + r.toString());
+            const acc: throw_substatement_unwinding = throw_substatement_unwinding { total: 0 }
+            const r: Int64 = acc.add(a(), b())
+            println("unreached:" + r.toString())
         } catch e: String {
-            println("caught method-args: " + e);
+            println("caught method-args: " + e)
         }
 
         // Nested: the throwing call itself sits as an ARGUMENT in an
         // inner call (sum(a(), b())); the OUTER second argument
         // (b() again) must not be evaluated anymore either, just like the inner one.
         try {
-            const r: Int64 = sum(sum(a(), b()), b());
-            println("unreached:" + r.toString());
+            const r: Int64 = sum(sum(a(), b()), b())
+            println("unreached:" + r.toString())
         } catch e: String {
-            println("caught nested: " + e);
+            println("caught nested: " + e)
         }
 
-        println("done");
-        return 0;
+        println("done")
+        return 0
     }
 }

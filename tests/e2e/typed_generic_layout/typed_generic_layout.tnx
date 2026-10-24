@@ -1,8 +1,8 @@
 class typed_generic_layout<T> {
-    var value: T;
-    var count: Int64;
-    fn make(v: T) -> typed_generic_layout<T> { return typed_generic_layout { value: v, count: 1 }; }
-    fn get() -> T { return this.value; }        // T-Feld read (Int64-Spezialisierung)
-    fn setCount(c: Int64) -> Nothing { this.count = c; }  // Int64-Feld getyptes Assignment
-    fn getCount() -> Int64 { return this.count; }
+    var value: T
+    var count: Int64
+    fn make(v: T) -> typed_generic_layout<T> { return typed_generic_layout { value: v, count: 1 } }
+    fn get() -> T { return this.value }        // T-Feld read (Int64-Spezialisierung)
+    fn setCount(c: Int64) -> Nothing { this.count = c }  // Int64-Feld getyptes Assignment
+    fn getCount() -> Int64 { return this.count }
 }

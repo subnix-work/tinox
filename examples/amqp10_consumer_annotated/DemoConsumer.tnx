@@ -10,16 +10,16 @@
 // on the user, same as the existing manual receiver loop in
 // examples/amqp10_publish_consume.tnx.
 
-import tinox.core.amqp10;
+import tinox.core.amqp10
 
 @Amqp10Consumer("localhost", 5873, "guest", "guest", "/queues/tinox-demo-queue")
 class DemoConsumer {
     @OnMessage
     fn onMessage(msg: Amqp10Message) -> Nothing {
-        var text: String = "";
+        var text: String = ""
         for i in 0..msg.body.len() {
-            text = text + fromCharCode(msg.body[i]);
+            text = text + fromCharCode(msg.body[i])
         }
-        println("received (" + msg.contentType + "): " + text);
+        println("received (" + msg.contentType + "): " + text)
     }
 }

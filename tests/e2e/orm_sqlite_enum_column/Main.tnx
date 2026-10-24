@@ -9,36 +9,36 @@
 // expect: summary variants: QUEUED RUNNING DONE
 // expect: unknown: TaskStatus has no variant named 'PAUSED'
 
-import tinox.core.db;
-import TaskStatus;
-import Job;
+import tinox.core.db
+import TaskStatus
+import Job
 
 class Main
 {
     fnc main() -> Int32
     {
-        println(DB::of(Job).first().status.name);
+        println(DB::of(Job).first().status.name)
 
-        const t = new Job();
-        t.title = "write";
-        t.status = TaskStatus::QUEUED;
-        DB::of(Job).save(t);
-        println(DB::of(Job).list().len());
+        const t = new Job()
+        t.title = "write"
+        t.status = TaskStatus::QUEUED
+        DB::of(Job).save(t)
+        println(DB::of(Job).list().len())
 
-        const queued: Job = DB::of(Job).filter(x => x.status == TaskStatus::QUEUED).first();
-        queued.status = TaskStatus::DONE;
-        DB::of(Job).save(queued);
-        println(DB::of(Job).filter(x => x.title == "write").first().status.name);
-        println(DB::of(Job).filter(x => x.status == TaskStatus::DONE).count());
-        println(DB::of(Job).filter(x => x.status == TaskStatus::DONE).first().title);
-        println(DB::of(Job).filter(x => x.status == TaskStatus::DONE).first().status.name);
+        const queued: Job = DB::of(Job).filter(x => x.status == TaskStatus::QUEUED).first()
+        queued.status = TaskStatus::DONE
+        DB::of(Job).save(queued)
+        println(DB::of(Job).filter(x => x.title == "write").first().status.name)
+        println(DB::of(Job).filter(x => x.status == TaskStatus::DONE).count())
+        println(DB::of(Job).filter(x => x.status == TaskStatus::DONE).first().title)
+        println(DB::of(Job).filter(x => x.status == TaskStatus::DONE).first().status.name)
 
-        var summary = "summary variants:";
-        const vs = TaskStatus::values();
-        for (let i = 0; i < vs.len(); i = i + 1) { summary = summary + " " + vs[i].name; }
-        println(summary);
+        var summary = "summary variants:"
+        const vs = TaskStatus::values()
+        for (let i = 0; i < vs.len(); i = i + 1) { summary = summary + " " + vs[i].name }
+        println(summary)
 
-        try { TaskStatus::parse("PAUSED"); } catch (e: String) { println("unknown: " + e); }
-        return 0;
+        try { TaskStatus::parse("PAUSED") } catch (e: String) { println("unknown: " + e) }
+        return 0
     }
 }

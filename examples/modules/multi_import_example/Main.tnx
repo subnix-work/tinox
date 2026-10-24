@@ -1,13 +1,13 @@
-import utils::math;
+import utils::math
 
-import math_lib;
+import math_lib
 
 class Main
 {
     fnc main() -> Int32
     {
-        println(math::square(5));
-        println(math_lib::add(10, 20));
-        return 0;
+        println(math::square(5))
+        println(math_lib::add(10, 20))
+        return 0
     }
 }

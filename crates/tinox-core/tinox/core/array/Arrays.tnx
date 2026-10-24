@@ -1,4 +1,4 @@
-module tinox.core.array;
+module tinox.core.array
 
 namespace tinox.core.array
 {
@@ -16,16 +16,16 @@ namespace tinox.core.array
          */
         fn containsInt(arr: List<Int64>, value: Int64) -> Bool
         {
-            var i: Int64 = 0;
+            var i: Int64 = 0
             while i < arr.len()
             {
                 if (arr[i] == value)
                 {
-                    return true;
+                    return true
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return false;
+            return false
         }
 
         /**
@@ -36,16 +36,16 @@ namespace tinox.core.array
          */
         fn indexOfInt(arr: List<Int64>, value: Int64) -> Int64
         {
-            var i: Int64 = 0;
+            var i: Int64 = 0
             while i < arr.len()
             {
                 if (arr[i] == value)
                 {
-                    return i;
+                    return i
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return -1;
+            return -1
         }
 
         /**
@@ -55,17 +55,17 @@ namespace tinox.core.array
          */
         fn findMin(arr: List<Int64>) -> Int64
         {
-            var min: Int64 = arr[0];
-            var i: Int64 = 1;
+            var min: Int64 = arr[0]
+            var i: Int64 = 1
             while i < arr.len()
             {
                 if (arr[i] < min)
                 {
-                    min = arr[i];
+                    min = arr[i]
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return min;
+            return min
         }
 
         /**
@@ -75,17 +75,17 @@ namespace tinox.core.array
          */
         fn findMax(arr: List<Int64>) -> Int64
         {
-            var max: Int64 = arr[0];
-            var i: Int64 = 1;
+            var max: Int64 = arr[0]
+            var i: Int64 = 1
             while i < arr.len()
             {
                 if (arr[i] > max)
                 {
-                    max = arr[i];
+                    max = arr[i]
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return max;
+            return max
         }
 
         /**
@@ -95,14 +95,14 @@ namespace tinox.core.array
          */
         fn sum(arr: List<Int64>) -> Int64
         {
-            var total: Int64 = 0;
-            var i: Int64 = 0;
+            var total: Int64 = 0
+            var i: Int64 = 0
             while i < arr.len()
             {
-                total = total + arr[i];
-                i = i + 1;
+                total = total + arr[i]
+                i = i + 1
             }
-            return total;
+            return total
         }
 
         /**
@@ -112,14 +112,14 @@ namespace tinox.core.array
          */
         fn average(arr: List<Int64>) -> Int64
         {
-            var total: Int64 = 0;
-            var i: Int64 = 0;
+            var total: Int64 = 0
+            var i: Int64 = 0
             while i < arr.len()
             {
-                total = total + arr[i];
-                i = i + 1;
+                total = total + arr[i]
+                i = i + 1
             }
-            return total / arr.len();
+            return total / arr.len()
         }
 
         /**
@@ -129,14 +129,14 @@ namespace tinox.core.array
          */
         fn reverseInt(arr: List<Int64>) -> List<Int64>
         {
-            var result: List<Int64> = [];
-            var i: Int64 = arr.len() - 1;
+            var result: List<Int64> = []
+            var i: Int64 = arr.len() - 1
             while i >= 0
             {
-                result.push(arr[i]);
-                i = i - 1;
+                result.push(arr[i])
+                i = i - 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -146,17 +146,17 @@ namespace tinox.core.array
          */
         fn filterPositive(arr: List<Int64>) -> List<Int64>
         {
-            var result: List<Int64> = [];
-            var i: Int64 = 0;
+            var result: List<Int64> = []
+            var i: Int64 = 0
             while i < arr.len()
             {
                 if (arr[i] > 0)
                 {
-                    result.push(arr[i]);
+                    result.push(arr[i])
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -166,25 +166,25 @@ namespace tinox.core.array
          */
         fn bubbleSort(arr: List<Int64>) -> List<Int64>
         {
-            var result: List<Int64> = arr;
-            var n: Int64 = result.len();
-            var i: Int64 = 0;
+            var result: List<Int64> = arr
+            var n: Int64 = result.len()
+            var i: Int64 = 0
             while i < n - 1
             {
-                var j: Int64 = 0;
+                var j: Int64 = 0
                 while j < n - i - 1
                 {
                     if (result[j] > result[j + 1])
                     {
-                        var temp: Int64 = result[j];
-                        result[j] = result[j + 1];
-                        result[j + 1] = temp;
+                        var temp: Int64 = result[j]
+                        result[j] = result[j + 1]
+                        result[j + 1] = temp
                     }
-                    j = j + 1;
+                    j = j + 1
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -194,16 +194,16 @@ namespace tinox.core.array
          */
         fn isSorted(arr: List<Int64>) -> Bool
         {
-            var i: Int64 = 1;
+            var i: Int64 = 1
             while i < arr.len()
             {
                 if (arr[i] < arr[i - 1])
                 {
-                    return false;
+                    return false
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return true;
+            return true
         }
 
         /**
@@ -214,14 +214,14 @@ namespace tinox.core.array
          */
         fn range(start: Int64, end: Int64) -> List<Int64>
         {
-            var result: List<Int64> = [];
-            var i: Int64 = start;
+            var result: List<Int64> = []
+            var i: Int64 = start
             while i < end
             {
-                result.push(i);
-                i = i + 1;
+                result.push(i)
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -232,14 +232,14 @@ namespace tinox.core.array
          */
         fn fill(value: Int64, count: Int64) -> List<Int64>
         {
-            var result: List<Int64> = [];
-            var i: Int64 = 0;
+            var result: List<Int64> = []
+            var i: Int64 = 0
             while i < count
             {
-                result.push(value);
-                i = i + 1;
+                result.push(value)
+                i = i + 1
             }
-            return result;
+            return result
         }
     }
 }

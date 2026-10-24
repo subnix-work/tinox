@@ -1,23 +1,23 @@
-import Drawable;
+import Drawable
 
 class Circle implements Drawable
 {
-    radius: Float64;
+    radius: Float64
 
     fn new(radius: Float64) -> Circle
     {
-        return Circle { radius: radius };
+        return Circle { radius: radius }
     }
 
     fn draw() -> Nothing
     {
-        print("Drawing circle with radius ");
-        print(this.radius);
-        print("\n");
+        print("Drawing circle with radius ")
+        print(this.radius)
+        print("\n")
     }
 
     fn getArea() -> Float64
     {
-        return 3.14159 * this.radius * this.radius;
+        return 3.14159 * this.radius * this.radius
     }
 }

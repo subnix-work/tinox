@@ -1,15 +1,15 @@
 // expect: cleanup
 class Main {
     fnc worker(ready: Int64) -> Nothing {
-        defer { println("cleanup"); }
-        send ready -> 1;
-        sleep(10000);
+        defer { println("cleanup") }
+        send ready -> 1
+        sleep(10000)
     }
     fnc main() -> Int32 {
-        const ready = channel;
-        spawn Main::worker(ready);
-        recv ready;
-        taskRequestShutdown();
-        return 0;
+        const ready = channel
+        spawn Main::worker(ready)
+        recv ready
+        taskRequestShutdown()
+        return 0
     }
 }

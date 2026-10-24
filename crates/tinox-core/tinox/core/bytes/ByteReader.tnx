@@ -1,12 +1,12 @@
-module tinox.core.bytes;
+module tinox.core.bytes
 
 namespace tinox.core.bytes
 {
-    extern fn tinoxFileOpenBytes(path: String, mode: String) -> Int64;
-    extern fn tinoxFileCloseBytes(handle: Int64);
-    extern fn tinoxBufReadChunk(handle: Int64, maxBytes: Int64) -> Int64;
-    extern fn tinoxBufLen(h: Int64) -> Int64;
-    extern fn httpConnWriteBuf(conn: Int64, h: Int64) -> Int64;
+    extern fn tinoxFileOpenBytes(path: String, mode: String) -> Int64
+    extern fn tinoxFileCloseBytes(handle: Int64)
+    extern fn tinoxBufReadChunk(handle: Int64, maxBytes: Int64) -> Int64
+    extern fn tinoxBufLen(h: Int64) -> Int64
+    extern fn httpConnWriteBuf(conn: Int64, h: Int64) -> Int64
 
     /**
      * Bounded streaming reader over a file: memory stays at one chunk no
@@ -14,24 +14,24 @@ namespace tinox.core.bytes
      */
     class ByteReader
     {
-        var fd: Int64;
+        var fd: Int64
 
         /** Opens a file for reading; a missing file is a hard error */
         fn open(path: String) -> ByteReader
         {
-            const fd: Int64 = tinoxFileOpenBytes(path, "rb");
+            const fd: Int64 = tinoxFileOpenBytes(path, "rb")
             if (fd == 0)
             {
-                println("runtime error: cannot open file for reading: " + path);
-                exit(1);
+                println("runtime error: cannot open file for reading: " + path)
+                exit(1)
             }
-            return ByteReader { fd: fd };
+            return ByteReader { fd: fd }
         }
 
         /** Next chunk of at most max bytes; an empty buffer means EOF */
         fn read(max: Int64) -> Bytes
         {
-            return Bytes { handle: tinoxBufReadChunk(this.fd, max) };
+            return Bytes { handle: tinoxBufReadChunk(this.fd, max) }
         }
 
         /**
@@ -43,36 +43,36 @@ namespace tinox.core.bytes
          */
         fn copyToConn(conn: Int64, chunk: Int64) -> Int64
         {
-            var total: Int64 = 0;
-            var more: Bool = true;
+            var total: Int64 = 0
+            var more: Bool = true
             while (more)
             {
-                const h: Int64 = tinoxBufReadChunk(this.fd, chunk);
-                const n: Int64 = tinoxBufLen(h);
+                const h: Int64 = tinoxBufReadChunk(this.fd, chunk)
+                const n: Int64 = tinoxBufLen(h)
                 if (n == 0)
                 {
-                    more = false;
+                    more = false
                 }
                 else
                 {
                     if (httpConnWriteBuf(conn, h) < 0)
                     {
-                        more = false;
+                        more = false
                     }
                     else
                     {
-                        total = total + n;
+                        total = total + n
                     }
                 }
             }
-            this.close();
-            return total;
+            this.close()
+            return total
         }
 
         /** Closes the file; safe to call once */
         fn close() -> Nothing
         {
-            tinoxFileCloseBytes(this.fd);
+            tinoxFileCloseBytes(this.fd)
         }
     }
 }

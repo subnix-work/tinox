@@ -1,6 +1,6 @@
 class method_chain_linear {
-    var v: Int64;
-    fn make(v: Int64) -> method_chain_linear { return method_chain_linear { v: v }; }
-    fn self_() -> method_chain_linear { return this; }
-    fn get() -> Int64 { return this.v; }
+    var v: Int64
+    fn make(v: Int64) -> method_chain_linear { return method_chain_linear { v: v } }
+    fn self_() -> method_chain_linear { return this }
+    fn get() -> Int64 { return this.v }
 }

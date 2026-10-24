@@ -1,4 +1,4 @@
-module tinox.core.msgpack;
+module tinox.core.msgpack
 
 namespace tinox.core.msgpack
 {
@@ -26,36 +26,36 @@ namespace tinox.core.msgpack
      */
     class MsgpackValue
     {
-        kind: String;
-        stringValue: String;
-        intValue: Int64;
-        floatValue: Float64;
-        boolValue: Bool;
-        arrayValue: List<MsgpackValue>;
-        objectValue: Map<String, MsgpackValue>;
+        kind: String
+        stringValue: String
+        intValue: Int64
+        floatValue: Float64
+        boolValue: Bool
+        arrayValue: List<MsgpackValue>
+        objectValue: Map<String, MsgpackValue>
 
-        fn isNull() -> Bool { return this.kind == "null"; }
-        fn isBool() -> Bool { return this.kind == "bool"; }
-        fn isInt() -> Bool { return this.kind == "int"; }
-        fn isFloat() -> Bool { return this.kind == "float"; }
-        fn isString() -> Bool { return this.kind == "string"; }
-        fn isArray() -> Bool { return this.kind == "array"; }
-        fn isObject() -> Bool { return this.kind == "object"; }
+        fn isNull() -> Bool { return this.kind == "null" }
+        fn isBool() -> Bool { return this.kind == "bool" }
+        fn isInt() -> Bool { return this.kind == "int" }
+        fn isFloat() -> Bool { return this.kind == "float" }
+        fn isString() -> Bool { return this.kind == "string" }
+        fn isArray() -> Bool { return this.kind == "array" }
+        fn isObject() -> Bool { return this.kind == "object" }
 
-        fn getBool() -> Bool { return this.boolValue; }
-        fn getInt() -> Int64 { return this.intValue; }
-        fn getFloat() -> Float64 { return this.floatValue; }
-        fn getString() -> String { return this.stringValue; }
-        fn asArray() -> List<MsgpackValue> { return this.arrayValue; }
-        fn asMap() -> Map<String, MsgpackValue> { return this.objectValue; }
+        fn getBool() -> Bool { return this.boolValue }
+        fn getInt() -> Int64 { return this.intValue }
+        fn getFloat() -> Float64 { return this.floatValue }
+        fn getString() -> String { return this.stringValue }
+        fn asArray() -> List<MsgpackValue> { return this.arrayValue }
+        fn asMap() -> Map<String, MsgpackValue> { return this.objectValue }
 
         fn getField(key: String) -> MsgpackValue
         {
             if (this.kind != "object" || !this.objectValue.contains(key))
             {
-                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
+                return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
             }
-            return this.objectValue[key];
+            return this.objectValue[key]
         }
     }
 }

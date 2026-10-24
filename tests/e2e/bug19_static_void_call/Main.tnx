@@ -4,14 +4,14 @@
 // expect: 5
 // expect: ok
 
-import bug19_static_void_call;
+import bug19_static_void_call
 
 class Main
 {
     fnc main() -> Int32 {
-        const c: bug19_static_void_call = bug19_static_void_call::mk();
-        bug19_static_void_call::voidy(c, 5);
-        println("ok");
-        return 0;
+        const c: bug19_static_void_call = bug19_static_void_call::mk()
+        bug19_static_void_call::voidy(c, 5)
+        println("ok")
+        return 0
     }
 }

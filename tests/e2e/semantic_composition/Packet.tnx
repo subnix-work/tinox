@@ -1,1 +1,1 @@
-class Packet { var value: UInt8; }
+class Packet { var value: UInt8 }

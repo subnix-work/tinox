@@ -3,17 +3,17 @@
 // expect: 3
 // expect: Alice
 
-import tinox.core.db;
+import tinox.core.db
 
-import orm_sqlite_list;
+import orm_sqlite_list
 
 class Main
 {
     fnc main() -> Int32
     {
-        const users: List<orm_sqlite_list> = DB::of(orm_sqlite_list).list();
-        println(users.len());
-        println(users[0].name);
-        return 0;
+        const users: List<orm_sqlite_list> = DB::of(orm_sqlite_list).list()
+        println(users.len())
+        println(users[0].name)
+        return 0
     }
 }

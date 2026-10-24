@@ -1,8 +1,8 @@
-import tinox.core.http_server;
-import tinox.core.json;
-import tinox.core.debug;
-import Item;
-import Report;
+import tinox.core.http_server
+import tinox.core.json
+import tinox.core.debug
+import Item
+import Report
 
 // Four workload profiles behind one annotation-driven controller:
 //   W1 stateless small JSON      GET  /small
@@ -21,7 +21,7 @@ import Report;
 @ApplicationComponent
 class BenchController
 {
-    var cache: List<Item>;
+    var cache: List<Item>
 
     fnc makeItem(id: Int64) -> Item
     {
@@ -30,43 +30,43 @@ class BenchController
             name: "item-" + id.toString(),
             tags: "alpha,beta,gamma-" + (id % 17).toString(),
             score: 0.5 + (id as Float64) / 1000.0
-        };
+        }
     }
 
     @GET
     @Path("/small")
     fn small() -> Item
     {
-        return makeItem(42);
+        return makeItem(42)
     }
 
     @GET
     @Path("/report/:n")
     fn report(@PathParam n: Int64) -> Report
     {
-        var items: List<Item> = [];
-        var i: Int64 = 0;
+        var items: List<Item> = []
+        var i: Int64 = 0
         while i < n
         {
-            items.push(makeItem(i));
-            i = i + 1;
+            items.push(makeItem(i))
+            i = i + 1
         }
-        return Report { count: n, items: items };
+        return Report { count: n, items: items }
     }
 
     @POST
     @Path("/cache/fill/:n")
     fn fill(@PathParam n: Int64) -> Item
     {
-        var c: List<Item> = [];
-        var i: Int64 = 0;
+        var c: List<Item> = []
+        var i: Int64 = 0
         while i < n
         {
-            c.push(makeItem(i));
-            i = i + 1;
+            c.push(makeItem(i))
+            i = i + 1
         }
-        this.cache = c;
-        return makeItem(n);
+        this.cache = c
+        return makeItem(n)
     }
 
     @GET
@@ -75,11 +75,11 @@ class BenchController
     {
         if (this.cache == null || id < 0 || id >= this.cache.len())
         {
-            ctx.response.status(404).json("{\"error\":\"not found\"}");
-            return ctx;
+            ctx.response.status(404).json("{\"error\":\"not found\"}")
+            return ctx
         }
-        ctx.response.json(Json::serialize(this.cache[id]));
-        return ctx;
+        ctx.response.json(Json::serialize(this.cache[id]))
+        return ctx
     }
 
     @POST
@@ -88,18 +88,18 @@ class BenchController
     {
         if (this.cache == null || id < 0 || id >= this.cache.len())
         {
-            ctx.response.status(404).json("{\"error\":\"not found\"}");
-            return ctx;
+            ctx.response.status(404).json("{\"error\":\"not found\"}")
+            return ctx
         }
-        this.cache[id] = makeItem(id + 1000000);
-        ctx.response.json("{\"ok\":true}");
-        return ctx;
+        this.cache[id] = makeItem(id + 1000000)
+        ctx.response.json("{\"ok\":true}")
+        return ctx
     }
 
     @GET
     @Path("/stats")
     fn stats() -> Item
     {
-        return Item { id: Debug::memoryUsage(), name: "boehm_heap_bytes", tags: "", score: 0.0 };
+        return Item { id: Debug::memoryUsage(), name: "boehm_heap_bytes", tags: "", score: 0.0 }
     }
 }

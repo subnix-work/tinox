@@ -1,4 +1,4 @@
-module tinox.core.collections;
+module tinox.core.collections
 
 /**
  * Tinox Standard Library - Collections Module
@@ -11,17 +11,17 @@ namespace tinox.core.collections
     {
         fn newStack<T>() -> Stack<T>
         {
-            return Stack<T>::new();
+            return Stack<T>::new()
         }
 
         fn newQueue<T>() -> Queue<T>
         {
-            return Queue<T>::new();
+            return Queue<T>::new()
         }
 
         fn newPair<T, U>(first: T, second: U) -> Pair<T, U>
         {
-            return Pair<T, U>::new(first, second);
+            return Pair<T, U>::new(first, second)
         }
     }
 }

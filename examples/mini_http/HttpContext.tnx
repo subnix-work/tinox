@@ -1,13 +1,13 @@
-import HttpRequest;
-import HttpResponse;
+import HttpRequest
+import HttpResponse
 
 class HttpContext
 {
-    var request: HttpRequest;
-    var response: HttpResponse;
+    var request: HttpRequest
+    var response: HttpResponse
 
     fn new(request: HttpRequest, response: HttpResponse) -> HttpContext
     {
-        return HttpContext { request: request, response: response };
+        return HttpContext { request: request, response: response }
     }
 }

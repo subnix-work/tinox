@@ -1,4 +1,4 @@
-module tinox.core.rest.client;
+module tinox.core.rest.client
 
 namespace tinox.core.rest.client
 {
@@ -17,13 +17,13 @@ namespace tinox.core.rest.client
         {
             match mediaType
             {
-                ApplicationJson => return "application/json";
-                ApplicationXml => return "application/xml";
-                ApplicationFormUrlencoded => return "application/x-www-form-urlencoded";
-                TextPlain => return "text/plain";
-                TextHtml => return "text/html";
-                TextCsv => return "text/csv";
-                MultipartFormData => return "multipart/form-data";
+                ApplicationJson => return "application/json"
+                ApplicationXml => return "application/xml"
+                ApplicationFormUrlencoded => return "application/x-www-form-urlencoded"
+                TextPlain => return "text/plain"
+                TextHtml => return "text/html"
+                TextCsv => return "text/csv"
+                MultipartFormData => return "multipart/form-data"
             }
         }
     }

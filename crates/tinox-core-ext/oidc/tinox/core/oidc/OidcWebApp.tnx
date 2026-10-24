@@ -1,10 +1,10 @@
-module tinox.core.oidc;
+module tinox.core.oidc
 
-import tinox.core.http_server;
-import tinox.core.oauth2;
-import tinox.core.json;
-import tinox.core.crypto;
-import tinox.core.time;
+import tinox.core.http_server
+import tinox.core.oauth2
+import tinox.core.json
+import tinox.core.crypto
+import tinox.core.time
 
 namespace tinox.core.oidc
 {
@@ -43,12 +43,12 @@ namespace tinox.core.oidc
      */
     class OidcWebApp
     {
-        var client: OidcClient;
-        var cookieSecret: String;
-        var loginPath: String;
-        var callbackPath: String;
-        var sessionCookieName: String;
-        var pendingCookieName: String;
+        var client: OidcClient
+        var cookieSecret: String
+        var loginPath: String
+        var callbackPath: String
+        var sessionCookieName: String
+        var pendingCookieName: String
 
         /*
          * `cookieSecret` seals both cookies (AES-256-GCM, arbitrary
@@ -62,7 +62,7 @@ namespace tinox.core.oidc
         {
             if (cookieSecret == "")
             {
-                throw "OidcWebApp::new: cookieSecret must not be empty";
+                throw "OidcWebApp::new: cookieSecret must not be empty"
             }
             return OidcWebApp {
                 client: client,
@@ -71,7 +71,7 @@ namespace tinox.core.oidc
                 callbackPath: "/callback",
                 sessionCookieName: "tinox_session",
                 pendingCookieName: "tinox_oidc_pending",
-            };
+            }
         }
 
         // Registers /login and /callback on `server`. Call once at startup,
@@ -81,71 +81,71 @@ namespace tinox.core.oidc
             // Captured by value into the closures below rather than
             // referencing `this` from inside them -- keeps this file
             // clear of ever needing `this` inside a lambda.
-            const client: OidcClient = this.client;
-            const cookieSecret: String = this.cookieSecret;
-            const sessionCookieName: String = this.sessionCookieName;
-            const pendingCookieName: String = this.pendingCookieName;
+            const client: OidcClient = this.client
+            const cookieSecret: String = this.cookieSecret
+            const sessionCookieName: String = this.sessionCookieName
+            const pendingCookieName: String = this.pendingCookieName
 
             server.get(this.loginPath, ctx => {
-                const authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
-                const now: Int64 = Time::now() / 1000;
-                const pendingJson: String = "{\"state\":\"" + authReq.state + "\",\"codeVerifier\":\"" + authReq.codeVerifier + "\",\"exp\":" + (now + 300).toString() + "}";
-                const sealedPending: String = Crypto::aesEncrypt(pendingJson, cookieSecret);
-                ctx.response.header("Set-Cookie", pendingCookieName + "=" + sealedPending + "; HttpOnly; Path=/; Max-Age=300; SameSite=Lax");
-                ctx.response.redirect(authReq.url);
-            });
+                const authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email")
+                const now: Int64 = Time::now() / 1000
+                const pendingJson: String = "{\"state\":\"" + authReq.state + "\",\"codeVerifier\":\"" + authReq.codeVerifier + "\",\"exp\":" + (now + 300).toString() + "}"
+                const sealedPending: String = Crypto::aesEncrypt(pendingJson, cookieSecret)
+                ctx.response.header("Set-Cookie", pendingCookieName + "=" + sealedPending + "; HttpOnly; Path=/; Max-Age=300; SameSite=Lax")
+                ctx.response.redirect(authReq.url)
+            })
 
             server.get(this.callbackPath, ctx => {
-                const code: String = QueryString::get(ctx.request.queryString, "code");
-                const stateParam: String = QueryString::get(ctx.request.queryString, "state");
+                const code: String = QueryString::get(ctx.request.queryString, "code")
+                const stateParam: String = QueryString::get(ctx.request.queryString, "state")
 
-                const pendingSealed: String = OidcWebApp::readCookie(ctx, pendingCookieName);
+                const pendingSealed: String = OidcWebApp::readCookie(ctx, pendingCookieName)
                 if (pendingSealed == "")
                 {
-                    ctx.response.status(400).text("no pending login (missing or expired state cookie)");
-                    return;
+                    ctx.response.status(400).text("no pending login (missing or expired state cookie)")
+                    return
                 }
 
-                var pending: Map<String, JsonValue> = Map::new();
-                var unsealError: String = "";
+                var pending: Map<String, JsonValue> = Map::new()
+                var unsealError: String = ""
                 try
                 {
-                    pending = OidcWebApp::unsealJson(pendingSealed, cookieSecret);
+                    pending = OidcWebApp::unsealJson(pendingSealed, cookieSecret)
                 }
                 catch e: String
                 {
-                    unsealError = e;
+                    unsealError = e
                 }
                 if (unsealError != "")
                 {
-                    ctx.response.status(400).text("invalid login attempt: " + unsealError);
-                    return;
+                    ctx.response.status(400).text("invalid login attempt: " + unsealError)
+                    return
                 }
 
-                const now: Int64 = Time::now() / 1000;
+                const now: Int64 = Time::now() / 1000
                 if (!pending.contains("exp") || now > pending["exp"].asInt())
                 {
-                    ctx.response.status(400).text("login attempt expired, please try again");
-                    return;
+                    ctx.response.status(400).text("login attempt expired, please try again")
+                    return
                 }
                 if (!pending.contains("state") || pending["state"].getString() != stateParam)
                 {
-                    ctx.response.status(400).text("state mismatch (possible CSRF)");
-                    return;
+                    ctx.response.status(400).text("state mismatch (possible CSRF)")
+                    return
                 }
-                const codeVerifier: String = pending["codeVerifier"].getString();
+                const codeVerifier: String = pending["codeVerifier"].getString()
 
-                const tokens: OidcTokenResponse = client.exchangeCode(code, codeVerifier);
+                const tokens: OidcTokenResponse = client.exchangeCode(code, codeVerifier)
                 if (!tokens.ok)
                 {
-                    ctx.response.status(401).text("login failed: " + tokens.errorMessage);
-                    return;
+                    ctx.response.status(401).text("login failed: " + tokens.errorMessage)
+                    return
                 }
 
-                const sealedSession: String = OidcWebApp::sealJson(tokens.claims, cookieSecret);
-                ctx.response.header("Set-Cookie", sessionCookieName + "=" + sealedSession + "; HttpOnly; Path=/; SameSite=Lax");
-                ctx.response.redirect("/");
-            });
+                const sealedSession: String = OidcWebApp::sealJson(tokens.claims, cookieSecret)
+                ctx.response.header("Set-Cookie", sessionCookieName + "=" + sealedSession + "; HttpOnly; Path=/; SameSite=Lax")
+                ctx.response.redirect("/")
+            })
         }
 
         /*
@@ -159,57 +159,57 @@ namespace tinox.core.oidc
          */
         fn requireLogin(ctx: HttpContext) -> Bool
         {
-            const sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName);
+            const sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName)
             if (sealed == "")
             {
-                ctx.response.redirect(this.loginPath);
-                return false;
+                ctx.response.redirect(this.loginPath)
+                return false
             }
 
-            var claims: Map<String, JsonValue> = Map::new();
-            var err: String = "";
+            var claims: Map<String, JsonValue> = Map::new()
+            var err: String = ""
             try
             {
-                claims = OidcWebApp::unsealJson(sealed, this.cookieSecret);
+                claims = OidcWebApp::unsealJson(sealed, this.cookieSecret)
             }
             catch e: String
             {
-                err = e;
+                err = e
             }
             if (err != "")
             {
-                ctx.response.redirect(this.loginPath);
-                return false;
+                ctx.response.redirect(this.loginPath)
+                return false
             }
 
-            const now: Int64 = Time::now() / 1000;
+            const now: Int64 = Time::now() / 1000
             if (claims.contains("exp") && now > claims["exp"].asInt())
             {
-                ctx.response.redirect(this.loginPath);
-                return false;
+                ctx.response.redirect(this.loginPath)
+                return false
             }
 
-            return true;
+            return true
         }
 
         // The verified claims from the current session. Only meaningful
         // right after requireLogin() returned true for the same request.
         fn currentUser(ctx: HttpContext) -> Map<String, JsonValue>
         {
-            const sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName);
-            return OidcWebApp::unsealJson(sealed, this.cookieSecret);
+            const sealed: String = OidcWebApp::readCookie(ctx, this.sessionCookieName)
+            return OidcWebApp::unsealJson(sealed, this.cookieSecret)
         }
 
         fn logout(ctx: HttpContext) -> Nothing
         {
-            ctx.response.header("Set-Cookie", this.sessionCookieName + "=; HttpOnly; Path=/; Max-Age=0");
-            ctx.response.redirect(this.loginPath);
+            ctx.response.header("Set-Cookie", this.sessionCookieName + "=; HttpOnly; Path=/; Max-Age=0")
+            ctx.response.redirect(this.loginPath)
         }
 
         fnc sealJson(data: Map<String, JsonValue>, secret: String) -> String
         {
-            const json: String = Json::stringify(Json::fromMap(data));
-            return Crypto::aesEncrypt(json, secret);
+            const json: String = Json::stringify(Json::fromMap(data))
+            return Crypto::aesEncrypt(json, secret)
         }
 
         // Throws (String) on a tampered cookie, the wrong secret, or a
@@ -218,30 +218,30 @@ namespace tinox.core.oidc
         // silently papers over.
         fnc unsealJson(sealed: String, secret: String) -> Map<String, JsonValue>
         {
-            const json: String = Crypto::aesDecrypt(sealed, secret);
-            return Json::parse(json).asTable();
+            const json: String = Crypto::aesDecrypt(sealed, secret)
+            return Json::parse(json).asTable()
         }
 
         fnc readCookie(ctx: HttpContext, name: String) -> String
         {
-            const cookieHeader: String = ctx.request.getHeader("Cookie");
+            const cookieHeader: String = ctx.request.getHeader("Cookie")
             if (cookieHeader == "")
             {
-                return "";
+                return ""
             }
-            const parts: List<String> = cookieHeader.split(";");
-            var i: Int64 = 0;
+            const parts: List<String> = cookieHeader.split(";")
+            var i: Int64 = 0
             while i < parts.len()
             {
-                const part: String = parts[i].trim();
-                const eq: Int64 = part.indexOf("=");
+                const part: String = parts[i].trim()
+                const eq: Int64 = part.indexOf("=")
                 if (eq > 0 && part.substring(0, eq) == name)
                 {
-                    return part.substring(eq + 1, part.len());
+                    return part.substring(eq + 1, part.len())
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return "";
+            return ""
         }
     }
 }

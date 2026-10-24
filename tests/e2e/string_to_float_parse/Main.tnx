@@ -10,11 +10,11 @@
 class Main
 {
     fnc main() -> Int32 {
-        println("3.14".toFloat().toString());     // 3.14
-        println("-2.5".toFloat().toString());      // -2.5
-        println("1.5e3".toFloat().toString());     // 1500 (scientific)
-        println("xyz".toFloat().toString());       // 0 (used to be 8004)
-        println("12.5abc".toFloat().toString());   // 12.5 (partial)
-        return 0;
+        println("3.14".toFloat().toString())     // 3.14
+        println("-2.5".toFloat().toString())      // -2.5
+        println("1.5e3".toFloat().toString())     // 1500 (scientific)
+        println("xyz".toFloat().toString())       // 0 (used to be 8004)
+        println("12.5abc".toFloat().toString())   // 12.5 (partial)
+        return 0
     }
 }

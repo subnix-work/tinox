@@ -10,14 +10,14 @@
 // expect: broker-saw-modify-fields:true
 // expect: ok-broker-saw-all
 
-import tinox.core.amqp10;
-import tinox.core.socket;
+import tinox.core.amqp10
+import tinox.core.socket
 
 class Main
 {
 
     fnc simpleTransfer(deliveryId: Int64, body: List<Int64>) -> List<Int64> {
-        const msgBody = Amqp10::encodeMessageBody(body, "text/plain");
+        const msgBody = Amqp10::encodeMessageBody(body, "text/plain")
         var transferFields: List<Amqp10Value> = [
             Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(deliveryId),
@@ -25,74 +25,74 @@ class Main
             Amqp10Value::UIntVal(0),
             Amqp10Value::BoolVal(true),
             Amqp10Value::BoolVal(false)
-        ];
-        const transferBody = Amqp10::encodePerformative(0x14, transferFields);
-        var fullFrame: List<Int64> = [];
-        for i in 0..transferBody.len() { fullFrame.push(transferBody[i]); }
-        for i in 0..msgBody.len() { fullFrame.push(msgBody[i]); }
-        return fullFrame;
+        ]
+        const transferBody = Amqp10::encodePerformative(0x14, transferFields)
+        var fullFrame: List<Int64> = []
+        for i in 0..transferBody.len() { fullFrame.push(transferBody[i]) }
+        for i in 0..msgBody.len() { fullFrame.push(msgBody[i]) }
+        return fullFrame
     }
 
 
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv)
 
         // --- SASL header + negotiation ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
-        Amqp10::writeFrame(sconn, 1, 0, mechBody);
-        Amqp10::readFrame(sconn);
-        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
-        Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0])
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])])
+        Amqp10::writeFrame(sconn, 1, 0, mechBody)
+        Amqp10::readFrame(sconn)
+        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)])
+        Amqp10::writeFrame(sconn, 1, 0, outcomeBody)
 
         // --- AMQP header ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0])
 
         // --- open / open-ok ---
-        Amqp10::readFrame(sconn);
+        Amqp10::readFrame(sconn)
         var openFields: List<Amqp10Value> = [
             Amqp10Value::StrVal("fake-broker"),
             Amqp10Value::NullVal,
             Amqp10Value::UIntVal(131072),
             Amqp10Value::UShortVal(2047)
-        ];
-        Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields))
 
         // --- begin / begin-ok ---
-        const fBegin = Amqp10::readFrame(sconn);
+        const fBegin = Amqp10::readFrame(sconn)
         var beginFields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin.chanId), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields))
 
         // --- attach (receiver) / attach-ok ---
-        const fAttach = Amqp10::readFrame(sconn);
-        const pAttach = Amqp10::decodePerformative(fAttach.body);
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach.fields));
+        const fAttach = Amqp10::readFrame(sconn)
+        const pAttach = Amqp10::decodePerformative(fAttach.body)
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttach.fields))
 
         // --- read flow from the client (credit grant) ---
-        Amqp10::readFrame(sconn);
+        Amqp10::readFrame(sconn)
 
         // --- send three transfers (deliveryId 1/2/3) ---
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(1, [65]));
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(2, [66]));
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(3, [67]));
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(1, [65]))
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(2, [66]))
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, simpleTransfer(3, [67]))
 
         // --- disposition 1: rejected with error ---
-        const fDisp1 = Amqp10::readFrame(sconn);
-        const pDisp1 = Amqp10::decodePerformative(fDisp1.body);
-        var rejectOk: Bool = false;
-        var rejectErrorOk: Bool = false;
+        const fDisp1 = Amqp10::readFrame(sconn)
+        const pDisp1 = Amqp10::decodePerformative(fDisp1.body)
+        var rejectOk: Bool = false
+        var rejectErrorOk: Bool = false
         if (pDisp1.descriptor == 0x15) {
             if (pDisp1.fields.len() > 4) {
                 match pDisp1.fields[4] {
                     DescribedVal(d) => {
                         if (d.descriptor == 0x25) {
-                            rejectOk = true;
+                            rejectOk = true
                             match d.value {
                                 ListVal(ef) => {
                                     if (ef.len() > 0) {
@@ -101,7 +101,7 @@ class Main
                                                 match errD.value {
                                                     ListVal(errFields) => {
                                                         if (errFields.len() > 1) {
-                                                            match errFields[0] { SymbolVal(s) => { if (s == "amqp:decode-error") { rejectErrorOk = true; } } _ => {} }
+                                                            match errFields[0] { SymbolVal(s) => { if (s == "amqp:decode-error") { rejectErrorOk = true } } _ => {} }
                                                         }
                                                     }
                                                     _ => {}
@@ -121,17 +121,17 @@ class Main
         }
 
         // --- disposition 2: released, no fields ---
-        const fDisp2 = Amqp10::readFrame(sconn);
-        const pDisp2 = Amqp10::decodePerformative(fDisp2.body);
-        var releaseOk: Bool = false;
-        var releaseEmptyOk: Bool = false;
+        const fDisp2 = Amqp10::readFrame(sconn)
+        const pDisp2 = Amqp10::decodePerformative(fDisp2.body)
+        var releaseOk: Bool = false
+        var releaseEmptyOk: Bool = false
         if (pDisp2.descriptor == 0x15) {
             if (pDisp2.fields.len() > 4) {
                 match pDisp2.fields[4] {
                     DescribedVal(d) => {
                         if (d.descriptor == 0x26) {
-                            releaseOk = true;
-                            match d.value { ListVal(rf) => { if (rf.len() == 0) { releaseEmptyOk = true; } } _ => {} }
+                            releaseOk = true
+                            match d.value { ListVal(rf) => { if (rf.len() == 0) { releaseEmptyOk = true } } _ => {} }
                         }
                     }
                     _ => {}
@@ -140,24 +140,24 @@ class Main
         }
 
         // --- disposition 3: modified with delivery-failed=true, undeliverable-here=false ---
-        const fDisp3 = Amqp10::readFrame(sconn);
-        const pDisp3 = Amqp10::decodePerformative(fDisp3.body);
-        var modifyOk: Bool = false;
-        var modifyFieldsOk: Bool = false;
+        const fDisp3 = Amqp10::readFrame(sconn)
+        const pDisp3 = Amqp10::decodePerformative(fDisp3.body)
+        var modifyOk: Bool = false
+        var modifyFieldsOk: Bool = false
         if (pDisp3.descriptor == 0x15) {
             if (pDisp3.fields.len() > 4) {
                 match pDisp3.fields[4] {
                     DescribedVal(d) => {
                         if (d.descriptor == 0x27) {
-                            modifyOk = true;
+                            modifyOk = true
                             match d.value {
                                 ListVal(mf) => {
                                     if (mf.len() > 1) {
-                                        var failedOk: Bool = false;
-                                        var undelOk: Bool = false;
-                                        match mf[0] { BoolVal(b) => { if (b) { failedOk = true; } } _ => {} }
-                                        match mf[1] { BoolVal(b) => { if (!b) { undelOk = true; } } _ => {} }
-                                        if (failedOk) { if (undelOk) { modifyFieldsOk = true; } }
+                                        var failedOk: Bool = false
+                                        var undelOk: Bool = false
+                                        match mf[0] { BoolVal(b) => { if (b) { failedOk = true } } _ => {} }
+                                        match mf[1] { BoolVal(b) => { if (!b) { undelOk = true } } _ => {} }
+                                        if (failedOk) { if (undelOk) { modifyFieldsOk = true } }
                                     }
                                 }
                                 _ => {}
@@ -169,59 +169,59 @@ class Main
             }
         }
 
-        httpConnClose(sconn);
+        httpConnClose(sconn)
 
-        println("broker-saw-reject:" + rejectOk.toString());
-        println("broker-saw-reject-error:" + rejectErrorOk.toString());
-        println("broker-saw-release:" + releaseOk.toString());
-        println("broker-saw-release-empty:" + releaseEmptyOk.toString());
-        println("broker-saw-modify:" + modifyOk.toString());
-        println("broker-saw-modify-fields:" + modifyFieldsOk.toString());
+        println("broker-saw-reject:" + rejectOk.toString())
+        println("broker-saw-reject-error:" + rejectErrorOk.toString())
+        println("broker-saw-release:" + releaseOk.toString())
+        println("broker-saw-release-empty:" + releaseEmptyOk.toString())
+        println("broker-saw-modify:" + modifyOk.toString())
+        println("broker-saw-modify-fields:" + modifyFieldsOk.toString())
 
-        var result: Int64 = 0;
+        var result: Int64 = 0
         if (rejectOk) { if (rejectErrorOk) { if (releaseOk) { if (releaseEmptyOk) { if (modifyOk) { if (modifyFieldsOk) {
-            result = 1;
+            result = 1
         } } } } } }
-        return result;
+        return result
     }
 
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv)
 
-        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest")
         if (conn.conn <= 0) {
-            println("connect failed: " + conn.errorMessage);
-            return 1;
+            println("connect failed: " + conn.errorMessage)
+            return 1
         }
-        println("ok-connect");
+        println("ok-connect")
 
-        const session = Amqp10Session::begin(conn);
-        const link = Amqp10Link::attach(session, "dispositions-link", true, "test-source");
-        link.grantCredit(10);
+        const session = Amqp10Session::begin(conn)
+        const link = Amqp10Link::attach(session, "dispositions-link", true, "test-source")
+        link.grantCredit(10)
 
-        const m1 = link.nextMessage();
-        link.reject(m1.deliveryId, "amqp:decode-error", "test-reject");
+        const m1 = link.nextMessage()
+        link.reject(m1.deliveryId, "amqp:decode-error", "test-reject")
 
-        const m2 = link.nextMessage();
-        link.release(m2.deliveryId);
+        const m2 = link.nextMessage()
+        link.release(m2.deliveryId)
 
-        const m3 = link.nextMessage();
-        link.modify(m3.deliveryId, true, false);
+        const m3 = link.nextMessage()
+        link.modify(m3.deliveryId, true, false)
 
-        const brokerOk = await handle;
+        const brokerOk = await handle
         if (brokerOk == 1) {
-            println("ok-broker-saw-all");
+            println("ok-broker-saw-all")
         }
 
-        conn.close();
-        httpServerClose(srv);
-        return 0;
+        conn.close()
+        httpServerClose(srv)
+        return 0
     }
 }

@@ -1,9 +1,9 @@
 @ApplicationComponent
 @Synchronized
 class Broken {
-    fnc fail() -> Nothing { throw "startup child failed"; }
+    fnc fail() -> Nothing { throw "startup child failed" }
     @OnStart
-    fn start() -> Nothing { spawn Broken::fail(); }
+    fn start() -> Nothing { spawn Broken::fail() }
     @OnStop
-    fn stop() -> Nothing { println("cleanup"); }
+    fn stop() -> Nothing { println("cleanup") }
 }

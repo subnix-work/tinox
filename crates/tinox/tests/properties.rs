@@ -62,11 +62,11 @@ fn prop_join_split(rng: &mut Rng, i: usize) -> Instance {
         .map(|s| format!("\"{s}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut stmts = format!("    let xs{i}: List<String> = [{lit}];\n");
-    stmts.push_str(&format!("    let joined{i} = xs{i}.join(\"|\");\n"));
-    stmts.push_str(&format!("    let back{i} = joined{i}.split(\"|\");\n"));
-    stmts.push_str(&format!("    println(back{i}.len());\n"));
-    stmts.push_str(&format!("    for x in back{i} {{ println(x + \"$\"); }}\n"));
+    let mut stmts = format!("    let xs{i}: List<String> = [{lit}]\n");
+    stmts.push_str(&format!("    let joined{i} = xs{i}.join(\"|\")\n"));
+    stmts.push_str(&format!("    let back{i} = joined{i}.split(\"|\")\n"));
+    stmts.push_str(&format!("    println(back{i}.len())\n"));
+    stmts.push_str(&format!("    for x in back{i} {{ println(x + \"$\") }}\n"));
     let mut expects = vec![xs.len().to_string()];
     expects.extend(xs.iter().map(|s| format!("{s}$")));
     (stmts, expects)
@@ -80,7 +80,7 @@ fn prop_substring(rng: &mut Rng, i: usize) -> Instance {
     let b = a + rng.below(len - a + 1);
     let expected = &s[a as usize..b as usize];
     let stmts = format!(
-        "    let s{i} = \"{s}\";\n    println(s{i}.substring({a}, {b}) + \"$\");\n    println(s{i}.substring(0, s{i}.len()) + \"$\");\n"
+        "    let s{i} = \"{s}\"\n    println(s{i}.substring({a}, {b}) + \"$\")\n    println(s{i}.substring(0, s{i}.len()) + \"$\")\n"
     );
     (stmts, vec![format!("{expected}$"), format!("{s}$")])
 }
@@ -90,7 +90,7 @@ fn prop_concat(rng: &mut Rng, i: usize) -> Instance {
     let a = rng.ident_string(12);
     let b = rng.ident_string(12);
     let stmts = format!(
-        "    let a{i} = \"{a}\";\n    let b{i} = \"{b}\";\n    let c{i} = a{i} + b{i};\n    println(c{i}.len());\n    println(c{i} + \"$\");\n"
+        "    let a{i} = \"{a}\"\n    let b{i} = \"{b}\"\n    let c{i} = a{i} + b{i}\n    println(c{i}.len())\n    println(c{i} + \"$\")\n"
     );
     (stmts, vec![(a.len() + b.len()).to_string(), format!("{a}{b}$")])
 }
@@ -101,10 +101,10 @@ fn prop_sort(rng: &mut Rng, i: usize) -> Instance {
     let lit = xs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
     let mut sorted = xs.clone();
     sorted.sort();
-    let mut stmts = format!("    let xs{i}: List<Int64> = [{lit}];\n");
-    stmts.push_str(&format!("    let s{i} = xs{i}.sort();\n"));
-    stmts.push_str(&format!("    for x in s{i} {{ println(x); }}\n"));
-    stmts.push_str(&format!("    println(xs{i}.len());\n"));
+    let mut stmts = format!("    let xs{i}: List<Int64> = [{lit}]\n");
+    stmts.push_str(&format!("    let s{i} = xs{i}.sort()\n"));
+    stmts.push_str(&format!("    for x in s{i} {{ println(x) }}\n"));
+    stmts.push_str(&format!("    println(xs{i}.len())\n"));
     let mut expects: Vec<String> = sorted.iter().map(|v| v.to_string()).collect();
     expects.push(xs.len().to_string());
     (stmts, expects)
@@ -114,11 +114,11 @@ fn prop_reverse(rng: &mut Rng, i: usize) -> Instance {
     // reverse(reverse(xs)) == xs and reverse == host reverse
     let xs = rng.int_list(8);
     let lit = xs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
-    let mut stmts = format!("    let xs{i}: List<Int64> = [{lit}];\n");
-    stmts.push_str(&format!("    let r{i} = xs{i}.reverse();\n"));
-    stmts.push_str(&format!("    for x in r{i} {{ println(x); }}\n"));
-    stmts.push_str(&format!("    let rr{i} = r{i}.reverse();\n"));
-    stmts.push_str(&format!("    for x in rr{i} {{ println(x); }}\n"));
+    let mut stmts = format!("    let xs{i}: List<Int64> = [{lit}]\n");
+    stmts.push_str(&format!("    let r{i} = xs{i}.reverse()\n"));
+    stmts.push_str(&format!("    for x in r{i} {{ println(x) }}\n"));
+    stmts.push_str(&format!("    let rr{i} = r{i}.reverse()\n"));
+    stmts.push_str(&format!("    for x in rr{i} {{ println(x) }}\n"));
     let mut expects: Vec<String> = xs.iter().rev().map(|v| v.to_string()).collect();
     expects.extend(xs.iter().map(|v| v.to_string()));
     (stmts, expects)
@@ -127,19 +127,19 @@ fn prop_reverse(rng: &mut Rng, i: usize) -> Instance {
 fn prop_push_pop(rng: &mut Rng, i: usize) -> Instance {
     // Model comparison: sequence of push/pop against Vec<i64>
     let mut model: Vec<i64> = Vec::new();
-    let mut stmts = format!("    var xs{i}: List<Int64> = [];\n");
+    let mut stmts = format!("    var xs{i}: List<Int64> = []\n");
     for _ in 0..rng.below(12) + 3 {
         if rng.below(3) == 0 && !model.is_empty() {
             model.pop();
-            stmts.push_str(&format!("    xs{i}.pop();\n"));
+            stmts.push_str(&format!("    xs{i}.pop()\n"));
         } else {
             let v = rng.next() as i64 % 1000;
             model.push(v);
-            stmts.push_str(&format!("    xs{i}.push({v});\n"));
+            stmts.push_str(&format!("    xs{i}.push({v})\n"));
         }
     }
-    stmts.push_str(&format!("    println(xs{i}.len());\n"));
-    stmts.push_str(&format!("    for x in xs{i} {{ println(x); }}\n"));
+    stmts.push_str(&format!("    println(xs{i}.len())\n"));
+    stmts.push_str(&format!("    for x in xs{i} {{ println(x) }}\n"));
     let mut expects = vec![model.len().to_string()];
     expects.extend(model.iter().map(|v| v.to_string()));
     (stmts, expects)
@@ -154,11 +154,11 @@ fn prop_contains_index_of(rng: &mut Rng, i: usize) -> Instance {
     let miss = 5000 + (rng.next() as i64 % 1000).abs(); // outside the value range
     let hit_idx = xs.iter().position(|&v| v == hit).unwrap();
     let stmts = format!(
-        "    let xs{i}: List<Int64> = [{lit}];\n\
-         \x20   if (xs{i}.contains({hit})) {{ println(\"y\"); }} else {{ println(\"n\"); }}\n\
-         \x20   if (xs{i}.contains({miss})) {{ println(\"y\"); }} else {{ println(\"n\"); }}\n\
-         \x20   println(xs{i}.indexOf({hit}));\n\
-         \x20   println(xs{i}.indexOf({miss}));\n"
+        "    let xs{i}: List<Int64> = [{lit}]\n\
+         \x20   if (xs{i}.contains({hit})) {{ println(\"y\") }} else {{ println(\"n\") }}\n\
+         \x20   if (xs{i}.contains({miss})) {{ println(\"y\") }} else {{ println(\"n\") }}\n\
+         \x20   println(xs{i}.indexOf({hit}))\n\
+         \x20   println(xs{i}.indexOf({miss}))\n"
     );
     (
         stmts,
@@ -176,7 +176,7 @@ fn prop_replace(rng: &mut Rng, i: usize) -> Instance {
     let s = format!("{base}{from}{base}");
     let expected = s.replace(&from, &to);
     let stmts = format!(
-        "    let s{i} = \"{s}\";\n    println(s{i}.replace(\"{from}\", \"{to}\") + \"$\");\n"
+        "    let s{i} = \"{s}\"\n    println(s{i}.replace(\"{from}\", \"{to}\") + \"$\")\n"
     );
     (stmts, vec![format!("{expected}$")])
 }
@@ -210,7 +210,7 @@ fn generate(shard: usize) -> PathBuf {
             body.push_str(&stmts);
             expects.extend(exp);
         }
-        body.push_str("    return 0;\n    }\n}\n");
+        body.push_str("    return 0\n    }\n}\n");
         let mut src = String::new();
         for e in &expects {
             src.push_str(&format!("// expect: {e}\n"));

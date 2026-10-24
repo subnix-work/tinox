@@ -13,20 +13,20 @@ class Main
     @inline
     fnc square(x: Int64) -> Int64
     {
-        return x * x;
+        return x * x
     }
 
     @inline
     fn instanceSquarePlusOne(x: Int64) -> Int64
     {
-        return x * x + 1;
+        return x * x + 1
     }
 
     fnc main() -> Int32
     {
-        println(square(4));
-        const m = Main {};
-        println(m.instanceSquarePlusOne(4));
-        return 0;
+        println(square(4))
+        const m = Main {}
+        println(m.instanceSquarePlusOne(4))
+        return 0
     }
 }

@@ -1,10 +1,10 @@
-import JVal;
+import JVal
 
 class Wrapped {
-    var value: JVal;
-    var tag: Int64;
+    var value: JVal
+    var tag: Int64
 
     fnc makeWrapped() -> Wrapped {
-        return Wrapped { value: JVal::SVal("hi"), tag: 42 };
+        return Wrapped { value: JVal::SVal("hi"), tag: 42 }
     }
 }

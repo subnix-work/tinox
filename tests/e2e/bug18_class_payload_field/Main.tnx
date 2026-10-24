@@ -1,5 +1,5 @@
-import User;
-import Res;
+import User
+import Res
 
 // Bug 18: class payloads from match bindings were untyped ("Other") —
 // field access always read offset 0 with i64 typing (u.name printed the id)
@@ -11,20 +11,20 @@ import Res;
 class Main
 {
     fnc main() -> Int32 {
-        const r = Res::Ok(User { id: 7, name: "Alice" });
+        const r = Res::Ok(User { id: 7, name: "Alice" })
         match r {
             Ok(u) => {
-                println(u.name);
-                println(u.id);
-                println(u.greet());
+                println(u.name)
+                println(u.id)
+                println(u.greet())
             }
-            Err(m) => println(m);
+            Err(m) => println(m)
         }
-        const e = Res::Err("broken");
+        const e = Res::Err("broken")
         match e {
-            Ok(u) => println(u.name);
-            Err(m) => println("err: " + m);
+            Ok(u) => println(u.name)
+            Err(m) => println("err: " + m)
         }
-        return 0;
+        return 0
     }
 }

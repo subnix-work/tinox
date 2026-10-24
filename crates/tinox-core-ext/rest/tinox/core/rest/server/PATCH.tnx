@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -9,16 +9,16 @@ namespace tinox.core.rest.server
     @annotation
     class PATCH
     {
-        var path: String;
+        var path: String
 
         fn new(path: String) -> PATCH
         {
-            return PATCH { path: path };
+            return PATCH { path: path }
         }
 
         fn default() -> PATCH
         {
-            return PATCH { path: "" };
+            return PATCH { path: "" }
         }
     }
 }

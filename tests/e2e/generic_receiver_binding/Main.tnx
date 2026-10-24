@@ -8,19 +8,19 @@
 // expect: 42
 // expect: 3.5
 
-import generic_receiver_binding;
+import generic_receiver_binding
 
 class Main
 {
     fnc main() -> Int32 {
-        const bs: generic_receiver_binding<String> = generic_receiver_binding::make("hi");
-        println(generic_receiver_binding::get(bs));               // hi — Box__i8P (receiver binding)
+        const bs: generic_receiver_binding<String> = generic_receiver_binding::make("hi")
+        println(generic_receiver_binding::get(bs))               // hi — Box__i8P (receiver binding)
 
-        const bi: generic_receiver_binding<Int64> = generic_receiver_binding::make(42);
-        println(generic_receiver_binding::get(bi).toString());    // 42 — Box__i64
+        const bi: generic_receiver_binding<Int64> = generic_receiver_binding::make(42)
+        println(generic_receiver_binding::get(bi).toString())    // 42 — Box__i64
 
-        const bf: generic_receiver_binding<Float64> = generic_receiver_binding::make(3.5);
-        println(generic_receiver_binding::get(bf).toString());    // 3.5 — Box__double
-        return 0;
+        const bf: generic_receiver_binding<Float64> = generic_receiver_binding::make(3.5)
+        println(generic_receiver_binding::get(bf).toString())    // 3.5 — Box__double
+        return 0
     }
 }

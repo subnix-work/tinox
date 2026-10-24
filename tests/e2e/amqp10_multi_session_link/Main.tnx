@@ -19,157 +19,157 @@
 // expect: broker-transfer2a-handle:0
 // expect: ok-broker-saw-all
 
-import tinox.core.amqp10;
-import tinox.core.socket;
+import tinox.core.amqp10
+import tinox.core.socket
 
 class Main
 {
 
     fnc attachOkAndGrantFlow(sconn: Int64, chanId: Int64) -> Int64 {
-        const fAttach = Amqp10::readFrame(sconn);
-        const pAttach = Amqp10::decodePerformative(fAttach.body);
-        Amqp10::writeFrame(sconn, 0, chanId, Amqp10::encodePerformative(0x12, pAttach.fields));
-        var handle: Int64 = -1;
+        const fAttach = Amqp10::readFrame(sconn)
+        const pAttach = Amqp10::decodePerformative(fAttach.body)
+        Amqp10::writeFrame(sconn, 0, chanId, Amqp10::encodePerformative(0x12, pAttach.fields))
+        var handle: Int64 = -1
         if (pAttach.fields.len() > 1) {
-            match pAttach.fields[1] { UIntVal(n) => { handle = n; } _ => {} }
+            match pAttach.fields[1] { UIntVal(n) => { handle = n } _ => {} }
         }
         var flowFields: List<Amqp10Value> = [
             Amqp10Value::NullVal, Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(handle), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(1)
-        ];
-        Amqp10::writeFrame(sconn, 0, chanId, Amqp10::encodePerformative(0x13, flowFields));
-        return handle;
+        ]
+        Amqp10::writeFrame(sconn, 0, chanId, Amqp10::encodePerformative(0x13, flowFields))
+        return handle
     }
 
 
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv)
 
         // --- SASL header + negotiation ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
-        Amqp10::writeFrame(sconn, 1, 0, mechBody);
-        Amqp10::readFrame(sconn);
-        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
-        Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0])
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])])
+        Amqp10::writeFrame(sconn, 1, 0, mechBody)
+        Amqp10::readFrame(sconn)
+        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)])
+        Amqp10::writeFrame(sconn, 1, 0, outcomeBody)
 
         // --- AMQP header ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0])
 
         // --- open / open-ok ---
-        Amqp10::readFrame(sconn);
+        Amqp10::readFrame(sconn)
         var openFields: List<Amqp10Value> = [
             Amqp10Value::StrVal("fake-broker"), Amqp10Value::NullVal,
             Amqp10Value::UIntVal(131072), Amqp10Value::UShortVal(2047)
-        ];
-        Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields))
 
         // --- begin (session 1) / begin-ok ---
-        const fBegin1 = Amqp10::readFrame(sconn);
+        const fBegin1 = Amqp10::readFrame(sconn)
         var begin1Fields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin1.chanId), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin1.chanId, Amqp10::encodePerformative(0x11, begin1Fields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin1.chanId, Amqp10::encodePerformative(0x11, begin1Fields))
 
         // --- begin (session 2) / begin-ok ---
-        const fBegin2 = Amqp10::readFrame(sconn);
+        const fBegin2 = Amqp10::readFrame(sconn)
         var begin2Fields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin2.chanId), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin2.chanId, Amqp10::encodePerformative(0x11, begin2Fields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin2.chanId, Amqp10::encodePerformative(0x11, begin2Fields))
 
         // --- attach 1a (session 1) / flow ---
-        const handle1a = attachOkAndGrantFlow(sconn, fBegin1.chanId);
-        const f1a = Amqp10::readFrame(sconn);
-        const p1a = Amqp10::decodePerformative(f1a.body);
-        var t1aHandle: Int64 = -1;
-        if (p1a.fields.len() > 0) { match p1a.fields[0] { UIntVal(n) => { t1aHandle = n; } _ => {} } }
+        const handle1a = attachOkAndGrantFlow(sconn, fBegin1.chanId)
+        const f1a = Amqp10::readFrame(sconn)
+        const p1a = Amqp10::decodePerformative(f1a.body)
+        var t1aHandle: Int64 = -1
+        if (p1a.fields.len() > 0) { match p1a.fields[0] { UIntVal(n) => { t1aHandle = n } _ => {} } }
 
         // --- attach 1b (session 1, second link) / flow ---
-        const handle1b = attachOkAndGrantFlow(sconn, fBegin1.chanId);
-        const f1b = Amqp10::readFrame(sconn);
-        const p1b = Amqp10::decodePerformative(f1b.body);
-        var t1bHandle: Int64 = -1;
-        if (p1b.fields.len() > 0) { match p1b.fields[0] { UIntVal(n) => { t1bHandle = n; } _ => {} } }
+        const handle1b = attachOkAndGrantFlow(sconn, fBegin1.chanId)
+        const f1b = Amqp10::readFrame(sconn)
+        const p1b = Amqp10::decodePerformative(f1b.body)
+        var t1bHandle: Int64 = -1
+        if (p1b.fields.len() > 0) { match p1b.fields[0] { UIntVal(n) => { t1bHandle = n } _ => {} } }
 
         // --- attach 2a (session 2) / flow ---
-        const handle2a = attachOkAndGrantFlow(sconn, fBegin2.chanId);
-        const f2a = Amqp10::readFrame(sconn);
-        const p2a = Amqp10::decodePerformative(f2a.body);
-        var t2aHandle: Int64 = -1;
-        if (p2a.fields.len() > 0) { match p2a.fields[0] { UIntVal(n) => { t2aHandle = n; } _ => {} } }
+        const handle2a = attachOkAndGrantFlow(sconn, fBegin2.chanId)
+        const f2a = Amqp10::readFrame(sconn)
+        const p2a = Amqp10::decodePerformative(f2a.body)
+        var t2aHandle: Int64 = -1
+        if (p2a.fields.len() > 0) { match p2a.fields[0] { UIntVal(n) => { t2aHandle = n } _ => {} } }
 
-        httpConnClose(sconn);
+        httpConnClose(sconn)
 
-        println("broker-chan1:" + fBegin1.chanId.toString());
-        println("broker-chan2:" + fBegin2.chanId.toString());
-        println("broker-handle1a:" + handle1a.toString());
-        println("broker-handle1b:" + handle1b.toString());
-        println("broker-handle2a:" + handle2a.toString());
-        println("broker-transfer1a-chan:" + f1a.chanId.toString());
-        println("broker-transfer1a-handle:" + t1aHandle.toString());
-        println("broker-transfer1b-chan:" + f1b.chanId.toString());
-        println("broker-transfer1b-handle:" + t1bHandle.toString());
-        println("broker-transfer2a-chan:" + f2a.chanId.toString());
-        println("broker-transfer2a-handle:" + t2aHandle.toString());
+        println("broker-chan1:" + fBegin1.chanId.toString())
+        println("broker-chan2:" + fBegin2.chanId.toString())
+        println("broker-handle1a:" + handle1a.toString())
+        println("broker-handle1b:" + handle1b.toString())
+        println("broker-handle2a:" + handle2a.toString())
+        println("broker-transfer1a-chan:" + f1a.chanId.toString())
+        println("broker-transfer1a-handle:" + t1aHandle.toString())
+        println("broker-transfer1b-chan:" + f1b.chanId.toString())
+        println("broker-transfer1b-handle:" + t1bHandle.toString())
+        println("broker-transfer2a-chan:" + f2a.chanId.toString())
+        println("broker-transfer2a-handle:" + t2aHandle.toString())
 
-        var result: Int64 = 0;
+        var result: Int64 = 0
         if (fBegin1.chanId == 1) { if (fBegin2.chanId == 2) {
             if (handle1a == 0) { if (handle1b == 1) { if (handle2a == 0) {
                 if (f1a.chanId == 1) { if (t1aHandle == 0) {
                     if (f1b.chanId == 1) { if (t1bHandle == 1) {
                         if (f2a.chanId == 2) { if (t2aHandle == 0) {
-                            result = 1;
+                            result = 1
                         } }
                     } }
                 } }
             } } }
         } }
-        return result;
+        return result
     }
 
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv)
 
-        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest")
         if (conn.conn <= 0) {
-            println("connect failed: " + conn.errorMessage);
-            return 1;
+            println("connect failed: " + conn.errorMessage)
+            return 1
         }
-        println("ok-connect");
+        println("ok-connect")
 
-        const session1 = Amqp10Session::begin(conn);
-        const session2 = Amqp10Session::begin(conn);
+        const session1 = Amqp10Session::begin(conn)
+        const session2 = Amqp10Session::begin(conn)
 
-        const link1a = Amqp10Link::attach(session1, "s1-link-a", false, "target-a");
-        link1a.publish([65], "text/plain");
+        const link1a = Amqp10Link::attach(session1, "s1-link-a", false, "target-a")
+        link1a.publish([65], "text/plain")
 
-        const link1b = Amqp10Link::attach(session1, "s1-link-b", false, "target-b");
-        link1b.publish([66], "text/plain");
+        const link1b = Amqp10Link::attach(session1, "s1-link-b", false, "target-b")
+        link1b.publish([66], "text/plain")
 
-        const link2a = Amqp10Link::attach(session2, "s2-link-a", false, "target-c");
-        link2a.publish([67], "text/plain");
+        const link2a = Amqp10Link::attach(session2, "s2-link-a", false, "target-c")
+        link2a.publish([67], "text/plain")
 
-        const brokerOk = await handle;
+        const brokerOk = await handle
         if (brokerOk == 1) {
-            println("ok-broker-saw-all");
+            println("ok-broker-saw-all")
         }
 
-        conn.close();
-        httpServerClose(srv);
-        return 0;
+        conn.close()
+        httpServerClose(srv)
+        return 0
     }
 }

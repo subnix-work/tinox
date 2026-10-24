@@ -1,5 +1,5 @@
-import tinox.core.db;
-import Account;
+import tinox.core.db
+import Account
 
 @ApplicationComponent
 @Synchronized
@@ -13,14 +13,14 @@ class BankService
     @Transactional
     fn transfer(fromId: Int64, toId: Int64, amount: Int64) -> Nothing
     {
-        const from: Account = DB::of(Account).filter(a => a.id == fromId).first();
-        const to: Account = DB::of(Account).filter(a => a.id == toId).first();
-        from.balance = from.balance - amount;
-        to.balance = to.balance + amount;
-        DB::of(Account).save(from);
-        DB::of(Account).save(to);
+        const from: Account = DB::of(Account).filter(a => a.id == fromId).first()
+        const to: Account = DB::of(Account).filter(a => a.id == toId).first()
+        from.balance = from.balance - amount
+        to.balance = to.balance + amount
+        DB::of(Account).save(from)
+        DB::of(Account).save(to)
         if (from.balance < 0) {
-            throw "insufficient funds";
+            throw "insufficient funds"
         }
     }
 
@@ -37,25 +37,25 @@ class BankService
     @Transactional
     fn getBalanceAndTouch(accountId: Int64) -> Int64
     {
-        const acct: Account = DB::of(Account).filter(a => a.id == accountId).first();
-        acct.balance = acct.balance + 1;
-        DB::of(Account).save(acct);
-        return acct.balance;
+        const acct: Account = DB::of(Account).filter(a => a.id == accountId).first()
+        acct.balance = acct.balance + 1
+        DB::of(Account).save(acct)
+        return acct.balance
     }
     // Cancellation must roll back before the owning scope finishes joining.
     @Transactional
     fn cancelledChange(accountId: Int64, ready: Int64) -> Nothing
     {
-        const acct: Account = DB::of(Account).filter(a => a.id == accountId).first();
-        acct.balance = acct.balance + 10000;
-        DB::of(Account).save(acct);
-        send ready -> 1;
-        sleep(10000);
+        const acct: Account = DB::of(Account).filter(a => a.id == accountId).first()
+        acct.balance = acct.balance + 10000
+        DB::of(Account).save(acct)
+        send ready -> 1
+        sleep(10000)
     }
     @Transactional
     fn readBalance(accountId: Int64) -> Int64 {
-        const account: Account = DB::of(Account).filter(a => a.id == accountId).first();
-        return account.balance;
+        const account: Account = DB::of(Account).filter(a => a.id == accountId).first()
+        return account.balance
     }
 
 }

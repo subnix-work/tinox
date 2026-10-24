@@ -1,5 +1,5 @@
 class generic_field_type_resolution<T> {
-    var value: T;
-    var tag: Int64;
-    fn make(v: T, tag: Int64) -> generic_field_type_resolution<T> { return generic_field_type_resolution { value: v, tag: tag }; }
+    var value: T
+    var tag: Int64
+    fn make(v: T, tag: Int64) -> generic_field_type_resolution<T> { return generic_field_type_resolution { value: v, tag: tag } }
 }

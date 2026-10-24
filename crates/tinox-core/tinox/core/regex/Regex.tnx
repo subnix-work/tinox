@@ -1,4 +1,4 @@
-module tinox.core.regex;
+module tinox.core.regex
 
 namespace tinox.core.regex
 {
@@ -6,27 +6,27 @@ namespace tinox.core.regex
     {
         fn isMatch(pattern: String, text: String) -> Bool
         {
-            return regexIsMatch(pattern, text);
+            return regexIsMatch(pattern, text)
         }
 
         fn findFirst(pattern: String, text: String) -> String
         {
-            return regexFindFirst(pattern, text);
+            return regexFindFirst(pattern, text)
         }
 
         fn findAll(pattern: String, text: String) -> List<String>
         {
-            return regexFindAll(pattern, text);
+            return regexFindAll(pattern, text)
         }
 
         fn replaceAll(pattern: String, text: String, replacement: String) -> String
         {
-            return regexReplaceAll(pattern, text, replacement);
+            return regexReplaceAll(pattern, text, replacement)
         }
 
         fn split(pattern: String, text: String) -> List<String>
         {
-            return regexSplit(pattern, text);
+            return regexSplit(pattern, text)
         }
     }
 }

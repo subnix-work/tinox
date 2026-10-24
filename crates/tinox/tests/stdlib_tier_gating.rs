@@ -27,7 +27,7 @@ fn core_module_import_resolves_with_zero_tinox_toml() {
     let dir = workdir("core");
     fs::write(
         dir.join("Main.tnx"),
-        "import tinox.core.string;\nclass Main {\n    fnc main() -> Int32 {\n        println(Strings::toUpperCase(\"hi\"));\n        return 0;\n    }\n}\n",
+        "import tinox.core.string\nclass Main {\n    fnc main() -> Int32 {\n        println(Strings::toUpperCase(\"hi\"))\n        return 0\n    }\n}\n",
     )
     .unwrap();
 
@@ -56,7 +56,7 @@ fn extended_module_import_with_no_tinox_toml_fails_with_declare_it_error() {
     let dir = workdir("undeclared");
     fs::write(
         dir.join("Main.tnx"),
-        "import tinox.core.json;\nclass Main {\n    fnc main() -> Int32 {\n        let v: JsonValue = Json::parse(\"1\");\n        println(v.getInt());\n        return 0;\n    }\n}\n",
+        "import tinox.core.json\nclass Main {\n    fnc main() -> Int32 {\n        let v: JsonValue = Json::parse(\"1\")\n        println(v.getInt())\n        return 0\n    }\n}\n",
     )
     .unwrap();
 
@@ -87,7 +87,7 @@ fn extended_module_declared_but_not_installed_fails_with_run_install_error() {
     .unwrap();
     fs::write(
         dir.join("Main.tnx"),
-        "import tinox.core.json;\nclass Main {\n    fnc main() -> Int32 {\n        let v: JsonValue = Json::parse(\"1\");\n        println(v.getInt());\n        return 0;\n    }\n}\n",
+        "import tinox.core.json\nclass Main {\n    fnc main() -> Int32 {\n        let v: JsonValue = Json::parse(\"1\")\n        println(v.getInt())\n        return 0\n    }\n}\n",
     )
     .unwrap();
 

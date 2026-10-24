@@ -1,4 +1,4 @@
-import TaskStatus;
+import TaskStatus
 
 @Entity
 @Table("jobs")
@@ -6,7 +6,7 @@ class Job
 {
     @Id
     @GeneratedValue
-    var id: Int64;
-    var title: String;
-    var status: TaskStatus;
+    var id: Int64
+    var title: String
+    var status: TaskStatus
 }

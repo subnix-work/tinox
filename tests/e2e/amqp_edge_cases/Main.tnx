@@ -31,174 +31,174 @@
 // expect: ok-message
 // expect: ok-broker-saw-all
 
-import tinox.core.amqp091;
-import tinox.core.socket;
+import tinox.core.amqp091
+import tinox.core.socket
 
 class Main
 {
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn, 8); // protocol header
+        const sconn = httpServerAcceptConnHandle(srv)
+        httpConnReadN(sconn, 8) // protocol header
 
         // --- Negotiation (like amqp_connection_negotiation.tnx) ---
-        const w1 = AmqpWriter091::new();
-        w1.octet(0);
-        w1.octet(9);
-        var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
-        w1.fieldTable(emptyProps);
-        w1.longstr("PLAIN");
-        w1.longstr("en_US");
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes));
-        Amqp091::readFrame(sconn); // start-ok
+        const w1 = AmqpWriter091::new()
+        w1.octet(0)
+        w1.octet(9)
+        var emptyProps: Map<String, AmqpFieldValue091> = Map::new()
+        w1.fieldTable(emptyProps)
+        w1.longstr("PLAIN")
+        w1.longstr("en_US")
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes))
+        Amqp091::readFrame(sconn) // start-ok
 
-        const w2 = AmqpWriter091::new();
-        w2.short(2047);
-        w2.long(100);
-        w2.short(60);
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 30, w2.bytes));
-        Amqp091::readFrame(sconn); // tune-ok
-        Amqp091::readFrame(sconn); // open
+        const w2 = AmqpWriter091::new()
+        w2.short(2047)
+        w2.long(100)
+        w2.short(60)
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 30, w2.bytes))
+        Amqp091::readFrame(sconn) // tune-ok
+        Amqp091::readFrame(sconn) // open
 
-        const w3 = AmqpWriter091::new();
-        w3.shortstr("");
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes));
+        const w3 = AmqpWriter091::new()
+        w3.shortstr("")
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes))
 
-        Amqp091::readFrame(sconn); // channel.open
-        const w4 = AmqpWriter091::new();
-        w4.longstr("");
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
+        Amqp091::readFrame(sconn) // channel.open
+        const w4 = AmqpWriter091::new()
+        w4.longstr("")
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes))
 
         // --- queue.declare -> declare-ok (mirrors the requested name) ---
-        const fDecl = Amqp091::readFrame(sconn);
-        const mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
-        const declArgs = AmqpReader091::new(mDecl.args);
-        declArgs.short(); // reserved-1
-        const queueName = declArgs.shortstr();
-        var ok1: Bool = mDecl.classId == 50 && mDecl.methodId == 10;
+        const fDecl = Amqp091::readFrame(sconn)
+        const mDecl = Amqp091::decodeMethodPayload(fDecl.payload)
+        const declArgs = AmqpReader091::new(mDecl.args)
+        declArgs.short() // reserved-1
+        const queueName = declArgs.shortstr()
+        var ok1: Bool = mDecl.classId == 50 && mDecl.methodId == 10
 
-        const wDeclOk = AmqpWriter091::new();
-        wDeclOk.shortstr(queueName);
-        wDeclOk.long(0); // message-count
-        wDeclOk.long(0); // consumer-count
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 11, wDeclOk.bytes));
+        const wDeclOk = AmqpWriter091::new()
+        wDeclOk.shortstr(queueName)
+        wDeclOk.long(0) // message-count
+        wDeclOk.long(0) // consumer-count
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 11, wDeclOk.bytes))
 
         // --- queue.bind -> bind-ok ---
-        const fBind = Amqp091::readFrame(sconn);
-        const mBind = Amqp091::decodeMethodPayload(fBind.payload);
-        var ok2: Bool = mBind.classId == 50 && mBind.methodId == 20;
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 21, []));
+        const fBind = Amqp091::readFrame(sconn)
+        const mBind = Amqp091::decodeMethodPayload(fBind.payload)
+        var ok2: Bool = mBind.classId == 50 && mBind.methodId == 20
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 21, []))
 
         // --- basic.qos -> qos-ok ---
-        const fQos = Amqp091::readFrame(sconn);
-        const mQos = Amqp091::decodeMethodPayload(fQos.payload);
-        var ok3: Bool = mQos.classId == 60 && mQos.methodId == 10;
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 11, []));
+        const fQos = Amqp091::readFrame(sconn)
+        const mQos = Amqp091::decodeMethodPayload(fQos.payload)
+        var ok3: Bool = mQos.classId == 60 && mQos.methodId == 10
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 11, []))
 
         // --- basic.publish #1: empty body (0 body frames expected) ---
-        const fPub0 = Amqp091::readFrame(sconn);
-        Amqp091::decodeMethodPayload(fPub0.payload);
-        const fHdr0 = Amqp091::readFrame(sconn);
-        const hr0 = AmqpReader091::new(fHdr0.payload);
-        hr0.short();
-        hr0.short();
-        const bodySize0 = hr0.longlong();
-        var ok0: Bool = bodySize0 == 0;
+        const fPub0 = Amqp091::readFrame(sconn)
+        Amqp091::decodeMethodPayload(fPub0.payload)
+        const fHdr0 = Amqp091::readFrame(sconn)
+        const hr0 = AmqpReader091::new(fHdr0.payload)
+        hr0.short()
+        hr0.short()
+        const bodySize0 = hr0.longlong()
+        var ok0: Bool = bodySize0 == 0
 
         // --- basic.publish #2 (method) + content header + body, spread
         // across multiple frames (frame-max=100) ---
-        const fPub = Amqp091::readFrame(sconn);
-        const mPub = Amqp091::decodeMethodPayload(fPub.payload);
-        var ok4: Bool = mPub.classId == 60 && mPub.methodId == 40;
+        const fPub = Amqp091::readFrame(sconn)
+        const mPub = Amqp091::decodeMethodPayload(fPub.payload)
+        var ok4: Bool = mPub.classId == 60 && mPub.methodId == 40
 
-        const fHdr = Amqp091::readFrame(sconn);
-        var ok5: Bool = fHdr.frameType == 2;
-        const hr = AmqpReader091::new(fHdr.payload);
-        hr.short(); // class-id
-        hr.short(); // weight
-        const bodySize = hr.longlong();
+        const fHdr = Amqp091::readFrame(sconn)
+        var ok5: Bool = fHdr.frameType == 2
+        const hr = AmqpReader091::new(fHdr.payload)
+        hr.short() // class-id
+        hr.short() // weight
+        const bodySize = hr.longlong()
 
-        var body: List<Int64> = [];
-        var frameCount: Int64 = 0;
+        var body: List<Int64> = []
+        var frameCount: Int64 = 0
         while body.len() < bodySize {
-            const fBody = Amqp091::readFrame(sconn);
+            const fBody = Amqp091::readFrame(sconn)
             for i in 0..fBody.payload.len() {
-                body.push(fBody.payload[i]);
+                body.push(fBody.payload[i])
             }
-            frameCount = frameCount + 1;
+            frameCount = frameCount + 1
         }
-        var ok4b: Bool = frameCount > 1;
+        var ok4b: Bool = frameCount > 1
 
         // --- basic.consume -> consume-ok ---
-        const fCons = Amqp091::readFrame(sconn);
-        const mCons = Amqp091::decodeMethodPayload(fCons.payload);
-        var ok6: Bool = mCons.classId == 60 && mCons.methodId == 20;
-        const wConsOk = AmqpWriter091::new();
-        wConsOk.shortstr("fake-consumer-tag");
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 21, wConsOk.bytes));
+        const fCons = Amqp091::readFrame(sconn)
+        const mCons = Amqp091::decodeMethodPayload(fCons.payload)
+        var ok6: Bool = mCons.classId == 60 && mCons.methodId == 20
+        const wConsOk = AmqpWriter091::new()
+        wConsOk.shortstr("fake-consumer-tag")
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 21, wConsOk.bytes))
 
         // --- basic.deliver #1: mirror back the empty body ---
-        const wDeliver0 = AmqpWriter091::new();
-        wDeliver0.shortstr("fake-consumer-tag");
-        wDeliver0.longlong(1);
-        wDeliver0.octet(0);
-        wDeliver0.shortstr("");
-        wDeliver0.shortstr(queueName);
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 60, wDeliver0.bytes));
-        const wDeliverHdr0 = AmqpWriter091::new();
-        wDeliverHdr0.short(60);
-        wDeliverHdr0.short(0);
-        wDeliverHdr0.longlong(0);
-        wDeliverHdr0.short(0);
-        Amqp091::writeFrame(sconn, 2, 1, wDeliverHdr0.bytes);
+        const wDeliver0 = AmqpWriter091::new()
+        wDeliver0.shortstr("fake-consumer-tag")
+        wDeliver0.longlong(1)
+        wDeliver0.octet(0)
+        wDeliver0.shortstr("")
+        wDeliver0.shortstr(queueName)
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 60, wDeliver0.bytes))
+        const wDeliverHdr0 = AmqpWriter091::new()
+        wDeliverHdr0.short(60)
+        wDeliverHdr0.short(0)
+        wDeliverHdr0.longlong(0)
+        wDeliverHdr0.short(0)
+        Amqp091::writeFrame(sconn, 2, 1, wDeliverHdr0.bytes)
         // 0 body frames, spec-compliant.
 
         // --- basic.deliver #2 (method) + content header + body, mirrors the
         // previously received publish body back, again spread across multiple
         // frames ---
-        const wDeliver = AmqpWriter091::new();
-        wDeliver.shortstr("fake-consumer-tag");
-        wDeliver.longlong(2); // delivery-tag
-        wDeliver.octet(0);    // redelivered flag
-        wDeliver.shortstr("");
-        wDeliver.shortstr(queueName);
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 60, wDeliver.bytes));
+        const wDeliver = AmqpWriter091::new()
+        wDeliver.shortstr("fake-consumer-tag")
+        wDeliver.longlong(2) // delivery-tag
+        wDeliver.octet(0)    // redelivered flag
+        wDeliver.shortstr("")
+        wDeliver.shortstr(queueName)
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(60, 60, wDeliver.bytes))
 
-        const wDeliverHdr = AmqpWriter091::new();
-        wDeliverHdr.short(60);
-        wDeliverHdr.short(0);
-        wDeliverHdr.longlong(body.len());
-        wDeliverHdr.short(32768); // content-type only
-        wDeliverHdr.shortstr("text/plain");
-        Amqp091::writeFrame(sconn, 2, 1, wDeliverHdr.bytes);
+        const wDeliverHdr = AmqpWriter091::new()
+        wDeliverHdr.short(60)
+        wDeliverHdr.short(0)
+        wDeliverHdr.longlong(body.len())
+        wDeliverHdr.short(32768) // content-type only
+        wDeliverHdr.shortstr("text/plain")
+        Amqp091::writeFrame(sconn, 2, 1, wDeliverHdr.bytes)
 
-        var dOffset: Int64 = 0;
-        var dChunkSize: Int64 = 92;
-        const dn = body.len();
+        var dOffset: Int64 = 0
+        var dChunkSize: Int64 = 92
+        const dn = body.len()
         while dOffset < dn {
-            var dEnd: Int64 = dOffset + dChunkSize;
+            var dEnd: Int64 = dOffset + dChunkSize
             if (dEnd > dn) {
-                dEnd = dn;
+                dEnd = dn
             }
-            var dChunk: List<Int64> = [];
+            var dChunk: List<Int64> = []
             for i in dOffset..dEnd {
-                dChunk.push(body[i]);
+                dChunk.push(body[i])
             }
-            Amqp091::writeFrame(sconn, 3, 1, dChunk);
-            dOffset = dEnd;
+            Amqp091::writeFrame(sconn, 3, 1, dChunk)
+            dOffset = dEnd
         }
 
         // --- expect two basic.ack ---
-        const fAck0 = Amqp091::readFrame(sconn);
-        const mAck0 = Amqp091::decodeMethodPayload(fAck0.payload);
-        var ok7a: Bool = mAck0.classId == 60 && mAck0.methodId == 80;
-        const fAck = Amqp091::readFrame(sconn);
-        const mAck = Amqp091::decodeMethodPayload(fAck.payload);
-        var ok7: Bool = mAck.classId == 60 && mAck.methodId == 80 && ok7a;
+        const fAck0 = Amqp091::readFrame(sconn)
+        const mAck0 = Amqp091::decodeMethodPayload(fAck0.payload)
+        var ok7a: Bool = mAck0.classId == 60 && mAck0.methodId == 80
+        const fAck = Amqp091::readFrame(sconn)
+        const mAck = Amqp091::decodeMethodPayload(fAck.payload)
+        var ok7: Bool = mAck.classId == 60 && mAck.methodId == 80 && ok7a
 
-        httpConnClose(sconn);
+        httpConnClose(sconn)
 
-        var allOk: Int64 = 0;
+        var allOk: Int64 = 0
         if (ok0) {
             if (ok1) {
                 if (ok2) {
@@ -208,7 +208,7 @@ class Main
                                 if (ok5) {
                                     if (ok6) {
                                         if (ok7) {
-                                            allOk = 1;
+                                            allOk = 1
                                         }
                                     }
                                 }
@@ -218,87 +218,87 @@ class Main
                 }
             }
         }
-        return allOk;
+        return allOk
     }
 
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv)
 
-        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
-        const ch = AmqpChannel091::open(c);
+        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest")
+        const ch = AmqpChannel091::open(c)
 
-        const queueName = ch.declareQueue("loopback-test-queue", true, false, false);
-        const bound = ch.bindQueue(queueName, "amq.direct", queueName);
-        const qosOk = ch.qos(5);
+        const queueName = ch.declareQueue("loopback-test-queue", true, false, false)
+        const bound = ch.bindQueue(queueName, "amq.direct", queueName)
+        const qosOk = ch.qos(5)
 
-        var emptyBody: List<Int64> = [];
-        ch.publish("amq.direct", queueName, emptyBody, "text/plain");
+        var emptyBody: List<Int64> = []
+        ch.publish("amq.direct", queueName, emptyBody, "text/plain")
 
-        var body: List<Int64> = [];
+        var body: List<Int64> = []
         for i in 0..250 {
-            body.push(i % 256);
+            body.push(i % 256)
         }
-        ch.publish("amq.direct", queueName, body, "text/plain");
+        ch.publish("amq.direct", queueName, body, "text/plain")
 
-        const tag = ch.consume(queueName);
-        const m0 = ch.nextMessage();
-        var emptyOk: Bool = m0.ok && m0.body.len() == 0;
+        const tag = ch.consume(queueName)
+        const m0 = ch.nextMessage()
+        var emptyOk: Bool = m0.ok && m0.body.len() == 0
         if (emptyOk) {
-            ch.ack(m0.deliveryTag);
+            ch.ack(m0.deliveryTag)
         }
 
-        const m = ch.nextMessage();
-        var contentOk: Bool = m.ok && m.body.len() == 250;
+        const m = ch.nextMessage()
+        var contentOk: Bool = m.ok && m.body.len() == 250
         if (contentOk) {
             for i in 0..250 {
                 if (m.body[i] != (i % 256)) {
-                    contentOk = false;
+                    contentOk = false
                 }
             }
         }
         if (contentOk) {
-            ch.ack(m.deliveryTag);
+            ch.ack(m.deliveryTag)
         }
 
-        const brokerOk = await handle;
+        const brokerOk = await handle
 
         if (queueName == "loopback-test-queue") {
-            println("ok-declare");
+            println("ok-declare")
         }
         if (bound) {
-            println("ok-bind");
+            println("ok-bind")
         }
         if (qosOk) {
-            println("ok-qos");
+            println("ok-qos")
         }
         if (tag == "fake-consumer-tag") {
-            println("ok-consume");
+            println("ok-consume")
         }
         if (emptyOk) {
-            println("ok-empty-body");
+            println("ok-empty-body")
         }
         if (contentOk) {
-            println("ok-multiframe-body");
+            println("ok-multiframe-body")
         }
         if (m.ok) {
             if (m.contentType == "text/plain") {
                 if (m.routingKey == queueName) {
-                    println("ok-message");
+                    println("ok-message")
                 }
             }
         }
         if (brokerOk == 1) {
-            println("ok-broker-saw-all");
+            println("ok-broker-saw-all")
         }
 
-        httpServerClose(srv);
-        return 0;
+        httpServerClose(srv)
+        return 0
     }
 }

@@ -21,9 +21,9 @@ class Main
 {
     fnc main() -> Int32
     {
-        const name: String = "Tinox";
-        println("Hello, " + name + "!");
-        return 0;
+        const name: String = "Tinox"
+        println("Hello, " + name + "!")
+        return 0
     }
 }
 ```
@@ -35,21 +35,21 @@ class Main
 @Setter
 class Main
 {
-    var count: Int64 = 0;
+    var count: Int64 = 0
 
     fnc main() -> Int32
     {
-        const counter = new Main();
-        counter.setCount(42);
-        println(counter.getCount());
-        return 0;
+        const counter = new Main()
+        counter.setCount(42)
+        println(counter.getCount())
+        return 0
     }
 
     @Test("generated accessors preserve values")
     fn testAccessors() -> Bool
     {
-        this.setCount(42);
-        return this.getCount() == 42;
+        this.setCount(42)
+        return this.getCount() == 42
     }
 }
 ```

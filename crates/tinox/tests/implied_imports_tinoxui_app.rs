@@ -47,13 +47,13 @@ fn stage_project(name: &str, app_imports: &str) -> PathBuf {
     std::fs::write(
         workdir.join("src/MyApp.tnx"),
         format!(
-            "{app_imports}\n\n@TinoxUIApp(18490, 18491)\nclass MyApp\n{{\n    var clicks: Int64;\n\n    @View\n    fn render() -> Component\n    {{\n        return Component::vbox([Component::label(\"Clicks: \" + this.clicks.toString())]);\n    }}\n}}\n"
+            "{app_imports}\n\n@TinoxUIApp(18490, 18491)\nclass MyApp\n{{\n    var clicks: Int64\n\n    @View\n    fn render() -> Component\n    {{\n        return Component::vbox([Component::label(\"Clicks: \" + this.clicks.toString())])\n    }}\n}}\n"
         ),
     )
     .expect("write MyApp.tnx");
     std::fs::write(
         workdir.join("src/Main.tnx"),
-        "import MyApp;\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        return 0;\n    }\n}\n",
+        "import MyApp\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        return 0\n    }\n}\n",
     )
     .expect("write Main.tnx");
 
@@ -84,7 +84,7 @@ fn tinoxui_app_compiles_with_only_ui_imported_explicitly() {
     let tinox = env!("CARGO_BIN_EXE_tinox");
     let workdir = stage_project(
         "only-ui",
-        "import tinox.core.ui;",
+        "import tinox.core.ui",
     );
     let exe = workdir.join("myapp_exe");
     let build = Command::new(tinox)
@@ -141,7 +141,7 @@ fn tinoxui_app_redundant_explicit_imports_still_work() {
     let tinox = env!("CARGO_BIN_EXE_tinox");
     let workdir = stage_project(
         "redundant",
-        "import tinox.core.websocket;\nimport tinox.core.http_server;\nimport tinox.core.ui;",
+        "import tinox.core.websocket\nimport tinox.core.http_server\nimport tinox.core.ui",
     );
     let exe = workdir.join("myapp_exe");
     let build = Command::new(tinox)
@@ -177,7 +177,7 @@ fn non_tinoxui_app_file_is_unaffected() {
     std::fs::create_dir_all(workdir.join("src")).expect("mkdir src");
     std::fs::write(
         workdir.join("src/Main.tnx"),
-        "class Main\n{\n    fnc main() -> Int32\n    {\n        println(\"no ui here\");\n        return 0;\n    }\n}\n",
+        "class Main\n{\n    fnc main() -> Int32\n    {\n        println(\"no ui here\")\n        return 0\n    }\n}\n",
     )
     .expect("write Main.tnx");
     std::fs::write(

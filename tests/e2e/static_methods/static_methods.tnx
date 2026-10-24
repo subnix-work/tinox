@@ -2,10 +2,10 @@ class static_methods
 {
     fnc square(n: Int64) -> Int64
     {
-        return n * n;
+        return n * n
     }
     fnc cube(n: Int64) -> Int64
     {
-        return n * n * n;
+        return n * n * n
     }
 }

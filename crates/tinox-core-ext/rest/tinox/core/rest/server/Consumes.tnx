@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -9,11 +9,11 @@ namespace tinox.core.rest.server
     @annotation
     class Consumes
     {
-        var value: MediaType;
+        var value: MediaType
 
         fn new(value: MediaType) -> Consumes
         {
-            return Consumes { value: value };
+            return Consumes { value: value }
         }
     }
 }

@@ -1,16 +1,16 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class ConfigMap
     {
-        var apiVersion: String;
-        var kind: String;
-        var metadata: ObjectMeta;
-        var data: Map<String, String>;
+        var apiVersion: String
+        var kind: String
+        var metadata: ObjectMeta
+        var data: Map<String, String>
 
         fnc create(name: String, namespace: String, data: Map<String, String>) -> ConfigMap
         {
@@ -18,7 +18,7 @@ namespace tinox.core.kubernetes
                 apiVersion: "v1", kind: "ConfigMap",
                 metadata: ObjectMeta::withNameAndNamespace(name, namespace),
                 data: data
-            };
+            }
         }
     }
 }

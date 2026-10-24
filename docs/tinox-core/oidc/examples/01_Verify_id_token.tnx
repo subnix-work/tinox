@@ -1,4 +1,4 @@
-import tinox.core.oidc;
+import tinox.core.oidc
 
 class Main
 {
@@ -12,22 +12,22 @@ class Main
             "my-client-id",
             "my-client-secret",
             "https://myapp.example.com/callback"
-        );
+        )
 
-        const req: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
-        println("redirect user to: " + req.url);
+        const req: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email")
+        println("redirect user to: " + req.url)
 
         // Callback handler, after the provider redirects back with ?code=...
-        const tokens: OidcTokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier);
+        const tokens: OidcTokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier)
         if (tokens.ok)
         {
             // id_token signature + iss/aud/exp/nbf already verified here
-            println("subject: " + tokens.claims["sub"].getString());
+            println("subject: " + tokens.claims["sub"].getString())
         }
         else
         {
-            println("login failed: " + tokens.errorMessage);
+            println("login failed: " + tokens.errorMessage)
         }
-        return 0;
+        return 0
     }
 }

@@ -1,4 +1,4 @@
-module tinox.core.yaml;
+module tinox.core.yaml
 
 namespace tinox.core.yaml
 {
@@ -10,7 +10,7 @@ namespace tinox.core.yaml
     // that indent, instead of needing to splice a separate line list.
     class YamlLine
     {
-        indent: Int64;
-        content: String;
+        indent: Int64
+        content: String
     }
 }

@@ -1,4 +1,4 @@
-module tinox.core.fs;
+module tinox.core.fs
 
 namespace tinox.core.fs
 {
@@ -6,67 +6,67 @@ namespace tinox.core.fs
     {
         fn readFile(path: String) -> String
         {
-            return fileReadAllText(path);
+            return fileReadAllText(path)
         }
 
         fn writeFile(path: String, content: String) -> Nothing
         {
-            let err: String = fileWriteAllTextChecked(path, content);
+            let err: String = fileWriteAllTextChecked(path, content)
             if (err != "")
             {
-                throw err;
+                throw err
             }
         }
 
         fn appendFile(path: String, content: String) -> Nothing
         {
-            fileAppendText(path, content);
+            fileAppendText(path, content)
         }
 
         fn deleteFile(path: String) -> Nothing
         {
-            deleteFile(path);
+            deleteFile(path)
         }
 
         fn copyFile(src: String, dest: String) -> Nothing
         {
-            const content: String = Fs::readFile(src);
-            Fs::writeFile(dest, content);
+            const content: String = Fs::readFile(src)
+            Fs::writeFile(dest, content)
         }
 
         fn moveFile(src: String, dest: String) -> Nothing
         {
-            Fs::copyFile(src, dest);
-            Fs::deleteFile(src);
+            Fs::copyFile(src, dest)
+            Fs::deleteFile(src)
         }
 
         fn listDirectory(path: String) -> List<String>
         {
-            return dirList(path);
+            return dirList(path)
         }
 
         fn createDirectory(path: String) -> Nothing
         {
-            let err: String = dirCreateChecked(path);
+            let err: String = dirCreateChecked(path)
             if (err != "")
             {
-                throw err;
+                throw err
             }
         }
 
         // Recursive, like `mkdir -p`; succeeds if the directory already exists.
         fn createDirectories(path: String) -> Nothing
         {
-            let err: String = dirCreateAllChecked(path);
+            let err: String = dirCreateAllChecked(path)
             if (err != "")
             {
-                throw err;
+                throw err
             }
         }
 
         fn deleteDirectory(path: String) -> Nothing
         {
-            dirDelete(path);
+            dirDelete(path)
         }
     }
 }

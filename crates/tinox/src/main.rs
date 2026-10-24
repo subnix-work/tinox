@@ -14,6 +14,7 @@ mod dockerfile;
 mod migrate;
 mod schema_diff;
 mod migrate_xml;
+mod semicolon_migration;
 mod db_new;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
@@ -66,6 +67,12 @@ fn run() {
             }
         }
         "graph" => gen_call_graph(&args[2..]),
+        "migrate-semicolons" => {
+            if let Err(e) = semicolon_migration::run(&args[2..]) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         "db" => db_command(&args[2..]),
         "contract" => gen_api_contract(&args[2..]),
         "check"   => check(&args[2..]),
@@ -161,11 +168,11 @@ fn new_project_files(name: &str) -> (String, String, String, String) {
         "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n"
     );
     let main_tnx = format!(
-        "class Main\n{{\n    fnc main() -> Int32\n    {{\n        println(\"Hello from {name}!\");\n        return 0;\n    }}\n}}\n"
+        "class Main\n{{\n    fnc main() -> Int32\n    {{\n        println(\"Hello from {name}!\")\n        return 0\n    }}\n}}\n"
     );
     let test_class = format!("{name}Tests");
     let test_tnx = format!(
-        "class {test_class}\n{{\n    @Test(\"example test\")\n    fn testExample() -> Bool\n    {{\n        return 1 + 1 == 2;\n    }}\n}}\n"
+        "class {test_class}\n{{\n    @Test(\"example test\")\n    fn testExample() -> Bool\n    {{\n        return 1 + 1 == 2\n    }}\n}}\n"
     );
     (toml, main_tnx, test_class, test_tnx)
 }
@@ -1478,7 +1485,7 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
             .collect::<Vec<_>>()
             .join("\n");
         let src = format!(
-            "{}\nfn __repl_{}() -> Int64 {{\n{}\n    return 0;\n}}\nfn main() -> Int64 {{\n    __repl_{}();\n    return 0;\n}}\n",
+            "{}\nfn __repl_{}() -> Int64 {{\n{}\n    return 0\n}}\nfn main() -> Int64 {{\n    __repl_{}()\n    return 0\n}}\n",
             session_decls, turn, body, turn
         );
         match repl_compile_and_run(&src, turn) {
@@ -1496,7 +1503,7 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
     // Single expression: try to print the value via println()
     let expr_clean = entry.trim_end_matches(';').trim();
     let src = format!(
-        "{}\nfn __repl_{}() -> Int64 {{\n    println({});\n    return 0;\n}}\nfn main() -> Int64 {{\n    __repl_{}();\n    return 0;\n}}\n",
+        "{}\nfn __repl_{}() -> Int64 {{\n    println({})\n    return 0\n}}\nfn main() -> Int64 {{\n    __repl_{}()\n    return 0\n}}\n",
         session_decls, turn, expr_clean, turn
     );
 
@@ -1511,7 +1518,7 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
         Err(msg) => {
             // Fallback: run as a void statement (e.g. method calls that return Nothing)
             let src2 = format!(
-                "{}\nfn __repl_{}() -> Int64 {{\n    {};\n    return 0;\n}}\nfn main() -> Int64 {{\n    __repl_{}();\n    return 0;\n}}\n",
+                "{}\nfn __repl_{}() -> Int64 {{\n    {}\n    return 0\n}}\nfn main() -> Int64 {{\n    __repl_{}()\n    return 0\n}}\n",
                 session_decls, turn, expr_clean, turn
             );
             match repl_compile_and_run(&src2, turn) {
@@ -1531,7 +1538,7 @@ fn repl_eval(entry: &str, session_decls: &mut String, turn: usize) {
 mod repl_semantics_tests {
     #[test]
     fn repl_preserves_checked_generic_types_and_numeric_promotions() {
-        let source = "fn identity<T>(value: T) -> T { return value; } fn main() -> Int64 { const byte: UInt8 = 255; println(identity(byte) + 1); println(identity(1.5)); return 0; }";
+        let source = "fn identity<T>(value: T) -> T { return value } fn main() -> Int64 { const byte: UInt8 = 255\nprintln(identity(byte) + 1)\nprintln(identity(1.5))\nreturn 0 }";
         let output = super::repl_compile_and_run(source, std::process::id() as usize).unwrap();
         assert_eq!(output.trim(), "256\n1.5");
     }
@@ -1716,7 +1723,7 @@ fn db_command(args: &[String]) {
         fail(format!("cannot create {}: {e}", stub_dir.display()));
     }
     let stub = stub_dir.join("Main.tnx");
-    if let Err(e) = fs::write(&stub, "class Main\n{\n    fnc main() -> Int32\n    {\n        return 0;\n    }\n}\n") {
+    if let Err(e) = fs::write(&stub, "class Main\n{\n    fnc main() -> Int32\n    {\n        return 0\n    }\n}\n") {
         let _ = fs::remove_dir_all(&stub_dir);
         fail(format!("cannot write {}: {e}", stub.display()));
     }
@@ -3493,24 +3500,24 @@ fn synthesize_enum_helpers_in(decls: &mut Vec<tinox_parser::Decl>, ambiguous: &H
                 let name_arms: String = e
                     .variants
                     .iter()
-                    .map(|v| format!("if (v == {en}::{0}) {{ return \"{0}\"; }} ", v.name))
+                    .map(|v| format!("if (v == {en}::{0}) {{ return \"{0}\" }} ", v.name))
                     .collect();
                 methods.push_str(&format!(
-                    "fnc name(v: {en}) -> String {{ {name_arms}throw \"{en} has no variant with this value\"; }} "
+                    "fnc name(v: {en}) -> String {{ {name_arms}throw \"{en} has no variant with this value\" }} "
                 ));
                 if !has_variant("parse") {
                     let parse_arms: String = e
                         .variants
                         .iter()
-                        .map(|v| format!("if (s == \"{0}\") {{ return {en}::{0}; }} ", v.name))
+                        .map(|v| format!("if (s == \"{0}\") {{ return {en}::{0} }} ", v.name))
                         .collect();
                     methods.push_str(&format!(
-                        "fnc parse(s: String) -> {en} {{ {parse_arms}throw \"{en} has no variant named '\" + s + \"'\"; }} "
+                        "fnc parse(s: String) -> {en} {{ {parse_arms}throw \"{en} has no variant named '\" + s + \"'\" }} "
                     ));
                 }
                 if !has_variant("values") {
                     let all: Vec<String> = e.variants.iter().map(|v| format!("{en}::{}", v.name)).collect();
-                    methods.push_str(&format!("fnc values() -> List<{en}> {{ return [{}]; }} ", all.join(", ")));
+                    methods.push_str(&format!("fnc values() -> List<{en}> {{ return [{}] }} ", all.join(", ")));
                 }
                 let src = format!("class {helper} {{ {methods}}}");
                 let tokens = Lexer::new(&src)
@@ -3583,7 +3590,7 @@ fn synthesize_accessors_for_class(class: &mut tinox_parser::Class, fallback_file
             let getter_name = format!("get{pascal}");
             if !existing_names.contains(&getter_name) {
                 let src = format!(
-                    "class __TinoxAccessorShim {{ fn {getter_name}() -> {type_str} {{ return this.{}; }} }}",
+                    "class __TinoxAccessorShim {{ fn {getter_name}() -> {type_str} {{ return this.{} }} }}",
                     field.name
                 );
                 new_methods.push(parse_synthetic_method(&src, &file)?);
@@ -3593,7 +3600,7 @@ fn synthesize_accessors_for_class(class: &mut tinox_parser::Class, fallback_file
             let setter_name = format!("set{pascal}");
             if !existing_names.contains(&setter_name) {
                 let src = format!(
-                    "class __TinoxAccessorShim {{ fn {setter_name}(value: {type_str}) -> Nothing {{ this.{} = value; }} }}",
+                    "class __TinoxAccessorShim {{ fn {setter_name}(value: {type_str}) -> Nothing {{ this.{} = value }} }}",
                     field.name
                 );
                 new_methods.push(parse_synthetic_method(&src, &file)?);
@@ -5244,19 +5251,19 @@ mod one_type_per_file_tests {
 
     #[test]
     fn zero_types_ok() {
-        let decls = parse_decls("fn main() -> Int32 { return 0; }");
+        let decls = parse_decls("fn main() -> Int32 { return 0 }");
         assert!(check_one_type_per_file(&decls, Path::new("script.tnx")).is_ok());
     }
 
     #[test]
     fn one_type_matching_name_ok() {
-        let decls = parse_decls("class Player { var hp: Int64; }");
+        let decls = parse_decls("class Player { var hp: Int64 }");
         assert!(check_one_type_per_file(&decls, Path::new("Player.tnx")).is_ok());
     }
 
     #[test]
     fn one_type_mismatched_name_err() {
-        let decls = parse_decls("class Player { var hp: Int64; }");
+        let decls = parse_decls("class Player { var hp: Int64 }");
         let err = check_one_type_per_file(&decls, Path::new("player.tnx")).unwrap_err();
         assert!(err.contains("Player"), "error should name the type: {err}");
         assert!(err.contains("Player.tnx"), "error should name the required filename: {err}");
@@ -5264,26 +5271,26 @@ mod one_type_per_file_tests {
 
     #[test]
     fn two_types_err() {
-        let decls = parse_decls("class A { var x: Int64; } class B { var y: Int64; }");
+        let decls = parse_decls("class A { var x: Int64 } class B { var y: Int64 }");
         let err = check_one_type_per_file(&decls, Path::new("AB.tnx")).unwrap_err();
         assert!(err.contains('A') && err.contains('B'), "error should list both types: {err}");
     }
 
     #[test]
     fn namespace_wrapped_type_matching_name_ok() {
-        let decls = parse_decls("namespace tinox.core.base64 { class Base64 { var x: Int64; } }");
+        let decls = parse_decls("namespace tinox.core.base64 { class Base64 { var x: Int64 } }");
         assert!(check_one_type_per_file(&decls, Path::new("Base64.tnx")).is_ok());
     }
 
     #[test]
     fn namespace_wrapped_type_mismatched_name_err() {
-        let decls = parse_decls("namespace tinox.core.base64 { class Base64 { var x: Int64; } }");
+        let decls = parse_decls("namespace tinox.core.base64 { class Base64 { var x: Int64 } }");
         assert!(check_one_type_per_file(&decls, Path::new("base64.tnx")).is_err());
     }
 
     #[test]
     fn interface_and_enum_count_too() {
-        let decls = parse_decls("interface Shape { fn area() -> Int64; } enum Color { Red, Blue }");
+        let decls = parse_decls("interface Shape { fn area() -> Int64 } enum Color { Red\nBlue }");
         let err = check_one_type_per_file(&decls, Path::new("x.tnx")).unwrap_err();
         assert!(err.contains("Shape") && err.contains("Color"), "error should list both: {err}");
     }
@@ -5329,7 +5336,7 @@ mod namespace_path_matches_tests {
     #[test]
     fn no_namespace_is_exempt() {
         let dir = make_manifest_dir("no_ns", true);
-        let path = write_file(&dir, "src/Anywhere.tnx", "class Foo { var x: Int64; }");
+        let path = write_file(&dir, "src/Anywhere.tnx", "class Foo { var x: Int64 }");
         let decls = parse_decls(&fs::read_to_string(&path).unwrap());
         assert!(check_namespace_path_matches(&decls, &path).is_ok());
         let _ = fs::remove_dir_all(&dir);
@@ -5341,7 +5348,7 @@ mod namespace_path_matches_tests {
         let path = write_file(
             &dir,
             "src/tinox/core/amqp10/Amqp10Connection.tnx",
-            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64; } }",
+            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64 } }",
         );
         let decls = parse_decls(&fs::read_to_string(&path).unwrap());
         assert!(check_namespace_path_matches(&decls, &path).is_ok());
@@ -5356,7 +5363,7 @@ mod namespace_path_matches_tests {
         let path = write_file(
             &dir,
             "tinox/core/amqp10/Amqp10Connection.tnx",
-            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64; } }",
+            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64 } }",
         );
         let decls = parse_decls(&fs::read_to_string(&path).unwrap());
         assert!(check_namespace_path_matches(&decls, &path).is_ok());
@@ -5373,7 +5380,7 @@ mod namespace_path_matches_tests {
         let path = write_file(
             &dir,
             "tests/tinox/core/amqp10/Amqp10ConnectionTest.tnx",
-            "namespace tinox.core.amqp10 { class Amqp10ConnectionTest { var x: Int64; } }",
+            "namespace tinox.core.amqp10 { class Amqp10ConnectionTest { var x: Int64 } }",
         );
         let decls = parse_decls(&fs::read_to_string(&path).unwrap());
         assert!(check_namespace_path_matches(&decls, &path).is_ok());
@@ -5386,7 +5393,7 @@ mod namespace_path_matches_tests {
         let path = write_file(
             &dir,
             "src/wrong/place/Amqp10Connection.tnx",
-            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64; } }",
+            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64 } }",
         );
         let decls = parse_decls(&fs::read_to_string(&path).unwrap());
         let err = check_namespace_path_matches(&decls, &path).unwrap_err();
@@ -5418,7 +5425,7 @@ mod namespace_path_matches_tests {
         let path = write_file(
             &dir,
             "Whatever.tnx",
-            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64; } }",
+            "namespace tinox.core.amqp10 { class Amqp10Connection { var x: Int64 } }",
         );
         let decls = parse_decls(&fs::read_to_string(&path).unwrap());
         assert!(check_namespace_path_matches(&decls, &path).is_ok());
@@ -5439,7 +5446,7 @@ mod namespace_path_matches_tests {
         let path = write_file(
             &dep_dir,
             "tinox/core/socket/Socket.tnx",
-            "namespace tinox.core.socket { class Socket { var x: Int64; } }",
+            "namespace tinox.core.socket { class Socket { var x: Int64 } }",
         );
         // No tinox.toml written anywhere under dep_dir -- matches the real
         // pre-existing package this reproduces.
@@ -5546,20 +5553,20 @@ mod no_top_level_fn_tests {
 
     #[test]
     fn class_only_ok() {
-        let decls = parse_decls("class Main { fnc main() -> Int32 { return 0; } }");
+        let decls = parse_decls("class Main { fnc main() -> Int32 { return 0 } }");
         assert!(check_no_top_level_fn(&decls, Path::new("Main.tnx")).is_ok());
     }
 
     #[test]
     fn top_level_fn_err() {
-        let decls = parse_decls("fn main() -> Int32 { return 0; }");
+        let decls = parse_decls("fn main() -> Int32 { return 0 }");
         let err = check_no_top_level_fn(&decls, Path::new("main.tnx")).unwrap_err();
         assert!(err.contains("main"), "error should name the function: {err}");
     }
 
     #[test]
     fn multiple_top_level_fns_err() {
-        let decls = parse_decls("fn helper() -> Int64 { return 1; } fn main() -> Int32 { return 0; }");
+        let decls = parse_decls("fn helper() -> Int64 { return 1 } fn main() -> Int32 { return 0 }");
         let err = check_no_top_level_fn(&decls, Path::new("x.tnx")).unwrap_err();
         assert!(err.contains("helper") && err.contains("main"), "error should list both: {err}");
     }
@@ -5568,13 +5575,13 @@ mod no_top_level_fn_tests {
     fn extern_fn_stays_legal() {
         // `extern fn` (StmtKind::Empty body) is an FFI binding, not a free
         // function in the issue #149 sense -- must not trip the check.
-        let decls = parse_decls("extern fn tinoxSomeRuntimeFn(x: Int64) -> Int64;");
+        let decls = parse_decls("extern fn tinoxSomeRuntimeFn(x: Int64) -> Int64");
         assert!(check_no_top_level_fn(&decls, Path::new("x.tnx")).is_ok());
     }
 
     #[test]
     fn namespace_wrapped_fn_err() {
-        let decls = parse_decls("namespace tinox.core.demo { fn helper() -> Int64 { return 1; } }");
+        let decls = parse_decls("namespace tinox.core.demo { fn helper() -> Int64 { return 1 } }");
         let err = check_no_top_level_fn(&decls, Path::new("x.tnx")).unwrap_err();
         assert!(err.contains("helper"), "error should name the function: {err}");
     }

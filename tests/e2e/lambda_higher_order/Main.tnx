@@ -4,13 +4,13 @@ class Main
 {
     fnc apply(f: fnc(Int64) -> Int64, x: Int64) -> Int64
     {
-        return f(x);
+        return f(x)
     }
 
     fnc main() -> Int32
     {
-        const double: fnc(Int64) -> Int64 = x => x * 2;
-        println(apply(double, 21));
-        return 0;
+        const double: fnc(Int64) -> Int64 = x => x * 2
+        println(apply(double, 21))
+        return 0
     }
 }

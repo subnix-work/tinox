@@ -20,14 +20,14 @@ class Main
     {
         try {
             try {
-                return 1;
+                return 1
             } finally {
-                println("inner finally");
+                println("inner finally")
             }
         } finally {
-            println("outer finally");
+            println("outer finally")
         }
-        return 0;
+        return 0
     }
 
     // try/catch/finally: a normal (non-throwing) return from the try body
@@ -35,13 +35,13 @@ class Main
     fnc g() -> Int64
     {
         try {
-            return 10;
+            return 10
         } catch (e: String) {
-            return -1;
+            return -1
         } finally {
-            println("g finally");
+            println("g finally")
         }
-        return 0;
+        return 0
     }
 
     // A `return` inside `finally` itself overrides the try body's own
@@ -50,18 +50,18 @@ class Main
     fnc h() -> String
     {
         try {
-            return "try-val";
+            return "try-val"
         } finally {
-            return "finally-val";
+            return "finally-val"
         }
-        return "";
+        return ""
     }
 
     fnc main() -> Int32
     {
-        println(f());
-        println(g());
-        println(h());
-        return 0;
+        println(f())
+        println(g())
+        println(h())
+        return 0
     }
 }

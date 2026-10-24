@@ -3,23 +3,23 @@
 // expect: 3.75
 // expect: 1.5
 // expect: 2.5
-import bug04_float64;
+import bug04_float64
 
 class Main
 {
     fnc main() -> Int32 {
-        const x: Float64 = 3.14;
-        println(x.toString());
-        const y = 2.5 + 1.25;
-        println(y.toString());
-        var xs: List<Float64> = [];
-        xs.push(1.5);
-        println(xs[0].toString());
-        const v = bug04_float64::F(2.5);
+        const x: Float64 = 3.14
+        println(x.toString())
+        const y = 2.5 + 1.25
+        println(y.toString())
+        var xs: List<Float64> = []
+        xs.push(1.5)
+        println(xs[0].toString())
+        const v = bug04_float64::F(2.5)
         match v {
-            F(f) => println(f.toString());
-            _ => println("-");
+            F(f) => println(f.toString())
+            _ => println("-")
         }
-        return 0;
+        return 0
     }
 }

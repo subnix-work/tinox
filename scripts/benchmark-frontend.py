@@ -32,10 +32,10 @@ def main():
             project.mkdir()
             env['TINOX_FRONTEND_CACHE_DIR'] = str(project / 'cache')
             (project / 'tinox.toml').write_text('[package]\nname="frontend-benchmark"\nversion="0.1.0"\n')
-            imports = ' '.join(f'import Leaf{i};' for i in range(size))
-            (project / 'Main.tnx').write_text(imports + ' class Main { fnc main() -> Int32 { println(Leaf0::get(1).toString()); return 0; } }')
+            imports = '\n'.join(f'import Leaf{i}' for i in range(size))
+            (project / 'Main.tnx').write_text(imports + '\nclass Main {\nfnc main() -> Int32 {\nprintln(Leaf0::get(1).toString())\nreturn 0\n}\n}\n')
             def leaf(value):
-                return 'class Leaf0 { fnc get(n: Int64) -> Int64 { var v: Int64 = n; ' + 'v = v + 1; ' * 100 + f'return v + {value}; }} }}'
+                return 'class Leaf0 {\nfnc get(n: Int64) -> Int64 {\nvar v: Int64 = n\n' + 'v = v + 1\n' * 100 + f'return v + {value}\n}}\n}}\n'
             for index in range(size):
                 (project / f'Leaf{index}.tnx').write_text(leaf(1).replace('Leaf0', f'Leaf{index}'))
             for mode in ('disabled', 'cold', 'warm', 'leaf-edit'):

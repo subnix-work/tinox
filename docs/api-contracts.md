@@ -71,25 +71,25 @@ An annotation-driven handler can treat a missing header separately from an
 empty one:
 
 ```tinox
-import tinox.core.http_server;
-import tinox.core.option;
+import tinox.core.http_server
+import tinox.core.option
 
 class TraceController
 {
     @GET("/trace")
     fnc trace(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        let trace: Option<String> = ctx.request.findHeader("X-Trace");
+        let trace: Option<String> = ctx.request.findHeader("X-Trace")
         if (trace.isNone())
         {
-            ctx.response.status(400).text("X-Trace is required");
+            ctx.response.status(400).text("X-Trace is required")
         }
         else
         {
             // This branch includes a present-empty header.
-            ctx.response.text("trace=" + trace.unwrap());
+            ctx.response.text("trace=" + trace.unwrap())
         }
-        return ctx;
+        return ctx
     }
 }
 ```

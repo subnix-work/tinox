@@ -3,9 +3,9 @@
 // expect: 2
 // expect: Carol
 
-import tinox.core.db;
+import tinox.core.db
 
-import orm_sqlite_filter_startswith;
+import orm_sqlite_filter_startswith
 
 class Main
 {
@@ -13,9 +13,9 @@ class Main
     {
         const cs: List<orm_sqlite_filter_startswith> = DB::of(orm_sqlite_filter_startswith)
             .filter(u => u.name.startsWith("C"))
-            .list();
-        println(cs.len());
-        println(cs[0].name);
-        return 0;
+            .list()
+        println(cs.len())
+        println(cs[0].name)
+        return 0
     }
 }

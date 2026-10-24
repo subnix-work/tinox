@@ -1,5 +1,5 @@
 class struct_field_access
 {
-    x: Int64;
-    y: Int64;
+    x: Int64
+    y: Int64
 }

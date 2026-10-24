@@ -1,10 +1,12 @@
 // expect-exit: 1
 // expect-contains: invalid or expired task handle
 class Main {
-    fnc value() -> String { return "ok"; }
+    fnc value() -> String { return "ok" }
     fnc escape() -> Task<String> {
-        scope { return spawn Main::value();
+        scope { return spawn Main::value()
         }
     }
-    fnc main() -> Int32 { const task = Main::escape(); println(await task); return 0; }
+    fnc main() -> Int32 { const task = Main::escape()
+    println(await task)
+    return 0 }
 }
