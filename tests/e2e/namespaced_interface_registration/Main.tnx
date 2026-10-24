@@ -10,15 +10,15 @@
 // interface/implementing class both live in a namespace used to fail with
 // "undefined function: IGreeter_greetNum" instead of dispatching correctly.
 // expect: 42
-import IGreeter;
-import Greeter;
+import IGreeter
+import Greeter
 
 class Main
 {
     fnc main() -> Int32
     {
-        const g: IGreeter = Greeter{};
-        println(g.greetNum());
-        return 0;
+        const g: IGreeter = Greeter{}
+        println(g.greetNum())
+        return 0
     }
 }

@@ -1,21 +1,21 @@
-import IDrawable;
-import Circle;
-import Square;
+import IDrawable
+import Circle
+import Square
 
 class Main
 {
     fnc main() -> Int32
     {
         // Direct (concrete) dispatch — should work as before
-        const c: Circle = Circle { radius: 5 };
-        const s: Square = Square { side: 10 };
-        println(c.draw());
-        println(s.draw());
+        const c: Circle = Circle { radius: 5 }
+        const s: Square = Square { side: 10 }
+        println(c.draw())
+        println(s.draw())
 
         // Interface (vtable) dispatch
-        const shape: IDrawable = Circle { radius: 42 };
-        println(shape.draw());
+        const shape: IDrawable = Circle { radius: 42 }
+        println(shape.draw())
 
-        return 0;
+        return 0
     }
 }

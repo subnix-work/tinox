@@ -41,26 +41,26 @@ fn component_pipe_list_props_reject_embedded_pipe_and_still_join_normally() {
 
     std::fs::write(
         workdir.join("src/Main.tnx"),
-        r#"import tinox.core.ui;
+        r#"import tinox.core.ui
 
 class Main
 {
     fnc main() -> Int32
     {
         // Normal case: unchanged wire encoding, still "|"-joined.
-        let dd: Component = Component::dropdown(["a", "b", "c"], "a", fn(v: String) { });
-        println("options=" + dd.props.get("options"));
+        let dd: Component = Component::dropdown(["a", "b", "c"], "a", fn(v: String) { })
+        println("options=" + dd.props.get("options"))
 
         // An item containing "|" must throw loudly, not corrupt the
         // encoding silently -- the exact regression this issue is about.
         try
         {
-            let bad: Component = Component::dropdown(["red|green", "blue"], "blue", fn(v: String) { });
-            println("BUG: no throw");
+            let bad: Component = Component::dropdown(["red|green", "blue"], "blue", fn(v: String) { })
+            println("BUG: no throw")
         }
         catch (e: String)
         {
-            println("threw: " + e);
+            println("threw: " + e)
         }
 
         // Second list-typed parameter (checkboxGroup's `selected`) is
@@ -69,15 +69,15 @@ class Main
         // not just the first one found.
         try
         {
-            let bad2: Component = Component::checkboxGroup(["x", "y"], ["x|y"], fn(v: String) { });
-            println("BUG: no throw for selected");
+            let bad2: Component = Component::checkboxGroup(["x", "y"], ["x|y"], fn(v: String) { })
+            println("BUG: no throw for selected")
         }
         catch (e: String)
         {
-            println("threw for selected: " + e);
+            println("threw for selected: " + e)
         }
 
-        return 0;
+        return 0
     }
 }
 "#,
@@ -85,9 +85,9 @@ class Main
     .expect("write Main.tnx");
 
     let toml = "[package]\nname = \"uipipelisttest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.0.4\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.0.3\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.0.0\"\n";
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n\n\
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.1.0\"\n\n\
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.1.0\"\n";
     std::fs::write(workdir.join("tinox.toml"), toml).expect("write tinox.toml");
 
     let install = Command::new(tinox)

@@ -20,59 +20,59 @@
 // *compare* (tinox_string_equals is null-safe), not safe to *serialize*
 // as a Map<String,String> value. `var color: String = "red";` now says
 // the same thing in one line, applied by codegen at allocation time.
-import tinox.core.ui;
-import tinox.core.websocket;
-import tinox.core.http_server;
+import tinox.core.ui
+import tinox.core.websocket
+import tinox.core.http_server
 
 @TinoxUIApp(8288, 8289)
 class RoutedDemoApp
 {
-    var isAbout: Bool;
-    var quantity: Float64;
+    var isAbout: Bool
+    var quantity: Float64
     // Field `= <literal>` default: applied by codegen when @TinoxUIApp
     // allocates this app's fresh per-connection instance, which is what
     // replaced the `initialized: Bool` + lazy-init-block this app used to
     // need (see the file's own header comment for what that looked like).
-    var color: String = "red";
+    var color: String = "red"
 
     @View
     fn render() -> Component
     {
         if (this.isAbout)
         {
-            return this.shell(this.aboutView());
+            return this.shell(this.aboutView())
         }
-        return this.shell(this.homeView());
+        return this.shell(this.homeView())
     }
 
     fn shell(page: Component) -> Component
     {
-        return Component::vbox([this.nav(), page]);
+        return Component::vbox([this.nav(), page])
     }
 
     fn nav() -> Component
     {
-        const app: RoutedDemoApp = this;
+        const app: RoutedDemoApp = this
         return Component::hbox([
-            Component::link("Home", "/", fn(p: String) { app.isAbout = false; }),
-            Component::link("About", "/about", fn(p: String) { app.isAbout = true; })
-        ]);
+            Component::link("Home", "/", fn(p: String) { app.isAbout = false }),
+            Component::link("About", "/about", fn(p: String) { app.isAbout = true })
+        ])
     }
 
     fn homeView() -> Component
     {
-        const app: RoutedDemoApp = this;
-        const colors: List<String> = ["red", "green", "blue"];
+        const app: RoutedDemoApp = this
+        const colors: List<String> = ["red", "green", "blue"]
         return Component::vbox([
             Component::heading("Tinox-UI Widget Showcase", 1),
-            Component::numberField(this.quantity, fn(v: Float64) { app.quantity = v; }),
+            Component::numberField(this.quantity, fn(v: Float64) { app.quantity = v }),
             Component::label("Quantity: " + this.quantity.toString()),
-            Component::dropdown(colors, this.color, fn(v: String) { app.color = v; }),
+            Component::dropdown(colors, this.color, fn(v: String) { app.color = v }),
             Component::label("Color: " + this.color),
             Component::progressBar(this.quantity),
             Component::spacer(),
             Component::textArea("Notes...", fn(v: String) { })
-        ]);
+        ])
     }
 
     fn aboutView() -> Component
@@ -80,6 +80,6 @@ class RoutedDemoApp
         return Component::vbox([
             Component::heading("About", 1),
             Component::label("Tinox-UI Phase 5 demo -- expanded widgets + client-side routing.")
-        ]);
+        ])
     }
 }

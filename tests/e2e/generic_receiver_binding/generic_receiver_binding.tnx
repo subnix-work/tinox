@@ -1,5 +1,5 @@
 class generic_receiver_binding<T> {
-    var value: T;
-    fn make(v: T) -> generic_receiver_binding<T> { return generic_receiver_binding { value: v }; }
-    fn get() -> T { return this.value; }
+    var value: T
+    fn make(v: T) -> generic_receiver_binding<T> { return generic_receiver_binding { value: v } }
+    fn get() -> T { return this.value }
 }

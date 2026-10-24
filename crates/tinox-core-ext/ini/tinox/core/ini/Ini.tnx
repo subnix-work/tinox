@@ -1,6 +1,6 @@
-module tinox.core.ini;
+module tinox.core.ini
 
-import tinox.core.string;
+import tinox.core.string
 
 namespace tinox.core.ini
 {
@@ -8,66 +8,66 @@ namespace tinox.core.ini
     {
         fn parse(content: String) -> IniConfig
         {
-            const config: IniConfig = IniConfig::new();
-            var currentSection: String = "";
-            const lines: List<String> = content.split("\n");
-            var i: Int64 = 0;
+            const config: IniConfig = IniConfig::new()
+            var currentSection: String = ""
+            const lines: List<String> = content.split("\n")
+            var i: Int64 = 0
             while i < lines.len()
             {
-                const line: String = Strings::trim(lines[i]);
+                const line: String = Strings::trim(lines[i])
                 if (line.len() == 0 || line.startsWith(";") || line.startsWith("#"))
                 {
-                    i = i + 1;
-                    continue;
+                    i = i + 1
+                    continue
                 }
                 if (line.startsWith("["))
                 {
-                    const endSection: Int64 = line.indexOf("]");
+                    const endSection: Int64 = line.indexOf("]")
                     if (endSection != -1)
                     {
-                        currentSection = line.substring(1, endSection);
-                        config.sections[currentSection] = Map::new();
+                        currentSection = line.substring(1, endSection)
+                        config.sections[currentSection] = Map::new()
                     }
                 }
                 else
                 {
-                    const eqPos: Int64 = line.indexOf("=");
+                    const eqPos: Int64 = line.indexOf("=")
                     if (eqPos != -1)
                     {
-                        const key: String = Strings::trim(line.substring(0, eqPos));
-                        const value: String = Strings::trim(line.substring(eqPos + 1, line.len()));
-                        const sectionMap: Map<String, String> = config.sections[currentSection];
+                        const key: String = Strings::trim(line.substring(0, eqPos))
+                        const value: String = Strings::trim(line.substring(eqPos + 1, line.len()))
+                        const sectionMap: Map<String, String> = config.sections[currentSection]
                         if (sectionMap == null)
                         {
-                            config.sections[currentSection] = Map::new();
+                            config.sections[currentSection] = Map::new()
                         }
-                        config.sections[currentSection][key] = value;
+                        config.sections[currentSection][key] = value
                     }
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return config;
+            return config
         }
 
         fn stringify(config: IniConfig) -> String
         {
-            var result: String = "";
-            const sectionNames: List<String> = config.sections.keys();
-            var i: Int64 = 0;
+            var result: String = ""
+            const sectionNames: List<String> = config.sections.keys()
+            var i: Int64 = 0
             while i < sectionNames.len()
             {
-                result = result + "[" + sectionNames[i] + "]\n";
-                const keys: List<String> = config.sections[sectionNames[i]].keys();
-                var j: Int64 = 0;
+                result = result + "[" + sectionNames[i] + "]\n"
+                const keys: List<String> = config.sections[sectionNames[i]].keys()
+                var j: Int64 = 0
                 while j < keys.len()
                 {
-                    result = result + keys[j] + "=" + config.sections[sectionNames[i]][keys[j]] + "\n";
-                    j = j + 1;
+                    result = result + keys[j] + "=" + config.sections[sectionNames[i]][keys[j]] + "\n"
+                    j = j + 1
                 }
-                result = result + "\n";
-                i = i + 1;
+                result = result + "\n"
+                i = i + 1
             }
-            return result;
+            return result
         }
     }
 }

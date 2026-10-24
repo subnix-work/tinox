@@ -1,28 +1,28 @@
-import tinox.core.amqp10;
+import tinox.core.amqp10
 
 class Main
 {
     fnc main() -> Int32
     {
-        const conn: Amqp10Connection = Amqp10Connection::connect("localhost", 5672, "guest", "guest");
-        const session: Amqp10Session = Amqp10Session::begin(conn);
+        const conn: Amqp10Connection = Amqp10Connection::connect("localhost", 5672, "guest", "guest")
+        const session: Amqp10Session = Amqp10Session::begin(conn)
 
         // role=false is a sender link (target = the destination address)
-        const sender: Amqp10Link = Amqp10Link::attach(session, "publisher", false, "orders");
-        sender.publish(Amqp10::stringToBytes("hello amqp-1.0"), "text/plain");
+        const sender: Amqp10Link = Amqp10Link::attach(session, "publisher", false, "orders")
+        sender.publish(Amqp10::stringToBytes("hello amqp-1.0"), "text/plain")
 
         // role=true is a receiver link (source = where messages come from)
-        const receiver: Amqp10Link = Amqp10Link::attach(session, "consumer", true, "orders");
-        receiver.grantCredit(1);
-        const msg: Amqp10Message = receiver.nextMessage();
+        const receiver: Amqp10Link = Amqp10Link::attach(session, "consumer", true, "orders")
+        receiver.grantCredit(1)
+        const msg: Amqp10Message = receiver.nextMessage()
         if (msg.ok)
         {
-            println(tinoxBytesToString(msg.body));
-            receiver.ack(msg.deliveryId);
+            println(tinoxBytesToString(msg.body))
+            receiver.ack(msg.deliveryId)
         }
 
-        session.end();
-        conn.close();
-        return 0;
+        session.end()
+        conn.close()
+        return 0
     }
 }

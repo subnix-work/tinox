@@ -10,16 +10,16 @@
 // expect-contains: "logger":"LoggedService"
 // expect-contains: "message":"service doing work"
 
-import tinox.core.env;
-import LoggedService;
+import tinox.core.env
+import LoggedService
 
 class Main
 {
     fnc main() -> Int32
     {
-        Env::setVar("TINOX_LOG_JSON", "true");
-        const svc: LoggedService = LoggedService::new();
-        LoggedService::doWork(svc);
-        return 0;
+        Env::setVar("TINOX_LOG_JSON", "true")
+        const svc: LoggedService = LoggedService::new()
+        LoggedService::doWork(svc)
+        return 0
     }
 }

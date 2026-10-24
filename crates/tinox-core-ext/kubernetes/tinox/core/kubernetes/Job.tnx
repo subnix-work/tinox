@@ -1,17 +1,17 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
     @JsonSerializable
     class Job
     {
-        var apiVersion: String;
-        var kind: String;
-        var metadata: ObjectMeta;
-        var spec: JobSpec;
-        var status: JobStatus;
+        var apiVersion: String
+        var kind: String
+        var metadata: ObjectMeta
+        var spec: JobSpec
+        var status: JobStatus
 
         // A Job's pod template MUST declare a non-"Always" restartPolicy
         // (the API server rejects "Always" outright) -- PodSpec's own
@@ -19,14 +19,14 @@ namespace tinox.core.kubernetes
         // is "Always", so it's overridden to "Never" here specifically.
         fnc create(name: String, namespace: String, containers: List<Container>) -> Job
         {
-            var template: PodTemplateSpec = PodTemplateSpec::create(Map::new(), containers);
-            template.spec.restartPolicy = "Never";
+            var template: PodTemplateSpec = PodTemplateSpec::create(Map::new(), containers)
+            template.spec.restartPolicy = "Never"
             return Job {
                 apiVersion: "batch/v1", kind: "Job",
                 metadata: ObjectMeta::withNameAndNamespace(name, namespace),
                 spec: JobSpec { template: template, completions: 1, parallelism: 1, backoffLimit: 6 },
                 status: JobStatus { succeeded: 0, failed: 0, active: 0 }
-            };
+            }
         }
     }
 }

@@ -1,4 +1,4 @@
-import tinox.core.http_server;
+import tinox.core.http_server
 
 class UserController
 {
@@ -7,7 +7,7 @@ class UserController
     @Produces("application/json")
     fn users(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        ctx.response.body = "[]";
-        return ctx;
+        ctx.response.body = "[]"
+        return ctx
     }
 }

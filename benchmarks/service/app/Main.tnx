@@ -1,9 +1,9 @@
-import BenchController;
+import BenchController
 
 class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }

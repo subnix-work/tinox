@@ -1,4 +1,4 @@
-module tinox.core.http2_server;
+module tinox.core.http2_server
 
 namespace tinox.core.http2_server
 {
@@ -8,14 +8,14 @@ namespace tinox.core.http2_server
 
     class Http2Error
     {
-        fn NO_ERROR()            -> Int64 { return 0x0; }
-        fn PROTOCOL_ERROR()      -> Int64 { return 0x1; }
-        fn INTERNAL_ERROR()      -> Int64 { return 0x2; }
-        fn FLOW_CONTROL_ERROR()  -> Int64 { return 0x3; }
-        fn STREAM_CLOSED()       -> Int64 { return 0x5; }
-        fn FRAME_SIZE_ERROR()    -> Int64 { return 0x6; }
-        fn REFUSED_STREAM()      -> Int64 { return 0x7; }
-        fn CANCEL()              -> Int64 { return 0x8; }
-        fn COMPRESSION_ERROR()   -> Int64 { return 0x9; }
+        fn NO_ERROR()            -> Int64 { return 0x0 }
+        fn PROTOCOL_ERROR()      -> Int64 { return 0x1 }
+        fn INTERNAL_ERROR()      -> Int64 { return 0x2 }
+        fn FLOW_CONTROL_ERROR()  -> Int64 { return 0x3 }
+        fn STREAM_CLOSED()       -> Int64 { return 0x5 }
+        fn FRAME_SIZE_ERROR()    -> Int64 { return 0x6 }
+        fn REFUSED_STREAM()      -> Int64 { return 0x7 }
+        fn CANCEL()              -> Int64 { return 0x8 }
+        fn COMPRESSION_ERROR()   -> Int64 { return 0x9 }
     }
 }

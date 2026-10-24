@@ -1,6 +1,6 @@
-import tinox.core.ui;
-import tinox.core.websocket;
-import tinox.core.http_server;
+import tinox.core.ui
+import tinox.core.websocket
+import tinox.core.http_server
 
 // A wider tour of the widget library plus client-side routing:
 // Component::link(text, path, onNavigate) reports its target path back
@@ -11,26 +11,26 @@ import tinox.core.http_server;
 @TinoxUIApp
 class ShowcaseApp
 {
-    var isAbout: Bool;
-    var quantity: Float64;
+    var isAbout: Bool
+    var quantity: Float64
 
     @View
     fn render() -> Component
     {
-        const app: ShowcaseApp = this;
+        const app: ShowcaseApp = this
         const nav: Component = Component::hbox([
-            Component::link("Home", "/", fn(p: String) { app.isAbout = false; }),
-            Component::link("About", "/about", fn(p: String) { app.isAbout = true; })
-        ]);
+            Component::link("Home", "/", fn(p: String) { app.isAbout = false }),
+            Component::link("About", "/about", fn(p: String) { app.isAbout = true })
+        ])
         if (this.isAbout)
         {
-            return Component::vbox([nav, Component::heading("About", 1)]);
+            return Component::vbox([nav, Component::heading("About", 1)])
         }
         return Component::vbox([
             nav,
             Component::heading("Widgets", 1),
-            Component::numberField(this.quantity, fn(v: Float64) { app.quantity = v; }),
+            Component::numberField(this.quantity, fn(v: Float64) { app.quantity = v }),
             Component::progressBar(this.quantity)
-        ]);
+        ])
     }
 }

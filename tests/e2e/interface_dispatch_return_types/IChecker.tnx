@@ -1,7 +1,7 @@
 interface IChecker
 {
-    fn label() -> String;
-    fn isOk() -> Bool;
-    fn count() -> Int64;
-    fn touch() -> Nothing;
+    fn label() -> String
+    fn isOk() -> Bool
+    fn count() -> Int64
+    fn touch() -> Nothing
 }

@@ -1,10 +1,10 @@
-module tinox.core.zip;
+module tinox.core.zip
 
 namespace tinox.core.zip
 {
     class ZipArchive
     {
-        path: String;
-        entries: List<ZipEntry>;
+        path: String
+        entries: List<ZipEntry>
     }
 }

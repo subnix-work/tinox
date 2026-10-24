@@ -1,4 +1,4 @@
-module tinox.core.toml;
+module tinox.core.toml
 
 namespace tinox.core.toml
 {
@@ -6,12 +6,12 @@ namespace tinox.core.toml
     {
         fn parse(content: String) -> TomlValue
         {
-            return TomlParser::parse(content);
+            return TomlParser::parse(content)
         }
 
         fn stringify(value: TomlValue) -> String
         {
-            return TomlRenderer::render(value);
+            return TomlRenderer::render(value)
         }
     }
 }

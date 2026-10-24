@@ -1,6 +1,6 @@
-import Pair;
+import Pair
 
 class Box<T> {
-    var value: T;
-    fn make(v: T) -> Box<T> { return Box { value: v }; }
+    var value: T
+    fn make(v: T) -> Box<T> { return Box { value: v } }
 }

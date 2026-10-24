@@ -5,17 +5,17 @@
 // expect: content-length
 // expect: www-authenticate
 
-import tinox.core.hpack;
+import tinox.core.hpack
 class Main
 {
     fnc main() -> Int32
     {
-        println(Hpack::staticName(2));
-        println(Hpack::staticValue(2));
-        println(Hpack::staticName(8));
-        println(Hpack::staticValue(8));
-        println(Hpack::staticName(28));
-        println(Hpack::staticName(61));
-        return 0;
+        println(Hpack::staticName(2))
+        println(Hpack::staticValue(2))
+        println(Hpack::staticName(8))
+        println(Hpack::staticValue(8))
+        println(Hpack::staticName(28))
+        println(Hpack::staticName(61))
+        return 0
     }
 }

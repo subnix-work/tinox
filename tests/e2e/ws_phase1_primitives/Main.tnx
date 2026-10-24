@@ -13,57 +13,57 @@
 // expect: 3
 // expect: 0 128 0
 
-import tinox.core.crypto;
-import tinox.core.socket;
+import tinox.core.crypto
+import tinox.core.socket
 
 class Main
 {
     fnc main() -> Int32 {
         // SHA-1 test vectors
-        println(Crypto::sha1(""));
-        println(Crypto::sha1("abc"));
-        var longInput: String = "";
+        println(Crypto::sha1(""))
+        println(Crypto::sha1("abc"))
+        var longInput: String = ""
         for i in 0..128 {
-            longInput = longInput + "a";
+            longInput = longInput + "a"
         }
-        println(Crypto::sha1(longInput));
+        println(Crypto::sha1(longInput))
 
         // Sec-WebSocket-Accept (RFC 6455 §1.3 example)
-        println(wsAcceptKey("dGhlIHNhbXBsZSBub25jZQ=="));
+        println(wsAcceptKey("dGhlIHNhbXBsZSBub25jZQ=="))
 
         // Loopback: server + client in the same process (the backlog holds the pending
         // connection, so connect-before-accept works single-threaded).
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const cfd = socketCreateTcp();
+        const cfd = socketCreateTcp()
         if (!socketConnect(cfd, "127.0.0.1", port)) {
-            println("connect failed");
-            return 1;
+            println("connect failed")
+            return 1
         }
-        const sconn = httpServerAcceptConnHandle(srv);
-        const cconn = httpConnFromFd(cfd);
+        const sconn = httpServerAcceptConnHandle(srv)
+        const cconn = httpConnFromFd(cfd)
 
         // Client → server: 5 bytes incl. NUL and 0xFF
-        const out = [72, 0, 255, 7, 200];
-        httpConnWriteBytes(cconn, out);
-        const got = httpConnReadN(sconn, 5);
-        println(got.len().toString());
-        println(got[0].toString() + " " + got[1].toString() + " " + got[2].toString() + " " + got[3].toString() + " " + got[4].toString());
+        const out = [72, 0, 255, 7, 200]
+        httpConnWriteBytes(cconn, out)
+        const got = httpConnReadN(sconn, 5)
+        println(got.len().toString())
+        println(got[0].toString() + " " + got[1].toString() + " " + got[2].toString() + " " + got[3].toString() + " " + got[4].toString())
 
         // Server → client: NUL at the start and end
-        const back = [0, 128, 0];
-        httpConnWriteBytes(sconn, back);
-        const got2 = httpConnReadN(cconn, 3);
-        println(got2.len().toString());
-        println(got2[0].toString() + " " + got2[1].toString() + " " + got2[2].toString());
+        const back = [0, 128, 0]
+        httpConnWriteBytes(sconn, back)
+        const got2 = httpConnReadN(cconn, 3)
+        println(got2.len().toString())
+        println(got2[0].toString() + " " + got2[1].toString() + " " + got2[2].toString())
 
-        httpConnClose(sconn);
-        httpConnClose(cconn);
-        httpServerClose(srv);
-        return 0;
+        httpConnClose(sconn)
+        httpConnClose(cconn)
+        httpServerClose(srv)
+        return 0
     }
 }

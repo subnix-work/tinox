@@ -1,4 +1,4 @@
 enum bug05_match_list_map {
-    Arr(List<Int64>),
-    Obj(Map<String, Int64>),
+    Arr(List<Int64>)
+    Obj(Map<String, Int64>)
 }

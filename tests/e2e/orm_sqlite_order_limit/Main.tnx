@@ -4,9 +4,9 @@
 // expect: Alice
 // expect: Bob
 
-import tinox.core.db;
+import tinox.core.db
 
-import orm_sqlite_order_limit;
+import orm_sqlite_order_limit
 
 class Main
 {
@@ -15,10 +15,10 @@ class Main
         const top2: List<orm_sqlite_order_limit> = DB::of(orm_sqlite_order_limit)
             .orderBy(u => u.name)
             .limit(2)
-            .list();
-        println(top2.len());
-        println(top2[0].name);
-        println(top2[1].name);
-        return 0;
+            .list()
+        println(top2.len())
+        println(top2[0].name)
+        println(top2[1].name)
+        return 0
     }
 }

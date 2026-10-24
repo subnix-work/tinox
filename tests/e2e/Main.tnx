@@ -17,19 +17,19 @@ class Main
 {
     fnc helper(x: Int64) -> Int64
     {
-        return x * 2;
+        return x * 2
     }
 
     fnc addOne(x: Int64) -> Int64
     {
-        return helper(x) + 1;
+        return helper(x) + 1
     }
 
     fnc main() -> Int32
     {
-        println(Main::helper(10) + 1);
-        println(addOne(4));
-        println("entry point ok");
-        return 0;
+        println(Main::helper(10) + 1)
+        println(addOne(4))
+        println("entry point ok")
+        return 0
     }
 }

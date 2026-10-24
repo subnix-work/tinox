@@ -71,7 +71,7 @@ impl Formatter {
             DeclKind::Enum(e) => self.fmt_enum(e),
             DeclKind::Trait(t) => self.fmt_trait(t),
             DeclKind::Import(i) => self.fmt_import(i),
-            DeclKind::Module(name) => format!("module {};", name),
+            DeclKind::Module(name) => format!("module {}", name),
             DeclKind::Namespace(ns) => self.fmt_namespace(ns),
             DeclKind::Immutable(u) => {
                 let fields: Vec<String> = u.fields.iter()
@@ -103,7 +103,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
         let params = self.fmt_params(&f.params);
         let ret = self.fmt_type(&f.ret_type);
         let sig = format!("{}fn {}{}({}) -> {}", async_, f.name, type_params, params, ret);
-        format!("{}{}{}\n{}", ann, doc, sig, self.fmt_block_stmt(&f.body))
+        format!("{}{}{} {}", ann, doc, sig, self.fmt_block_stmt(&f.body).trim_start())
     }
 
     fn fmt_method(&mut self, m: &Method) -> String {
@@ -115,7 +115,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
         let params = self.fmt_params(&m.params);
         let ret = self.fmt_type(&m.ret_type);
         let sig = format!("{}{}{}{} {}({}) -> {}", self.ind(), vis, async_, fn_kw, m.name, params, ret);
-        format!("{}{}{}\n{}", ann, doc, sig, self.fmt_block_stmt(&m.body))
+        format!("{}{}{} {}", ann, doc, sig, self.fmt_block_stmt(&m.body).trim_start())
     }
 
     fn fmt_namespace(&mut self, ns: &Namespace) -> String {
@@ -147,7 +147,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
         for field in &c.fields {
             let field_ann = self.fmt_annotations(&field.annotations);
             let field_doc = self.fmt_doc(&field.doc);
-            body.push_str(&format!("{}{}{}{}{}{}: {};\n",
+            body.push_str(&format!("{}{}{}{}{}{}: {}\n",
                 field_ann,
                 field_doc,
                 self.ind(),
@@ -185,7 +185,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
             let type_params = fmt_type_params(&f.type_params);
             let params = self.fmt_params(&f.params);
             let ret = self.fmt_type(&f.ret_type);
-            body.push_str(&format!("{}{}fn {}{}({}) -> {};\n",
+            body.push_str(&format!("{}{}fn {}{}({}) -> {}\n",
                 self.ind(), method_doc, f.name, type_params, params, ret));
         }
         self.indent -= 1;
@@ -200,10 +200,10 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
         for v in &e.variants {
             let variant_doc = self.fmt_doc(&v.doc);
             if v.args.is_empty() {
-                body.push_str(&format!("{}{}{};\n", self.ind(), variant_doc, v.name));
+                body.push_str(&format!("{}{}{}\n", self.ind(), variant_doc, v.name));
             } else {
                 let args: Vec<String> = v.args.iter().map(|t| self.fmt_type(t)).collect();
-                body.push_str(&format!("{}{}{}({});\n", self.ind(), variant_doc, v.name, args.join(", ")));
+                body.push_str(&format!("{}{}{}({})\n", self.ind(), variant_doc, v.name, args.join(", ")));
             }
         }
         self.indent -= 1;
@@ -220,7 +220,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
             let type_params = fmt_type_params(&f.type_params);
             let params = self.fmt_params(&f.params);
             let ret = self.fmt_type(&f.ret_type);
-            body.push_str(&format!("{}{}fn {}{}({}) -> {};\n",
+            body.push_str(&format!("{}{}fn {}{}({}) -> {}\n",
                 self.ind(), method_doc, f.name, type_params, params, ret));
         }
         self.indent -= 1;
@@ -230,8 +230,8 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
     fn fmt_import(&self, i: &Import) -> String {
         let path = i.path.join("::");
         match &i.alias {
-            Some(a) => format!("import {} as {};", path, a),
-            None => format!("import {};", path),
+            Some(a) => format!("import {} as {}", path, a),
+            None => format!("import {}", path),
         }
     }
 
@@ -264,19 +264,19 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
 
     fn fmt_stmt_kind(&mut self, stmt: &StmtKind) -> String {
         match stmt {
-            StmtKind::Expr(e) => format!("{};", self.fmt_expr(&e.node)),
+            StmtKind::Expr(e) => self.fmt_expr(&e.node),
             StmtKind::Let { name, ty, value } => {
                 let ty_str = ty.as_ref().map(|t| format!(": {}", self.fmt_type(t))).unwrap_or_default();
                 let val_str = value.as_ref().map(|v| format!(" = {}", self.fmt_expr(&v.node))).unwrap_or_default();
-                format!("const {}{}{};", name, ty_str, val_str)
+                format!("const {}{}{}", name, ty_str, val_str)
             }
             StmtKind::Var { name, ty, value, .. } => {
                 let ty_str = ty.as_ref().map(|t| format!(": {}", self.fmt_type(t))).unwrap_or_default();
                 let val_str = value.as_ref().map(|v| format!(" = {}", self.fmt_expr(&v.node))).unwrap_or_default();
-                format!("var {}{}{};", name, ty_str, val_str)
+                format!("var {}{}{}", name, ty_str, val_str)
             }
             StmtKind::Assignment { target, value } => {
-                format!("{} = {};", self.fmt_expr(&target.node), self.fmt_expr(&value.node))
+                format!("{} = {}", self.fmt_expr(&target.node), self.fmt_expr(&value.node))
             }
             StmtKind::If { cond, then_branch, else_branch } => {
                 let cond_str = self.fmt_expr(&cond.node);
@@ -314,17 +314,17 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
                 let cond_str = cond.as_ref().map(|e| self.fmt_expr(&e.node)).unwrap_or_default();
                 let upd_str = update.as_ref().map(|e| self.fmt_expr(&e.node)).unwrap_or_default();
                 let body_str = self.fmt_block_stmt(body);
-                format!("for {}; {}; {}\n{}", init_str, cond_str, upd_str, body_str)
+                format!("for ({}; {}; {})\n{}", init_str, cond_str, upd_str, body_str)
             }
             StmtKind::Loop { body } => {
                 let body_str = self.fmt_block_stmt(body);
                 format!("loop\n{}", body_str)
             }
-            StmtKind::Return(Some(e)) => format!("return {};", self.fmt_expr(&e.node)),
-            StmtKind::Return(None) => "return;".to_string(),
-            StmtKind::Break => "break;".to_string(),
-            StmtKind::Continue => "continue;".to_string(),
-            StmtKind::Throw(e) => format!("throw {};", self.fmt_expr(&e.node)),
+            StmtKind::Return(Some(e)) => format!("return {}", self.fmt_expr(&e.node)),
+            StmtKind::Return(None) => "return".to_string(),
+            StmtKind::Break => "break".to_string(),
+            StmtKind::Continue => "continue".to_string(),
+            StmtKind::Throw(e) => format!("throw {}", self.fmt_expr(&e.node)),
             StmtKind::Try { body, catches, finally } => {
                 let body_str = self.fmt_block_stmt(body);
                 let mut s = format!("try\n{}", body_str);
@@ -474,7 +474,7 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
                         .map(|g| format!(" if {}", self.fmt_expr(&g.node)))
                         .unwrap_or_default();
                     let case_body = self.fmt_expr(&case.body.node);
-                    body.push_str(&format!("{}{}{} => {};\n", self.ind(), pat, guard, case_body));
+                    body.push_str(&format!("{}{}{} => {},\n", self.ind(), pat, guard, case_body));
                 }
                 self.indent -= 1;
                 format!("match {}\n{}{{\n{}{}}}", e, self.ind(), body, self.ind())
@@ -710,9 +710,9 @@ mod tests {
 
     #[test]
     fn test_fmt_simple_function() {
-        let out = fmt("fn add(a: Int32, b: Int32) -> Int32 { return a + b; }");
+        let out = fmt("fn add(a: Int32, b: Int32) -> Int32 { return a + b }");
         assert!(out.contains("fn add(a: Int32, b: Int32) -> Int32"));
-        assert!(out.contains("return a + b;"));
+        assert!(out.contains("return a + b"));
     }
 
     #[test]
@@ -742,14 +742,14 @@ mod tests {
 
     #[test]
     fn test_fmt_function_with_doc_comment() {
-        let out = fmt("/** Returns x doubled */\nfn double(x: Int32) -> Int32 { return x * 2; }");
+        let out = fmt("/** Returns x doubled */\nfn double(x: Int32) -> Int32 { return x * 2 }");
         assert!(out.contains("Returns x doubled"));
         assert!(out.contains("fn double(x: Int32)"));
     }
 
     #[test]
     fn test_fmt_generic_function() {
-        let out = fmt("fn identity<T>(x: T) -> T { return x; }");
+        let out = fmt("fn identity<T>(x: T) -> T { return x }");
         assert!(out.contains("fn identity<T>(x: T) -> T"));
     }
 
@@ -757,150 +757,150 @@ mod tests {
 
     #[test]
     fn test_fmt_let_with_type() {
-        let out = fmt("fn f() { const x: Int32 = 5; }");
-        assert!(out.contains("const x: Int32 = 5;"));
+        let out = fmt("fn f() { const x: Int32 = 5 }");
+        assert!(out.contains("const x: Int32 = 5"));
     }
 
     #[test]
     fn test_fmt_let_inferred() {
-        let out = fmt("fn f() { let x = 42; }");
+        let out = fmt("fn f() { let x = 42 }");
         // legacy `let` is normalized to `const`
-        assert!(out.contains("const x = 42;"));
+        assert!(out.contains("const x = 42"));
     }
 
     #[test]
     fn test_fmt_var() {
-        let out = fmt("fn f() { var count: Int32 = 0; }");
-        assert!(out.contains("var count: Int32 = 0;"));
+        let out = fmt("fn f() { var count: Int32 = 0 }");
+        assert!(out.contains("var count: Int32 = 0"));
     }
 
     #[test]
     fn test_fmt_return() {
-        let out = fmt("fn f() -> Int32 { return 1; }");
-        assert!(out.contains("return 1;"));
+        let out = fmt("fn f() -> Int32 { return 1 }");
+        assert!(out.contains("return 1"));
     }
 
     #[test]
     fn test_fmt_return_void() {
-        let out = fmt("fn f() { return; }");
-        assert!(out.contains("return;"));
+        let out = fmt("fn f() { return }");
+        assert!(out.contains("return"));
     }
 
     #[test]
     fn test_fmt_if_else() {
-        let out = fmt("fn f(x: Int32) -> Nothing { if (x > 0) { return; } else { return; } }");
+        let out = fmt("fn f(x: Int32) -> Nothing { if (x > 0) { return } else { return } }");
         assert!(out.contains("if (x > 0)"));
         assert!(out.contains("else"));
     }
 
     #[test]
     fn test_fmt_while() {
-        let out = fmt("fn f() { while true { break; } }");
+        let out = fmt("fn f() { while true { break } }");
         assert!(out.contains("while true"));
-        assert!(out.contains("break;"));
+        assert!(out.contains("break"));
     }
 
     #[test]
     fn test_fmt_for_in() {
-        let out = fmt("fn f() { for i in 0..10 { continue; } }");
+        let out = fmt("fn f() { for i in 0..10 { continue } }");
         assert!(out.contains("for i in"));
         assert!(out.contains("0..10"));
     }
 
     #[test]
     fn test_fmt_loop() {
-        let out = fmt("fn f() { loop { break; } }");
+        let out = fmt("fn f() { loop { break } }");
         assert!(out.contains("loop"));
-        assert!(out.contains("break;"));
+        assert!(out.contains("break"));
     }
 
     #[test]
     fn test_fmt_assignment() {
-        let out = fmt("fn f() { var x = 1; x = 2; }");
-        assert!(out.contains("x = 2;"));
+        let out = fmt("fn f() { var x = 1\nx = 2 }");
+        assert!(out.contains("x = 2\n"));
     }
 
     #[test]
     fn test_fmt_throw() {
-        let out = fmt("fn f() { throw \"error\"; }");
+        let out = fmt("fn f() { throw \"error\" }");
         assert!(out.contains("throw"));
         assert!(out.contains("\"error\""));
     }
 
     #[test]
     fn test_fmt_try_catch() {
-        let out = fmt("fn f() { try { throw \"x\"; } catch e: String { return; } }");
+        let out = fmt("fn f() { try { throw \"x\" } catch e: String { return } }");
         assert!(out.contains("try"));
         assert!(out.contains("catch e: String"));
     }
 
     #[test]
     fn test_fmt_break_continue() {
-        let out = fmt("fn f() { while true { break; continue; } }");
-        assert!(out.contains("break;"));
-        assert!(out.contains("continue;"));
+        let out = fmt("fn f() { while true { break\ncontinue } }");
+        assert!(out.contains("break"));
+        assert!(out.contains("continue"));
     }
 
     // --- expressions ---
 
     #[test]
     fn test_fmt_binary_ops() {
-        let out = fmt("fn f() -> Int32 { return 1 + 2 * 3; }");
+        let out = fmt("fn f() -> Int32 { return 1 + 2 * 3 }");
         assert!(out.contains("1 + 2 * 3"));
     }
 
     #[test]
     fn test_fmt_unary_neg() {
-        let out = fmt("fn f(x: Int32) -> Int32 { return -x; }");
+        let out = fmt("fn f(x: Int32) -> Int32 { return -x }");
         assert!(out.contains("-x"));
     }
 
     #[test]
     fn test_fmt_call() {
-        let out = fmt("fn f() { println(\"hi\"); }");
+        let out = fmt("fn f() { println(\"hi\") }");
         assert!(out.contains("println(\"hi\")"));
     }
 
     #[test]
     fn test_fmt_method_call() {
-        let out = fmt("fn f(s: String) { s.length(); }");
+        let out = fmt("fn f(s: String) { s.length() }");
         assert!(out.contains("s.length()"));
     }
 
     #[test]
     fn test_fmt_field_access() {
-        let out = fmt("fn f(p: Point) -> Int32 { return p.x; }");
+        let out = fmt("fn f(p: Point) -> Int32 { return p.x }");
         assert!(out.contains("p.x"));
     }
 
     #[test]
     fn test_fmt_index() {
-        let out = fmt("fn f(a: Array<Int32>) -> Int32 { return a[0]; }");
+        let out = fmt("fn f(a: Array<Int32>) -> Int32 { return a[0] }");
         assert!(out.contains("a[0]"));
     }
 
     #[test]
     fn test_fmt_new() {
-        let out = fmt("fn f() -> Foo { return new Foo(); }");
+        let out = fmt("fn f() -> Foo { return new Foo() }");
         assert!(out.contains("new Foo()"));
     }
 
     #[test]
     fn test_fmt_array_literal() {
-        let out = fmt("fn f() { let a = [1, 2, 3]; }");
+        let out = fmt("fn f() { let a = [1, 2, 3] }");
         assert!(out.contains("[1, 2, 3]"));
     }
 
     #[test]
     fn test_fmt_map_literal() {
-        let out = fmt("fn f() { let m = @{\"a\" => 1}; }");
+        let out = fmt("fn f() { let m = @{\"a\" => 1} }");
         assert!(out.contains("@{"));
         assert!(out.contains("=>"));
     }
 
     #[test]
     fn test_fmt_cast() {
-        let out = fmt("fn f(x: Int32) -> Int64 { return x as Int64; }");
+        let out = fmt("fn f(x: Int32) -> Int64 { return x as Int64 }");
         assert!(out.contains("x as Int64"));
     }
 
@@ -918,13 +918,13 @@ mod tests {
 
     #[test]
     fn test_fmt_compound_assign() {
-        let out = fmt("fn f() { var x = 1; x += 2; }");
+        let out = fmt("fn f() { var x = 1\nx += 2 }");
         assert!(out.contains("+="));
     }
 
     #[test]
     fn test_fmt_match() {
-        let out = fmt("fn f(x: Int32) -> Nothing { match x { 1 => return; _ => return; } }");
+        let out = fmt("fn f(x: Int32) -> Nothing { match x { 1 => return\n_ => return } }");
         assert!(out.contains("match x"));
         assert!(out.contains("=>"));
         assert!(out.contains("_"));
@@ -932,7 +932,7 @@ mod tests {
 
     #[test]
     fn test_fmt_enum_value() {
-        let out = fmt("fn f() -> Color { return Color::Red; }");
+        let out = fmt("fn f() -> Color { return Color::Red }");
         assert!(out.contains("Color::Red"));
     }
 
@@ -958,7 +958,7 @@ mod tests {
 
     #[test]
     fn test_fmt_type_tuple() {
-        let out = fmt("fn f() -> (Int32, String) { return (1, \"x\"); }");
+        let out = fmt("fn f() -> (Int32, String) { return (1, \"x\") }");
         assert!(out.contains("(Int32, String)"));
     }
 
@@ -966,9 +966,9 @@ mod tests {
 
     #[test]
     fn test_fmt_class_basic() {
-        let out = fmt("class Dog { var name: String; fn bark() -> Nothing {} }");
+        let out = fmt("class Dog { var name: String\nfn bark() -> Nothing {} }");
         assert!(out.contains("class Dog"));
-        assert!(out.contains("var name: String;"));
+        assert!(out.contains("var name: String"));
         assert!(out.contains("fn bark() -> Nothing"));
     }
 
@@ -999,7 +999,7 @@ mod tests {
 
     #[test]
     fn test_fmt_class_generic() {
-        let out = fmt("class Box<T> { var value: T; }");
+        let out = fmt("class Box<T> { var value: T }");
         assert!(out.contains("class Box<T>"));
         assert!(out.contains("value: T"));
     }
@@ -1008,57 +1008,57 @@ mod tests {
 
     #[test]
     fn test_fmt_interface() {
-        let out = fmt("interface Printable { fn print() -> Nothing; }");
+        let out = fmt("interface Printable { fn print() -> Nothing }");
         assert!(out.contains("interface Printable"));
-        assert!(out.contains("fn print() -> Nothing;"));
+        assert!(out.contains("fn print() -> Nothing"));
     }
 
     #[test]
     fn test_fmt_interface_extends() {
-        let out = fmt("interface ReadWrite extends Read, Write { fn rw() -> Nothing; }");
+        let out = fmt("interface ReadWrite extends Read, Write { fn rw() -> Nothing }");
         assert!(out.contains("extends Read, Write"));
     }
 
     #[test]
     fn test_fmt_enum_simple() {
-        let out = fmt("enum Color { Red; Green; Blue; }");
+        let out = fmt("enum Color { Red\nGreen\nBlue }");
         assert!(out.contains("enum Color"));
-        assert!(out.contains("Red;"));
-        assert!(out.contains("Green;"));
+        assert!(out.contains("Red\n"));
+        assert!(out.contains("Green\n"));
     }
 
     #[test]
     fn test_fmt_enum_with_args() {
-        let out = fmt("enum Shape { Circle(Float64); Rect(Float64, Float64); }");
+        let out = fmt("enum Shape { Circle(Float64)\nRect(Float64, Float64) }");
         assert!(out.contains("Circle(Float64)"));
         assert!(out.contains("Rect(Float64, Float64)"));
     }
 
     #[test]
     fn test_fmt_trait() {
-        let out = fmt("trait Serialize { fn serialize() -> String; }");
+        let out = fmt("trait Serialize { fn serialize() -> String }");
         assert!(out.contains("trait Serialize"));
-        assert!(out.contains("fn serialize() -> String;"));
+        assert!(out.contains("fn serialize() -> String"));
     }
 
     // --- import / module / namespace ---
 
     #[test]
     fn test_fmt_import() {
-        let out = fmt("import std.io;");
-        assert!(out.contains("import std::io;"));
+        let out = fmt("import std.io");
+        assert!(out.contains("import std::io"));
     }
 
     #[test]
     fn test_fmt_import_alias() {
-        let out = fmt("import std.io as io;");
-        assert!(out.contains("as io;"));
+        let out = fmt("import std.io as io");
+        assert!(out.contains("as io"));
     }
 
     #[test]
     fn test_fmt_module() {
-        let out = fmt("module myapp;");
-        assert!(out.contains("module myapp;"));
+        let out = fmt("module myapp");
+        assert!(out.contains("module myapp"));
     }
 
     #[test]
@@ -1094,7 +1094,7 @@ mod tests {
 
     #[test]
     fn test_fmt_idempotent_function() {
-        let src = "fn add(a: Int32, b: Int32) -> Int32 { return a + b; }";
+        let src = "fn add(a: Int32, b: Int32) -> Int32 { return a + b }";
         let first = fmt(src);
         // Parse the formatted output and format again
         let tokens = tinox_lexer::Lexer::new(&first).tokenize().unwrap();
@@ -1105,7 +1105,7 @@ mod tests {
 
     #[test]
     fn test_fmt_idempotent_class() {
-        let src = "class Foo { var x: Int32; fn bar() -> Nothing {} }";
+        let src = "class Foo { var x: Int32\nfn bar() -> Nothing {} }";
         let first = fmt(src);
         let tokens = tinox_lexer::Lexer::new(&first).tokenize().unwrap();
         let ast2 = Parser::new(tokens).parse().unwrap();
@@ -1144,7 +1144,7 @@ mod tests {
 
     #[test]
     fn test_fmt_string_literal_with_escaped_quote_round_trips() {
-        let src = r#"fn main() -> Nothing { "select == \"ERROR\""; }"#;
+        let src = r#"fn main() -> Nothing { "select == \"ERROR\"" }"#;
         let original_value = parsed_string_literal_value(src);
         let formatted = fmt(src);
         let reparsed_value = parsed_string_literal_value(&formatted);
@@ -1159,7 +1159,7 @@ mod tests {
 
     #[test]
     fn test_fmt_string_literal_with_backslash_and_newline_round_trips() {
-        let src = r#"fn main() -> Nothing { "a\\b\nc\td"; }"#;
+        let src = r#"fn main() -> Nothing { "a\\b\nc\td" }"#;
         let original_value = parsed_string_literal_value(src);
         let formatted = fmt(src);
         let reparsed_value = parsed_string_literal_value(&formatted);
@@ -1168,7 +1168,8 @@ mod tests {
 
     #[test]
     fn test_fmt_char_literal_with_quote_and_backslash() {
-        let out = fmt(r"fn main() -> Nothing { '\''; '\\'; }");
+        let out = fmt(r"fn main() -> Nothing { '\''
+'\\' }");
         // A literal, un-escaped `'`/`\` here would either end the char
         // literal early or otherwise fail to re-parse -- re-tokenizing
         // the formatted output is itself the assertion.

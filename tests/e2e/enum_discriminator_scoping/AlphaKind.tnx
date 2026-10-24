@@ -1,4 +1,4 @@
 enum AlphaKind {
-    Foo,
-    Bar(Int64),
+    Foo
+    Bar(Int64)
 }

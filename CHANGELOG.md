@@ -4,6 +4,32 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-24
+
+### Changed (breaking)
+
+- **Statements end at the end of the line; `;` is gone** (#445). A `;` that
+  terminates a statement is a hard compile error with a migration hint, several
+  statements on one line are rejected, and a statement continues on the next line
+  only if the line ends with a binary operator, a comma or an open bracket, or the
+  next line starts with `.`. Inside `( )` / `[ ]` newlines are whitespace. A line
+  starting with `(`, `[`, `-` or `+` directly after a complete expression is a hard
+  error (never silently a continuation or a new statement). Enum variants are
+  written one per line. The `;` inside a C-style `for (init; cond; update)` header
+  stays. All sources in this repository were migrated with the new one-shot tool
+  `tinox migrate-semicolons [--check|--verify] <paths>` (also `--rust` for Tinox
+  code embedded in Rust string literals and `--md` for Markdown code blocks).
+  Packages published before this change contain `;` sources and do not compile
+  with this compiler: they must be republished (migrate, bump, publish).
+  `tinox fmt` no longer prints `;`.
+
+### Added
+
+- **Schema drift detection (`tinox db diff`)** (#420): compare the full changelog's
+  schema with live tables, columns, types and indexes, with a non-zero exit status
+  on drift. SQLite uses an in-memory replay; PostgreSQL and MySQL accept an empty
+  disposable shadow database through `TINOX_DB_DIFF_URL`.
+
 ## [2.5.1] - 2026-10-23
 
 ### Added

@@ -10,41 +10,41 @@
 //         s.onmessage = e => console.log(e.data); s.onopen = () => s.send("hello");
 // Serves one connection at a time (blocking, v1 -- same as ws_echo).
 
-import tinox.core.websocket;
+import tinox.core.websocket
 
 class Main
 {
     fnc main() -> Int32 {
-        const srv = WsServer::listenTls(8791, "cert.pem", "key.pem");
+        const srv = WsServer::listenTls(8791, "cert.pem", "key.pem")
         if (srv < 0) {
-            println("listenTls failed (port in use, runtime built with TINOX_TLS=0, or cert.pem/key.pem missing/invalid)");
-            return 1;
+            println("listenTls failed (port in use, runtime built with TINOX_TLS=0, or cert.pem/key.pem missing/invalid)")
+            return 1
         }
-        println("wss://localhost:8791 ready");
+        println("wss://localhost:8791 ready")
         while true {
-            const conn = WsServer::acceptTls(srv);
+            const conn = WsServer::acceptTls(srv)
             if (conn <= 0) {
-                continue;
+                continue
             }
-            println("client connected");
+            println("client connected")
             while true {
-                const f = Ws::readMessage(conn);
+                const f = Ws::readMessage(conn)
                 if (f.opcode == 1) {
-                    const msg = Ws::text(f);
-                    println("received: " + msg);
-                    Ws::sendText(conn, "echo: " + msg);
-                    continue;
+                    const msg = Ws::text(f)
+                    println("received: " + msg)
+                    Ws::sendText(conn, "echo: " + msg)
+                    continue
                 }
                 if (f.opcode == 2) {
-                    Ws::sendBinary(conn, f.payload);
-                    continue;
+                    Ws::sendBinary(conn, f.payload)
+                    continue
                 }
                 // Close (8), EOF (-1), or protocol error (-2): end the connection
-                break;
+                break
             }
-            Ws::close(conn);
-            println("client disconnected");
+            Ws::close(conn)
+            println("client disconnected")
         }
-        return 0;
+        return 0
     }
 }

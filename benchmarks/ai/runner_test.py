@@ -224,7 +224,7 @@ class RealCompilerChecks(unittest.TestCase):
             shutil.rmtree(work)
             shutil.copytree(runner.HERE / "tasks/bugfix/starter", work)
             path = work / "Main.tnx"
-            path.write_text(path.read_text().replace("return price * quantity - discount;", "if (price < 0 || quantity < 0 || discount < 0 || discount > 100) { return -1; }\nreturn price * quantity * (100 - discount) / 100;"))
+            path.write_text(path.read_text().replace("return price * quantity - discount", "if (price < 0 || quantity < 0 || discount < 0 || discount > 100) { return -1 }\nreturn price * quantity * (100 - discount) / 100"))
             completed = subprocess.run(command, capture_output=True)
             self.assertEqual(completed.returncode, 0, completed.stderr.decode())
 
@@ -236,8 +236,8 @@ class RealCompilerChecks(unittest.TestCase):
             root = Path(directory)
             adapter = root / "adapter.py"
             source = (runner.HERE / "tasks/bugfix/starter/Main.tnx").read_text().replace(
-                "return price * quantity - discount;",
-                "if (price < 0 || quantity < 0 || discount < 0 || discount > 100) { return -1; } return price * quantity * (100 - discount) / 100;")
+                "return price * quantity - discount",
+                "if (price < 0 || quantity < 0 || discount < 0 || discount > 100) { return -1 }\nreturn price * quantity * (100 - discount) / 100")
             adapter.write_text("import json, sys\nrequest=json.load(sys.stdin)\n" +
                 "action=" + repr({"tool": "write", "args": {"path": "Main.tnx", "content": source}}) + "\n" +
                 "if len(request['messages']) > 2: action={'tool':'submit'}\n" +

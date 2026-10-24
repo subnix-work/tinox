@@ -1,6 +1,6 @@
-import tinox.core.ui;
-import tinox.core.websocket;
-import tinox.core.http_server;
+import tinox.core.ui
+import tinox.core.websocket
+import tinox.core.http_server
 
 // Annotation-driven: no HttpServer/WsServer wiring anywhere in the
 // program -- @TinoxUIApp generates the HTTP shell/client-JS server and
@@ -10,15 +10,15 @@ import tinox.core.http_server;
 @TinoxUIApp
 class CounterApp
 {
-    var clicks: Int64;
+    var clicks: Int64
 
     @View
     fn render() -> Component
     {
-        const app: CounterApp = this;
+        const app: CounterApp = this
         return Component::vbox([
             Component::label("Clicks: " + this.clicks.toString()),
-            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1; })
-        ]);
+            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1 })
+        ])
     }
 }

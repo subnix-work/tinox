@@ -1,20 +1,20 @@
-module tinox.core.logger;
+module tinox.core.logger
 
-import tinox.core.time;
-import tinox.core.env;
+import tinox.core.time
+import tinox.core.env
 
 namespace tinox.core.logger
 {
-    extern fn telemetryLogJson(timestamp: String, level: String, logger: String, message: String) -> String;
+    extern fn telemetryLogJson(timestamp: String, level: String, logger: String, message: String) -> String
 
-    extern fn telemetryEnabled() -> Int64;
-    extern fn telemetryWriteLogJson(timestamp: String, level: String, logger: String, message: String) -> Nothing;
+    extern fn telemetryEnabled() -> Int64
+    extern fn telemetryWriteLogJson(timestamp: String, level: String, logger: String, message: String) -> Nothing
 
     class Logger
     {
-        var name: String;
-        var level: Int64;
-        var jsonFormat: Bool;
+        var name: String
+        var level: Int64
+        var jsonFormat: Bool
 
         // Telemetry enables JSON output automatically. Without telemetry it
         // remains opt-in via the TINOX_LOG_JSON=true environment
@@ -24,14 +24,14 @@ namespace tinox.core.logger
         // class — just set the env var before the process starts.
         fn new(name: String) -> Logger
         {
-            return Logger { name: name, level: LogLevel::Info, jsonFormat: Env::getVar("TINOX_LOG_JSON") == "true" || telemetryEnabled() == 1 };
+            return Logger { name: name, level: LogLevel::Info, jsonFormat: Env::getVar("TINOX_LOG_JSON") == "true" || telemetryEnabled() == 1 }
         }
 
         fn debug(logger: Logger, message: String) -> Nothing
         {
             if (logger.level <= LogLevel::Debug)
             {
-                Logger::log(logger, "DEBUG", message);
+                Logger::log(logger, "DEBUG", message)
             }
         }
 
@@ -39,7 +39,7 @@ namespace tinox.core.logger
         {
             if (logger.level <= LogLevel::Info)
             {
-                Logger::log(logger, "INFO", message);
+                Logger::log(logger, "INFO", message)
             }
         }
 
@@ -47,7 +47,7 @@ namespace tinox.core.logger
         {
             if (logger.level <= LogLevel::Warn)
             {
-                Logger::log(logger, "WARN", message);
+                Logger::log(logger, "WARN", message)
             }
         }
 
@@ -55,49 +55,49 @@ namespace tinox.core.logger
         {
             if (logger.level <= LogLevel::Error)
             {
-                Logger::log(logger, "ERROR", message);
+                Logger::log(logger, "ERROR", message)
             }
         }
 
         fn setLevel(logger: Logger, level: Int64) -> Nothing
         {
-            logger.level = level;
+            logger.level = level
         }
 
         fn log(logger: Logger, level: String, message: String) -> Nothing
         {
-            const timestamp: String = Time::now().toString();
+            const timestamp: String = Time::now().toString()
             if (logger.jsonFormat)
             {
-                telemetryWriteLogJson(timestamp, level, logger.name, message);
+                telemetryWriteLogJson(timestamp, level, logger.name, message)
             }
             else
             {
-                print("[");
-                print(timestamp);
-                print("] [");
-                print(level);
-                print("] [");
-                print(logger.name);
-                print("] ");
-                println(message);
+                print("[")
+                print(timestamp)
+                print("] [")
+                print(level)
+                print("] [")
+                print(logger.name)
+                print("] ")
+                println(message)
             }
         }
 
         // Runtime serialization adds the active context and bounds/escapes fields.
         fnc toJson(record: LogRecord) -> String
         {
-            return telemetryLogJson(record.timestamp, record.level, record.logger, record.message);
+            return telemetryLogJson(record.timestamp, record.level, record.logger, record.message)
         }
         fnc escapeJson(s: String) -> String
         {
-            var result: String = s;
-            result = result.replace("\\", "\\\\");
-            result = result.replace("\"", "\\\"");
-            result = result.replace("\n", "\\n");
-            result = result.replace("\r", "\\r");
-            result = result.replace("\t", "\\t");
-            return result;
+            var result: String = s
+            result = result.replace("\\", "\\\\")
+            result = result.replace("\"", "\\\"")
+            result = result.replace("\n", "\\n")
+            result = result.replace("\r", "\\r")
+            result = result.replace("\t", "\\t")
+            return result
         }
     }
 }

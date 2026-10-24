@@ -321,6 +321,7 @@ pub struct Lexer<'a> {
     line: u32,
     column: u32,
     start_column: u32,
+    start_line: u32,
 }
 
 impl<'a> Lexer<'a> {
@@ -334,6 +335,7 @@ impl<'a> Lexer<'a> {
             line: 1,
             column: 1,
             start_column: 1,
+            start_line: 1,
         }
     }
 
@@ -372,6 +374,7 @@ impl<'a> Lexer<'a> {
     fn next_token(&mut self) -> Result<Token, Error> {
         self.start = self.pos;
         self.start_column = self.column;
+        self.start_line = self.line;
 
         if self.pos >= self.chars.len() {
             return Ok(Token::new(
@@ -531,7 +534,7 @@ impl<'a> Lexer<'a> {
         Span::new(
             Pos {
                 offset: self.start as u32,
-                line: self.line,
+                line: self.start_line,
                 column: self.start_column,
             },
             Pos {

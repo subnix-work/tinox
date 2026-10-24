@@ -1,4 +1,4 @@
-module tinox.core.websocket;
+module tinox.core.websocket
 
 /*
  * WebSocket server (RFC 6455) on top of the HTTP server's conn-handle
@@ -35,9 +35,9 @@ namespace tinox.core.websocket
      */
     class WsFrame
     {
-        var fin: Bool;
-        var opcode: Int64;
-        var payload: List<Int64>;
+        var fin: Bool
+        var opcode: Int64
+        var payload: List<Int64>
         /*
          * RSV1 bit (RFC 7692 §7.2.1, issue #122): set on the FIRST frame
          * of a permessage-deflate-compressed message (never on
@@ -46,6 +46,6 @@ namespace tinox.core.websocket
          * the extension (wsIsCompressed) — otherwise it's rejected as a
          * protocol error, same as any other unexpected RSV bit.
          */
-        var rsv1: Bool;
+        var rsv1: Bool
     }
 }

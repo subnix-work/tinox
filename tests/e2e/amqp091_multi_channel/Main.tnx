@@ -23,51 +23,51 @@
 // expect: ok-chan2-message
 // expect: ok-broker-saw-all
 
-import tinox.core.amqp091;
-import tinox.core.socket;
+import tinox.core.amqp091
+import tinox.core.socket
 
 class Main
 {
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn, 8); // protocol header
+        const sconn = httpServerAcceptConnHandle(srv)
+        httpConnReadN(sconn, 8) // protocol header
 
-        const w1 = AmqpWriter091::new();
-        w1.octet(0);
-        w1.octet(9);
-        var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
-        w1.fieldTable(emptyProps);
-        w1.longstr("PLAIN");
-        w1.longstr("en_US");
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes));
-        Amqp091::readFrame(sconn); // start-ok
+        const w1 = AmqpWriter091::new()
+        w1.octet(0)
+        w1.octet(9)
+        var emptyProps: Map<String, AmqpFieldValue091> = Map::new()
+        w1.fieldTable(emptyProps)
+        w1.longstr("PLAIN")
+        w1.longstr("en_US")
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes))
+        Amqp091::readFrame(sconn) // start-ok
 
-        const w2 = AmqpWriter091::new();
-        w2.short(2047);
-        w2.long(131072);
-        w2.short(60);
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 30, w2.bytes));
-        Amqp091::readFrame(sconn); // tune-ok
-        Amqp091::readFrame(sconn); // open
+        const w2 = AmqpWriter091::new()
+        w2.short(2047)
+        w2.long(131072)
+        w2.short(60)
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 30, w2.bytes))
+        Amqp091::readFrame(sconn) // tune-ok
+        Amqp091::readFrame(sconn) // open
 
-        const w3 = AmqpWriter091::new();
-        w3.shortstr("");
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes));
+        const w3 = AmqpWriter091::new()
+        w3.shortstr("")
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes))
 
         // --- channel 1 open ---
-        const fOpen1 = Amqp091::readFrame(sconn);
-        var chan1Ok: Bool = fOpen1.chanId == 1;
-        const w4 = AmqpWriter091::new();
-        w4.longstr("");
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
+        const fOpen1 = Amqp091::readFrame(sconn)
+        var chan1Ok: Bool = fOpen1.chanId == 1
+        const w4 = AmqpWriter091::new()
+        w4.longstr("")
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes))
 
         // --- channel 2 open ---
-        const fOpen2 = Amqp091::readFrame(sconn);
-        var chan2Ok: Bool = fOpen2.chanId == 2;
-        const w5 = AmqpWriter091::new();
-        w5.longstr("");
-        Amqp091::writeFrame(sconn, 1, 2, Amqp091::encodeMethodPayload(20, 11, w5.bytes));
+        const fOpen2 = Amqp091::readFrame(sconn)
+        var chan2Ok: Bool = fOpen2.chanId == 2
+        const w5 = AmqpWriter091::new()
+        w5.longstr("")
+        Amqp091::writeFrame(sconn, 1, 2, Amqp091::encodeMethodPayload(20, 11, w5.bytes))
 
         // --- channel 1's queue.declare and channel 2's basic.consume are
         // sent from two separate client threads sharing one connection (see
@@ -76,19 +76,19 @@ class Main
         // assumed sequence. queue.declare is deliberately NOT answered yet:
         // channel 1's declareQueue() is left blocked, waiting on its own
         // inbox, while the broker below sends channel 2 traffic first.
-        var declChanOk: Bool = false;
-        var consChanOk: Bool = false;
+        var declChanOk: Bool = false
+        var consChanOk: Bool = false
         for i in 0..2 {
-            const f = Amqp091::readFrame(sconn);
-            const mf = Amqp091::decodeMethodPayload(f.payload);
+            const f = Amqp091::readFrame(sconn)
+            const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 50 && mf.methodId == 10) {
-                declChanOk = f.chanId == 1;
+                declChanOk = f.chanId == 1
             }
             if (mf.classId == 60 && mf.methodId == 20) {
-                consChanOk = f.chanId == 2;
-                const wConsOk = AmqpWriter091::new();
-                wConsOk.shortstr("chan2-consumer");
-                Amqp091::writeFrame(sconn, 1, 2, Amqp091::encodeMethodPayload(60, 21, wConsOk.bytes));
+                consChanOk = f.chanId == 2
+                const wConsOk = AmqpWriter091::new()
+                wConsOk.shortstr("chan2-consumer")
+                Amqp091::writeFrame(sconn, 1, 2, Amqp091::encodeMethodPayload(60, 21, wConsOk.bytes))
             }
         }
 
@@ -96,57 +96,57 @@ class Main
         // declareQueue() is still blocked waiting for ITS reply. This is the
         // exact race: if routing were broken, channel 1 would receive this
         // frame instead of its own queue.declare-ok. ---
-        const wDeliver = AmqpWriter091::new();
-        wDeliver.shortstr("chan2-consumer");
-        wDeliver.longlong(1);
-        wDeliver.octet(0);
-        wDeliver.shortstr("");
-        wDeliver.shortstr("chan2-queue");
-        Amqp091::writeFrame(sconn, 1, 2, Amqp091::encodeMethodPayload(60, 60, wDeliver.bytes));
+        const wDeliver = AmqpWriter091::new()
+        wDeliver.shortstr("chan2-consumer")
+        wDeliver.longlong(1)
+        wDeliver.octet(0)
+        wDeliver.shortstr("")
+        wDeliver.shortstr("chan2-queue")
+        Amqp091::writeFrame(sconn, 1, 2, Amqp091::encodeMethodPayload(60, 60, wDeliver.bytes))
 
-        var body: List<Int64> = [];
-        const msg = "chan2-payload";
+        var body: List<Int64> = []
+        const msg = "chan2-payload"
         for i in 0..msg.len() {
-            body.push(msg.charCodeAt(i) & 0xFF);
+            body.push(msg.charCodeAt(i) & 0xFF)
         }
-        const wHdr = AmqpWriter091::new();
-        wHdr.short(60);
-        wHdr.short(0);
-        wHdr.longlong(body.len());
-        wHdr.short(0); // no properties set
-        Amqp091::writeFrame(sconn, 2, 2, wHdr.bytes);
-        Amqp091::writeFrame(sconn, 3, 2, body);
+        const wHdr = AmqpWriter091::new()
+        wHdr.short(60)
+        wHdr.short(0)
+        wHdr.longlong(body.len())
+        wHdr.short(0) // no properties set
+        Amqp091::writeFrame(sconn, 2, 2, wHdr.bytes)
+        Amqp091::writeFrame(sconn, 3, 2, body)
 
         // --- ONLY NOW reply to channel 1's still-pending queue.declare ---
-        const wDeclOk = AmqpWriter091::new();
-        wDeclOk.shortstr("chan1-queue");
-        wDeclOk.long(0);
-        wDeclOk.long(0);
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 11, wDeclOk.bytes));
+        const wDeclOk = AmqpWriter091::new()
+        wDeclOk.shortstr("chan1-queue")
+        wDeclOk.long(0)
+        wDeclOk.long(0)
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(50, 11, wDeclOk.bytes))
 
         // --- expect channel 2's basic.ack for the delivered message ---
-        const fAck = Amqp091::readFrame(sconn);
-        var ackChanOk: Bool = fAck.chanId == 2;
-        const mAck = Amqp091::decodeMethodPayload(fAck.payload);
-        var ackMethodOk: Bool = mAck.classId == 60 && mAck.methodId == 80;
+        const fAck = Amqp091::readFrame(sconn)
+        var ackChanOk: Bool = fAck.chanId == 2
+        const mAck = Amqp091::decodeMethodPayload(fAck.payload)
+        var ackMethodOk: Bool = mAck.classId == 60 && mAck.methodId == 80
 
-        httpConnClose(sconn);
+        httpConnClose(sconn)
 
-        var allOk: Int64 = 0;
+        var allOk: Int64 = 0
         if (chan1Ok) {
             if (chan2Ok) {
                 if (declChanOk) {
                     if (consChanOk) {
                         if (ackChanOk) {
                             if (ackMethodOk) {
-                                allOk = 1;
+                                allOk = 1
                             }
                         }
                     }
                 }
             }
         }
-        return allOk;
+        return allOk
     }
 
 
@@ -158,65 +158,65 @@ class Main
      * is synchronously waiting for its own reply.
      */
     async fnc consumeChan2(ch2: AmqpChannel091) -> Int64 {
-        ch2.consume("chan2-queue");
-        const m = ch2.nextMessage();
+        ch2.consume("chan2-queue")
+        const m = ch2.nextMessage()
         if (m.ok) {
-            var received: String = "";
+            var received: String = ""
             for i in 0..m.body.len() {
-                received = received + fromCharCode(m.body[i]);
+                received = received + fromCharCode(m.body[i])
             }
             if (received == "chan2-payload") {
-                ch2.ack(m.deliveryTag);
-                return 1;
+                ch2.ack(m.deliveryTag)
+                return 1
             }
         }
-        return 0;
+        return 0
     }
 
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const brokerHandle = spawn fakeBroker(srv);
+        const brokerHandle = spawn fakeBroker(srv)
 
-        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
-        const ch1 = AmqpChannel091::open(c);
-        const ch2 = AmqpChannel091::open(c);
+        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest")
+        const ch1 = AmqpChannel091::open(c)
+        const ch2 = AmqpChannel091::open(c)
 
         if (ch1.chanId == 1) {
-            println("ok-chan1-id");
+            println("ok-chan1-id")
         }
         if (ch2.chanId == 2) {
-            println("ok-chan2-id");
+            println("ok-chan2-id")
         }
 
-        const chan2Handle = spawn consumeChan2(ch2);
+        const chan2Handle = spawn consumeChan2(ch2)
 
         // Blocks on ch1's own inbox while the broker (see fakeBroker above)
         // pushes channel 2 traffic first -- must still return channel 1's
         // OWN reply, not misinterpret channel 2's basic.deliver.
-        const queueName = ch1.declareQueue("chan1-queue", true, false, false);
+        const queueName = ch1.declareQueue("chan1-queue", true, false, false)
         if (queueName == "chan1-queue") {
             if (ch1.errorMessage == "") {
-                println("ok-chan1-not-confused");
+                println("ok-chan1-not-confused")
             }
         }
 
-        const chan2Result = await chan2Handle;
+        const chan2Result = await chan2Handle
         if (chan2Result == 1) {
-            println("ok-chan2-message");
+            println("ok-chan2-message")
         }
 
-        const brokerOk = await brokerHandle;
+        const brokerOk = await brokerHandle
         if (brokerOk == 1) {
-            println("ok-broker-saw-all");
+            println("ok-broker-saw-all")
         }
 
-        httpServerClose(srv);
-        return 0;
+        httpServerClose(srv)
+        return 0
     }
 }

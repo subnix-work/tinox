@@ -1,1 +1,1 @@
-class small_int_tostring { var n: Int32; }
+class small_int_tostring { var n: Int32 }

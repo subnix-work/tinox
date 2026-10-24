@@ -10,19 +10,19 @@
 // expect-contains: ok-verify-reject
 // tls-fixture
 
-import tinox.core.http_server;
-import tinox.core.socket;
+import tinox.core.http_server
+import tinox.core.socket
 
 class Main
 {
 
-    async fnc runServer() -> Int64 {
-        const server: HttpServer = HttpServer::new(47700);
+    async fnc runServer(port: Int64) -> Int64 {
+        const server: HttpServer = HttpServer::new(port)
         server.get("/hello", ctx => {
-            ctx.response.text("Hello over TLS!");
-        });
-        server.listenTls("tls_cert.pem", "tls_key.pem");
-        return 1;
+            ctx.response.text("Hello over TLS!")
+        })
+        server.listenTls("tls_cert.pem", "tls_key.pem")
+        return 1
     }
 
 
@@ -30,56 +30,62 @@ class Main
     // spawned server thread's bind may not have happened yet when we get here —
     // retry the initial TCP connect instead of coordinating on a signal.
     fnc dialRetry(port: Int64) -> Int64 {
-        var attempt: Int64 = 0;
+        var attempt: Int64 = 0
         while attempt < 50 {
-            const fd: Int64 = socketCreateTcp();
+            const fd: Int64 = socketCreateTcp()
             if (socketConnect(fd, "127.0.0.1", port)) {
-                return fd;
+                return fd
             }
-            sleep_ms(20);
-            attempt = attempt + 1;
+            sleep_ms(20)
+            attempt = attempt + 1
         }
-        return -1;
+        return -1
     }
 
 
     fnc main() -> Int32 {
         // This fixture intentionally ends with the TLS server still listening.
-        const serverTask = spawn runServer();
-        taskDetach(serverTask);
+        // listenTls() binds internally, so it cannot report an OS-assigned port:
+        // ask the kernel for a free one first (a fixed literal sits inside the
+        // ephemeral range and collided with other tests' dynamic ports).
+        const probe: Int64 = httpServerCreate(0)
+        const port: Int64 = httpServerBoundPort(probe)
+        httpServerClose(probe)
+        const serverTask = spawn runServer(port)
+        taskDetach(serverTask)
 
         // --- Positive path: verify=false accepts the self-signed test cert ---
-        const fd: Int64 = dialRetry(47700);
+        const fd: Int64 = dialRetry(port)
         if (fd < 0) {
-            println("connect failed");
-            return 1;
+            println("connect failed")
+            return 1
         }
-        const conn: Int64 = httpConnFromFdTls(fd, "localhost", false);
+        const conn: Int64 = httpConnFromFdTls(fd, "localhost", false)
         if (conn < 0) {
-            println("tls handshake failed");
-            return 1;
+            println("tls handshake failed")
+            return 1
         }
-        httpConnSendRaw(conn, "GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        const resp: String = httpConnReadRequest(conn);
+        httpConnSendRaw(conn, "GET /hello HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        const resp: String = httpConnReadRequest(conn)
         if (resp.contains("200")) {
-            println("ok-status");
+            println("ok-status")
         }
         if (resp.contains("Hello over TLS!")) {
-            println("ok-body");
+            println("ok-body")
         }
-        httpConnClose(conn);
+        httpConnClose(conn)
 
         // --- Negative path: verify=true must reject the self-signed cert ---
-        const fd2: Int64 = dialRetry(47700);
+        const fd2: Int64 = dialRetry(port)
         if (fd2 < 0) {
-            println("connect2 failed");
-            return 1;
+            println("connect2 failed")
+            return 1
         }
-        const conn2: Int64 = httpConnFromFdTls(fd2, "localhost", true);
+        const conn2: Int64 = httpConnFromFdTls(fd2, "localhost", true)
         if (conn2 < 0) {
-            println("ok-verify-reject");
+            println("ok-verify-reject")
         }
 
-        return 0;
+        return 0
     }
 }

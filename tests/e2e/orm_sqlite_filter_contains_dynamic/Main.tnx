@@ -12,25 +12,25 @@
 // the literal-argument path; this one exercises the local-variable path
 // that was actually broken.
 
-import tinox.core.db;
-import orm_sqlite_filter_contains_dynamic;
+import tinox.core.db
+import orm_sqlite_filter_contains_dynamic
 
 class Main
 {
     fnc main() -> Int32
     {
-        const prefix: String = "C";
+        const prefix: String = "C"
         const cs: List<orm_sqlite_filter_contains_dynamic> = DB::of(orm_sqlite_filter_contains_dynamic)
             .filter(u => u.name.startsWith(prefix))
-            .list();
-        println(cs.len());
+            .list()
+        println(cs.len())
 
-        const needle: String = "rol";
+        const needle: String = "rol"
         const containing: List<orm_sqlite_filter_contains_dynamic> = DB::of(orm_sqlite_filter_contains_dynamic)
             .filter(u => u.name.contains(needle))
-            .list();
-        println(containing.len());
+            .list()
+        println(containing.len())
 
-        return 0;
+        return 0
     }
 }

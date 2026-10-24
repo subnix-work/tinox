@@ -20,89 +20,91 @@
 // expect: -5
 // expect: 7
 // expect: 1.5
-import Point;
+import Point
 
 class Main {
-    async fnc greet(n: Int64) -> String { return "hi " + n.toString(); }
-    async fnc half(n: Int64) -> Float64 { return 0.5; }
-    async fnc small(n: Int32) -> Int32 { return n + 1; }
-    async fnc flag(b: Bool) -> Bool { return !b; }
-    async fnc makePoint(x: Int64, y: Int64) -> Point { return Point { x: x, y: y }; }
-    async fnc sum(a: Int64, b: Int64) -> Int64 { return a + b; }
+    async fnc greet(n: Int64) -> String { return "hi " + n.toString() }
+    async fnc half(n: Int64) -> Float64 { return 0.5 }
+    async fnc small(n: Int32) -> Int32 { return n + 1 }
+    async fnc flag(b: Bool) -> Bool { return !b }
+    async fnc makePoint(x: Int64, y: Int64) -> Point { return Point { x: x, y: y } }
+    async fnc sum(a: Int64, b: Int64) -> Int64 { return a + b }
     async fnc nothing() -> Nothing { }
-    async fnc numbers() -> List<Int64> { return [1, 2, 3]; }
+    async fnc numbers() -> List<Int64> { return [1, 2, 3] }
 
-    async fnc names() -> List<String> { return ["a", "b"]; }
-    async fnc floats() -> List<Float64> { return [1.5, 2.5]; }
-    async fnc table() -> Map<String, Int64> { var m: Map<String, Int64> = Map::new(); m.insert("k", 7); return m; }
-    async fnc maybe(b: Bool) -> String? { if (b) { return "yes"; } return null; }
-    async fnc points() -> List<Point> { return [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]; }
-    async fnc nested() -> List<List<Int64>> { return [[1, 2], [3, 4]]; }
-    async fnc maybePoint(b: Bool) -> Point? { if (b) { return Point { x: 9, y: 8 }; } return null; }
-    async fnc neg(n: Int32) -> Int32 { return 0 - n; }
-    async fnc tiny(n: Int8) -> Int8 { return n; }
-    async fnc f32(x: Float32) -> Float32 { return x; }
+    async fnc names() -> List<String> { return ["a", "b"] }
+    async fnc floats() -> List<Float64> { return [1.5, 2.5] }
+    async fnc table() -> Map<String, Int64> { var m: Map<String, Int64> = Map::new()
+    m.insert("k", 7)
+    return m }
+    async fnc maybe(b: Bool) -> String? { if (b) { return "yes" } return null }
+    async fnc points() -> List<Point> { return [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }] }
+    async fnc nested() -> List<List<Int64>> { return [[1, 2], [3, 4]] }
+    async fnc maybePoint(b: Bool) -> Point? { if (b) { return Point { x: 9, y: 8 } } return null }
+    async fnc neg(n: Int32) -> Int32 { return 0 - n }
+    async fnc tiny(n: Int8) -> Int8 { return n }
+    async fnc f32(x: Float32) -> Float32 { return x }
 
     fnc join(t: Task<Int64>) -> Int64 {
-        return await t;
+        return await t
     }
 
     fnc main() -> Int32 {
-        const g = spawn Main::greet(7);
-        const h = spawn Main::half(1);
-        const s = spawn Main::small(41);
-        const f = spawn Main::flag(false);
-        println(await g);
-        println((await h).toString());
-        println((await s).toString());
-        println((await f).toString());
+        const g = spawn Main::greet(7)
+        const h = spawn Main::half(1)
+        const s = spawn Main::small(41)
+        const f = spawn Main::flag(false)
+        println(await g)
+        println((await h).toString())
+        println((await s).toString())
+        println((await f).toString())
 
-        const p: Point = await spawn Main::makePoint(3, 4);
-        println(p.x.toString() + "," + p.y.toString());
+        const p: Point = await spawn Main::makePoint(3, 4)
+        println(p.x.toString() + "," + p.y.toString())
 
         // Task<T> as a parameter type; Nothing-returning tasks are awaitable.
-        const j = spawn Main::sum(2, 3);
-        println(Main::join(j).toString());
-        await spawn Main::nothing();
+        const j = spawn Main::sum(2, 3)
+        println(Main::join(j).toString())
+        await spawn Main::nothing()
 
         // Repeat await returns the same cached result.
-        const r = spawn Main::sum(90, 9);
-        println((await r).toString());
-        println((await r).toString());
+        const r = spawn Main::sum(90, 9)
+        println((await r).toString())
+        println((await r).toString())
 
         // Many tasks in one expression.
-        const t1: Task<Int64> = spawn Main::sum(1, 2);
-        const t2: Task<Int64> = spawn Main::sum(3, 4);
-        const t3: Task<Int64> = spawn Main::sum(5, 6);
-        const t4: Task<Int64> = spawn Main::sum(7, 8);
-        println((await t1 + await t2 + await t3 + await t4).toString());
+        const t1: Task<Int64> = spawn Main::sum(1, 2)
+        const t2: Task<Int64> = spawn Main::sum(3, 4)
+        const t3: Task<Int64> = spawn Main::sum(5, 6)
+        const t4: Task<Int64> = spawn Main::sum(7, 8)
+        println((await t1 + await t2 + await t3 + await t4).toString())
 
-        const nums = await spawn Main::numbers();
-        println("list " + nums.len().toString());
+        const nums = await spawn Main::numbers()
+        println("list " + nums.len().toString())
 
-        const w = spawn Main::sum(3, 5);
-        println("wrapped " + (await w).toString());
+        const w = spawn Main::sum(3, 5)
+        println("wrapped " + (await w).toString())
 
         // Pointer-shaped and narrow results.
-        const n = await spawn Main::names();
-        println(n[1]);
-        const fl = await spawn Main::floats();
-        println(fl[1].toString());
-        const tbl = await spawn Main::table();
-        println(tbl["k"].toString());
-        const m = await spawn Main::maybe(true);
-        println(m);
-        const ps = await spawn Main::points();
-        println(ps[1].y.toString());
-        const nn = await spawn Main::nested();
-        println(nn[1][0].toString());
-        const mp = await spawn Main::maybePoint(true);
-        println((mp == null).toString());
-        const mn = await spawn Main::maybePoint(false);
-        println((mn == null).toString());
-        println((await spawn Main::neg(5)).toString());
-        println((await spawn Main::tiny(7)).toString());
-        println(((await spawn Main::f32(1.5)) as Float64).toString());
-        return 0;
+        const n = await spawn Main::names()
+        println(n[1])
+        const fl = await spawn Main::floats()
+        println(fl[1].toString())
+        const tbl = await spawn Main::table()
+        println(tbl["k"].toString())
+        const m = await spawn Main::maybe(true)
+        println(m)
+        const ps = await spawn Main::points()
+        println(ps[1].y.toString())
+        const nn = await spawn Main::nested()
+        println(nn[1][0].toString())
+        const mp = await spawn Main::maybePoint(true)
+        println((mp == null).toString())
+        const mn = await spawn Main::maybePoint(false)
+        println((mn == null).toString())
+        println((await spawn Main::neg(5)).toString())
+        println((await spawn Main::tiny(7)).toString())
+        println(((await spawn Main::f32(1.5)) as Float64).toString())
+        return 0
     }
 }

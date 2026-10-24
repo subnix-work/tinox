@@ -10,22 +10,22 @@
 // one fresh instance per accepted connection, running on its own thread
 // since the Phase 0 concurrency fix, with `this` passed to every
 // @OnOpen/@OnMessage/@OnClose call for that same connection.
-import tinox.core.ui;
-import tinox.core.websocket;
+import tinox.core.ui
+import tinox.core.websocket
 
 @WebsocketEndpoint("/__tinoxui", 8281)
 class HelloApp
 {
-    var clicks: Int64;
-    var root: Component;
-    var handlers: Map<String, fnc(String) -> Nothing>;
+    var clicks: Int64
+    var root: Component
+    var handlers: Map<String, fnc(String) -> Nothing>
 
     @OnOpen
     fn onOpen(conn: Int64) -> Nothing
     {
-        this.clicks = 0;
-        this.rerender();
-        TinoxUIRuntime::sendInit(conn, this.root);
+        this.clicks = 0
+        this.rerender()
+        TinoxUIRuntime::sendInit(conn, this.root)
     }
 
     @OnMessage
@@ -35,9 +35,9 @@ class HelloApp
         // framework rebuilding and resending the tree -- the handler
         // itself (see build() below) only ever mutates state, it never
         // has to remember to trigger a re-render.
-        TinoxUIRuntime::dispatchEvent(this.handlers, msg);
-        this.rerender();
-        TinoxUIRuntime::sendUpdate(conn, this.root);
+        TinoxUIRuntime::dispatchEvent(this.handlers, msg)
+        this.rerender()
+        TinoxUIRuntime::sendUpdate(conn, this.root)
     }
 
     @OnClose
@@ -47,8 +47,8 @@ class HelloApp
 
     fn rerender() -> Nothing
     {
-        this.root = this.build();
-        this.handlers = TinoxUIRuntime::buildHandlers(this.root);
+        this.root = this.build()
+        this.handlers = TinoxUIRuntime::buildHandlers(this.root)
     }
 
     fn build() -> Component
@@ -65,11 +65,11 @@ class HelloApp
         // and never updates) -- see this module's own docs for why
         // per-connection app state belongs on instance fields, not loose
         // locals, for exactly this reason.
-        const app: HelloApp = this;
+        const app: HelloApp = this
         return Component::vbox([
             Component::label("Tinox-UI Hello"),
             Component::label("Clicks: " + this.clicks.toString()),
-            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1; })
-        ]);
+            Component::button("Click me", fn(v: String) { app.clicks = app.clicks + 1 })
+        ])
     }
 }

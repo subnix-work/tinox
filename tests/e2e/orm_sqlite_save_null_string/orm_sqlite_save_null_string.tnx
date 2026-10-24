@@ -3,9 +3,9 @@
 class orm_sqlite_save_null_string
 {
     @Id @GeneratedValue
-    var id: Int64;
+    var id: Int64
     @Column("name")
-    var name: String;
+    var name: String
     @Column("note")
-    var note: String;
+    var note: String
 }

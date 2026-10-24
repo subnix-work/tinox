@@ -1,4 +1,4 @@
-module tinox.core.metrics;
+module tinox.core.metrics
 
 namespace tinox.core.metrics
 {
@@ -9,22 +9,22 @@ namespace tinox.core.metrics
     {
         fn incCounter(name: String) -> Nothing
         {
-            tinox_counter_inc(name);
+            tinox_counter_inc(name)
         }
 
         fn recordDuration(name: String, durationNs: Int64) -> Nothing
         {
-            tinox_histogram_record(name, durationNs);
+            tinox_histogram_record(name, durationNs)
         }
 
         fn setGauge(name: String, value: Int64) -> Nothing
         {
-            tinox_gauge_set(name, value);
+            tinox_gauge_set(name, value)
         }
 
         fn prometheusFormat() -> String
         {
-            return tinox_metrics_prometheus();
+            return tinox_metrics_prometheus()
         }
     }
 }

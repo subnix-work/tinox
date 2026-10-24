@@ -1,7 +1,7 @@
-module tinox.core.amqp10;
+module tinox.core.amqp10
 
-import tinox.core.socket;
-import tinox.core.base64;
+import tinox.core.socket
+import tinox.core.base64
 
 /*
  * AMQP-1.0 client (no broker): transport dial + protocol-header
@@ -40,25 +40,25 @@ namespace tinox.core.amqp10
      */
     enum Amqp10Value
     {
-        NullVal;
-        BoolVal(Bool);
-        UByteVal(Int64);
-        UShortVal(Int64);
-        UIntVal(Int64);
-        ULongVal(Int64);
-        ByteVal(Int64);
-        ShortVal(Int64);
-        IntVal(Int64);
-        LongVal(Int64);
-        CharVal(Int64);       // UTF-32 codepoint, raw (not a Tinox string)
-        TimestampVal(Int64);  // ms since the Unix epoch
-        UuidVal(List<Int64>); // exactly 16 raw bytes
-        BinaryVal(List<Int64>);
-        StrVal(String);
-        SymbolVal(String);
-        ListVal(List<Amqp10Value>);
-        MapVal(List<Amqp10Value>);      // flat: key,val,key,val,...
-        DescribedVal(Amqp10Described);  // performatives/SASL frames/sections
-        ErrorVal(String);
+        NullVal
+        BoolVal(Bool)
+        UByteVal(Int64)
+        UShortVal(Int64)
+        UIntVal(Int64)
+        ULongVal(Int64)
+        ByteVal(Int64)
+        ShortVal(Int64)
+        IntVal(Int64)
+        LongVal(Int64)
+        CharVal(Int64)       // UTF-32 codepoint, raw (not a Tinox string)
+        TimestampVal(Int64)  // ms since the Unix epoch
+        UuidVal(List<Int64>) // exactly 16 raw bytes
+        BinaryVal(List<Int64>)
+        StrVal(String)
+        SymbolVal(String)
+        ListVal(List<Amqp10Value>)
+        MapVal(List<Amqp10Value>)      // flat: key,val,key,val,...
+        DescribedVal(Amqp10Described)  // performatives/SASL frames/sections
+        ErrorVal(String)
     }
 }

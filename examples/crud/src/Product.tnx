@@ -1,4 +1,4 @@
-import tinox.core.json;
+import tinox.core.json
 
 @Entity
 @Table("products")
@@ -7,16 +7,16 @@ class Product
 {
     @Id
     @GeneratedValue
-    var id: Int64;
+    var id: Int64
 
     @Column("name")
     @NotNull
-    var name: String;
+    var name: String
 
     @Column("price_cents")
     @NotNull
-    var priceCents: Int64;
+    var priceCents: Int64
 
     @Column("stock")
-    var stock: Int64;
+    var stock: Int64
 }

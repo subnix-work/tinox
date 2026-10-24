@@ -7,17 +7,17 @@
 // expect: 42
 // expect: 7
 
-import small_int_tostring;
+import small_int_tostring
 
 class Main
 {
     fnc main() -> Int32 {
-        println((5000000000 as Int32).toString());   // Int64->Int32 wrap
-        println((3.5 as Int32).toString());           // Float->Int32 trunc
-        const a: Int32 = 42;
-        println(a.toString());                         // Int32 variable
-        const c: small_int_tostring = small_int_tostring { n: 7 };
-        println(c.n.toString());                       // Int32 field read
-        return 0;
+        println((5000000000 as Int32).toString())   // Int64->Int32 wrap
+        println((3.5 as Int32).toString())           // Float->Int32 trunc
+        const a: Int32 = 42
+        println(a.toString())                         // Int32 variable
+        const c: small_int_tostring = small_int_tostring { n: 7 }
+        println(c.n.toString())                       // Int32 field read
+        return 0
     }
 }

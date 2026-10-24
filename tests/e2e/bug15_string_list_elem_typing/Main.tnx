@@ -2,21 +2,21 @@
 // expect: 3
 // expect: 5
 // expect: 5
-import bug15_string_list_elem_typing;
+import bug15_string_list_elem_typing
 
 class Main
 {
     fnc splitLines(s: String) -> List<String> {
-        return s.split("|");
+        return s.split("|")
     }
 
 
     fnc main() -> Int32 {
-        const lines = splitLines("one|two|three");
-        println(lines.len());
-        println(lines[2].len());
-        const h = bug15_string_list_elem_typing { rawLines: splitLines("abcde|x") };
-        println(h.firstLen());
-        return 0;
+        const lines = splitLines("one|two|three")
+        println(lines.len())
+        println(lines[2].len())
+        const h = bug15_string_list_elem_typing { rawLines: splitLines("abcde|x") }
+        println(h.firstLen())
+        return 0
     }
 }

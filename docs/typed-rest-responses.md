@@ -9,8 +9,8 @@ See `examples/typed_rest/build.sh` for a local staging example.
 @Path("/users/:id")
 fn getUser(@PathParam id: Int64) -> Response<User>
 {
-    if (id != 1) { return Response<User>::error(404, "user not found"); }
-    return Response<User>::ok(User { id: 1, name: "Ada" }).header("X-Result", "found");
+    if (id != 1) { return Response<User>::error(404, "user not found") }
+    return Response<User>::ok(User { id: 1, name: "Ada" }).header("X-Result", "found")
 }
 ```
 

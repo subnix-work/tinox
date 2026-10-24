@@ -5,11 +5,11 @@ class Main
 {
     fnc main() -> Int32
     {
-        const double = x => x * 2;
-        const offset = 10;
-        const addOff = x => x + offset;
-        println(double(21));
-        println(addOff(5));
-        return 0;
+        const double = x => x * 2
+        const offset = 10
+        const addOff = x => x + offset
+        println(double(21))
+        println(addOff(5))
+        return 0
     }
 }

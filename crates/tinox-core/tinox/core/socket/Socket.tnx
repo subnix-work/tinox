@@ -1,69 +1,69 @@
-module tinox.core.socket;
+module tinox.core.socket
 
 namespace tinox.core.socket
 {
     // Raw BSD socket primitives (blocking). Handles are fds as Int64,
     // -1 = error. For a complete HTTP server see tinox.core.http_server
     // (its own epoll machinery).
-    extern fn socketCreateTcp() -> Int64;
-    extern fn socketCreateUdp() -> Int64;
-    extern fn socketConnect(fd: Int64, host: String, port: Int64) -> Bool;
-    extern fn socketBind(fd: Int64, port: Int64) -> Bool;
-    extern fn socketListen(fd: Int64) -> Bool;
-    extern fn socketAccept(fd: Int64) -> Int64;
-    extern fn socketSend(fd: Int64, data: String) -> Int64;
-    extern fn socketReceive(fd: Int64, size: Int64) -> String;
-    extern fn socketClose(fd: Int64) -> Nothing;
+    extern fn socketCreateTcp() -> Int64
+    extern fn socketCreateUdp() -> Int64
+    extern fn socketConnect(fd: Int64, host: String, port: Int64) -> Bool
+    extern fn socketBind(fd: Int64, port: Int64) -> Bool
+    extern fn socketListen(fd: Int64) -> Bool
+    extern fn socketAccept(fd: Int64) -> Int64
+    extern fn socketSend(fd: Int64, data: String) -> Int64
+    extern fn socketReceive(fd: Int64, size: Int64) -> String
+    extern fn socketClose(fd: Int64) -> Nothing
 
     class Socket
     {
-        var handle: Int64;
-        var mode: String;
+        var handle: Int64
+        var mode: String
 
         fn createTcp() -> Socket
         {
-            return Socket { handle: socketCreateTcp(), mode: "tcp" };
+            return Socket { handle: socketCreateTcp(), mode: "tcp" }
         }
 
         fn createUdp() -> Socket
         {
-            return Socket { handle: socketCreateUdp(), mode: "udp" };
+            return Socket { handle: socketCreateUdp(), mode: "udp" }
         }
 
         fn connect(socket: Socket, host: String, port: Int64) -> Bool
         {
-            return socketConnect(socket.handle, host, port);
+            return socketConnect(socket.handle, host, port)
         }
 
         fn bind(socket: Socket, port: Int64) -> Bool
         {
-            return socketBind(socket.handle, port);
+            return socketBind(socket.handle, port)
         }
 
         fn listen(socket: Socket) -> Bool
         {
-            return socketListen(socket.handle);
+            return socketListen(socket.handle)
         }
 
         fn accept(socket: Socket) -> Socket
         {
-            const newHandle: Int64 = socketAccept(socket.handle);
-            return Socket { handle: newHandle, mode: socket.mode };
+            const newHandle: Int64 = socketAccept(socket.handle)
+            return Socket { handle: newHandle, mode: socket.mode }
         }
 
         fn send(socket: Socket, data: String) -> Int64
         {
-            return socketSend(socket.handle, data);
+            return socketSend(socket.handle, data)
         }
 
         fn receive(socket: Socket, size: Int64) -> String
         {
-            return socketReceive(socket.handle, size);
+            return socketReceive(socket.handle, size)
         }
 
         fn close(socket: Socket) -> Nothing
         {
-            socketClose(socket.handle);
+            socketClose(socket.handle)
         }
     }
 }

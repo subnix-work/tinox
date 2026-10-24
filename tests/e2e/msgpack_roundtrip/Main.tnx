@@ -24,63 +24,63 @@
 // expect: true
 // expect: true
 
-import tinox.core.msgpack;
+import tinox.core.msgpack
 
 class Main
 {
     fnc main() -> Int32
     {
-        var fields: Map<String, MsgpackValue> = Map::new();
-        fields["str"] = MsgpackValue { kind: "string", stringValue: "hello", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        fields["int_small"] = MsgpackValue { kind: "int", stringValue: "", intValue: 42, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        fields["int_neg"] = MsgpackValue { kind: "int", stringValue: "", intValue: -12345, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        fields["int_max"] = MsgpackValue { kind: "int", stringValue: "", intValue: 9223372036854775807, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        fields["int_min"] = MsgpackValue { kind: "int", stringValue: "", intValue: -9223372036854775807, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        fields["float"] = MsgpackValue { kind: "float", stringValue: "", intValue: 0, floatValue: 2.71828, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        fields["bool_t"] = MsgpackValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: true, arrayValue: [], objectValue: Map::new() };
-        fields["bool_f"] = MsgpackValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        fields["nothing"] = MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
+        var fields: Map<String, MsgpackValue> = Map::new()
+        fields["str"] = MsgpackValue { kind: "string", stringValue: "hello", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        fields["int_small"] = MsgpackValue { kind: "int", stringValue: "", intValue: 42, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        fields["int_neg"] = MsgpackValue { kind: "int", stringValue: "", intValue: -12345, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        fields["int_max"] = MsgpackValue { kind: "int", stringValue: "", intValue: 9223372036854775807, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        fields["int_min"] = MsgpackValue { kind: "int", stringValue: "", intValue: -9223372036854775807, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        fields["float"] = MsgpackValue { kind: "float", stringValue: "", intValue: 0, floatValue: 2.71828, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        fields["bool_t"] = MsgpackValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: true, arrayValue: [], objectValue: Map::new() }
+        fields["bool_f"] = MsgpackValue { kind: "bool", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        fields["nothing"] = MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
 
-        var longStr: String = "";
-        var i: Int64 = 0;
+        var longStr: String = ""
+        var i: Int64 = 0
         while i < 300 {
-            longStr = longStr + "y";
-            i = i + 1;
+            longStr = longStr + "y"
+            i = i + 1
         }
-        fields["longstr"] = MsgpackValue { kind: "string", stringValue: longStr, intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
+        fields["longstr"] = MsgpackValue { kind: "string", stringValue: longStr, intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
 
-        var arr: List<MsgpackValue> = [];
-        var j: Int64 = 0;
+        var arr: List<MsgpackValue> = []
+        var j: Int64 = 0
         while j < 5 {
-            arr.push(MsgpackValue { kind: "int", stringValue: "", intValue: j * j, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() });
-            j = j + 1;
+            arr.push(MsgpackValue { kind: "int", stringValue: "", intValue: j * j, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() })
+            j = j + 1
         }
-        fields["arr"] = MsgpackValue { kind: "array", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: arr, objectValue: Map::new() };
+        fields["arr"] = MsgpackValue { kind: "array", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: arr, objectValue: Map::new() }
 
-        var innerFields: Map<String, MsgpackValue> = Map::new();
-        innerFields["nested_key"] = MsgpackValue { kind: "string", stringValue: "nested_value", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        fields["obj"] = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: innerFields };
+        var innerFields: Map<String, MsgpackValue> = Map::new()
+        innerFields["nested_key"] = MsgpackValue { kind: "string", stringValue: "nested_value", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        fields["obj"] = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: innerFields }
 
-        const root: MsgpackValue = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: fields };
-        const bytes: List<Int64> = Msgpack::encode(root);
-        const decoded: MsgpackValue = Msgpack::decode(bytes);
+        const root: MsgpackValue = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: fields }
+        const bytes: List<Int64> = Msgpack::encode(root)
+        const decoded: MsgpackValue = Msgpack::decode(bytes)
 
-        println(decoded.getField("str").getString() == "hello");
-        println(decoded.getField("int_neg").getInt() == -12345);
-        println(decoded.getField("int_max").getInt() == 9223372036854775807);
-        println(decoded.getField("float").getFloat() == 2.71828);
-        println(decoded.getField("nothing").isNull());
-        println(decoded.getField("longstr").getString().len() == 300);
-        println(decoded.getField("arr").asArray()[4].getInt() == 16);
-        println(decoded.getField("obj").getField("nested_key").getString() == "nested_value");
+        println(decoded.getField("str").getString() == "hello")
+        println(decoded.getField("int_neg").getInt() == -12345)
+        println(decoded.getField("int_max").getInt() == 9223372036854775807)
+        println(decoded.getField("float").getFloat() == 2.71828)
+        println(decoded.getField("nothing").isNull())
+        println(decoded.getField("longstr").getString().len() == 300)
+        println(decoded.getField("arr").asArray()[4].getInt() == 16)
+        println(decoded.getField("obj").getField("nested_key").getString() == "nested_value")
 
         // Truncated input: a str32 tag declaring a ~4-billion-byte string
         // with nothing following must fail cleanly (isNull), not hang or
         // read out of bounds.
-        var truncated: List<Int64> = [0xdb, 0xff, 0xff, 0xff, 0xff];
-        const badResult: MsgpackValue = Msgpack::decode(truncated);
+        var truncated: List<Int64> = [0xdb, 0xff, 0xff, 0xff, 0xff]
+        const badResult: MsgpackValue = Msgpack::decode(truncated)
         if (!badResult.isNull()) {
-            println(false);
+            println(false)
         }
 
         // Regression guard (found via fuzzing, see the module doc comment
@@ -98,17 +98,17 @@ class Main
         // whole e2e case run noticeably slower (multiple seconds instead
         // of milliseconds), likely enough on its own to be noticed even
         // without a hard timing assertion.
-        var bigBytes: List<Int64> = [];
-        var n: Int64 = 0;
+        var bigBytes: List<Int64> = []
+        var n: Int64 = 0
         while n < 100000 {
-            bigBytes.push(65 + (n % 26));
-            n = n + 1;
+            bigBytes.push(65 + (n % 26))
+            n = n + 1
         }
-        const bigStrValue: MsgpackValue = MsgpackValue { kind: "string", stringValue: tinoxBytesToString(bigBytes), intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() };
-        const bigEncoded: List<Int64> = Msgpack::encode(bigStrValue);
-        const bigDecoded: MsgpackValue = Msgpack::decode(bigEncoded);
-        println(bigDecoded.getString().len() == 100000 && bigDecoded.getString().charCodeAt(0) == 65 && bigDecoded.getString().charCodeAt(99999) == 65 + (99999 % 26));
+        const bigStrValue: MsgpackValue = MsgpackValue { kind: "string", stringValue: tinoxBytesToString(bigBytes), intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        const bigEncoded: List<Int64> = Msgpack::encode(bigStrValue)
+        const bigDecoded: MsgpackValue = Msgpack::decode(bigEncoded)
+        println(bigDecoded.getString().len() == 100000 && bigDecoded.getString().charCodeAt(0) == 65 && bigDecoded.getString().charCodeAt(99999) == 65 + (99999 % 26))
 
-        return 0;
+        return 0
     }
 }

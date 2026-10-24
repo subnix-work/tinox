@@ -1,0 +1,15 @@
+import tinox.core.bitmap
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let img: Bitmap = Bitmap::create(64, 64, 0)
+        Bitmap::fillRect(img, 10, 10, 20, 20, 16711680)
+        Bitmap::drawLine(img, 0, 0, 63, 63, 65280)
+        Bitmap::drawCircle(img, 32, 32, 10, 255)
+
+        println("pixel at (15,15): " + Bitmap::getPixel(img, 15, 15).toString())
+        return 0
+    }
+}

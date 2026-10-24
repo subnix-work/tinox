@@ -1,11 +1,11 @@
-import Endpoint;
-import CleanupResources;
+import Endpoint
+import CleanupResources
 @Service(5000, 3000)
 class Main {
     fnc main() -> Int32 {
-        while (serviceBoundPort(0) < 0) { sleep(1); }
-        println(serviceBoundPort(0));
-        serviceAwaitShutdown();
-        return 0;
+        while (serviceBoundPort(0) < 0) { sleep(1) }
+        println(serviceBoundPort(0))
+        serviceAwaitShutdown()
+        return 0
     }
 }

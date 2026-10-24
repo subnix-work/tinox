@@ -1,16 +1,16 @@
 // HTTP/3 is opt-in at build time: compile with TINOX_HTTP3=1 tinox build ...
 // (without it, http3ServerCreate is unavailable and linking fails).
-import tinox.core.http3_server;
+import tinox.core.http3_server
 
 class Main
 {
     fnc main() -> Int32
     {
-        const server: Http3Server = Http3Server::new(8443, "cert.pem", "key.pem");
+        const server: Http3Server = Http3Server::new(8443, "cert.pem", "key.pem")
         server.get("/hello", ctx => {
-            ctx.response.text("Hello over HTTP/3!");
-        });
-        server.listen();
-        return 0;
+            ctx.response.text("Hello over HTTP/3!")
+        })
+        server.listen()
+        return 0
     }
 }

@@ -1,4 +1,4 @@
-import tinox.core.http_server;
+import tinox.core.http_server
 
 // Manual-response mode (@HttpContext parameter, -> HttpContext return
 // type) throughout -- these handlers write hardcoded JSON strings
@@ -14,8 +14,8 @@ class UserController
     @StatusCode(200)
     fn listUsers(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        ctx.response.body = "[{\"id\":1,\"name\":\"Alice\"}]";
-        return ctx;
+        ctx.response.body = "[{\"id\":1,\"name\":\"Alice\"}]"
+        return ctx
     }
 
     @POST
@@ -25,7 +25,7 @@ class UserController
     @StatusCode(201)
     fn createUser(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        ctx.response.body = "{\"id\":2,\"name\":\"Bob\"}";
-        return ctx;
+        ctx.response.body = "{\"id\":2,\"name\":\"Bob\"}"
+        return ctx
     }
 }

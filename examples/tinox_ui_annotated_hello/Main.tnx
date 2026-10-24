@@ -6,12 +6,12 @@
 // class only exists to satisfy the mandatory `class Main` entry point
 // rule (same convention already used by examples/rest_auto/Main.tnx and
 // similar annotation-only examples).
-import AnnotatedHelloApp;
+import AnnotatedHelloApp
 
 class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }

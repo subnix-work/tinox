@@ -1,9 +1,9 @@
-import UserController;
+import UserController
 
 class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }

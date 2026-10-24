@@ -1,0 +1,18 @@
+import tinox.core.ini
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let content: String = "[server]\nhost=localhost\nport=8080\n"
+        let config: IniConfig = Ini::parse(content)
+
+        let host: String = IniConfig::getString(config, "server", "host", "127.0.0.1")
+        let port: Int64 = IniConfig::getInt(config, "server", "port", 80)
+        println(host + ":" + port.toString())
+
+        IniConfig::setString(config, "server", "env", "prod")
+        println(Ini::stringify(config))
+        return 0
+    }
+}

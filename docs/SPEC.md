@@ -97,19 +97,63 @@ true | false
 +    -    *    /    %    =    ==   !=   <    >    <=   >=
 &&   ||   !    &    |    ^    ~    <<   >>   >>>  ++   --
 +=   -=   *=   /=   %=   &=   |=   ^=   <<=  >>=  >>>=
-->   =>   ::   ..   ...  ?    ??   ?:   @    ;    ,    .
+->   =>   ::   ..   ...  ?    ??   ?:   @    ,    .
 ```
 
 ### Whitespace and Comments
 
 - Whitespace (spaces, tabs, carriage returns) is ignored except to separate
   tokens.
-- Newlines separate statements.
+- Newlines end statements (see [Statement Termination](#statement-termination)).
 - Single-line comments start with `//`.
 - Multi-line comments start with `/*` and end with `*/`. The stdlib
   (`crates/tinox-core/**/*.tnx`) uses `/** ... */` as a doc-comment
   convention, but this is stylistic — the lexer treats it as an ordinary
   block comment, not a distinct doc-comment token.
+
+### Statement Termination
+
+A statement ends at the end of its line. There is no statement terminator
+character: a `;` that terminates a statement is a hard compile error ("semicolons
+were removed"), and several statements cannot share a line.
+
+A statement **continues** on the next line only when
+
+- the line ends with a binary operator, a comma or an opening bracket
+  (`(` `[` `{`), or
+- the next line starts with `.` (a method chain).
+
+Inside `( )` and `[ ]` newlines are ordinary whitespace. Anything else ends the
+statement. In particular a line that starts with `(`, `[`, `-` or `+` directly
+after a complete expression is a hard error (the compiler never guesses whether it
+continues the previous line or begins a new statement); put the operator at the end
+of the previous line, or restructure the code.
+
+```tinox
+const total = first +
+    second +
+    third                  // continues: lines end with an operator
+
+const name = user
+    .profile()
+    .displayName()         // continues: lines start with '.'
+
+return                     // a bare 'return' ends at its line; the value must
+    value                  // start on the same line (this is a separate statement)
+```
+
+Specifics:
+
+- `else`, `catch` and `finally` may start a line after the closing `}`.
+- The last statement before a closing `}` needs no line break
+  (`fn f() -> Int64 { return 1 }`).
+- A function signature that is not followed by `{` is an abstract declaration and
+  ends at its line (interface and trait methods).
+- Enum variants are separated by newlines, one variant per line
+  (`enum E { A B }` and `enum E { A, B }` are errors).
+- Match arms are separated by a newline or a comma.
+- The one remaining `;` is the separator inside a C-style `for (init; cond; update)`
+  header, which is not a statement terminator.
 
 ### Brace Style
 
@@ -121,16 +165,16 @@ previous line:
 ```tinox
 class Point
 {
-    var x: Float64;
-    var y: Float64;
+    var x: Float64
+    var y: Float64
 
     fn distanceTo(other: Point) -> Float64
     {
         if this.x == other.x
         {
-            return 0.0;
+            return 0.0
         }
-        return 1.0;
+        return 1.0
     }
 }
 ```
@@ -195,12 +239,12 @@ Fn(P1, P2) -> R       Function type
 
 ```tinox
 // Immutable variable (`let` is still accepted as a deprecated alias for `const`)
-const x: Int32 = 42;
-val y: Int64 = 100;
+const x: Int32 = 42
+val y: Int64 = 100
 
 // Mutable variable
-var counter: Int32 = 0;
-counter = counter + 1;
+var counter: Int32 = 0
+counter = counter + 1
 ```
 
 ### Modules, Namespaces, and Imports
@@ -209,7 +253,7 @@ Every stdlib file declares a dotted-path module and matching namespace
 block up front:
 
 ```tinox
-module tinox.core.result;
+module tinox.core.result
 
 namespace tinox.core.result
 {
@@ -226,9 +270,9 @@ of the file — both forms are valid, and imports work identically either
 way:
 
 ```tinox
-import tinox.core.http_server;   // pull in a stdlib module
-import tinox.core.json;
-import User;                      // pull in a project-local type
+import tinox.core.http_server   // pull in a stdlib module
+import tinox.core.json
+import User                      // pull in a project-local type
 ```
 
 **Since 2026-07-26, every `.tnx` file may contain at most one top-level
@@ -255,17 +299,17 @@ class Utils
 {
     fnc add(a: Int64, b: Int64) -> Int64
     {
-        return a + b;
+        return a + b
     }
 
     fnc square(x: Int64) -> Int64
     {
-        return x * x;
+        return x * x
     }
 }
 
-Utils::add(3, 4);     // 7
-Utils::square(5);     // 25
+Utils::add(3, 4)     // 7
+Utils::square(5)     // 25
 ```
 
 ### Instance Methods (`fn`)
@@ -275,14 +319,14 @@ Instance methods have access to `this` and are called on an object.
 ```tinox
 class Point
 {
-    var x: Float64;
-    var y: Float64;
+    var x: Float64
+    var y: Float64
 
     fn distanceTo(other: Point) -> Float64
     {
-        const dx: Float64 = this.x - other.x;
-        const dy: Float64 = this.y - other.y;
-        return (dx * dx + dy * dy).sqrt();
+        const dx: Float64 = this.x - other.x
+        const dy: Float64 = this.y - other.y
+        return (dx * dx + dy * dy).sqrt()
     }
 }
 ```
@@ -293,8 +337,8 @@ Objects are built with **struct-literal syntax** — field name/value pairs
 in braces, not a positional `new ClassName(args)` constructor call:
 
 ```tinox
-const p: Point = Point { x: 1.0, y: 2.0 };
-const user: User = User { id: 1, name: "Alice" };
+const p: Point = Point { x: 1.0, y: 2.0 }
+const user: User = User { id: 1, name: "Alice" }
 ```
 
 ### Entry Point (`class Main`)
@@ -312,8 +356,8 @@ class Main
 {
     fnc main() -> Int32
     {
-        println("Hello!");
-        return 0;
+        println("Hello!")
+        return 0
     }
 }
 ```
@@ -328,16 +372,16 @@ codegen, so it is unaffected either way.
 ```tinox
 class Circle
 {
-    var radius: Float64;
+    var radius: Float64
 
     fn area() -> Float64
     {
-        return 3.14159 * this.radius * this.radius;
+        return 3.14159 * this.radius * this.radius
     }
 
     fnc unitCircle() -> Circle
     {
-        return Circle { radius: 1.0 };
+        return Circle { radius: 1.0 }
     }
 }
 ```
@@ -347,11 +391,11 @@ class Circle
 ```tinox
 class Animal
 {
-    var name: String;
+    var name: String
 
     fn speak() -> String
     {
-        return "...";
+        return "..."
     }
 }
 
@@ -359,46 +403,45 @@ class Dog extends Animal
 {
     fn speak() -> String
     {
-        return "Woof!";
+        return "Woof!"
     }
 }
 ```
 
 ### Interface Declarations
 
-Interface methods are signature-only (no body, terminated with `;`) —
+Interface methods are signature-only (no body, the declaration ends at its line) —
 there is no support for default method implementations in interfaces
 today.
 
 ```tinox
 interface IDrawable
 {
-    fn draw() -> Int64;
+    fn draw() -> Int64
 }
 
 class CheckerImpl implements IChecker
 {
     fn draw() -> Int64
     {
-        return 0;
+        return 0
     }
 }
 ```
 
 ### Enum Declarations
 
-Variants may carry associated data. Both `;`- and `,`-separated variant
-lists appear in real code; `;` matches the rest of the language's
-statement-termination convention and is the more common choice.
+Variants may carry associated data. Variants are separated by newlines (one
+variant per line).
 
 ```tinox
 enum Direction
 {
-    North;
-    South;
-    East;
-    West;
-    Diagonal(dx: Int32, dy: Int32);
+    North
+    South
+    East
+    West
+    Diagonal(dx: Int32, dy: Int32)
 }
 ```
 
@@ -409,11 +452,16 @@ An enum whose variants all carry no data also has a name and text conversion
 built in:
 
 ```tinox
-enum TaskStatus { QUEUED; RUNNING; DONE; }
+enum TaskStatus
+{
+    QUEUED
+    RUNNING
+    DONE
+}
 
-const s = TaskStatus::parse("RUNNING");   // text -> variant; fails hard on an unknown name
-println(s.name);                          // "RUNNING"
-const all = TaskStatus::values();         // List<TaskStatus>, in declaration order
+const s = TaskStatus::parse("RUNNING")   // text -> variant; fails hard on an unknown name
+println(s.name)                          // "RUNNING"
+const all = TaskStatus::values()         // List<TaskStatus>, in declaration order
 ```
 
 `value.name` fails hard for a value that is not one of the variants. A variant
@@ -430,8 +478,8 @@ variant name (`where` filters compare against the name too):
 class Job
 {
     @Id @GeneratedValue
-    var id: Int64;
-    var status: TaskStatus;
+    var id: Int64
+    var status: TaskStatus
 }
 // DB::of(Job).filter(j => j.status == TaskStatus::DONE).count()
 ```
@@ -451,18 +499,18 @@ to reach for.
 ```tinox
 match v
 {
-    Str(s) => return s.len();
-    _      => return 0;
+    Str(s) => return s.len()
+    _      => return 0
 }
 ```
 
-Arms are terminated with `;` (not `,`), use `=>` (not `case`), and `_` is
+Arms are separated by a newline (a `,` is also accepted), use `=>` (not `case`), and `_` is
 the wildcard pattern. Arm bodies can also be blocks:
 
 ```tinox
 match tf[5]
 {
-    BoolVal(b) => { more1 = b; }
+    BoolVal(b) => { more1 = b }
     _          => {}
 }
 ```
@@ -472,12 +520,12 @@ match tf[5]
 ```tinox
 class Pair<T, U>
 {
-    var first: T;
-    var second: U;
+    var first: T
+    var second: U
 
     fn new(first: T, second: U) -> Pair<T, U>
     {
-        return Pair<T, U> { first: first, second: second };
+        return Pair<T, U> { first: first, second: second }
     }
 }
 ```
@@ -487,11 +535,11 @@ A method can introduce its own type parameter independent of its class's:
 ```tinox
 class Box<T>
 {
-    var value: T;
+    var value: T
 
     fn transform<U>(f: fnc(T) -> U) -> Box<U>
     {
-        return Box<U> { value: f(this.value) };
+        return Box<U> { value: f(this.value) }
     }
 }
 ```
@@ -537,13 +585,13 @@ no percent/plus decoding, last duplicate wins, bare keys are present-empty,
 and empty keys are ignored. For example:
 
 ```tinox
-import tinox.core.http_server;
-import tinox.core.option;
+import tinox.core.http_server
+import tinox.core.option
 
 // Inside an annotation-driven route with @HttpContext ctx:
-let header: Option<String> = ctx.request.findHeader("X-Trace");
-if (header.isNone()) { ctx.response.status(400).text("X-Trace is required"); }
-else { ctx.response.text("trace=" + header.unwrap()); }
+let header: Option<String> = ctx.request.findHeader("X-Trace")
+if (header.isNone()) { ctx.response.status(400).text("X-Trace is required") }
+else { ctx.response.text("trace=" + header.unwrap()) }
 ```
 
 `getHeader`/`getParam`/`getQuery` and `QueryString::get` retain their String
@@ -560,15 +608,15 @@ Real and commonly used, including `finally` without a matching `catch`:
 ```tinox
 try
 {
-    throw "x";
+    throw "x"
 }
 catch e: String
 {
-    println("caught: " + e);
+    println("caught: " + e)
 }
 finally
 {
-    println("finally block");
+    println("finally block")
 }
 ```
 
@@ -595,35 +643,35 @@ finally
 // If-else
 if x > 0
 {
-    print("positive");
+    print("positive")
 }
 else if x < 0
 {
-    print("negative");
+    print("negative")
 }
 else
 {
-    print("zero");
+    print("zero")
 }
 
 // While loop
-var i: Int32 = 0;
+var i: Int32 = 0
 while i < 10
 {
-    print(i);
-    i = i + 1;
+    print(i)
+    i = i + 1
 }
 
 // For loop
 for item in collection
 {
-    print(item);
+    print(item)
 }
 
 // Loop (infinite)
 loop
 {
-    if done { break; }
+    if done { break }
 }
 ```
 
@@ -638,9 +686,9 @@ parallelism, not a cooperative/green-thread scheduler. `spawn` is a
 `spawn(...)` function, and returns a handle used with `await`:
 
 ```tinox
-const handle: Int64 = spawn fetchData(url);
+const handle: Int64 = spawn fetchData(url)
 // ... do other work ...
-const result: Data = await handle;
+const result: Data = await handle
 ```
 
 `async fnc` marks a function as spawnable this way:
@@ -696,8 +744,8 @@ returned value as the JSON response body itself.
 fn getUser(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
 {
     // ... look up id, then either:
-    ctx.response.status(404).json("{\"error\":\"not found\"}");
-    return ctx;
+    ctx.response.status(404).json("{\"error\":\"not found\"}")
+    return ctx
 }
 
 @POST
@@ -705,7 +753,7 @@ fn getUser(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
 @StatusCode(201)
 fn createUser(@PostParam user: User) -> User
 {
-    return user;   // auto-serialized as the JSON response body
+    return user   // auto-serialized as the JSON response body
 }
 ```
 

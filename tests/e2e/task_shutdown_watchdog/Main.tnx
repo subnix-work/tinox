@@ -1,11 +1,12 @@
 // expect-exit: 1
 // expect-contains: task ignored cooperative cancellation for 5 seconds
 class Main {
-    fnc worker(ready: Int64) -> Nothing { send ready -> 1; loop {} }
+    fnc worker(ready: Int64) -> Nothing { send ready -> 1
+    loop {} }
     fnc main() -> Int32 {
-        const ready = channel;
-        spawn Main::worker(ready);
-        recv ready;
-        return 0;
+        const ready = channel
+        spawn Main::worker(ready)
+        recv ready
+        return 0
     }
 }

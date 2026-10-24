@@ -1,4 +1,4 @@
 class Animal
 {
-    var name: String;
+    var name: String
 }

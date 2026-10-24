@@ -23,7 +23,7 @@ impl Project {
         );
         project.write(
             "src/Main.tnx",
-            "class Main { fnc main() -> Int32 { return 0; } }",
+            "class Main { fnc main() -> Int32 { return 0 } }",
         );
         project
     }
@@ -69,15 +69,15 @@ fn generics_callbacks_visibility_and_member_bounds_are_retained() {
     let project = Project::new();
     project.write(
         "src/Main.tnx",
-        "import model.Box; class Main { fnc main() -> Int32 { return 0; } }",
+        "import model.Box\nclass Main { fnc main() -> Int32 { return 0 } }",
     );
-    project.write("src/model/Box.tnx", "namespace model { /** A typed box. */ class Box<T> { private var value: T; /** Apply a callback. */ fn map<U>(callback: fnc(T) -> U) -> U { return callback(this.value); } fnc make(value: T) -> Box<T> { return Box { value: value }; } } }");
+    project.write("src/model/Box.tnx", "namespace model { /** A typed box. */ class Box<T> { private var value: T\n/** Apply a callback. */ fn map<U>(callback: fnc(T) -> U) -> U { return callback(this.value) } fnc make(value: T) -> Box<T> { return Box { value: value } } } }");
     let checked = project.command("check").output().unwrap();
     assert!(checked.status.success(), "{checked:?}");
     let result = project.query(&["model.Box"], true);
     let symbol = &result["symbol"];
     assert_eq!(symbol["type_parameters"], serde_json::json!(["T"]));
-    assert_eq!(symbol["required_import"], "import model.Box;");
+    assert_eq!(symbol["required_import"], "import model.Box");
     assert_eq!(symbol["members"][0]["visibility"], "private");
     let member = project.query(&["Box::map"], true);
     assert_eq!(member["symbol"]["members"].as_array().unwrap().len(), 1);
@@ -112,15 +112,15 @@ fn namespaced_and_ambiguous_symbols_fail_or_resolve_explicitly() {
     let project = Project::new();
     project.write(
         "src/Main.tnx",
-        "import left.Thing; import right.Thing; class Main { fnc main() -> Int32 { return 0; } }",
+        "import left.Thing\nimport right.Thing\nclass Main { fnc main() -> Int32 { return 0 } }",
     );
     project.write(
         "src/left/Thing.tnx",
-        "namespace left { class Thing { fnc side() -> String { return \"left\"; } } }",
+        "namespace left { class Thing { fnc side() -> String { return \"left\" } } }",
     );
     project.write(
         "src/right/Thing.tnx",
-        "namespace right { class Thing { fnc side() -> String { return \"right\"; } } }",
+        "namespace right { class Thing { fnc side() -> String { return \"right\" } } }",
     );
     let failure = project.query(&["Thing"], false);
     assert!(failure["error"]["message"]
@@ -149,7 +149,7 @@ fn descriptions_follow_installed_versions_and_never_bundled_extended_sources() {
     };
     for (version, method) in [("9.0.0", "installedNine"), ("10.0.0", "installedTen")] {
         project.write("tinox.toml", &manifest(version));
-        project.write(&format!(".tinox/repository/central/tinox.core/crypto/{version}/tinox/core/crypto/Crypto.tnx"), &format!("namespace tinox.core.crypto {{ class Crypto {{ fnc {method}() -> UInt8 {{ return 1; }} }} }}"));
+        project.write(&format!(".tinox/repository/central/tinox.core/crypto/{version}/tinox/core/crypto/Crypto.tnx"), &format!("namespace tinox.core.crypto {{ class Crypto {{ fnc {method}() -> UInt8 {{ return 1 }} }} }}"));
         let result = project.query(&["tinox.core.crypto.Crypto"], true);
         assert_eq!(
             result["symbol"]["package"],
@@ -157,11 +157,11 @@ fn descriptions_follow_installed_versions_and_never_bundled_extended_sources() {
         );
         assert_eq!(result["symbol"]["members"][0]["name"], method);
         assert_eq!(result["symbol"]["members"][0]["return_type"], "UInt8");
-        project.write("src/Main.tnx", &format!("import tinox.core.crypto; class Main {{ fnc main() -> Int32 {{ println(Crypto::{method}()); return 0; }} }}"));
+        project.write("src/Main.tnx", &format!("import tinox.core.crypto\nclass Main {{ fnc main() -> Int32 {{ println(Crypto::{method}())\nreturn 0 }} }}"));
         assert!(project.command("check").output().unwrap().status.success());
         project.write(
             "src/Main.tnx",
-            "class Main { fnc main() -> Int32 { return 0; } }",
+            "class Main { fnc main() -> Int32 { return 0 } }",
         );
     }
     project.write("tinox.toml", &manifest("11.0.0"));
@@ -203,7 +203,7 @@ fn core_and_annotation_queries_reuse_compiler_metadata() {
         .contains("endpoint"));
     project.write(
         "src/Main.tnx",
-        "import Mark; @Mark class Main { fnc main() -> Int32 { return 0; } }",
+        "import Mark\n@Mark class Main { fnc main() -> Int32 { return 0 } }",
     );
     project.write("src/Mark.tnx", "@annotation class Mark {}");
     let result = project.query(&["@Mark"], true);
@@ -217,7 +217,7 @@ fn explicit_sources_generated_accessors_and_doc_limits_are_honest() {
     project.write(
         "src/Person.tnx",
         &format!(
-            "@Getter /** {} */ class Person {{ var name: String = \"\"; }}",
+            "@Getter /** {} */ class Person {{ var name: String = \"\" }}",
             "Documentation ".repeat(150)
         ),
     );
@@ -262,7 +262,7 @@ fn annotations_use_source_overrides_and_queries_can_run_without_a_project() {
     let project = Project::new();
     project.write(
         "src/Main.tnx",
-        "import Test; @Test class Main { fnc main() -> Int32 { return 0; } }",
+        "import Test\n@Test class Main { fnc main() -> Int32 { return 0 } }",
     );
     project.write("src/Test.tnx", "@annotation class Test {}");
     let result = project.query(&["@Test"], true);

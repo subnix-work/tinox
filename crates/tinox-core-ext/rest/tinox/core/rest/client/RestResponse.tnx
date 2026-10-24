@@ -1,7 +1,7 @@
-module tinox.core.rest.client;
+module tinox.core.rest.client
 
-import tinox.core.http;
-import tinox.core.json;
+import tinox.core.http
+import tinox.core.json
 
 namespace tinox.core.rest.client
 {
@@ -12,13 +12,13 @@ namespace tinox.core.rest.client
     class RestResponse
     {
         /** The HTTP status code */
-        var statusCode: Int64;
+        var statusCode: Int64
 
         /** The response body as a string */
-        var body: String;
+        var body: String
 
         /** Whether the request was successful (status 2xx) */
-        var ok: Bool;
+        var ok: Bool
 
         /**
          * Creates a new RestResponse
@@ -29,8 +29,8 @@ namespace tinox.core.rest.client
          */
         fn new(statusCode: Int64, body: String) -> RestResponse
         {
-            const isOk: Bool = statusCode >= 200 && statusCode < 300;
-            return RestResponse { statusCode: statusCode, body: body, ok: isOk };
+            const isOk: Bool = statusCode >= 200 && statusCode < 300
+            return RestResponse { statusCode: statusCode, body: body, ok: isOk }
         }
 
         /**
@@ -41,10 +41,10 @@ namespace tinox.core.rest.client
          */
         fn fromHttp(response: HttpClientResponse) -> RestResponse
         {
-            const code: Int64 = response.statusCode();
-            const bodyText: String = response.body();
-            const isOk: Bool = code >= 200 && code < 300;
-            return RestResponse { statusCode: code, body: bodyText, ok: isOk };
+            const code: Int64 = response.statusCode()
+            const bodyText: String = response.body()
+            const isOk: Bool = code >= 200 && code < 300
+            return RestResponse { statusCode: code, body: bodyText, ok: isOk }
         }
 
         /**
@@ -54,7 +54,7 @@ namespace tinox.core.rest.client
          */
         fn text() -> String
         {
-            return this.body;
+            return this.body
         }
 
         /**
@@ -64,7 +64,7 @@ namespace tinox.core.rest.client
          */
         fn json() -> JsonValue
         {
-            return Json::parse(this.body);
+            return Json::parse(this.body)
         }
 
         /**
@@ -74,7 +74,7 @@ namespace tinox.core.rest.client
          */
         fn isOk() -> Bool
         {
-            return this.ok;
+            return this.ok
         }
 
         /**
@@ -84,7 +84,7 @@ namespace tinox.core.rest.client
          */
         fn isClientError() -> Bool
         {
-            return this.statusCode >= 400 && this.statusCode < 500;
+            return this.statusCode >= 400 && this.statusCode < 500
         }
 
         /**
@@ -94,7 +94,7 @@ namespace tinox.core.rest.client
          */
         fn isServerError() -> Bool
         {
-            return this.statusCode >= 500;
+            return this.statusCode >= 500
         }
 
         /**
@@ -104,7 +104,7 @@ namespace tinox.core.rest.client
          */
         fn status() -> Int64
         {
-            return this.statusCode;
+            return this.statusCode
         }
 
         /**
@@ -117,10 +117,10 @@ namespace tinox.core.rest.client
         {
             if (this.ok == false)
             {
-                const msg: String = "HTTP " + this.statusCode.toString() + ": " + this.body;
-                throw msg;
+                const msg: String = "HTTP " + this.statusCode.toString() + ": " + this.body
+                throw msg
             }
-            return this;
+            return this
         }
     }
 }

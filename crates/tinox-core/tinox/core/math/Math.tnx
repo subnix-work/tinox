@@ -1,4 +1,4 @@
-module tinox.core.math;
+module tinox.core.math
 
 namespace tinox.core.math
 {
@@ -14,7 +14,7 @@ namespace tinox.core.math
          */
         fn pi() -> Float64
         {
-            return 3.14159265358979;
+            return 3.14159265358979
         }
 
         /**
@@ -23,7 +23,7 @@ namespace tinox.core.math
          */
         fn e() -> Float64
         {
-            return 2.71828182845904;
+            return 2.71828182845904
         }
 
         /**
@@ -32,7 +32,7 @@ namespace tinox.core.math
          */
         fn tau() -> Float64
         {
-            return 6.28318530717958;
+            return 6.28318530717958
         }
 
         /**
@@ -44,9 +44,9 @@ namespace tinox.core.math
         {
             if (x < 0)
             {
-                return -x;
+                return -x
             }
-            return x;
+            return x
         }
 
         /**
@@ -59,9 +59,9 @@ namespace tinox.core.math
         {
             if (a < b)
             {
-                return a;
+                return a
             }
-            return b;
+            return b
         }
 
         /**
@@ -74,9 +74,9 @@ namespace tinox.core.math
         {
             if (a > b)
             {
-                return a;
+                return a
             }
-            return b;
+            return b
         }
 
         /**
@@ -86,7 +86,7 @@ namespace tinox.core.math
          */
         fn square(x: Int64) -> Int64
         {
-            return x * x;
+            return x * x
         }
 
         /**
@@ -97,14 +97,14 @@ namespace tinox.core.math
          */
         fn pow(base: Int64, exp: Int64) -> Int64
         {
-            var result: Int64 = 1;
-            var i: Int64 = 0;
+            var result: Int64 = 1
+            var i: Int64 = 0
             while i < exp
             {
-                result = result * base;
-                i = i + 1;
+                result = result * base
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -118,14 +118,14 @@ namespace tinox.core.math
         {
             if (n <= 1)
             {
-                return 1;
+                return 1
             }
-            var result: Int64 = 1;
+            var result: Int64 = 1
             for i in 2..(n+1)
             {
-                result = result * i;
+                result = result * i
             }
-            return result;
+            return result
         }
 
         /**
@@ -137,7 +137,7 @@ namespace tinox.core.math
          */
         fn randomSeed(seed: Int64) -> Int64
         {
-            return (seed * 1103515245 + 12345) & 2147483647;
+            return (seed * 1103515245 + 12345) & 2147483647
         }
     }
 }

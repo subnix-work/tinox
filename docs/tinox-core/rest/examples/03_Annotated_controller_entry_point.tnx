@@ -1,4 +1,4 @@
-import GreetController;
+import GreetController
 
 // Every Tinox program still needs its own class Main as the mandatory
 // entry point (since 2026-08-09) -- @ApplicationComponent's REST server
@@ -8,6 +8,6 @@ class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }

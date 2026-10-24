@@ -1,4 +1,4 @@
-module tinox.core.http2_server;
+module tinox.core.http2_server
 
 namespace tinox.core.http2_server
 {
@@ -8,11 +8,11 @@ namespace tinox.core.http2_server
 
     class Http2Settings
     {
-        fn HEADER_TABLE_SIZE()      -> Int64 { return 0x1; }
-        fn ENABLE_PUSH()            -> Int64 { return 0x2; }
-        fn MAX_CONCURRENT_STREAMS() -> Int64 { return 0x3; }
-        fn INITIAL_WINDOW_SIZE()    -> Int64 { return 0x4; }
-        fn MAX_FRAME_SIZE()         -> Int64 { return 0x5; }
-        fn MAX_HEADER_LIST_SIZE()   -> Int64 { return 0x6; }
+        fn HEADER_TABLE_SIZE()      -> Int64 { return 0x1 }
+        fn ENABLE_PUSH()            -> Int64 { return 0x2 }
+        fn MAX_CONCURRENT_STREAMS() -> Int64 { return 0x3 }
+        fn INITIAL_WINDOW_SIZE()    -> Int64 { return 0x4 }
+        fn MAX_FRAME_SIZE()         -> Int64 { return 0x5 }
+        fn MAX_HEADER_LIST_SIZE()   -> Int64 { return 0x6 }
     }
 }

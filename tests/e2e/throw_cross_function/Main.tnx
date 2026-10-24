@@ -8,31 +8,31 @@ class Main
 {
     fnc divide(a: Int64, b: Int64) -> Int64 {
         if (b == 0) {
-            throw "broken";
+            throw "broken"
         }
-        return a / b;
+        return a / b
     }
 
 
     fnc main() -> Int32 {
         try {
-            const r = divide(10, 0);
-            println("unreachable");
+            const r = divide(10, 0)
+            println("unreachable")
         }
         catch e: String {
-            println("caught: " + e);
+            println("caught: " + e)
         }
         finally {
-            println("cleanup");
+            println("cleanup")
         }
         try {
-            const r2 = divide(10, 2);
-            println("ok: " + r2.toString());
+            const r2 = divide(10, 2)
+            println("ok: " + r2.toString())
         }
         catch e: String {
-            println("nope");
+            println("nope")
         }
-        println("done");
-        return 0;
+        println("done")
+        return 0
     }
 }

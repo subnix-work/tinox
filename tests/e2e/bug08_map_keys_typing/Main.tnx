@@ -4,13 +4,13 @@
 class Main
 {
     fnc main() -> Int32 {
-        var m: Map<String, Int64> = Map::new();
-        m.insert("x", 1);
-        const ks = m.keys();
+        var m: Map<String, Int64> = Map::new()
+        m.insert("x", 1)
+        const ks = m.keys()
         for k in ks {
-            println(k);
-            println(k.len());
+            println(k)
+            println(k.len())
         }
-        return 0;
+        return 0
     }
 }

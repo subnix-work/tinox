@@ -1,4 +1,4 @@
-module tinox.core.http_server;
+module tinox.core.http_server
 
 namespace tinox.core.http_server
 {
@@ -8,12 +8,12 @@ namespace tinox.core.http_server
     class Route
     {
         /** The HTTP method (GET, POST, etc.) */
-        var method: String;
+        var method: String
 
         /** The path pattern (e.g., "/users/:id") */
-        var path: String;
+        var path: String
 
         /** The handler function to execute */
-        var handler: fnc(HttpContext) -> Nothing;
+        var handler: fnc(HttpContext) -> Nothing
     }
 }

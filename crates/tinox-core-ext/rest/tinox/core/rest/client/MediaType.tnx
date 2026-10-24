@@ -1,4 +1,4 @@
-module tinox.core.rest.client;
+module tinox.core.rest.client
 
 namespace tinox.core.rest.client
 {
@@ -12,12 +12,12 @@ namespace tinox.core.rest.client
      */
     enum MediaType
     {
-        ApplicationJson;
-        ApplicationXml;
-        ApplicationFormUrlencoded;
-        TextPlain;
-        TextHtml;
-        TextCsv;
-        MultipartFormData;
+        ApplicationJson
+        ApplicationXml
+        ApplicationFormUrlencoded
+        TextPlain
+        TextHtml
+        TextCsv
+        MultipartFormData
     }
 }

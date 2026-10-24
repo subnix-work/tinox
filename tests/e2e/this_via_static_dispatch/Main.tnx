@@ -1,6 +1,6 @@
-import IntBox;
-import Acc;
-import Box;
+import IntBox
+import Acc
+import Box
 
 // `this` in an instance method called via `Class::method(obj, ...)`:
 // the leading arg IS self. Previously the static-dispatch path prepended a
@@ -22,23 +22,23 @@ class Main
 {
     fnc main() -> Int32 {
         // non-generic, this.value via ::
-        const b: IntBox = IntBox::wrap(42);
-        println(IntBox::get(b).toString());        // 42 (obj == self)
+        const b: IntBox = IntBox::wrap(42)
+        println(IntBox::get(b).toString())        // 42 (obj == self)
 
         // obj + additional declared param
-        const a: Acc = Acc::make();
-        println(Acc::addAndGet(a, 5).toString());  // 5
-        println(Acc::addAndGet(a, 3).toString());  // 8
+        const a: Acc = Acc::make()
+        println(Acc::addAndGet(a, 5).toString())  // 5
+        println(Acc::addAndGet(a, 3).toString())  // 8
 
         // generic, this.value via ::
-        const g: Box<Int64> = Box::wrap(7);
-        println(Box::get(g).toString());           // 7
+        const g: Box<Int64> = Box::wrap(7)
+        println(Box::get(g).toString())           // 7
 
-        const h: Box<Int64> = Box::wrap(99);
-        println(Box::get(h).toString());           // 99
+        const h: Box<Int64> = Box::wrap(99)
+        println(Box::get(h).toString())           // 99
 
         // generic, T param, direct .toString() on the return value (Bug 39)
-        println(Box::setAndGet(h, 123).toString()); // 123
-        return 0;
+        println(Box::setAndGet(h, 123).toString()) // 123
+        return 0
     }
 }

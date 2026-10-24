@@ -1,11 +1,11 @@
-module tinox.core.oauth2;
+module tinox.core.oauth2
 
-import tinox.core.http;
-import tinox.core.uri;
-import tinox.core.crypto;
-import tinox.core.base64;
-import tinox.core.hex;
-import tinox.core.json;
+import tinox.core.http
+import tinox.core.uri
+import tinox.core.crypto
+import tinox.core.base64
+import tinox.core.hex
+import tinox.core.json
 
 namespace tinox.core.oauth2
 {
@@ -38,15 +38,15 @@ namespace tinox.core.oauth2
      */
     class OAuth2Client
     {
-        var authorizeUrl: String;
-        var tokenUrl: String;
-        var clientId: String;
-        var clientSecret: String;
-        var redirectUri: String;
+        var authorizeUrl: String
+        var tokenUrl: String
+        var clientId: String
+        var clientSecret: String
+        var redirectUri: String
 
         fn new(authorizeUrl: String, tokenUrl: String, clientId: String, clientSecret: String, redirectUri: String) -> OAuth2Client
         {
-            return OAuth2Client { authorizeUrl: authorizeUrl, tokenUrl: tokenUrl, clientId: clientId, clientSecret: clientSecret, redirectUri: redirectUri };
+            return OAuth2Client { authorizeUrl: authorizeUrl, tokenUrl: tokenUrl, clientId: clientId, clientSecret: clientSecret, redirectUri: redirectUri }
         }
 
         /*
@@ -60,39 +60,39 @@ namespace tinox.core.oauth2
          */
         fn buildAuthorizeUrl(scope: String) -> OAuth2AuthorizeRequest
         {
-            const stateBytes: List<Int64> = Crypto::secureRandomBytes(32);
-            const state: String = Base64::encodeUrlBytes(stateBytes);
+            const stateBytes: List<Int64> = Crypto::secureRandomBytes(32)
+            const state: String = Base64::encodeUrlBytes(stateBytes)
 
-            const verifierBytes: List<Int64> = Crypto::secureRandomBytes(32);
-            const codeVerifier: String = Base64::encodeUrlBytes(verifierBytes);
+            const verifierBytes: List<Int64> = Crypto::secureRandomBytes(32)
+            const codeVerifier: String = Base64::encodeUrlBytes(verifierBytes)
 
             // Crypto::sha256 returns hex text (no raw-bytes primitive in
             // Crypto, see issue #137); Hex::decodeBytes safely recovers
             // the raw 32 digest bytes (no string-based detour via
             // fromCharCode, which would have silently truncated on an
             // embedded 0 byte in the digest).
-            const challengeHex: String = Crypto::sha256(codeVerifier);
-            const challengeBytes: List<Int64> = Hex::decodeBytes(challengeHex);
-            const codeChallenge: String = Base64::encodeUrlBytes(challengeBytes);
+            const challengeHex: String = Crypto::sha256(codeVerifier)
+            const challengeBytes: List<Int64> = Hex::decodeBytes(challengeHex)
+            const codeChallenge: String = Base64::encodeUrlBytes(challengeBytes)
 
-            var url: String = this.authorizeUrl;
+            var url: String = this.authorizeUrl
             if (url.contains("?"))
             {
-                url = url + "&";
+                url = url + "&"
             }
             else
             {
-                url = url + "?";
+                url = url + "?"
             }
-            url = url + "response_type=code";
-            url = url + "&client_id=" + Uri::encodeComponent(this.clientId);
-            url = url + "&redirect_uri=" + Uri::encodeComponent(this.redirectUri);
-            url = url + "&scope=" + Uri::encodeComponent(scope);
-            url = url + "&state=" + Uri::encodeComponent(state);
-            url = url + "&code_challenge=" + Uri::encodeComponent(codeChallenge);
-            url = url + "&code_challenge_method=S256";
+            url = url + "response_type=code"
+            url = url + "&client_id=" + Uri::encodeComponent(this.clientId)
+            url = url + "&redirect_uri=" + Uri::encodeComponent(this.redirectUri)
+            url = url + "&scope=" + Uri::encodeComponent(scope)
+            url = url + "&state=" + Uri::encodeComponent(state)
+            url = url + "&code_challenge=" + Uri::encodeComponent(codeChallenge)
+            url = url + "&code_challenge_method=S256"
 
-            return OAuth2AuthorizeRequest { url: url, state: state, codeVerifier: codeVerifier };
+            return OAuth2AuthorizeRequest { url: url, state: state, codeVerifier: codeVerifier }
         }
 
         /*
@@ -105,23 +105,23 @@ namespace tinox.core.oauth2
          */
         fn exchangeCode(code: String, codeVerifier: String) -> OAuth2TokenResponse
         {
-            var body: String = "grant_type=authorization_code";
-            body = body + "&code=" + Uri::encodeComponent(code);
-            body = body + "&redirect_uri=" + Uri::encodeComponent(this.redirectUri);
-            body = body + "&client_id=" + Uri::encodeComponent(this.clientId);
-            body = body + "&client_secret=" + Uri::encodeComponent(this.clientSecret);
-            body = body + "&code_verifier=" + Uri::encodeComponent(codeVerifier);
-            return OAuth2Client::postToken(this.tokenUrl, body);
+            var body: String = "grant_type=authorization_code"
+            body = body + "&code=" + Uri::encodeComponent(code)
+            body = body + "&redirect_uri=" + Uri::encodeComponent(this.redirectUri)
+            body = body + "&client_id=" + Uri::encodeComponent(this.clientId)
+            body = body + "&client_secret=" + Uri::encodeComponent(this.clientSecret)
+            body = body + "&code_verifier=" + Uri::encodeComponent(codeVerifier)
+            return OAuth2Client::postToken(this.tokenUrl, body)
         }
 
         /* Exchanges a refresh token for a fresh token pair (RFC 6749 §6). */
         fn refresh(refreshToken: String) -> OAuth2TokenResponse
         {
-            var body: String = "grant_type=refresh_token";
-            body = body + "&refresh_token=" + Uri::encodeComponent(refreshToken);
-            body = body + "&client_id=" + Uri::encodeComponent(this.clientId);
-            body = body + "&client_secret=" + Uri::encodeComponent(this.clientSecret);
-            return OAuth2Client::postToken(this.tokenUrl, body);
+            var body: String = "grant_type=refresh_token"
+            body = body + "&refresh_token=" + Uri::encodeComponent(refreshToken)
+            body = body + "&client_id=" + Uri::encodeComponent(this.clientId)
+            body = body + "&client_secret=" + Uri::encodeComponent(this.clientSecret)
+            return OAuth2Client::postToken(this.tokenUrl, body)
         }
 
         /*
@@ -137,61 +137,61 @@ namespace tinox.core.oauth2
          */
         fn postToken(url: String, body: String) -> OAuth2TokenResponse
         {
-            Http::clearHeaders();
-            Http::setHeader("Content-Type", "application/x-www-form-urlencoded");
-            Http::setHeader("Accept", "application/json");
-            const resp = Http::post(url, body);
-            Http::clearHeaders();
+            Http::clearHeaders()
+            Http::setHeader("Content-Type", "application/x-www-form-urlencoded")
+            Http::setHeader("Accept", "application/json")
+            const resp = Http::post(url, body)
+            Http::clearHeaders()
 
             if (resp.statusCode() == 0)
             {
-                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "network error contacting token endpoint (connection failed or TLS/certificate error)" };
+                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "network error contacting token endpoint (connection failed or TLS/certificate error)" }
             }
 
-            const fields: Map<String, JsonValue> = Json::parse(resp.body()).asTable();
+            const fields: Map<String, JsonValue> = Json::parse(resp.body()).asTable()
 
             if (fields.contains("error"))
             {
-                var msg: String = fields["error"].getString();
+                var msg: String = fields["error"].getString()
                 if (fields.contains("error_description"))
                 {
-                    msg = msg + ": " + fields["error_description"].getString();
+                    msg = msg + ": " + fields["error_description"].getString()
                 }
-                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: msg };
+                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: msg }
             }
 
             if (resp.statusCode() < 200 || resp.statusCode() >= 300)
             {
-                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "token endpoint returned HTTP " + resp.statusCode().toString() };
+                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "token endpoint returned HTTP " + resp.statusCode().toString() }
             }
 
             if (!fields.contains("access_token"))
             {
-                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "token endpoint response has no access_token field" };
+                return OAuth2TokenResponse { accessToken: "", refreshToken: "", tokenType: "", expiresIn: 0, idToken: "", ok: false, errorMessage: "token endpoint response has no access_token field" }
             }
 
-            var refreshTok: String = "";
+            var refreshTok: String = ""
             if (fields.contains("refresh_token"))
             {
-                refreshTok = fields["refresh_token"].getString();
+                refreshTok = fields["refresh_token"].getString()
             }
-            var tokType: String = "Bearer";
+            var tokType: String = "Bearer"
             if (fields.contains("token_type"))
             {
-                tokType = fields["token_type"].getString();
+                tokType = fields["token_type"].getString()
             }
-            var expIn: Int64 = 0;
+            var expIn: Int64 = 0
             if (fields.contains("expires_in"))
             {
-                expIn = fields["expires_in"].asInt();
+                expIn = fields["expires_in"].asInt()
             }
-            var idTok: String = "";
+            var idTok: String = ""
             if (fields.contains("id_token"))
             {
-                idTok = fields["id_token"].getString();
+                idTok = fields["id_token"].getString()
             }
 
-            return OAuth2TokenResponse { accessToken: fields["access_token"].getString(), refreshToken: refreshTok, tokenType: tokType, expiresIn: expIn, idToken: idTok, ok: true, errorMessage: "" };
+            return OAuth2TokenResponse { accessToken: fields["access_token"].getString(), refreshToken: refreshTok, tokenType: tokType, expiresIn: expIn, idToken: idTok, ok: true, errorMessage: "" }
         }
     }
 }

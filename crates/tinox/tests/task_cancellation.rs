@@ -10,23 +10,24 @@ use std::time::Duration;
 const SOURCE: &str = r#"
 class Main {
     fnc waitForSocket(fd: Int64, ready: Int64) -> Nothing {
-        defer { httpServerClose(fd); println("closed"); }
-        send ready -> 1;
-        taskWaitReadable(fd);
-        println("readable");
+        defer { httpServerClose(fd)
+        println("closed") }
+        send ready -> 1
+        taskWaitReadable(fd)
+        println("readable")
     }
     fnc main() -> Int32 {
-        const fd = httpServerCreate(0);
-        println(httpServerBoundPort(fd));
-        const ready = channel;
+        const fd = httpServerCreate(0)
+        println(httpServerBoundPort(fd))
+        const ready = channel
         try {
             scope {
-                spawn Main::waitForSocket(fd, ready);
-                recv ready;
-                taskSetDeadline(DEADLINE);
+                spawn Main::waitForSocket(fd, ready)
+                recv ready
+                taskSetDeadline(DEADLINE)
             }
-        } catch (e: String) { println(e); }
-        return 0;
+        } catch (e: String) { println(e) }
+        return 0
     }
 }
 "#;

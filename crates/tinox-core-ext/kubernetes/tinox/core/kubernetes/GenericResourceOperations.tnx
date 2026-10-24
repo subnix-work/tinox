@@ -1,6 +1,6 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
@@ -16,12 +16,12 @@ namespace tinox.core.kubernetes
     // `client.resource(group, version, plural, namespaced)`.
     class GenericResourceOperations
     {
-        var client: KubernetesClient;
-        var group: String;
-        var version: String;
-        var plural: String;
-        var namespaced: Bool;
-        var namespace: String;
+        var client: KubernetesClient
+        var group: String
+        var version: String
+        var plural: String
+        var namespaced: Bool
+        var namespace: String
 
         // Named `of`, not `create` -- this class also has an instance
         // `create(bodyJson)` (the REST POST operation) and this compiler
@@ -35,7 +35,7 @@ namespace tinox.core.kubernetes
             return GenericResourceOperations {
                 client: client, group: group, version: version, plural: plural,
                 namespaced: namespaced, namespace: namespace
-            };
+            }
         }
 
         fn inNamespace(namespace: String) -> GenericResourceOperations
@@ -43,25 +43,25 @@ namespace tinox.core.kubernetes
             return GenericResourceOperations {
                 client: this.client, group: this.group, version: this.version, plural: this.plural,
                 namespaced: this.namespaced, namespace: namespace
-            };
+            }
         }
 
         fn basePath() -> String
         {
-            var apiRoot: String = "";
+            var apiRoot: String = ""
             if (this.group.len() == 0)
             {
-                apiRoot = "/api/" + this.version;
+                apiRoot = "/api/" + this.version
             }
             else
             {
-                apiRoot = "/apis/" + this.group + "/" + this.version;
+                apiRoot = "/apis/" + this.group + "/" + this.version
             }
             if (this.namespaced)
             {
-                return apiRoot + "/namespaces/" + this.namespace + "/" + this.plural;
+                return apiRoot + "/namespaces/" + this.namespace + "/" + this.plural
             }
-            return apiRoot + "/" + this.plural;
+            return apiRoot + "/" + this.plural
         }
 
         // Full raw JSON response ({kind: "...List", items: [...], ...}) --
@@ -69,29 +69,29 @@ namespace tinox.core.kubernetes
         // class's own `::fromJson(item)` for the common kinds.
         fn list() -> JsonValue
         {
-            const resp: KubeResponse = this.client.request("GET", this.basePath(), "");
-            resp.throwIfError("list " + this.plural);
-            return resp.json();
+            const resp: KubeResponse = this.client.request("GET", this.basePath(), "")
+            resp.throwIfError("list " + this.plural)
+            return resp.json()
         }
 
         fn get(name: String) -> JsonValue
         {
-            const resp: KubeResponse = this.client.request("GET", this.basePath() + "/" + name, "");
-            resp.throwIfError("get " + this.plural + "/" + name);
-            return resp.json();
+            const resp: KubeResponse = this.client.request("GET", this.basePath() + "/" + name, "")
+            resp.throwIfError("get " + this.plural + "/" + name)
+            return resp.json()
         }
 
         fn exists(name: String) -> Bool
         {
-            const resp: KubeResponse = this.client.request("GET", this.basePath() + "/" + name, "");
-            return resp.isSuccess();
+            const resp: KubeResponse = this.client.request("GET", this.basePath() + "/" + name, "")
+            return resp.isSuccess()
         }
 
         fn create(bodyJson: String) -> JsonValue
         {
-            const resp: KubeResponse = this.client.request("POST", this.basePath(), bodyJson);
-            resp.throwIfError("create " + this.plural);
-            return resp.json();
+            const resp: KubeResponse = this.client.request("POST", this.basePath(), bodyJson)
+            resp.throwIfError("create " + this.plural)
+            return resp.json()
         }
 
         // Full-object replace (HTTP PUT) -- bodyJson must carry the
@@ -100,18 +100,18 @@ namespace tinox.core.kubernetes
         // API write goes through).
         fn update(name: String, bodyJson: String) -> JsonValue
         {
-            const resp: KubeResponse = this.client.request("PUT", this.basePath() + "/" + name, bodyJson);
-            resp.throwIfError("update " + this.plural + "/" + name);
-            return resp.json();
+            const resp: KubeResponse = this.client.request("PUT", this.basePath() + "/" + name, bodyJson)
+            resp.throwIfError("update " + this.plural + "/" + name)
+            return resp.json()
         }
 
         // JSON Merge Patch (RFC 7386) -- patchJson only needs the fields
         // being changed, not the whole object (unlike update()).
         fn patchMerge(name: String, patchJson: String) -> JsonValue
         {
-            const resp: KubeResponse = this.client.request("PATCH", this.basePath() + "/" + name, patchJson);
-            resp.throwIfError("patch " + this.plural + "/" + name);
-            return resp.json();
+            const resp: KubeResponse = this.client.request("PATCH", this.basePath() + "/" + name, patchJson)
+            resp.throwIfError("patch " + this.plural + "/" + name)
+            return resp.json()
         }
 
         // Server-Side Apply (PATCH + `application/apply-patch+json`,
@@ -129,7 +129,7 @@ namespace tinox.core.kubernetes
         // was there, not a background controller that should defer.
         fn applyServerSide(name: String, bodyJson: String, fieldManager: String) -> JsonValue
         {
-            const path: String = this.basePath() + "/" + name + "?fieldManager=" + fieldManager + "&force=true";
+            const path: String = this.basePath() + "/" + name + "?fieldManager=" + fieldManager + "&force=true"
             // `application/apply-patch+yaml`, NOT `+json` -- verified live
             // against a real cluster (minikube, kube-apiserver v1.35.1):
             // `+json` is rejected outright with HTTP 415 Unsupported
@@ -142,15 +142,15 @@ namespace tinox.core.kubernetes
             // so sending JSON under `+yaml` works fine; only the
             // Content-Type header needed to match what kubectl itself
             // actually uses.
-            const resp: KubeResponse = this.client.requestWithContentType("PATCH", path, bodyJson, "application/apply-patch+yaml");
-            resp.throwIfError("applyServerSide " + this.plural + "/" + name);
-            return resp.json();
+            const resp: KubeResponse = this.client.requestWithContentType("PATCH", path, bodyJson, "application/apply-patch+yaml")
+            resp.throwIfError("applyServerSide " + this.plural + "/" + name)
+            return resp.json()
         }
 
         fn delete(name: String) -> Nothing
         {
-            const resp: KubeResponse = this.client.request("DELETE", this.basePath() + "/" + name, "");
-            resp.throwIfError("delete " + this.plural + "/" + name);
+            const resp: KubeResponse = this.client.request("DELETE", this.basePath() + "/" + name, "")
+            resp.throwIfError("delete " + this.plural + "/" + name)
         }
 
         // Opens a live watch on this resource collection (or, combined
@@ -159,7 +159,7 @@ namespace tinox.core.kubernetes
         // known simplifications (no resourceVersion resume support).
         fn watch() -> Watch
         {
-            return Watch::open(this.client, this.basePath());
+            return Watch::open(this.client, this.basePath())
         }
     }
 }

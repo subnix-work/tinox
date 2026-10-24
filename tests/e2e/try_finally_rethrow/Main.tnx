@@ -17,42 +17,42 @@ class Main
 {
     fnc risky() -> Nothing {
         try {
-            println("before throw");
-            throw "error";
-            println("after throw (never)");
+            println("before throw")
+            throw "error"
+            println("after throw (never)")
         } finally {
-            println("finally A");
+            println("finally A")
         }
-        println("after try (never — re-propagated)");
+        println("after try (never — re-propagated)")
     }
 
 
     fnc noError() -> Nothing {
         try {
-            println("in try");
+            println("in try")
         } finally {
-            println("finally B");
+            println("finally B")
         }
-        println("after try normal");
+        println("after try normal")
     }
 
 
     fnc caught() -> Nothing {
         try {
-            throw "x";
+            throw "x"
         } catch e: String {
-            println("caught: " + e);
+            println("caught: " + e)
         } finally {
-            println("finally C");
+            println("finally C")
         }
-        println("after catch");
+        println("after catch")
     }
 
 
     fnc main() -> Int32 {
-        try { risky(); } catch e: String { println("outer catch: " + e); }
-        noError();
-        caught();
-        return 0;
+        try { risky() } catch e: String { println("outer catch: " + e) }
+        noError()
+        caught()
+        return 0
     }
 }

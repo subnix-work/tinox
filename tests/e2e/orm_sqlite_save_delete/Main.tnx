@@ -7,37 +7,37 @@
 // expect: 22
 // expect: 1
 
-import tinox.core.db;
+import tinox.core.db
 
-import orm_sqlite_save_delete;
+import orm_sqlite_save_delete
 
 class Main
 {
     fnc main() -> Int32
     {
-        const bob = new orm_sqlite_save_delete();
-        bob.name = "Bob";
-        bob.age = 21;
-        DB::of(orm_sqlite_save_delete).save(bob);
+        const bob = new orm_sqlite_save_delete()
+        bob.name = "Bob"
+        bob.age = 21
+        DB::of(orm_sqlite_save_delete).save(bob)
 
-        const all: List<orm_sqlite_save_delete> = DB::of(orm_sqlite_save_delete).orderBy(u => u.id).list();
-        println(all.len());
-        println(all[1].name);
-        println(all[1].age);
+        const all: List<orm_sqlite_save_delete> = DB::of(orm_sqlite_save_delete).orderBy(u => u.id).list()
+        println(all.len())
+        println(all[1].name)
+        println(all[1].age)
 
-        const toUpdate: orm_sqlite_save_delete = DB::of(orm_sqlite_save_delete).filter(u => u.name == "Bob").first();
-        toUpdate.name = "Bobby";
-        toUpdate.age = 22;
-        DB::of(orm_sqlite_save_delete).save(toUpdate);
+        const toUpdate: orm_sqlite_save_delete = DB::of(orm_sqlite_save_delete).filter(u => u.name == "Bob").first()
+        toUpdate.name = "Bobby"
+        toUpdate.age = 22
+        DB::of(orm_sqlite_save_delete).save(toUpdate)
 
-        const updated: orm_sqlite_save_delete = DB::of(orm_sqlite_save_delete).filter(u => u.id == toUpdate.id).first();
-        println(updated.name);
-        println(updated.age);
+        const updated: orm_sqlite_save_delete = DB::of(orm_sqlite_save_delete).filter(u => u.id == toUpdate.id).first()
+        println(updated.name)
+        println(updated.age)
 
-        DB::of(orm_sqlite_save_delete).delete(updated);
-        const remaining: List<orm_sqlite_save_delete> = DB::of(orm_sqlite_save_delete).list();
-        println(remaining.len());
+        DB::of(orm_sqlite_save_delete).delete(updated)
+        const remaining: List<orm_sqlite_save_delete> = DB::of(orm_sqlite_save_delete).list()
+        println(remaining.len())
 
-        return 0;
+        return 0
     }
 }

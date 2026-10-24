@@ -3,21 +3,21 @@
 // expect-contains: "trace_id":""
 // expect-contains: "span_id":""
 // expect-contains: disabled
-import tinox.core.logger;
-import User;
+import tinox.core.logger
+import User
 
 class Main
 {
     fnc main() -> Int32
     {
-        const user = User { password: "never-print-this", email: "alice@example.com" };
-        const record = LogRecord { timestamp: "0", level: "INFO", logger: "test", message: user.toString() };
-        println(Logger::toJson(record));
-        const token = telemetryBegin("disabled", "", "");
+        const user = User { password: "never-print-this", email: "alice@example.com" }
+        const record = LogRecord { timestamp: "0", level: "INFO", logger: "test", message: user.toString() }
+        println(Logger::toJson(record))
+        const token = telemetryBegin("disabled", "", "")
         if (token == 0 && telemetryTraceparent() == "" && telemetryEnd(token) == 1)
         {
-            println("disabled");
+            println("disabled")
         }
-        return 0;
+        return 0
     }
 }

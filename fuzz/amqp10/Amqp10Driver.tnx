@@ -1,11 +1,11 @@
-import tinox.core.amqp10;
-import tinox.core.socket;
+import tinox.core.amqp10
+import tinox.core.socket
 
 class Amqp10Driver
 {
     fnc tinoxAmqp10ReadFrame(conn: Int64) -> Int64
     {
-        const f = Amqp10::readFrame(conn);
-        return f.frameType;
+        const f = Amqp10::readFrame(conn)
+        return f.frameType
     }
 }

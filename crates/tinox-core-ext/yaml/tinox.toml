@@ -1,4 +1,4 @@
 [package]
 name = "yaml"
-version = "1.0.2"
+version = "1.1.0"
 description = "tinox.core.yaml, split out of the bundled stdlib as a standalone tinox-central package."

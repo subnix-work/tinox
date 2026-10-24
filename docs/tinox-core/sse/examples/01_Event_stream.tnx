@@ -1,0 +1,17 @@
+import tinox.core.sse
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let srv: Int64 = SseServer::listen(8080)
+        let conn: Int64 = SseServer::accept(srv)
+        if (conn > 0)
+        {
+            Sse::sendEvent(conn, "message", "hello")
+            Sse::sendComment(conn) // keepalive
+            Sse::close(conn)
+        }
+        return 0
+    }
+}

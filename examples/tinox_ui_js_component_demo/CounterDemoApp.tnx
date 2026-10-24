@@ -23,28 +23,28 @@
 // @TinoxUIApp's generated HTTP shell server can't take extra routes --
 // referenced here via the ":port/path" cross-port convention (see
 // Component::jsComponent's own doc comment), not a baked-in host.
-import tinox.core.ui;
-import tinox.core.websocket;
-import tinox.core.http_server;
+import tinox.core.ui
+import tinox.core.websocket
+import tinox.core.http_server
 
 @TinoxUIApp(8292, 8293)
 class CounterDemoApp
 {
-    var serverClicks: Int64;
-    var lastReportedFromWidget: String;
+    var serverClicks: Int64
+    var lastReportedFromWidget: String
 
     @View
     fn render() -> Component
     {
-        const app: CounterDemoApp = this;
-        var widgetProps: Map<String, String> = Map::new();
-        widgetProps.insert("label", "server clicks: " + this.serverClicks.toString());
+        const app: CounterDemoApp = this
+        var widgetProps: Map<String, String> = Map::new()
+        widgetProps.insert("label", "server clicks: " + this.serverClicks.toString())
         return Component::vbox([
             Component::label("Tinox-UI JsComponent Demo"),
             Component::label("Server clicks: " + this.serverClicks.toString()),
-            Component::button("Increment server counter", fn(v: String) { app.serverClicks = app.serverClicks + 1; }),
+            Component::button("Increment server counter", fn(v: String) { app.serverClicks = app.serverClicks + 1 }),
             Component::label("Last value reported by widget: " + this.lastReportedFromWidget),
-            Component::jsComponent("tinox-counter", ":8290/tinox-counter.js", widgetProps, fn(v: String) { app.lastReportedFromWidget = v; })
-        ]);
+            Component::jsComponent("tinox-counter", ":8290/tinox-counter.js", widgetProps, fn(v: String) { app.lastReportedFromWidget = v })
+        ])
     }
 }

@@ -1,6 +1,6 @@
 enum Color
 {
-    RED;
-    GREEN;
-    parse;
+    RED
+    GREEN
+    parse
 }

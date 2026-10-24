@@ -14,39 +14,39 @@
 // expect: 5
 // expect: 5
 // expect: -1
-import tinox.core.option;
+import tinox.core.option
 
 class Main
 {
     fnc main() -> Int32
     {
-        const u: Option<String> = Option<String>::some("Alice");
+        const u: Option<String> = Option<String>::some("Alice")
 
         // Arrow-sugar, block body with an explicit `return`.
         const viaAndThen: Option<Int64> = u.andThen(n => {
-            return Option::some(n.len());
-        });
-        println(viaAndThen.unwrapOr(0));
+            return Option::some(n.len())
+        })
+        println(viaAndThen.unwrapOr(0))
 
         // Explicit fully-typed lambda — the pre-#165 workaround, must keep
         // working unchanged.
         const viaExplicit: Option<Int64> = u.andThen(fnc(n: String) -> Option<Int64> {
-            return Option::some(n.len());
-        });
-        println(viaExplicit.unwrapOr(0));
+            return Option::some(n.len())
+        })
+        println(viaExplicit.unwrapOr(0))
 
         // Arrow-sugar, bare expression body (no braces/return).
-        const viaMap: Option<Int64> = u.map(n => n.len());
-        println(viaMap.unwrapOr(0));
+        const viaMap: Option<Int64> = u.map(n => n.len())
+        println(viaMap.unwrapOr(0))
 
         // None receiver: confirms the fix isn't special-cased to the `some`
         // path only.
-        const none: Option<String> = Option<String>::none();
+        const none: Option<String> = Option<String>::none()
         const viaNone: Option<Int64> = none.andThen(n => {
-            return Option::some(n.len());
-        });
-        println(viaNone.unwrapOr(-1));
+            return Option::some(n.len())
+        })
+        println(viaNone.unwrapOr(-1))
 
-        return 0;
+        return 0
     }
 }

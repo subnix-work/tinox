@@ -5,7 +5,7 @@ class Widget
     // generated, and internalCounter stays genuinely private (no
     // annotation on it at all).
     @Getter
-    private var label: String;
+    private var label: String
 
-    private var internalCounter: Int64;
+    private var internalCounter: Int64
 }

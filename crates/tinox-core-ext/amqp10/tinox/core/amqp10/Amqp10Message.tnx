@@ -1,7 +1,7 @@
-module tinox.core.amqp10;
+module tinox.core.amqp10
 
-import tinox.core.socket;
-import tinox.core.base64;
+import tinox.core.socket
+import tinox.core.base64
 
 namespace tinox.core.amqp10
 {
@@ -13,10 +13,10 @@ namespace tinox.core.amqp10
      */
     class Amqp10Message
     {
-        var body: List<Int64>;
-        var contentType: String;
-        var deliveryId: Int64;
-        var ok: Bool;
-        var errorMessage: String;
+        var body: List<Int64>
+        var contentType: String
+        var deliveryId: Int64
+        var ok: Bool
+        var errorMessage: String
     }
 }

@@ -1,4 +1,4 @@
-module tinox.core.ui;
+module tinox.core.ui
 
 namespace tinox.core.ui
 {
@@ -31,8 +31,8 @@ namespace tinox.core.ui
         // used to reach this page) plus this port, at connect time.
         fnc shellHtml(wsPort: Int64) -> String
         {
-            const template: String = Assets::shellHtmlTemplate();
-            return template.replace("__TINOX_UI_WS_PORT__", wsPort.toString());
+            const template: String = Assets::shellHtmlTemplate()
+            return template.replace("__TINOX_UI_WS_PORT__", wsPort.toString())
         }
 
         // Design tokens (dark, glassy, cyan/purple neon-accented) ported
@@ -353,7 +353,7 @@ namespace tinox.core.ui
 <script src="/ui.js"></script>
 </body>
 </html>
-"#;
+"#
         }
 
         fnc clientJs() -> String
@@ -1498,7 +1498,7 @@ namespace tinox.core.ui
 
   connect();
 })();
-"#;
+"#
         }
     }
 }

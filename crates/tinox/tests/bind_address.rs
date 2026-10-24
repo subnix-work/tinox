@@ -10,10 +10,10 @@ const PROGRAM: &str = r#"class Main
 {
     fnc main() -> Int32
     {
-        const srv = httpServerCreate(0);
-        println(httpServerBoundPort(srv).toString());
-        sleep_ms(3000);
-        return 0;
+        const srv = httpServerCreate(0)
+        println(httpServerBoundPort(srv).toString())
+        sleep_ms(3000)
+        return 0
     }
 }
 "#;

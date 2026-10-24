@@ -15,66 +15,66 @@
 // expect: ok-frame-cap
 // expect: ok-frame-eof
 
-import tinox.core.amqp091;
-import tinox.core.socket;
+import tinox.core.amqp091
+import tinox.core.socket
 
 class Main
 {
     fnc main() -> Int32 {
         // --- shortstr / longstr round trip ---
-        const w1 = AmqpWriter091::new();
-        w1.shortstr("hi");
-        const r1 = AmqpReader091::new(w1.bytes);
+        const w1 = AmqpWriter091::new()
+        w1.shortstr("hi")
+        const r1 = AmqpReader091::new(w1.bytes)
         if (r1.shortstr() == "hi") {
             if (r1.pos == w1.bytes.len()) {
-                println("ok-shortstr");
+                println("ok-shortstr")
             }
         }
 
-        const w2 = AmqpWriter091::new();
-        w2.longstr("a longer string value");
-        const r2 = AmqpReader091::new(w2.bytes);
+        const w2 = AmqpWriter091::new()
+        w2.longstr("a longer string value")
+        const r2 = AmqpReader091::new(w2.bytes)
         if (r2.longstr() == "a longer string value") {
             if (r2.pos == w2.bytes.len()) {
-                println("ok-longstr");
+                println("ok-longstr")
             }
         }
 
         // --- field table with mixed types ---
-        var mixed: Map<String, AmqpFieldValue091> = Map::new();
-        mixed.insert("flag", AmqpFieldValue091::BoolVal(true));
-        mixed.insert("small", AmqpFieldValue091::Int32Val(-42));
-        mixed.insert("big", AmqpFieldValue091::Int64Val(9000000000));
-        mixed.insert("name", AmqpFieldValue091::StrVal("tinox"));
-        mixed.insert("when", AmqpFieldValue091::TimestampVal(1700000000));
-        mixed.insert("nothing", AmqpFieldValue091::VoidVal);
+        var mixed: Map<String, AmqpFieldValue091> = Map::new()
+        mixed.insert("flag", AmqpFieldValue091::BoolVal(true))
+        mixed.insert("small", AmqpFieldValue091::Int32Val(-42))
+        mixed.insert("big", AmqpFieldValue091::Int64Val(9000000000))
+        mixed.insert("name", AmqpFieldValue091::StrVal("tinox"))
+        mixed.insert("when", AmqpFieldValue091::TimestampVal(1700000000))
+        mixed.insert("nothing", AmqpFieldValue091::VoidVal)
 
-        const w3 = AmqpWriter091::new();
-        w3.fieldValue(AmqpFieldValue091::TableVal(mixed));
-        const r3 = AmqpReader091::new(w3.bytes);
-        const decoded3 = r3.fieldValue();
+        const w3 = AmqpWriter091::new()
+        w3.fieldValue(AmqpFieldValue091::TableVal(mixed))
+        const r3 = AmqpReader091::new(w3.bytes)
+        const decoded3 = r3.fieldValue()
         match decoded3 {
             TableVal(t) => {
                 if (t.len() == 6) {
-                    var flagOk: Bool = false;
-                    match t.get("flag") { BoolVal(b) => { flagOk = b; } _ => {} }
-                    var smallOk: Bool = false;
-                    match t.get("small") { Int32Val(n) => { smallOk = n == -42; } _ => {} }
-                    var bigOk: Bool = false;
-                    match t.get("big") { Int64Val(n) => { bigOk = n == 9000000000; } _ => {} }
-                    var nameOk: Bool = false;
-                    match t.get("name") { StrVal(s) => { nameOk = s == "tinox"; } _ => {} }
-                    var whenOk: Bool = false;
-                    match t.get("when") { TimestampVal(ts) => { whenOk = ts == 1700000000; } _ => {} }
-                    var voidOk: Bool = false;
-                    match t.get("nothing") { VoidVal => { voidOk = true; } _ => {} }
+                    var flagOk: Bool = false
+                    match t.get("flag") { BoolVal(b) => { flagOk = b } _ => {} }
+                    var smallOk: Bool = false
+                    match t.get("small") { Int32Val(n) => { smallOk = n == -42 } _ => {} }
+                    var bigOk: Bool = false
+                    match t.get("big") { Int64Val(n) => { bigOk = n == 9000000000 } _ => {} }
+                    var nameOk: Bool = false
+                    match t.get("name") { StrVal(s) => { nameOk = s == "tinox" } _ => {} }
+                    var whenOk: Bool = false
+                    match t.get("when") { TimestampVal(ts) => { whenOk = ts == 1700000000 } _ => {} }
+                    var voidOk: Bool = false
+                    match t.get("nothing") { VoidVal => { voidOk = true } _ => {} }
                     if (flagOk) {
                         if (smallOk) {
                             if (bigOk) {
                                 if (nameOk) {
                                     if (whenOk) {
                                         if (voidOk) {
-                                            println("ok-fieldtable-mixed");
+                                            println("ok-fieldtable-mixed")
                                         }
                                     }
                                 }
@@ -88,20 +88,20 @@ class Main
 
         // --- nested field table (e.g. like "capabilities" in
         // server-properties) ---
-        var inner: Map<String, AmqpFieldValue091> = Map::new();
-        inner.insert("publisher_confirms", AmqpFieldValue091::BoolVal(true));
-        var outer: Map<String, AmqpFieldValue091> = Map::new();
-        outer.insert("capabilities", AmqpFieldValue091::TableVal(inner));
+        var inner: Map<String, AmqpFieldValue091> = Map::new()
+        inner.insert("publisher_confirms", AmqpFieldValue091::BoolVal(true))
+        var outer: Map<String, AmqpFieldValue091> = Map::new()
+        outer.insert("capabilities", AmqpFieldValue091::TableVal(inner))
 
-        const w4 = AmqpWriter091::new();
-        w4.fieldValue(AmqpFieldValue091::TableVal(outer));
-        const r4 = AmqpReader091::new(w4.bytes);
+        const w4 = AmqpWriter091::new()
+        w4.fieldValue(AmqpFieldValue091::TableVal(outer))
+        const r4 = AmqpReader091::new(w4.bytes)
         match r4.fieldValue() {
             TableVal(t) => {
                 match t.get("capabilities") {
                     TableVal(inner2) => {
                         match inner2.get("publisher_confirms") {
-                            BoolVal(b) => { if (b) { println("ok-nested-table"); } }
+                            BoolVal(b) => { if (b) { println("ok-nested-table") } }
                             _ => {}
                         }
                     }
@@ -112,90 +112,90 @@ class Main
         }
 
         // --- field array ---
-        const arr: List<AmqpFieldValue091> = [AmqpFieldValue091::Int32Val(1), AmqpFieldValue091::Int32Val(2), AmqpFieldValue091::StrVal("x")];
-        const w5 = AmqpWriter091::new();
-        w5.fieldValue(AmqpFieldValue091::ArrayVal(arr));
-        const r5 = AmqpReader091::new(w5.bytes);
+        const arr: List<AmqpFieldValue091> = [AmqpFieldValue091::Int32Val(1), AmqpFieldValue091::Int32Val(2), AmqpFieldValue091::StrVal("x")]
+        const w5 = AmqpWriter091::new()
+        w5.fieldValue(AmqpFieldValue091::ArrayVal(arr))
+        const r5 = AmqpReader091::new(w5.bytes)
         match r5.fieldValue() {
             ArrayVal(a) => {
                 if (a.len() == 3) {
-                    println("ok-array");
+                    println("ok-array")
                 }
             }
             _ => {}
         }
 
         // --- unknown type marker: hard ErrorVal instead of guessing ---
-        const badBytes: List<Int64> = [90]; // 'Z', not a known type marker
-        const r6 = AmqpReader091::new(badBytes);
+        const badBytes: List<Int64> = [90] // 'Z', not a known type marker
+        const r6 = AmqpReader091::new(badBytes)
         match r6.fieldValue() {
-            ErrorVal(_msg) => { println("ok-unknown-tag"); }
+            ErrorVal(_msg) => { println("ok-unknown-tag") }
             _ => {}
         }
 
         // --- method frame envelope round trip ---
-        const args: List<Int64> = [1, 2, 3, 4, 5];
-        const payload = Amqp091::encodeMethodPayload(10, 10, args);
-        const mf = Amqp091::decodeMethodPayload(payload);
+        const args: List<Int64> = [1, 2, 3, 4, 5]
+        const payload = Amqp091::encodeMethodPayload(10, 10, args)
+        const mf = Amqp091::decodeMethodPayload(payload)
         if (mf.classId == 10) {
             if (mf.methodId == 10) {
                 if (mf.args.len() == 5) {
                     if (mf.args[4] == 5) {
-                        println("ok-method-envelope");
+                        println("ok-method-envelope")
                     }
                 }
             }
         }
 
         // --- readFrame/writeFrame over a real loopback conn ---
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
 
-        const cfd = socketCreateTcp();
-        socketConnect(cfd, "127.0.0.1", port);
-        const cconn = httpConnFromFd(cfd);
-        const sconn = httpServerAcceptConnHandle(srv);
+        const cfd = socketCreateTcp()
+        socketConnect(cfd, "127.0.0.1", port)
+        const cconn = httpConnFromFd(cfd)
+        const sconn = httpServerAcceptConnHandle(srv)
 
         // Client -> server
-        const framePayload: List<Int64> = [10, 10, 1, 2, 3];
-        Amqp091::writeFrame(cconn, 1, 0, framePayload);
-        const f = Amqp091::readFrame(sconn);
+        const framePayload: List<Int64> = [10, 10, 1, 2, 3]
+        Amqp091::writeFrame(cconn, 1, 0, framePayload)
+        const f = Amqp091::readFrame(sconn)
         if (f.frameType == 1) {
             if (f.chanId == 0) {
                 if (f.payload.len() == 5) {
                     if (f.payload[4] == 3) {
-                        println("ok-frame-roundtrip");
+                        println("ok-frame-roundtrip")
                     }
                 }
             }
         }
 
         // --- protocol error: wrong frame terminator instead of 0xCE ---
-        httpConnWriteBytes(cconn, [1, 0, 0, 0, 0, 0, 1, 42, 0xFF]);
-        const fBad = Amqp091::readFrame(sconn);
+        httpConnWriteBytes(cconn, [1, 0, 0, 0, 0, 0, 1, 42, 0xFF])
+        const fBad = Amqp091::readFrame(sconn)
         if (fBad.frameType == -2) {
-            println("ok-frame-badend");
+            println("ok-frame-badend")
         }
 
         // --- payload cap exceeded (size > 16 MB, no actual read) ---
-        httpConnWriteBytes(cconn, [1, 0, 0, 127, 255, 255, 255]);
-        const fCap = Amqp091::readFrame(sconn);
+        httpConnWriteBytes(cconn, [1, 0, 0, 127, 255, 255, 255])
+        const fCap = Amqp091::readFrame(sconn)
         if (fCap.frameType == -2) {
-            println("ok-frame-cap");
+            println("ok-frame-cap")
         }
 
-        httpConnClose(cconn);
-        const fEof = Amqp091::readFrame(sconn);
+        httpConnClose(cconn)
+        const fEof = Amqp091::readFrame(sconn)
         if (fEof.frameType == -1) {
-            println("ok-frame-eof");
+            println("ok-frame-eof")
         }
 
-        httpConnClose(sconn);
-        httpServerClose(srv);
-        return 0;
+        httpConnClose(sconn)
+        httpServerClose(srv)
+        return 0
     }
 }

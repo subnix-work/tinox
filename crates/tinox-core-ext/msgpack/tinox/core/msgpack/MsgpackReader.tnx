@@ -1,4 +1,4 @@
-module tinox.core.msgpack;
+module tinox.core.msgpack
 
 namespace tinox.core.msgpack
 {
@@ -22,30 +22,30 @@ namespace tinox.core.msgpack
      */
     class MsgpackReader
     {
-        bytes: List<Int64>;
-        pos: Int64;
-        failed: Bool;
+        bytes: List<Int64>
+        pos: Int64
+        failed: Bool
 
         fn new(bytes: List<Int64>) -> MsgpackReader
         {
-            return MsgpackReader { bytes: bytes, pos: 0, failed: false };
+            return MsgpackReader { bytes: bytes, pos: 0, failed: false }
         }
 
         fn remaining() -> Int64
         {
-            return this.bytes.len() - this.pos;
+            return this.bytes.len() - this.pos
         }
 
         fn readByte() -> Int64
         {
             if (this.failed || this.pos >= this.bytes.len())
             {
-                this.failed = true;
-                return 0;
+                this.failed = true
+                return 0
             }
-            const b: Int64 = this.bytes[this.pos];
-            this.pos = this.pos + 1;
-            return b;
+            const b: Int64 = this.bytes[this.pos]
+            this.pos = this.pos + 1
+            return b
         }
 
         // Reads n bytes (n <= 8) big-endian into the low n*8 bits of an
@@ -54,14 +54,14 @@ namespace tinox.core.msgpack
         // or negative) with no separate sign-extension step needed.
         fn readBE(n: Int64) -> Int64
         {
-            var result: Int64 = 0;
-            var i: Int64 = 0;
+            var result: Int64 = 0
+            var i: Int64 = 0
             while i < n
             {
-                result = (result << 8) | this.readByte();
-                i = i + 1;
+                result = (result << 8) | this.readByte()
+                i = i + 1
             }
-            return result;
+            return result
         }
     }
 }

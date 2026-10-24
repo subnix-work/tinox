@@ -1901,6 +1901,73 @@ startup failure, never a silent fallback.
   clients, `taskset`, cgroup fixture trees).
 
 
+## Declarative Schema Changesets (issue #410, since 2026-10-23)
+
+`tinox db <update|status|baseline|validate|update-sql|release-lock>` and
+`[database] migrate_on_startup = true` apply a Liquibase-style YAML changelog
+(`migrations/changelog.yaml`, `changelog = ` overrides). Full user documentation:
+`docs/database-changesets.md`. Architecture worth knowing:
+
+- **Split by what needs a database.** `crates/tinox/src/migrate.rs` (parsing,
+  validation, per-dialect SQL generation, checksums, payload serialization) needs
+  none; the engine that talks to the database is C in `runtime/runtime.c`
+  (`tinox_migrate_run`) and only uses the driver ABI (`tinox_db_*`), so it is
+  identical for sqlite/postgres/mysql. The compiler embeds the already-translated
+  changelog as a constant and calls the engine from `__tinox_db_init` (the
+  `@llvm.global_ctors` entry), right after `tinox_db_pool_init`.
+- **The CLI has no DB driver of its own.** `update`/`status`/`baseline`/`release-lock`
+  compile a stub `class Main` (in `.tinox_db_stub_<pid>/`, removed afterwards) with
+  `TINOX_DB_FORCE_MIGRATE=1` and run it with `TINOX_MIGRATE_MODE=<sub>`.
+- **SQL strings handed to the SQLite driver must outlive the call**: its statement
+  cache stores the `sql` pointer, not a copy. The engine therefore never frees the
+  strings it parses out of the payload.
+- Checksums are over the changeSet's parsed YAML (as JSON), not the generated SQL,
+  so switching the driver does not invalidate history.
+- Verified against real PostgreSQL (docker) and SQLite, including 3 concurrent
+  starters x 5 rounds: `crates/tinox/tests/db_changesets.rs`.
+
+## Newline-Terminated Statements (issue #445, since 2026-10-24)
+
+`;` as a statement terminator is gone. Full user-facing rules: `docs/SPEC.md`
+"Statement Termination". Implementation notes worth knowing:
+
+- **No lexer change, all in `Parser::prepare_tokens` (`tinox-parser/src/
+  parser.rs`).** The lexer still emits `Semicolon` tokens; the parser first
+  computes `nl[i]` ("token i starts a later line than token i-1 AND sits at
+  block level, i.e. not inside `( )`/`[ ]`") from the token spans, and drops +
+  reports every `;` that is not a `for ( ... )` header separator. `end_stmt()`
+  replaces the old `expect(Semicolon)`: ok at `;` (for header), `}`, EOF or a
+  token with `nl[i]`; a `nl` token that is `(`/`[`/`-`/`+` is the hard
+  "ambiguous" error; anything else is "expected end of line".
+- **Continuation is the parser's job, not a lexical guess.** A lexical
+  "line ends with an operator" rule is wrong because `>` closes a generic
+  (`List<Int64>` at a line end) and `?` is a nullable suffix. Instead the
+  binary/ternary/`as` loops use `check_cont` (false for a token on a fresh
+  line) and the postfix loop breaks on a fresh line unless it starts with `.`;
+  an operator at the END of a line continues naturally because the
+  right-hand operand parse skips the newline.
+- The lexer's token `start.line` used to be the line at the token's END
+  (wrong for multi-line strings); it is now the real start line
+  (`start_line`), which the newline logic depends on.
+- Bare `return` ends at its line (`return` + newline + expression returns
+  nothing). An abstract `fn f() -> T` (interface/trait) ends at its line; a
+  `{` on the next line is still its body (Allman stays legal).
+- **Migration tool: `tinox migrate-semicolons`** (`crates/tinox/src/
+  semicolon_migration.rs`). It works on old-syntax token streams and also moves
+  a line-leading binary operator to the end of the previous line. `--rust`
+  rewrites Tinox inside Rust string literals (decodes escapes, understands
+  `concat!`), `--md` fenced code blocks. Its heuristics (literal lexes, has a
+  keyword and a `;`) produce false positives on prose error messages and
+  non-Tinox code, so production `src/` code is only touched below
+  `#[cfg(test)]`; templates that emit Tinox from production code were fixed by
+  hand. Never re-run `--rust` over `semicolon_migration.rs`,
+  `tinox-lexer` or the `newline_termination_tests` (their inputs are
+  deliberately old-syntax; the tool skips them).
+- Published extended-tier packages still contain `;` sources and fail to parse
+  until they are migrated, version-bumped and republished (see the
+  per-version doc rule above); the workspace/override test lanes use the
+  migrated in-tree sources.
+
 ## Shared Application State (issue #303)
 
 - Application/startup DI providers serialize construction and publication with

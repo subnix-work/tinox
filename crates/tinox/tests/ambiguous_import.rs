@@ -17,7 +17,7 @@ fn write_dep_util(project: &Path, group: &str, artifact: &str, greeting: &str) {
     std::fs::create_dir_all(&dir).expect("mkdir dep dir");
     std::fs::write(
         dir.join("Util.tnx"),
-        format!("class Util {{\n    fnc greet() -> String {{ return \"{greeting}\"; }}\n}}\n"),
+        format!("class Util {{\n    fnc greet() -> String {{ return \"{greeting}\" }}\n}}\n"),
     )
     .expect("write Util.tnx");
 }
@@ -33,7 +33,7 @@ fn setup_project(name: &str, deps_toml: &str) -> std::path::PathBuf {
     .expect("write tinox.toml");
     std::fs::write(
         workdir.join("src/Main.tnx"),
-        "import Util;\nclass Main {\n    fnc main() -> Int32 {\n        println(Util::greet());\n        return 0;\n    }\n}\n",
+        "import Util\nclass Main {\n    fnc main() -> Int32 {\n        println(Util::greet())\n        return 0\n    }\n}\n",
     )
     .expect("write Main.tnx");
     workdir

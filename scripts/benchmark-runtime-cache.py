@@ -33,7 +33,7 @@ def main():
     }
     with tempfile.TemporaryDirectory(prefix="tinox-runtime-benchmark-") as temporary:
         root = Path(temporary)
-        (root / "Main.tnx").write_text('class Main { fnc main() -> Int32 { println("42"); return 0; } }\n')
+        (root / "Main.tnx").write_text('class Main {\nfnc main() -> Int32 {\nprintln("42")\nreturn 0\n}\n}\n')
         env = os.environ.copy()
         env["TINOX_BUILD_CACHE"] = "0"
         env["TINOX_RUNTIME_CACHE_DIR"] = str(root / "cache")

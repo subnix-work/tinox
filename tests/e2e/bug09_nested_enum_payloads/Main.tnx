@@ -3,33 +3,33 @@
 // expect: acc
 // expect: a
 // expect: b
-import bug09_nested_enum_payloads;
+import bug09_nested_enum_payloads
 
 class Main
 {
     fnc main() -> Int32 {
         const f = bug09_nested_enum_payloads::Reduce(bug09_nested_enum_payloads::Identity, "acc", bug09_nested_enum_payloads::Identity,
-            bug09_nested_enum_payloads::Pipe(bug09_nested_enum_payloads::FieldAccess("a"), bug09_nested_enum_payloads::FieldAccess("b")));
+            bug09_nested_enum_payloads::Pipe(bug09_nested_enum_payloads::FieldAccess("a"), bug09_nested_enum_payloads::FieldAccess("b")))
         match f {
             Reduce(gen, v, init, body) => {
-                println("reduce");
-                println(v);
+                println("reduce")
+                println(v)
                 match body {
                     Pipe(l, r) => {
                         match l {
-                            FieldAccess(n1) => println(n1);
-                            _ => println("-");
+                            FieldAccess(n1) => println(n1)
+                            _ => println("-")
                         }
                         match r {
-                            FieldAccess(n2) => println(n2);
-                            _ => println("-");
+                            FieldAccess(n2) => println(n2)
+                            _ => println("-")
                         }
                     }
-                    _ => println("-");
+                    _ => println("-")
                 }
             }
-            _ => println("-");
+            _ => println("-")
         }
-        return 0;
+        return 0
     }
 }

@@ -24,7 +24,7 @@
  *   httpServerClose(fd)              — existing native, closes listener
  *   fromCharCode(code)               — existing native, Int64 → single-char String
  */
-module tinox.core.http2_server;
+module tinox.core.http2_server
 
 namespace tinox.core.http2_server
 {
@@ -34,15 +34,15 @@ namespace tinox.core.http2_server
 
     class Http2FrameType
     {
-        fn DATA()          -> Int64 { return 0x0; }
-        fn HEADERS()       -> Int64 { return 0x1; }
-        fn PRIORITY()      -> Int64 { return 0x2; }
-        fn RST_STREAM()    -> Int64 { return 0x3; }
-        fn SETTINGS()      -> Int64 { return 0x4; }
-        fn PUSH_PROMISE()  -> Int64 { return 0x5; }
-        fn PING()          -> Int64 { return 0x6; }
-        fn GOAWAY()        -> Int64 { return 0x7; }
-        fn WINDOW_UPDATE() -> Int64 { return 0x8; }
-        fn CONTINUATION()  -> Int64 { return 0x9; }
+        fn DATA()          -> Int64 { return 0x0 }
+        fn HEADERS()       -> Int64 { return 0x1 }
+        fn PRIORITY()      -> Int64 { return 0x2 }
+        fn RST_STREAM()    -> Int64 { return 0x3 }
+        fn SETTINGS()      -> Int64 { return 0x4 }
+        fn PUSH_PROMISE()  -> Int64 { return 0x5 }
+        fn PING()          -> Int64 { return 0x6 }
+        fn GOAWAY()        -> Int64 { return 0x7 }
+        fn WINDOW_UPDATE() -> Int64 { return 0x8 }
+        fn CONTINUATION()  -> Int64 { return 0x9 }
     }
 }

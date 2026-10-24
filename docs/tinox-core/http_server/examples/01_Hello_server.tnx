@@ -1,18 +1,18 @@
-import tinox.core.http_server;
+import tinox.core.http_server
 
 class Main
 {
     fnc main() -> Int32
     {
-        const server: HttpServer = HttpServer::new(8080);
+        const server: HttpServer = HttpServer::new(8080)
         server.get("/hello", ctx => {
-            ctx.response.text("Hello, World!");
-        });
+            ctx.response.text("Hello, World!")
+        })
         server.get("/users/:id", ctx => {
-            const id: String = ctx.request.getParam("id");
-            ctx.response.json("{\"id\": \"" + id + "\"}");
-        });
-        server.listen();
-        return 0;
+            const id: String = ctx.request.getParam("id")
+            ctx.response.json("{\"id\": \"" + id + "\"}")
+        })
+        server.listen()
+        return 0
     }
 }

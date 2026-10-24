@@ -52,7 +52,7 @@ fn source_reference_preserves_generic_signatures_and_fails_on_invalid_source() {
     let source = dir.join("Box.tnx");
     std::fs::write(
         &source,
-        "class Box<T> { fn identity(value: T) -> T { return value; } }",
+        "class Box<T> { fn identity(value: T) -> T { return value } }",
     )
     .unwrap();
     let output = export(&[source.to_str().unwrap()]);

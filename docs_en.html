@@ -727,8 +727,8 @@
       Quarkus – without JVM overhead, garbage collector pauses, or high memory usage.
     </div>
 
-    <pre><code><span class="kw">import</span> tinox.core.http_server;
-<span class="kw">import</span> tinox.core.json;
+    <pre><code><span class="kw">import</span> tinox.core.http_server
+<span class="kw">import</span> tinox.core.json
 
 <span class="kw">class</span> <span class="type">SortController</span>
 {
@@ -738,9 +738,9 @@
     <span class="ann">@Produces</span>(<span class="type">MediaType</span>.APPLICATION_JSON)
     <span class="kw">fn</span> <span class="fn">sort</span>(ctx: <span class="type">HttpContext</span>) -> <span class="type">Nothing</span>
     {
-        <span class="kw">const</span> root: <span class="type">JsonValue</span> = <span class="type">Json</span>.<span class="fn">parse</span>(ctx.request.body);
-        <span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = <span class="type">Json</span>.<span class="fn">intArrayFromJson</span>(root.<span class="fn">getField</span>(<span class="str">"numbers"</span>));
-        ctx.response.body = <span class="type">Json</span>.<span class="fn">intArrayWrap</span>(<span class="str">"sorted"</span>, numbers.<span class="fn">sort</span>());
+        <span class="kw">const</span> root: <span class="type">JsonValue</span> = <span class="type">Json</span>.<span class="fn">parse</span>(ctx.request.body)
+        <span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = <span class="type">Json</span>.<span class="fn">intArrayFromJson</span>(root.<span class="fn">getField</span>(<span class="str">"numbers"</span>))
+        ctx.response.body = <span class="type">Json</span>.<span class="fn">intArrayWrap</span>(<span class="str">"sorted"</span>, numbers.<span class="fn">sort</span>())
     }
 }</code></pre>
     <p>
@@ -816,6 +816,27 @@
         Full parallelism on multiple CPU cores.</p>
       </div>
     </div>
+
+    <h3>Statement Termination</h3>
+    <p>A statement ends at the end of its line &ndash; there is no statement
+      terminator. A <code>;</code> that terminates a statement is a hard compile error
+      (&ldquo;semicolons were removed&rdquo;), and several statements cannot share a line.
+      The only remaining <code>;</code> separates the parts of a C-style
+      <code>for (init; cond; update)</code> header.</p>
+    <p>A statement continues on the next line only if the line ends with a binary
+      operator, a comma or an opening bracket, or if the next line starts with
+      <code>.</code> (method chains). Inside <code>( )</code> and <code>[ ]</code>
+      newlines are plain whitespace. A line starting with <code>(</code>,
+      <code>[</code>, <code>-</code> or <code>+</code> directly after a complete
+      expression is a hard error &ndash; the compiler never guesses whether it continues
+      the previous line. Enum variants are written one per line.</p>
+    <pre><code><span class="kw">const</span> total = first +
+    second +
+    third
+
+<span class="kw">const</span> name = user
+    .<span class="fn">profile</span>()
+    .<span class="fn">displayName</span>()</code></pre>
   </section>
 
   <!-- ══════════════════════════════════════ -->
@@ -1032,11 +1053,11 @@
       Keep tasks inside their owner; return the awaited value instead of a task.</p>
     <pre><code>try {
     scope {
-        taskSetDeadline(250); // Duration from now, in monotonic milliseconds.
-        const task: Task&lt;String&gt; = spawn Main::load();
-        println(await task);
+        taskSetDeadline(250) // Duration from now, in monotonic milliseconds.
+        const task: Task&lt;String&gt; = spawn Main::load()
+        println(await task)
     }
-} catch (e: String) { println(e); }</code></pre>
+} catch (e: String) { println(e) }</code></pre>
     <table>
       <thead><tr><th>Operation</th><th>Contract</th></tr></thead>
       <tbody>
@@ -1084,16 +1105,16 @@ class Resources {
     @OnStart
     fn start() -&gt; Nothing { /* Initialize resources before listeners start. */ }
     @Readiness
-    fn ready() -&gt; Bool { return true; }
+    fn ready() -&gt; Bool { return true }
     @Liveness
-    fn live() -&gt; Bool { return true; }
+    fn live() -&gt; Bool { return true }
     @OnStop
     fn stop() -&gt; Nothing { /* Dispose resources after callbacks and tasks finish. */ }
 }
 
 @Service(30000, 5000)
 class Main {
-    fnc main() -&gt; Int32 { return 0; }
+    fnc main() -&gt; Int32 { return 0 }
 }</code></pre>
     <p>Import the component and annotated controllers/endpoints from the entry file.
       Hooks are synchronous instance methods without parameters, on non-generic
@@ -1157,18 +1178,18 @@ class Main {
     <pre><code>@ApplicationComponent
 @Synchronized
 class Counter {
-    private var value: Int64 = 0;
+    private var value: Int64 = 0
     fn increment() -&gt; Int64 {
-        this.value = this.value + 1;
-        return this.value;
+        this.value = this.value + 1
+        return this.value
     }
 }
 
 @HttpRequestScoped
 class Api {
-    @Inject var counter: Counter;
+    @Inject var counter: Counter
     @GET @Path("/count")
-    fn count() -&gt; Int64 { return this.counter.increment(); }
+    fn count() -&gt; Int64 { return this.counter.increment() }
 }</code></pre>
     <p><code>@Synchronized</code> on a non-generic application/startup class protects
       all instance methods; on an instance method it protects only that method. There
@@ -1225,11 +1246,11 @@ class Api {
     </table>
 
     <h3>Composite Types</h3>
-    <pre><code><span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>];                 <span class="cmt">// Array</span>
-<span class="kw">const</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>};  <span class="cmt">// Map/Dictionary</span>
-<span class="kw">const</span> pair: (<span class="type">Int32</span>, <span class="type">String</span>) = (<span class="num">42</span>, <span class="str">"hello"</span>);           <span class="cmt">// Tuple</span>
-<span class="kw">const</span> name: <span class="type">String</span>? = <span class="kw">null</span>;                             <span class="cmt">// Nullable</span>
-<span class="kw">const</span> fn add: <span class="kw">fn</span>(<span class="type">Int32</span>, <span class="type">Int32</span>) -> <span class="type">Int32</span> = |a, b| a + b; <span class="cmt">// Function type</span></code></pre>
+    <pre><code><span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]                 <span class="cmt">// Array</span>
+<span class="kw">const</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>}  <span class="cmt">// Map/Dictionary</span>
+<span class="kw">const</span> pair: (<span class="type">Int32</span>, <span class="type">String</span>) = (<span class="num">42</span>, <span class="str">"hello"</span>)           <span class="cmt">// Tuple</span>
+<span class="kw">const</span> name: <span class="type">String</span>? = <span class="kw">null</span>                             <span class="cmt">// Nullable</span>
+<span class="kw">const</span> fn add: <span class="kw">fn</span>(<span class="type">Int32</span>, <span class="type">Int32</span>) -> <span class="type">Int32</span> = |a, b| a + b <span class="cmt">// Function type</span></code></pre>
 
     <h3>Generics</h3>
     <p>
@@ -1239,13 +1260,13 @@ class Api {
     </p>
     <pre><code><span class="kw">fn</span> <span class="fn">max</span>&lt;<span class="type">T</span>&gt;(a: <span class="type">T</span>, b: <span class="type">T</span>) -> <span class="type">T</span>
 {
-    <span class="kw">if</span> a > b { <span class="kw">return</span> a; }
-    <span class="kw">return</span> b;
+    <span class="kw">if</span> a > b { <span class="kw">return</span> a }
+    <span class="kw">return</span> b
 }
 
 <span class="kw">class</span> <span class="type">Box</span>&lt;<span class="type">T</span>&gt;
 {
-    <span class="kw">var</span> value: <span class="type">T</span>;
+    <span class="kw">var</span> value: <span class="type">T</span>
 }</code></pre>
   </section>
 
@@ -1261,17 +1282,17 @@ class Api {
     <h3>Classes</h3>
     <pre><code><span class="kw">class</span> <span class="type">Animal</span>
 {
-    <span class="kw">var</span> name: <span class="type">String</span>;
-    <span class="kw">var</span> age:  <span class="type">Int32</span>;
+    <span class="kw">var</span> name: <span class="type">String</span>
+    <span class="kw">var</span> age:  <span class="type">Int32</span>
 
     <span class="kw">fn</span> <span class="fn">speak</span>() -> <span class="type">String</span>        <span class="cmt">// instance method</span>
     {
-        <span class="kw">return</span> <span class="str">"..."</span>;
+        <span class="kw">return</span> <span class="str">"..."</span>
     }
 
     <span class="kw">fnc</span> <span class="fn">create</span>(name: <span class="type">String</span>) -> <span class="type">Animal</span>  <span class="cmt">// static method (fnc)</span>
     {
-        <span class="kw">return</span> <span class="type">Animal</span> { name: name, age: <span class="num">0</span> };
+        <span class="kw">return</span> <span class="type">Animal</span> { name: name, age: <span class="num">0</span> }
     }
 }
 
@@ -1279,23 +1300,23 @@ class Api {
 {
     <span class="kw">fn</span> <span class="fn">speak</span>() -> <span class="type">String</span>
     {
-        <span class="kw">return</span> <span class="str">"Woof!"</span>;
+        <span class="kw">return</span> <span class="str">"Woof!"</span>
     }
 }</code></pre>
 
     <h3>Interfaces &amp; Polymorphism</h3>
     <pre><code><span class="kw">interface</span> <span class="type">Serializable</span>
 {
-    <span class="kw">fn</span> <span class="fn">serialize</span>() -> <span class="type">String</span>;
+    <span class="kw">fn</span> <span class="fn">serialize</span>() -> <span class="type">String</span>
 }
 
 <span class="kw">class</span> <span class="type">User</span> <span class="kw">implements</span> <span class="type">Serializable</span>
 {
-    <span class="kw">var</span> name: <span class="type">String</span>;
+    <span class="kw">var</span> name: <span class="type">String</span>
 
     <span class="kw">fn</span> <span class="fn">serialize</span>() -> <span class="type">String</span>
     {
-        <span class="kw">return</span> <span class="str">"User:"</span> + this.name;
+        <span class="kw">return</span> <span class="str">"User:"</span> + this.name
     }
 }</code></pre>
     <p>
@@ -1388,7 +1409,7 @@ class Api {
 <span class="kw">fn</span> <span class="fn">getUserOrNotFound</span>(<span class="ann">@PathParam</span> id: <span class="type">Int64</span>, <span class="ann">@HttpContext</span> ctx: <span class="type">HttpContext</span>) -> <span class="type">HttpContext</span>
 {
     <span class="cmt">// ... ctx.response.status(404).json(...) or ctx.response.json(...)</span>
-    <span class="kw">return</span> ctx;
+    <span class="kw">return</span> ctx
 }</code></pre>
 
     <h4>Migrating from the old REST API</h4>
@@ -1417,7 +1438,7 @@ class Api {
           sometimes and 404 other times) can't be expressed with a fixed return
           type — manual mode stays available for that: <code>@HttpContext ctx:
           HttpContext</code> as a parameter, <code>-&gt; HttpContext</code> as the
-          return type, ending in <code>return ctx;</code>.</td>
+          return type, ending in <code>return ctx</code>.</td>
         </tr>
       </tbody>
     </table>
@@ -1426,16 +1447,16 @@ class Api {
     <pre><code><span class="ann">@JsonSerializable</span>
 <span class="kw">class</span> <span class="type">User</span>
 {
-    <span class="kw">var</span> id:   <span class="type">Int64</span>;
+    <span class="kw">var</span> id:   <span class="type">Int64</span>
 
     <span class="ann">@JsonField</span>(<span class="str">"first_name"</span>)   <span class="cmt">// Overrides the JSON key</span>
-    <span class="kw">var</span> firstName: <span class="type">String</span>;
+    <span class="kw">var</span> firstName: <span class="type">String</span>
 
     <span class="ann">@Sensitive</span>              <span class="cmt">// Output as "***" in logs</span>
-    <span class="kw">var</span> password: <span class="type">String</span>;
+    <span class="kw">var</span> password: <span class="type">String</span>
 
     <span class="ann">@DoNotSerialize</span>         <span class="cmt">// Excluded from JSON</span>
-    <span class="kw">var</span> internalToken: <span class="type">String</span>;
+    <span class="kw">var</span> internalToken: <span class="type">String</span>
 }</code></pre>
 
     <h3>All Built-in Annotations</h3>
@@ -1488,7 +1509,7 @@ class Api {
     <h2>Standard Library (tinox-core)</h2>
     <p>
       The standard library consists of over 55 modules written in Tinox itself.
-      Import: <code>import tinox.core.&lt;module&gt;;</code>
+      Import: <code>import tinox.core.&lt;module&gt;</code>
     </p>
 
     <div class="card-grid">
@@ -1754,15 +1775,15 @@ Lex → Parse → Typecheck → Responses to editor</code></pre>
       – in a single system call.
     </p>
     <pre><code><span class="cmt">// Concept (simplified):</span>
-epoll_fd = epoll_create1(0);
+epoll_fd = epoll_create1(0)
 <span class="cmt">// Register all active connections...</span>
 <span class="kw">while</span> (true)
 {
-    events = epoll_wait(epoll_fd, max_events, <span class="num">50</span>); <span class="cmt">// 50ms Timeout</span>
+    events = epoll_wait(epoll_fd, max_events, <span class="num">50</span>) <span class="cmt">// 50ms Timeout</span>
     <span class="kw">for</span> event <span class="kw">in</span> events
     {
-        <span class="kw">if</span> event.fd == server_socket { accept(); }
-        <span class="kw">else</span> { handle_request(event.fd); }
+        <span class="kw">if</span> event.fd == server_socket { accept() }
+        <span class="kw">else</span> { handle_request(event.fd) }
     }
 }</code></pre>
 
@@ -2636,13 +2657,13 @@ epoll_fd = epoll_create1(0);
 @Table("users")
 class User {
     @Id @GeneratedValue
-    var id: Int64;
+    var id: Int64
     @Column("name")
-    var name: String;
+    var name: String
     @Column("age")
-    var age: Int64;
+    var age: Int64
     @Column("active")
-    var active: Bool;
+    var active: Bool
 }</code></pre></div>
 
   <h3>tinox.toml – [database] Configuration</h3>
@@ -2668,17 +2689,17 @@ const adults: List&lt;User&gt; = DB::of(User)
     .filter(u -&gt; u.age &gt; 18)
     .orderBy(u -&gt; u.name)
     .limit(10)
-    .list();
+    .list()
 
 // Read a single user
 const alice: User = DB::of(User)
     .filter(u -&gt; u.name == "Alice")
-    .first();
+    .first()
 
 // Count active users
 const n: Int64 = DB::of(User)
     .filter(u -&gt; u.active == true)
-    .count();</code></pre></div>
+    .count()</code></pre></div>
 
   <h3>Lambda → SQL Translation Table</h3>
   <div class="card">
@@ -2698,19 +2719,19 @@ const n: Int64 = DB::of(User)
 
   <h3>Save, Update, Delete</h3>
   <div class="card"><pre><code>// INSERT (ID assigned by the DB)
-const user: User = User {};
-user.name = "Alice";
-user.age  = 30;
-const saved: User = DB::of(User).save(user);
+const user: User = User {}
+user.name = "Alice"
+user.age  = 30
+const saved: User = DB::of(User).save(user)
 
 // DELETE
-DB::of(User).delete(saved);
+DB::of(User).delete(saved)
 
 // Save multiple entities
-const list: List&lt;User&gt; = List::new();
-list.add(user1);
-list.add(user2);
-DB::of(User).saveAll(list);</code></pre></div>
+const list: List&lt;User&gt; = List::new()
+list.add(user1)
+list.add(user2)
+DB::of(User).saveAll(list)</code></pre></div>
 
   <h3>Error Handling</h3>
   <p>Database errors are currently logged to stderr. Integration with try/catch is planned for a future release. Connection errors at startup terminate the program with a descriptive message.</p>

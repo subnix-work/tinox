@@ -1,14 +1,14 @@
 @ApplicationComponent
 @Synchronized
 class State {
- private var enabled: Bool = false;
+ private var enabled: Bool = false
  @OnStart
- fn start() -> Nothing { println("init"); }
+ fn start() -> Nothing { println("init") }
  @OnStop
- fn stop() -> Nothing { println("stop"); }
+ fn stop() -> Nothing { println("stop") }
  @Readiness
- fn ready() -> Bool { return this.enabled; }
+ fn ready() -> Bool { return this.enabled }
  @Liveness
- fn live() -> Bool { return true; }
- fn enable() -> Nothing { this.enabled = true; }
+ fn live() -> Bool { return true }
+ fn enable() -> Nothing { this.enabled = true }
 }

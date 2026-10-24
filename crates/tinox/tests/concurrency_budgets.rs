@@ -88,23 +88,23 @@ fn http_fixture(name: &str) -> (PathBuf, PathBuf, u16) {
     let dir = workdir(name);
     std::fs::write(
         dir.join("Ctrl.tnx"),
-        r#"import tinox.core.http_server;
+        r#"import tinox.core.http_server
 
 class Ctrl
 {
     @GET("/fast")
     fnc fast(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        ctx.response.status(200).json("{\"ok\":true}");
-        return ctx;
+        ctx.response.status(200).json("{\"ok\":true}")
+        return ctx
     }
 
     @GET("/slow")
     fnc slow(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        sleep_ms(200);
-        ctx.response.status(200).json("{\"ok\":true}");
-        return ctx;
+        sleep_ms(200)
+        ctx.response.status(200).json("{\"ok\":true}")
+        return ctx
     }
 }
 "#,
@@ -112,7 +112,7 @@ class Ctrl
     .unwrap();
     std::fs::write(
         dir.join("Main.tnx"),
-        "import Ctrl;\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        return 0;\n    }\n}\n",
+        "import Ctrl\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        return 0\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
@@ -247,6 +247,68 @@ fn curl_status(port: u16, path: &str) -> (String, String) {
     (status, text)
 }
 
+/// Socket inodes held open by `pid` (from `/proc/<pid>/fd`).
+fn socket_inodes_of(pid: u32) -> std::collections::HashSet<u64> {
+    let mut set = std::collections::HashSet::new();
+    if let Ok(rd) = std::fs::read_dir(format!("/proc/{pid}/fd")) {
+        for e in rd.flatten() {
+            if let Ok(t) = std::fs::read_link(e.path()) {
+                let t = t.to_string_lossy().into_owned();
+                if let Some(n) = t.strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')) {
+                    if let Ok(n) = n.parse() {
+                        set.insert(n);
+                    }
+                }
+            }
+        }
+    }
+    set
+}
+
+/// `(state, inode)` of every IPv4/IPv6 TCP socket whose LOCAL port is `port`,
+/// read from `/proc/net/tcp{,6}` -- an independent view of the kernel's
+/// socket table, not of the server's own bookkeeping.
+fn tcp_sockets_on_port(port: u16) -> Vec<(String, u64)> {
+    let mut rows = Vec::new();
+    for file in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 10 {
+                continue;
+            }
+            let local_port = f[1].rsplit(':').next().and_then(|p| u16::from_str_radix(p, 16).ok());
+            if local_port == Some(port) {
+                if let Ok(inode) = f[9].parse() {
+                    rows.push((f[3].to_string(), inode));
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// Listening sockets on `port` that the server process `pid` does not own.
+/// With `SO_REUSEPORT` a foreign listener on the same port silently joins
+/// the server's accept group and steals connections (#442).
+fn foreign_listeners(pid: u32, port: u16) -> Vec<u64> {
+    let mine = socket_inodes_of(pid);
+    tcp_sockets_on_port(port)
+        .into_iter()
+        .filter(|(st, ino)| st == "0A" && !mine.contains(ino))
+        .map(|(_, ino)| ino)
+        .collect()
+}
+
+/// Established connections on `port` that the server `pid` has accepted.
+fn accepted_by_server(pid: u32, port: u16) -> usize {
+    let mine = socket_inodes_of(pid);
+    tcp_sockets_on_port(port)
+        .into_iter()
+        .filter(|(st, ino)| st == "01" && mine.contains(ino))
+        .count()
+}
+
 #[test]
 fn http_overload_is_rejected_with_503_and_server_recovers() {
     let (dir, exe, port) = http_fixture("http-overload");
@@ -257,18 +319,46 @@ fn http_overload_is_rejected_with_503_and_server_recovers() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn server");
+    let pid = child.id();
     let _guard = KillOnDrop(child);
     std::thread::sleep(Duration::from_millis(600));
+
+    // The port was reserved by free_port() before the build, so another
+    // process could have bound it since. Then idle connections would be
+    // spread over foreign listeners and the budget never fills (#442).
+    let foreign = foreign_listeners(pid, port);
+    assert!(foreign.is_empty(), "port {port} is shared with listeners the server does not own (socket inodes {foreign:?}); fixture port was taken by another process");
 
     // Healthy before any load.
     let (status, _) = curl_status(port, "/fast");
     assert!(status.contains("200"), "baseline request failed: {status}");
 
+    // The baseline curl has exited, but the server only frees its budget slot
+    // once a worker has processed the EOF. Saturating before that makes the
+    // third idle connection get rejected at accept (the stale slot still
+    // counts), leaving the budget one short once the slot is freed -- the
+    // next probe then gets 200 instead of 503 (#442). Wait until the kernel
+    // shows no connection left on the port, only listeners.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while tcp_sockets_on_port(port).iter().any(|(st, _)| st != "0A" && st != "06") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let leftover: Vec<_> = tcp_sockets_on_port(port).into_iter().filter(|(st, _)| st != "0A" && st != "06").collect();
+    assert!(leftover.is_empty(), "baseline connection still open after 10s: {leftover:?}");
+
     // Saturate the budget with idle connections the server has accepted.
     let idle: Vec<TcpStream> = (0..3)
         .map(|_| TcpStream::connect(("127.0.0.1", port)).expect("connect idle"))
         .collect();
-    std::thread::sleep(Duration::from_millis(300));
+    // Wait until the server has really accepted all three; a fixed sleep
+    // races with worker scheduling on a loaded machine.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut accepted = accepted_by_server(pid, port);
+    while accepted < 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        accepted = accepted_by_server(pid, port);
+    }
+    assert!(accepted >= 3, "server accepted only {accepted} of 3 idle connections within 10s; sockets on port {port}: {:?}", tcp_sockets_on_port(port));
 
     // The next client is turned away visibly, and distinguishably.
     let (status, text) = curl_status(port, "/fast");
@@ -319,25 +409,31 @@ fn spawn_over_task_budget_rejects_instead_of_growing_threads() {
     std::fs::write(
         dir.join("Main.tnx"),
         r#"class Main {
-    async fnc hold(n: Int64) -> Int64 { sleep_ms(300); return n; }
+    async fnc hold(n: Int64) -> Int64 { sleep_ms(300)
+    return n }
 
     fnc main() -> Int32 {
-        var ok = 0;
-        var rejected = 0;
-        const t1 = spawn Main::hold(1);
-        const t2 = spawn Main::hold(2);
-        const t3 = spawn Main::hold(3);
-        const t4 = spawn Main::hold(4);
-        try { await t1; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t2; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t3; ok = ok + 1; } catch (e: String) { println(e); rejected = rejected + 1; }
-        try { await t4; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        println("ok=" + ok.toString() + " rejected=" + rejected.toString());
+        var ok = 0
+        var rejected = 0
+        const t1 = spawn Main::hold(1)
+        const t2 = spawn Main::hold(2)
+        const t3 = spawn Main::hold(3)
+        const t4 = spawn Main::hold(4)
+        try { await t1
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t2
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t3
+        ok = ok + 1 } catch (e: String) { println(e)
+        rejected = rejected + 1 }
+        try { await t4
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        println("ok=" + ok.toString() + " rejected=" + rejected.toString())
 
         // Budget is released once the running tasks finish: healthy again.
-        const t5 = spawn Main::hold(5);
-        println("after=" + (await t5).toString());
-        return 0;
+        const t5 = spawn Main::hold(5)
+        println("after=" + (await t5).toString())
+        return 0
     }
 }
 "#,
@@ -420,21 +516,26 @@ fn queued_spawn_waits_for_a_slot_within_the_deadline() {
     std::fs::write(
         dir.join("Main.tnx"),
         r#"class Main {
-    async fnc hold(n: Int64) -> Int64 { sleep_ms(300); return n; }
+    async fnc hold(n: Int64) -> Int64 { sleep_ms(300)
+    return n }
 
     fnc main() -> Int32 {
-        var ok = 0;
-        var rejected = 0;
-        const t1 = spawn Main::hold(1);
-        const t2 = spawn Main::hold(2);
-        const t3 = spawn Main::hold(3);
-        const t4 = spawn Main::hold(4);
-        try { await t1; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t2; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t3; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        try { await t4; ok = ok + 1; } catch (e: String) { rejected = rejected + 1; }
-        println("ok=" + ok.toString() + " rejected=" + rejected.toString());
-        return 0;
+        var ok = 0
+        var rejected = 0
+        const t1 = spawn Main::hold(1)
+        const t2 = spawn Main::hold(2)
+        const t3 = spawn Main::hold(3)
+        const t4 = spawn Main::hold(4)
+        try { await t1
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t2
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t3
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        try { await t4
+        ok = ok + 1 } catch (e: String) { rejected = rejected + 1 }
+        println("ok=" + ok.toString() + " rejected=" + rejected.toString())
+        return 0
     }
 }
 "#,

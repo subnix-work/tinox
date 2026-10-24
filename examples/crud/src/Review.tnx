@@ -1,4 +1,4 @@
-import tinox.core.json;
+import tinox.core.json
 
 @Entity
 @Table("reviews")
@@ -7,20 +7,20 @@ class Review
 {
     @Id
     @GeneratedValue
-    var id: Int64;
+    var id: Int64
 
     @Column("product_id")
     @NotNull
-    var productId: Int64;
+    var productId: Int64
 
     @Column("customer_id")
     @NotNull
-    var customerId: Int64;
+    var customerId: Int64
 
     @Column("rating")
     @NotNull
-    var rating: Int64;
+    var rating: Int64
 
     @Column("comment")
-    var comment: String;
+    var comment: String
 }

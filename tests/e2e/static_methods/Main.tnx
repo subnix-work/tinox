@@ -1,14 +1,14 @@
 // expect: 25
 // expect: 27
 
-import static_methods;
+import static_methods
 
 class Main
 {
     fnc main() -> Int32
     {
-        println(static_methods::square(5));
-        println(static_methods::cube(3));
-        return 0;
+        println(static_methods::square(5))
+        println(static_methods::cube(3))
+        return 0
     }
 }

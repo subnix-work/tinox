@@ -1,4 +1,4 @@
-module tinox.core.semaphore;
+module tinox.core.semaphore
 
 namespace tinox.core.semaphore
 {
@@ -15,26 +15,26 @@ namespace tinox.core.semaphore
      */
     class Semaphore
     {
-        var handle: Int64;
+        var handle: Int64
 
         fn new(count: Int64) -> Semaphore
         {
-            return Semaphore { handle: semaphoreNew(count) };
+            return Semaphore { handle: semaphoreNew(count) }
         }
 
         fn acquire(sem: Semaphore) -> Nothing
         {
-            semaphoreAcquire(sem.handle);
+            semaphoreAcquire(sem.handle)
         }
 
         fn release(sem: Semaphore) -> Nothing
         {
-            semaphoreRelease(sem.handle);
+            semaphoreRelease(sem.handle)
         }
 
         fn tryAcquire(sem: Semaphore) -> Bool
         {
-            return semaphoreTryAcquire(sem.handle) != 0;
+            return semaphoreTryAcquire(sem.handle) != 0
         }
     }
 }

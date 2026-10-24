@@ -35,12 +35,12 @@ fn write_localdemo(dir: &Path, greeting: &str) {
     std::fs::write(dir.join("tinox.toml"), "[package]\nname = \"localdemo\"\nversion = \"9.9.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n").expect("pkg toml");
     std::fs::write(
         src.join("Greeter.tnx"),
-        format!("class Greeter {{\n    fn greet() -> String {{ return \"{greeting}\"; }}\n}}\n"),
+        format!("class Greeter {{\n    fn greet() -> String {{ return \"{greeting}\" }}\n}}\n"),
     )
     .expect("Greeter.tnx");
 }
 
-const MAIN: &str = "import tinox.core.localdemo;\nclass Main {\n    fnc main() -> Int32 {\n        println(Greeter::greet());\n        return 0;\n    }\n}\n";
+const MAIN: &str = "import tinox.core.localdemo\nclass Main {\n    fnc main() -> Int32 {\n        println(Greeter::greet())\n        return 0\n    }\n}\n";
 
 fn project(name: &str, extra_toml: &str) -> PathBuf {
     let p = fresh_dir(name);
@@ -173,7 +173,7 @@ fn workspace_crypto_resolves_from_the_checkout() {
     .unwrap();
     std::fs::write(
         proj.join("src/Main.tnx"),
-        "import tinox.core.crypto;\nclass Main {\n    fnc main() -> Int32 {\n        let c = new Crypto();\n        println(c.md5(\"abc\"));\n        return 0;\n    }\n}\n",
+        "import tinox.core.crypto\nclass Main {\n    fnc main() -> Int32 {\n        let c = new Crypto()\n        println(c.md5(\"abc\"))\n        return 0\n    }\n}\n",
     )
     .unwrap();
     let out = run(&proj);

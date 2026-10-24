@@ -26,50 +26,50 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     // Issue #149 stage 3: no top-level `fn` allowed anymore -- `ident`
     // becomes a sibling `fnc` in the same `class Main` as `main`, called
     // bare exactly as before (same-class fallback).
-    body.push_str("class Main {\n    fnc ident(s: String) -> String {\n        return s;\n    }\n\n    fnc main() -> Int32 {\n");
+    body.push_str("class Main {\n    fnc ident(s: String) -> String {\n        return s\n    }\n\n    fnc main() -> Int32 {\n");
     for (i, l) in lengths.iter().enumerate() {
         let s: String = "abcdefghijklmnopqrstuvwxyzABCDEF"[..*l].to_string();
-        body.push_str(&format!("    let s{i}: String = \"{s}\";\n"));
-        body.push_str(&format!("    println(s{i}.len());\n"));
+        body.push_str(&format!("    let s{i}: String = \"{s}\"\n"));
+        body.push_str(&format!("    println(s{i}.len())\n"));
         expects.push(l.to_string());
-        body.push_str(&format!("    println(ident(s{i}).len());\n"));
+        body.push_str(&format!("    println(ident(s{i}).len())\n"));
         expects.push(l.to_string());
         // split: an element of length L between two anchors
         body.push_str(&format!(
-            "    let parts{i} = (\"x|\" + s{i} + \"|y\").split(\"|\");\n"
+            "    let parts{i} = (\"x|\" + s{i} + \"|y\").split(\"|\")\n"
         ));
-        body.push_str(&format!("    println(parts{i}.len());\n"));
+        body.push_str(&format!("    println(parts{i}.len())\n"));
         expects.push("3".to_string());
-        body.push_str(&format!("    println(parts{i}[1].len());\n"));
+        body.push_str(&format!("    println(parts{i}[1].len())\n"));
         expects.push(l.to_string());
         // Concatenation correctly changes the length
-        body.push_str(&format!("    println((s{i} + \"!\").len());\n"));
+        body.push_str(&format!("    println((s{i} + \"!\").len())\n"));
         expects.push((l + 1).to_string());
     }
-    body.push_str("    return 0;\n    }\n}\n");
+    body.push_str("    return 0\n    }\n}\n");
     out.push(("boundary_string_lengths".to_string(), body, expects));
 
     // ── Special characters ────────────────────────────────────────────────
     let src = r##"class Main {
     fnc main() -> Int32 {
-    let hash = "# kein Raw-String";
-    println(hash.len());
-    println(hash);
-    let quoted = "sag \"hi\"";
-    println(quoted.len());
-    println(quoted);
-    let nl = "a\nb";
-    println(nl.len());
-    println(nl.split("\n").len());
-    let spaces = "  mitte  ";
-    println(spaces.len());
-    println(spaces + "|");
-    let uml = "äöü";
-    println(uml.len());
-    println(uml);
-    let tab = "a\tb";
-    println(tab.len());
-    return 0;
+    let hash = "# kein Raw-String"
+    println(hash.len())
+    println(hash)
+    let quoted = "sag \"hi\""
+    println(quoted.len())
+    println(quoted)
+    let nl = "a\nb"
+    println(nl.len())
+    println(nl.split("\n").len())
+    let spaces = "  mitte  "
+    println(spaces.len())
+    println(spaces + "|")
+    let uml = "äöü"
+    println(uml.len())
+    println(uml)
+    let tab = "a\tb"
+    println(tab.len())
+    return 0
     }
 }
 "##;
@@ -86,28 +86,28 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     // ── Empty and 1-element containers ─────────────────────────────
     let src = r#"class Main {
     fnc main() -> Int32 {
-    var e: List<Int64> = [];
-    println(e.len());
-    var n = 0;
-    for x in e { n += 1; }
-    println(n);
-    e.push(42);
-    println(e.len());
-    println(e[0]);
-    println(e.first());
-    println(e.last());
-    e.pop();
-    println(e.len());
-    let one: List<String> = ["solo"];
-    println(one.len());
-    println(one[0]);
-    println(one.first());
-    println(one.last());
-    var m: Map<String, Int64> = Map::new();
-    println(m.len());
-    println(m.keys().len());
-    if (m.contains("x")) { println("y"); } else { println("n"); }
-    return 0;
+    var e: List<Int64> = []
+    println(e.len())
+    var n = 0
+    for x in e { n += 1 }
+    println(n)
+    e.push(42)
+    println(e.len())
+    println(e[0])
+    println(e.first())
+    println(e.last())
+    e.pop()
+    println(e.len())
+    let one: List<String> = ["solo"]
+    println(one.len())
+    println(one[0])
+    println(one.first())
+    println(one.last())
+    var m: Map<String, Int64> = Map::new()
+    println(m.len())
+    println(m.keys().len())
+    if (m.contains("x")) { println("y") } else { println("n") }
+    return 0
     }
 }
 "#;
@@ -121,21 +121,21 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     // ── Nesting: 3 levels of lists ─────────────────────────────
     let src = r#"class Main {
     fnc main() -> Int32 {
-    let deep: List<List<List<Int64>>> = [[[1, 2], [3]], [[4]]];
-    println(deep.len());
-    println(deep[0].len());
-    println(deep[0][0].len());
-    println(deep[0][0][1]);
-    println(deep[0][1][0]);
-    println(deep[1][0][0]);
-    var total = 0;
+    let deep: List<List<List<Int64>>> = [[[1, 2], [3]], [[4]]]
+    println(deep.len())
+    println(deep[0].len())
+    println(deep[0][0].len())
+    println(deep[0][0][1])
+    println(deep[0][1][0])
+    println(deep[1][0][0])
+    var total = 0
     for lvl2 in deep {
         for lvl3 in lvl2 {
-            for x in lvl3 { total += x; }
+            for x in lvl3 { total += x }
         }
     }
-    println(total);
-    return 0;
+    println(total)
+    return 0
     }
 }
 "#;
@@ -147,18 +147,18 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     // ── A list of maps ───────────────────────────────────────────────
     let src = r#"class Main {
     fnc main() -> Int32 {
-    var m1: Map<String, Int64> = Map::new();
-    m1.insert("a", 1);
-    var m2: Map<String, Int64> = Map::new();
-    m2.insert("b", 2);
-    m2.insert("c", 3);
-    let ms: List<Map<String, Int64>> = [m1, m2];
-    println(ms.len());
-    println(ms[0].len());
-    println(ms[1].len());
-    println(ms[0].get("a"));
-    println(ms[1].get("c"));
-    return 0;
+    var m1: Map<String, Int64> = Map::new()
+    m1.insert("a", 1)
+    var m2: Map<String, Int64> = Map::new()
+    m2.insert("b", 2)
+    m2.insert("c", 3)
+    let ms: List<Map<String, Int64>> = [m1, m2]
+    println(ms.len())
+    println(ms[0].len())
+    println(ms[1].len())
+    println(ms[0].get("a"))
+    println(ms[1].get("c"))
+    return 0
     }
 }
 "#;
@@ -168,15 +168,15 @@ fn cases() -> Vec<(String, String, Vec<String>)> {
     // ── A map with list values ────────────────────────────────────────
     let src = r#"class Main {
     fnc main() -> Int32 {
-    var m: Map<String, List<Int64>> = Map::new();
-    m.insert("xs", [10, 20]);
-    let xs: List<Int64> = m.get("xs");
-    println(xs.len());
-    println(xs[1]);
-    var s = 0;
-    for x in xs { s += x; }
-    println(s);
-    return 0;
+    var m: Map<String, List<Int64>> = Map::new()
+    m.insert("xs", [10, 20])
+    let xs: List<Int64> = m.get("xs")
+    println(xs.len())
+    println(xs[1])
+    var s = 0
+    for x in xs { s += x }
+    println(s)
+    return 0
     }
 }
 "#;

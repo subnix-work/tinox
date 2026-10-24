@@ -1,6 +1,6 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
-import tinox.core.http_server;
+import tinox.core.http_server
 
 namespace tinox.core.rest.server
 {
@@ -25,14 +25,14 @@ namespace tinox.core.rest.server
     class RestController
     {
         /** Route entries registered for this controller */
-        var routes: List<RouteEntry>;
+        var routes: List<RouteEntry>
 
         /** Base path for all routes in this controller */
-        var basePath: String;
+        var basePath: String
 
         fn new() -> RestController
         {
-            return RestController { routes: [], basePath: "" };
+            return RestController { routes: [], basePath: "" }
         }
 
         /**
@@ -46,9 +46,9 @@ namespace tinox.core.rest.server
          */
         fn route(method: String, path: String, handler: fnc(HttpContext) -> Nothing) -> RouteEntry
         {
-            const routeEntry: RouteEntry = RouteEntry::new(method, UrlBuilder::join(this.basePath, path), handler);
-            this.routes.push(routeEntry);
-            return routeEntry;
+            const routeEntry: RouteEntry = RouteEntry::new(method, UrlBuilder::join(this.basePath, path), handler)
+            this.routes.push(routeEntry)
+            return routeEntry
         }
     }
 }

@@ -1,24 +1,24 @@
-module tinox.core.asm;
+module tinox.core.asm
 
 namespace tinox.core.asm
 {
     class Ops
     {
-        fn Nop() -> Int64 { return 0; }
-        fn Halt() -> Int64 { return 1; }
-        fn Load() -> Int64 { return 2; }
-        fn Store() -> Int64 { return 3; }
-        fn Push() -> Int64 { return 4; }
-        fn Pop() -> Int64 { return 5; }
-        fn Add() -> Int64 { return 6; }
-        fn Sub() -> Int64 { return 7; }
-        fn Mul() -> Int64 { return 8; }
-        fn Div() -> Int64 { return 9; }
-        fn Jmp() -> Int64 { return 10; }
-        fn Jz() -> Int64 { return 11; }
-        fn Jnz() -> Int64 { return 12; }
-        fn Cmp() -> Int64 { return 13; }
-        fn Call() -> Int64 { return 14; }
-        fn Ret() -> Int64 { return 15; }
+        fn Nop() -> Int64 { return 0 }
+        fn Halt() -> Int64 { return 1 }
+        fn Load() -> Int64 { return 2 }
+        fn Store() -> Int64 { return 3 }
+        fn Push() -> Int64 { return 4 }
+        fn Pop() -> Int64 { return 5 }
+        fn Add() -> Int64 { return 6 }
+        fn Sub() -> Int64 { return 7 }
+        fn Mul() -> Int64 { return 8 }
+        fn Div() -> Int64 { return 9 }
+        fn Jmp() -> Int64 { return 10 }
+        fn Jz() -> Int64 { return 11 }
+        fn Jnz() -> Int64 { return 12 }
+        fn Cmp() -> Int64 { return 13 }
+        fn Call() -> Int64 { return 14 }
+        fn Ret() -> Int64 { return 15 }
     }
 }

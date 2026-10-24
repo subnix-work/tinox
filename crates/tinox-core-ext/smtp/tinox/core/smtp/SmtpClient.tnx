@@ -17,21 +17,21 @@
  *   - No DKIM signing (the sending mail server's job when routing
  *     through a real relay like SES/SendGrid, not this client library's).
  */
-module tinox.core.smtp;
+module tinox.core.smtp
 
-import tinox.core.socket;
-import tinox.core.base64;
+import tinox.core.socket
+import tinox.core.base64
 
 namespace tinox.core.smtp
 {
-    extern fn httpConnReadLine(conn: Int64) -> String;
-    extern fn httpConnTakeFd(conn: Int64) -> Int64;
+    extern fn httpConnReadLine(conn: Int64) -> String
+    extern fn httpConnTakeFd(conn: Int64) -> Int64
 
     class SmtpClient
     {
-        var conn: Int64;
-        var host: String;
-        var errorMessage: String;
+        var conn: Int64
+        var host: String
+        var errorMessage: String
 
         /*
          * Plain-text connect (port 25/587 before STARTTLS): dials, reads
@@ -44,12 +44,12 @@ namespace tinox.core.smtp
          */
         fn connect(host: String, port: Int64) -> SmtpClient
         {
-            const fd = socketCreateTcp();
+            const fd = socketCreateTcp()
             if (!socketConnect(fd, host, port)) {
-                socketClose(fd);
-                return SmtpClient { conn: -1, host: host, errorMessage: "connect failed" };
+                socketClose(fd)
+                return SmtpClient { conn: -1, host: host, errorMessage: "connect failed" }
             }
-            return SmtpClient::finishConnect(httpConnFromFd(fd), host);
+            return SmtpClient::finishConnect(httpConnFromFd(fd), host)
         }
 
         /*
@@ -62,42 +62,42 @@ namespace tinox.core.smtp
          */
         fn connectTls(host: String, port: Int64, verify: Bool) -> SmtpClient
         {
-            const fd = socketCreateTcp();
+            const fd = socketCreateTcp()
             if (!socketConnect(fd, host, port)) {
-                socketClose(fd);
-                return SmtpClient { conn: -1, host: host, errorMessage: "connect failed (TLS)" };
+                socketClose(fd)
+                return SmtpClient { conn: -1, host: host, errorMessage: "connect failed (TLS)" }
             }
-            const conn = httpConnFromFdTls(fd, host, verify);
+            const conn = httpConnFromFdTls(fd, host, verify)
             if (conn <= 0) {
-                return SmtpClient { conn: -1, host: host, errorMessage: "TLS handshake failed" };
+                return SmtpClient { conn: -1, host: host, errorMessage: "TLS handshake failed" }
             }
-            return SmtpClient::finishConnect(conn, host);
+            return SmtpClient::finishConnect(conn, host)
         }
 
         // Shared tail of connect()/connectTls(): greeting + EHLO.
         fn finishConnect(conn: Int64, host: String) -> SmtpClient
         {
             if (conn <= 0) {
-                return SmtpClient { conn: -1, host: host, errorMessage: "connect failed" };
+                return SmtpClient { conn: -1, host: host, errorMessage: "connect failed" }
             }
-            const greeting = SmtpClient::readReply(conn);
+            const greeting = SmtpClient::readReply(conn)
             if (!greeting.startsWith("2")) {
-                httpConnClose(conn);
-                return SmtpClient { conn: -1, host: host, errorMessage: "unexpected greeting: " + greeting };
+                httpConnClose(conn)
+                return SmtpClient { conn: -1, host: host, errorMessage: "unexpected greeting: " + greeting }
             }
-            var client: SmtpClient = SmtpClient { conn: conn, host: host, errorMessage: "" };
+            var client: SmtpClient = SmtpClient { conn: conn, host: host, errorMessage: "" }
             if (!client.ehlo()) {
-                httpConnClose(conn);
-                client.conn = -1;
-                client.errorMessage = "EHLO failed";
+                httpConnClose(conn)
+                client.conn = -1
+                client.errorMessage = "EHLO failed"
             }
-            return client;
+            return client
         }
 
         fn ehlo() -> Bool
         {
-            httpConnSendRaw(this.conn, "EHLO localhost\r\n");
-            return SmtpClient::readReply(this.conn).startsWith("2");
+            httpConnSendRaw(this.conn, "EHLO localhost\r\n")
+            return SmtpClient::readReply(this.conn).startsWith("2")
         }
 
         /*
@@ -111,20 +111,20 @@ namespace tinox.core.smtp
          */
         fn startTls() -> Bool
         {
-            httpConnSendRaw(this.conn, "STARTTLS\r\n");
+            httpConnSendRaw(this.conn, "STARTTLS\r\n")
             if (SmtpClient::readReply(this.conn) != "220") {
-                return false;
+                return false
             }
-            const fd = httpConnTakeFd(this.conn);
+            const fd = httpConnTakeFd(this.conn)
             if (fd < 0) {
-                return false;
+                return false
             }
-            const tlsConn = httpConnFromFdTls(fd, this.host, true);
+            const tlsConn = httpConnFromFdTls(fd, this.host, true)
             if (tlsConn <= 0) {
-                return false;
+                return false
             }
-            this.conn = tlsConn;
-            return this.ehlo();
+            this.conn = tlsConn
+            return this.ehlo()
         }
 
         /*
@@ -141,22 +141,22 @@ namespace tinox.core.smtp
          */
         fn authPlain(user: String, pass: String) -> Bool
         {
-            var bytes: List<Int64> = [];
-            bytes.push(0);
-            var i: Int64 = 0;
+            var bytes: List<Int64> = []
+            bytes.push(0)
+            var i: Int64 = 0
             while i < user.len() {
-                bytes.push(user.charCodeAt(i));
-                i = i + 1;
+                bytes.push(user.charCodeAt(i))
+                i = i + 1
             }
-            bytes.push(0);
-            var j: Int64 = 0;
+            bytes.push(0)
+            var j: Int64 = 0
             while j < pass.len() {
-                bytes.push(pass.charCodeAt(j));
-                j = j + 1;
+                bytes.push(pass.charCodeAt(j))
+                j = j + 1
             }
-            const encoded = Base64::encodeBytes(bytes);
-            httpConnSendRaw(this.conn, "AUTH PLAIN " + encoded + "\r\n");
-            return SmtpClient::readReply(this.conn) == "235";
+            const encoded = Base64::encodeBytes(bytes)
+            httpConnSendRaw(this.conn, "AUTH PLAIN " + encoded + "\r\n")
+            return SmtpClient::readReply(this.conn) == "235"
         }
 
         /*
@@ -168,57 +168,57 @@ namespace tinox.core.smtp
          */
         fn send(from: String, to: List<String>, subject: String, body: String) -> Bool
         {
-            httpConnSendRaw(this.conn, "MAIL FROM:<" + from + ">\r\n");
+            httpConnSendRaw(this.conn, "MAIL FROM:<" + from + ">\r\n")
             if (!SmtpClient::readReply(this.conn).startsWith("2")) {
-                return false;
+                return false
             }
 
-            var i: Int64 = 0;
+            var i: Int64 = 0
             while i < to.len() {
-                httpConnSendRaw(this.conn, "RCPT TO:<" + to[i] + ">\r\n");
+                httpConnSendRaw(this.conn, "RCPT TO:<" + to[i] + ">\r\n")
                 if (!SmtpClient::readReply(this.conn).startsWith("2")) {
-                    return false;
+                    return false
                 }
-                i = i + 1;
+                i = i + 1
             }
 
-            httpConnSendRaw(this.conn, "DATA\r\n");
+            httpConnSendRaw(this.conn, "DATA\r\n")
             if (SmtpClient::readReply(this.conn) != "354") {
-                return false;
+                return false
             }
 
-            var toHeader: String = "";
-            var k: Int64 = 0;
+            var toHeader: String = ""
+            var k: Int64 = 0
             while k < to.len() {
                 if (k > 0) {
-                    toHeader = toHeader + ", ";
+                    toHeader = toHeader + ", "
                 }
-                toHeader = toHeader + to[k];
-                k = k + 1;
+                toHeader = toHeader + to[k]
+                k = k + 1
             }
 
-            const message = "From: " + from + "\r\nTo: " + toHeader + "\r\nSubject: " + subject + "\r\n\r\n" + body;
-            const lines = message.split("\n");
-            var m: Int64 = 0;
+            const message = "From: " + from + "\r\nTo: " + toHeader + "\r\nSubject: " + subject + "\r\n\r\n" + body
+            const lines = message.split("\n")
+            var m: Int64 = 0
             while m < lines.len() {
-                var line = lines[m];
+                var line = lines[m]
                 if (line.endsWith("\r")) {
-                    line = line.substring(0, line.len() - 1);
+                    line = line.substring(0, line.len() - 1)
                 }
                 if (line.startsWith(".")) {
-                    line = "." + line;
+                    line = "." + line
                 }
-                httpConnSendRaw(this.conn, line + "\r\n");
-                m = m + 1;
+                httpConnSendRaw(this.conn, line + "\r\n")
+                m = m + 1
             }
-            httpConnSendRaw(this.conn, ".\r\n");
+            httpConnSendRaw(this.conn, ".\r\n")
 
-            return SmtpClient::readReply(this.conn).startsWith("2");
+            return SmtpClient::readReply(this.conn).startsWith("2")
         }
 
         fn close() -> Nothing
         {
-            httpConnClose(this.conn);
+            httpConnClose(this.conn)
         }
 
         /*
@@ -232,19 +232,19 @@ namespace tinox.core.smtp
          */
         fn readReply(conn: Int64) -> String
         {
-            var code: String = "";
-            var done: Bool = false;
+            var code: String = ""
+            var done: Bool = false
             while !done {
-                const line = httpConnReadLine(conn);
+                const line = httpConnReadLine(conn)
                 if (line.len() < 4) {
-                    return "";
+                    return ""
                 }
-                code = line.substring(0, 3);
+                code = line.substring(0, 3)
                 if (line.substring(3, 4) == " ") {
-                    done = true;
+                    done = true
                 }
             }
-            return code;
+            return code
         }
     }
 }

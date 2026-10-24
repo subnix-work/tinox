@@ -13,61 +13,62 @@
 
 class Main
 {
-    fnc c() -> Nothing { throw "from c"; }
+    fnc c() -> Nothing { throw "from c" }
 
-    fnc b() -> Nothing { c(); println("b after c (never)"); }
+    fnc b() -> Nothing { c()
+    println("b after c (never)") }
 
 
     fnc helper(i: Int64) -> Nothing {
-        if (i == 3) { throw "boom"; }
-        println("iter " + i.toString());
+        if (i == 3) { throw "boom" }
+        println("iter " + i.toString())
     }
 
 
     fnc compute(x: Int64) -> Int64 {
-        if (x < 0) { throw "negative"; }
-        return x * 2;
+        if (x < 0) { throw "negative" }
+        return x * 2
     }
 
 
     fnc useCompute() -> Int64 {
-        const r: Int64 = compute(0 - 5);
-        println("after compute (never)");   // skipped — immediate unwinding
-        return r;
+        const r: Int64 = compute(0 - 5)
+        println("after compute (never)")   // skipped — immediate unwinding
+        return r
     }
 
 
     fnc main() -> Int32 {
         // Unwinding out of a loop into a try
         try {
-            var i: Int64 = 0;
+            var i: Int64 = 0
             while i < 10 {
-                helper(i);
-                i = i + 1;
+                helper(i)
+                i = i + 1
             }
-            println("never reached (loop)");
+            println("never reached (loop)")
         } catch e: String {
-            println("caught from loop: " + e);
+            println("caught from loop: " + e)
         }
 
         // Multi-frame unwinding: c -> b (no try) -> caught here
         try {
-            b();
-            println("after b (never)");
+            b()
+            println("after b (never)")
         } catch e: String {
-            println("a catches: " + e);
+            println("a catches: " + e)
         }
-        println("a done");
+        println("a done")
 
         // Return-value function throws, caller catches
         try {
-            const v: Int64 = useCompute();
-            println(v.toString());
+            const v: Int64 = useCompute()
+            println(v.toString())
         } catch e: String {
-            println("caught: " + e);
+            println("caught: " + e)
         }
 
-        println("done");
-        return 0;
+        println("done")
+        return 0
     }
 }

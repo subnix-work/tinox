@@ -1,4 +1,4 @@
-module tinox.core.semaphore;
+module tinox.core.semaphore
 
 namespace tinox.core.semaphore
 {
@@ -15,31 +15,31 @@ namespace tinox.core.semaphore
      */
     class RWLock
     {
-        var handle: Int64;
+        var handle: Int64
 
         fn new() -> RWLock
         {
-            return RWLock { handle: rwlockNew() };
+            return RWLock { handle: rwlockNew() }
         }
 
         fn readLock(lock: RWLock) -> Nothing
         {
-            rwlockReadLock(lock.handle);
+            rwlockReadLock(lock.handle)
         }
 
         fn readUnlock(lock: RWLock) -> Nothing
         {
-            rwlockReadUnlock(lock.handle);
+            rwlockReadUnlock(lock.handle)
         }
 
         fn writeLock(lock: RWLock) -> Nothing
         {
-            rwlockWriteLock(lock.handle);
+            rwlockWriteLock(lock.handle)
         }
 
         fn writeUnlock(lock: RWLock) -> Nothing
         {
-            rwlockWriteUnlock(lock.handle);
+            rwlockWriteUnlock(lock.handle)
         }
     }
 }

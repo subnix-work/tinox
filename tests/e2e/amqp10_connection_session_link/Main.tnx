@@ -14,154 +14,154 @@
 // expect: ok-link
 // expect: ok-broker-saw-all
 
-import tinox.core.amqp10;
-import tinox.core.socket;
+import tinox.core.amqp10
+import tinox.core.socket
 
 class Main
 {
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv)
 
         // --- SASL header + negotiation ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]);
-        Amqp10::writeFrame(sconn, 1, 0, mechBody);
-        Amqp10::readFrame(sconn); // sasl-init, v1 not checked (see Phase-4 test)
-        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]);
-        Amqp10::writeFrame(sconn, 1, 0, outcomeBody);
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0])
+        const mechBody = Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])])
+        Amqp10::writeFrame(sconn, 1, 0, mechBody)
+        Amqp10::readFrame(sconn) // sasl-init, v1 not checked (see Phase-4 test)
+        const outcomeBody = Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)])
+        Amqp10::writeFrame(sconn, 1, 0, outcomeBody)
 
         // --- AMQP header ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0])
 
         // --- open / open-ok ---
-        const fOpen = Amqp10::readFrame(sconn);
-        const pOpen = Amqp10::decodePerformative(fOpen.body);
-        var ok1: Bool = pOpen.descriptor == 0x10;
+        const fOpen = Amqp10::readFrame(sconn)
+        const pOpen = Amqp10::decodePerformative(fOpen.body)
+        var ok1: Bool = pOpen.descriptor == 0x10
         var openFields: List<Amqp10Value> = [
             Amqp10Value::StrVal("fake-broker"),
             Amqp10Value::NullVal,
             Amqp10Value::UIntVal(131072),
             Amqp10Value::UShortVal(2047)
-        ];
-        const openOkBody = Amqp10::encodePerformative(0x10, openFields);
-        Amqp10::writeFrame(sconn, 0, 0, openOkBody);
+        ]
+        const openOkBody = Amqp10::encodePerformative(0x10, openFields)
+        Amqp10::writeFrame(sconn, 0, 0, openOkBody)
 
         // --- begin / begin-ok ---
-        const fBegin = Amqp10::readFrame(sconn);
-        const pBegin = Amqp10::decodePerformative(fBegin.body);
-        var ok2: Bool = pBegin.descriptor == 0x11;
+        const fBegin = Amqp10::readFrame(sconn)
+        const pBegin = Amqp10::decodePerformative(fBegin.body)
+        var ok2: Bool = pBegin.descriptor == 0x11
         var beginFields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin.chanId),
             Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647),
             Amqp10Value::UIntVal(2147483647)
-        ];
-        const beginOkBody = Amqp10::encodePerformative(0x11, beginFields);
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, beginOkBody);
+        ]
+        const beginOkBody = Amqp10::encodePerformative(0x11, beginFields)
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, beginOkBody)
 
         // --- attach / attach-ok ---
-        const fAttach = Amqp10::readFrame(sconn);
-        const pAttach = Amqp10::decodePerformative(fAttach.body);
-        var ok3: Bool = pAttach.descriptor == 0x12;
-        var sawRole: Bool = false;
-        var linkName: String = "";
+        const fAttach = Amqp10::readFrame(sconn)
+        const pAttach = Amqp10::decodePerformative(fAttach.body)
+        var ok3: Bool = pAttach.descriptor == 0x12
+        var sawRole: Bool = false
+        var linkName: String = ""
         if (pAttach.fields.len() >= 3) {
-            match pAttach.fields[0] { StrVal(s) => { linkName = s; } _ => {} }
-            match pAttach.fields[2] { BoolVal(b) => { sawRole = !b; } _ => {} } // client attaches as sender (role=false)
+            match pAttach.fields[0] { StrVal(s) => { linkName = s } _ => {} }
+            match pAttach.fields[2] { BoolVal(b) => { sawRole = !b } _ => {} } // client attaches as sender (role=false)
         }
-        const attachOkBody = Amqp10::encodePerformative(0x12, pAttach.fields);
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, attachOkBody);
+        const attachOkBody = Amqp10::encodePerformative(0x12, pAttach.fields)
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, attachOkBody)
 
         // --- detach / detach-ok ---
-        const fDetach = Amqp10::readFrame(sconn);
-        const pDetach = Amqp10::decodePerformative(fDetach.body);
-        var ok4: Bool = pDetach.descriptor == 0x16;
-        const detachOkBody = Amqp10::encodePerformative(0x16, pDetach.fields);
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, detachOkBody);
+        const fDetach = Amqp10::readFrame(sconn)
+        const pDetach = Amqp10::decodePerformative(fDetach.body)
+        var ok4: Bool = pDetach.descriptor == 0x16
+        const detachOkBody = Amqp10::encodePerformative(0x16, pDetach.fields)
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, detachOkBody)
 
         // --- end / end-ok ---
-        const fEnd = Amqp10::readFrame(sconn);
-        const pEnd = Amqp10::decodePerformative(fEnd.body);
-        var ok5: Bool = pEnd.descriptor == 0x17;
-        const endOkBody = Amqp10::encodePerformative(0x17, []);
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, endOkBody);
+        const fEnd = Amqp10::readFrame(sconn)
+        const pEnd = Amqp10::decodePerformative(fEnd.body)
+        var ok5: Bool = pEnd.descriptor == 0x17
+        const endOkBody = Amqp10::encodePerformative(0x17, [])
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, endOkBody)
 
         // --- close / close-ok ---
-        const fClose = Amqp10::readFrame(sconn);
-        const pClose = Amqp10::decodePerformative(fClose.body);
-        var ok6: Bool = pClose.descriptor == 0x18;
-        const closeOkBody = Amqp10::encodePerformative(0x18, []);
-        Amqp10::writeFrame(sconn, 0, 0, closeOkBody);
+        const fClose = Amqp10::readFrame(sconn)
+        const pClose = Amqp10::decodePerformative(fClose.body)
+        var ok6: Bool = pClose.descriptor == 0x18
+        const closeOkBody = Amqp10::encodePerformative(0x18, [])
+        Amqp10::writeFrame(sconn, 0, 0, closeOkBody)
 
-        httpConnClose(sconn);
+        httpConnClose(sconn)
 
         if (sawRole) {
-            println("ok-broker-saw-role");
+            println("ok-broker-saw-role")
         }
         if (linkName == "test-link") {
-            var allOk: Int64 = 0;
+            var allOk: Int64 = 0
             if (ok1) { if (ok2) { if (ok3) { if (ok4) { if (ok5) { if (ok6) {
-                allOk = 1;
+                allOk = 1
             } } } } } }
-            return allOk;
+            return allOk
         }
-        return 0;
+        return 0
     }
 
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv)
 
-        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest")
         if (conn.conn <= 0) {
-            println("connect failed: " + conn.errorMessage);
-            return 1;
+            println("connect failed: " + conn.errorMessage)
+            return 1
         }
 
-        const session = Amqp10Session::begin(conn);
+        const session = Amqp10Session::begin(conn)
         if (session.chanId <= 0) {
-            println("begin failed: " + session.errorMessage);
-            return 1;
+            println("begin failed: " + session.errorMessage)
+            return 1
         }
 
-        const link = Amqp10Link::attach(session, "test-link", false, "test-queue");
+        const link = Amqp10Link::attach(session, "test-link", false, "test-queue")
         if (link.handle < 0) {
-            println("attach failed: " + link.errorMessage);
-            return 1;
+            println("attach failed: " + link.errorMessage)
+            return 1
         }
 
-        link.detach();
-        session.end();
-        conn.close();
+        link.detach()
+        session.end()
+        conn.close()
 
-        const brokerOk = await handle;
+        const brokerOk = await handle
 
         if (conn.conn > 0) {
-            println("ok-connect");
+            println("ok-connect")
         }
         if (conn.maxFrameSize == 131072) {
-            println("ok-framemax");
+            println("ok-framemax")
         }
         if (session.chanId == 1) {
-            println("ok-session");
+            println("ok-session")
         }
         if (link.handle == 0) {
-            println("ok-link");
+            println("ok-link")
         }
         if (brokerOk == 1) {
-            println("ok-broker-saw-all");
+            println("ok-broker-saw-all")
         }
 
-        httpServerClose(srv);
-        return 0;
+        httpServerClose(srv)
+        return 0
     }
 }

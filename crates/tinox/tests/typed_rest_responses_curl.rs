@@ -60,37 +60,38 @@ fn verify(http3: bool) {
             &work.0.join(".tinox/deps/tinox.core").join(module).join("checkout/tinox"));
     }
     std::fs::write(work.0.join("tinox.toml"), "[package]\nname = \"typed_response\"\nversion = \"0.0.0\"\n").unwrap();
-    std::fs::write(work.0.join("Main.tnx"), "import Ctrl;\nclass Main { fnc main() -> Int32 { return 0; } }\n").unwrap();
-    std::fs::write(work.0.join("User.tnx"), "import tinox.core.json;\n@JsonSerializable class User { var name: String; }\n").unwrap();
+    std::fs::write(work.0.join("Main.tnx"), "import Ctrl\nclass Main { fnc main() -> Int32 { return 0 } }\n").unwrap();
+    std::fs::write(work.0.join("User.tnx"), "import tinox.core.json\n@JsonSerializable class User { var name: String }\n").unwrap();
     let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
     let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = if http3 { udp.local_addr().unwrap().port() } else { tcp.local_addr().unwrap().port() };
     let annotation = if http3 { format!("@Http3RestController({port}, \"cert.pem\", \"key.pem\")") } else { String::new() };
-    let source = if http3 { "import tinox.core.http3_server;\n" } else { "" }.to_string() + r#"
-import tinox.core.http_server;
-import User;
+    let source = if http3 { "import tinox.core.http3_server\n" } else { "" }.to_string() + r#"
+import tinox.core.http_server
+import User
 class Ctrl {
     @GET @Path("/users/:id") @Produces("application/json") @StatusCode(201)
     fn get(@PathParam id: Int64) -> Response<User> {
-        if (id == 1) { return Response<User>::ok(User { name: "Ada" }).header("X-Result", "success"); }
-        if (id == 2) { return Response<User>::noContent().header("X-Result", "empty"); }
-        if (id == 3) { return Response<User>::ok(User { name: "Grace" }).withStatus(202); }
-        if (id == 4) { return Response<User>::error(200, "invalid status"); }
-        return Response<User>::error(404, "missing \"user\"\n\\path\x01").header("X-Result", "error");
+        if (id == 1) { return Response<User>::ok(User { name: "Ada" }).header("X-Result", "success") }
+        if (id == 2) { return Response<User>::noContent().header("X-Result", "empty") }
+        if (id == 3) { return Response<User>::ok(User { name: "Grace" }).withStatus(202) }
+        if (id == 4) { return Response<User>::error(200, "invalid status") }
+        return Response<User>::error(404, "missing \"user\"\n\\path\x01").header("X-Result", "error")
     }
     @POST @Path("/users") @Consumes("application/json")
     fn create(@PostParam user: User) -> Response<User> {
-        if (user.name == "") { return Response<User>::error(422, "name required"); }
-        return Response<User>::ok(user);
+        if (user.name == "") { return Response<User>::error(422, "name required") }
+        return Response<User>::ok(user)
     }
-    @GET @Path("/scalar") fn scalar() -> Response<Int32> { let n: Int32 = -7; return Response<Int32>::ok(n); }
-    @GET @Path("/string") fn stringValue() -> Response<String> { return Response<String>::ok("quoted \"text\""); }
-    @GET @Path("/bool") fn boolValue() -> Response<Bool> { return Response<Bool>::ok(false); }
-    @GET @Path("/int") fn intValue() -> Response<Int64> { return Response<Int64>::ok(9223372036854775807); }
-    @GET @Path("/list") fn listValue() -> Response<List<User>> { return Response<List<User>>::ok([User { name: "Ada" }]); }
+    @GET @Path("/scalar") fn scalar() -> Response<Int32> { let n: Int32 = -7
+    return Response<Int32>::ok(n) }
+    @GET @Path("/string") fn stringValue() -> Response<String> { return Response<String>::ok("quoted \"text\"") }
+    @GET @Path("/bool") fn boolValue() -> Response<Bool> { return Response<Bool>::ok(false) }
+    @GET @Path("/int") fn intValue() -> Response<Int64> { return Response<Int64>::ok(9223372036854775807) }
+    @GET @Path("/list") fn listValue() -> Response<List<User>> { return Response<List<User>>::ok([User { name: "Ada" }]) }
     @GET @Path("/raw") fn raw(@HttpContext ctx: HttpContext) -> HttpContext {
-        ctx.response.status(202).text("manual");
-        return ctx;
+        ctx.response.status(202).text("manual")
+        return ctx
     }
 }
 "#;

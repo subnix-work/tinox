@@ -16,53 +16,53 @@
 // expect: broker-saw-txn-disposition:true
 // expect: ok-broker-saw-all
 
-import tinox.core.amqp10;
-import tinox.core.socket;
+import tinox.core.amqp10
+import tinox.core.socket
 
 class Main
 {
 
     async fnc txnBroker(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
+        const sconn = httpServerAcceptConnHandle(srv)
 
         // --- SASL header + negotiation (PLAIN) ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0]);
-        Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]));
-        Amqp10::readFrame(sconn);
-        Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]));
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 3, 1, 0, 0])
+        Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x40, [Amqp10Value::ListVal([Amqp10Value::SymbolVal("PLAIN")])]))
+        Amqp10::readFrame(sconn)
+        Amqp10::writeFrame(sconn, 1, 0, Amqp10::encodePerformative(0x44, [Amqp10Value::UByteVal(0)]))
 
         // --- AMQP header ---
-        httpConnReadN(sconn, 8);
-        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0]);
+        httpConnReadN(sconn, 8)
+        httpConnWriteBytes(sconn, [65, 77, 81, 80, 0, 1, 0, 0])
 
         // --- open / open-ok ---
-        Amqp10::readFrame(sconn);
+        Amqp10::readFrame(sconn)
         var openFields: List<Amqp10Value> = [
             Amqp10Value::StrVal("fake-broker"), Amqp10Value::NullVal,
             Amqp10Value::UIntVal(131072), Amqp10Value::UShortVal(2047)
-        ];
-        Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, 0, Amqp10::encodePerformative(0x10, openFields))
 
         // --- begin / begin-ok ---
-        const fBegin = Amqp10::readFrame(sconn);
+        const fBegin = Amqp10::readFrame(sconn)
         var beginFields: List<Amqp10Value> = [
             Amqp10Value::UShortVal(fBegin.chanId), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(2147483647)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x11, beginFields))
 
         // --- attach (coordinator link) / attach-ok ---
-        const fAttachCoord = Amqp10::readFrame(sconn);
-        const pAttachCoord = Amqp10::decodePerformative(fAttachCoord.body);
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachCoord.fields));
+        const fAttachCoord = Amqp10::readFrame(sconn)
+        const pAttachCoord = Amqp10::decodePerformative(fAttachCoord.body)
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachCoord.fields))
 
         // --- attach (normal sender link for the transactional message) / attach-ok + flow ---
-        const fAttachPub = Amqp10::readFrame(sconn);
-        const pAttachPub = Amqp10::decodePerformative(fAttachPub.body);
-        var pubHandle: Int64 = -1;
-        if (pAttachPub.fields.len() > 1) { match pAttachPub.fields[1] { UIntVal(n) => { pubHandle = n; } _ => {} } }
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachPub.fields));
+        const fAttachPub = Amqp10::readFrame(sconn)
+        const pAttachPub = Amqp10::decodePerformative(fAttachPub.body)
+        var pubHandle: Int64 = -1
+        if (pAttachPub.fields.len() > 1) { match pAttachPub.fields[1] { UIntVal(n) => { pubHandle = n } _ => {} } }
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachPub.fields))
         // The flow for pubLink is deliberately NOT sent here, right after the
         // attach-ok: the client only reads it later, during
         // publishTransactional() (awaitFlow() internally) — if it were sent
@@ -73,48 +73,48 @@ class Main
         // being discovered only through a failure).
 
         // --- Receive declare (transfer on the coordinator link) ---
-        const fDeclare = Amqp10::readFrame(sconn);
-        const pDeclareXfer = Amqp10::decodePerformative(fDeclare.body);
-        var declareDeliveryId: Int64 = -1;
-        if (pDeclareXfer.fields.len() > 1) { match pDeclareXfer.fields[1] { UIntVal(n) => { declareDeliveryId = n; } _ => {} } }
-        const rDeclare = Amqp10Reader::new(fDeclare.body);
-        rDeclare.readValue(); // skip the transfer performative (already decoded)
-        const declareSection = rDeclare.readValue();
-        var sawDeclare: Bool = false;
+        const fDeclare = Amqp10::readFrame(sconn)
+        const pDeclareXfer = Amqp10::decodePerformative(fDeclare.body)
+        var declareDeliveryId: Int64 = -1
+        if (pDeclareXfer.fields.len() > 1) { match pDeclareXfer.fields[1] { UIntVal(n) => { declareDeliveryId = n } _ => {} } }
+        const rDeclare = Amqp10Reader::new(fDeclare.body)
+        rDeclare.readValue() // skip the transfer performative (already decoded)
+        const declareSection = rDeclare.readValue()
+        var sawDeclare: Bool = false
         match declareSection {
             DescribedVal(sd) => {
                 if (sd.descriptor == 0x77) {
                     match sd.value {
-                        DescribedVal(dd) => { if (dd.descriptor == 0x31) { sawDeclare = true; } }
+                        DescribedVal(dd) => { if (dd.descriptor == 0x31) { sawDeclare = true } }
                         _ => {}
                     }
                 }
             }
             _ => {}
         }
-        println("broker-saw-declare:" + sawDeclare.toString());
+        println("broker-saw-declare:" + sawDeclare.toString())
 
         // --- Reply with declared(txn-id) as a disposition ---
-        const txnId: List<Int64> = [1, 2, 3, 4];
-        const declaredDesc = Amqp10Described { descriptor: 0x33, value: Amqp10Value::ListVal([Amqp10Value::BinaryVal(txnId)]) };
+        const txnId: List<Int64> = [1, 2, 3, 4]
+        const declaredDesc = Amqp10Described { descriptor: 0x33, value: Amqp10Value::ListVal([Amqp10Value::BinaryVal(txnId)]) }
         var declaredDispFields: List<Amqp10Value> = [
             Amqp10Value::BoolVal(true), Amqp10Value::UIntVal(declareDeliveryId), Amqp10Value::NullVal,
             Amqp10Value::BoolVal(true), Amqp10Value::DescribedVal(declaredDesc)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, declaredDispFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, declaredDispFields))
 
         // --- Send flow for pubLink now (not earlier, see above) ---
         var flowFields: List<Amqp10Value> = [
             Amqp10Value::NullVal, Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(2147483647), Amqp10Value::UIntVal(pubHandle), Amqp10Value::UIntVal(0),
             Amqp10Value::UIntVal(10)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x13, flowFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x13, flowFields))
 
         // --- Receive the transactional transfer (real message), check the state field ---
-        const fTxnXfer = Amqp10::readFrame(sconn);
-        const pTxnXfer = Amqp10::decodePerformative(fTxnXfer.body);
-        var sawTxnTransfer: Bool = false;
+        const fTxnXfer = Amqp10::readFrame(sconn)
+        const pTxnXfer = Amqp10::decodePerformative(fTxnXfer.body)
+        var sawTxnTransfer: Bool = false
         if (pTxnXfer.fields.len() > 7) {
             match pTxnXfer.fields[7] {
                 DescribedVal(sd) => {
@@ -125,9 +125,9 @@ class Main
                                     match sf[0] {
                                         BinaryVal(tid) => {
                                             if (tid.len() == txnId.len()) {
-                                                var same: Bool = true;
-                                                for i in 0..tid.len() { if (tid[i] != txnId[i]) { same = false; } }
-                                                sawTxnTransfer = same;
+                                                var same: Bool = true
+                                                for i in 0..tid.len() { if (tid[i] != txnId[i]) { same = false } }
+                                                sawTxnTransfer = same
                                             }
                                         }
                                         _ => {}
@@ -141,17 +141,17 @@ class Main
                 _ => {}
             }
         }
-        println("broker-saw-txn-transfer:" + sawTxnTransfer.toString());
+        println("broker-saw-txn-transfer:" + sawTxnTransfer.toString())
 
         // --- Receive discharge (commit, fail=false) ---
-        const fDischarge1 = Amqp10::readFrame(sconn);
-        const pDischarge1Xfer = Amqp10::decodePerformative(fDischarge1.body);
-        var discharge1DeliveryId: Int64 = -1;
-        if (pDischarge1Xfer.fields.len() > 1) { match pDischarge1Xfer.fields[1] { UIntVal(n) => { discharge1DeliveryId = n; } _ => {} } }
-        const rDischarge1 = Amqp10Reader::new(fDischarge1.body);
-        rDischarge1.readValue();
-        const discharge1Section = rDischarge1.readValue();
-        var sawCommit: Bool = false;
+        const fDischarge1 = Amqp10::readFrame(sconn)
+        const pDischarge1Xfer = Amqp10::decodePerformative(fDischarge1.body)
+        var discharge1DeliveryId: Int64 = -1
+        if (pDischarge1Xfer.fields.len() > 1) { match pDischarge1Xfer.fields[1] { UIntVal(n) => { discharge1DeliveryId = n } _ => {} } }
+        const rDischarge1 = Amqp10Reader::new(fDischarge1.body)
+        rDischarge1.readValue()
+        const discharge1Section = rDischarge1.readValue()
+        var sawCommit: Bool = false
         match discharge1Section {
             DescribedVal(sd) => {
                 if (sd.descriptor == 0x77) {
@@ -161,7 +161,7 @@ class Main
                                 match dd.value {
                                     ListVal(df) => {
                                         if (df.len() > 1) {
-                                            match df[1] { BoolVal(fail) => { sawCommit = !fail; } _ => {} }
+                                            match df[1] { BoolVal(fail) => { sawCommit = !fail } _ => {} }
                                         }
                                     }
                                     _ => {}
@@ -174,35 +174,35 @@ class Main
             }
             _ => {}
         }
-        println("broker-saw-commit-discharge:" + sawCommit.toString());
-        const acceptedDesc1 = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) };
+        println("broker-saw-commit-discharge:" + sawCommit.toString())
+        const acceptedDesc1 = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) }
         var discharge1DispFields: List<Amqp10Value> = [
             Amqp10Value::BoolVal(true), Amqp10Value::UIntVal(discharge1DeliveryId), Amqp10Value::NullVal,
             Amqp10Value::BoolVal(true), Amqp10Value::DescribedVal(acceptedDesc1)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, discharge1DispFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, discharge1DispFields))
 
         // --- Second round: declare -> discharge(fail=true, rollback) ---
-        const fDeclare2 = Amqp10::readFrame(sconn);
-        const pDeclare2Xfer = Amqp10::decodePerformative(fDeclare2.body);
-        var declare2DeliveryId: Int64 = -1;
-        if (pDeclare2Xfer.fields.len() > 1) { match pDeclare2Xfer.fields[1] { UIntVal(n) => { declare2DeliveryId = n; } _ => {} } }
-        const txnId2: List<Int64> = [9, 9, 9, 9];
-        const declared2Desc = Amqp10Described { descriptor: 0x33, value: Amqp10Value::ListVal([Amqp10Value::BinaryVal(txnId2)]) };
+        const fDeclare2 = Amqp10::readFrame(sconn)
+        const pDeclare2Xfer = Amqp10::decodePerformative(fDeclare2.body)
+        var declare2DeliveryId: Int64 = -1
+        if (pDeclare2Xfer.fields.len() > 1) { match pDeclare2Xfer.fields[1] { UIntVal(n) => { declare2DeliveryId = n } _ => {} } }
+        const txnId2: List<Int64> = [9, 9, 9, 9]
+        const declared2Desc = Amqp10Described { descriptor: 0x33, value: Amqp10Value::ListVal([Amqp10Value::BinaryVal(txnId2)]) }
         var declared2DispFields: List<Amqp10Value> = [
             Amqp10Value::BoolVal(true), Amqp10Value::UIntVal(declare2DeliveryId), Amqp10Value::NullVal,
             Amqp10Value::BoolVal(true), Amqp10Value::DescribedVal(declared2Desc)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, declared2DispFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, declared2DispFields))
 
-        const fDischarge2 = Amqp10::readFrame(sconn);
-        const pDischarge2Xfer = Amqp10::decodePerformative(fDischarge2.body);
-        var discharge2DeliveryId: Int64 = -1;
-        if (pDischarge2Xfer.fields.len() > 1) { match pDischarge2Xfer.fields[1] { UIntVal(n) => { discharge2DeliveryId = n; } _ => {} } }
-        const rDischarge2 = Amqp10Reader::new(fDischarge2.body);
-        rDischarge2.readValue();
-        const discharge2Section = rDischarge2.readValue();
-        var sawRollback: Bool = false;
+        const fDischarge2 = Amqp10::readFrame(sconn)
+        const pDischarge2Xfer = Amqp10::decodePerformative(fDischarge2.body)
+        var discharge2DeliveryId: Int64 = -1
+        if (pDischarge2Xfer.fields.len() > 1) { match pDischarge2Xfer.fields[1] { UIntVal(n) => { discharge2DeliveryId = n } _ => {} } }
+        const rDischarge2 = Amqp10Reader::new(fDischarge2.body)
+        rDischarge2.readValue()
+        const discharge2Section = rDischarge2.readValue()
+        var sawRollback: Bool = false
         match discharge2Section {
             DescribedVal(sd) => {
                 if (sd.descriptor == 0x77) {
@@ -212,7 +212,7 @@ class Main
                                 match dd.value {
                                     ListVal(df) => {
                                         if (df.len() > 1) {
-                                            match df[1] { BoolVal(fail) => { sawRollback = fail; } _ => {} }
+                                            match df[1] { BoolVal(fail) => { sawRollback = fail } _ => {} }
                                         }
                                     }
                                     _ => {}
@@ -225,37 +225,37 @@ class Main
             }
             _ => {}
         }
-        println("broker-saw-rollback-discharge:" + sawRollback.toString());
-        const acceptedDesc2 = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) };
+        println("broker-saw-rollback-discharge:" + sawRollback.toString())
+        const acceptedDesc2 = Amqp10Described { descriptor: 0x24, value: Amqp10Value::ListVal([]) }
         var discharge2DispFields: List<Amqp10Value> = [
             Amqp10Value::BoolVal(true), Amqp10Value::UIntVal(discharge2DeliveryId), Amqp10Value::NullVal,
             Amqp10Value::BoolVal(true), Amqp10Value::DescribedVal(acceptedDesc2)
-        ];
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, discharge2DispFields));
+        ]
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x15, discharge2DispFields))
 
         // --- Receiver link for ackTransactional() ---
-        const fAttachSub = Amqp10::readFrame(sconn);
-        const pAttachSub = Amqp10::decodePerformative(fAttachSub.body);
-        var subHandle: Int64 = -1;
-        if (pAttachSub.fields.len() > 1) { match pAttachSub.fields[1] { UIntVal(n) => { subHandle = n; } _ => {} } }
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachSub.fields));
-        Amqp10::readFrame(sconn); // flow from the client (credit)
+        const fAttachSub = Amqp10::readFrame(sconn)
+        const pAttachSub = Amqp10::decodePerformative(fAttachSub.body)
+        var subHandle: Int64 = -1
+        if (pAttachSub.fields.len() > 1) { match pAttachSub.fields[1] { UIntVal(n) => { subHandle = n } _ => {} } }
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, Amqp10::encodePerformative(0x12, pAttachSub.fields))
+        Amqp10::readFrame(sconn) // flow from the client (credit)
 
-        const msgBody = Amqp10::encodeMessageBody([88], "text/plain");
+        const msgBody = Amqp10::encodeMessageBody([88], "text/plain")
         var subTransferFields: List<Amqp10Value> = [
             Amqp10Value::UIntVal(subHandle), Amqp10Value::UIntVal(0),
             Amqp10Value::BinaryVal([0, 0, 0, 1]), Amqp10Value::UIntVal(0),
             Amqp10Value::BoolVal(true), Amqp10Value::BoolVal(false)
-        ];
-        const subTransferBody = Amqp10::encodePerformative(0x14, subTransferFields);
-        var subFullFrame: List<Int64> = [];
-        for i in 0..subTransferBody.len() { subFullFrame.push(subTransferBody[i]); }
-        for i in 0..msgBody.len() { subFullFrame.push(msgBody[i]); }
-        Amqp10::writeFrame(sconn, 0, fBegin.chanId, subFullFrame);
+        ]
+        const subTransferBody = Amqp10::encodePerformative(0x14, subTransferFields)
+        var subFullFrame: List<Int64> = []
+        for i in 0..subTransferBody.len() { subFullFrame.push(subTransferBody[i]) }
+        for i in 0..msgBody.len() { subFullFrame.push(msgBody[i]) }
+        Amqp10::writeFrame(sconn, 0, fBegin.chanId, subFullFrame)
 
-        const fTxnDisp = Amqp10::readFrame(sconn);
-        const pTxnDisp = Amqp10::decodePerformative(fTxnDisp.body);
-        var sawTxnDisposition: Bool = false;
+        const fTxnDisp = Amqp10::readFrame(sconn)
+        const pTxnDisp = Amqp10::decodePerformative(fTxnDisp.body)
+        var sawTxnDisposition: Bool = false
         if (pTxnDisp.fields.len() > 4) {
             match pTxnDisp.fields[4] {
                 DescribedVal(sd) => {
@@ -263,23 +263,23 @@ class Main
                         match sd.value {
                             ListVal(sf) => {
                                 if (sf.len() > 1) {
-                                    var tidOk: Bool = false;
+                                    var tidOk: Bool = false
                                     match sf[0] {
                                         BinaryVal(tid) => {
                                             if (tid.len() == txnId.len()) {
-                                                var same2: Bool = true;
-                                                for i in 0..tid.len() { if (tid[i] != txnId[i]) { same2 = false; } }
-                                                tidOk = same2;
+                                                var same2: Bool = true
+                                                for i in 0..tid.len() { if (tid[i] != txnId[i]) { same2 = false } }
+                                                tidOk = same2
                                             }
                                         }
                                         _ => {}
                                     }
-                                    var outcomeOk: Bool = false;
+                                    var outcomeOk: Bool = false
                                     match sf[1] {
-                                        DescribedVal(od) => { if (od.descriptor == 0x24) { outcomeOk = true; } }
+                                        DescribedVal(od) => { if (od.descriptor == 0x24) { outcomeOk = true } }
                                         _ => {}
                                     }
-                                    sawTxnDisposition = tidOk && outcomeOk;
+                                    sawTxnDisposition = tidOk && outcomeOk
                                 }
                             }
                             _ => {}
@@ -289,73 +289,73 @@ class Main
                 _ => {}
             }
         }
-        println("broker-saw-txn-disposition:" + sawTxnDisposition.toString());
+        println("broker-saw-txn-disposition:" + sawTxnDisposition.toString())
 
-        httpConnClose(sconn);
+        httpConnClose(sconn)
 
-        var result: Int64 = 0;
+        var result: Int64 = 0
         if (sawDeclare) { if (sawTxnTransfer) { if (sawCommit) { if (sawRollback) { if (sawTxnDisposition) {
-            result = 1;
+            result = 1
         } } } } }
-        return result;
+        return result
     }
 
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle = spawn txnBroker(srv);
+        const handle = spawn txnBroker(srv)
 
-        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", port, "guest", "guest")
         if (conn.conn <= 0) {
-            println("connect failed: " + conn.errorMessage);
-            return 1;
+            println("connect failed: " + conn.errorMessage)
+            return 1
         }
-        println("ok-connect");
+        println("ok-connect")
 
-        const session = Amqp10Session::begin(conn);
-        const coordinator = Amqp10Link::attachCoordinator(session, "txn-coordinator");
-        const pubLink = Amqp10Link::attach(session, "txn-pub-link", false, "txn-target");
+        const session = Amqp10Session::begin(conn)
+        const coordinator = Amqp10Link::attachCoordinator(session, "txn-coordinator")
+        const pubLink = Amqp10Link::attach(session, "txn-pub-link", false, "txn-target")
 
         // --- Round 1: declare -> transactional publish -> commit ---
-        const txn1 = coordinator.declare();
+        const txn1 = coordinator.declare()
         if (txn1.ok) {
-            println("ok-declared");
+            println("ok-declared")
         } else {
-            println("declare failed: " + txn1.errorMessage);
+            println("declare failed: " + txn1.errorMessage)
         }
-        pubLink.publishTransactional([42], "text/plain", txn1.txnId);
-        const commitOk = coordinator.discharge(txn1.txnId, false);
+        pubLink.publishTransactional([42], "text/plain", txn1.txnId)
+        const commitOk = coordinator.discharge(txn1.txnId, false)
         if (commitOk) {
-            println("ok-commit-discharge");
+            println("ok-commit-discharge")
         }
 
         // --- Round 2: declare -> discharge(fail=true), rollback ---
-        const txn2 = coordinator.declare();
-        const rollbackOk = coordinator.discharge(txn2.txnId, true);
+        const txn2 = coordinator.declare()
+        const rollbackOk = coordinator.discharge(txn2.txnId, true)
         if (rollbackOk) {
-            println("ok-rollback-discharge");
+            println("ok-rollback-discharge")
         }
 
         // --- ackTransactional() on a receiver link ---
-        const subLink = Amqp10Link::attach(session, "txn-sub-link", true, "txn-source");
-        subLink.grantCredit(5);
-        const msg = subLink.nextMessage();
+        const subLink = Amqp10Link::attach(session, "txn-sub-link", true, "txn-source")
+        subLink.grantCredit(5)
+        const msg = subLink.nextMessage()
         if (msg.ok) {
-            subLink.ackTransactional(msg.deliveryId, txn1.txnId);
+            subLink.ackTransactional(msg.deliveryId, txn1.txnId)
         }
 
-        const brokerOk = await handle;
+        const brokerOk = await handle
         if (brokerOk == 1) {
-            println("ok-broker-saw-all");
+            println("ok-broker-saw-all")
         }
 
-        conn.close();
-        httpServerClose(srv);
-        return 0;
+        conn.close()
+        httpServerClose(srv)
+        return 0
     }
 }

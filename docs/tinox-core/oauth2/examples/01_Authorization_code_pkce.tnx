@@ -1,4 +1,4 @@
-import tinox.core.oauth2;
+import tinox.core.oauth2
 
 class Main
 {
@@ -10,24 +10,24 @@ class Main
             "my-client-id",
             "my-client-secret",
             "https://myapp.example.com/callback"
-        );
+        )
 
         // Step 1: redirect the user-agent to req.url, store req.state +
         // req.codeVerifier in the session (needed again at the callback).
-        const req: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email");
-        println("redirect user to: " + req.url);
+        const req: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email")
+        println("redirect user to: " + req.url)
 
         // Step 2: in the callback handler, after checking req.state against
         // the callback's "state" query param:
-        const tokens: OAuth2TokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier);
+        const tokens: OAuth2TokenResponse = client.exchangeCode("the-code-from-callback", req.codeVerifier)
         if (tokens.ok)
         {
-            println("access token: " + tokens.accessToken);
+            println("access token: " + tokens.accessToken)
         }
         else
         {
-            println("login failed: " + tokens.errorMessage);
+            println("login failed: " + tokens.errorMessage)
         }
-        return 0;
+        return 0
     }
 }

@@ -1,10 +1,10 @@
-module tinox.core.amqp091;
+module tinox.core.amqp091
 
-import tinox.core.socket;
+import tinox.core.socket
 
 namespace tinox.core.amqp091
 {
-    extern fn tinoxBytesToString(bytes: List<Int64>) -> String;
+    extern fn tinoxBytesToString(bytes: List<Int64>) -> String
 
     /*
      * Counterpart to AmqpWriter091: reads big-endian from `bytes` starting
@@ -15,8 +15,8 @@ namespace tinox.core.amqp091
      */
     class AmqpReader091
     {
-        var bytes: List<Int64>;
-        var pos: Int64;
+        var bytes: List<Int64>
+        var pos: Int64
         // Bug 89: sticky flag set once a read runs past the end of `bytes`,
         // same pattern as Amqp10Reader (Bug 86). A malicious/compromised
         // broker frame — e.g. a METHOD frame shorter than the class-id/
@@ -24,34 +24,34 @@ namespace tinox.core.amqp091
         // field-table/array whose declared length exceeds what's actually
         // present — used to index straight into `bytes` and hard-crash the
         // client. Now octet() returns a dummy 0 and sets this instead.
-        var truncated: Bool;
+        var truncated: Bool
 
         fn new(bytes: List<Int64>) -> AmqpReader091
         {
-            return AmqpReader091 { bytes: bytes, pos: 0, truncated: false };
+            return AmqpReader091 { bytes: bytes, pos: 0, truncated: false }
         }
 
         fn remaining() -> Int64
         {
-            return this.bytes.len() - this.pos;
+            return this.bytes.len() - this.pos
         }
 
         fn octet() -> Int64
         {
             if (this.pos >= this.bytes.len()) {
-                this.truncated = true;
-                return 0;
+                this.truncated = true
+                return 0
             }
-            const v = this.bytes[this.pos];
-            this.pos = this.pos + 1;
-            return v;
+            const v = this.bytes[this.pos]
+            this.pos = this.pos + 1
+            return v
         }
 
         fn short() -> Int64
         {
-            const hi = this.octet();
-            const lo = this.octet();
-            return (hi << 8) | lo;
+            const hi = this.octet()
+            const lo = this.octet()
+            return (hi << 8) | lo
         }
 
         /* Reads 4 bytes as an UNSIGNED 32-bit value (0..2^32-1) — for
@@ -59,11 +59,11 @@ namespace tinox.core.amqp091
          * `long-int` field-value type ('I') see longSigned(). */
         fn long() -> Int64
         {
-            var v: Int64 = 0;
+            var v: Int64 = 0
             for i in 0..4 {
-                v = (v << 8) | this.octet();
+                v = (v << 8) | this.octet()
             }
-            return v;
+            return v
         }
 
         /* Reads 4 bytes as a SIGNED 32-bit value (two's complement) — for
@@ -73,20 +73,20 @@ namespace tinox.core.amqp091
          * -42 -> 4294967254). */
         fn longSigned() -> Int64
         {
-            const v = this.long();
+            const v = this.long()
             if (v >= 2147483648) {
-                return v - 4294967296;
+                return v - 4294967296
             }
-            return v;
+            return v
         }
 
         fn longlong() -> Int64
         {
-            var v: Int64 = 0;
+            var v: Int64 = 0
             for i in 0..8 {
-                v = (v << 8) | this.octet();
+                v = (v << 8) | this.octet()
             }
-            return v;
+            return v
         }
 
         fn rawStr(n: Int64) -> String
@@ -94,29 +94,29 @@ namespace tinox.core.amqp091
             // Collects bytes into a List<Int64> and converts in one pass
             // (tinoxBytesToString) instead of `s = s + fromCharCode(...)`
             // in the loop, which is O(n^2) over the string length (issue #167).
-            var bytes: List<Int64> = [];
+            var bytes: List<Int64> = []
             for i in 0..n {
                 // Bug 66 (fixed): fromCharCode(this.octet()) directly used
                 // to evaluate the side-effecting argument twice. The fix
                 // is in codegen.rs, but other builtin arguments are
                 // presumably affected the same way — done via a local
                 // variable here regardless, just to be safe.
-                const b = this.octet();
-                bytes.push(b);
+                const b = this.octet()
+                bytes.push(b)
             }
-            return tinoxBytesToString(bytes);
+            return tinoxBytesToString(bytes)
         }
 
         fn shortstr() -> String
         {
-            const n = this.octet();
-            return this.rawStr(n);
+            const n = this.octet()
+            return this.rawStr(n)
         }
 
         fn longstr() -> String
         {
-            const n = this.long();
-            return this.rawStr(n);
+            const n = this.long()
+            return this.rawStr(n)
         }
 
         /* No silent garbage: an unknown type marker returns
@@ -124,64 +124,64 @@ namespace tinox.core.amqp091
          * caller decides whether that's fatal. */
         fn fieldValue() -> AmqpFieldValue091
         {
-            const tag = this.octet();
+            const tag = this.octet()
             if (tag == 116) { // 't'
-                const b = this.octet();
-                return AmqpFieldValue091::BoolVal(b != 0);
+                const b = this.octet()
+                return AmqpFieldValue091::BoolVal(b != 0)
             }
             if (tag == 73) { // 'I'
-                return AmqpFieldValue091::Int32Val(this.longSigned());
+                return AmqpFieldValue091::Int32Val(this.longSigned())
             }
             if (tag == 76) { // 'L'
-                return AmqpFieldValue091::Int64Val(this.longlong());
+                return AmqpFieldValue091::Int64Val(this.longlong())
             }
             if (tag == 83) { // 'S'
-                return AmqpFieldValue091::StrVal(this.longstr());
+                return AmqpFieldValue091::StrVal(this.longstr())
             }
             if (tag == 84) { // 'T'
-                return AmqpFieldValue091::TimestampVal(this.longlong());
+                return AmqpFieldValue091::TimestampVal(this.longlong())
             }
             if (tag == 70) { // 'F'
-                return AmqpFieldValue091::TableVal(this.fieldTable());
+                return AmqpFieldValue091::TableVal(this.fieldTable())
             }
             if (tag == 65) { // 'A'
-                return AmqpFieldValue091::ArrayVal(this.fieldArray());
+                return AmqpFieldValue091::ArrayVal(this.fieldArray())
             }
             if (tag == 86) { // 'V'
-                return AmqpFieldValue091::VoidVal;
+                return AmqpFieldValue091::VoidVal
             }
-            return AmqpFieldValue091::ErrorVal("unknown field-value type: " + tag.toString());
+            return AmqpFieldValue091::ErrorVal("unknown field-value type: " + tag.toString())
         }
 
         fn fieldTable() -> Map<String, AmqpFieldValue091>
         {
-            const tableLen = this.long();
-            const endPos = this.pos + tableLen;
-            var result: Map<String, AmqpFieldValue091> = Map::new();
+            const tableLen = this.long()
+            const endPos = this.pos + tableLen
+            var result: Map<String, AmqpFieldValue091> = Map::new()
             while this.pos < endPos {
                 // Bug 89: endPos comes from the broker-controlled tableLen
                 // and can exceed what's actually in `bytes`. Once octet()
                 // hits the end it no longer advances `pos` (see above), so
                 // without this check `this.pos < endPos` would stay true
                 // forever — an infinite loop instead of a crash.
-                if (this.truncated) { break; }
-                const key = this.shortstr();
-                const value = this.fieldValue();
-                result.insert(key, value);
+                if (this.truncated) { break }
+                const key = this.shortstr()
+                const value = this.fieldValue()
+                result.insert(key, value)
             }
-            return result;
+            return result
         }
 
         fn fieldArray() -> List<AmqpFieldValue091>
         {
-            const arrLen = this.long();
-            const endPos = this.pos + arrLen;
-            var result: List<AmqpFieldValue091> = [];
+            const arrLen = this.long()
+            const endPos = this.pos + arrLen
+            var result: List<AmqpFieldValue091> = []
             while this.pos < endPos {
-                if (this.truncated) { break; }
-                result.push(this.fieldValue());
+                if (this.truncated) { break }
+                result.push(this.fieldValue())
             }
-            return result;
+            return result
         }
     }
 }

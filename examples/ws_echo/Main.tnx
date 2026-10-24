@@ -4,41 +4,41 @@
 //         s.onmessage = e => console.log(e.data); s.onopen = () => s.send("hello");
 // Serves one connection at a time (blocking, v1).
 
-import tinox.core.websocket;
+import tinox.core.websocket
 
 class Main
 {
     fnc main() -> Int32 {
-        const srv = WsServer::listen(8790);
+        const srv = WsServer::listen(8790)
         if (srv < 0) {
-            println("port 8790 in use");
-            return 1;
+            println("port 8790 in use")
+            return 1
         }
-        println("ws://localhost:8790 ready");
+        println("ws://localhost:8790 ready")
         while true {
-            const conn = WsServer::accept(srv);
+            const conn = WsServer::accept(srv)
             if (conn <= 0) {
-                continue;
+                continue
             }
-            println("client connected");
+            println("client connected")
             while true {
-                const f = Ws::readMessage(conn);
+                const f = Ws::readMessage(conn)
                 if (f.opcode == 1) {
-                    const msg = Ws::text(f);
-                    println("received: " + msg);
-                    Ws::sendText(conn, "echo: " + msg);
-                    continue;
+                    const msg = Ws::text(f)
+                    println("received: " + msg)
+                    Ws::sendText(conn, "echo: " + msg)
+                    continue
                 }
                 if (f.opcode == 2) {
-                    Ws::sendBinary(conn, f.payload);
-                    continue;
+                    Ws::sendBinary(conn, f.payload)
+                    continue
                 }
                 // Close (8), EOF (-1), or protocol error (-2): end the connection
-                break;
+                break
             }
-            Ws::close(conn);
-            println("client disconnected");
+            Ws::close(conn)
+            println("client disconnected")
         }
-        return 0;
+        return 0
     }
 }

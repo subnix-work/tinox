@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -9,11 +9,11 @@ namespace tinox.core.rest.server
     @annotation
     class Produces
     {
-        var value: MediaType;
+        var value: MediaType
 
         fn new(value: MediaType) -> Produces
         {
-            return Produces { value: value };
+            return Produces { value: value }
         }
     }
 }

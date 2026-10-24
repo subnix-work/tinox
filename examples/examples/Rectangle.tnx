@@ -1,26 +1,26 @@
-import Drawable;
+import Drawable
 
 class Rectangle implements Drawable
 {
-    width: Float64;
-    height: Float64;
+    width: Float64
+    height: Float64
 
     fn new(w: Float64, h: Float64) -> Rectangle
     {
-        return Rectangle { width: w, height: h };
+        return Rectangle { width: w, height: h }
     }
 
     fn draw() -> Nothing
     {
-        print("Drawing rectangle ");
-        print(this.width);
-        print(" x ");
-        print(this.height);
-        print("\n");
+        print("Drawing rectangle ")
+        print(this.width)
+        print(" x ")
+        print(this.height)
+        print("\n")
     }
 
     fn getArea() -> Float64
     {
-        return this.width * this.height;
+        return this.width * this.height
     }
 }

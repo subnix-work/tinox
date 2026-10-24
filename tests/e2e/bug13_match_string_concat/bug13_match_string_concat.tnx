@@ -1,4 +1,4 @@
 enum bug13_match_string_concat {
-    Str(String),
-    Num(Int64),
+    Str(String)
+    Num(Int64)
 }

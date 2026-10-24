@@ -9,114 +9,114 @@
 // expect: ok-reject
 // expect: ok-args-seen
 
-import tinox.core.amqp091;
-import tinox.core.socket;
+import tinox.core.amqp091
+import tinox.core.socket
 
 class Main
 {
 
     async fnc fakeBroker(srv: Int64) -> Int64 {
-        const sconn = httpServerAcceptConnHandle(srv);
-        httpConnReadN(sconn, 8); // protocol header
+        const sconn = httpServerAcceptConnHandle(srv)
+        httpConnReadN(sconn, 8) // protocol header
 
-        const w1 = AmqpWriter091::new();
-        w1.octet(0);
-        w1.octet(9);
-        var emptyProps: Map<String, AmqpFieldValue091> = Map::new();
-        w1.fieldTable(emptyProps);
-        w1.longstr("PLAIN");
-        w1.longstr("en_US");
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes));
-        Amqp091::readFrame(sconn); // start-ok
+        const w1 = AmqpWriter091::new()
+        w1.octet(0)
+        w1.octet(9)
+        var emptyProps: Map<String, AmqpFieldValue091> = Map::new()
+        w1.fieldTable(emptyProps)
+        w1.longstr("PLAIN")
+        w1.longstr("en_US")
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 10, w1.bytes))
+        Amqp091::readFrame(sconn) // start-ok
 
-        const w2 = AmqpWriter091::new();
-        w2.short(2047);
-        w2.long(131072);
-        w2.short(60);
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 30, w2.bytes));
-        Amqp091::readFrame(sconn); // tune-ok
-        Amqp091::readFrame(sconn); // open
+        const w2 = AmqpWriter091::new()
+        w2.short(2047)
+        w2.long(131072)
+        w2.short(60)
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 30, w2.bytes))
+        Amqp091::readFrame(sconn) // tune-ok
+        Amqp091::readFrame(sconn) // open
 
-        const w3 = AmqpWriter091::new();
-        w3.shortstr("");
-        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes));
+        const w3 = AmqpWriter091::new()
+        w3.shortstr("")
+        Amqp091::writeFrame(sconn, 1, 0, Amqp091::encodeMethodPayload(10, 41, w3.bytes))
 
-        Amqp091::readFrame(sconn); // channel.open
-        const w4 = AmqpWriter091::new();
-        w4.longstr("");
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes));
+        Amqp091::readFrame(sconn) // channel.open
+        const w4 = AmqpWriter091::new()
+        w4.longstr("")
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 11, w4.bytes))
 
         // --- exchange.declare -> declare-ok ---
-        const fDecl = Amqp091::readFrame(sconn);
-        const mDecl = Amqp091::decodeMethodPayload(fDecl.payload);
-        var argsOk: Bool = false;
+        const fDecl = Amqp091::readFrame(sconn)
+        const mDecl = Amqp091::decodeMethodPayload(fDecl.payload)
+        var argsOk: Bool = false
         if (mDecl.classId == 40) {
             if (mDecl.methodId == 10) {
-                const r = AmqpReader091::new(mDecl.args);
-                r.short(); // reserved-1
-                const name = r.shortstr();
-                const exType = r.shortstr();
-                const flags = r.octet();
+                const r = AmqpReader091::new(mDecl.args)
+                r.short() // reserved-1
+                const name = r.shortstr()
+                const exType = r.shortstr()
+                const flags = r.octet()
                 if (name == "my-exchange") {
                     if (exType == "topic") {
                         if ((flags & 2) != 0) { // durable bit set
-                            argsOk = true;
+                            argsOk = true
                         }
                     }
                 }
             }
         }
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(40, 11, [])); // declare-ok, no args
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(40, 11, [])) // declare-ok, no args
 
         // --- second exchange.declare -> broker rejects via channel.close ---
-        Amqp091::readFrame(sconn); // exchange.declare (unchecked, only care about the rejection path)
-        const wClose = AmqpWriter091::new();
-        wClose.short(406); // reply-code: PRECONDITION_FAILED
-        wClose.shortstr("PRECONDITION_FAILED - inequivalent arg 'type'");
-        wClose.short(40); // class-id
-        wClose.short(10); // method-id
-        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 40, wClose.bytes));
-        Amqp091::readFrame(sconn); // expect channel.close-ok
+        Amqp091::readFrame(sconn) // exchange.declare (unchecked, only care about the rejection path)
+        const wClose = AmqpWriter091::new()
+        wClose.short(406) // reply-code: PRECONDITION_FAILED
+        wClose.shortstr("PRECONDITION_FAILED - inequivalent arg 'type'")
+        wClose.short(40) // class-id
+        wClose.short(10) // method-id
+        Amqp091::writeFrame(sconn, 1, 1, Amqp091::encodeMethodPayload(20, 40, wClose.bytes))
+        Amqp091::readFrame(sconn) // expect channel.close-ok
 
-        httpConnClose(sconn);
+        httpConnClose(sconn)
 
         if (argsOk) {
-            return 1;
+            return 1
         }
-        return 0;
+        return 0
     }
 
 
     fnc main() -> Int32 {
-        const srv = httpServerCreate(0);
-        const port = httpServerBoundPort(srv);
+        const srv = httpServerCreate(0)
+        const port = httpServerBoundPort(srv)
         if (srv < 0) {
-            println("bind failed");
-            return 1;
+            println("bind failed")
+            return 1
         }
-        const handle = spawn fakeBroker(srv);
+        const handle = spawn fakeBroker(srv)
 
-        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest");
-        const ch = AmqpChannel091::open(c);
+        const c = AmqpConnection091::connect("127.0.0.1", port, "/", "guest", "guest")
+        const ch = AmqpChannel091::open(c)
 
-        const declared = ch.declareExchange("my-exchange", "topic", true, false);
+        const declared = ch.declareExchange("my-exchange", "topic", true, false)
         if (declared) {
-            println("ok-declare");
+            println("ok-declare")
         }
 
-        const rejected = ch.declareExchange("my-exchange", "direct", false, false);
+        const rejected = ch.declareExchange("my-exchange", "direct", false, false)
         if (!rejected) {
             if (ch.errorMessage.contains("PRECONDITION_FAILED")) {
-                println("ok-reject");
+                println("ok-reject")
             }
         }
 
-        const brokerSawArgs = await handle;
+        const brokerSawArgs = await handle
         if (brokerSawArgs == 1) {
-            println("ok-args-seen");
+            println("ok-args-seen")
         }
 
-        httpServerClose(srv);
-        return 0;
+        httpServerClose(srv)
+        return 0
     }
 }

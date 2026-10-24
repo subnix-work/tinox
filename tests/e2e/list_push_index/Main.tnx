@@ -5,12 +5,12 @@ class Main
 {
     fnc main() -> Int32
     {
-        var nums: List<Int64> = [];
-        nums.push(10);
-        nums.push(20);
-        nums.push(30);
-        println(nums.len());
-        println(nums[1]);
-        return 0;
+        var nums: List<Int64> = []
+        nums.push(10)
+        nums.push(20)
+        nums.push(30)
+        println(nums.len())
+        println(nums[1])
+        return 0
     }
 }

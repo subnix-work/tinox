@@ -1,9 +1,9 @@
-import tinox.core.json;
-import Item;
+import tinox.core.json
+import Item
 
 @JsonSerializable
 class Report
 {
-    var count: Int64;
-    var items: List<Item>;
+    var count: Int64
+    var items: List<Item>
 }

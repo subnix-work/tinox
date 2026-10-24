@@ -6,19 +6,19 @@ description = "Tinox-UI click counter using @TinoxUIApp/@View annotation sugar i
 [[dependencies]]
 group = "tinox.core"
 artifactId = "ui"
-version = "1.0.13"
+version = "1.1.0"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.0.4"
+version = "1.1.0"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "websocket"
-version = "1.0.3"
+version = "1.1.0"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.0.0"
+version = "1.1.0"

@@ -9,73 +9,73 @@
 // credit-based messages, then attaches a receiver link to the same queue,
 // consumes them back, and acks each one individually.
 
-import tinox.core.amqp10;
+import tinox.core.amqp10
 
 class Main
 {
     fnc main() -> Int32 {
-        const conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest");
+        const conn = Amqp10Connection::connect("127.0.0.1", 5672, "guest", "guest")
         if (conn.conn <= 0) {
-            println("connect failed: " + conn.errorMessage);
-            return 1;
+            println("connect failed: " + conn.errorMessage)
+            return 1
         }
 
-        const session = Amqp10Session::begin(conn);
+        const session = Amqp10Session::begin(conn)
         if (session.errorMessage.len() > 0) {
-            println("begin failed: " + session.errorMessage);
-            return 1;
+            println("begin failed: " + session.errorMessage)
+            return 1
         }
 
-        var sender = Amqp10Link::attach(session, "tinox-demo-sender", false, "/queues/tinox-demo-queue");
+        var sender = Amqp10Link::attach(session, "tinox-demo-sender", false, "/queues/tinox-demo-queue")
         if (sender.errorMessage.len() > 0) {
-            println("attach (sender) failed: " + sender.errorMessage);
-            return 1;
+            println("attach (sender) failed: " + sender.errorMessage)
+            return 1
         }
 
-        var i: Int64 = 0;
+        var i: Int64 = 0
         while i < 3 {
-            var body: List<Int64> = [];
-            const text = "message #" + i.toString();
+            var body: List<Int64> = []
+            const text = "message #" + i.toString()
             for j in 0..text.len() {
-                body.push(text.charCodeAt(j) & 0xFF);
+                body.push(text.charCodeAt(j) & 0xFF)
             }
-            sender.publish(body, "text/plain");
+            sender.publish(body, "text/plain")
             if (sender.errorMessage.len() > 0) {
-                println("publish failed: " + sender.errorMessage);
-                return 1;
+                println("publish failed: " + sender.errorMessage)
+                return 1
             }
-            println("sent: " + text);
-            i = i + 1;
+            println("sent: " + text)
+            i = i + 1
         }
-        sender.detach();
+        sender.detach()
 
-        var receiver = Amqp10Link::attach(session, "tinox-demo-receiver", true, "/queues/tinox-demo-queue");
+        var receiver = Amqp10Link::attach(session, "tinox-demo-receiver", true, "/queues/tinox-demo-queue")
         if (receiver.errorMessage.len() > 0) {
-            println("attach (receiver) failed: " + receiver.errorMessage);
-            return 1;
+            println("attach (receiver) failed: " + receiver.errorMessage)
+            return 1
         }
-        receiver.grantCredit(10);
+        receiver.grantCredit(10)
 
-        var received: Int64 = 0;
+        var received: Int64 = 0
         while received < 3 {
-            const m = receiver.nextMessage();
+            const m = receiver.nextMessage()
             if (!m.ok) {
-                println("receive failed: " + m.errorMessage);
-                return 1;
+                println("receive failed: " + m.errorMessage)
+                return 1
             }
-            var text: String = "";
+            var text: String = ""
             for j in 0..m.body.len() {
-                text = text + fromCharCode(m.body[j]);
+                text = text + fromCharCode(m.body[j])
             }
-            println("received: " + text + " (delivery " + m.deliveryId.toString() + ")");
-            receiver.ack(m.deliveryId);
-            received = received + 1;
+            println("received: " + text + " (delivery " + m.deliveryId.toString() + ")")
+            receiver.ack(m.deliveryId)
+            received = received + 1
         }
-        receiver.detach();
+        receiver.detach()
 
-        session.end();
-        conn.close();
-        println("done");
-        return 0;
+        session.end()
+        conn.close()
+        println("done")
+        return 0
     }
 }

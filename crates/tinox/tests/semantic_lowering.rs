@@ -90,13 +90,13 @@ fn typed_task_results_keep_the_existing_runtime_word_abi() {
 #[test]
 fn incompatible_callback_and_generic_compositions_fail_in_the_frontend() {
     let work = Work::new();
-    fs::write(work.0.join("Box.tnx"), "class Box<T> { var value: T; }").unwrap();
+    fs::write(work.0.join("Box.tnx"), "class Box<T> { var value: T }").unwrap();
     for source in [
-        "class Main { fnc bad(f: fnc(String) -> String) -> String { return f(42); } fnc main() -> Int32 { return 0; } }",
-        "class Main { fnc bad(f: fnc(String) -> String) -> String { return f(); } fnc main() -> Int32 { return 0; } }",
-        "class Main { fnc take(f: fnc(Float64) -> Float64) -> Nothing {} fnc main() -> Int32 { Main::take(fnc(x: String) -> String { return x; }); return 0; } }",
-        "import Box; class Main { fnc main() -> Int32 { const wrong: Box<String> = Box { value: 42 }; return 0; } }",
-        "import Box; class Main { fnc take(value: Box<String>) -> Nothing {} fnc main() -> Int32 { Main::take(Box { value: 42 }); return 0; } }",
+        "class Main { fnc bad(f: fnc(String) -> String) -> String { return f(42) } fnc main() -> Int32 { return 0 } }",
+        "class Main { fnc bad(f: fnc(String) -> String) -> String { return f() } fnc main() -> Int32 { return 0 } }",
+        "class Main { fnc take(f: fnc(Float64) -> Float64) -> Nothing {} fnc main() -> Int32 { Main::take(fnc(x: String) -> String { return x })\nreturn 0 } }",
+        "import Box\nclass Main { fnc main() -> Int32 { const wrong: Box<String> = Box { value: 42 }\nreturn 0 } }",
+        "import Box\nclass Main { fnc take(value: Box<String>) -> Nothing {} fnc main() -> Int32 { Main::take(Box { value: 42 })\nreturn 0 } }",
     ] {
         fs::write(work.0.join("Main.tnx"), source).unwrap();
         for action in ["check", "build"] {
@@ -110,7 +110,7 @@ fn incompatible_callback_and_generic_compositions_fail_in_the_frontend() {
 
 #[test]
 fn missing_checked_callback_data_is_an_actionable_lowering_error() {
-    let tokens = tinox_lexer::Lexer::new("class Main { fnc apply(cb: fnc(Int64) -> Int64) -> Int64 { const local = cb; return local(1); } fnc main() -> Int32 { Main::apply(x => x); return 0; } }").tokenize().unwrap();
+    let tokens = tinox_lexer::Lexer::new("class Main { fnc apply(cb: fnc(Int64) -> Int64) -> Int64 { const local = cb\nreturn local(1) } fnc main() -> Int32 { Main::apply(x => x)\nreturn 0 } }").tokenize().unwrap();
     let mut ast = tinox_parser::Parser::new(tokens).parse().unwrap();
     tinox_parser::assign_node_ids(&mut ast);
     let mut checker = tinox_typecheck::TypeChecker::new();
@@ -171,9 +171,9 @@ fn complete_semantic_compositions_run_in_all_modes() {
 fn unresolved_and_conflicting_generic_bindings_fail_before_lowering() {
     let work = Work::new();
     for source in [
-        "class Main { fnc main() -> Int32 { const source: List<Float64> = [1.5]; const invalid: List<Float32> = source; return 0; } }",
-        "class Main { fnc make<T>() -> T { throw 1; } fnc main() -> Int32 { Main::make(); return 0; } }",
-        "class Main { fnc same<T>(left: T, right: T) -> T { return left; } fnc main() -> Int32 { Main::same(\"text\", 42); return 0; } }",
+        "class Main { fnc main() -> Int32 { const source: List<Float64> = [1.5]\nconst invalid: List<Float32> = source\nreturn 0 } }",
+        "class Main { fnc make<T>() -> T { throw 1 } fnc main() -> Int32 { Main::make()\nreturn 0 } }",
+        "class Main { fnc same<T>(left: T, right: T) -> T { return left } fnc main() -> Int32 { Main::same(\"text\", 42)\nreturn 0 } }",
     ] {
         fs::write(work.0.join("Main.tnx"), source).unwrap();
         let result = work.command("build").args(["Main.tnx", "--json"]).env("PATH", "").output().unwrap();
@@ -187,7 +187,7 @@ fn unresolved_and_conflicting_generic_bindings_fail_before_lowering() {
 fn unsigned_zero_division_and_remainder_fail_with_visible_runtime_diagnostics() {
     let work = Work::new();
     for (operator, message) in [("/", "division by zero"), ("%", "modulo by zero")] {
-        fs::write(work.0.join("Main.tnx"), format!("class Main {{ fnc main() -> Int32 {{ const value: UInt8 = 255; const zero: UInt8 = 0; println(value {operator} zero); return 0; }} }}")).unwrap();
+        fs::write(work.0.join("Main.tnx"), format!("class Main {{ fnc main() -> Int32 {{ const value: UInt8 = 255\nconst zero: UInt8 = 0\nprintln(value {operator} zero)\nreturn 0 }} }}")).unwrap();
         for flags in [vec!["--debug"], vec![], vec!["--checked"]] {
             let executable = work.0.join("zero");
             let build = work
@@ -211,7 +211,7 @@ fn unsigned_zero_division_and_remainder_fail_with_visible_runtime_diagnostics() 
 
 #[test]
 fn ambiguous_qualified_declarations_never_reach_native_emission() {
-    let source = "namespace left { class Thing { fnc side() -> String { return \"left\"; } } } namespace right { class Thing { fnc side() -> String { return \"right\"; } } }";
+    let source = "namespace left { class Thing { fnc side() -> String { return \"left\" } } } namespace right { class Thing { fnc side() -> String { return \"right\" } } }";
     let tokens = tinox_lexer::Lexer::new(source).tokenize().unwrap();
     let mut ast = tinox_parser::Parser::new(tokens).parse().unwrap();
     tinox_parser::assign_node_ids(&mut ast);

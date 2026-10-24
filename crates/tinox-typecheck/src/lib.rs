@@ -2739,6 +2739,21 @@ impl TypeChecker {
                 let obj_ty = self.infer_type(obj);
                 // Any-typed receiver: dynamic dispatch, no type errors
                 if obj_ty == ValueType::Any {
+                    // ORM `filter(x => ...)`: type the lambda param as the
+                    // entity so field comparisons (e.g. enum vs String) are checked.
+                    let orm_entity = if method == "filter" {
+                        self.orm_query_entity(obj).map(|e| e.to_string())
+                    } else {
+                        None
+                    };
+                    if let (Some(entity), Some(lam)) = (orm_entity, args.first()) {
+                        if matches!(&lam.node, ExprKind::Lambda { .. }) {
+                            self.infer_lambda_with_param_hints(
+                                lam,
+                                &[ValueType::Named(entity, vec![])],
+                            );
+                        }
+                    }
                     for arg in args { self.infer_type(arg); }
                     if method == "first" && args.is_empty() {
                         if let Some(entity) = self.orm_query_entity(obj) {
@@ -3238,12 +3253,16 @@ impl TypeChecker {
                 target_ty
             }
             ExprKind::CompoundAssign {
-                op: _,
+                op,
                 target,
                 value,
             } => {
-                self.infer_type(target);
-                self.infer_type(value)
+                let target_ty = self.infer_type(target);
+                let value_ty = self.infer_type(value);
+                if matches!(op, tinox_parser::CompoundOp::Add) {
+                    self.check_binary_op(&BinaryOp::Add, &target_ty, &value_ty, expr.span);
+                }
+                value_ty
             }
             ExprKind::Lambda {
                 params,
@@ -3781,7 +3800,55 @@ impl TypeChecker {
         }
     }
 
+    /// The enum a type denotes (`TaskStatus` or a variant type `TaskStatus.QUEUED`).
+    fn enum_of(&self, t: &ValueType) -> Option<String> {
+        if let ValueType::Named(n, _) = t {
+            let base = n.split('.').next().unwrap_or(n);
+            if self.enums.contains_key(base) {
+                return Some(base.to_string());
+            }
+        }
+        None
+    }
+
     fn check_binary_op(&mut self, op: &BinaryOp, lhs: &ValueType, rhs: &ValueType, span: Span) {
+        // Enum discriminators are integers, not string pointers. Named types
+        // otherwise bypass this check to allow generic operands and object
+        // toString(), so reject enum concatenation before that fallback.
+        if matches!(op, BinaryOp::Add) {
+            let other = if *lhs == ValueType::String { Some(rhs) }
+                else if *rhs == ValueType::String { Some(lhs) }
+                else { None };
+            if let Some(name) = other.and_then(|ty| self.enum_of(ty)) {
+                self.errors.push(Error::new(span, format!(
+                    "cannot concatenate String and enum '{name}'; convert the enum to a String explicitly (use .name for payload-free enums)"
+                )));
+                return;
+            }
+        }
+        // Enum values only compare with the same enum: an enum vs a String
+        // (leftover from a String-constant migration) or another enum is an error.
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+            let (le, re) = (self.enum_of(lhs), self.enum_of(rhs));
+            let mismatch = match (&le, &re) {
+                (Some(a), Some(b)) => a != b,
+                (Some(_), None) => matches!(rhs, ValueType::String),
+                (None, Some(_)) => matches!(lhs, ValueType::String),
+                (None, None) => false,
+            };
+            if mismatch {
+                self.errors.push(
+                    TypeError::BinaryOpTypeMismatch {
+                        op: format!("{:?}", op).to_lowercase(),
+                        lhs: le.unwrap_or_else(|| lhs.to_string()),
+                        rhs: re.unwrap_or_else(|| rhs.to_string()),
+                        span,
+                    }
+                    .to_error(),
+                );
+                return;
+            }
+        }
         // Any and Named (generic type params) are wildcards — skip checking
         if matches!(lhs, ValueType::Any | ValueType::Named(_, _))
             || matches!(rhs, ValueType::Any | ValueType::Named(_, _))
@@ -4285,10 +4352,12 @@ mod tests {
     #[test]
     fn orm_first_exports_entity_type() {
         let code = r#"
-            class DB { fnc of(cls: Any) -> Any { return 0; } }
-            @Entity class Account { var id: Int64; var name: String; var balance: Int64; }
+            class DB { fnc of(cls: Any) -> Any { return 0 } }
+            @Entity class Account { var id: Int64
+            var name: String
+            var balance: Int64 }
             fn balance() -> Int64 {
-                return DB::of(Account).filter(a => a.id == 1).first().balance;
+                return DB::of(Account).filter(a => a.id == 1).first().balance
             }
         "#;
         let tokens = Lexer::new(code).tokenize().unwrap();
@@ -4304,7 +4373,7 @@ mod tests {
         err_contains(&code.replace("first().balance", "first().name"), "String");
         ok(&code.replace("@Entity", "@Table(\"accounts\")"));
         // An unrelated dynamic first() must retain its permissive behavior.
-        ok("fn dynamic(q: Any) -> Int64 { return q.first().anything; }");
+        ok("fn dynamic(q: Any) -> Int64 { return q.first().anything }");
     }
 
     fn err_contains(code: &str, msg: &str) {
@@ -4322,21 +4391,21 @@ mod tests {
     #[test]
     fn log_masked_tostring_has_a_checked_instance_signature() {
         for annotation in ["Sensitive", "Masked"] {
-            let class = format!("class User {{ @{annotation} var secret: String; }}");
-            ok(&format!("{class} fn f(user: User) -> String {{ return user.toString(); }}"));
+            let class = format!("class User {{ @{annotation} var secret: String }}");
+            ok(&format!("{class} fn f(user: User) -> String {{ return user.toString() }}"));
             err_contains(
-                &format!("{class} fn f(user: User) -> String {{ return user.toString(1); }}"),
+                &format!("{class} fn f(user: User) -> String {{ return user.toString(1) }}"),
                 "expected 1 arguments, found 2",
             );
             err_contains(
-                &format!("{class} fn f(user: User) -> Int64 {{ return user.toString(); }}"),
+                &format!("{class} fn f(user: User) -> Int64 {{ return user.toString() }}"),
                 "expected Int64, found String",
             );
         }
         // A user-defined method takes precedence over the generated helper.
-        ok("class User { @Sensitive var secret: String; fn toString(value: Int64) -> Int64 { return value; } } fn f(user: User) -> Int64 { return user.toString(7); }");
+        ok("class User { @Sensitive var secret: String\nfn toString(value: Int64) -> Int64 { return value } } fn f(user: User) -> Int64 { return user.toString(7) }");
         err_contains(
-            "class User { var secret: String; } fn f(user: User) -> String { return user.toString(); }",
+            "class User { var secret: String } fn f(user: User) -> String { return user.toString() }",
             "undefined function: User_toString",
         );
     }
@@ -4345,26 +4414,26 @@ mod tests {
 
     #[test]
     fn test_await_task_yields_declared_result_type() {
-        ok("class C { async fnc name() -> String { return \"x\"; } fnc main() -> Nothing { const t = spawn C::name(); const s: String = await t; } }");
+        ok("class C { async fnc name() -> String { return \"x\" } fnc main() -> Nothing { const t = spawn C::name()\nconst s: String = await t } }");
     }
 
     #[test]
     fn test_await_task_result_type_mismatch_errors() {
         err_contains(
-            "class C { async fnc name() -> String { return \"x\"; } fnc main() -> Nothing { const t = spawn C::name(); const n: Int64 = await t; } }",
+            "class C { async fnc name() -> String { return \"x\" } fnc main() -> Nothing { const t = spawn C::name()\nconst n: Int64 = await t } }",
             "Int",
         );
     }
 
     #[test]
     fn test_task_annotation_and_legacy_int_handle_storage_ok() {
-        ok("class C { async fnc f() -> Int64 { return 1; } fnc main() -> Nothing { const t: Task<Int64> = spawn C::f(); var legacy: Int64 = spawn C::f(); const r: Int64 = await t; const q = await legacy; } }");
+        ok("class C { async fnc f() -> Int64 { return 1 } fnc main() -> Nothing { const t: Task<Int64> = spawn C::f()\nvar legacy: Int64 = spawn C::f()\nconst r: Int64 = await t\nconst q = await legacy } }");
     }
 
     #[test]
     fn test_plain_int_is_not_a_task() {
         err_contains(
-            "class C { fnc main() -> Nothing { const t: Task<Int64> = 5; } }",
+            "class C { fnc main() -> Nothing { const t: Task<Int64> = 5 } }",
             "Task",
         );
     }
@@ -4372,35 +4441,35 @@ mod tests {
     #[test]
     fn test_await_on_non_task_errors() {
         err_contains(
-            "class C { fnc main() -> Nothing { const s = \"x\"; const r = await s; } }",
+            "class C { fnc main() -> Nothing { const s = \"x\"\nconst r = await s } }",
             "await",
         );
     }
 
     #[test]
     fn test_user_class_named_task_is_rejected() {
-        err_contains("class Task { var id: Int64; }", "built-in type");
+        err_contains("class Task { var id: Int64 }", "built-in type");
     }
 
     #[test]
     fn task_control_requires_a_typed_task() {
-        ok("class C { fnc f() -> String { return \"x\"; } fnc g() -> Nothing { const t = spawn C::f(); taskCancel(t); taskDetach(t); } }");
-        err_contains("class C { fnc f() -> Nothing { taskCancel(42); } }", "Task");
-        err_contains("class C { fnc f() -> Nothing { taskDetach(42); } }", "Task");
-        err_contains("class C { fnc f() -> Nothing { taskSetDeadline(\"soon\"); } }", "Int");
+        ok("class C { fnc f() -> String { return \"x\" } fnc g() -> Nothing { const t = spawn C::f()\ntaskCancel(t)\ntaskDetach(t) } }");
+        err_contains("class C { fnc f() -> Nothing { taskCancel(42) } }", "Task");
+        err_contains("class C { fnc f() -> Nothing { taskDetach(42) } }", "Task");
+        err_contains("class C { fnc f() -> Nothing { taskSetDeadline(\"soon\") } }", "Int");
     }
 
     // --- same-class bare `fnc` calls (issue #149 stage 2) ---
 
     #[test]
     fn test_same_class_bare_static_call_ok() {
-        ok("class C { fnc helper(x: Int64) -> Int64 { return x * 2; } fnc main() -> Int64 { return helper(3); } }");
+        ok("class C { fnc helper(x: Int64) -> Int64 { return x * 2 } fnc main() -> Int64 { return helper(3) } }");
     }
 
     #[test]
     fn test_same_class_bare_static_call_wrong_arg_count_errors() {
         err_contains(
-            "class C { fnc helper(x: Int64) -> Int64 { return x; } fnc main() -> Int64 { return helper(); } }",
+            "class C { fnc helper(x: Int64) -> Int64 { return x } fnc main() -> Int64 { return helper() } }",
             "argument",
         );
     }
@@ -4411,7 +4480,7 @@ mod tests {
         // method just because it shares a name -- only the current class
         // (and the flat free-function table) are consulted.
         err_contains(
-            "class Other { fnc helper() -> Int64 { return 1; } } class C { fnc main() -> Int64 { return helper(); } }",
+            "class Other { fnc helper() -> Int64 { return 1 } } class C { fnc main() -> Int64 { return helper() } }",
             "undefined function",
         );
     }
@@ -4421,7 +4490,7 @@ mod tests {
         // Same-class bare resolution is static-only; an instance `fn`
         // sibling still requires an explicit `this.` receiver.
         err_contains(
-            "class C { fn helper() -> Int64 { return 1; } fnc main() -> Int64 { return helper(); } }",
+            "class C { fn helper() -> Int64 { return 1 } fnc main() -> Int64 { return helper() } }",
             "undefined function",
         );
     }
@@ -4432,12 +4501,12 @@ mod tests {
         // name (still supported during the #149 migration) must win over
         // a same-class static method of that name, matching codegen's
         // priority (fn_sigs checked before the same-class fallback).
-        ok("fn helper() -> Int64 { return 99; } class C { fnc helper() -> Int64 { return 1; } fnc main() -> Int64 { return helper(); } }");
+        ok("fn helper() -> Int64 { return 99 } class C { fnc helper() -> Int64 { return 1 } fnc main() -> Int64 { return helper() } }");
     }
 
     #[test]
     fn test_simple_function() {
-        let result = typecheck_code("fn main() -> Int32 { return 42; }");
+        let result = typecheck_code("fn main() -> Int32 { return 42 }");
         assert!(result.is_ok());
     }
 
@@ -4448,7 +4517,7 @@ mod tests {
     #[test]
     fn test_list_element_mismatch() {
         err_contains(
-            "fn main() -> Int32 { let xs: List<String> = [1, 2]; return 0; }",
+            "fn main() -> Int32 { let xs: List<String> = [1, 2]\nreturn 0 }",
             "expected List<String>, found List<Int64>",
         );
     }
@@ -4456,7 +4525,7 @@ mod tests {
     #[test]
     fn test_list_element_arg_mismatch() {
         err_contains(
-            "fn f(xs: List<Int64>) -> Int64 { return xs.len(); }\nfn main() -> Int32 { let names: List<String> = [\"a\"]; f(names); return 0; }",
+            "fn f(xs: List<Int64>) -> Int64 { return xs.len() }\nfn main() -> Int32 { let names: List<String> = [\"a\"]\nf(names)\nreturn 0 }",
             "expected List<Int64>, found List<String>",
         );
     }
@@ -4464,28 +4533,28 @@ mod tests {
     #[test]
     fn test_map_value_mismatch() {
         err_contains(
-            "fn main() -> Int32 { let m: Map<String, Int64> = @{\"k\" => \"v\"}; return 0; }",
+            "fn main() -> Int32 { let m: Map<String, Int64> = @{\"k\" => \"v\"}\nreturn 0 }",
             "expected Map<String, Int64>, found Map<String, String>",
         );
     }
 
     #[test]
     fn test_list_element_match_ok() {
-        ok("fn main() -> Int32 { let xs: List<Int64> = [1, 2]; let ys: List<String> = [\"a\"]; let m: Map<String, String> = @{\"k\" => \"v\"}; return 0; }");
+        ok("fn main() -> Int32 { let xs: List<Int64> = [1, 2]\nlet ys: List<String> = [\"a\"]\nlet m: Map<String, String> = @{\"k\" => \"v\"}\nreturn 0 }");
     }
 
     #[test]
     fn test_empty_list_stays_wildcard() {
         // Empty literals and erased sources (Any element) are compatible
         // with any element type
-        ok("fn main() -> Int32 { let xs: List<String> = []; let m: Map<String, Int64> = @{}; return 0; }");
+        ok("fn main() -> Int32 { let xs: List<String> = []\nlet m: Map<String, Int64> = @{}\nreturn 0 }");
     }
 
     #[test]
     fn test_index_yields_element_type() {
         // xs[0] ist Int64 — String-Zuweisung elementgenau abgelehnt
         err_contains(
-            "fn main() -> Int32 { let xs: List<Int64> = [1]; let s: String = xs[0]; return 0; }",
+            "fn main() -> Int32 { let xs: List<Int64> = [1]\nlet s: String = xs[0]\nreturn 0 }",
             "expected String, found Int64",
         );
     }
@@ -4493,7 +4562,7 @@ mod tests {
     #[test]
     fn test_loop_var_yields_element_type() {
         err_contains(
-            "fn main() -> Int32 { let xs: List<Int64> = [1]; for x in xs { let s: String = x; } return 0; }",
+            "fn main() -> Int32 { let xs: List<Int64> = [1]\nfor x in xs { let s: String = x } return 0 }",
             "expected String, found Int64",
         );
     }
@@ -4501,7 +4570,7 @@ mod tests {
     #[test]
     fn test_int_float_lists_compatible() {
         // Int/Float coercion applies element-wise too
-        ok("fn main() -> Int32 { let xs: List<Float64> = [1, 2]; return 0; }");
+        ok("fn main() -> Int32 { let xs: List<Float64> = [1, 2]\nreturn 0 }");
     }
 
     #[test]
@@ -4509,7 +4578,7 @@ mod tests {
         // var used to ignore the annotation completely whenever a value
         // was present — the let rule now applies here too
         err_contains(
-            "fn main() -> Int32 { var x: String = 5; return 0; }",
+            "fn main() -> Int32 { var x: String = 5\nreturn 0 }",
             "expected String, found Int64",
         );
     }
@@ -4518,13 +4587,13 @@ mod tests {
     fn test_var_annotation_wins_over_erased_value() {
         // The annotation is the contract: Map<String, List<String>>
         // is preserved, even though Map::new() only returns Map(Any)
-        ok("fn main() -> Int32 { var m: Map<String, List<String>> = Map::new(); m.insert(\"k\", [\"a\"]); let v: List<String> = m.get(\"k\"); return 0; }");
+        ok("fn main() -> Int32 { var m: Map<String, List<String>> = Map::new()\nm.insert(\"k\", [\"a\"])\nlet v: List<String> = m.get(\"k\")\nreturn 0 }");
     }
 
     #[test]
     fn test_receiver_dependent_first() {
         err_contains(
-            "fn main() -> Int32 { let xs: List<Int64> = [1]; let s: String = xs.first(); return 0; }",
+            "fn main() -> Int32 { let xs: List<Int64> = [1]\nlet s: String = xs.first()\nreturn 0 }",
             "expected String, found Int64",
         );
     }
@@ -4533,7 +4602,7 @@ mod tests {
     fn test_match_payload_binding_typed() {
         // Payload-Variablen tragen den deklarierten Variantentyp
         err_contains(
-            "enum Box { Val(Int64), Nix }\nfn main() -> Int32 { let b = Box::Val(5); match b { Val(n) => { let s: String = n; } _ => println(\"-\"); } return 0; }",
+            "enum Box { Val(Int64)\nNix }\nfn main() -> Int32 { let b = Box::Val(5)\nmatch b { Val(n) => { let s: String = n } _ => println(\"-\") } return 0 }",
             "expected String, found Int64",
         );
     }
@@ -4541,20 +4610,20 @@ mod tests {
     #[test]
     fn test_match_payload_binding_container() {
         // Container-Payloads bleiben elementgenau (List<String> → String)
-        ok("enum Box { Val(List<String>), Nix }\nfn main() -> Int32 { let b = Box::Val([\"a\"]); match b { Val(xs) => { let s: String = xs[0]; } _ => println(\"-\"); } return 0; }");
+        ok("enum Box { Val(List<String>)\nNix }\nfn main() -> Int32 { let b = Box::Val([\"a\"])\nmatch b { Val(xs) => { let s: String = xs[0] } _ => println(\"-\") } return 0 }");
     }
 
     #[test]
     fn test_map_get_yields_value_type() {
         err_contains(
-            "fn main() -> Int32 { var m: Map<String, Int64> = Map::new(); let s: String = m.get(\"k\"); return 0; }",
+            "fn main() -> Int32 { var m: Map<String, Int64> = Map::new()\nlet s: String = m.get(\"k\")\nreturn 0 }",
             "expected String, found Int64",
         );
     }
 
     #[test]
     fn test_undefined_variable() {
-        let result = typecheck_code("fn main() -> Int32 { return x; }");
+        let result = typecheck_code("fn main() -> Int32 { return x }");
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert!(errors
@@ -4565,7 +4634,7 @@ mod tests {
 
     #[test]
     fn test_binary_op_mismatch() {
-        let result = typecheck_code("fn main() -> Int32 { return true + 1; }");
+        let result = typecheck_code("fn main() -> Int32 { return true + 1 }");
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert!(errors
@@ -4576,13 +4645,13 @@ mod tests {
 
     #[test]
     fn test_type_mismatch() {
-        let result = typecheck_code("fn main() -> Int32 { let x: Int32 = \"hello\"; return x; }");
+        let result = typecheck_code("fn main() -> Int32 { let x: Int32 = \"hello\"\nreturn x }");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_undefined_function() {
-        let result = typecheck_code("fn main() -> Int32 { return foo(); }");
+        let result = typecheck_code("fn main() -> Int32 { return foo() }");
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert!(errors
@@ -4604,14 +4673,14 @@ mod tests {
         // Interface methods require a body (parser constraint); use empty bodies here.
         let code = r#"
 interface IShape {
-    fn area() -> Int64 { return 0; }
+    fn area() -> Int64 { return 0 }
 }
 interface IDrawable extends IShape {
     fn draw() { }
 }
 class Circle implements IDrawable {
     fn draw() { }
-    fn area() -> Int64 { return 42; }
+    fn area() -> Int64 { return 42 }
 }
 "#;
         let ast = parse_code(code).expect("parse should succeed");
@@ -4625,7 +4694,7 @@ class Circle implements IDrawable {
         // A class implementing IDrawable but missing area() (inherited from IShape) should fail.
         let code = r#"
 interface IShape {
-    fn area() -> Int64 { return 0; }
+    fn area() -> Int64 { return 0 }
 }
 interface IDrawable extends IShape {
     fn draw() { }
@@ -4669,48 +4738,48 @@ interface IDrawable extends IDoesNotExist {
 
     #[test]
     fn test_let_explicit_type_ok() {
-        ok("fn f() { let x: Int32 = 5; }");
+        ok("fn f() { let x: Int32 = 5 }");
     }
 
     #[test]
     fn test_let_inferred_type_ok() {
-        ok("fn f() { let x = 42; }");
+        ok("fn f() { let x = 42 }");
     }
 
     #[test]
     fn test_let_string_ok() {
-        ok(r#"fn f() { let s: String = "hello"; }"#);
+        ok(r#"fn f() { let s: String = "hello" }"#);
     }
 
     #[test]
     fn test_let_bool_ok() {
-        ok("fn f() { let b: Bool = true; }");
+        ok("fn f() { let b: Bool = true }");
     }
 
     #[test]
     fn test_let_type_mismatch_string_as_int() {
         err_contains(
-            r#"fn f() { let x: Int32 = "oops"; }"#,
+            r#"fn f() { let x: Int32 = "oops" }"#,
             "expected",
         );
     }
 
     #[test]
     fn test_let_type_mismatch_bool_as_int() {
-        err_contains("fn f() { let x: Int32 = true; }", "expected");
+        err_contains("fn f() { let x: Int32 = true }", "expected");
     }
 
     // --- Function calls ---
 
     #[test]
     fn test_call_correct_arg_count() {
-        ok("fn add(a: Int32, b: Int32) -> Int32 { return a; } fn f() { add(1, 2); }");
+        ok("fn add(a: Int32, b: Int32) -> Int32 { return a } fn f() { add(1, 2) }");
     }
 
     #[test]
     fn test_call_too_few_args() {
         err_contains(
-            "fn add(a: Int32, b: Int32) -> Int32 { return a; } fn f() { add(1); }",
+            "fn add(a: Int32, b: Int32) -> Int32 { return a } fn f() { add(1) }",
             "arguments",
         );
     }
@@ -4718,90 +4787,90 @@ interface IDrawable extends IDoesNotExist {
     #[test]
     fn test_call_too_many_args() {
         err_contains(
-            "fn add(a: Int32, b: Int32) -> Int32 { return a; } fn f() { add(1, 2, 3); }",
+            "fn add(a: Int32, b: Int32) -> Int32 { return a } fn f() { add(1, 2, 3) }",
             "arguments",
         );
     }
 
     #[test]
     fn test_recursive_function_ok() {
-        ok("fn fact(n: Int32) -> Int32 { if (n > 0) { return fact(n); } return 1; }");
+        ok("fn fact(n: Int32) -> Int32 { if (n > 0) { return fact(n) } return 1 }");
     }
 
     #[test]
     fn test_mutual_recursion_ok() {
-        ok("fn a() -> Int32 { return b(); } fn b() -> Int32 { return a(); }");
+        ok("fn a() -> Int32 { return b() } fn b() -> Int32 { return a() }");
     }
 
     // --- Return type ---
 
     #[test]
     fn test_return_type_not_checked() {
-        err_contains(r#"fn f() -> Int32 { return "hello"; }"#, "expected Int");
+        err_contains(r#"fn f() -> Int32 { return "hello" }"#, "expected Int");
     }
 
     #[test]
     fn test_return_nothing_ok() {
-        ok("fn f() { return; }");
+        ok("fn f() { return }");
     }
 
     #[test]
     fn test_return_correct_type_ok() {
-        ok("fn f() -> Bool { return true; }");
+        ok("fn f() -> Bool { return true }");
     }
 
     // --- Binary operators ---
 
     #[test]
     fn test_add_ints_ok() {
-        ok("fn f() { let x = 1 + 2; }");
+        ok("fn f() { let x = 1 + 2 }");
     }
 
     #[test]
     fn test_add_floats_ok() {
-        ok("fn f() { let x = 1.0 + 2.0; }");
+        ok("fn f() { let x = 1.0 + 2.0 }");
     }
 
     #[test]
     fn test_add_bool_int_err() {
-        err_contains("fn f() { let x = true + 1; }", "cannot be applied");
+        err_contains("fn f() { let x = true + 1 }", "cannot be applied");
     }
 
     #[test]
     fn test_compare_ints_ok() {
-        ok("fn f() { let x = 1 < 2; }");
+        ok("fn f() { let x = 1 < 2 }");
     }
 
     #[test]
     fn test_logical_and_bools_ok() {
-        ok("fn f() { let x = true && false; }");
+        ok("fn f() { let x = true && false }");
     }
 
     #[test]
     fn test_logical_and_int_err() {
-        err_contains("fn f() { let x = 1 && 2; }", "cannot be applied");
+        err_contains("fn f() { let x = 1 && 2 }", "cannot be applied");
     }
 
     #[test]
     fn test_equality_ok() {
-        ok("fn f() { let x = 1 == 1; }");
+        ok("fn f() { let x = 1 == 1 }");
     }
 
     // --- Unary operators ---
 
     #[test]
     fn test_unary_neg_int_ok() {
-        ok("fn f() { let x = -5; }");
+        ok("fn f() { let x = -5 }");
     }
 
     #[test]
     fn test_unary_not_bool_ok() {
-        ok("fn f() { let x = !true; }");
+        ok("fn f() { let x = !true }");
     }
 
     #[test]
     fn test_unary_not_int_err() {
-        err_contains("fn f() { let x = !5; }", "cannot be applied");
+        err_contains("fn f() { let x = !5 }", "cannot be applied");
     }
 
     // --- Control flow ---
@@ -4823,50 +4892,51 @@ interface IDrawable extends IDoesNotExist {
 
     #[test]
     fn test_break_in_loop_ok() {
-        ok("fn f() { while true { break; } }");
+        ok("fn f() { while true { break } }");
     }
 
     #[test]
     fn test_continue_in_loop_ok() {
-        ok("fn f() { while true { continue; } }");
+        ok("fn f() { while true { continue } }");
     }
 
     #[test]
     fn test_break_outside_loop_err() {
-        err_contains("fn f() { break; }", "loop");
+        err_contains("fn f() { break }", "loop");
     }
 
     #[test]
     fn test_continue_outside_loop_err() {
-        err_contains("fn f() { continue; }", "loop");
+        err_contains("fn f() { continue }", "loop");
     }
 
     // --- Classes ---
 
     #[test]
     fn test_class_instantiation_ok() {
-        ok("class Point { x: Int64; y: Int64; } fn f() { let p = new Point(0, 0); }");
+        ok("class Point { x: Int64\ny: Int64 } fn f() { let p = new Point(0, 0) }");
     }
 
     #[test]
     fn test_class_field_access_ok() {
-        ok("class Point { x: Int64; } fn f() { let p = new Point(0); let n = p.x; }");
+        ok("class Point { x: Int64 } fn f() { let p = new Point(0)\nlet n = p.x }");
     }
 
     #[test]
     fn test_class_method_call_ok() {
         ok(r#"
 class Greeter {
-    fn greet() -> String { return "hi"; }
+    fn greet() -> String { return "hi" }
 }
-fn f() { let g = new Greeter(); g.greet(); }
+fn f() { let g = new Greeter()
+g.greet() }
 "#);
     }
 
     #[test]
     fn test_class_undefined_field_err() {
         err_contains(
-            "class Point { x: Int64; } fn f() { let p = new Point(0); let n = p.z; }",
+            "class Point { x: Int64 } fn f() { let p = new Point(0)\nlet n = p.z }",
             "no field",
         );
     }
@@ -4875,8 +4945,8 @@ fn f() { let g = new Greeter(); g.greet(); }
     fn test_class_with_this() {
         ok(r#"
 class Counter {
-    count: Int64;
-    fn increment() { this.count = 1; }
+    count: Int64
+    fn increment() { this.count = 1 }
 }
 "#);
     }
@@ -4937,13 +5007,14 @@ class C implements A, B { fn a() { } }
 
     #[test]
     fn test_enum_ok() {
-        ok("enum Color { Red, Green, Blue }");
+        ok("enum Color { Red\nGreen\nBlue }");
     }
 
     #[test]
     fn test_enum_in_match_ok() {
         ok(r#"
-enum Dir { Left, Right }
+enum Dir { Left
+Right }
 fn f(d: Dir) {
     match d {
         Dir::Left => { }
@@ -4958,24 +5029,24 @@ fn f(d: Dir) {
 
     #[test]
     fn test_generic_function_ok() {
-        ok("fn identity<T>(x: T) -> T { return x; }");
+        ok("fn identity<T>(x: T) -> T { return x }");
     }
 
     #[test]
     fn test_generic_class_ok() {
-        ok("class Box<T> { value: T; } fn f() { let b = new Box(42); }");
+        ok("class Box<T> { value: T } fn f() { let b = new Box(42) }");
     }
 
     // --- Array ---
 
     #[test]
     fn test_array_index_ok() {
-        ok("fn f() { let arr = [1, 2, 3]; let x = arr[0]; }");
+        ok("fn f() { let arr = [1, 2, 3]\nlet x = arr[0] }");
     }
 
     #[test]
     fn test_array_index_non_int_err() {
-        err_contains("fn f() { let arr = [1, 2, 3]; let x = arr[true]; }", "index");
+        err_contains("fn f() { let arr = [1, 2, 3]\nlet x = arr[true] }", "index");
     }
 
     // --- Match ---
@@ -4994,7 +5065,7 @@ fn f(d: Dir) {
 
     #[test]
     fn test_try_catch_ok() {
-        ok(r#"fn f() { try { let x = 1; } catch e: String { } }"#);
+        ok(r#"fn f() { try { let x = 1 } catch e: String { } }"#);
     }
 
     // --- Visibility ---
@@ -5003,8 +5074,8 @@ fn f(d: Dir) {
     fn test_private_field_inside_class_ok() {
         ok(r#"
 class Foo {
-    private x: Int64;
-    fn getX() -> Int64 { return this.x; }
+    private x: Int64
+    fn getX() -> Int64 { return this.x }
 }
 "#);
     }
@@ -5013,8 +5084,9 @@ class Foo {
     fn test_private_field_outside_class_err() {
         err_contains(
             r#"
-class Foo { private x: Int64; }
-fn f() { let foo = new Foo(0); let n = foo.x; }
+class Foo { private x: Int64 }
+fn f() { let foo = new Foo(0)
+let n = foo.x }
 "#,
             "private",
         );
@@ -5032,7 +5104,7 @@ fn f() { let foo = new Foo(0); let n = foo.x; }
 
     #[test]
     fn test_module_decl_ok() {
-        ok("module myapp;");
+        ok("module myapp");
     }
 
     // --- Nested let / shadowing ---
@@ -5040,19 +5112,19 @@ fn f() { let foo = new Foo(0); let n = foo.x; }
     #[test]
     fn test_variable_shadowing_err() {
         // Tinox typecheck does not allow variable shadowing in the same scope
-        err_contains("fn f() { let x = 1; let x = 2; }", "duplicate definition");
+        err_contains("fn f() { let x = 1\nlet x = 2 }", "duplicate definition");
     }
 
     #[test]
     fn test_variable_used_after_declaration() {
-        ok("fn f() { let x = 5; let y = x; }");
+        ok("fn f() { let x = 5\nlet y = x }");
     }
 
     // --- Nested function calls ---
 
     #[test]
     fn test_nested_function_call_ok() {
-        ok("fn double(x: Int32) -> Int32 { return x; } fn f() { let y = double(double(1)); }");
+        ok("fn double(x: Int32) -> Int32 { return x } fn f() { let y = double(double(1)) }");
     }
 
     // --- Chained method calls ---
@@ -5061,10 +5133,10 @@ fn f() { let foo = new Foo(0); let n = foo.x; }
     fn test_chained_method_calls_ok() {
         ok(r#"
 class Builder {
-    fn step() -> Builder { return this; }
+    fn step() -> Builder { return this }
     fn build() { }
 }
-fn f() { new Builder().step().build(); }
+fn f() { new Builder().step().build() }
 "#);
     }
 
@@ -5072,38 +5144,38 @@ fn f() { new Builder().step().build(); }
 
     #[test]
     fn test_multiple_return_paths_ok() {
-        ok("fn f(x: Int32) -> Int32 { if (x > 0) { return x; } return 0; }");
+        ok("fn f(x: Int32) -> Int32 { if (x > 0) { return x } return 0 }");
     }
 
     // --- Undefined variable in different scopes ---
 
     #[test]
     fn test_undefined_variable_in_if_branch_err() {
-        err_contains("fn f() { if (true) { return z; } }", "undefined variable");
+        err_contains("fn f() { if (true) { return z } }", "undefined variable");
     }
 
     #[test]
     fn test_var_defined_in_outer_scope_accessible_in_inner() {
-        ok("fn f() { let x = 5; if (true) { let y = x; } }");
+        ok("fn f() { let x = 5\nif (true) { let y = x } }");
     }
 
     // --- Float operations ---
 
     #[test]
     fn test_float_comparison_ok() {
-        ok("fn f() { let x = 1.0 < 2.0; }");
+        ok("fn f() { let x = 1.0 < 2.0 }");
     }
 
     #[test]
     fn test_float_arithmetic_chain_ok() {
-        ok("fn f() { let x = 1.0 + 2.0 * 3.0 - 0.5; }");
+        ok("fn f() { let x = 1.0 + 2.0 * 3.0 - 0.5 }");
     }
 
     // --- String operations ---
 
     #[test]
     fn test_string_concat_ok() {
-        ok(r#"fn f() { let s = "hello" + " world"; }"#);
+        ok(r#"fn f() { let s = "hello" + " world" }"#);
     }
 
     // --- Nested class usage ---
@@ -5112,8 +5184,8 @@ fn f() { new Builder().step().build(); }
     fn test_class_field_assigned_via_this() {
         ok(r#"
 class Tracker {
-    count: Int64;
-    fn reset() { this.count = 0; }
+    count: Int64
+    fn reset() { this.count = 0 }
 }
 "#);
     }
@@ -5122,7 +5194,8 @@ class Tracker {
     fn test_nested_class_instances_ok() {
         ok(r#"
 class Engine { fn start() { } }
-class Car { engine: Engine; fn drive() { this.engine.start(); } }
+class Car { engine: Engine
+fn drive() { this.engine.start() } }
 "#);
     }
 
@@ -5132,12 +5205,12 @@ class Car { engine: Engine; fn drive() { this.engine.start(); } }
     fn test_interface_multiple_methods_fully_impl() {
         ok(r#"
 interface Shape {
-    fn area() -> Int64 { return 0; }
-    fn perimeter() -> Int64 { return 0; }
+    fn area() -> Int64 { return 0 }
+    fn perimeter() -> Int64 { return 0 }
 }
 class Square implements Shape {
-    fn area() -> Int64 { return 1; }
-    fn perimeter() -> Int64 { return 4; }
+    fn area() -> Int64 { return 1 }
+    fn perimeter() -> Int64 { return 4 }
 }
 "#);
     }
@@ -5146,11 +5219,11 @@ class Square implements Shape {
     fn test_interface_partial_impl_err() {
         err_contains(r#"
 interface Shape {
-    fn area() -> Int64 { return 0; }
-    fn perimeter() -> Int64 { return 0; }
+    fn area() -> Int64 { return 0 }
+    fn perimeter() -> Int64 { return 0 }
 }
 class Square implements Shape {
-    fn area() -> Int64 { return 1; }
+    fn area() -> Int64 { return 1 }
 }
 "#, "perimeter");
     }
@@ -5160,7 +5233,9 @@ class Square implements Shape {
     #[test]
     fn test_enum_match_with_wildcard_ok() {
         ok(r#"
-enum Status { Active, Inactive, Pending }
+enum Status { Active
+Inactive
+Pending }
 fn f(s: Status) {
     match s {
         Status::Active => { }
@@ -5174,14 +5249,14 @@ fn f(s: Status) {
 
     #[test]
     fn test_immutable_decl_ok() {
-        ok("immutable Point(x: Int64, y: Int64);");
+        ok("immutable Point(x: Int64, y: Int64)");
     }
 
     // --- Namespace / imports ---
 
     #[test]
     fn test_import_ok() {
-        ok("import std.io;");
+        ok("import std.io");
     }
 
     #[test]
@@ -5189,8 +5264,8 @@ fn f(s: Status) {
         ok(r#"
 namespace geometry {
     class Circle {
-        radius: Float64;
-        fn area() -> Float64 { return this.radius; }
+        radius: Float64
+        fn area() -> Float64 { return this.radius }
     }
 }
 "#);
@@ -5210,12 +5285,12 @@ namespace geometry {
         ok(r#"
 namespace boxns {
     class SomeBox<T> {
-        value: T;
-        fnc wrap(v: T) -> SomeBox<T> { return SomeBox<T> { value: v }; }
-        fn unwrap() -> T { return this.value; }
+        value: T
+        fnc wrap(v: T) -> SomeBox<T> { return SomeBox<T> { value: v } }
+        fn unwrap() -> T { return this.value }
     }
 }
-fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
+fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap() }
 "#);
     }
 
@@ -5223,39 +5298,39 @@ fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
 
     #[test]
     fn test_generic_two_type_params_ok() {
-        ok("fn swap<A, B>(a: A, b: B) -> A { return a; }");
+        ok("fn swap<A, B>(a: A, b: B) -> A { return a }");
     }
 
     // --- Stdlib builtins ---
 
     #[test]
     fn test_builtin_print_ok() {
-        ok(r#"fn f() { print("hello"); }"#);
+        ok(r#"fn f() { print("hello") }"#);
     }
 
     #[test]
     fn test_builtin_println_ok() {
-        ok(r#"fn f() { println(42); }"#);
+        ok(r#"fn f() { println(42) }"#);
     }
 
     #[test]
     fn test_builtin_len_ok() {
-        ok("fn f() { let arr = [1, 2, 3]; let n = len(arr); }");
+        ok("fn f() { let arr = [1, 2, 3]\nlet n = len(arr) }");
     }
 
     #[test]
     fn test_builtin_push_ok() {
-        ok("fn f() { let arr = [1, 2]; push(arr, 3); }");
+        ok("fn f() { let arr = [1, 2]\npush(arr, 3) }");
     }
 
     #[test]
     fn test_builtin_sqrt_ok() {
-        ok("fn f() { let x = sqrt(2.0); }");
+        ok("fn f() { let x = sqrt(2.0) }");
     }
 
     #[test]
     fn test_builtin_min_max_ok() {
-        ok("fn f() { let a = min(1, 2); let b = max(3, 4); }");
+        ok("fn f() { let a = min(1, 2)\nlet b = max(3, 4) }");
     }
 
     // --- For range variations ---
@@ -5267,28 +5342,28 @@ fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
 
     #[test]
     fn test_for_loop_body_var_accessible() {
-        ok("fn f() { for i in 0..5 { let x = i; } }");
+        ok("fn f() { for i in 0..5 { let x = i } }");
     }
 
     // --- Trait ---
 
     #[test]
     fn test_trait_decl_ok() {
-        ok("trait Serializable { fn serialize() -> String; }");
+        ok("trait Serializable { fn serialize() -> String }");
     }
 
     // --- Extern fn ---
 
     #[test]
     fn test_extern_fn_callable_ok() {
-        ok("extern fn malloc(size: Int64) -> Int64; fn f() { malloc(8); }");
+        ok("extern fn malloc(size: Int64) -> Int64\nfn f() { malloc(8) }");
     }
 
     // --- Async fn ---
 
     #[test]
     fn test_async_fn_ok() {
-        ok(r#"async fn fetch() -> String { return ""; }"#);
+        ok(r#"async fn fetch() -> String { return "" }"#);
     }
 
     // ================================================================
@@ -5298,38 +5373,38 @@ fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
     #[test]
     fn test_assign_to_let_is_err() {
         // let variables are immutable — assigning should fail
-        err_contains("fn f() { let x = 1; x = 2; }", "immutable");
+        err_contains("fn f() { let x = 1\nx = 2 }", "immutable");
     }
 
     #[test]
     fn test_assign_to_var_ok() {
-        ok("fn f() { var x = 1; x = 2; }");
+        ok("fn f() { var x = 1\nx = 2 }");
     }
 
     #[test]
     fn test_compound_add_assign_ok() {
-        ok("fn f() { var x = 1; x += 2; }");
+        ok("fn f() { var x = 1\nx += 2 }");
     }
 
     #[test]
     fn test_compound_sub_assign_ok() {
-        ok("fn f() { var x = 10; x -= 3; }");
+        ok("fn f() { var x = 10\nx -= 3 }");
     }
 
     #[test]
     fn test_compound_mul_assign_ok() {
-        ok("fn f() { var x = 2; x *= 4; }");
+        ok("fn f() { var x = 2\nx *= 4 }");
     }
 
     #[test]
     fn test_compound_div_assign_ok() {
-        ok("fn f() { var x = 8; x /= 2; }");
+        ok("fn f() { var x = 8\nx /= 2 }");
     }
 
     #[test]
     fn test_compound_assign_on_let_not_detected() {
         // BUG: typechecker does not yet flag compound-assignment to a `let` variable
-        ok("fn f() { let x = 1; x += 1; }");
+        ok("fn f() { let x = 1\nx += 1 }");
     }
 
     // ================================================================
@@ -5339,7 +5414,7 @@ fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
     #[test]
     fn test_array_float_index_err() {
         err_contains(
-            "fn f(a: Array<Int32>) { let x = a[1.0]; }",
+            "fn f(a: Array<Int32>) { let x = a[1.0] }",
             "integer",
         );
     }
@@ -5347,7 +5422,7 @@ fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
     #[test]
     fn test_array_bool_index_err() {
         err_contains(
-            "fn f(a: Array<Int32>) { let x = a[true]; }",
+            "fn f(a: Array<Int32>) { let x = a[true] }",
             "integer",
         );
     }
@@ -5359,13 +5434,13 @@ fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
     #[test]
     fn test_division_by_zero_not_detected() {
         // BUG: constant division by zero is not detected at typecheck time
-        ok("fn f() -> Int64 { return 10 / 0; }");
+        ok("fn f() -> Int64 { return 10 / 0 }");
     }
 
     #[test]
     fn test_mod_by_zero_not_detected() {
         // BUG: constant modulo by zero is not detected at typecheck time
-        ok("fn f() -> Int64 { return 5 % 0; }");
+        ok("fn f() -> Int64 { return 5 % 0 }");
     }
 
     // ================================================================
@@ -5374,22 +5449,22 @@ fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
 
     #[test]
     fn test_cast_int_to_float_ok() {
-        ok("fn f(x: Int64) -> Float64 { return x as Float64; }");
+        ok("fn f(x: Int64) -> Float64 { return x as Float64 }");
     }
 
     #[test]
     fn test_cast_float_to_int_ok() {
-        ok("fn f(x: Float64) -> Int64 { return x as Int64; }");
+        ok("fn f(x: Float64) -> Int64 { return x as Int64 }");
     }
 
     #[test]
     fn test_cast_int_to_string_ok() {
-        ok("fn f(x: Int64) -> String { return x as String; }");
+        ok("fn f(x: Int64) -> String { return x as String }");
     }
 
     #[test]
     fn test_cast_bool_to_string_ok() {
-        ok("fn f(b: Bool) -> String { return b as String; }");
+        ok("fn f(b: Bool) -> String { return b as String }");
     }
 
     // ================================================================
@@ -5402,7 +5477,7 @@ fn f() -> Int64 { return SomeBox<Int64>::wrap(1).unwrap(); }
         ok(r#"
 class Foo {
     private fn secret() -> Nothing {}
-    fn callSecret() -> Nothing { this.secret(); }
+    fn callSecret() -> Nothing { this.secret() }
 }
 "#);
     }
@@ -5411,9 +5486,9 @@ class Foo {
     fn test_protected_field_outside_class_err() {
         err_contains(r#"
 class Foo {
-    protected var x: Int64;
+    protected var x: Int64
 }
-fn f(foo: Foo) { let y = foo.x; }
+fn f(foo: Foo) { let y = foo.x }
 "#, "protected");
     }
 
@@ -5423,32 +5498,32 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_string_method_touppercase_ok() {
-        ok(r#"fn f(s: String) { let u = s.toUpper(); }"#);
+        ok(r#"fn f(s: String) { let u = s.toUpper() }"#);
     }
 
     #[test]
     fn test_string_method_length_ok() {
-        ok(r#"fn f(s: String) { let n = s.len(); }"#);
+        ok(r#"fn f(s: String) { let n = s.len() }"#);
     }
 
     #[test]
     fn test_string_method_contains_ok() {
-        ok(r#"fn f(s: String) { let b = s.contains("x"); }"#);
+        ok(r#"fn f(s: String) { let b = s.contains("x") }"#);
     }
 
     #[test]
     fn test_string_method_charat_ok() {
-        ok(r#"fn f(s: String) { let c = s.charAt(0); }"#);
+        ok(r#"fn f(s: String) { let c = s.charAt(0) }"#);
     }
 
     #[test]
     fn test_string_method_toint_ok() {
-        ok(r#"fn f(s: String) { let n = s.toInt(); }"#);
+        ok(r#"fn f(s: String) { let n = s.toInt() }"#);
     }
 
     #[test]
     fn test_string_method_replace_ok() {
-        ok(r#"fn f(s: String) { let r = s.replace("a", "b"); }"#);
+        ok(r#"fn f(s: String) { let r = s.replace("a", "b") }"#);
     }
 
     // ================================================================
@@ -5457,22 +5532,22 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_array_method_push_ok() {
-        ok("fn f(a: Array<Int64>) { a.push(1); }");
+        ok("fn f(a: Array<Int64>) { a.push(1) }");
     }
 
     #[test]
     fn test_array_method_len_ok() {
-        ok("fn f(a: Array<Int64>) { let n = a.len(); }");
+        ok("fn f(a: Array<Int64>) { let n = a.len() }");
     }
 
     #[test]
     fn test_array_method_sort_ok() {
-        ok("fn f(a: Array<Int64>) { let s = a.sort(); }");
+        ok("fn f(a: Array<Int64>) { let s = a.sort() }");
     }
 
     #[test]
     fn test_array_method_contains_ok() {
-        ok("fn f(a: Array<Int64>) { let b = a.contains(1); }");
+        ok("fn f(a: Array<Int64>) { let b = a.contains(1) }");
     }
 
     // ================================================================
@@ -5482,7 +5557,7 @@ fn f(foo: Foo) { let y = foo.x; }
     #[test]
     fn test_forc_loop_ok() {
         // For-C syntax requires parentheses: for (init; cond; update) { body }
-        ok("fn f() { for (var i = 0; i < 10; i += 1) { let x = i; } }");
+        ok("fn f() { for (var i = 0; i < 10; i += 1) { let x = i } }");
     }
 
     // ================================================================
@@ -5500,17 +5575,17 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_logical_or_bools_ok() {
-        ok("fn f(a: Bool, b: Bool) -> Bool { return a || b; }");
+        ok("fn f(a: Bool, b: Bool) -> Bool { return a || b }");
     }
 
     #[test]
     fn test_logical_or_int_err() {
-        err_contains("fn f(a: Int64, b: Int64) -> Bool { return a || b; }", "cannot be applied");
+        err_contains("fn f(a: Int64, b: Int64) -> Bool { return a || b }", "cannot be applied");
     }
 
     #[test]
     fn test_logical_not_bool_ok() {
-        ok("fn f(b: Bool) -> Bool { return !b; }");
+        ok("fn f(b: Bool) -> Bool { return !b }");
     }
 
     // ================================================================
@@ -5519,32 +5594,32 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_bitwise_and_ints_ok() {
-        ok("fn f(a: Int64, b: Int64) -> Int64 { return a & b; }");
+        ok("fn f(a: Int64, b: Int64) -> Int64 { return a & b }");
     }
 
     #[test]
     fn test_bitwise_or_ints_ok() {
-        ok("fn f(a: Int64, b: Int64) -> Int64 { return a | b; }");
+        ok("fn f(a: Int64, b: Int64) -> Int64 { return a | b }");
     }
 
     #[test]
     fn test_bitwise_xor_ints_ok() {
-        ok("fn f(a: Int64, b: Int64) -> Int64 { return a ^ b; }");
+        ok("fn f(a: Int64, b: Int64) -> Int64 { return a ^ b }");
     }
 
     #[test]
     fn test_bitwise_not_int_ok() {
-        ok("fn f(a: Int64) -> Int64 { return ~a; }");
+        ok("fn f(a: Int64) -> Int64 { return ~a }");
     }
 
     #[test]
     fn test_shift_left_ok() {
-        ok("fn f(a: Int64) -> Int64 { return a << 2; }");
+        ok("fn f(a: Int64) -> Int64 { return a << 2 }");
     }
 
     #[test]
     fn test_shift_right_ok() {
-        ok("fn f(a: Int64) -> Int64 { return a >> 1; }");
+        ok("fn f(a: Int64) -> Int64 { return a >> 1 }");
     }
 
     // ================================================================
@@ -5553,22 +5628,22 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_compare_floats_ok() {
-        ok("fn f(a: Float64, b: Float64) -> Bool { return a < b; }");
+        ok("fn f(a: Float64, b: Float64) -> Bool { return a < b }");
     }
 
     #[test]
     fn test_compare_strings_ok() {
-        ok("fn f(a: String, b: String) -> Bool { return a < b; }");
+        ok("fn f(a: String, b: String) -> Bool { return a < b }");
     }
 
     #[test]
     fn test_equality_bools_ok() {
-        ok("fn f(a: Bool, b: Bool) -> Bool { return a == b; }");
+        ok("fn f(a: Bool, b: Bool) -> Bool { return a == b }");
     }
 
     #[test]
     fn test_equality_strings_ok() {
-        ok("fn f(a: String, b: String) -> Bool { return a == b; }");
+        ok("fn f(a: String, b: String) -> Bool { return a == b }");
     }
 
     // ================================================================
@@ -5577,7 +5652,7 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_null_literal_ok() {
-        ok("fn f() -> Nothing { let x = null; }");
+        ok("fn f() -> Nothing { let x = null }");
     }
 
     // ================================================================
@@ -5586,12 +5661,12 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_nested_if_ok() {
-        ok("fn f(x: Int64, y: Int64) -> Nothing { if (x > 0) { if (y > 0) { return; } } }");
+        ok("fn f(x: Int64, y: Int64) -> Nothing { if (x > 0) { if (y > 0) { return } } }");
     }
 
     #[test]
     fn test_else_if_ok() {
-        ok("fn f(x: Int64) -> Nothing { if (x > 0) { return; } else if (x < 0) { return; } else { return; } }");
+        ok("fn f(x: Int64) -> Nothing { if (x > 0) { return } else if (x < 0) { return } else { return } }");
     }
 
     // ================================================================
@@ -5600,12 +5675,12 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_throw_string_ok() {
-        ok(r#"fn f() { throw "error"; }"#);
+        ok(r#"fn f() { throw "error" }"#);
     }
 
     #[test]
     fn test_try_catch_var_accessible_ok() {
-        ok(r#"fn f() { try { let x = 1; } catch e: String { println(e); } }"#);
+        ok(r#"fn f() { try { let x = 1 } catch e: String { println(e) } }"#);
     }
 
     // ================================================================
@@ -5614,15 +5689,15 @@ fn f(foo: Foo) { let y = foo.x; }
 
     #[test]
     fn test_new_class_ok() {
-        ok("class Foo { var x: Int64; } fn f() -> Foo { return new Foo(1); }");
+        ok("class Foo { var x: Int64 } fn f() -> Foo { return new Foo(1) }");
     }
 
     #[test]
     fn test_class_self_reference_ok() {
         ok(r#"
 class Node {
-    var value: Int64;
-    fn getValue() -> Int64 { return this.value; }
+    var value: Int64
+    fn getValue() -> Int64 { return this.value }
 }
 "#);
     }
@@ -5633,7 +5708,7 @@ class Node {
 
     #[test]
     fn test_var_not_visible_before_decl_err() {
-        err_contains("fn f() { let y = x; let x = 1; }", "undefined variable");
+        err_contains("fn f() { let y = x\nlet x = 1 }", "undefined variable");
     }
 
     // ================================================================
@@ -5642,17 +5717,18 @@ class Node {
 
     #[test]
     fn test_enum_variant_in_let_ok() {
-        ok("enum Dir { North; South; } fn f() { let d = Dir::North; }");
+        ok("enum Dir { North\nSouth } fn f() { let d = Dir::North }");
     }
 
     #[test]
     fn test_enum_variant_in_match_pattern_ok() {
         ok(r#"
-enum Status { Ok; Err; }
+enum Status { Ok
+Err }
 fn f(s: Status) -> Nothing {
     match s {
-        Status::Ok => return;
-        Status::Err => return;
+        Status::Ok => return
+        Status::Err => return
     }
 }
 "#);
@@ -5667,7 +5743,7 @@ fn f(s: Status) -> Nothing {
         // Interface declares fn run() -> String, class returns Nothing
         err_contains(r#"
 interface Runner {
-    fn run() -> String;
+    fn run() -> String
 }
 class Jogger implements Runner {
     fn run() -> Nothing {}
@@ -5681,37 +5757,39 @@ class Jogger implements Runner {
 
     #[test]
     fn test_multiple_builtin_calls_ok() {
-        ok(r#"fn f() { println("a"); println("b"); println("c"); }"#);
+        ok(r#"fn f() { println("a")
+println("b")
+println("c") }"#);
     }
 
     #[test]
     fn test_builtin_pop_ok() {
-        ok("fn f(a: Array<Int64>) { let b = pop(a); }");
+        ok("fn f(a: Array<Int64>) { let b = pop(a) }");
     }
 
     #[test]
     fn test_builtin_to_string_ok() {
-        ok("fn f(x: Int64) { let s = toString(x); }");
+        ok("fn f(x: Int64) { let s = toString(x) }");
     }
 
     #[test]
     fn test_builtin_char_at_ok() {
-        ok(r#"fn f(s: String) { let c = charAt(s, 0); }"#);
+        ok(r#"fn f(s: String) { let c = charAt(s, 0) }"#);
     }
 
     #[test]
     fn test_builtin_floor_ceil_round_ok() {
-        ok("fn f(x: Float64) { let a = floor(x); let b = ceil(x); let c = round(x); }");
+        ok("fn f(x: Float64) { let a = floor(x)\nlet b = ceil(x)\nlet c = round(x) }");
     }
 
     #[test]
     fn test_builtin_exit_ok() {
-        ok("fn f() { exit(0); }");
+        ok("fn f() { exit(0) }");
     }
 
     #[test]
     fn test_builtin_pow_ok() {
-        ok("fn f(x: Float64) { let r = pow(x, 2.0); }");
+        ok("fn f(x: Float64) { let r = pow(x, 2.0) }");
     }
 
     // ================================================================
@@ -5730,12 +5808,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_map_literal_ok() {
-        ok("fn f() { let m = @{\"a\" => 1, \"b\" => 2}; }");
+        ok("fn f() { let m = @{\"a\" => 1, \"b\" => 2} }");
     }
 
     #[test]
     fn test_map_subscript_ok() {
-        ok("fn f() -> Int64 { let m = @{\"x\" => 42}; return m[\"x\"]; }");
+        ok("fn f() -> Int64 { let m = @{\"x\" => 42}\nreturn m[\"x\"] }");
     }
 
     // ================================================================
@@ -5744,12 +5822,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_tuple_type_ok() {
-        ok("fn f() -> (Int64, Bool) { return (1, true); }");
+        ok("fn f() -> (Int64, Bool) { return (1, true) }");
     }
 
     #[test]
     fn test_tuple_access_ok() {
-        ok("fn f() -> Int64 { let t = (10, 20); return t.0; }");
+        ok("fn f() -> Int64 { let t = (10, 20)\nreturn t.0 }");
     }
 
     // ================================================================
@@ -5758,17 +5836,17 @@ class Jogger implements Runner {
 
     #[test]
     fn test_cast_int_to_float_v2_ok() {
-        ok("fn f() -> Float64 { let x = 5; return x as Float64; }");
+        ok("fn f() -> Float64 { let x = 5\nreturn x as Float64 }");
     }
 
     #[test]
     fn test_cast_float_to_int_v2_ok() {
-        ok("fn f() -> Int64 { let x = 3.14; return x as Int64; }");
+        ok("fn f() -> Int64 { let x = 3.14\nreturn x as Int64 }");
     }
 
     #[test]
     fn test_cast_int_to_string_v2_ok() {
-        ok("fn f() -> String { let x = 42; return x as String; }");
+        ok("fn f() -> String { let x = 42\nreturn x as String }");
     }
 
     // ================================================================
@@ -5778,7 +5856,7 @@ class Jogger implements Runner {
     #[test]
     fn test_class_extends_and_implements_ok() {
         ok(concat!(
-            "interface Printable { fn print() -> Nothing; }\n",
+            "interface Printable { fn print() -> Nothing }\n",
             "class Base { fn init() -> Nothing {} }\n",
             "class Child extends Base implements Printable { fn print() -> Nothing {} }"
         ));
@@ -5787,8 +5865,8 @@ class Jogger implements Runner {
     #[test]
     fn test_super_call_ok() {
         ok(concat!(
-            "class Animal { fn speak() -> Nothing { println(\"...\"); } }\n",
-            "class Dog extends Animal { fn speak() -> Nothing { super.speak(); } }"
+            "class Animal { fn speak() -> Nothing { println(\"...\") } }\n",
+            "class Dog extends Animal { fn speak() -> Nothing { super.speak() } }"
         ));
     }
 
@@ -5799,16 +5877,16 @@ class Jogger implements Runner {
     #[test]
     fn test_enum_match_exhaustive_ok() {
         ok(concat!(
-            "enum Dir { North, South, East, West }\n",
-            "fn f(d: Dir) -> Nothing { match d { Dir::North => return; Dir::South => return; Dir::East => return; Dir::West => return; } }"
+            "enum Dir { North\nSouth\nEast\nWest }\n",
+            "fn f(d: Dir) -> Nothing { match d { Dir::North => return\nDir::South => return\nDir::East => return\nDir::West => return } }"
         ));
     }
 
     #[test]
     fn test_enum_match_with_wildcard_v2_ok() {
         ok(concat!(
-            "enum Color { Red, Green, Blue }\n",
-            "fn f(c: Color) -> Nothing { match c { Color::Red => return; _ => return; } }"
+            "enum Color { Red\nGreen\nBlue }\n",
+            "fn f(c: Color) -> Nothing { match c { Color::Red => return\n_ => return } }"
         ));
     }
 
@@ -5816,16 +5894,16 @@ class Jogger implements Runner {
     fn test_sensitive_class_has_generated_to_string() {
         ok(concat!(
             "class User {\n",
-            "    @Sensitive var password: String;\n",
+            "    @Sensitive var password: String\n",
             "}\n",
-            "fn f(u: User) -> String { return u.toString(); }"
+            "fn f(u: User) -> String { return u.toString() }"
         ));
     }
 
     #[test]
     fn test_class_without_masked_fields_has_no_generated_to_string() {
         err_contains(
-            concat!("class Plain { var name: String; }\n", "fn f(p: Plain) -> String { return p.toString(); }"),
+            concat!("class Plain { var name: String }\n", "fn f(p: Plain) -> String { return p.toString() }"),
             "undefined function: Plain_toString",
         );
     }
@@ -5833,8 +5911,8 @@ class Jogger implements Runner {
     #[test]
     fn test_enum_variant_with_payload_ok() {
         ok(concat!(
-            "enum Shape { Circle(Float64), Square(Float64) }\n",
-            "fn f() { let s = Shape::Circle(3.0); }"
+            "enum Shape { Circle(Float64)\nSquare(Float64) }\n",
+            "fn f() { let s = Shape::Circle(3.0) }"
         ));
     }
 
@@ -5844,12 +5922,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_nested_call_chain_ok() {
-        ok("fn f() -> String { return toString(42); }");
+        ok("fn f() -> String { return toString(42) }");
     }
 
     #[test]
     fn test_method_call_chain_ok() {
-        ok("fn f(s: String) -> String { return s.toUpperCase().trim(); }");
+        ok("fn f(s: String) -> String { return s.toUpperCase().trim() }");
     }
 
     // ================================================================
@@ -5858,18 +5936,18 @@ class Jogger implements Runner {
 
     #[test]
     fn test_array_literal_int_ok() {
-        ok("fn f() { let a = [1, 2, 3]; }");
+        ok("fn f() { let a = [1, 2, 3] }");
     }
 
     #[test]
     fn test_array_index_out_of_range_not_detected() {
         // BUG: typechecker does not check index bounds at compile time
-        ok("fn f() { let a = [1, 2, 3]; let x = a[99]; }");
+        ok("fn f() { let a = [1, 2, 3]\nlet x = a[99] }");
     }
 
     #[test]
     fn test_array_push_and_len_ok() {
-        ok("fn f() { var a: Array<Int64> = []; a.push(1); let n = a.len(); }");
+        ok("fn f() { var a: Array<Int64> = []\na.push(1)\nlet n = a.len() }");
     }
 
     // ================================================================
@@ -5879,7 +5957,7 @@ class Jogger implements Runner {
     #[test]
     fn test_var_in_if_block_not_visible_outside_err() {
         err_contains(
-            "fn f() -> Int64 { if (true) { var x = 1; } return x; }",
+            "fn f() -> Int64 { if (true) { var x = 1 } return x }",
             "undefined",
         );
     }
@@ -5887,7 +5965,7 @@ class Jogger implements Runner {
     #[test]
     fn test_nested_blocks_shadow_err() {
         // Typechecker treats shadowing in inner blocks as duplicate definition
-        err_contains("fn f() -> Int64 { var x = 1; { var x = 2; } return x; }", "duplicate");
+        err_contains("fn f() -> Int64 { var x = 1\n{ var x = 2 } return x }", "duplicate");
     }
 
     // ================================================================
@@ -5896,22 +5974,22 @@ class Jogger implements Runner {
 
     #[test]
     fn test_while_loop_ok() {
-        ok("fn f() { var i = 0; while i < 10 { i = i + 1; } }");
+        ok("fn f() { var i = 0\nwhile i < 10 { i = i + 1 } }");
     }
 
     #[test]
     fn test_loop_forever_ok() {
-        ok("fn f() { loop { break; } }");
+        ok("fn f() { loop { break } }");
     }
 
     #[test]
     fn test_break_in_while_ok() {
-        ok("fn f() { while true { break; } }");
+        ok("fn f() { while true { break } }");
     }
 
     #[test]
     fn test_continue_in_while_ok() {
-        ok("fn f() { var i = 0; while i < 5 { i = i + 1; continue; } }");
+        ok("fn f() { var i = 0\nwhile i < 5 { i = i + 1\ncontinue } }");
     }
 
     // ================================================================
@@ -5920,12 +5998,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_generic_fn_ok() {
-        ok("fn identity<T>(x: T) -> T { return x; }");
+        ok("fn identity<T>(x: T) -> T { return x }");
     }
 
     #[test]
     fn test_generic_class_with_field_ok() {
-        ok("class Box<T> { var value: T; fn init(v: T) -> Nothing { this.value = v; } }");
+        ok("class Box<T> { var value: T\nfn init(v: T) -> Nothing { this.value = v } }");
     }
 
     // ================================================================
@@ -5934,12 +6012,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_multiple_return_paths_v2_ok() {
-        ok("fn abs(x: Int64) -> Int64 { if (x < 0) { return -x; } return x; }");
+        ok("fn abs(x: Int64) -> Int64 { if (x < 0) { return -x } return x }");
     }
 
     #[test]
     fn test_early_return_type_mismatch() {
-        err_contains("fn f() -> Int64 { if (true) { return \"oops\"; } return 1; }", "expected Int64");
+        err_contains("fn f() -> Int64 { if (true) { return \"oops\" } return 1 }", "expected Int64");
     }
 
     // ================================================================
@@ -5948,7 +6026,7 @@ class Jogger implements Runner {
 
     #[test]
     fn test_defer_ok() {
-        ok("fn f() { defer { println(\"done\"); } println(\"start\"); }");
+        ok("fn f() { defer { println(\"done\") } println(\"start\") }");
     }
 
     // ================================================================
@@ -5957,12 +6035,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_channel_expr_ok() {
-        ok("fn f() { let ch = channel; }");
+        ok("fn f() { let ch = channel }");
     }
 
     #[test]
     fn test_spawn_expr_ok() {
-        ok("fn worker() -> Nothing {}\nfn f() { let t = spawn worker(); }");
+        ok("fn worker() -> Nothing {}\nfn f() { let t = spawn worker() }");
     }
 
     // ================================================================
@@ -5971,7 +6049,7 @@ class Jogger implements Runner {
 
     #[test]
     fn test_string_concat_v2_ok() {
-        ok("fn f() -> String { let a = \"hello\"; let b = \"world\"; return a + \" \" + b; }");
+        ok("fn f() -> String { let a = \"hello\"\nlet b = \"world\"\nreturn a + \" \" + b }");
     }
 
     // ================================================================
@@ -5980,27 +6058,27 @@ class Jogger implements Runner {
 
     #[test]
     fn test_nullable_type_ok() {
-        ok("fn f() -> String? { return null; }");
+        ok("fn f() -> String? { return null }");
     }
 
     #[test]
     fn test_null_in_non_nullable_rejected() {
-        err_contains("fn f() -> String { return null; }", "found null");
+        err_contains("fn f() -> String { return null }", "found null");
     }
 
     #[test]
     fn test_nullable_accepts_non_null() {
-        ok("fn f() -> String? { return \"hello\"; }");
+        ok("fn f() -> String? { return \"hello\" }");
     }
 
     #[test]
     fn test_nullable_var_accepts_null() {
-        ok("fn f() { let x: String? = null; }");
+        ok("fn f() { let x: String? = null }");
     }
 
     #[test]
     fn test_non_nullable_var_rejects_null() {
-        err_contains("fn f() { let x: String = null; }", "found null");
+        err_contains("fn f() { let x: String = null }", "found null");
     }
 
     // ================================================================
@@ -6009,12 +6087,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_boolean_short_circuit_ok() {
-        ok("fn f() -> Bool { return true && false || true; }");
+        ok("fn f() -> Bool { return true && false || true }");
     }
 
     #[test]
     fn test_boolean_negation_ok() {
-        ok("fn f() -> Bool { return !false; }");
+        ok("fn f() -> Bool { return !false }");
     }
 
     // ================================================================
@@ -6024,7 +6102,7 @@ class Jogger implements Runner {
     #[test]
     fn test_ternary_ok() {
         // if-else as expression with explicit returns in branches
-        ok("fn f(x: Int64) -> Int64 { if (x > 0) { return x; } return -x; }");
+        ok("fn f(x: Int64) -> Int64 { if (x > 0) { return x } return -x }");
     }
 
     // ================================================================
@@ -6035,12 +6113,12 @@ class Jogger implements Runner {
     fn test_interface_with_multiple_methods_all_impl_ok() {
         ok(concat!(
             "interface Shape {\n",
-            "  fn area() -> Float64;\n",
-            "  fn perimeter() -> Float64;\n",
+            "  fn area() -> Float64\n",
+            "  fn perimeter() -> Float64\n",
             "}\n",
             "class Circle implements Shape {\n",
-            "  fn area() -> Float64 { return 3.14; }\n",
-            "  fn perimeter() -> Float64 { return 6.28; }\n",
+            "  fn area() -> Float64 { return 3.14 }\n",
+            "  fn perimeter() -> Float64 { return 6.28 }\n",
             "}"
         ));
     }
@@ -6049,7 +6127,7 @@ class Jogger implements Runner {
     fn test_interface_missing_method_err() {
         err_contains(
             concat!(
-                "interface Shape { fn area() -> Float64; }\n",
+                "interface Shape { fn area() -> Float64 }\n",
                 "class Circle implements Shape {}"
             ),
             "does not implement",
@@ -6063,32 +6141,32 @@ class Jogger implements Runner {
     #[test]
     fn test_add_int_float_not_detected() {
         // BUG: mixed int+float arithmetic silently passes typecheck
-        ok("fn f() -> Int64 { return 1 + 2.0; }");
+        ok("fn f() -> Int64 { return 1 + 2.0 }");
     }
 
     #[test]
     fn test_multiply_bool_err() {
-        err_contains("fn f() -> Bool { return true * false; }", "cannot be applied");
+        err_contains("fn f() -> Bool { return true * false }", "cannot be applied");
     }
 
     #[test]
     fn test_negate_string_err() {
-        err_contains("fn f() { let x = -\"hello\"; }", "cannot be applied");
+        err_contains("fn f() { let x = -\"hello\" }", "cannot be applied");
     }
 
     #[test]
     fn test_add_two_floats_ok() {
-        ok("fn f() -> Float64 { return 1.5 + 2.5; }");
+        ok("fn f() -> Float64 { return 1.5 + 2.5 }");
     }
 
     #[test]
     fn test_modulo_ints_ok() {
-        ok("fn f() -> Int64 { return 10 % 3; }");
+        ok("fn f() -> Int64 { return 10 % 3 }");
     }
 
     #[test]
     fn test_modulo_floats_ok() {
-        ok("fn f() -> Float64 { return 10.0 % 3.0; }");
+        ok("fn f() -> Float64 { return 10.0 % 3.0 }");
     }
 
     // ================================================================
@@ -6097,12 +6175,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_compare_int_string_err() {
-        err_contains("fn f() -> Bool { return 5 < \"a\"; }", "cannot be applied");
+        err_contains("fn f() -> Bool { return 5 < \"a\" }", "cannot be applied");
     }
 
     #[test]
     fn test_equality_int_bool_err() {
-        err_contains("fn f() -> Bool { return 1 == true; }", "cannot be applied");
+        err_contains("fn f() -> Bool { return 1 == true }", "cannot be applied");
     }
 
     // ================================================================
@@ -6116,17 +6194,17 @@ class Jogger implements Runner {
 
     #[test]
     fn test_fn_returns_correct_type_ok() {
-        ok("fn f() -> Bool { return true; }");
+        ok("fn f() -> Bool { return true }");
     }
 
     #[test]
     fn test_fn_returns_wrong_primitive() {
-        err_contains("fn f() -> Bool { return 42; }", "expected Bool");
+        err_contains("fn f() -> Bool { return 42 }", "expected Bool");
     }
 
     #[test]
     fn test_fn_returns_string_literal_ok() {
-        ok("fn f() -> String { return \"hello world\"; }");
+        ok("fn f() -> String { return \"hello world\" }");
     }
 
     // ================================================================
@@ -6136,7 +6214,7 @@ class Jogger implements Runner {
     #[test]
     fn test_call_too_many_args_err() {
         err_contains(
-            "fn add(a: Int64, b: Int64) -> Int64 { return a + b; }\nfn f() { add(1, 2, 3); }",
+            "fn add(a: Int64, b: Int64) -> Int64 { return a + b }\nfn f() { add(1, 2, 3) }",
             "argument",
         );
     }
@@ -6144,7 +6222,7 @@ class Jogger implements Runner {
     #[test]
     fn test_call_too_few_args_err() {
         err_contains(
-            "fn add(a: Int64, b: Int64) -> Int64 { return a + b; }\nfn f() { add(1); }",
+            "fn add(a: Int64, b: Int64) -> Int64 { return a + b }\nfn f() { add(1) }",
             "argument",
         );
     }
@@ -6152,14 +6230,14 @@ class Jogger implements Runner {
     #[test]
     fn test_call_wrong_arg_type_err() {
         err_contains(
-            "fn greet(name: String) -> Nothing { println(name); }\nfn f() { greet(42); }",
+            "fn greet(name: String) -> Nothing { println(name) }\nfn f() { greet(42) }",
             "expected String",
         );
     }
 
     #[test]
     fn test_call_no_args_ok() {
-        ok("fn ping() -> Nothing {}\nfn f() { ping(); }");
+        ok("fn ping() -> Nothing {}\nfn f() { ping() }");
     }
 
     // ================================================================
@@ -6168,30 +6246,30 @@ class Jogger implements Runner {
 
     #[test]
     fn test_const_reassign_err() {
-        err_contains("fn f() { const x = 1; x = 2; }", "immutable");
+        err_contains("fn f() { const x = 1\nx = 2 }", "immutable");
     }
 
     #[test]
     fn test_let_reassign_err() {
         err_contains(
-            "fn f() { let x = 1; x = 2; }",
+            "fn f() { let x = 1\nx = 2 }",
             "immutable",
         );
     }
 
     #[test]
     fn test_var_reassign_ok() {
-        ok("fn f() { var x = 1; x = 2; }");
+        ok("fn f() { var x = 1\nx = 2 }");
     }
 
     #[test]
     fn test_var_reassign_wrong_type_err() {
-        err_contains("fn f() { var x = 1; x = \"oops\"; }", "expected Int64");
+        err_contains("fn f() { var x = 1\nx = \"oops\" }", "expected Int64");
     }
 
     #[test]
     fn test_var_compound_assign_ok() {
-        ok("fn f() { var x = 10; x += 5; }");
+        ok("fn f() { var x = 10\nx += 5 }");
     }
 
     // ================================================================
@@ -6200,13 +6278,13 @@ class Jogger implements Runner {
 
     #[test]
     fn test_recursive_fn_ok() {
-        ok("fn fib(n: Int64) -> Int64 { if (n <= 1) { return n; } return fib(n - 1) + fib(n - 2); }");
+        ok("fn fib(n: Int64) -> Int64 { if (n <= 1) { return n } return fib(n - 1) + fib(n - 2) }");
     }
 
     #[test]
     fn test_mutually_recursive_not_detected() {
         // BUG: mutual recursion may not be detected if functions are defined in order
-        ok("fn a() -> Nothing { b(); }\nfn b() -> Nothing { a(); }");
+        ok("fn a() -> Nothing { b() }\nfn b() -> Nothing { a() }");
     }
 
     // ================================================================
@@ -6216,27 +6294,27 @@ class Jogger implements Runner {
     #[test]
     fn test_class_field_access_v2_ok() {
         // Classes are instantiated with new keyword in typechecker context
-        ok("class Box { var value: Int64; }\nfn make() -> Box { return new Box(); }\nfn f() -> Int64 { let b = make(); return b.value; }");
+        ok("class Box { var value: Int64 }\nfn make() -> Box { return new Box() }\nfn f() -> Int64 { let b = make()\nreturn b.value }");
     }
 
     #[test]
     fn test_class_field_nonexistent_err() {
         // Typechecker only resolves field access on known types
         err_contains(
-            "class Box { var value: Int64; }\nfn f(b: Box) { let x = b.missing; }",
+            "class Box { var value: Int64 }\nfn f(b: Box) { let x = b.missing }",
             "field",
         );
     }
 
     #[test]
     fn test_class_method_call_v2_ok() {
-        ok("class Counter { var n: Int64; fn inc() -> Nothing { this.n += 1; } }\nfn f(c: Counter) { c.inc(); }");
+        ok("class Counter { var n: Int64\nfn inc() -> Nothing { this.n += 1 } }\nfn f(c: Counter) { c.inc() }");
     }
 
     #[test]
     fn test_class_method_wrong_arg_err() {
         err_contains(
-            "class Greeter { fn greet(name: String) -> Nothing {} }\nfn f(g: Greeter) { g.greet(42); }",
+            "class Greeter { fn greet(name: String) -> Nothing {} }\nfn f(g: Greeter) { g.greet(42) }",
             "expected String",
         );
     }
@@ -6247,17 +6325,17 @@ class Jogger implements Runner {
 
     #[test]
     fn test_array_index_int_ok() {
-        ok("fn f() -> Int64 { let a = [1, 2, 3]; return a[0]; }");
+        ok("fn f() -> Int64 { let a = [1, 2, 3]\nreturn a[0] }");
     }
 
     #[test]
     fn test_array_index_float_err() {
-        err_contains("fn f() { let a = [1, 2, 3]; let x = a[1.5]; }", "integer");
+        err_contains("fn f() { let a = [1, 2, 3]\nlet x = a[1.5] }", "integer");
     }
 
     #[test]
     fn test_array_len_returns_int_ok() {
-        ok("fn f() -> Int64 { let a = [1, 2, 3]; return a.len(); }");
+        ok("fn f() -> Int64 { let a = [1, 2, 3]\nreturn a.len() }");
     }
 
     // ================================================================
@@ -6267,17 +6345,17 @@ class Jogger implements Runner {
     #[test]
     fn test_throw_int_not_allowed() {
         // throw only accepts String or error types
-        err_contains("fn f() { throw 42; }", "throw");
+        err_contains("fn f() { throw 42 }", "throw");
     }
 
     #[test]
     fn test_try_catch_string_ok() {
-        ok("fn f() { try { throw \"oops\"; } catch e: String { println(e); } }");
+        ok("fn f() { try { throw \"oops\" } catch e: String { println(e) } }");
     }
 
     #[test]
     fn test_try_finally_ok() {
-        ok("fn f() { try { throw \"err\"; } catch e: String {} finally { println(\"done\"); } }");
+        ok("fn f() { try { throw \"err\" } catch e: String {} finally { println(\"done\") } }");
     }
 
     // ================================================================
@@ -6288,7 +6366,7 @@ class Jogger implements Runner {
     fn test_static_call_unknown_class_err() {
         // `Bogus` is neither imported nor defined → hard error, not silent Any.
         err_contains(
-            "fn main() -> Int32 { let x: Int64 = Bogus::doStuff(42); return 0; }",
+            "fn main() -> Int32 { let x: Int64 = Bogus::doStuff(42)\nreturn 0 }",
             "unresolved",
         );
     }
@@ -6297,39 +6375,55 @@ class Jogger implements Runner {
     fn test_static_call_unknown_method_err() {
         // `Calc` is a known non-generic class but has no method `addValu` (typo).
         err_contains(
-            "class Calc { var v: Int64; fn addVal(x: Int64) -> Int64 { return x; } } \
-             fn main() -> Int32 { let c: Calc = Calc { v: 0 }; let r: Int64 = Calc::addValu(c, 5); return 0; }",
+            "class Calc { var v: Int64
+fn addVal(x: Int64) -> Int64 { return x } } \
+             fn main() -> Int32 { let c: Calc = Calc { v: 0 }
+let r: Int64 = Calc::addValu(c, 5)
+return 0 }",
             "has no method 'addValu'",
         );
     }
 
     #[test]
     fn test_static_call_known_method_ok() {
-        ok("class Calc { var v: Int64; fn addVal(x: Int64) -> Int64 { return x; } } \
-            fn main() -> Int32 { let c: Calc = Calc { v: 0 }; let r: Int64 = Calc::addVal(c, 5); return 0; }");
+        ok("class Calc { var v: Int64
+fn addVal(x: Int64) -> Int64 { return x } } \
+            fn main() -> Int32 { let c: Calc = Calc { v: 0 }
+let r: Int64 = Calc::addVal(c, 5)
+return 0 }");
     }
 
     #[test]
     fn test_enum_unknown_variant_err() {
         err_contains(
-            "enum Color { Red; Green; Blue; } \
-             fn main() -> Int32 { let c: Color = Color::Purple; return 0; }",
+            "enum Color { Red
+Green
+Blue } \
+             fn main() -> Int32 { let c: Color = Color::Purple
+return 0 }",
             "has no variant 'Purple'",
         );
     }
 
     #[test]
     fn test_enum_known_variant_ok() {
-        ok("enum Color { Red; Green; Blue; } \
-            fn main() -> Int32 { let c: Color = Color::Green; return 0; }");
+        ok("enum Color { Red
+Green
+Blue } \
+            fn main() -> Int32 { let c: Color = Color::Green
+return 0 }");
     }
 
     #[test]
     fn test_enum_same_name_variants_unioned_ok() {
         // Two enums share the name `M`; a variant valid in EITHER definition must
         // pass the variant check (Bug 45 union across cross-module collisions).
-        ok("enum M { A; B; } enum M { C; D; } \
-            fn main() -> Int32 { let x: M = M::A; let y: M = M::D; return 0; }");
+        ok("enum M { A
+B } enum M { C
+D } \
+            fn main() -> Int32 { let x: M = M::A
+let y: M = M::D
+return 0 }");
     }
 
     #[test]
@@ -6337,8 +6431,11 @@ class Jogger implements Runner {
         // `add` declares 2 params; a call giving only the receiver (1 arg) is
         // below both accepted counts {2, 3} → error.
         err_contains(
-            "class Calc { var v: Int64; fn add(a: Int64, b: Int64) -> Int64 { return a + b; } } \
-             fn main() -> Int32 { let c: Calc = Calc { v: 0 }; let r: Int64 = Calc::add(c); return 0; }",
+            "class Calc { var v: Int64
+fn add(a: Int64, b: Int64) -> Int64 { return a + b } } \
+             fn main() -> Int32 { let c: Calc = Calc { v: 0 }
+let r: Int64 = Calc::add(c)
+return 0 }",
             "arguments",
         );
     }
@@ -6346,8 +6443,9 @@ class Jogger implements Runner {
     #[test]
     fn test_static_call_static_wrong_arg_count_err() {
         err_contains(
-            "class Mathy { fnc square(x: Int64) -> Int64 { return x * x; } } \
-             fn main() -> Int32 { let r: Int64 = Mathy::square(3, 4, 5); return 0; }",
+            "class Mathy { fnc square(x: Int64) -> Int64 { return x * x } } \
+             fn main() -> Int32 { let r: Int64 = Mathy::square(3, 4, 5)
+return 0 }",
             "arguments",
         );
     }
@@ -6358,8 +6456,11 @@ class Jogger implements Runner {
         // args). Calling `Box::getN()` with no object would deref a null self at
         // runtime — caught exactly (Bug 47).
         err_contains(
-            "class Box { var n: Int64; fn getN() -> Int64 { return this.n; } } \
-             fn main() -> Int32 { let b: Box = Box { n: 5 }; let r: Int64 = Box::getN(); return 0; }",
+            "class Box { var n: Int64
+fn getN() -> Int64 { return this.n } } \
+             fn main() -> Int32 { let b: Box = Box { n: 5 }
+let r: Int64 = Box::getN()
+return 0 }",
             "arguments",
         );
     }
@@ -6369,27 +6470,39 @@ class Jogger implements Runner {
         // `label` ignores its receiver (no `this`); called `C::label(obj)` the
         // object is passed-but-unused. Not distinguishable from a pure namespace
         // helper → stays permissive, must not false-positive (Bug 47).
-        ok("class C { var n: Int64; fn label() -> String { return \"x\"; } } \
-            fn main() -> Int32 { let c: C = C { n: 0 }; let s: String = C::label(c); return 0; }");
+        ok("class C { var n: Int64
+fn label() -> String { return \"x\" } } \
+            fn main() -> Int32 { let c: C = C { n: 0 }
+let s: String = C::label(c)
+return 0 }");
     }
 
     #[test]
     fn test_static_call_instance_both_styles_ok() {
         // Style 2 (object as self, args == declared+1) and style 1 (object as an
         // explicit first declared param, args == declared) both pass.
-        ok("class Calc { var v: Int64; fn add(a: Int64, b: Int64) -> Int64 { return a + b; } } \
-            fn main() -> Int32 { let c: Calc = Calc { v: 0 }; let r: Int64 = Calc::add(c, 3, 4); return 0; }");
-        ok("class Store { var n: Int64; fn getWith(s: Store, extra: Int64) -> Int64 { return s.n + extra; } } \
-            fn main() -> Int32 { let s: Store = Store { n: 0 }; let r: Int64 = Store::getWith(s, 5); return 0; }");
+        ok("class Calc { var v: Int64
+fn add(a: Int64, b: Int64) -> Int64 { return a + b } } \
+            fn main() -> Int32 { let c: Calc = Calc { v: 0 }
+let r: Int64 = Calc::add(c, 3, 4)
+return 0 }");
+        ok("class Store { var n: Int64
+fn getWith(s: Store, extra: Int64) -> Int64 { return s.n + extra } } \
+            fn main() -> Int32 { let s: Store = Store { n: 0 }
+let r: Int64 = Store::getWith(s, 5)
+return 0 }");
     }
 
     #[test]
     fn test_static_call_generic_class_permissive_ok() {
         // Generic-class statics stay permissive (method may resolve only after
         // monomorphization) — no false positive from the Bug 43 hardening.
-        ok("class Box<T> { var value: T; fn wrap(v: T) -> Box<T> { return Box { value: v }; } \
-            fn get() -> T { return this.value; } } \
-            fn main() -> Int32 { let b: Box<Int64> = Box::wrap(5); let r: Int64 = Box::get(b); return 0; }");
+        ok("class Box<T> { var value: T
+fn wrap(v: T) -> Box<T> { return Box { value: v } } \
+            fn get() -> T { return this.value } } \
+            fn main() -> Int32 { let b: Box<Int64> = Box::wrap(5)
+let r: Int64 = Box::get(b)
+return 0 }");
     }
 
     // ================================================================
@@ -6398,12 +6511,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_cast_int8_to_int64_ok() {
-        ok("fn f() -> Int64 { let x: Int8 = 5; return x as Int64; }");
+        ok("fn f() -> Int64 { let x: Int8 = 5\nreturn x as Int64 }");
     }
 
     #[test]
     fn test_cast_float64_to_int32_ok() {
-        ok("fn f() -> Int32 { let x = 3.7; return x as Int32; }");
+        ok("fn f() -> Int32 { let x = 3.7\nreturn x as Int32 }");
     }
 
     // ================================================================
@@ -6412,7 +6525,7 @@ class Jogger implements Runner {
 
     #[test]
     fn test_immutable_struct_field_access_ok() {
-        ok("immutable Point(x: Int64, y: Int64);\nfn f(p: Point) -> Int64 { return p.x; }");
+        ok("immutable Point(x: Int64, y: Int64)\nfn f(p: Point) -> Int64 { return p.x }");
     }
 
     // ================================================================
@@ -6422,7 +6535,7 @@ class Jogger implements Runner {
     #[test]
     fn test_namespace_fn_direct_call_ok() {
         // Namespace functions are callable directly within scope
-        ok("namespace math { fn square(x: Int64) -> Int64 { return x * x; } }");
+        ok("namespace math { fn square(x: Int64) -> Int64 { return x * x } }");
     }
 
     // ================================================================
@@ -6431,22 +6544,49 @@ class Jogger implements Runner {
 
     #[test]
     fn test_chained_comparisons_ok() {
-        ok("fn f(x: Int64) -> Bool { return x > 0 && x < 100; }");
+        ok("fn f(x: Int64) -> Bool { return x > 0 && x < 100 }");
     }
 
     #[test]
     fn test_complex_bool_expr_ok() {
-        ok("fn f(a: Bool, b: Bool, c: Bool) -> Bool { return (a || b) && !c; }");
+        ok("fn f(a: Bool, b: Bool, c: Bool) -> Bool { return (a || b) && !c }");
     }
 
     #[test]
     fn test_nested_ternary_style_ok() {
-        ok("fn clamp(x: Int64, lo: Int64, hi: Int64) -> Int64 { if (x < lo) { return lo; } if (x > hi) { return hi; } return x; }");
+        ok("fn clamp(x: Int64, lo: Int64, hi: Int64) -> Int64 { if (x < lo) { return lo } if (x > hi) { return hi } return x }");
     }
 
     #[test]
     fn test_string_plus_int_err() {
-        err_contains("fn f() -> String { return \"x\" + 1; }", "cannot be applied");
+        err_contains("fn f() -> String { return \"x\" + 1 }", "cannot be applied");
+    }
+
+    #[test]
+    fn test_enum_string_concat_err() {
+        for expression in ["\"status: \" + s", "s + \"!\"", "\"attempt \" + \"1: \" + s", "\"status: \" + Status::FAILED", "Status::FAILED + \"!\""] {
+            err_contains(
+                &format!("enum Status {{ STARTING\nFAILED }} fn f(s: Status) -> String {{ return {expression} }}"),
+                "cannot concatenate String and enum 'Status'",
+            );
+        }
+        err_contains(
+            "enum Status { STARTING\nFAILED } class Run { var status: Status } fn f(run: Run) -> String { return \"status: \" + run.status }",
+            "cannot concatenate String and enum 'Status'",
+        );
+        err_contains(
+            "enum Status { STARTING\nFAILED } fn f(s: Status) { var text = \"status: \"\ntext += s }",
+            "cannot concatenate String and enum 'Status'",
+        );
+        err_contains(
+            "enum Shape { Circle(Float64) } fn f(s: Shape) -> String { return \"shape: \" + s }",
+            "cannot concatenate String and enum 'Shape'",
+        );
+    }
+
+    #[test]
+    fn test_string_concat_object_to_string_still_ok() {
+        ok("class Label { fn toString() -> String { return \"label\" } } fn f(label: Label) -> String { return \"[\" + label + \"]\" }");
     }
 
     // #164: List<Int64>.join() used to segfault at runtime (no
@@ -6458,7 +6598,7 @@ class Jogger implements Runner {
     #[test]
     fn test_join_on_int_array_method_call_err() {
         err_contains(
-            "fn f() -> String { let xs: List<Int64> = [1, 2, 3]; return xs.join(\", \"); }",
+            "fn f() -> String { let xs: List<Int64> = [1, 2, 3]\nreturn xs.join(\", \") }",
             "List<String>",
         );
     }
@@ -6466,24 +6606,24 @@ class Jogger implements Runner {
     #[test]
     fn test_join_on_int_array_free_call_err() {
         err_contains(
-            "fn f() -> String { let xs: List<Int64> = [1, 2, 3]; return join(xs, \", \"); }",
+            "fn f() -> String { let xs: List<Int64> = [1, 2, 3]\nreturn join(xs, \", \") }",
             "List<String>",
         );
     }
 
     #[test]
     fn test_join_on_string_array_method_call_ok() {
-        ok("fn f() -> String { let xs: List<String> = [\"a\", \"b\"]; return xs.join(\", \"); }");
+        ok("fn f() -> String { let xs: List<String> = [\"a\", \"b\"]\nreturn xs.join(\", \") }");
     }
 
     #[test]
     fn test_join_on_string_array_free_call_ok() {
-        ok("fn f() -> String { let xs: List<String> = [\"a\", \"b\"]; return join(xs, \", \"); }");
+        ok("fn f() -> String { let xs: List<String> = [\"a\", \"b\"]\nreturn join(xs, \", \") }");
     }
 
     #[test]
     fn test_join_on_any_array_stays_permissive() {
-        ok("fn f(xs: List<Any>) -> String { return xs.join(\", \"); }");
+        ok("fn f(xs: List<Any>) -> String { return xs.join(\", \") }");
     }
 
     // ================================================================
@@ -6494,13 +6634,13 @@ class Jogger implements Runner {
     fn test_two_classes_interact_ok() {
         ok(concat!(
             "class Engine { fn start() -> Nothing {} }\n",
-            "class Car { fn drive(e: Engine) -> Nothing { e.start(); } }"
+            "class Car { fn drive(e: Engine) -> Nothing { e.start() } }"
         ));
     }
 
     #[test]
     fn test_class_returns_self_ok() {
-        ok("class Builder { fn build() -> Builder { return this; } }");
+        ok("class Builder { fn build() -> Builder { return this } }");
     }
 
     // ================================================================
@@ -6510,11 +6650,11 @@ class Jogger implements Runner {
     #[test]
     fn test_enum_match_returns_value_ok() {
         ok(concat!(
-            "enum Dir { North, South }\n",
+            "enum Dir { North\nSouth }\n",
             "fn label(d: Dir) -> String {\n",
             "  match d {\n",
-            "    Dir::North => return \"N\";\n",
-            "    Dir::South => return \"S\";\n",
+            "    Dir::North => return \"N\"\n",
+            "    Dir::South => return \"S\"\n",
             "  }\n",
             "}"
         ));
@@ -6530,7 +6670,7 @@ class Jogger implements Runner {
             "fn f() {\n",
             "  for (var i = 0; i < 3; i += 1) {\n",
             "    for (var j = 0; j < 3; j += 1) {\n",
-            "      let x = i + j;\n",
+            "      let x = i + j\n",
             "    }\n",
             "  }\n",
             "}"
@@ -6539,7 +6679,7 @@ class Jogger implements Runner {
 
     #[test]
     fn test_forc_loop_var_accessible_in_body_ok() {
-        ok("fn f() { for (var i = 0; i < 5; i += 1) { let x = i * 2; } }");
+        ok("fn f() { for (var i = 0; i < 5; i += 1) { let x = i * 2 } }");
     }
 
     // ================================================================
@@ -6549,7 +6689,7 @@ class Jogger implements Runner {
     #[test]
     fn test_select_stmt_ok() {
         // select arms: recv channel -> varname { body }
-        ok("fn f(ch: Chan) { select { recv ch -> v { println(\"got\"); } } }");
+        ok("fn f(ch: Chan) { select { recv ch -> v { println(\"got\") } } }");
     }
 
     // ================================================================
@@ -6560,7 +6700,7 @@ class Jogger implements Runner {
     fn test_defer_with_method_call_ok() {
         ok(concat!(
             "class Resource { fn close() -> Nothing {} }\n",
-            "fn f(r: Resource) { defer { r.close(); } }"
+            "fn f(r: Resource) { defer { r.close() } }"
         ));
     }
 
@@ -6570,12 +6710,12 @@ class Jogger implements Runner {
 
     #[test]
     fn test_float_less_than_ok() {
-        ok("fn f() -> Bool { return 1.0 < 2.0; }");
+        ok("fn f() -> Bool { return 1.0 < 2.0 }");
     }
 
     #[test]
     fn test_float_equality_ok() {
-        ok("fn f() -> Bool { return 1.0 == 1.0; }");
+        ok("fn f() -> Bool { return 1.0 == 1.0 }");
     }
 
     // ================================================================
@@ -6584,17 +6724,17 @@ class Jogger implements Runner {
 
     #[test]
     fn test_bitwise_left_shift_result_ok() {
-        ok("fn f() -> Int64 { let x = 1 << 4; return x; }");
+        ok("fn f() -> Int64 { let x = 1 << 4\nreturn x }");
     }
 
     #[test]
     fn test_bitwise_right_shift_result_ok() {
-        ok("fn f() -> Int64 { let x = 256 >> 2; return x; }");
+        ok("fn f() -> Int64 { let x = 256 >> 2\nreturn x }");
     }
 
     #[test]
     fn test_bitwise_ops_on_bool_err() {
-        err_contains("fn f() { let x = true & false; }", "cannot be applied");
+        err_contains("fn f() { let x = true & false }", "cannot be applied");
     }
 
     // ================================================================
@@ -6604,20 +6744,20 @@ class Jogger implements Runner {
     #[test]
     fn test_struct_literal_missing_field_errors() {
         err_contains(
-            "class Point { var x: Int64; var y: Int64; var label: String; } fn f() { let p = Point { x: 1, y: 2 }; }",
+            "class Point { var x: Int64\nvar y: Int64\nvar label: String } fn f() { let p = Point { x: 1, y: 2 } }",
             "missing field(s): label",
         );
     }
 
     #[test]
     fn test_struct_literal_all_fields_present_ok() {
-        ok("class Point { var x: Int64; var y: Int64; var label: String; } fn f() { let p = Point { x: 1, y: 2, label: \"a\" }; }");
+        ok("class Point { var x: Int64\nvar y: Int64\nvar label: String } fn f() { let p = Point { x: 1, y: 2, label: \"a\" } }");
     }
 
     #[test]
     fn test_struct_literal_unknown_field_errors() {
         err_contains(
-            "class Point { var x: Int64; var y: Int64; } fn f() { let p = Point { x: 1, y: 2, z: 3 }; }",
+            "class Point { var x: Int64\nvar y: Int64 } fn f() { let p = Point { x: 1, y: 2, z: 3 } }",
             "has no field 'z'",
         );
     }
@@ -6625,14 +6765,14 @@ class Jogger implements Runner {
     #[test]
     fn test_struct_literal_missing_inherited_field_errors() {
         err_contains(
-            "class Animal { var name: String; } class Dog extends Animal { var breed: String; } fn f() { let d = Dog { breed: \"Lab\" }; }",
+            "class Animal { var name: String } class Dog extends Animal { var breed: String } fn f() { let d = Dog { breed: \"Lab\" } }",
             "missing field(s): name",
         );
     }
 
     #[test]
     fn test_struct_literal_generic_class_stays_permissive() {
-        ok("class Box<T> { var value: T; } fn f() { let b = Box { value: 42 }; }");
+        ok("class Box<T> { var value: T } fn f() { let b = Box { value: 42 } }");
     }
 
     // ================================================================
@@ -6641,18 +6781,18 @@ class Jogger implements Runner {
 
     #[test]
     fn test_try_finally_no_catch_unconditional_return_is_exhaustive() {
-        ok("class Main { fnc f() -> Int64 { try { return 1; } finally { } } fnc main() -> Int64 { return f(); } }");
+        ok("class Main { fnc f() -> Int64 { try { return 1 } finally { } } fnc main() -> Int64 { return f() } }");
     }
 
     #[test]
     fn test_try_catch_both_returning_is_exhaustive() {
-        ok("class Main { fnc f() -> Int64 { try { return 1; } catch (e: String) { return -1; } } fnc main() -> Int64 { return f(); } }");
+        ok("class Main { fnc f() -> Int64 { try { return 1 } catch (e: String) { return -1 } } fnc main() -> Int64 { return f() } }");
     }
 
     #[test]
     fn test_try_catch_with_non_returning_catch_still_errors() {
         err_contains(
-            "class Main { fnc f() -> Int64 { try { return 1; } catch (e: String) { println(e); } } fnc main() -> Int64 { return f(); } }",
+            "class Main { fnc f() -> Int64 { try { return 1 } catch (e: String) { println(e) } } fnc main() -> Int64 { return f() } }",
             "missing return statement",
         );
     }
@@ -6661,14 +6801,41 @@ class Jogger implements Runner {
     fn test_try_with_non_returning_finally_but_returning_body_is_exhaustive() {
         // `finally` doesn't itself need to return -- the `try` body alone
         // (with no catches) is enough, matching #262's exact repro.
-        ok("class Main { fnc f() -> Int64 { try { return 1; } finally { println(\"cleanup\"); } } fnc main() -> Int64 { return f(); } }");
+        ok("class Main { fnc f() -> Int64 { try { return 1 } finally { println(\"cleanup\") } } fnc main() -> Int64 { return f() } }");
     }
 
     #[test]
     fn test_try_body_not_returning_still_errors() {
         err_contains(
-            "class Main { fnc f() -> Int64 { try { println(\"no return\"); } finally { } } fnc main() -> Int64 { return f(); } }",
+            "class Main { fnc f() -> Int64 { try { println(\"no return\") } finally { } } fnc main() -> Int64 { return f() } }",
             "missing return statement",
+        );
+    }
+
+    #[test]
+    fn test_enum_compared_with_string_or_other_enum_errors() {
+        let pre = "enum S { A\nB } enum O { X } class Main { fnc main() -> Int64 { const s: S = S::A\n";
+        for cond in ["s == \"A\"", "s != \"B\"", "\"A\" == s", "s == O::X"] {
+            err_contains(
+                &format!("{pre}if ({cond}) {{ println(\"x\") }} return 0 }} }}"),
+                "cannot be applied",
+            );
+        }
+        ok(&format!("{pre}if (s == S::B) {{ println(\"x\") }} return 0 }} }}"));
+    }
+
+    #[test]
+    fn test_orm_filter_enum_vs_string_errors() {
+        err_contains(
+            r#"
+            enum S { A
+            B }
+            class DB { fnc of(cls: Any) -> Any { return 0 } }
+            @Entity class Job { var id: Int64
+            var status: S }
+            fn f() -> Any { return DB::of(Job).filter(j => j.status == "A").first() }
+            "#,
+            "cannot be applied",
         );
     }
 }

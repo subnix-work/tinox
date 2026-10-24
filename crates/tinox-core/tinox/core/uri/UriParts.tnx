@@ -1,13 +1,13 @@
-module tinox.core.uri;
+module tinox.core.uri
 
 namespace tinox.core.uri
 {
     class UriParts
     {
-        scheme: String;
-        host: String;
-        path: String;
-        query: String;
-        fragment: String;
+        scheme: String
+        host: String
+        path: String
+        query: String
+        fragment: String
     }
 }

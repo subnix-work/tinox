@@ -4,21 +4,21 @@
 // expect: 7
 // expect: Alice
 // expect: [{"id":1,"name":"A"},{"id":2,"name":"B"}]
-import tinox.core.json;
+import tinox.core.json
 
-import generic_static_methods;
+import generic_static_methods
 
 class Main
 {
     fnc main() -> Int32 {
-        const u = generic_static_methods { id: 7, name: "Alice" };
-        const j: String = Json::serialize(u);
-        println(j);
-        const back: generic_static_methods = Json::deserialize<generic_static_methods>(j);
-        println(back.id);
-        println(back.name);
-        const users: List<generic_static_methods> = [generic_static_methods { id: 1, name: "A" }, generic_static_methods { id: 2, name: "B" }];
-        println(Json::serialize(users));
-        return 0;
+        const u = generic_static_methods { id: 7, name: "Alice" }
+        const j: String = Json::serialize(u)
+        println(j)
+        const back: generic_static_methods = Json::deserialize<generic_static_methods>(j)
+        println(back.id)
+        println(back.name)
+        const users: List<generic_static_methods> = [generic_static_methods { id: 1, name: "A" }, generic_static_methods { id: 2, name: "B" }]
+        println(Json::serialize(users))
+        return 0
     }
 }

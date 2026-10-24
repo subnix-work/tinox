@@ -1,6 +1,6 @@
-module tinox.core.ui;
+module tinox.core.ui
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.ui
 {
@@ -13,12 +13,12 @@ namespace tinox.core.ui
     @JsonSerializable
     class TinoxUIPatchOp
     {
-        var op: String;         // "update" | "replace" | "remove" | "insert"
-        var id: String;         // update/replace/remove: the target node's id
-        var text: String;       // update: new text
-        var props: Map<String, String>; // update: new props
-        var node: Component;    // replace/insert: the new subtree
-        var parentId: String;   // insert: id of the parent to insert into
-        var index: Int64;       // insert: position among the parent's children
+        var op: String         // "update" | "replace" | "remove" | "insert"
+        var id: String         // update/replace/remove: the target node's id
+        var text: String       // update: new text
+        var props: Map<String, String> // update: new props
+        var node: Component    // replace/insert: the new subtree
+        var parentId: String   // insert: id of the parent to insert into
+        var index: Int64       // insert: position among the parent's children
     }
 }

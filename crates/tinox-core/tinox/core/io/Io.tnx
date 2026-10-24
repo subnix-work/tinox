@@ -3,7 +3,7 @@
  * Input/Output utilities including file operations,
  * path manipulation, console output, and string buffering
  */
-module tinox.core.io;
+module tinox.core.io
 
 namespace tinox.core.io
 {
@@ -20,7 +20,7 @@ namespace tinox.core.io
          */
         fn newBuffer() -> Buffer
         {
-            return Buffer::new();
+            return Buffer::new()
         }
 
         /**
@@ -30,8 +30,8 @@ namespace tinox.core.io
          */
         fn printLine(value: String) -> Nothing
         {
-            print(value);
-            print("\n");
+            print(value)
+            print("\n")
         }
 
         /**
@@ -41,9 +41,9 @@ namespace tinox.core.io
          */
         fn printHeader(title: String) -> Nothing
         {
-            print("=== ");
-            print(title);
-            print(" ===\n");
+            print("=== ")
+            print(title)
+            print(" ===\n")
         }
     }
 }

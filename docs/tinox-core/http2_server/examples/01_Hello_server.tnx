@@ -1,14 +1,14 @@
-import tinox.core.http2_server;
+import tinox.core.http2_server
 
 class Main
 {
     fnc main() -> Int32
     {
-        const server: Http2Server = Http2Server::new(8443);
+        const server: Http2Server = Http2Server::new(8443)
         server.get("/hello", ctx => {
-            ctx.response.text("Hello over HTTP/2!");
-        });
-        server.listen();
-        return 0;
+            ctx.response.text("Hello over HTTP/2!")
+        })
+        server.listen()
+        return 0
     }
 }

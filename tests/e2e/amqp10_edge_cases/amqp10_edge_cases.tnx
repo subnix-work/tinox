@@ -1,4 +1,4 @@
 class amqp10_edge_cases {
-    var frameCount: Int64;
-    var bytes: List<Int64>;
+    var frameCount: Int64
+    var bytes: List<Int64>
 }

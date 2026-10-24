@@ -1,4 +1,4 @@
-module tinox.core.db;
+module tinox.core.db
 
 namespace tinox.core.db
 {
@@ -9,47 +9,47 @@ namespace tinox.core.db
     {
         fn filter(predicate: fnc(Any) -> Bool) -> Any
         {
-            return this;
+            return this
         }
 
         fn orderBy(field: fnc(Any) -> Any) -> Any
         {
-            return this;
+            return this
         }
 
         fn orderByDesc(field: fnc(Any) -> Any) -> Any
         {
-            return this;
+            return this
         }
 
         fn limit(n: Int64) -> Any
         {
-            return this;
+            return this
         }
 
         fn offset(n: Int64) -> Any
         {
-            return this;
+            return this
         }
 
         fn list() -> Any
         {
-            return 0;
+            return 0
         }
 
         fn first() -> Any
         {
-            return 0;
+            return 0
         }
 
         fn count() -> Int64
         {
-            return 0;
+            return 0
         }
 
         fn save(entity: Any) -> Any
         {
-            return entity;
+            return entity
         }
 
         fn delete(entity: Any) -> Nothing

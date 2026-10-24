@@ -1,5 +1,7 @@
 // expect-exit: 1
 // expect-contains: invalid or expired task handle
 class Main {
-    fnc main() -> Int32 { const legacy: Int64 = 42; await legacy; return 0; }
+    fnc main() -> Int32 { const legacy: Int64 = 42
+    await legacy
+    return 0 }
 }

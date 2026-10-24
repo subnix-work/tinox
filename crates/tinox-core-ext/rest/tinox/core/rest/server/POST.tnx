@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -9,16 +9,16 @@ namespace tinox.core.rest.server
     @annotation
     class POST
     {
-        var path: String;
+        var path: String
 
         fn new(path: String) -> POST
         {
-            return POST { path: path };
+            return POST { path: path }
         }
 
         fn default() -> POST
         {
-            return POST { path: "" };
+            return POST { path: "" }
         }
     }
 }

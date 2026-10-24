@@ -1,6 +1,6 @@
 // Bug 13: sv + bs auf match-gebundenen Strings machte Integer-Addition
 // expect: hello world
-import bug13_match_string_concat;
+import bug13_match_string_concat
 
 class Main
 {
@@ -8,17 +8,17 @@ class Main
         match a {
             Str(sv) => {
                 match b {
-                    Str(bs) => return sv + bs;
-                    _ => return "";
+                    Str(bs) => return sv + bs
+                    _ => return ""
                 }
             }
-            _ => return "";
+            _ => return ""
         }
     }
 
 
     fnc main() -> Int32 {
-        println(cat(bug13_match_string_concat::Str("hello "), bug13_match_string_concat::Str("world")));
-        return 0;
+        println(cat(bug13_match_string_concat::Str("hello "), bug13_match_string_concat::Str("world")))
+        return 0
     }
 }

@@ -40,12 +40,12 @@ const TYPES: &[TypeSpec] = &[
         lit: r#""hello""#,
         other: r#""zz""#,
         ops: &[
-            ("println({V}.len());", &["5"]),
-            ("println({V});", &["hello"]),
-            (r#"println({V} + "!");"#, &["hello!"]),
-            (r#"if ({V} == "hello") { println("eq"); } else { println("ne"); }"#, &["eq"]),
-            (r#"if ({V}.contains("ell")) { println("has"); } else { println("not"); }"#, &["has"]),
-            ("println({V}.substring(1, 3));", &["el"]),
+            ("println({V}.len())", &["5"]),
+            ("println({V})", &["hello"]),
+            (r#"println({V} + "!")"#, &["hello!"]),
+            (r#"if ({V} == "hello") { println("eq") } else { println("ne") }"#, &["eq"]),
+            (r#"if ({V}.contains("ell")) { println("has") } else { println("not") }"#, &["has"]),
+            ("println({V}.substring(1, 3))", &["el"]),
         ],
         prelude: "",
     },
@@ -55,12 +55,12 @@ const TYPES: &[TypeSpec] = &[
         lit: "[10, 20, 30]",
         other: "[7]",
         ops: &[
-            ("println({V}.len());", &["3"]),
-            ("println({V}[1]);", &["20"]),
-            ("var s = 0;\n    for x in {V} { s += x; }\n    println(s);", &["60"]),
-            (r#"if ({V}.contains(20)) { println("has"); } else { println("not"); }"#, &["has"]),
-            ("println({V}.first());", &["10"]),
-            ("println({V}.last());", &["30"]),
+            ("println({V}.len())", &["3"]),
+            ("println({V}[1])", &["20"]),
+            ("var s = 0\n    for x in {V} { s += x }\n    println(s)", &["60"]),
+            (r#"if ({V}.contains(20)) { println("has") } else { println("not") }"#, &["has"]),
+            ("println({V}.first())", &["10"]),
+            ("println({V}.last())", &["30"]),
         ],
         prelude: "",
     },
@@ -70,10 +70,10 @@ const TYPES: &[TypeSpec] = &[
         lit: r#"["ab", "cde"]"#,
         other: r#"["z"]"#,
         ops: &[
-            ("println({V}.len());", &["2"]),
-            ("println({V}[0]);", &["ab"]),
-            ("println({V}[1].len());", &["3"]),
-            ("for x in {V} { println(x.len()); }", &["2", "3"]),
+            ("println({V}.len())", &["2"]),
+            ("println({V}[0])", &["ab"]),
+            ("println({V}[1].len())", &["3"]),
+            ("for x in {V} { println(x.len()) }", &["2", "3"]),
         ],
         prelude: "",
     },
@@ -83,9 +83,9 @@ const TYPES: &[TypeSpec] = &[
         lit: "1.5",
         other: "9.0",
         ops: &[
-            ("println({V}.toString());", &["1.5"]),
-            ("println(({V} + 1.25).toString());", &["2.75"]),
-            (r#"if ({V} < 2.0) { println("lt"); } else { println("ge"); }"#, &["lt"]),
+            ("println({V}.toString())", &["1.5"]),
+            ("println(({V} + 1.25).toString())", &["2.75"]),
+            (r#"if ({V} < 2.0) { println("lt") } else { println("ge") }"#, &["lt"]),
         ],
         prelude: "",
     },
@@ -95,10 +95,10 @@ const TYPES: &[TypeSpec] = &[
         lit: r#"@{"a" => 1, "b" => 2}"#,
         other: r#"@{"z" => 9}"#,
         ops: &[
-            ("println({V}.len());", &["2"]),
-            (r#"println({V}.get("b"));"#, &["2"]),
-            (r#"if ({V}.contains("a")) { println("has"); } else { println("not"); }"#, &["has"]),
-            (r#"println({V}["a"]);"#, &["1"]),
+            ("println({V}.len())", &["2"]),
+            (r#"println({V}.get("b"))"#, &["2"]),
+            (r#"if ({V}.contains("a")) { println("has") } else { println("not") }"#, &["has"]),
+            (r#"println({V}["a"])"#, &["1"]),
         ],
         prelude: "",
     },
@@ -108,10 +108,10 @@ const TYPES: &[TypeSpec] = &[
         lit: r#"@{"k" => "hello"}"#,
         other: r#"@{"z" => "y"}"#,
         ops: &[
-            ("println({V}.len());", &["1"]),
-            (r#"println({V}.get("k"));"#, &["hello"]),
-            (r#"println({V}.get("k").len());"#, &["5"]),
-            (r#"println({V}["k"]);"#, &["hello"]),
+            ("println({V}.len())", &["1"]),
+            (r#"println({V}.get("k"))"#, &["hello"]),
+            (r#"println({V}.get("k").len())"#, &["5"]),
+            (r#"println({V}["k"])"#, &["hello"]),
         ],
         prelude: "",
     },
@@ -121,12 +121,12 @@ const TYPES: &[TypeSpec] = &[
         lit: r#"User { id: 7, name: "Alice" }"#,
         other: r#"User { id: 1, name: "z" }"#,
         ops: &[
-            ("println({V}.name);", &["Alice"]),
-            ("println({V}.id);", &["7"]),
-            ("println({V}.name.len());", &["5"]),
-            ("println({V}.greet());", &["Hi Alice"]),
+            ("println({V}.name)", &["Alice"]),
+            ("println({V}.id)", &["7"]),
+            ("println({V}.name.len())", &["5"]),
+            ("println({V}.greet())", &["Hi Alice"]),
         ],
-        prelude: "class User {\n    var id: Int64;\n    var name: String;\n    fn greet() -> String {\n        return \"Hi \" + this.name;\n    }\n}\n",
+        prelude: "class User {\n    var id: Int64\n    var name: String\n    fn greet() -> String {\n        return \"Hi \" + this.name\n    }\n}\n",
     },
     TypeSpec {
         key: "listfloat",
@@ -134,9 +134,9 @@ const TYPES: &[TypeSpec] = &[
         lit: "[1.5, 2.25]",
         other: "[9.0]",
         ops: &[
-            ("println({V}.len());", &["2"]),
-            ("println({V}[1].toString());", &["2.25"]),
-            ("var s = 0.0;\n    for x in {V} { s += x; }\n    println(s.toString());", &["3.75"]),
+            ("println({V}.len())", &["2"]),
+            ("println({V}[1].toString())", &["2.25"]),
+            ("var s = 0.0\n    for x in {V} { s += x }\n    println(s.toString())", &["3.75"]),
         ],
         prelude: "",
     },
@@ -153,13 +153,13 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
         // Operation directly on the literal
         "literal" => (String::new(), String::new(), lit.to_string()),
         // let without a type annotation
-        "let" => (String::new(), format!("let v = {lit};"), "v".into()),
+        "let" => (String::new(), format!("let v = {lit}"), "v".into()),
         // let with a type annotation
-        "let_ann" => (String::new(), format!("let v: {t} = {lit};"), "v".into()),
+        "let_ann" => (String::new(), format!("let v: {t} = {lit}"), "v".into()),
         // var, then reassignment from a function result
         "var_reassign" => (
-            format!("fnc make() -> {t} {{\n    return {lit};\n}}\n"),
-            format!("var v: {t} = {other};\n    v = make();"),
+            format!("fnc make() -> {t} {{\n    return {lit}\n}}\n"),
+            format!("var v: {t} = {other}\n    v = make()"),
             "v".into(),
         ),
         // Function parameter
@@ -171,51 +171,51 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
         ),
         // let from a function return
         "let_from_fn" => (
-            format!("fnc make() -> {t} {{\n    return {lit};\n}}\n"),
-            "let v = make();".to_string(),
+            format!("fnc make() -> {t} {{\n    return {lit}\n}}\n"),
+            "let v = make()".to_string(),
             "v".into(),
         ),
         // Operation directly on the call expression
         "ret_direct" => (
-            format!("fnc make() -> {t} {{\n    return {lit};\n}}\n"),
+            format!("fnc make() -> {t} {{\n    return {lit}\n}}\n"),
             String::new(),
             "make()".into(),
         ),
         // Element of a list (literal)
         "list_elem" => (
             String::new(),
-            format!("let xs: List<{t}> = [{lit}];"),
+            format!("let xs: List<{t}> = [{lit}]"),
             "xs[0]".into(),
         ),
         // Element of a list from a function return
         "list_elem_fn" => (
-            format!("fnc makeList() -> List<{t}> {{\n    return [{lit}];\n}}\n"),
-            "let xs = makeList();".to_string(),
+            format!("fnc makeList() -> List<{t}> {{\n    return [{lit}]\n}}\n"),
+            "let xs = makeList()".to_string(),
             "xs[0]".into(),
         ),
         // Class field
         "field" => (
-            format!("class Holder {{\n    var f: {t};\n}}\n"),
-            format!("let h = Holder {{ f: {lit} }};"),
+            format!("class Holder {{\n    var f: {t}\n}}\n"),
+            format!("let h = Holder {{ f: {lit} }}"),
             "h.f".into(),
         ),
         // Element of a list field
         "field_list_elem" => (
-            format!("class Holder {{\n    var xs: List<{t}>;\n}}\n"),
-            format!("let h = Holder {{ xs: [{lit}] }};"),
+            format!("class Holder {{\n    var xs: List<{t}>\n}}\n"),
+            format!("let h = Holder {{ xs: [{lit}] }}"),
             "h.xs[0]".into(),
         ),
         // Match payload
         "match_payload" => (
-            format!("enum Box {{\n    Val({t}),\n    Empty,\n}}\n"),
-            format!("let b = Box::Val({lit});"),
+            format!("enum Box {{\n    Val({t})\n    Empty\n}}\n"),
+            format!("let b = Box::Val({lit})"),
             // Special case: ops run inside the match arm, see emit_case
             "v".into(),
         ),
         // Loop variable (list of the type), just 1 element
         "loop_var" => (
             String::new(),
-            format!("let xs: List<{t}> = [{lit}];"),
+            format!("let xs: List<{t}> = [{lit}]"),
             // Special case: ops run inside the loop body
             "v".into(),
         ),
@@ -223,7 +223,7 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
         "map_value" => (
             String::new(),
             format!(
-                "var m: Map<String, {t}> = Map::new();\n    m.insert(\"k\", {lit});"
+                "var m: Map<String, {t}> = Map::new()\n    m.insert(\"k\", {lit})"
             ),
             r#"m.get("k")"#.into(),
         ),
@@ -245,8 +245,8 @@ fn apply_context(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String)> {
                 return None;
             }
             (
-                "import MatrixMod;\n".to_string(),
-                format!("let v = MatrixMod::mk_{}();", ty.key),
+                "import MatrixMod\n".to_string(),
+                format!("let v = MatrixMod::mk_{}()", ty.key),
                 "v".into(),
             )
         }
@@ -295,14 +295,14 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String
     let body = match ctx {
         // Ops run in their own function with a type parameter
         "param" => format!(
-            "fnc useIt(v: {t}) -> Nothing {{\n{ops}}}\n\nfnc main() -> Int32 {{\n    useIt({lit});\n    return 0;\n}}",
+            "fnc useIt(v: {t}) -> Nothing {{\n{ops}}}\n\nfnc main() -> Int32 {{\n    useIt({lit})\n    return 0\n}}",
             t = ty.tnx,
             ops = op_stmts,
             lit = ty.lit
         ),
         // Ops run inside the match arm
         "match_payload" => format!(
-            "fnc main() -> Int32 {{\n    {setup}\n    match b {{\n        Val(v) => {{\n{ops}        }}\n        _ => println(\"none\");\n    }}\n    return 0;\n}}",
+            "fnc main() -> Int32 {{\n    {setup}\n    match b {{\n        Val(v) => {{\n{ops}        }}\n        _ => println(\"none\")\n    }}\n    return 0\n}}",
             setup = setup,
             ops = op_stmts
                 .lines()
@@ -311,7 +311,7 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String
         ),
         // Ops run inside the loop body
         "loop_var" => format!(
-            "fnc main() -> Int32 {{\n    {setup}\n    for v in xs {{\n{ops}    }}\n    return 0;\n}}",
+            "fnc main() -> Int32 {{\n    {setup}\n    for v in xs {{\n{ops}    }}\n    return 0\n}}",
             setup = setup,
             ops = op_stmts
                 .lines()
@@ -324,7 +324,7 @@ fn emit_case(ctx: &str, ty: &TypeSpec) -> Option<(String, String, String, String
             } else {
                 format!("    {setup}\n")
             };
-            format!("fnc main() -> Int32 {{\n{setup_line}{op_stmts}    return 0;\n}}")
+            format!("fnc main() -> Int32 {{\n{setup_line}{op_stmts}    return 0\n}}")
         }
     };
 
@@ -362,7 +362,7 @@ fn helper_module() -> String {
     let mut s = String::from("class MatrixMod\n{\n");
     for ty in TYPES.iter().filter(|t| t.prelude.is_empty()) {
         s.push_str(&format!(
-            "    fnc mk_{key}() -> {t} {{\n        return {lit};\n    }}\n\n",
+            "    fnc mk_{key}() -> {t} {{\n        return {lit}\n    }}\n\n",
             key = ty.key,
             t = ty.tnx,
             lit = ty.lit
@@ -434,7 +434,7 @@ fn generate_all(shard: usize) -> PathBuf {
                 let case_dir = dir.join(&name);
                 fs::create_dir_all(&case_dir).expect("mkdir case dir");
                 let imports: String =
-                    type_preludes.iter().map(|(t, _)| format!("import {t};\n")).collect();
+                    type_preludes.iter().map(|(t, _)| format!("import {t}\n")).collect();
                 for (type_name, p) in &type_preludes {
                     // Every sibling prelude type is imported into every
                     // other one too (harmless if unused — e.g. `Holder`
@@ -443,7 +443,7 @@ fn generate_all(shard: usize) -> PathBuf {
                     let others: String = type_preludes
                         .iter()
                         .filter(|(t, _)| t != type_name)
-                        .map(|(t, _)| format!("import {t};\n"))
+                        .map(|(t, _)| format!("import {t}\n"))
                         .collect();
                     let content = if others.is_empty() {
                         (*p).to_string()
@@ -457,7 +457,7 @@ fn generate_all(shard: usize) -> PathBuf {
                     type_preludes.is_empty() || header_import.is_empty(),
                     "cross_module never co-occurs with a type prelude"
                 );
-                if header_import.starts_with("import MatrixMod;") {
+                if header_import.starts_with("import MatrixMod") {
                     fs::write(case_dir.join("MatrixMod.tnx"), &matrixmod_src)
                         .expect("write case's MatrixMod.tnx copy");
                 }

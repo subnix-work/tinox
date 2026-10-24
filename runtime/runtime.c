@@ -9770,6 +9770,16 @@ static pthread_cond_t  _tinox_pg_pool_cond = PTHREAD_COND_INITIALIZER;
 static __thread PGconn* _tinox_db_tx_conn = NULL;
 
 void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    const char* diff_mode = getenv("TINOX_MIGRATE_MODE");
+    if (diff_mode && strcmp(diff_mode, "diff-shadow") == 0) {
+#if defined(TINOX_DB_SQLITE)
+        url = ":memory:";
+#else
+        url = getenv("TINOX_DB_DIFF_URL");
+        if (!url || !*url) { fprintf(stderr, "diff: TINOX_DB_DIFF_URL must name an empty disposable shadow database\n"); exit(1); }
+#endif
+    }
+
     if (pool_size <= 0) pool_size = 1;
     if (pool_size > TINOX_DB_POOL_MAX) {
         fprintf(stderr, "DB pool size %lld exceeds maximum of %d\n",
@@ -9930,6 +9940,16 @@ typedef struct {
 } TinoxSqliteResult;
 
 void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    const char* diff_mode = getenv("TINOX_MIGRATE_MODE");
+    if (diff_mode && strcmp(diff_mode, "diff-shadow") == 0) {
+#if defined(TINOX_DB_SQLITE)
+        url = ":memory:";
+#else
+        url = getenv("TINOX_DB_DIFF_URL");
+        if (!url || !*url) { fprintf(stderr, "diff: TINOX_DB_DIFF_URL must name an empty disposable shadow database\n"); exit(1); }
+#endif
+    }
+
     // SQLite keeps its pre-#191 single-connection model -- pool_size is
     // accepted (uniform driver-layer signature, see the Postgres block
     // above) but ignored; no pooling/transactions for this driver yet,
@@ -9939,7 +9959,8 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
     const char* path = url;
     if (strncmp(path, "sqlite:///", 10) == 0) path += 9;
     else if (strncmp(path, "sqlite://", 9) == 0) path += 9;
-    if (sqlite3_open(path, &_tinox_sqlite_db) != SQLITE_OK) {
+    if (sqlite3_open_v2(path, &_tinox_sqlite_db,
+            diff_mode && !strcmp(diff_mode, "diff-live") ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
         fprintf(stderr, "SQLite error: %s\n", sqlite3_errmsg(_tinox_sqlite_db));
         if (service_enabled()) { service_record_error("SQLite initialization failed", 0); return; }
         exit(1);
@@ -10168,6 +10189,16 @@ static void _parse_mysql_url(const char* url,
 }
 
 void tinox_db_pool_init(const char* url, int64_t pool_size) {
+    const char* diff_mode = getenv("TINOX_MIGRATE_MODE");
+    if (diff_mode && strcmp(diff_mode, "diff-shadow") == 0) {
+#if defined(TINOX_DB_SQLITE)
+        url = ":memory:";
+#else
+        url = getenv("TINOX_DB_DIFF_URL");
+        if (!url || !*url) { fprintf(stderr, "diff: TINOX_DB_DIFF_URL must name an empty disposable shadow database\n"); exit(1); }
+#endif
+    }
+
     // MySQL keeps its pre-#191 single-connection model -- pool_size is
     // accepted (uniform driver-layer signature, see the Postgres block
     // above) but ignored; no pooling/transactions for this driver yet,
@@ -10340,6 +10371,633 @@ bool    tinox_db_result_failed(void* r)                                        {
 char*   tinox_db_error(void* c)                                                { (void)c; return ""; }
 
 #endif /* DB driver */
+
+// ---- Declarative schema migrations (issue #410) ----
+//
+// The compiler parses the YAML changelog, translates every change into SQL for the
+// configured driver and passes the result here as one payload string (format: see
+// serialize_payload in crates/tinox/src/migrate.rs): change sets separated by 0x1d,
+// fields by 0x1f (id, author, file, checksum, flags, statements joined by 0x1e, rollback statements, irreversible
+// reason, tag, preconditions, context names, label names).
+// This engine is driver-agnostic: it only uses the tinox_db_* ABI above.
+//
+// Messages go to stderr so a program's stdout stays untouched; `status` prints its
+// table to stdout. TINOX_MIGRATE_MODE = update (default) | status | baseline | release-lock | rollback
+// (with TINOX_MIGRATE_ROLLBACK_COUNT=N or TINOX_MIGRATE_ROLLBACK_TAG=T).
+// `baseline` records every pending change set as applied WITHOUT running it, to adopt a
+// database whose schema already exists.
+#include <time.h>
+
+#if defined(TINOX_DB_POSTGRES)
+#define TINOX_MIG_PH(n) "$" #n
+#else
+#define TINOX_MIG_PH(n) "?"
+#endif
+
+typedef struct {
+    char* id; char* author; char* file; char* checksum;
+    int run_on_change, run_always;
+    char** stmts; int n_stmts;
+    char** rb_stmts; int n_rb_stmts;
+    char* irreversible;  // reason, empty when the change set can be rolled back
+    char* context; char* labels; // comma-separated names
+    char* tag;           // empty when untagged
+    // preConditions: on_fail is NULL when the changeSet has none; each check is
+    // { negate, kind, a, b, desc } (see serialize_payload in migrate.rs).
+    char* on_fail; char*** checks; int n_checks;
+} TinoxMigSet;
+
+static void tinox_mig_die(const char* msg) {
+    fprintf(stderr, "migrate: %s\n", msg);
+    exit(1);
+}
+
+static int tinox_mig_exec(void* conn, const char* sql, const char** params, int64_t n) {
+    void* r = tinox_db_exec(conn, sql, params, n);
+    int failed = tinox_db_result_failed(r);
+    if (r) tinox_db_free(r);
+    return !failed;
+}
+
+static int64_t tinox_mig_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static char* tinox_mig_dup(const char* s, size_t len) {
+    char* p = (char*)malloc(len + 1);
+    if (!p) tinox_mig_die("out of memory");
+    memcpy(p, s, len);
+    p[len] = 0;
+    return p;
+}
+
+// Splits `s` at every `sep`; returns a malloc'd array of malloc'd strings. Strings are
+// never freed on purpose: the SQLite driver's statement cache keeps the SQL pointer.
+static char** tinox_mig_split(const char* s, char sep, int* count) {
+    int n = 1;
+    for (const char* p = s; *p; p++) if (*p == sep) n++;
+    char** out = (char**)malloc(sizeof(char*) * (size_t)n);
+    int i = 0;
+    const char* start = s;
+    for (const char* p = s;; p++) {
+        if (*p == sep || *p == 0) {
+            out[i++] = tinox_mig_dup(start, (size_t)(p - start));
+            start = p + 1;
+            if (*p == 0) break;
+        }
+    }
+    *count = n;
+    return out;
+}
+
+static TinoxMigSet* tinox_mig_parse(const char* payload, int* n_sets) {
+    if (!payload || !*payload) { *n_sets = 0; return NULL; }
+    int n = 0;
+    char** recs = tinox_mig_split(payload, '\x1d', &n);
+    TinoxMigSet* sets = (TinoxMigSet*)calloc((size_t)n, sizeof(TinoxMigSet));
+    for (int i = 0; i < n; i++) {
+        int nf = 0;
+        char** f = tinox_mig_split(recs[i], '\x1f', &nf);
+        if (nf != 12) tinox_mig_die("corrupt changelog payload");
+        sets[i].id = f[0]; sets[i].author = f[1]; sets[i].file = f[2]; sets[i].checksum = f[3];
+        sets[i].run_on_change = strchr(f[4], 'C') != NULL;
+        sets[i].run_always = strchr(f[4], 'A') != NULL;
+        sets[i].stmts = tinox_mig_split(f[5], '\x1e', &sets[i].n_stmts);
+        if (sets[i].n_stmts == 1 && sets[i].stmts[0][0] == 0) sets[i].n_stmts = 0;
+        sets[i].rb_stmts = tinox_mig_split(f[6], '\x1e', &sets[i].n_rb_stmts);
+        if (sets[i].n_rb_stmts == 1 && sets[i].rb_stmts[0][0] == 0) sets[i].n_rb_stmts = 0;
+        sets[i].irreversible = f[7]; sets[i].tag = f[8];
+        sets[i].context = f[10]; sets[i].labels = f[11];
+        if (f[9][0]) {
+            int np = 0;
+            char** parts = tinox_mig_split(f[9], '\x1c', &np);
+            sets[i].on_fail = parts[0];
+            sets[i].n_checks = np - 1;
+            sets[i].checks = (char***)calloc((size_t)np, sizeof(char**));
+            for (int k = 1; k < np; k++) {
+                int cf = 0;
+                sets[i].checks[k - 1] = tinox_mig_split(parts[k], '\x1b', &cf);
+                if (cf != 5) tinox_mig_die("corrupt changelog payload (precondition)");
+            }
+        }
+    }
+    *n_sets = n;
+    return sets;
+}
+
+// Every non-empty qualifier list must intersect the active contexts.
+static int tinox_mig_matches(const char* names, const char* active) {
+    if (!*names) return 1;
+    if (!active || !*active) return 0;
+    for (const char* n = names; *n;) {
+        const char* end = strchr(n, ',');
+        size_t len = end ? (size_t)(end - n) : strlen(n);
+        for (const char* a = active; *a;) {
+            const char* ae = strchr(a, ',');
+            const char* stop = ae ? ae : a + strlen(a);
+            while (a < stop && isspace((unsigned char)*a)) a++;
+            while (stop > a && isspace((unsigned char)stop[-1])) stop--;
+            if ((size_t)(stop - a) == len && !strncmp(n, a, len)) return 1;
+            if (!ae) break;
+            a = ae + 1;
+        }
+        if (!end) break;
+        n = end + 1;
+    }
+    return 0;
+}
+
+static void tinox_mig_sleep_ms(long ms) {
+    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
+static int tinox_mig_table_exists(void* conn, const char* table) {
+#if defined(TINOX_DB_SQLITE)
+    const char* sql = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?";
+#elif defined(TINOX_DB_POSTGRES)
+    const char* sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1";
+#else
+    const char* sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
+#endif
+    const char* params[1] = { table };
+    void* r = tinox_db_exec(conn, sql, params, 1);
+    int exists = (r && !tinox_db_result_failed(r)) ? tinox_db_getval_int(r, 0, 0) > 0 : 0;
+    if (r) tinox_db_free(r);
+    return exists;
+}
+
+// Runs a query that returns one COUNT-like value; a failing query is a hard error, never "false".
+static int64_t tinox_mig_scalar_int(void* conn, const char* sql, const char** params, int64_t n) {
+    void* r = tinox_db_exec(conn, sql, params, n);
+    if (!r || tinox_db_result_failed(r)) tinox_mig_die("a precondition query failed");
+    int64_t v = tinox_db_getval_int(r, 0, 0);
+    tinox_db_free(r);
+    return v;
+}
+
+// Evaluates one precondition check (without `negate`). 1 = holds.
+static int tinox_mig_check_holds(void* conn, char** c) {
+    const char* kind = c[1]; const char* a = c[2]; const char* b = c[3];
+    if (!strcmp(kind, "const")) return a[0] == '1';
+    if (!strcmp(kind, "tableExists")) return tinox_mig_table_exists(conn, a);
+    if (!strcmp(kind, "sqlCheck")) {
+        void* r = tinox_db_exec(conn, a, NULL, 0);
+        if (!r || tinox_db_result_failed(r)) tinox_mig_die("the sqlCheck precondition query failed");
+        int ok = tinox_db_nrows(r) > 0 && tinox_db_ncols(r) > 0 && !tinox_db_is_null(r, 0, 0)
+                 && strcmp(tinox_db_getval(r, 0, 0), b) == 0;
+        tinox_db_free(r);
+        return ok;
+    }
+    const char* params[2] = { a, b };
+    if (!strcmp(kind, "columnExists")) {
+#if defined(TINOX_DB_SQLITE)
+        return tinox_mig_scalar_int(conn, "SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", params, 2) > 0;
+#elif defined(TINOX_DB_POSTGRES)
+        return tinox_mig_scalar_int(conn, "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2", params, 2) > 0;
+#else
+        return tinox_mig_scalar_int(conn, "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?", params, 2) > 0;
+#endif
+    }
+    if (!strcmp(kind, "indexExists")) {
+#if defined(TINOX_DB_SQLITE)
+        return tinox_mig_scalar_int(conn, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name = ?", params, 2) > 0;
+#elif defined(TINOX_DB_POSTGRES)
+        return tinox_mig_scalar_int(conn, "SELECT COUNT(*) FROM pg_indexes WHERE schemaname = current_schema() AND tablename = $1 AND indexname = $2", params, 2) > 0;
+#else
+        return tinox_mig_scalar_int(conn, "SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?", params, 2) > 0;
+#endif
+    }
+    tinox_mig_die("unknown precondition kind");
+    return 0;
+}
+
+// Returns the first failed check's description, or NULL when every check holds.
+static const char* tinox_mig_first_failed(void* conn, TinoxMigSet* s) {
+    for (int k = 0; k < s->n_checks; k++) {
+        char** c = s->checks[k];
+        int holds = tinox_mig_check_holds(conn, c);
+        if (c[0][0] == '1') holds = !holds;
+        if (!holds) return c[4];
+    }
+    return NULL;
+}
+
+static void tinox_mig_ensure_tables(void* conn) {
+    // Skip the CREATE when the tables exist (avoids a driver notice on every start). On PostgreSQL
+    // two instances creating them at once can still collide in the catalog, so serialize that.
+#if defined(TINOX_DB_POSTGRES)
+    tinox_mig_exec(conn, "SELECT pg_advisory_lock(727274)", NULL, 0);
+#endif
+    if (tinox_mig_table_exists(conn, "tinox_changelog") && tinox_mig_table_exists(conn, "tinox_changelog_lock")) {
+#if defined(TINOX_DB_POSTGRES)
+        tinox_mig_exec(conn, "SELECT pg_advisory_unlock(727274)", NULL, 0);
+#endif
+        return;
+    }
+    if (!tinox_mig_exec(conn,
+            "CREATE TABLE IF NOT EXISTS tinox_changelog ("
+            "changeset_id VARCHAR(190) NOT NULL, author VARCHAR(190) NOT NULL, source_file VARCHAR(255) NOT NULL, "
+            "checksum VARCHAR(64) NOT NULL, executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+            "execution_ms BIGINT NOT NULL, exec_order BIGINT NOT NULL, PRIMARY KEY (changeset_id, author))", NULL, 0))
+        tinox_mig_die("cannot create the tinox_changelog table");
+    if (!tinox_mig_exec(conn,
+            "CREATE TABLE IF NOT EXISTS tinox_changelog_lock ("
+            "id INTEGER NOT NULL PRIMARY KEY, locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, locked_by VARCHAR(255))", NULL, 0))
+        tinox_mig_die("cannot create the tinox_changelog_lock table");
+#if defined(TINOX_DB_POSTGRES)
+    tinox_mig_exec(conn, "SELECT pg_advisory_unlock(727274)", NULL, 0);
+#endif
+}
+
+// The lock is a row in tinox_changelog_lock; a second starter waits for it (bounded), a lock
+// left behind by a crashed run is NEVER broken automatically (`tinox db release-lock`).
+static void tinox_mig_lock(void* conn) {
+    long wait_ms = 30000;
+    const char* env = getenv("TINOX_MIGRATE_LOCK_WAIT_MS");
+    if (env && *env) wait_ms = atol(env);
+    char who[64];
+    snprintf(who, sizeof who, "pid %ld", (long)getpid());
+    const char* params[1] = { who };
+    long waited = 0;
+    for (;;) {
+        void* r = tinox_db_exec(conn, "SELECT COUNT(*) FROM tinox_changelog_lock", NULL, 0);
+        int64_t held = (r && !tinox_db_result_failed(r)) ? tinox_db_getval_int(r, 0, 0) : 1;
+        if (r) tinox_db_free(r);
+        if (held == 0 && tinox_mig_exec(conn,
+                "INSERT INTO tinox_changelog_lock (id, locked_by) VALUES (1, " TINOX_MIG_PH(1) ")", params, 1))
+            return;
+        if (waited >= wait_ms) {
+            tinox_mig_die("the changelog lock is held by another process. If no migration is running "
+                          "(e.g. it crashed), release it with `tinox db release-lock`");
+        }
+        tinox_mig_sleep_ms(250);
+        waited += 250;
+    }
+}
+
+static void tinox_mig_unlock(void* conn) {
+    tinox_mig_exec(conn, "DELETE FROM tinox_changelog_lock WHERE id = 1", NULL, 0);
+}
+
+#if defined(TINOX_DB_MYSQL)
+// MySQL commits DDL implicitly, so a change set is not atomic there.
+#define TINOX_MIG_BEGIN(c)    (1)
+#define TINOX_MIG_COMMIT(c)   (1)
+#define TINOX_MIG_ROLLBACK(c) ((void)0)
+#else
+#define TINOX_MIG_BEGIN(c)    tinox_mig_exec((c), "BEGIN", NULL, 0)
+#define TINOX_MIG_COMMIT(c)   tinox_mig_exec((c), "COMMIT", NULL, 0)
+#define TINOX_MIG_ROLLBACK(c) ((void)tinox_mig_exec((c), "ROLLBACK", NULL, 0))
+#endif
+
+typedef struct { char* id; char* author; char* checksum; } TinoxMigApplied;
+
+// Catalog rows have four fields: object kind, table, object name, definition.
+// Hex framing keeps arbitrary SQL identifiers/expressions unambiguous across processes.
+static void* tinox_diff_catalog(void* conn) {
+#if defined(TINOX_DB_SQLITE)
+    const char* sql =
+        "SELECT 'table', name, '', '' FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' "
+        "UNION ALL SELECT 'column', m.name, p.name, upper(replace(p.type,' ','')) "
+        "FROM sqlite_master m, pragma_table_xinfo(m.name) p WHERE m.type='table' AND m.name NOT GLOB 'sqlite_*' "
+        "UNION ALL SELECT 'index', m.name, i.name, "
+        "CAST(i.\"unique\" AS TEXT)||':'||i.origin||':'||x.seqno||':'||coalesce(x.name,'<expression>')||':'||x.desc||':'||coalesce(x.coll,'')||':'|| "
+        "CASE WHEN i.partial OR x.cid=-2 THEN coalesce((SELECT sql FROM sqlite_master WHERE name=i.name),'') ELSE '' END "
+        "FROM sqlite_master m, pragma_index_list(m.name) i, pragma_index_xinfo(i.name) x "
+        "WHERE m.type='table' AND m.name NOT GLOB 'sqlite_*' AND x.key=1";
+#elif defined(TINOX_DB_POSTGRES)
+    const char* sql =
+        "SELECT 'table', c.relname, '', '' FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname=current_schema() AND c.relkind IN ('r','p') "
+        "UNION ALL SELECT 'column', c.relname, a.attname, format_type(a.atttypid,a.atttypmod) "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid "
+        "WHERE n.nspname=current_schema() AND c.relkind IN ('r','p') AND a.attnum>0 AND NOT a.attisdropped "
+        "UNION ALL SELECT 'index', t.relname, c.relname, "
+        "i.indisunique::text||':'||coalesce(to_jsonb(i)->>'indnullsnotdistinct','false')||':'||i.indnkeyatts::text||':'||i.indisvalid::text||':'||am.amname||':'||k::text||':'||pg_get_indexdef(i.indexrelid,k,true)||':'||coalesce(pg_get_expr(i.indpred,i.indrelid),'') "
+        "||':'||coalesce(i.indoption[k-1]::text,'')||':'||coalesce((SELECT collname FROM pg_collation WHERE oid=i.indcollation[k-1]),'') "
+        "||':'||coalesce((SELECT opcname FROM pg_opclass WHERE oid=i.indclass[k-1]),'') "
+        "FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid JOIN pg_namespace n ON n.oid=t.relnamespace "
+        "JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_am am ON am.oid=c.relam, generate_series(1,i.indnatts) k "
+        "WHERE n.nspname=current_schema()";
+#elif defined(TINOX_DB_MYSQL)
+    const char* sql =
+        "SELECT 'table', table_name, '', '' FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE' "
+        "UNION ALL SELECT 'column', table_name, column_name, column_type FROM information_schema.columns WHERE table_schema=DATABASE() "
+        "UNION ALL SELECT CASE WHEN column_name IS NULL THEN 'unsupported-index' ELSE 'index' END, table_name, index_name, "
+        "CONCAT(non_unique,':',index_type,':',seq_in_index,':',COALESCE(column_name,'<expression>'),':',COALESCE(sub_part,0),':',COALESCE(collation,'')) "
+        "FROM information_schema.statistics WHERE table_schema=DATABASE()";
+#else
+    const char* sql = "";
+#endif
+    void* r = tinox_db_exec(conn, sql, NULL, 0);
+    if (!r || tinox_db_result_failed(r)) tinox_mig_die("cannot inspect schema catalogs");
+    for (int64_t row = 0; row < tinox_db_nrows(r); row++) {
+        if (!strcmp(tinox_db_getval(r, row, 0), "unsupported-index"))
+            tinox_mig_die("MySQL functional indexes are not supported by schema diff");
+    }
+    return r;
+}
+
+static void tinox_diff_snapshot(void* conn, TinoxMigSet* sets, int n_sets, int shadow) {
+    void* r = tinox_diff_catalog(conn);
+    if (shadow) {
+        if (tinox_db_nrows(r) != 0) tinox_mig_die("shadow database must be empty; use a disposable database, never the live database");
+        tinox_db_free(r);
+#if defined(TINOX_DB_POSTGRES)
+        if (!tinox_mig_exec(conn, "BEGIN", NULL, 0)) tinox_mig_die("cannot start shadow transaction");
+#endif
+        for (int i = 0; i < n_sets; i++) {
+            for (int j = 0; j < sets[i].n_stmts; j++) {
+                if (!tinox_mig_exec(conn, sets[i].stmts[j], NULL, 0)) {
+                    fprintf(stderr, "diff: shadow replay failed in changeSet '%s' by '%s' (%s)\n", sets[i].id, sets[i].author, sets[i].file);
+                    tinox_mig_die("cannot produce expected schema");
+                }
+            }
+        }
+        r = tinox_diff_catalog(conn);
+    }
+    for (int64_t row = 0; row < tinox_db_nrows(r); row++) {
+        const char* table = tinox_db_getval(r, row, 1);
+        if (!strcmp(table, "tinox_changelog") || !strcmp(table, "tinox_changelog_lock")) continue;
+        for (int col = 0; col < 4; col++) {
+            const unsigned char* p = (const unsigned char*)tinox_db_getval(r, row, col);
+            for (; *p; p++) printf("%02x", *p);
+            putchar(col == 3 ? '\n' : '\t');
+        }
+    }
+    tinox_db_free(r);
+#if defined(TINOX_DB_POSTGRES)
+    if (shadow && !tinox_mig_exec(conn, "ROLLBACK", NULL, 0)) tinox_mig_die("cannot roll back shadow transaction");
+#endif
+    fflush(stdout);
+}
+
+// Undo the newest applied change sets (a count, or everything after a tag). Everything is
+// checked before the first statement runs; each undo is one transaction together with the
+// removal of its history row.
+static void tinox_mig_rollback(void* conn, TinoxMigSet* sets, int n_sets, TinoxMigApplied* applied, int64_t n_applied) {
+    const char* count_env = getenv("TINOX_MIGRATE_ROLLBACK_COUNT");
+    const char* tag_env = getenv("TINOX_MIGRATE_ROLLBACK_TAG");
+    int64_t count = 0;
+    if ((count_env && *count_env) == (tag_env && *tag_env)) {
+        tinox_mig_unlock(conn);
+        tinox_mig_die("rollback needs exactly one of --count N or --tag T");
+    }
+    if (count_env && *count_env) {
+        count = atoll(count_env);
+        if (count < 1) { tinox_mig_unlock(conn); tinox_mig_die("rollback --count must be a positive number"); }
+        if (count > n_applied) {
+            fprintf(stderr, "migrate: only %lld changeSet(s) are applied\n", (long long)n_applied);
+            tinox_mig_unlock(conn);
+            tinox_mig_die("rollback --count exceeds the applied changeSets, nothing was rolled back");
+        }
+    } else {
+        int tagged = -1;
+        for (int i = 0; i < n_sets; i++) if (!strcmp(sets[i].tag, tag_env)) { tagged = i; break; }
+        if (tagged < 0) { tinox_mig_unlock(conn); tinox_mig_die("rollback --tag: no changeSet carries that tag"); }
+        int64_t pos = -1;
+        for (int64_t j = 0; j < n_applied; j++)
+            if (!strcmp(applied[j].id, sets[tagged].id) && !strcmp(applied[j].author, sets[tagged].author)) { pos = j; break; }
+        if (pos < 0) { tinox_mig_unlock(conn); tinox_mig_die("rollback --tag: the tagged changeSet is not applied, nothing was rolled back"); }
+        count = n_applied - 1 - pos;
+    }
+    // Validate the whole selection first.
+    int bad = 0;
+    for (int64_t k = 0; k < count; k++) {
+        TinoxMigApplied* a = &applied[n_applied - 1 - k];
+        int idx = -1;
+        for (int i = 0; i < n_sets; i++) if (!strcmp(a->id, sets[i].id) && !strcmp(a->author, sets[i].author)) { idx = i; break; }
+        if (idx < 0) {
+            fprintf(stderr, "migrate: applied changeSet '%s' by '%s' is not in the changelog, so it cannot be rolled back\n", a->id, a->author);
+            bad++;
+        } else if (strcmp(a->checksum, sets[idx].checksum) != 0) {
+            fprintf(stderr, "migrate: changeSet '%s' by '%s' was modified after it was applied, so its rollback may not match\n", a->id, a->author);
+            bad++;
+        } else if (sets[idx].irreversible[0]) {
+            fprintf(stderr, "migrate: %s\n", sets[idx].irreversible);
+            bad++;
+        }
+    }
+    if (bad) { tinox_mig_unlock(conn); tinox_mig_die("rollback refused, nothing was rolled back"); }
+    for (int64_t k = 0; k < count; k++) {
+        TinoxMigApplied* a = &applied[n_applied - 1 - k];
+        TinoxMigSet* cs = NULL;
+        for (int i = 0; i < n_sets; i++) if (!strcmp(a->id, sets[i].id) && !strcmp(a->author, sets[i].author)) { cs = &sets[i]; break; }
+        if (!TINOX_MIG_BEGIN(conn)) { tinox_mig_unlock(conn); tinox_mig_die("cannot start a transaction"); }
+        for (int s = 0; s < cs->n_rb_stmts; s++) {
+            if (!tinox_mig_exec(conn, cs->rb_stmts[s], NULL, 0)) {
+                TINOX_MIG_ROLLBACK(conn);
+                fprintf(stderr, "migrate: rollback of changeSet '%s' by '%s' (%s) failed on: %s\n", cs->id, cs->author, cs->file, cs->rb_stmts[s]);
+                tinox_mig_unlock(conn);
+                tinox_mig_die("rollback failed; this changeSet stays applied, earlier rollbacks stay done");
+            }
+        }
+        const char* p[2] = { cs->id, cs->author };
+        if (!tinox_mig_exec(conn, "DELETE FROM tinox_changelog WHERE changeset_id = " TINOX_MIG_PH(1) " AND author = " TINOX_MIG_PH(2), p, 2)
+                || !TINOX_MIG_COMMIT(conn)) {
+            TINOX_MIG_ROLLBACK(conn);
+            tinox_mig_unlock(conn);
+            tinox_mig_die("cannot remove the changeSet from tinox_changelog");
+        }
+        fprintf(stderr, "migrate: rolled back changeSet '%s' by '%s'\n", cs->id, cs->author);
+    }
+    if (count == 0) fprintf(stderr, "migrate: nothing to roll back\n");
+    tinox_mig_unlock(conn);
+    tinox_db_release_stmt_conn(conn);
+}
+
+void tinox_migrate_run(const char* payload) {
+    int n_sets = 0;
+    TinoxMigSet* sets = tinox_mig_parse(payload, &n_sets);
+    const char* mode = getenv("TINOX_MIGRATE_MODE");
+    if (!mode || !*mode) mode = "update";
+    if (!strcmp(mode, "diff-live") || !strcmp(mode, "diff-shadow")) {
+        void* conn = tinox_db_acquire_stmt_conn();
+        if (!conn) tinox_mig_die("no database connection");
+        tinox_diff_snapshot(conn, sets, n_sets, !strcmp(mode, "diff-shadow"));
+        tinox_db_release_stmt_conn(conn);
+        return;
+    }
+    int status_only = strcmp(mode, "status") == 0;
+    int release_only = strcmp(mode, "release-lock") == 0;
+    int baseline = strcmp(mode, "baseline") == 0;
+    int rollback = strcmp(mode, "rollback") == 0;
+    if (!status_only && !release_only && !baseline && !rollback && strcmp(mode, "update") != 0)
+        tinox_mig_die("TINOX_MIGRATE_MODE must be update, status, baseline, release-lock or rollback");
+
+    void* conn = tinox_db_acquire_stmt_conn();
+    if (!conn) tinox_mig_die("no database connection (is [database] configured?)");
+    tinox_mig_ensure_tables(conn);
+    if (release_only) {
+        tinox_mig_unlock(conn);
+        fprintf(stderr, "migrate: changelog lock released\n");
+        tinox_db_release_stmt_conn(conn);
+        return;
+    }
+    if (!status_only) tinox_mig_lock(conn);
+
+    // What the database already ran.
+    void* r = tinox_db_exec(conn, "SELECT changeset_id, author, checksum FROM tinox_changelog ORDER BY exec_order", NULL, 0);
+    if (!r || tinox_db_result_failed(r)) tinox_mig_die("cannot read tinox_changelog");
+    int64_t n_applied = tinox_db_nrows(r);
+    TinoxMigApplied* applied = (TinoxMigApplied*)calloc((size_t)(n_applied + 1), sizeof(TinoxMigApplied));
+    for (int64_t i = 0; i < n_applied; i++) {
+        const char* a = tinox_db_getval(r, i, 0); const char* b = tinox_db_getval(r, i, 1); const char* c = tinox_db_getval(r, i, 2);
+        applied[i].id = tinox_mig_dup(a, strlen(a)); applied[i].author = tinox_mig_dup(b, strlen(b));
+        applied[i].checksum = tinox_mig_dup(c, strlen(c));
+    }
+    tinox_db_free(r);
+
+    if (rollback) {
+        tinox_mig_rollback(conn, sets, n_sets, applied, n_applied);
+        return;
+    }
+
+    // Pass 1: classify. A changed change set that already ran is an error, before anything is applied.
+    int* state = (int*)calloc((size_t)(n_sets + 1), sizeof(int)); // 0 applied, 1 pending, 2 re-run, 3 changed, 4 excluded
+    int changed = 0, pending = 0;
+    const char* contexts = getenv("TINOX_MIGRATE_CONTEXTS");
+    for (int i = 0; i < n_sets; i++) {
+        int found = -1;
+        for (int64_t j = 0; j < n_applied; j++)
+            if (!strcmp(applied[j].id, sets[i].id) && !strcmp(applied[j].author, sets[i].author)) { found = (int)j; break; }
+        if (found < 0) { state[i] = 1; pending++; }
+        else if (strcmp(applied[found].checksum, sets[i].checksum) != 0) {
+            if (sets[i].run_on_change) { state[i] = 2; pending++; }
+            else { state[i] = 3; changed++; }
+        } else if (sets[i].run_always) { state[i] = 2; pending++; }
+    }
+    for (int i = 0; i < n_sets; i++) {
+        if ((state[i] == 1 || state[i] == 2) &&
+            (!tinox_mig_matches(sets[i].context, contexts) || !tinox_mig_matches(sets[i].labels, contexts))) {
+            state[i] = 4; pending--;
+        }
+    }
+    for (int64_t j = 0; j < n_applied; j++) {
+        int known = 0;
+        for (int i = 0; i < n_sets; i++)
+            if (!strcmp(applied[j].id, sets[i].id) && !strcmp(applied[j].author, sets[i].author)) { known = 1; break; }
+        if (!known) fprintf(stderr, "migrate: warning: applied changeSet '%s' by '%s' is not in the changelog\n", applied[j].id, applied[j].author);
+    }
+
+    if (status_only) {
+        for (int i = 0; i < n_sets; i++) {
+            const char* label = state[i] == 0 ? "applied" : state[i] == 1 ? "pending" : state[i] == 2 ? "re-run" : state[i] == 4 ? "excluded" : "CHANGED";
+            printf("%-8s %s by %s (%s)", label, sets[i].id, sets[i].author, sets[i].file);
+            if (*sets[i].tag) printf(" [tag: %s]", sets[i].tag);
+            printf("\n");
+        }
+        printf("%d changeSet(s): %d pending, %d changed\n", n_sets, pending, changed);
+        fflush(stdout);
+        tinox_db_release_stmt_conn(conn);
+        if (changed) exit(1);
+        return;
+    }
+
+    if (changed) {
+        for (int i = 0; i < n_sets; i++)
+            if (state[i] == 3)
+                fprintf(stderr, "migrate: changeSet '%s' by '%s' (%s) was modified after it was applied "
+                                "(add 'runOnChange: true' if re-running is intended, otherwise add a new changeSet instead)\n",
+                        sets[i].id, sets[i].author, sets[i].file);
+        tinox_mig_unlock(conn);
+        tinox_mig_die("checksum validation failed, nothing was applied");
+    }
+
+    // Pass 2: apply, each change set in its own transaction together with its history row.
+    static const char* ins_sql = NULL;
+    static const char* upd_sql = NULL;
+    if (!ins_sql) {
+        ins_sql = "INSERT INTO tinox_changelog (changeset_id, author, source_file, checksum, execution_ms, exec_order) "
+                  "VALUES (" TINOX_MIG_PH(1) ", " TINOX_MIG_PH(2) ", " TINOX_MIG_PH(3) ", " TINOX_MIG_PH(4) ", "
+                  TINOX_MIG_PH(5) ", " TINOX_MIG_PH(6) ")";
+#if defined(TINOX_DB_POSTGRES)
+        upd_sql = "UPDATE tinox_changelog SET checksum = $1, execution_ms = $2, executed_at = CURRENT_TIMESTAMP "
+                  "WHERE changeset_id = $3 AND author = $4";
+#else
+        upd_sql = "UPDATE tinox_changelog SET checksum = ?, execution_ms = ?, executed_at = CURRENT_TIMESTAMP "
+                  "WHERE changeset_id = ? AND author = ?";
+#endif
+    }
+    int64_t order = n_applied;
+    int ran = 0;
+    for (int i = 0; i < n_sets; i++) {
+        if (state[i] == 0 || state[i] == 4) continue;
+        int skip_stmts = baseline;
+        if (!baseline && sets[i].on_fail) {
+            const char* failed = tinox_mig_first_failed(conn, &sets[i]);
+            if (failed) {
+                const char* how = sets[i].on_fail;
+                if (!strcmp(how, "HALT")) {
+                    fprintf(stderr, "migrate: precondition failed for changeSet '%s' by '%s' (%s): %s\n",
+                            sets[i].id, sets[i].author, sets[i].file, failed);
+                    tinox_mig_unlock(conn);
+                    tinox_mig_die("precondition failed (onFail: HALT); nothing further was applied "
+                                  "(use onFail: CONTINUE, MARK_RAN or WARN to tolerate it)");
+                } else if (!strcmp(how, "CONTINUE")) {
+                    fprintf(stderr, "migrate: skipped changeSet '%s' by '%s': precondition failed (%s); it is retried on the next run\n",
+                            sets[i].id, sets[i].author, failed);
+                    continue;
+                } else if (!strcmp(how, "MARK_RAN")) {
+                    fprintf(stderr, "migrate: precondition failed for changeSet '%s' by '%s' (%s): marking it as applied without running it\n",
+                            sets[i].id, sets[i].author, failed);
+                    skip_stmts = 1;
+                } else {
+                    fprintf(stderr, "migrate: warning: precondition failed for changeSet '%s' by '%s' (%s): running it anyway\n",
+                            sets[i].id, sets[i].author, failed);
+                }
+            }
+        }
+        int64_t t0 = tinox_mig_now_ms();
+        if (!TINOX_MIG_BEGIN(conn)) { tinox_mig_unlock(conn); tinox_mig_die("cannot start a transaction"); }
+        for (int s = 0; !skip_stmts && s < sets[i].n_stmts; s++) {
+            if (!tinox_mig_exec(conn, sets[i].stmts[s], NULL, 0)) {
+                TINOX_MIG_ROLLBACK(conn);
+                fprintf(stderr, "migrate: changeSet '%s' by '%s' (%s) failed on: %s\n",
+                        sets[i].id, sets[i].author, sets[i].file, sets[i].stmts[s]);
+                tinox_mig_unlock(conn);
+#if defined(TINOX_DB_MYSQL)
+                // MySQL commits DDL implicitly: the statements before this one are already in the
+                // database, but the changeSet has no tinox_changelog row.
+                if (s > 0)
+                    fprintf(stderr, "migrate: MySQL cannot roll back DDL: statements 1-%d of %d of changeSet '%s' by '%s' "
+                                    "stay applied and the changeSet is NOT recorded. Repair the schema by hand "
+                                    "(or `tinox db baseline` once it matches), then run the migration again\n",
+                            s, sets[i].n_stmts, sets[i].id, sets[i].author);
+                tinox_mig_die("migration failed; earlier changeSets stay applied, this changeSet may be partially applied");
+#else
+                tinox_mig_die("migration failed; this changeSet was rolled back, earlier ones stay applied");
+#endif
+            }
+        }
+        char ms[32], ord[32];
+        snprintf(ms, sizeof ms, "%lld", (long long)(tinox_mig_now_ms() - t0));
+        int ok;
+        if (state[i] == 2) {
+            const char* p[4] = { sets[i].checksum, ms, sets[i].id, sets[i].author };
+            ok = tinox_mig_exec(conn, upd_sql, p, 4);
+        } else {
+            snprintf(ord, sizeof ord, "%lld", (long long)(++order));
+            const char* p[6] = { sets[i].id, sets[i].author, sets[i].file, sets[i].checksum, ms, ord };
+            ok = tinox_mig_exec(conn, ins_sql, p, 6);
+        }
+        if (!ok || !TINOX_MIG_COMMIT(conn)) {
+            TINOX_MIG_ROLLBACK(conn);
+            tinox_mig_unlock(conn);
+            tinox_mig_die("cannot record the changeSet in tinox_changelog");
+        }
+        if (skip_stmts && !baseline) fprintf(stderr, "migrate: marked changeSet '%s' by '%s' as applied (not executed)\n", sets[i].id, sets[i].author);
+        else if (baseline) fprintf(stderr, "migrate: baselined changeSet '%s' by '%s' (not executed)\n", sets[i].id, sets[i].author);
+        else fprintf(stderr, "migrate: applied changeSet '%s' by '%s' (%s ms)\n", sets[i].id, sets[i].author, ms);
+        ran++;
+    }
+    tinox_mig_unlock(conn);
+    tinox_db_release_stmt_conn(conn);
+    if (ran == 0 && n_sets > 0) fprintf(stderr, "migrate: database is up to date (%d changeSets)\n", n_sets);
+}
 
 static void service_close_database(void) {
 #ifdef TINOX_DB_POSTGRES

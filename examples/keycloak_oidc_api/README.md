@@ -9,7 +9,7 @@ realm role — declared entirely with a single annotation:
 @OIDCRolesAllowed(["api-user"])
 fnc hello(ctx: HttpContext) -> Nothing
 {
-    ctx.response.status(200).json("{\"message\":\"Hello, you are authorized!\"}");
+    ctx.response.status(200).json("{\"message\":\"Hello, you are authorized!\"}")
 }
 ```
 

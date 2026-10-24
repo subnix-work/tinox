@@ -3,21 +3,21 @@
 // expect: acme
 // expect: x-token
 
-import tinox.core.hpack;
+import tinox.core.hpack
 class Main
 {
     fnc main() -> Int32
     {
-        const dynEnc: HpackDynTable = HpackDynTable::new(4096);
-        const headers: List<HpackHeader> = [];
-        headers.push(HpackHeader::new("x-token", "secret"));
-        headers.push(HpackHeader::new("x-tenant", "acme"));
-        const encoded: List<Int64> = Hpack::encode(headers, dynEnc);
+        const dynEnc: HpackDynTable = HpackDynTable::new(4096)
+        const headers: List<HpackHeader> = []
+        headers.push(HpackHeader::new("x-token", "secret"))
+        headers.push(HpackHeader::new("x-tenant", "acme"))
+        const encoded: List<Int64> = Hpack::encode(headers, dynEnc)
         // Both non-static headers should be added to the dynamic table
-        println(dynEnc.entries.len());
-        println(dynEnc.entries[0].name);
-        println(dynEnc.entries[0].value);
-        println(dynEnc.entries[1].name);
-        return 0;
+        println(dynEnc.entries.len())
+        println(dynEnc.entries[0].name)
+        println(dynEnc.entries[0].value)
+        println(dynEnc.entries[1].name)
+        return 0
     }
 }

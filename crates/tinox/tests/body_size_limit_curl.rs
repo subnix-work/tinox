@@ -61,7 +61,7 @@ fn oversized_body_rejected_with_413_not_silently_truncated() {
 
     std::fs::write(
         workdir.join("Ctrl.tnx"),
-        r#"import tinox.core.http_server;
+        r#"import tinox.core.http_server
 
 class Ctrl
 {
@@ -69,8 +69,8 @@ class Ctrl
     @Path("/upload")
     fn upload(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        ctx.response.status(200).json("{\"ok\":true,\"len\":" + ctx.request.body.len().toString() + "}");
-        return ctx;
+        ctx.response.status(200).json("{\"ok\":true,\"len\":" + ctx.request.body.len().toString() + "}")
+        return ctx
     }
 }
 "#,
@@ -79,13 +79,13 @@ class Ctrl
 
     std::fs::write(
         workdir.join("Main.tnx"),
-        r#"import Ctrl;
+        r#"import Ctrl
 
 class Main
 {
     fnc main() -> Int32
     {
-        return 0;
+        return 0
     }
 }
 "#,

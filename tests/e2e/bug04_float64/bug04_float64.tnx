@@ -1,4 +1,4 @@
 enum bug04_float64 {
-    F(Float64),
-    Num(Int64),
+    F(Float64)
+    Num(Int64)
 }

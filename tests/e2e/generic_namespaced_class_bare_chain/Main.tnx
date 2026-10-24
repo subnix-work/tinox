@@ -14,13 +14,13 @@
 // #166, not covered by this fix or this test.)
 // expect: true
 // expect: 1
-import tinox.core.option;
+import tinox.core.option
 
 class Main
 {
     fnc main() -> Int32 {
-        println(Option<Int64>::some(1).isSome());
-        println(Option<Int64>::some(1).unwrap());
-        return 0;
+        println(Option<Int64>::some(1).isSome())
+        println(Option<Int64>::some(1).unwrap())
+        return 0
     }
 }

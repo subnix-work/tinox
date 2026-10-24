@@ -1,81 +1,81 @@
-import tinox.core.http_server;
-import tinox.core.option;
-import tinox.core.result;
+import tinox.core.http_server
+import tinox.core.option
+import tinox.core.result
 
 class Main
 {
     fnc check(condition: Bool, message: String) -> Nothing
     {
-        if (!condition) { throw message; }
+        if (!condition) { throw message }
     }
 
     fnc main() -> Int32
     {
-        let headers: Map<String, String> = Map::new();
-        headers["X-Empty"] = "";
-        headers["X-Value"] = "value";
-        headers["x-value"] = "exact";
-        let req: HttpRequest = HttpRequest::new("GET", "/", "empty=&bare&value=first&value=last&encoded=%20+&=ignored&equals=a=b", headers, "");
-        check(req.findHeader("missing").isNone(), "missing header");
-        check(req.findHeader("x-empty").isSome(), "empty header is present");
-        check(req.findHeader("x-empty").unwrap() == "", "empty header value");
-        check(req.findHeader("X-Value").unwrap() == "value", "exact header wins");
-        check(req.findHeader("x-value").unwrap() == "exact", "lowercase exact header");
-        check(req.findHeader("X-EMPTY").isSome(), "case-insensitive header");
-        check(req.getHeader("missing") == "", "legacy missing header");
-        check(req.getHeader("x-empty") == "", "legacy empty header");
-        check(req.getHeader("X-Value") == "value", "legacy header value");
+        let headers: Map<String, String> = Map::new()
+        headers["X-Empty"] = ""
+        headers["X-Value"] = "value"
+        headers["x-value"] = "exact"
+        let req: HttpRequest = HttpRequest::new("GET", "/", "empty=&bare&value=first&value=last&encoded=%20+&=ignored&equals=a=b", headers, "")
+        check(req.findHeader("missing").isNone(), "missing header")
+        check(req.findHeader("x-empty").isSome(), "empty header is present")
+        check(req.findHeader("x-empty").unwrap() == "", "empty header value")
+        check(req.findHeader("X-Value").unwrap() == "value", "exact header wins")
+        check(req.findHeader("x-value").unwrap() == "exact", "lowercase exact header")
+        check(req.findHeader("X-EMPTY").isSome(), "case-insensitive header")
+        check(req.getHeader("missing") == "", "legacy missing header")
+        check(req.getHeader("x-empty") == "", "legacy empty header")
+        check(req.getHeader("X-Value") == "value", "legacy header value")
 
-        let params: Map<String, String> = Map::new();
-        params["empty"] = "";
-        params["id"] = "42";
-        req.setParams(params);
-        check(req.findParam("missing").isNone(), "missing path parameter");
-        check(req.findParam("empty").isSome(), "empty path parameter is present");
-        check(req.findParam("empty").unwrap() == "", "empty path value");
-        check(req.findParam("id").unwrap() == "42", "path value");
-        check(req.findParam("ID").isNone(), "case-sensitive path");
-        check(req.getParam("missing") == "", "legacy missing path");
-        check(req.getParam("empty") == "", "legacy empty path");
-        check(req.getParam("id") == "42", "legacy path value");
+        let params: Map<String, String> = Map::new()
+        params["empty"] = ""
+        params["id"] = "42"
+        req.setParams(params)
+        check(req.findParam("missing").isNone(), "missing path parameter")
+        check(req.findParam("empty").isSome(), "empty path parameter is present")
+        check(req.findParam("empty").unwrap() == "", "empty path value")
+        check(req.findParam("id").unwrap() == "42", "path value")
+        check(req.findParam("ID").isNone(), "case-sensitive path")
+        check(req.getParam("missing") == "", "legacy missing path")
+        check(req.getParam("empty") == "", "legacy empty path")
+        check(req.getParam("id") == "42", "legacy path value")
 
-        check(req.findQuery("missing").isNone(), "missing query");
-        check(req.findQuery("empty").isSome(), "empty query is present");
-        check(req.findQuery("empty").unwrap() == "", "empty query value");
-        check(req.findQuery("bare").isSome(), "bare query is present");
-        check(req.findQuery("bare").unwrap() == "", "bare query value");
-        check(req.findQuery("value").unwrap() == "last", "last duplicate wins");
-        check(req.findQuery("VALUE").isNone(), "case-sensitive query");
-        check(req.findQuery("encoded").unwrap() == "%20+", "raw query preserved");
-        check(req.findQuery("equals").unwrap() == "a=b", "equals in value");
-        check(req.findQuery("").isNone(), "empty query key ignored");
-        check(QueryString::find("", "missing").isNone(), "empty query string");
-        check(QueryString::find("value=first&value=", "value").unwrap() == "", "last empty duplicate wins");
-        check(req.getQuery("missing") == "", "legacy missing query");
-        check(req.getQuery("empty") == "", "legacy empty query");
-        check(req.getQuery("value") == "last", "legacy query value");
-        check(QueryString::get("bare", "bare") == "", "legacy bare query");
-        check(QueryString::get("", "missing") == "", "legacy empty query string");
+        check(req.findQuery("missing").isNone(), "missing query")
+        check(req.findQuery("empty").isSome(), "empty query is present")
+        check(req.findQuery("empty").unwrap() == "", "empty query value")
+        check(req.findQuery("bare").isSome(), "bare query is present")
+        check(req.findQuery("bare").unwrap() == "", "bare query value")
+        check(req.findQuery("value").unwrap() == "last", "last duplicate wins")
+        check(req.findQuery("VALUE").isNone(), "case-sensitive query")
+        check(req.findQuery("encoded").unwrap() == "%20+", "raw query preserved")
+        check(req.findQuery("equals").unwrap() == "a=b", "equals in value")
+        check(req.findQuery("").isNone(), "empty query key ignored")
+        check(QueryString::find("", "missing").isNone(), "empty query string")
+        check(QueryString::find("value=first&value=", "value").unwrap() == "", "last empty duplicate wins")
+        check(req.getQuery("missing") == "", "legacy missing query")
+        check(req.getQuery("empty") == "", "legacy empty query")
+        check(req.getQuery("value") == "last", "legacy query value")
+        check(QueryString::get("bare", "bare") == "", "legacy bare query")
+        check(QueryString::get("", "missing") == "", "legacy empty query string")
 
-        let ok: Result<String> = Result<String>::ok("");
-        let err: Result<String> = Result<String>::err("read /missing: permission denied");
-        check(ok.isOk(), "empty success");
-        check(ok.unwrap() == "", "empty success value");
-        check(err.isErr(), "expected failure");
-        check(err.getError() == "read /missing: permission denied", "error detail retained");
-        let emptyError: Result<String> = Result<String>::err("");
-        check(emptyError.isErr(), "error status is independent of message");
-        var caught: Bool = false;
-        var cleaned: Bool = false;
-        try { err.unwrap(); }
-        catch e: String { caught = e == "read /missing: permission denied"; }
-        finally { cleaned = true; }
-        check(caught && cleaned, "Result unwrap propagation and cleanup");
-        caught = false;
-        try { req.findHeader("missing").unwrap(); }
-        catch e: String { caught = e == "Option is None"; }
-        check(caught, "Option unwrap contract");
-        println("contracts ok");
-        return 0;
+        let ok: Result<String> = Result<String>::ok("")
+        let err: Result<String> = Result<String>::err("read /missing: permission denied")
+        check(ok.isOk(), "empty success")
+        check(ok.unwrap() == "", "empty success value")
+        check(err.isErr(), "expected failure")
+        check(err.getError() == "read /missing: permission denied", "error detail retained")
+        let emptyError: Result<String> = Result<String>::err("")
+        check(emptyError.isErr(), "error status is independent of message")
+        var caught: Bool = false
+        var cleaned: Bool = false
+        try { err.unwrap() }
+        catch e: String { caught = e == "read /missing: permission denied" }
+        finally { cleaned = true }
+        check(caught && cleaned, "Result unwrap propagation and cleanup")
+        caught = false
+        try { req.findHeader("missing").unwrap() }
+        catch e: String { caught = e == "Option is None" }
+        check(caught, "Option unwrap contract")
+        println("contracts ok")
+        return 0
     }
 }

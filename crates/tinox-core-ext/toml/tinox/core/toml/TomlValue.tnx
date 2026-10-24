@@ -1,29 +1,29 @@
-module tinox.core.toml;
+module tinox.core.toml
 
 namespace tinox.core.toml
 {
     class TomlValue
     {
-        fn isString() -> Bool { return this.kind == "string"; }
-        fn isInt() -> Bool { return this.kind == "int"; }
-        fn isFloat() -> Bool { return this.kind == "float"; }
-        fn isBool() -> Bool { return this.kind == "bool"; }
-        fn isTable() -> Bool { return this.kind == "table"; }
-        fn isArray() -> Bool { return this.kind == "array"; }
+        fn isString() -> Bool { return this.kind == "string" }
+        fn isInt() -> Bool { return this.kind == "int" }
+        fn isFloat() -> Bool { return this.kind == "float" }
+        fn isBool() -> Bool { return this.kind == "bool" }
+        fn isTable() -> Bool { return this.kind == "table" }
+        fn isArray() -> Bool { return this.kind == "array" }
 
-        fn asString() -> String { return this.stringValue; }
-        fn asInt() -> Int64 { return this.intValue; }
-        fn asFloat() -> Float64 { return this.floatValue; }
-        fn asBool() -> Bool { return this.boolValue; }
-        fn asTable() -> Map<String, TomlValue> { return this.tableValue; }
-        fn asArray() -> List<TomlValue> { return this.arrayValue; }
+        fn asString() -> String { return this.stringValue }
+        fn asInt() -> Int64 { return this.intValue }
+        fn asFloat() -> Float64 { return this.floatValue }
+        fn asBool() -> Bool { return this.boolValue }
+        fn asTable() -> Map<String, TomlValue> { return this.tableValue }
+        fn asArray() -> List<TomlValue> { return this.arrayValue }
 
-        kind: String;
-        stringValue: String;
-        intValue: Int64;
-        floatValue: Float64;
-        boolValue: Bool;
-        tableValue: Map<String, TomlValue>;
-        arrayValue: List<TomlValue>;
+        kind: String
+        stringValue: String
+        intValue: Int64
+        floatValue: Float64
+        boolValue: Bool
+        tableValue: Map<String, TomlValue>
+        arrayValue: List<TomlValue>
     }
 }

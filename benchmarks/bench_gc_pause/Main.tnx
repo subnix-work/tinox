@@ -2,40 +2,40 @@
 // size (#116). Builds up N long-lived objects, then times an explicit
 // full collection (Debug::gcCollect()) over that live set. See
 // benchmarks/gc_pause_results.md for methodology notes and results.
-import tinox.core.debug;
+import tinox.core.debug
 
 class Main
 {
     fnc benchAtSize(n: Int64) -> Nothing
     {
-        var heap: List<String> = [];
-        var i: Int64 = 0;
+        var heap: List<String> = []
+        var i: Int64 = 0
         while i < n
         {
-            heap.push("object-" + i.toString() + "-payload-000000000000");
-            i = i + 1;
+            heap.push("object-" + i.toString() + "-payload-000000000000")
+            i = i + 1
         }
 
         // Reclaim garbage from any earlier benchAtSize() call before timing,
         // so the live set being collected below is (close to) just this run's
         // `heap`, not a growing accumulation across calls.
-        Debug::gcCollect();
+        Debug::gcCollect()
 
         // tinox_clock_nanos() (used by tinox.core.metrics.Stopwatch) is a
         // compiler builtin — no import needed — and gives real sub-ms
         // resolution, unlike tinox.core.time's millisecond clock. Averaging a
         // few back-to-back full collections over the same live set smooths
         // out scheduling noise.
-        const reps: Int64 = 10;
-        const startNs: Int64 = tinox_clock_nanos();
-        var r: Int64 = 0;
+        const reps: Int64 = 10
+        const startNs: Int64 = tinox_clock_nanos()
+        var r: Int64 = 0
         while r < reps
         {
-            Debug::gcCollect();
-            r = r + 1;
+            Debug::gcCollect()
+            r = r + 1
         }
-        const totalNs: Int64 = tinox_clock_nanos() - startNs;
-        const avgUs: Int64 = totalNs / reps / 1000;
+        const totalNs: Int64 = tinox_clock_nanos() - startNs
+        const avgUs: Int64 = totalNs / reps / 1000
 
         // Read `heap` here, after the timed collections: a conservative GC
         // only sees roots that are still physically live somewhere (stack/
@@ -43,19 +43,19 @@ class Main
         // is never read again is fair game to have already reused that slot
         // for something else before we get here, silently unrooting the
         // array we meant to be measuring the collection of.
-        println("live_objects=${n} (checked ${heap.len()}) avg_pause_us=${avgUs} heap_bytes=${Debug::memoryUsage()}");
+        println("live_objects=${n} (checked ${heap.len()}) avg_pause_us=${avgUs} heap_bytes=${Debug::memoryUsage()}")
     }
 
 
     fnc main() -> Int32
     {
-        benchAtSize(10000);
-        benchAtSize(50000);
-        benchAtSize(100000);
-        benchAtSize(500000);
-        benchAtSize(1000000);
-        benchAtSize(2000000);
-        benchAtSize(5000000);
-        return 0;
+        benchAtSize(10000)
+        benchAtSize(50000)
+        benchAtSize(100000)
+        benchAtSize(500000)
+        benchAtSize(1000000)
+        benchAtSize(2000000)
+        benchAtSize(5000000)
+        return 0
     }
 }

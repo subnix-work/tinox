@@ -1,4 +1,4 @@
-module tinox.core.rest.client;
+module tinox.core.rest.client
 
 namespace tinox.core.rest.client
 {
@@ -17,16 +17,16 @@ namespace tinox.core.rest.client
          */
         fn build(baseUrl: String, path: String) -> String
         {
-            const base: String = baseUrl.trim();
+            const base: String = baseUrl.trim()
             if (base.endsWith("/") && path.startsWith("/"))
             {
-                return base.substring(0, base.len() - 1) + path;
+                return base.substring(0, base.len() - 1) + path
             }
             if (base.endsWith("/") || path.startsWith("/"))
             {
-                return base + path;
+                return base + path
             }
-            return base + "/" + path;
+            return base + "/" + path
         }
 
         /**
@@ -39,26 +39,26 @@ namespace tinox.core.rest.client
          */
         fn buildWithParams(baseUrl: String, path: String, params: Map<String, String>) -> String
         {
-            const url: String = Url::build(baseUrl, path);
+            const url: String = Url::build(baseUrl, path)
             if (params.len() == 0)
             {
-                return url;
+                return url
             }
-            var result: String = url + "?";
-            var first: Bool = true;
-            const keys: List<String> = params.keys();
-            var i: Int64 = 0;
+            var result: String = url + "?"
+            var first: Bool = true
+            const keys: List<String> = params.keys()
+            var i: Int64 = 0
             while i < keys.len()
             {
                 if (first == false)
                 {
-                    result = result + "&";
+                    result = result + "&"
                 }
-                result = result + Url::encode(keys[i]) + "=" + Url::encode(params.get(keys[i]));
-                first = false;
-                i = i + 1;
+                result = result + Url::encode(keys[i]) + "=" + Url::encode(params.get(keys[i]))
+                first = false
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -72,23 +72,23 @@ namespace tinox.core.rest.client
          */
         fn encode(s: String) -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
+            var result: String = ""
+            var i: Int64 = 0
             while i < s.len()
             {
-                const ch: String = s.substring(i, i + 1);
-                const code: Int64 = ch.charCodeAt(0);
+                const ch: String = s.substring(i, i + 1)
+                const code: Int64 = ch.charCodeAt(0)
                 if (Url::isUnreserved(ch))
                 {
-                    result = result + ch;
+                    result = result + ch
                 }
                 else
                 {
-                    result = result + "%" + Url::toHex(code);
+                    result = result + "%" + Url::toHex(code)
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return result;
+            return result
         }
 
         /**
@@ -101,24 +101,24 @@ namespace tinox.core.rest.client
          */
         fn isUnreserved(ch: String) -> Bool
         {
-            const code: Int64 = ch.charCodeAt(0);
+            const code: Int64 = ch.charCodeAt(0)
             if (code >= 65 && code <= 90)
             {
-                return true;
+                return true
             }
             if (code >= 97 && code <= 122)
             {
-                return true;
+                return true
             }
             if (code >= 48 && code <= 57)
             {
-                return true;
+                return true
             }
             if (ch == "-" || ch == "_" || ch == "." || ch == "~")
             {
-                return true;
+                return true
             }
-            return false;
+            return false
         }
 
         /**
@@ -129,10 +129,10 @@ namespace tinox.core.rest.client
          */
         fn toHex(n: Int64) -> String
         {
-            const hex: String = "0123456789ABCDEF";
-            const high: Int64 = (n / 16) % 16;
-            const low: Int64 = n % 16;
-            return hex.substring(high, high + 1) + hex.substring(low, low + 1);
+            const hex: String = "0123456789ABCDEF"
+            const high: Int64 = (n / 16) % 16
+            const low: Int64 = n % 16
+            return hex.substring(high, high + 1) + hex.substring(low, low + 1)
         }
 
         /**
@@ -145,22 +145,22 @@ namespace tinox.core.rest.client
          */
         fn joinPath(segments: List<String>) -> String
         {
-            var result: String = "";
-            var i: Int64 = 0;
+            var result: String = ""
+            var i: Int64 = 0
             while i < segments.len()
             {
-                const seg: String = segments[i].trim();
+                const seg: String = segments[i].trim()
                 if (seg.len() > 0)
                 {
                     if (result.len() > 0 && result.endsWith("/") == false && seg.startsWith("/") == false)
                     {
-                        result = result + "/";
+                        result = result + "/"
                     }
-                    result = result + seg;
+                    result = result + seg
                 }
-                i = i + 1;
+                i = i + 1
             }
-            return result;
+            return result
         }
     }
 }

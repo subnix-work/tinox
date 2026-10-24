@@ -1,6 +1,6 @@
-module tinox.core.kubernetes;
+module tinox.core.kubernetes
 
-import tinox.core.json;
+import tinox.core.json
 
 namespace tinox.core.kubernetes
 {
@@ -10,7 +10,7 @@ namespace tinox.core.kubernetes
     @JsonSerializable
     class EnvVar
     {
-        var name: String;
-        var value: String;
+        var name: String
+        var value: String
     }
 }

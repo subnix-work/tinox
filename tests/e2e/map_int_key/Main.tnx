@@ -11,22 +11,22 @@ class Main
 {
     fnc main() -> Int32
     {
-        var m: Map<Int64, Int64> = Map::new();
-        m.insert(1, 100);
-        m.insert(2, 200);
-        println(m.get(1).toString());
-        println(m.get(2).toString());
-        println(m.contains(1).toString());
-        println(m.contains(2).toString());
-        m.remove(1);
-        println(m.contains(1).toString());
+        var m: Map<Int64, Int64> = Map::new()
+        m.insert(1, 100)
+        m.insert(2, 200)
+        println(m.get(1).toString())
+        println(m.get(2).toString())
+        println(m.contains(1).toString())
+        println(m.contains(2).toString())
+        m.remove(1)
+        println(m.contains(1).toString())
 
-        var mb: Map<Bool, Int64> = Map::new();
-        mb.insert(true, 1);
-        mb.insert(false, 2);
-        println(mb.contains(true).toString());
-        println(mb.get(true).toString());
-        println(mb.get(false).toString());
-        return 0;
+        var mb: Map<Bool, Int64> = Map::new()
+        mb.insert(true, 1)
+        mb.insert(false, 2)
+        println(mb.contains(true).toString())
+        println(mb.get(true).toString())
+        println(mb.get(false).toString())
+        return 0
     }
 }

@@ -2,7 +2,7 @@
  * Tinox Standard Library - Time Module
  * Time and date utilities including Duration, Timer, and Stopwatch
  */
-module tinox.core.time;
+module tinox.core.time
 
 namespace tinox.core.time
 {
@@ -19,7 +19,7 @@ namespace tinox.core.time
          */
         fn now() -> Int64
         {
-            return now();
+            return now()
         }
 
         /**
@@ -29,7 +29,7 @@ namespace tinox.core.time
          */
         fn sleep(ms: Int64) -> Nothing
         {
-            sleep_ms(ms);
+            sleep_ms(ms)
         }
 
         /**
@@ -39,7 +39,7 @@ namespace tinox.core.time
          */
         fn newTimer() -> Timer
         {
-            return Timer::new();
+            return Timer::new()
         }
 
         /**
@@ -49,7 +49,7 @@ namespace tinox.core.time
          */
         fn newStopwatch() -> Stopwatch
         {
-            return Stopwatch::new();
+            return Stopwatch::new()
         }
 
         /**
@@ -60,7 +60,7 @@ namespace tinox.core.time
          */
         fn newDuration(seconds: Int64) -> Duration
         {
-            return Duration::new(seconds);
+            return Duration::new(seconds)
         }
 
         /**
@@ -71,7 +71,7 @@ namespace tinox.core.time
          */
         fn durationFromMinutes(minutes: Int64) -> Duration
         {
-            return Duration::fromMinutes(minutes);
+            return Duration::fromMinutes(minutes)
         }
 
         /**
@@ -82,7 +82,7 @@ namespace tinox.core.time
          */
         fn durationFromHours(hours: Int64) -> Duration
         {
-            return Duration::fromHours(hours);
+            return Duration::fromHours(hours)
         }
     }
 }

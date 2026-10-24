@@ -1,6 +1,6 @@
-module tinox.core.amqp091;
+module tinox.core.amqp091
 
-import tinox.core.socket;
+import tinox.core.socket
 
 namespace tinox.core.amqp091
 {
@@ -14,10 +14,10 @@ namespace tinox.core.amqp091
      */
     class AmqpConfirmResult091
     {
-        var deliveryTag: Int64;
-        var multiple: Bool;
-        var ack: Bool;
-        var ok: Bool;
-        var errorMessage: String;
+        var deliveryTag: Int64
+        var multiple: Bool
+        var ack: Bool
+        var ok: Bool
+        var errorMessage: String
     }
 }

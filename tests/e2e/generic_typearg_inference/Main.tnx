@@ -1,5 +1,5 @@
-import Box;
-import Pair;
+import Box
+import Pair
 
 // B2 step 2: type-argument inference for unannotated bindings.
 // `const bi = Box::make(42)` derives T=Int from the args (typecheck unification
@@ -20,29 +20,29 @@ class Main
 {
     fnc main() -> Int32 {
         // let without annotation: T=Int64 from the argument
-        const bi = Box::make(42);
-        println(bi.value.toString());        // 42
+        const bi = Box::make(42)
+        println(bi.value.toString())        // 42
 
         // T=String: direct field read + method on the resolved T
-        const bs = Box::make("hi");
-        println(bs.value);                    // hi
-        println(bs.value.len().toString());  // 2
+        const bs = Box::make("hi")
+        println(bs.value)                    // hi
+        println(bs.value.len().toString())  // 2
 
         // T=Float64
-        const bf = Box::make(3.5);
-        println(bf.value.toString());        // 3.5
+        const bf = Box::make(3.5)
+        println(bf.value.toString())        // 3.5
 
         // var path uses the same bridge
-        var vi = Box::make(7);
-        println(vi.value.toString());        // 7
+        var vi = Box::make(7)
+        println(vi.value.toString())        // 7
 
         // Two type params bound independently (A=Int64, B=String)
-        const p = Pair::make(1, "x");
-        println(p.a.toString());             // 1
-        println(p.b);                         // x
+        const p = Pair::make(1, "x")
+        println(p.a.toString())             // 1
+        println(p.b)                         // x
 
         // Chained access without a binding: marker directly on the call expression
-        println(Box::make(9).value.toString()); // 9
-        return 0;
+        println(Box::make(9).value.toString()) // 9
+        return 0
     }
 }

@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -9,16 +9,16 @@ namespace tinox.core.rest.server
     @annotation
     class GET
     {
-        var path: String;
+        var path: String
 
         fn new(path: String) -> GET
         {
-            return GET { path: path };
+            return GET { path: path }
         }
 
         fn default() -> GET
         {
-            return GET { path: "" };
+            return GET { path: "" }
         }
     }
 }

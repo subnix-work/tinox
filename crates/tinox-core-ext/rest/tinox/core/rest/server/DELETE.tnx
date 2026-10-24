@@ -1,4 +1,4 @@
-module tinox.core.rest.server;
+module tinox.core.rest.server
 
 namespace tinox.core.rest.server
 {
@@ -9,16 +9,16 @@ namespace tinox.core.rest.server
     @annotation
     class DELETE
     {
-        var path: String;
+        var path: String
 
         fn new(path: String) -> DELETE
         {
-            return DELETE { path: path };
+            return DELETE { path: path }
         }
 
         fn default() -> DELETE
         {
-            return DELETE { path: "" };
+            return DELETE { path: "" }
         }
     }
 }

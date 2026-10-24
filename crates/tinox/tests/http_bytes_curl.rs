@@ -49,42 +49,42 @@ fn binary_bodies_round_trip_over_http() {
 
     std::fs::write(
         workdir.join("BlobController.tnx"),
-        r#"import tinox.core.http_server;
-import tinox.core.bytes;
+        r#"import tinox.core.http_server
+import tinox.core.bytes
 
 class BlobController
 {
     @POST("/echo")
     fnc echo(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        const got: Bytes = Bytes::fromRequestBody(ctx.request.body);
-        const tail: Bytes = Bytes::new(2);
-        tail.set(1, 255);
-        ctx.response.status(200).header("Content-Type", "application/octet-stream");
-        ctx.response.body = got.concat(tail).asResponseBody();
-        return ctx;
+        const got: Bytes = Bytes::fromRequestBody(ctx.request.body)
+        const tail: Bytes = Bytes::new(2)
+        tail.set(1, 255)
+        ctx.response.status(200).header("Content-Type", "application/octet-stream")
+        ctx.response.body = got.concat(tail).asResponseBody()
+        return ctx
     }
 
     @GET("/blob")
     fnc blob(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        const b: Bytes = Bytes::new(256);
-        var i: Int64 = 0;
+        const b: Bytes = Bytes::new(256)
+        var i: Int64 = 0
         while i < 256
         {
-            b.set(i, i);
-            i = i + 1;
+            b.set(i, i)
+            i = i + 1
         }
-        ctx.response.status(200).header("Content-Type", "application/octet-stream");
-        ctx.response.body = b.asResponseBody();
-        return ctx;
+        ctx.response.status(200).header("Content-Type", "application/octet-stream")
+        ctx.response.body = b.asResponseBody()
+        return ctx
     }
 
     @GET("/text")
     fnc text(@HttpContext ctx: HttpContext) -> HttpContext
     {
-        ctx.response.status(200).text("plain");
-        return ctx;
+        ctx.response.status(200).text("plain")
+        return ctx
     }
 }
 "#,
@@ -92,7 +92,7 @@ class BlobController
     .unwrap();
     std::fs::write(
         workdir.join("Main.tnx"),
-        "import BlobController;\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        return 0;\n    }\n}\n",
+        "import BlobController\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        return 0\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(

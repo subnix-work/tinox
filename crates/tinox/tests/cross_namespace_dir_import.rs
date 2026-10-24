@@ -37,7 +37,7 @@ fn setup_project(name: &str) -> std::path::PathBuf {
     .expect("write tinox.toml");
     std::fs::write(
         workdir.join("src/demo/model/Person.tnx"),
-        "namespace demo.model {\n    class Person {\n        var id: Int64;\n    }\n}\n",
+        "namespace demo.model {\n    class Person {\n        var id: Int64\n    }\n}\n",
     )
     .expect("write Person.tnx");
     // Full dotted path, written from a file that is NOT the project root
@@ -45,12 +45,12 @@ fn setup_project(name: &str) -> std::path::PathBuf {
     // previously had no valid resolution at all.
     std::fs::write(
         workdir.join("src/demo/dao/PersonDao.tnx"),
-        "import demo.model.Person;\n\nnamespace demo.dao {\n    class PersonDao {\n        fn get() -> Person {\n            return Person { id: 1 };\n        }\n    }\n}\n",
+        "import demo.model.Person\n\nnamespace demo.dao {\n    class PersonDao {\n        fn get() -> Person {\n            return Person { id: 1 }\n        }\n    }\n}\n",
     )
     .expect("write PersonDao.tnx");
     std::fs::write(
         workdir.join("src/Main.tnx"),
-        "import demo.dao.PersonDao;\n\nclass Main {\n    fnc main() -> Int32 {\n        let d = new PersonDao();\n        println(d.get().id);\n        return 0;\n    }\n}\n",
+        "import demo.dao.PersonDao\n\nclass Main {\n    fnc main() -> Int32 {\n        let d = new PersonDao()\n        println(d.get().id)\n        return 0\n    }\n}\n",
     )
     .expect("write Main.tnx");
     workdir
@@ -93,7 +93,7 @@ fn missing_return_statement_is_not_misreported_as_a_missing_import() {
     // gone now, so this uses an unrelated, still-genuine trigger instead.)
     std::fs::write(
         workdir.join("src/Main.tnx"),
-        "class Main {\n    fnc f() -> Bool {\n        println(\"never returns\");\n    }\n    fnc main() -> Int32 {\n        println(f());\n        return 0;\n    }\n}\n",
+        "class Main {\n    fnc f() -> Bool {\n        println(\"never returns\")\n    }\n    fnc main() -> Int32 {\n        println(f())\n        return 0\n    }\n}\n",
     )
     .expect("write Main.tnx");
 
