@@ -58,9 +58,9 @@ fn stage_project(name: &str, app_imports: &str) -> PathBuf {
     .expect("write Main.tnx");
 
     let toml = "[package]\nname = \"impliedimportstest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.0.3\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.0.3\"\n\n\
-        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.0.0\"\n";
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n\n\
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.1.0\"\n\n\
+        [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.1.0\"\n";
     std::fs::write(workdir.join("tinox.toml"), toml).expect("write tinox.toml");
 
     let tinox = env!("CARGO_BIN_EXE_tinox");
