@@ -1,0 +1,17 @@
+import tinox.core.toml
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let content: String = "name = \"tinox-central\"\nport = 8080\ndebug = true\n"
+        let value: TomlValue = Toml::parse(content)
+        let table: Map<String, TomlValue> = value.asTable()
+
+        println(table["name"].asString())
+        println(table["port"].asInt().toString())
+        println(table["debug"].asBool().toString())
+
+        return 0
+    }
+}

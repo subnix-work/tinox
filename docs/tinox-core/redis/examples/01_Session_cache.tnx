@@ -1,0 +1,30 @@
+import tinox.core.redis
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let client: RedisClient = RedisClient::connect("localhost", 6379)
+        if (client.conn <= 0)
+        {
+            println("connect failed: " + client.errorMessage)
+            return 1
+        }
+
+        client.setEx("session:abc", "user-42", 3600)
+
+        let value: String = client.get("session:abc")
+        if (client.lastGetFound())
+        {
+            println("session:abc = " + value)
+        }
+        else
+        {
+            println("cache miss")
+        }
+
+        client.incr("visits:abc")
+        client.close()
+        return 0
+    }
+}

@@ -1,0 +1,19 @@
+import tinox.core.msgpack
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        var fields: Map<String, MsgpackValue> = Map::new()
+        fields["name"] = MsgpackValue { kind: "string", stringValue: "Ada", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        fields["age"] = MsgpackValue { kind: "int", stringValue: "", intValue: 36, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+
+        let payload: MsgpackValue = MsgpackValue { kind: "object", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: fields }
+        let bytes: List<Int64> = Msgpack::encode(payload)
+        println("encoded " + bytes.len().toString() + " bytes")
+
+        let decoded: MsgpackValue = Msgpack::decode(bytes)
+        println("name = " + decoded.getField("name").getString())
+        return 0
+    }
+}

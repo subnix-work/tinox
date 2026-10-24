@@ -1,4 +1,4 @@
 [package]
 name = "asm"
-version = "1.0.0"
+version = "1.1.0"
 description = "tinox.core.asm, split out of the bundled stdlib as a standalone tinox-central package."

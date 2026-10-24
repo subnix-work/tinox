@@ -1,0 +1,16 @@
+import tinox.core.tpl
+import tinox.core.json
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let data: Map<String, JsonValue> = Map::new()
+        data["name"] = Json::parse("\"World\"")
+
+        let output: String = Template::render("Hello, {{name}}!", data)
+        println(output)
+
+        return 0
+    }
+}

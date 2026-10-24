@@ -7,7 +7,7 @@ class Main
         const srv: Int64 = WsServer::listen(8080)
         const conn: Int64 = WsServer::accept(srv)
 
-        while true
+        while (true)
         {
             const f: WsFrame = Ws::readMessage(conn)
             if (f.opcode != 1)

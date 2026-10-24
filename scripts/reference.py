@@ -8,6 +8,7 @@ import argparse
 from collections import Counter
 from html.parser import HTMLParser
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -91,7 +92,8 @@ def check_links(page, text=None):
     for href in Inventory(page.read_text() if text is None else text).links:
         target = href.split('#', 1)[0]
         if target and not target.startswith(('https:', 'http:', 'mailto:', 'data:')):
-            if not (page.parent / target).is_file():
+            # normpath: the page's own directory may not exist yet while staging
+            if not Path(os.path.normpath(page.parent / target)).is_file():
                 raise ValueError(f'{page}: broken dependency/document link: {href}')
 
 
