@@ -1,4 +1,5 @@
 [package]
+compiler = "2.5.1"
 name = "tinox_ui_annotated_hello"
 version = "0.1.0"
 description = "Tinox-UI click counter using @TinoxUIApp/@View annotation sugar instead of hand-wired @OnOpen/@OnMessage/@OnClose."

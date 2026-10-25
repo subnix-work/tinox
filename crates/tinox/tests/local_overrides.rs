@@ -8,7 +8,7 @@ impl Project {
         let root = std::env::temp_dir().join(format!("tinox-overrides-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         fs::create_dir_all(&root).unwrap();
         let p = Self(root);
-        p.write("tinox.toml", "[package]\nname=\"consumer\"\nversion=\"1.0.0\"\ngroup=\"demo\"\nentry=\"src/Main.tnx\"\n[[dependencies]]\ngroup=\"demo\"\nartifactId=\"counter\"\nversion=\"1.0.0\"\nurl=\"https://invalid.example/counter.tar.gz\"\n");
+        p.write("tinox.toml", "[package]\ncompiler = \"2.5.1\"\nname=\"consumer\"\nversion=\"1.0.0\"\ngroup=\"demo\"\nentry=\"src/Main.tnx\"\n[[dependencies]]\ngroup=\"demo\"\nartifactId=\"counter\"\nversion=\"1.0.0\"\nurl=\"https://invalid.example/counter.tar.gz\"\n");
         p.write("src/Main.tnx", "import demo.counter\nclass Main { fnc main() -> Int32 { println(Counter::value())\nreturn 0 } }");
         p.package("local", "counter", 2);
         p.package(".tinox/deps/demo/counter/1.0.0", "counter", 1);
@@ -21,7 +21,7 @@ impl Project {
         fs::write(path, content).unwrap();
     }
     fn package(&self, path: &str, name: &str, value: i32) {
-        self.write(&format!("{path}/tinox.toml"), &format!("[package]\ngroup=\"demo\"\nname=\"{name}\"\nversion=\"1.0.0\"\n"));
+        self.write(&format!("{path}/tinox.toml"), &format!("[package]\ncompiler = \"2.5.1\"\ngroup=\"demo\"\nname=\"{name}\"\nversion=\"1.0.0\"\n"));
         self.write(&format!("{path}/src/demo/{name}/Counter.tnx"), &format!("namespace demo.{name} {{ class Counter {{ fnc value() -> Int64 {{ return {value} }} }} }}"));
         if path.starts_with(".tinox") {
             let src = self.0.join(format!("{path}/src/demo"));
@@ -74,7 +74,7 @@ fn transitive_overrides_and_cycles_use_the_consumer_configuration() {
     let mut local = fs::read_to_string(p.0.join("local/tinox.toml")).unwrap();
     local.push_str("[[dependencies]]\ngroup=\"demo\"\nartifactId=\"leaf\"\nversion=\"1.0.0\"\n");
     p.write("local/tinox.toml", &local);
-    p.write("leaf/tinox.toml", "[package]\nname=\"leaf\"\nversion=\"1.0.0\"\n[[dependencies]]\ngroup=\"demo\"\nartifactId=\"counter\"\nversion=\"1.0.0\"\n");
+    p.write("leaf/tinox.toml", "[package]\ncompiler = \"2.5.1\"\nname=\"leaf\"\nversion=\"1.0.0\"\n[[dependencies]]\ngroup=\"demo\"\nartifactId=\"counter\"\nversion=\"1.0.0\"\n");
     p.write("local/tinox.overrides.yaml", "overrides:\n  'demo:leaf:1.0.0': missing\n");
     p.write("tinox.overrides.yaml", "overrides:\n  'demo:counter:1.0.0': local\n  'demo:leaf:1.0.0': leaf\n");
     p.cli(&["install"], true);
@@ -102,7 +102,7 @@ fn invalid_sources_fail_without_falling_back_to_installed_copies() {
         p.cli(&["install"], false);
     }
     p.enable();
-    p.write("local/tinox.toml", "[package]\nname=\"counter\"\nversion=\"1.0.0\"\ngroup=\"wrong\"\n");
+    p.write("local/tinox.toml", "[package]\ncompiler = \"2.5.1\"\nname=\"counter\"\nversion=\"1.0.0\"\ngroup=\"wrong\"\n");
     p.cli(&["sources"], false);
     p.package("local", "counter", 2);
     fs::rename(p.0.join("local/src/demo"), p.0.join("local/src/wrong")).unwrap();

@@ -84,7 +84,7 @@ class Main
     )
     .expect("write Main.tnx");
 
-    let toml = "[package]\nname = \"uipipelisttest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
+    let toml = "[package]\ncompiler = \"2.5.1\"\nname = \"uipipelisttest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.1.0\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.1.0\"\n";

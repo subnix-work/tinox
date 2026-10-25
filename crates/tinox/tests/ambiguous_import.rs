@@ -28,7 +28,7 @@ fn setup_project(name: &str, deps_toml: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(workdir.join("src")).expect("mkdir src");
     std::fs::write(
         workdir.join("tinox.toml"),
-        format!("[package]\nname = \"ambigtest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n{deps_toml}"),
+        format!("[package]\ncompiler = \"2.5.1\"\nname = \"ambigtest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n{deps_toml}"),
     )
     .expect("write tinox.toml");
     std::fs::write(

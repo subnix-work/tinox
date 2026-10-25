@@ -1,4 +1,5 @@
 [package]
+compiler = "2.5.1"
 name = "sse"
 version = "1.1.0"
 description = "tinox.core.sse, split out of the bundled stdlib as a standalone tinox-central package."

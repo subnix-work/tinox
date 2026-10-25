@@ -18,6 +18,32 @@ pub struct Package {
     pub version: String,
     pub description: String,
     pub group: Option<String>,
+    /// Exact compiler version this package is built with (issue #449).
+    pub compiler: Option<String>,
+}
+
+/// The version of the running compiler -- what `[package] compiler` must
+/// equal exactly (issue #449).
+pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Compare a manifest's declared `[package] compiler` against the running
+/// compiler. `what` names the manifest in the message ("tinox.toml",
+/// "dependency <dir>", ...). A manifest without a `[package]` section
+/// declares nothing and is not checked. `required` makes a missing field
+/// an error too (the root project); installed dependencies published
+/// before #449 have no field and are only rejected on an actual mismatch.
+pub fn check_compiler_version(manifest: &TinoxManifest, what: &str, required: bool) -> Result<(), String> {
+    let Some(pkg) = &manifest.package else { return Ok(()) };
+    match pkg.compiler.as_deref() {
+        Some(v) if v == COMPILER_VERSION => Ok(()),
+        Some(v) => Err(format!(
+            "{what} requires compiler version {v}, but this is tinox {COMPILER_VERSION} -- build it with tinox {v}, or update `compiler` in its [package] section after migrating"
+        )),
+        None if required => Err(format!(
+            "{what} does not declare the compiler version -- add `compiler = \"{COMPILER_VERSION}\"` to its [package] section"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// One `[[repositories]]` table — a named base URL a `Dependency` can
@@ -197,6 +223,7 @@ impl LocalOverrides {
                 return Err(format!("local override {coordinate}: missing {}/tinox.toml", package_root.display()));
             }
             let manifest = read_manifest(&package_root)?;
+            check_compiler_version(&manifest, &format!("local override {coordinate}"), false)?;
             let package = manifest.package.ok_or_else(|| format!("local override {coordinate}: missing [package]"))?;
             if package.name != parts[1] || package.version != parts[2]
                 || package.group.as_deref().is_some_and(|g| g != parts[0]) {
@@ -233,6 +260,16 @@ fn local_source_dir(root: &Path) -> PathBuf {
 /// of overridden coordinates are excluded, including stale project-local copies.
 /// The root consumer's overrides also apply to every transitive dependency.
 pub fn dependency_dirs(root: &Path, manifest: &TinoxManifest) -> Result<(Vec<PathBuf>, Vec<MissingDep>), String> {
+    let (dirs, missing) = dependency_dirs_unchecked(root, manifest)?;
+    for dir in &dirs {
+        if dir.join("tinox.toml").is_file() {
+            check_compiler_version(&read_manifest(dir)?, &format!("dependency {}", dir.display()), false)?;
+        }
+    }
+    Ok((dirs, missing))
+}
+
+fn dependency_dirs_unchecked(root: &Path, manifest: &TinoxManifest) -> Result<(Vec<PathBuf>, Vec<MissingDep>), String> {
     let overrides = LocalOverrides::read(root)?;
     if overrides.overrides.is_empty() {
         let (dirs, missing, notes) = installed_dep_dirs(root, manifest)?;
@@ -401,6 +438,7 @@ fn parse_manifest(content: &str) -> TinoxManifest {
     let mut pkg_version = String::new();
     let mut pkg_description = String::new();
     let mut pkg_group: Option<String> = None;
+    let mut pkg_compiler: Option<String> = None;
     let mut have_package = false;
 
     fn empty_dep() -> Dependency {
@@ -457,6 +495,7 @@ fn parse_manifest(content: &str) -> TinoxManifest {
                 "version" => pkg_version = value,
                 "description" => pkg_description = value,
                 "group" if !value.is_empty() => pkg_group = Some(value),
+                "compiler" if !value.is_empty() => pkg_compiler = Some(value),
                 _ => {}
             },
             ManifestSection::Dependency => match key {
@@ -492,7 +531,7 @@ fn parse_manifest(content: &str) -> TinoxManifest {
         repositories.push(cur_repo);
     }
 
-    let package = have_package.then_some(Package { name: pkg_name, version: pkg_version, description: pkg_description, group: pkg_group });
+    let package = have_package.then_some(Package { name: pkg_name, version: pkg_version, description: pkg_description, group: pkg_group, compiler: pkg_compiler });
     TinoxManifest { package, dependencies, repositories, overrides }
 }
 
@@ -504,6 +543,14 @@ pub fn read_manifest(root: &Path) -> Result<TinoxManifest, String> {
     let content = crate::build_cache::read_to_string(&toml_path)
         .map_err(|e| format!("Cannot read tinox.toml: {}", e))?;
     Ok(parse_manifest(&content))
+}
+
+/// `read_manifest` for the project being built: a `[package]` section
+/// must declare the exact running compiler version (issue #449).
+pub fn read_root_manifest(root: &Path) -> Result<TinoxManifest, String> {
+    let manifest = read_manifest(root)?;
+    check_compiler_version(&manifest, "tinox.toml", true)?;
+    Ok(manifest)
 }
 
 fn format_dependency(dep: &Dependency) -> String {
@@ -588,8 +635,8 @@ pub fn write_manifest(root: &Path, manifest: &TinoxManifest) -> Result<(), Strin
     if !saw_package_header {
         if let Some(pkg) = &manifest.package {
             content.push_str(&format!(
-                "[package]\nname = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\n",
-                pkg.name, pkg.version, pkg.description
+                "[package]\ncompiler = \"2.5.1\"\nname = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\ncompiler = \"{}\"\n",
+                pkg.name, pkg.version, pkg.description, pkg.compiler.as_deref().unwrap_or(COMPILER_VERSION)
             ));
         }
     }
@@ -1543,7 +1590,7 @@ pub fn source_provenance(root: &Path, dirs: &[PathBuf]) -> Result<Vec<String>, S
 
 pub fn cmd_sources() -> Result<(), String> {
     let root = find_project_root().ok_or("no tinox.toml found")?;
-    let (dirs, missing) = dependency_dirs(&root, &read_manifest(&root)?)?;
+    let (dirs, missing) = dependency_dirs(&root, &read_root_manifest(&root)?)?;
     for message in source_provenance(&root, &dirs)? { println!("{message}"); }
     for dir in dirs { println!("source directory: {}", dir.display()); }
     if !missing.is_empty() {
@@ -1576,7 +1623,7 @@ pub fn cmd_install(args: &[String]) -> bool {
             return false;
         }
     };
-    let manifest = match read_manifest(&root) {
+    let manifest = match read_root_manifest(&root) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -1640,7 +1687,7 @@ pub fn cmd_package() {
             return;
         }
     };
-    let manifest = match read_manifest(&root) {
+    let manifest = match read_root_manifest(&root) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -1807,7 +1854,7 @@ pub fn cmd_publish(args: &[String]) {
             return;
         }
     };
-    let manifest = match read_manifest(&root) {
+    let manifest = match read_root_manifest(&root) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -1822,7 +1869,7 @@ pub fn cmd_publish(args: &[String]) {
         }
     };
     let Some(group) = pkg.group.clone() else {
-        eprintln!("error: tinox.toml's [package] section is missing `group` — publishing needs a full group:artifactId:version coordinate (artifactId/version come from `name`/`version`), e.g.:\n\n  [package]\n  name = \"{}\"\n  version = \"{}\"\n  group = \"your.group\"", pkg.name, pkg.version);
+        eprintln!("error: tinox.toml's [package] section is missing `group` — publishing needs a full group:artifactId:version coordinate (artifactId/version come from `name`/`version`), e.g.:\n\n  [package]\ncompiler = \"2.5.1\"\n  name = \"{}\"\n  version = \"{}\"\n  group = \"your.group\"", pkg.name, pkg.version);
         return;
     };
     let Ok(admin_key) = std::env::var("TINOX_CENTRAL_ADMIN_KEY") else {
@@ -2136,7 +2183,7 @@ mod tests {
         ));
         let nested = root.join("src").join("deeper");
         fs::create_dir_all(&nested).unwrap();
-        fs::write(root.join("tinox.toml"), "[package]\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.5.1\"\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
 
         // cwd (wherever the test runner happens to be) has no tinox.toml of
         // its own reachable from `nested` — only walking up from `nested`
@@ -2157,8 +2204,8 @@ mod tests {
         ));
         let inner = root.join("inner");
         fs::create_dir_all(&inner).unwrap();
-        fs::write(root.join("tinox.toml"), "[package]\nname = \"outer\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
-        fs::write(inner.join("tinox.toml"), "[package]\nname = \"inner\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.5.1\"\nname = \"outer\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        fs::write(inner.join("tinox.toml"), "[package]\ncompiler = \"2.5.1\"\nname = \"inner\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
 
         assert_eq!(find_project_root_from(&inner), Some(inner.clone()));
 
@@ -2313,7 +2360,7 @@ mod tests {
 
     #[test]
     fn parse_manifest_reads_package_and_dependencies() {
-        let content = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"x\"\nentry = \"src/main.tnx\"\n\n[[dependencies]]\ngroup = \"com.example\"\nartifactId = \"mylib\"\nversion = \"1.0.0\"\nurl = \"https://example.com/mylib.tar.gz\"\nsha256 = \"abc123\"\n";
+        let content = "[package]\ncompiler = \"2.5.1\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"x\"\nentry = \"src/main.tnx\"\n\n[[dependencies]]\ngroup = \"com.example\"\nartifactId = \"mylib\"\nversion = \"1.0.0\"\nurl = \"https://example.com/mylib.tar.gz\"\nsha256 = \"abc123\"\n";
         let m = parse_manifest(content);
         let pkg = m.package.expect("package");
         assert_eq!(pkg.name, "demo");
@@ -2342,7 +2389,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("tinox.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/main.tnx\"\n\n[build]\noutput = \"demo_bin\"\n\n[metrics]\nenabled = true\n",
+            "[package]\ncompiler = \"2.5.1\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/main.tnx\"\n\n[build]\noutput = \"demo_bin\"\n\n[metrics]\nenabled = true\n",
         )
         .unwrap();
 
@@ -2377,7 +2424,7 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let mut manifest = TinoxManifest {
-            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new(), group: None }),
+            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new(), group: None, compiler: None }),
             dependencies: vec![dep("com.example", "mylib", "1.0.0")],
             repositories: Vec::new(),
             overrides: Vec::new(),
@@ -2417,7 +2464,7 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let manifest = TinoxManifest {
-            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new(), group: None }),
+            package: Some(Package { name: "demo".to_string(), version: "0.1.0".to_string(), description: String::new(), group: None, compiler: None }),
             dependencies: vec![],
             repositories: vec![Repository { id: "internal".to_string(), url: "https://pkg.example.internal".to_string() }],
             overrides: Vec::new(),
@@ -2587,7 +2634,7 @@ mod tests {
         fs::create_dir_all(&oauth2_dir).unwrap();
         fs::write(
             oidc_dir.join("tinox.toml"),
-            "[package]\nname = \"oidc\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"oauth2\"\nversion = \"1.0.0\"\n",
+            "[package]\ncompiler = \"2.5.1\"\nname = \"oidc\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"oauth2\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
 
@@ -2714,14 +2761,14 @@ mod tests {
 
     #[test]
     fn parse_manifest_reads_package_group() {
-        let content = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\ngroup = \"com.example\"\n";
+        let content = "[package]\ncompiler = \"2.5.1\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\ngroup = \"com.example\"\n";
         let m = parse_manifest(content);
         assert_eq!(m.package.expect("package").group.as_deref(), Some("com.example"));
     }
 
     #[test]
     fn parse_manifest_missing_group_is_none() {
-        let content = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\n";
+        let content = "[package]\ncompiler = \"2.5.1\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\n";
         let m = parse_manifest(content);
         assert_eq!(m.package.expect("package").group, None);
     }
@@ -2792,7 +2839,7 @@ mod tests {
         fs::write(src_dir.join("foo").join("Bar.tnx"), "class Bar {}").unwrap();
         fs::write(
             dir.join("tinox.toml"),
-            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"g\"\nartifactId = \"a\"\nversion = \"1.0.0\"\nurl = \"http://example.com/a\"\n",
+            "[package]\ncompiler = \"2.5.1\"\nname = \"foo\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"g\"\nartifactId = \"a\"\nversion = \"1.0.0\"\nurl = \"http://example.com/a\"\n",
         )
         .unwrap();
 
@@ -2834,6 +2881,7 @@ mod tests {
             version: "1.0.0".to_string(),
             description: String::new(),
             group: group.map(|g| g.to_string()),
+            compiler: None,
         }
     }
 
@@ -2905,7 +2953,7 @@ mod tests {
         .unwrap();
         fs::write(
             dir.join("tinox.toml"),
-            "[package]\nname = \"ui\"\nversion = \"1.0.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n",
+            "[package]\ncompiler = \"2.5.1\"\nname = \"ui\"\nversion = \"1.0.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n",
         )
         .unwrap();
 
@@ -2920,7 +2968,7 @@ mod tests {
 
     #[test]
     fn parse_manifest_reads_overrides_and_write_manifest_preserves_them() {
-        let content = "[package]\nname = \"p\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"../crypto\"\n";
+        let content = "[package]\ncompiler = \"2.5.1\"\nname = \"p\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"../crypto\"\n";
         let m = parse_manifest(content);
         assert_eq!(
             m.overrides,
@@ -2939,7 +2987,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tinox-pm-test-{}-resolve_overrides", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("pkg")).unwrap();
-        fs::write(dir.join("pkg/tinox.toml"), "[package]\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
+        fs::write(dir.join("pkg/tinox.toml"), "[package]\ncompiler = \"2.5.1\"\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
         let ovr = |path: &str| LocalOverride { group: "com.example".into(), artifact_id: "lib".into(), path: path.into() };
         let manifest = |o: LocalOverride| TinoxManifest { overrides: vec![o], ..TinoxManifest::default() };
         assert!(resolve_overrides(&dir, &manifest(ovr("nope"))).is_err());

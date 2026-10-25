@@ -17,7 +17,7 @@ impl Project {
         )));
         project.write(
             "tinox.toml",
-            "[package]\nname=\"explain\"\nversion=\"0.1.0\"\nentry=\"src/Main.tnx\"\n",
+            "[package]\ncompiler = \"2.5.1\"\nname=\"explain\"\nversion=\"0.1.0\"\nentry=\"src/Main.tnx\"\n",
         );
         project.write(
             "src/Main.tnx",

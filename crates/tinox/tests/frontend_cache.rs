@@ -21,7 +21,7 @@ impl Project {
         let p = Self { root };
         p.write(
             "tinox.toml",
-            "[package]\nname=\"frontend\"\nversion=\"0.1.0\"\n",
+            "[package]\ncompiler = \"2.5.1\"\nname=\"frontend\"\nversion=\"0.1.0\"\n",
         );
         p.write("Main.tnx", "import Left\nimport Right\nclass Main { fnc main() -> Int32 { println(Left::get().toString())\nreturn 0 } }");
         p.write(
@@ -199,7 +199,7 @@ fn newly_ambiguous_installed_import_is_never_hidden_by_cached_queries() {
         format!("\n[[dependencies]]\ngroup=\"example\"\nartifactId=\"{name}\"\nversion=\"1.0.0\"\nurl=\"https://example.com/{name}.tar.gz\"\n")
     };
     let manifest = format!(
-        "[package]\nname=\"frontend\"\nversion=\"0.1.0\"\n{}",
+        "[package]\ncompiler = \"2.5.1\"\nname=\"frontend\"\nversion=\"0.1.0\"\n{}",
         dep("one")
     );
     p.write("tinox.toml", &manifest);

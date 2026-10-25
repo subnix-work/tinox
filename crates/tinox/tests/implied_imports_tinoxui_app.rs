@@ -57,7 +57,7 @@ fn stage_project(name: &str, app_imports: &str) -> PathBuf {
     )
     .expect("write Main.tnx");
 
-    let toml = "[package]\nname = \"impliedimportstest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
+    let toml = "[package]\ncompiler = \"2.5.1\"\nname = \"impliedimportstest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.1.0\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.1.0\"\n";
@@ -182,7 +182,7 @@ fn non_tinoxui_app_file_is_unaffected() {
     .expect("write Main.tnx");
     std::fs::write(
         workdir.join("tinox.toml"),
-        "[package]\nname = \"noui\"\nversion = \"0.1.0\"\ndescription = \"\"\n",
+        "[package]\ncompiler = \"2.5.1\"\nname = \"noui\"\nversion = \"0.1.0\"\ndescription = \"\"\n",
     )
     .expect("write tinox.toml");
 
