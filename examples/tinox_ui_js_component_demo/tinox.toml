@@ -1,4 +1,5 @@
 [package]
+compiler = "2.7.0"
 name = "tinox_ui_js_component_demo"
 version = "0.1.0"
 description = "Tinox-UI JsComponent demo: wraps a real browser custom element (a client-only counter) via Component::jsComponent instead of Component::html() string-concatenation."

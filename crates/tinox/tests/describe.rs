@@ -19,7 +19,7 @@ impl Project {
         let project = Self(root);
         project.write(
             "tinox.toml",
-            "[package]\nname=\"describe\"\nversion=\"0.1.0\"\nentry=\"src/Main.tnx\"\n",
+            "[package]\ncompiler = \"2.7.0\"\nname=\"describe\"\nversion=\"0.1.0\"\nentry=\"src/Main.tnx\"\n",
         );
         project.write(
             "src/Main.tnx",
@@ -145,7 +145,7 @@ fn namespaced_and_ambiguous_symbols_fail_or_resolve_explicitly() {
 fn descriptions_follow_installed_versions_and_never_bundled_extended_sources() {
     let project = Project::new();
     let manifest = |version| {
-        format!("[package]\nname=\"describe\"\nversion=\"0.1.0\"\nentry=\"src/Main.tnx\"\n[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"crypto\"\nversion=\"{version}\"\n")
+        format!("[package]\ncompiler = \"2.7.0\"\nname=\"describe\"\nversion=\"0.1.0\"\nentry=\"src/Main.tnx\"\n[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"crypto\"\nversion=\"{version}\"\n")
     };
     for (version, method) in [("9.0.0", "installedNine"), ("10.0.0", "installedTen")] {
         project.write("tinox.toml", &manifest(version));

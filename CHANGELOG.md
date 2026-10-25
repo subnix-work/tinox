@@ -4,6 +4,16 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-10-25
+
+### Changed (breaking)
+
+- **`[package] compiler` is required in `tinox.toml`** (#449). It must equal the
+  running compiler version exactly; a mismatch or a missing field is a hard error
+  (`tinox new` writes it). An installed dependency declaring a different compiler
+  version is rejected too. After bumping the workspace version run
+  `scripts/set_compiler_version.py`.
+
 ## [2.6.0] - 2026-10-24
 
 ### Changed (breaking)

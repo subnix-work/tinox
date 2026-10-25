@@ -1,4 +1,5 @@
 [package]
+compiler = "2.7.0"
 name = "ratelimit"
 version = "1.1.0"
 description = "tinox.core.ratelimit, split out of the bundled stdlib as a standalone tinox-central package."

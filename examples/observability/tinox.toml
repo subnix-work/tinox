@@ -1,4 +1,5 @@
 [package]
+compiler = "2.7.0"
 name = "observability"
 version = "0.1.0"
 description = "Correlate annotated routes, spawned operations and outbound HTTP calls"

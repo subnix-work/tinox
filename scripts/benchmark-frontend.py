@@ -31,7 +31,7 @@ def main():
             project = root / str(size)
             project.mkdir()
             env['TINOX_FRONTEND_CACHE_DIR'] = str(project / 'cache')
-            (project / 'tinox.toml').write_text('[package]\nname="frontend-benchmark"\nversion="0.1.0"\n')
+            (project / 'tinox.toml').write_text('[package]\ncompiler = \"2.7.0\"\nname="frontend-benchmark"\nversion="0.1.0"\n')
             imports = '\n'.join(f'import Leaf{i}' for i in range(size))
             (project / 'Main.tnx').write_text(imports + '\nclass Main {\nfnc main() -> Int32 {\nprintln(Leaf0::get(1).toString())\nreturn 0\n}\n}\n')
             def leaf(value):

@@ -271,7 +271,7 @@ fn amqp10_consumer_annotation_receives_and_acks() {
     std::fs::write(
         broker_src_dir.join("tinox.toml"),
         format!(
-            "[package]\nname = \"fake_broker\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp10\"\nversion = \"{}\"\n",
+            "[package]\ncompiler = \"2.7.0\"\nname = \"fake_broker\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp10\"\nversion = \"{}\"\n",
             extended_module_version("amqp10"),
         ),
     )

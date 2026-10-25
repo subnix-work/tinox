@@ -1,4 +1,5 @@
 [package]
+compiler = "2.7.0"
 name = "bench_service"
 version = "0.1.0"
 description = "Service workloads for tail-latency / RSS benchmarking (#312)"

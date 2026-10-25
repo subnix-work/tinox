@@ -115,7 +115,7 @@ fn tinox_ui_signup_validation_flow_end_to_end() {
         std::fs::copy(src_dir.join(name), workdir.join("src").join(name))
             .unwrap_or_else(|e| panic!("copy {name}: {e}"));
     }
-    let staged_toml = "[package]\nname = \"tinox_ui_signup_test\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
+    let staged_toml = "[package]\ncompiler = \"2.7.0\"\nname = \"tinox_ui_signup_test\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.1.0\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.1.0\"\n";

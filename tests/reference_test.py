@@ -50,7 +50,7 @@ class ReferenceChecks(unittest.TestCase):
             root = Path(temp)
             manifest = root / 'crates/tinox-core-ext/demo/tinox.toml'
             manifest.parent.mkdir(parents=True)
-            manifest.write_text('[package]\nname = "demo"\nversion = "1.0.1"\n')
+            manifest.write_text('[package]\ncompiler = \"2.7.0\"\nname = "demo"\nversion = "1.0.1"\n')
             source = manifest.parent / 'tinox/core/demo'
             source.mkdir(parents=True)
             (source / 'Demo.tnx').write_text('class Demo {}')

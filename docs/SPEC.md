@@ -803,6 +803,13 @@ from the `class Main` requirement above), `@Test` (`tinox test`),
 
 ---
 
+## Compiler Version
+
+`tinox.toml`'s `[package]` section must declare `compiler = "<version>"`, the
+exact version of the compiler that builds the package. Any other running
+compiler (and a missing field) is a hard error; there is one syntax per
+compiler. Installed dependencies that declare a different version are rejected.
+
 ## Standard Library
 
 The stdlib is split into a **core tier** (`crates/tinox-core`, bundled
