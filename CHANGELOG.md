@@ -4,6 +4,8 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-24
+
 ### Changed (breaking)
 
 - **`[package] compiler` is required in `tinox.toml`** (#449). It must equal the
