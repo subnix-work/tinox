@@ -213,7 +213,7 @@ fn transactional_commits_on_success_and_rolls_back_on_error() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.5.1"
+compiler = "2.6.0"
 name = "postgres_transactional"
 version = "0.1.0"
 description = "issue #191 e2e fixture"

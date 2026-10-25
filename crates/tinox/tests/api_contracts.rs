@@ -27,7 +27,7 @@ fn http_absence_and_legacy_contracts() {
     fs::create_dir_all(&work.0).expect("create workdir");
     fs::write(
         work.0.join("tinox.toml"),
-        "[package]\ncompiler = \"2.5.1\"\nname = \"api_contracts\"\nversion = \"0.0.0\"\n",
+        "[package]\ncompiler = \"2.6.0\"\nname = \"api_contracts\"\nversion = \"0.0.0\"\n",
     )
     .expect("write manifest");
     fs::copy(

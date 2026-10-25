@@ -95,7 +95,7 @@ fn concurrent_http_clients_share_a_guarded_counter_and_collection() {
     let directory = std::env::temp_dir().join(format!("tinox-shared-http-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core-ext");
-    let mut manifest = "[package]\ncompiler = \"2.5.1\"\nname=\"shared_http\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
+    let mut manifest = "[package]\ncompiler = \"2.6.0\"\nname=\"shared_http\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
     for module in ["http_server", "json"] {
         manifest.push_str(&format!("\n[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"{module}\"\nversion=\"9.9.9\"\n"));
         copy_tree(&modules.join(module).join("tinox"), &directory.join(format!(".tinox/repository/central/tinox.core/{module}/9.9.9/tinox")));

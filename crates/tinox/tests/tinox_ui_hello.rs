@@ -141,7 +141,7 @@ fn tinox_ui_hello_click_counter_end_to_end() {
     // to do reliably with plain text munging) -- just the same three
     // already-published deps written directly, kept in sync by hand with
     // examples/tinox_ui_hello/tinox.toml.
-    let staged_toml = "[package]\ncompiler = \"2.5.1\"\nname = \"tinox_ui_hello_test\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
+    let staged_toml = "[package]\ncompiler = \"2.6.0\"\nname = \"tinox_ui_hello_test\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.1.0\"\n\n\
         [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.1.0\"\n";

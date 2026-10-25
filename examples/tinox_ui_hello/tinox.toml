@@ -1,5 +1,5 @@
 [package]
-compiler = "2.5.1"
+compiler = "2.6.0"
 name = "tinox_ui_hello"
 version = "0.1.0"
 description = "Tinox-UI hello-world: a label + a click-counting button."

@@ -1,5 +1,5 @@
 [package]
-compiler = "2.5.1"
+compiler = "2.6.0"
 name = "db"
 version = "1.1.0"
 description = "tinox.core.db, split out of the bundled stdlib as a standalone tinox-central package."

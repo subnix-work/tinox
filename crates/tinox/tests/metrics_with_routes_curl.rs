@@ -85,7 +85,7 @@ class Main
     std::fs::write(
         workdir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.5.1\"\nname = \"metrics_with_routes\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n\
+            "[package]\ncompiler = \"2.6.0\"\nname = \"metrics_with_routes\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n\
              [metrics]\nenabled = true\n\n\
              [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n",
             extended_module_version("http_server"),

@@ -14,7 +14,7 @@ impl Project {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("tinox.toml"),
-            "[package]\ncompiler = \"2.5.1\"\nname = \"discovery\"\nversion = \"0.1.0\"\n",
+            "[package]\ncompiler = \"2.6.0\"\nname = \"discovery\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
         Self(root)

@@ -158,7 +158,7 @@ class Main
     std::fs::write(
         workdir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.5.1\"\nname = \"param_binding_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n\
+            "[package]\ncompiler = \"2.6.0\"\nname = \"param_binding_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n\
              [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n\n\
              [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"{}\"\n",
             extended_module_version("http_server"),
