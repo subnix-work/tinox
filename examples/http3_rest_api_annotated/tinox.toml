@@ -1,5 +1,5 @@
 [package]
-compiler = "2.6.0"
+compiler = "2.7.0"
 name = "http3_rest_api_annotated"
 version = "0.1.0"
 description = ""

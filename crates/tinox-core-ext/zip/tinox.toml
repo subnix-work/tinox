@@ -1,5 +1,5 @@
 [package]
-compiler = "2.6.0"
+compiler = "2.7.0"
 name = "zip"
 version = "1.1.0"
 description = "tinox.core.zip, split out of the bundled stdlib as a standalone tinox-central package."

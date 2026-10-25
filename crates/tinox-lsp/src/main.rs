@@ -758,7 +758,7 @@ mod tests {
     fn write_demo_fixture(root: &std::path::Path) {
         std::fs::create_dir_all(root.join("demo/model")).unwrap();
         std::fs::create_dir_all(root.join("demo/dao")).unwrap();
-        std::fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.6.0\"\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        std::fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.7.0\"\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
         std::fs::write(
             root.join("demo/model/Person.tnx"),
             "namespace demo.model {\n    class Person {\n        var id: Int64\n    }\n}\n",
@@ -868,7 +868,7 @@ mod diagnostic_tests {
         let local = root.join("package/src/tinox/core/json");
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(root.join("tinox.toml"), "[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"json\"\nversion=\"1.0.0\"\n").unwrap();
-        std::fs::write(root.join("package/tinox.toml"), "[package]\ncompiler = \"2.6.0\"\nname=\"json\"\nversion=\"1.0.0\"\n").unwrap();
+        std::fs::write(root.join("package/tinox.toml"), "[package]\ncompiler = \"2.7.0\"\nname=\"json\"\nversion=\"1.0.0\"\n").unwrap();
         std::fs::write(root.join("tinox.overrides.yaml"), "overrides:\n  'tinox.core:json:1.0.0': package\n").unwrap();
         let entry = root.join("Main.tnx");
         let source = "import tinox.core.json.LocalJson\nclass Main { fnc main() -> Int32 { const n: Int64 = LocalJson::unpublished()\nreturn 0 } }";
