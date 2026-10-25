@@ -32,7 +32,7 @@ fn setup_project(name: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(workdir.join("src/demo/dao")).expect("mkdir src/demo/dao");
     std::fs::write(
         workdir.join("tinox.toml"),
-        "[package]\nname = \"crossnstest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n",
+        "[package]\ncompiler = \"2.5.1\"\nname = \"crossnstest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n",
     )
     .expect("write tinox.toml");
     std::fs::write(
@@ -82,7 +82,7 @@ fn missing_return_statement_is_not_misreported_as_a_missing_import() {
     std::fs::create_dir_all(workdir.join("src")).expect("mkdir src");
     std::fs::write(
         workdir.join("tinox.toml"),
-        "[package]\nname = \"missingrettest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n",
+        "[package]\ncompiler = \"2.5.1\"\nname = \"missingrettest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n",
     )
     .expect("write tinox.toml");
     // `f` has no return on any path -- a genuine, unconditional

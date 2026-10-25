@@ -1,4 +1,5 @@
 [package]
+compiler = "2.5.1"
 name = "bitmap"
 version = "1.1.0"
 description = "tinox.core.bitmap, split out of the bundled stdlib as a standalone tinox-central package."

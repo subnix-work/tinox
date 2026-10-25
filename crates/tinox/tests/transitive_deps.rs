@@ -122,7 +122,7 @@ fn install_follows_a_dependencys_own_tinox_toml_transitively() {
     let project = workdir.join("project");
     std::fs::write(
         project.join("tinox.toml"),
-        format!("[package]\nname = \"freshtest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"com.example\"\nartifactId = \"E\"\nversion = \"1.0.0\"\nurl = \"http://127.0.0.1:{port}/E.tar.gz\"\n"),
+        format!("[package]\ncompiler = \"2.5.1\"\nname = \"freshtest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"com.example\"\nartifactId = \"E\"\nversion = \"1.0.0\"\nurl = \"http://127.0.0.1:{port}/E.tar.gz\"\n"),
     )
     .expect("write project tinox.toml");
 
@@ -150,7 +150,7 @@ fn a_dependency_cycle_terminates_instead_of_hanging() {
 
     std::fs::write(
         workdir.join("tinox.toml"),
-        "[package]\nname = \"cycletest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"com.example\"\nartifactId = \"A\"\nversion = \"1.0.0\"\nurl = \"https://example.invalid/A.tar.gz\"\n",
+        "[package]\ncompiler = \"2.5.1\"\nname = \"cycletest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"com.example\"\nartifactId = \"A\"\nversion = \"1.0.0\"\nurl = \"https://example.invalid/A.tar.gz\"\n",
     )
     .expect("write tinox.toml");
     std::fs::write(

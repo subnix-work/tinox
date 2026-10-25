@@ -95,7 +95,7 @@ class Main
     std::fs::write(
         workdir.join("tinox.toml"),
         format!(
-            "[package]\nname = \"body_size_limit_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n",
+            "[package]\ncompiler = \"2.5.1\"\nname = \"body_size_limit_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n",
             extended_module_version("http_server"),
         ),
     )

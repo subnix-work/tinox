@@ -6,6 +6,11 @@ All notable changes to Tinox are documented in this file.
 
 ### Changed (breaking)
 
+- **`[package] compiler` is required in `tinox.toml`** (#449). It must equal the
+  running compiler version exactly; a mismatch or a missing field is a hard error
+  (`tinox new` writes it). An installed dependency declaring a different compiler
+  version is rejected too. After bumping the workspace version run
+  `scripts/set_compiler_version.py`.
 - **Statements end at the end of the line; `;` is gone** (#445). A `;` that
   terminates a statement is a hard compile error with a migration hint, several
   statements on one line are rejected, and a statement continues on the next line

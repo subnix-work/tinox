@@ -327,7 +327,7 @@ mod tests {
         fs::create_dir_all(root.join("src/sub")).unwrap();
         fs::create_dir_all(root.join(".tinox/deps")).unwrap();
         fs::create_dir_all(root.join("secrets")).unwrap();
-        fs::write(root.join("tinox.toml"), "[package]\nname=\"a\"\n").unwrap();
+        fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.5.1\"\nname=\"a\"\n").unwrap();
         fs::write(root.join("src/Main.tnx"), "x").unwrap();
         fs::write(root.join("src/sub/A.tnx"), "x").unwrap();
         fs::write(root.join("src/.env"), "SECRET=1").unwrap();

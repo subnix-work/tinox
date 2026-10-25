@@ -28,7 +28,7 @@ impl Project {
         fs::copy(env!("CARGO_BIN_EXE_tinox"), p.root.join("tinox")).unwrap();
         p.write(
             "tinox.toml",
-            "[package]\nname = \"cache\"\nversion = \"0.1.0\"\n",
+            "[package]\ncompiler = \"2.5.1\"\nname = \"cache\"\nversion = \"0.1.0\"\n",
         );
         p.write("Main.tnx", "import Value\nclass Main { fnc main() -> Int32 { println(Value::get().toString())\nreturn 0 } }");
         p.value(42);
@@ -162,7 +162,7 @@ fn sources_config_flags_compiler_and_corrupt_metadata_invalidate() {
     p.output("19");
     p.write(
         "tinox.toml",
-        "[package]\nname = \"cache-renamed\"\nversion = \"0.1.1\"\n",
+        "[package]\ncompiler = \"2.5.1\"\nname = \"cache-renamed\"\nversion = \"0.1.1\"\n",
     );
     let count = p.count();
     success(&p.build());
@@ -222,7 +222,7 @@ fn failed_frontend_and_forced_failed_backend_leave_no_success_marker() {
 #[test]
 fn installed_dependency_replacement_changes_output() {
     let p = Project::new();
-    p.write("tinox.toml", "[package]\nname = \"cache\"\nversion = \"0.1.0\"\n[[dependencies]]\ngroup = \"example\"\nartifactId = \"dep\"\nversion = \"1.0.0\"\nurl = \"https://example.invalid/dep.tar.gz\"\n");
+    p.write("tinox.toml", "[package]\ncompiler = \"2.5.1\"\nname = \"cache\"\nversion = \"0.1.0\"\n[[dependencies]]\ngroup = \"example\"\nartifactId = \"dep\"\nversion = \"1.0.0\"\nurl = \"https://example.invalid/dep.tar.gz\"\n");
     fs::remove_file(p.root.join("Value.tnx")).unwrap();
     let source = ".tinox/deps/example/dep/1.0.0/Value.tnx";
     p.write(source, "class Value { fnc get() -> Int64 { return 7 } }");
@@ -361,7 +361,7 @@ fn missing_project_entry_is_an_error_and_invalidates_known_build_output() {
     let p = Project::new();
     p.write(
         "tinox.toml",
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"Main.tnx\"\n",
+        "[package]\ncompiler = \"2.5.1\"\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"Main.tnx\"\n",
     );
     success(&p.build());
     assert!(p.root.join(".app.tinox-build/manifest.yaml").is_file());
