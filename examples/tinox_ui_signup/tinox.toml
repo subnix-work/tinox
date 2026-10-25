@@ -1,5 +1,5 @@
 [package]
-compiler = "2.5.1"
+compiler = "2.6.0"
 name = "tinox_ui_signup"
 version = "0.1.0"
 description = "Tinox-UI signup form example: TextField + Checkbox + validation feedback."

@@ -29,7 +29,7 @@ fn project(name: &str, modules: &[&str]) -> PathBuf {
         std::env::temp_dir().join(format!("tinox-lifecycle-{name}-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let mut manifest =
-        "[package]\ncompiler = \"2.5.1\"\nname=\"lifecycle\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
+        "[package]\ncompiler = \"2.6.0\"\nname=\"lifecycle\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
     for module in modules {
         manifest.push_str(&format!(
             "[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"{module}\"\nversion=\"9.9.9\"\n"

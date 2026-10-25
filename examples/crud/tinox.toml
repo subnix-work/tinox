@@ -1,5 +1,5 @@
 [package]
-compiler = "2.5.1"
+compiler = "2.6.0"
 name = "crud"
 version = "0.1.0"
 description = "Full CRUD REST API example with SQLite and related entities"

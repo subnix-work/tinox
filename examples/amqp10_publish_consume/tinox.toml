@@ -1,5 +1,5 @@
 [package]
-compiler = "2.5.1"
+compiler = "2.6.0"
 name = "amqp10_publish_consume"
 version = "0.1.0"
 description = ""

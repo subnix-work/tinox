@@ -1,5 +1,5 @@
 [package]
-compiler = "2.5.1"
+compiler = "2.6.0"
 name = "service_latency"
 version = "0.1.0"
 description = "Service workload profiles for tail-latency / RSS measurement (#312)"
