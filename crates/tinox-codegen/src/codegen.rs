@@ -8209,6 +8209,18 @@ tr_done_{idx}:"#).unwrap();
 
                 if let Some(val) = value {
                     let (v, val_ty) = self.gen_expr(val, ctx)?;
+                    // Issue #453: explicit numeric annotation -> convert the
+                    // value (widening, int literal -> float) instead of storing
+                    // it with the wrong LLVM type.
+                    let (v, val_ty) = match ty.as_ref().map(tinox_typecheck::ValueType::from_parser_type) {
+                        Some(expected) if (expected.is_integer() || expected.is_float())
+                            && !is_heap_ptr && !val_ty.contains('*') && val_ty != "void" =>
+                        {
+                            let src_unsigned = self.semantic_type(val.id).is_some_and(|t| t.is_unsigned());
+                            self.convert_semantic_value(v, val_ty, &expected, src_unsigned)
+                        }
+                        _ => (v, val_ty),
+                    };
                     if let Some(cls) = generic_let_alias.take() {
                         self.type_param_aliases.remove(&cls);
                     }
@@ -8455,6 +8467,16 @@ tr_done_{idx}:"#).unwrap();
 
                 if let Some(val) = value {
                     let (v, val_ty) = self.gen_expr(val, ctx)?;
+                    // Issue #453: see the matching conversion in Let.
+                    let (v, val_ty) = match ty.as_ref().map(tinox_typecheck::ValueType::from_parser_type) {
+                        Some(expected) if (expected.is_integer() || expected.is_float())
+                            && !is_ptr && !val_ty.contains('*') && val_ty != "void" =>
+                        {
+                            let src_unsigned = self.semantic_type(val.id).is_some_and(|t| t.is_unsigned());
+                            self.convert_semantic_value(v, val_ty, &expected, src_unsigned)
+                        }
+                        _ => (v, val_ty),
+                    };
                     let actual_ty = if matches!(&val.node, ExprKind::Lambda { .. }) {
                         val_ty.clone()
                     } else if is_ptr {
@@ -9050,8 +9072,14 @@ tr_done_{idx}:"#).unwrap();
                                 _ => None,
                             }
                         };
+                        let numeric_target = self.semantic_type(target.id)
+                            .filter(|t| (t.is_integer() || t.is_float()) && !val_ty.contains('*') && !ty.contains('*') && val_ty != "void");
                         let store_val = if val_ty == ty || val_ty.is_empty() || ty.is_empty() {
                             val
+                        } else if let Some(expected) = numeric_target.filter(|_| Self::is_float(&ty) || Self::is_float(&val_ty) || self.semantic_type(value.id).is_some_and(|t| t.is_unsigned())) {
+                            // Issue #453: float<->int and unsigned widening need real conversions.
+                            let src_unsigned = self.semantic_type(value.id).is_some_and(|t| t.is_unsigned());
+                            self.convert_semantic_value(val, val_ty.clone(), &expected, src_unsigned).0
                         } else if val_ty == "i64" && (ty.ends_with('*') || ty == "ptr") {
                             let c = self.temp();
                             writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, val, ty).unwrap();

@@ -2555,7 +2555,7 @@ impl TypeChecker {
                                 }
                                 .to_error(),
                             );
-                        }
+                        }                        else { self.check_numeric_conversion(&ann_ty, &val_ty, v, false); }
                         Some(ann_ty)
                     }
                     (Some(v), None) => Some(self.infer_type(v)),
@@ -2601,7 +2601,7 @@ impl TypeChecker {
                                 }
                                 .to_error(),
                             );
-                        }
+                        }                        else { self.check_numeric_conversion(&ann_ty, &val_ty, v, false); }
                         Some(ann_ty)
                     }
                     (Some(v), None) => Some(self.infer_type(v)),
@@ -2631,7 +2631,7 @@ impl TypeChecker {
                         }
                         .to_error(),
                     );
-                }
+                }                else { self.check_numeric_conversion(&target_ty, &value_ty, value, false); }
                 if let ExprKind::Ident(name) = &target.node {
                     if let Some((_, mutable)) = self.symbols.variables.get(name) {
                         if !mutable {
@@ -2721,7 +2721,7 @@ impl TypeChecker {
                                 found: val_ty.display(),
                                 span: expr.span,
                             }.to_error());
-                        }
+                        } else { self.check_numeric_conversion(&expected, &val_ty, expr, false); }
                     }
                 }
                 true
@@ -3376,7 +3376,7 @@ impl TypeChecker {
                             }
                             .to_error(),
                         );
-                    }
+                    }                    else { self.check_numeric_conversion(expected_ty, &arg_ty, arg, true); }
                 }
                 sig.return_type.clone()
             }
@@ -3915,7 +3915,7 @@ impl TypeChecker {
                 let actual = self.infer_argument(arg, expected);
                 if !self.types_compatible(expected, &actual) {
                     self.errors.push(TypeError::TypeMismatch { expected: expected.display(), found: actual.display(), span: arg.span }.to_error());
-                }
+                } else { let e = expected.clone(); self.check_numeric_conversion(&e, &actual, arg, true); }
             } else { self.infer_type(arg); }
         }
         // B2 step 2 / #158 — type-argument inference for unannotated
@@ -4103,7 +4103,7 @@ impl TypeChecker {
                             }
                             .to_error(),
                         );
-                    }
+                    }                    else { self.check_numeric_conversion(expected_ty, &arg_ty, arg, true); }
                 }
                 return self.unify_generic_return(name, &sig.return_type, args, &[]).unwrap_or(sig.return_type);
             }
@@ -4785,6 +4785,80 @@ impl TypeChecker {
                     );
                 }
             }
+        }
+    }
+
+    /// Issue #453: reject implicit numeric conversions that can lose data.
+    /// Only value-preserving widening is implicit; integer literals are
+    /// range-checked against the target. `allow_int_to_float` keeps the
+    /// call-argument rule that integer arguments may feed float parameters.
+    fn check_numeric_conversion(&mut self, expected: &ValueType, actual: &ValueType, expr: &Expr, allow_int_to_float: bool) {
+        if self.lenient_dependency { return; }
+        // Arithmetic and call results are not typed precisely yet (Int32
+        // operands yield Int64, Float32 math yields Float64), so only values
+        // whose declared type is certain are checked: literals and variables.
+        let precise = |e: &Expr| -> bool {
+            match &e.node {
+                ExprKind::Literal(_) | ExprKind::Ident(_) => true,
+                ExprKind::Unary { op: UnaryOp::Neg, operand } => matches!(operand.node, ExprKind::Literal(_)),
+                _ => false,
+            }
+        };
+        if !precise(expr) { return; }
+        let int_bits = |t: &ValueType| -> Option<(u32, bool)> {
+            match t {
+                ValueType::Int => Some((64, true)),
+                ValueType::Integer { bits, signed } => Some((*bits as u32, *signed)),
+                _ => None,
+            }
+        };
+        let literal = |e: &Expr| -> Option<i128> {
+            match &e.node {
+                ExprKind::Literal(Literal::Integer(v)) => Some(*v as i128),
+                ExprKind::Unary { op: UnaryOp::Neg, operand } => match &operand.node {
+                    ExprKind::Literal(Literal::Integer(v)) => Some(-(*v as i128)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let exp_int = int_bits(expected);
+        let act_int = int_bits(actual);
+        let msg = if let Some((eb, es)) = exp_int {
+            if let Some(v) = literal(expr) {
+                let (min, max): (i128, i128) = if es {
+                    (-(1i128 << (eb - 1)), (1i128 << (eb - 1)) - 1)
+                } else {
+                    (0, (1i128 << eb) - 1)
+                };
+                if v < min || v > max {
+                    Some(format!("integer literal {} is out of range for {}", v, expected.display()))
+                } else { None }
+            } else if let Some((ab, asg)) = act_int {
+                let ok = if es == asg { eb >= ab } else { !asg && es && eb > ab };
+                if ok { None } else {
+                    Some(format!("implicit conversion from {} to {} may lose data; convert explicitly with `as {}`", actual.display(), expected.display(), expected.display()))
+                }
+            } else if actual.is_float() {
+                let integral_literal = match &expr.node {
+                    ExprKind::Literal(Literal::Float(f)) => f.fract() == 0.0,
+                    _ => false,
+                };
+                if integral_literal { None } else {
+                Some(format!("cannot implicitly convert {} to {}; use an explicit conversion (`.toInt()` or `as {}`)", actual.display(), expected.display(), expected.display()))
+                }
+            } else { None }
+        } else if expected.is_float() {
+            if let Some((ab, _)) = act_int {
+                if literal(expr).is_some() || allow_int_to_float || ab <= 16 || (ab <= 32 && *expected == ValueType::Float) { None } else {
+                    Some(format!("cannot implicitly convert {} to {}; use `.toFloat()` or `as {}`", actual.display(), expected.display(), expected.display()))
+                }
+            } else if *actual == ValueType::Float && *expected == ValueType::Float32 && !matches!(expr.node, ExprKind::Literal(_)) {
+                Some("implicit conversion from Float64 to Float32 may lose precision; use `as Float32`".to_string())
+            } else { None }
+        } else { None };
+        if let Some(m) = msg {
+            self.errors.push(Error::new(expr.span, m));
         }
     }
 
@@ -7296,6 +7370,19 @@ return 0 }");
         // local to the closure, and field/element mutation, are fine
         ok("fn g() { const f = fnc(d: Int64) -> Int64 { return d }\n }");
         ok("fn h() { var xs = [1, 2]\n const f = fnc(d: Int64) -> Nothing { xs[0] = d }\n }");
+    }
+
+    #[test]
+    fn test_implicit_numeric_narrowing_is_error() {
+        err_contains("fn f(x: Int64) { const y: Int32 = x }", "may lose data");
+        err_contains("fn f(x: UInt8) { const y: Int8 = x }", "may lose data");
+        err_contains("fn f(x: Float64) { const y: Int64 = x }", "cannot implicitly convert Float64");
+        err_contains("fn f(x: Int64) { const y: Float64 = x }", "toFloat");
+        err_contains("fn f() { const b: Int8 = 200 }", "out of range");
+        err_contains("fn f() { const b: UInt8 = -1 }", "out of range");
+        err_contains("fn f(x: Float64) { var y: Float32 = 1.5\n y = x }", "may lose precision");
+        ok("fn f(x: UInt8) { const a: Int64 = x\n const b: Int16 = x\n const c: Float64 = 5 }");
+        ok("fn f(x: Int8) { const a: Int64 = x\n const b: Int8 = 127\n const c: Int8 = -128 }");
     }
 
     #[test]
