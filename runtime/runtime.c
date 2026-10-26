@@ -789,6 +789,32 @@ int64_t* tinox_array_sort(int64_t* h) {
     return nh;
 }
 
+// Natural-order sorts for String (by content) and Float64 (numerically) lists;
+// tinox_array_sort above compares the raw words as signed integers (#459).
+static int tinox_cmp_str_word(const void* a, const void* b) {
+    const char* x = (const char*)(intptr_t)*(const int64_t*)a;
+    const char* y = (const char*)(intptr_t)*(const int64_t*)b;
+    return strcmp(x, y);
+}
+static int tinox_cmp_f64_word(const void* a, const void* b) {
+    double x, y;
+    memcpy(&x, a, sizeof x);
+    memcpy(&y, b, sizeof y);
+    return (x > y) - (x < y);
+}
+static int64_t* tinox_array_sort_with(int64_t* h, int (*cmp)(const void*, const void*)) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_sort");
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t len = a->len;
+    int64_t* nh = tinox_array_new(len, 0);
+    int64_t* nd = ((TinoxArray*)nh)->data;
+    if (len > 0) memcpy(nd, a->data, (size_t)len * sizeof(int64_t));
+    if (len > 1) qsort(nd, (size_t)len, sizeof(int64_t), cmp);
+    return nh;
+}
+int64_t* tinox_array_sort_str(int64_t* h) { return tinox_array_sort_with(h, tinox_cmp_str_word); }
+int64_t* tinox_array_sort_f64(int64_t* h) { return tinox_array_sort_with(h, tinox_cmp_f64_word); }
+
 int64_t* tinox_array_reverse(int64_t* h) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_reverse");
     TinoxArray* a = (TinoxArray*)h;

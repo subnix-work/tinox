@@ -2570,6 +2570,21 @@ impl TypeChecker {
             }
             StmtKind::Expr(expr) => {
                 let ty = self.infer_type(expr);
+                // Issue #459: sort()/reverse() return a NEW list; as a bare
+                // statement they used to be a silent no-op.
+                if let ExprKind::MethodCall { obj, method, .. } = &expr.node {
+                    if matches!(method.as_str(), "sort" | "reverse")
+                        && matches!(self.infer_type(obj), ValueType::Array(_))
+                    {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!(
+                                "the result of {}() is unused: it returns a new list and does not modify the receiver (write `x = x.{}()`)",
+                                method, method
+                            ),
+                        ));
+                    }
+                }
                 ty == ValueType::Never
             }
             StmtKind::Block(stmts) => {
@@ -2938,6 +2953,16 @@ impl TypeChecker {
                         if **e != ValueType::Any =>
                     {
                         (**e).clone()
+                    }
+                    (ValueType::Array(e), "sort")
+                        if !matches!(**e, ValueType::Any | ValueType::Int | ValueType::Float | ValueType::String | ValueType::Bool)
+                            && !e.is_integer() && !e.is_float() =>
+                    {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!("List<{}> cannot be sorted: the element type has no natural order", e.display()),
+                        ));
+                        ValueType::Array(e.clone())
                     }
                     (ValueType::Array(e), "pop" | "sort" | "reverse" | "slice" | "unique"
                         | "take" | "skip" | "toList")

@@ -1646,6 +1646,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_map_set(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_get(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_array_check_index(i64*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_sort_str(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_sort_f64(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_contains(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_map_remove(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_len(i8*)").unwrap();
@@ -10411,7 +10413,13 @@ tr_done_{idx}:"#).unwrap();
                         }
                         "sort" => {
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_sort(i64* {})", result, obj_ptr).unwrap();
+                            let sorter = match self.semantic_type(obj.id) {
+                                Some(tinox_typecheck::ValueType::Array(elem)) if *elem == tinox_typecheck::ValueType::String => "tinox_array_sort_str",
+                                Some(tinox_typecheck::ValueType::Array(elem)) if elem.is_float() => "tinox_array_sort_f64",
+                                _ if is_str => "tinox_array_sort_str",
+                                _ => "tinox_array_sort",
+                            };
+                            writeln!(&mut self.ir, "{} = call i64* @{}(i64* {})", result, sorter, obj_ptr).unwrap();
                             return Ok((result, "i64*".to_string()));
                         }
                         "reverse" => {
