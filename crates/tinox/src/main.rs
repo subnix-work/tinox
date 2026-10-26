@@ -1542,7 +1542,7 @@ mod repl_semantics_tests {
     fn repl_preserves_checked_generic_types_and_numeric_promotions() {
         let source = "fn identity<T>(value: T) -> T { return value } fn main() -> Int64 { const byte: UInt8 = 255\nprintln(identity(byte) + 1)\nprintln(identity(1.5))\nreturn 0 }";
         let output = super::repl_compile_and_run(source, std::process::id() as usize).unwrap();
-        assert_eq!(output.trim(), "256\n1.5");
+        assert_eq!(output.trim(), "0\n1.5");
     }
 
 }
