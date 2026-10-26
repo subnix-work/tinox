@@ -2378,6 +2378,9 @@ impl TypeChecker {
                     (None, None) => None,
                 };
                 if let Some(t) = final_type {
+                    if t == ValueType::Nothing && value.is_some() {
+                        self.errors.push(Error::new(stmt.span, "cannot bind a value of type Nothing"));
+                    }
                     self.symbols.variables.insert(name.clone(), (t, false));
                 } else {
                     self.errors
@@ -2421,6 +2424,9 @@ impl TypeChecker {
                     (None, None) => None,
                 };
                 if let Some(t) = inferred_type {
+                    if t == ValueType::Nothing && value.is_some() {
+                        self.errors.push(Error::new(stmt.span, "cannot bind a value of type Nothing"));
+                    }
                     self.symbols.variables.insert(name.clone(), (t, *mutable));
                 } else {
                     self.errors
@@ -3277,6 +3283,17 @@ impl TypeChecker {
                 let then_ty = self.infer_type(then_branch);
                 if let Some(else_br) = else_branch {
                     let else_ty = self.infer_type(else_br);
+                    // Issue #428: unrelated branch types used to unify to Any.
+                    if self.unrelated_types(&then_ty, &else_ty) {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!(
+                                "branches have incompatible types {} and {}",
+                                then_ty.display(),
+                                else_ty.display()
+                            ),
+                        ));
+                    }
                     Self::lub(&then_ty, &else_ty)
                 } else {
                     ValueType::Nothing
@@ -3589,6 +3606,14 @@ impl TypeChecker {
                 let mut elem: Option<ValueType> = None;
                 for e in elements {
                     let t = self.infer_type(e);
+                    if let Some(acc) = &elem {
+                        if self.unrelated_types(acc, &t) {
+                            self.errors.push(Error::new(
+                                e.span,
+                                format!("list elements have incompatible types {} and {}", acc.display(), t.display()),
+                            ));
+                        }
+                    }
                     elem = Some(match elem {
                         Some(acc) => Self::lub(&acc, &t),
                         None => t,
@@ -4577,6 +4602,33 @@ impl TypeChecker {
             (ValueType::Named(name, _), ValueType::Int) if name == "Channel" => true,
             _ => false,
         }
+    }
+
+    /// Two concrete types with no conversion in either direction (a branch /
+    /// element pair whose least upper bound would silently degrade to `Any`).
+    fn unrelated_types(&self, a: &ValueType, b: &ValueType) -> bool {
+        let skip = |t: &ValueType| {
+            matches!(
+                t,
+                ValueType::Any
+                    | ValueType::Never
+                    | ValueType::Nothing
+                    | ValueType::Null
+                    | ValueType::Nullable(_)
+                    | ValueType::Callable { .. }
+                    | ValueType::Fn
+                    | ValueType::TupleOf(_)
+            ) || matches!(t, ValueType::Named(n, _) if self.type_param_scope.contains(n))
+        };
+        if skip(a) || skip(b) {
+            return false;
+        }
+        // Two class types may share an interface or base class that this
+        // pairwise check cannot see; only flag class-vs-other mixes.
+        if matches!((a, b), (ValueType::Named(..), ValueType::Named(..))) {
+            return false;
+        }
+        !(self.types_compatible(a, b) || self.types_compatible(b, a))
     }
 
     fn lub(a: &ValueType, b: &ValueType) -> ValueType {
@@ -6977,6 +7029,24 @@ return 0 }");
     fn test_catch_clause_type_must_be_string() {
         err_contains("fn f() { try { throw \"a\" } catch e: Int64 { } }", "catch clause type must be String");
         ok("fn g() { try { throw \"a\" } catch e: String { } }");
+    }
+
+    #[test]
+    fn test_conditional_with_unrelated_branch_types_is_error() {
+        err_contains("fn f() { let c = 5 > 3 ? \"y\" : 1 }", "incompatible types");
+        ok("fn g() { let c = 5 > 3 ? 1 : 2 }");
+        ok("fn h() { let c = 5 > 3 ? 1 : 2.5 }");
+    }
+
+    #[test]
+    fn test_heterogeneous_list_literal_is_error() {
+        err_contains("fn f() { let xs = [1, \"x\", true] }", "list elements have incompatible types");
+        ok("fn g() { let xs = [1, 2, 3] }");
+    }
+
+    #[test]
+    fn test_binding_a_nothing_result_is_error() {
+        err_contains("fn f() { let r = println(\"x\") }", "cannot bind a value of type Nothing");
     }
 
     #[test]

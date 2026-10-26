@@ -1,0 +1,21 @@
+// Regression test for #428: a `var` without initializer holds its type's
+// default value instead of stack garbage.
+// expect: 0
+// expect: 0
+// expect: 0
+// expect: false
+class Main
+{
+    fnc main() -> Int32
+    {
+        var y: Int64
+        println(y)
+        var s: String
+        println(s.len())
+        var f: Float64
+        println(f)
+        var b: Bool
+        println(b)
+        return 0
+    }
+}

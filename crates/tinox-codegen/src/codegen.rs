@@ -8497,6 +8497,19 @@ tr_done_{idx}:"#).unwrap();
                         ctx.local_types.insert(name.clone(), sn.clone());
                     }
                     writeln!(&mut self.ir, "%{} = alloca {}", slot_name, llvm_ty).unwrap();
+                    // Issue #428: a `var` without initializer used to hold
+                    // stack garbage. Give it its type's default value.
+                    let zero = if llvm_ty == "i8*" && struct_name.is_none() && ty.as_ref().is_some_and(|t| matches!(t, Type::String)) {
+                        let (empty, _) = self.gen_literal(&Literal::String(String::new()))?;
+                        empty
+                    } else if Self::is_float(&llvm_ty) {
+                        "0.0".to_string()
+                    } else if llvm_ty == "i1" || llvm_ty.starts_with('i') && !llvm_ty.ends_with('*') {
+                        if llvm_ty == "i1" { "false".to_string() } else { "0".to_string() }
+                    } else {
+                        "null".to_string()
+                    };
+                    writeln!(&mut self.ir, "store {} {}, {}* %{}", llvm_ty, zero, llvm_ty, slot_name).unwrap();
                 }
             }
             StmtKind::If {
