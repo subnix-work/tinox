@@ -858,7 +858,7 @@ go stale here.
   -> Int32 -> Int64`, `UInt8 -> UInt16 -> UInt32 -> UInt64`, an unsigned type
   to any wider signed type, `Float32 -> Float64`. Narrowing, `Float -> Int`,
   and `Int64 -> Float` are compile errors for any expression (names, literals,
-  arithmetic, calls, fields, elements); convert explicitly (`x as Int32`, `x.toFloat()`, `f.toInt()`). An integer literal is
+  arithmetic, fields, elements; call results are not checked yet); convert explicitly (`x as Int32`, `x.toFloat()`, `f.toInt()`). An integer literal is
   range-checked against the declared type (`const b: Int8 = 200` is an error)
   and may initialize any float type; an integral float literal may initialize
   an integer type. Integer arguments may feed float parameters.
