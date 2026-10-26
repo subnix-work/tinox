@@ -441,6 +441,13 @@ pub struct TypeChecker {
     errors: Vec<Error>,
     symbols: SymbolTable,
     enums: HashMap<String, Vec<String>>, // enum_name -> list of variant names
+    /// Match expression ids (Expr.id) whose every path returns/throws: the
+    /// match is exhaustive AND all arms diverge (issues #426/#427).
+    match_diverges: HashSet<u32>,
+    /// True while checking a declaration from an installed dependency
+    /// (a `.tinox` path component): old, published code keeps the lenient
+    /// pre-#426 match rules.
+    lenient_dependency: bool,
     /// "Enum::Variant" -> payload types — for typed match bindings
     enum_variant_payloads: HashMap<String, Vec<ValueType>>,
     interfaces: HashMap<String, Vec<(String, FunctionSignature)>>, // interface_name -> [(method_name, signature)]
@@ -1348,6 +1355,8 @@ impl TypeChecker {
             errors: Vec::new(),
             symbols,
             enums: HashMap::new(),
+            match_diverges: HashSet::new(),
+            lenient_dependency: false,
             enum_variant_payloads: HashMap::new(),
             interfaces: HashMap::new(),
             interface_extends: HashMap::new(),
@@ -2142,6 +2151,10 @@ impl TypeChecker {
 
         for decl in Self::flatten_decls(source) {
             let first_error = self.errors.len();
+            self.lenient_dependency = decl
+                .file
+                .as_deref()
+                .is_some_and(|f| std::path::Path::new(f).components().any(|c| c.as_os_str() == ".tinox"));
             match &decl.node {
                 DeclKind::Function(f) => {
                     self.check_function(f);
@@ -2154,6 +2167,9 @@ impl TypeChecker {
             for error in &mut self.errors[first_error..] {
                 error.file = decl.file.as_deref().map(Into::into);
             }
+            // Installed (published, immutable) dependencies predate the
+            // exhaustive-match rule (#426): keep them compiling.
+            self.lenient_dependency = false;
         }
 
         // Annotation validation pass
@@ -2477,7 +2493,8 @@ impl TypeChecker {
                 self.symbols.in_loop = true;
                 self.check_stmt(body);
                 self.symbols.in_loop = was_in_loop;
-                false
+                // `while (true)` without a `break` never falls through (#427).
+                matches!(&cond.node, ExprKind::Literal(Literal::Bool(true))) && !Self::stmt_has_break(body)
             }
             StmtKind::For { var, iter, body } => {
                 let iter_ty = self.infer_type(iter);
@@ -2500,7 +2517,7 @@ impl TypeChecker {
                 self.symbols.in_loop = true;
                 self.check_stmt(body);
                 self.symbols.in_loop = was_in_loop;
-                false
+                !Self::stmt_has_break(body)
             }
             StmtKind::Return(opt_expr) => {
                 if let Some(expr) = opt_expr {
@@ -2570,6 +2587,8 @@ impl TypeChecker {
             }
             StmtKind::Expr(expr) => {
                 let ty = self.infer_type(expr);
+                let diverges = ty == ValueType::Never && !matches!(expr.node, ExprKind::Match { .. })
+                    || self.expr_diverges(expr);
                 // Issue #459: sort()/reverse() return a NEW list; as a bare
                 // statement they used to be a silent no-op.
                 if let ExprKind::MethodCall { obj, method, .. } = &expr.node {
@@ -2585,17 +2604,16 @@ impl TypeChecker {
                         ));
                     }
                 }
-                ty == ValueType::Never
+                diverges
             }
             StmtKind::Block(stmts) => {
                 let saved_vars = self.symbols.enter_scope();
-                let mut last_returns = false;
                 for s in stmts {
-                    last_returns = self.check_stmt(s);
+                    self.check_stmt(s);
                 }
                 self.symbols.exit_scope(saved_vars);
-                // Block returns only if the LAST statement causes a return
-                last_returns
+                // Block returns if any statement guarantees a return/throw
+                stmts.iter().any(|s| self.stmt_diverges(s))
             }
             StmtKind::Empty => false,
             StmtKind::Defer(stmt) => {
@@ -3276,15 +3294,40 @@ impl TypeChecker {
                 self.infer_type(body);
                 ValueType::Never
             }
-            ExprKind::Match { expr, cases } => {
-                let scrutinee_ty = self.infer_type(expr);
+            ExprKind::Match { expr: scrutinee_expr, cases } => {
+                let scrutinee_ty = self.infer_type(scrutinee_expr);
                 let mut result_types = Vec::new();
+                let mut all_arms_diverge = true;
                 for case in cases {
                     let saved = self.symbols.enter_scope();
                     self.bind_pattern_vars(&case.pattern, &scrutinee_ty);
                     let case_ty = self.infer_type(&case.body);
                     self.symbols.exit_scope(saved);
+                    all_arms_diverge &= self.expr_diverges(&case.body) || case_ty == ValueType::Never;
                     result_types.push(case_ty);
+                }
+                // Issue #426: an enum match must cover every variant (or have
+                // a catch-all arm). For other scrutinee types the match is
+                // only treated as terminating when it has a catch-all arm.
+                let exhaustive = match self.match_exhaustiveness(&scrutinee_ty, cases) {
+                    Ok(()) => true,
+                    Err(_) if self.lenient_dependency => true,
+                    Err(missing) => {
+                        if !missing.is_empty() {
+                            self.errors.push(Error::new(
+                                expr.span,
+                                format!(
+                                    "non-exhaustive match on enum '{}': missing {}; add the missing variants or a `_` arm",
+                                    self.enum_of(&scrutinee_ty).unwrap_or_default(),
+                                    missing.join(", ")
+                                ),
+                            ));
+                        }
+                        false
+                    }
+                };
+                if exhaustive && all_arms_diverge && !cases.is_empty() {
+                    self.match_diverges.insert(expr.id);
                 }
                 if result_types.is_empty() {
                     return ValueType::Any;
@@ -3849,6 +3892,141 @@ impl TypeChecker {
     /// enum-payload arguments get the declared payload types (from
     /// enum_variant_payloads), top-level idents get the scrutinee type.
     /// Unknowns stay Any.
+    // --- Definite-return / reachability analysis (issues #426, #427) ---
+
+    /// True when `stmt` can never complete normally (return/throw on every
+    /// path, or an infinite loop with no `break`).
+    fn stmt_diverges(&self, stmt: &Stmt) -> bool {
+        match &stmt.node {
+            StmtKind::Return(_) | StmtKind::Throw(_) => true,
+            StmtKind::Block(stmts) => stmts.iter().any(|s| self.stmt_diverges(s)),
+            StmtKind::If { then_branch, else_branch: Some(else_branch), .. } => {
+                self.stmt_diverges(then_branch) && self.stmt_diverges(else_branch)
+            }
+            StmtKind::While { cond, body } => {
+                matches!(&cond.node, ExprKind::Literal(Literal::Bool(true))) && !Self::stmt_has_break(body)
+            }
+            StmtKind::Loop { body } => !Self::stmt_has_break(body),
+            StmtKind::Try { body, catches, finally } => {
+                finally.as_ref().is_some_and(|f| self.stmt_diverges(f))
+                    || (self.stmt_diverges(body) && catches.iter().all(|c| self.stmt_diverges(&c.body)))
+            }
+            StmtKind::Expr(e) => self.expr_diverges(e),
+            _ => false,
+        }
+    }
+
+    fn expr_diverges(&self, expr: &Expr) -> bool {
+        match &expr.node {
+            ExprKind::Return(_) | ExprKind::Throw(_) => true,
+            ExprKind::Block(stmts) => stmts.iter().any(|s| self.stmt_diverges(s)),
+            ExprKind::If { then_branch, else_branch: Some(else_branch), .. } => {
+                self.expr_diverges(then_branch) && self.expr_diverges(else_branch)
+            }
+            ExprKind::While { cond, body } => {
+                matches!(&cond.node, ExprKind::Literal(Literal::Bool(true))) && !Self::expr_has_break(body)
+            }
+            ExprKind::Loop { body } => !Self::expr_has_break(body),
+            ExprKind::Try { body, catches, finally } => {
+                finally.as_ref().is_some_and(|f| self.expr_diverges(f))
+                    || (self.expr_diverges(body) && catches.iter().all(|c| self.stmt_diverges(&c.body)))
+            }
+            ExprKind::Match { .. } => self.match_diverges.contains(&expr.id),
+            _ => false,
+        }
+    }
+
+    /// Does `stmt` contain a `break` that targets the loop being analysed
+    /// (i.e. not one inside a nested loop or lambda)?
+    fn stmt_has_break(stmt: &Stmt) -> bool {
+        match &stmt.node {
+            StmtKind::Break => true,
+            StmtKind::Block(stmts) => stmts.iter().any(Self::stmt_has_break),
+            StmtKind::If { then_branch, else_branch, .. } => {
+                Self::stmt_has_break(then_branch) || else_branch.as_ref().is_some_and(|e| Self::stmt_has_break(e))
+            }
+            StmtKind::Try { body, catches, finally } => {
+                Self::stmt_has_break(body)
+                    || catches.iter().any(|c| Self::stmt_has_break(&c.body))
+                    || finally.as_ref().is_some_and(|f| Self::stmt_has_break(f))
+            }
+            StmtKind::Expr(e) => Self::expr_has_break(e),
+            StmtKind::Defer(s) => Self::stmt_has_break(s),
+            _ => false,
+        }
+    }
+
+    fn expr_has_break(expr: &Expr) -> bool {
+        match &expr.node {
+            ExprKind::Break => true,
+            ExprKind::Block(stmts) => stmts.iter().any(Self::stmt_has_break),
+            ExprKind::If { then_branch, else_branch, .. } => {
+                Self::expr_has_break(then_branch) || else_branch.as_ref().is_some_and(|e| Self::expr_has_break(e))
+            }
+            ExprKind::Match { cases, .. } => cases.iter().any(|c| Self::expr_has_break(&c.body)),
+            ExprKind::Try { body, catches, finally } => {
+                Self::expr_has_break(body)
+                    || catches.iter().any(|c| Self::stmt_has_break(&c.body))
+                    || finally.as_ref().is_some_and(|f| Self::expr_has_break(f))
+            }
+            _ => false,
+        }
+    }
+
+    /// An irrefutable sub-pattern (matches every value).
+    fn pattern_irrefutable(&self, pattern: &Pattern, enum_name: Option<&str>) -> bool {
+        match pattern {
+            Pattern::Wildcard(_) => true,
+            Pattern::Ident(name, inner, _) => {
+                let is_variant = enum_name
+                    .and_then(|e| self.enums.get(e))
+                    .is_some_and(|vs| vs.contains(name));
+                !is_variant && inner.as_ref().is_none_or(|p| self.pattern_irrefutable(p, enum_name))
+            }
+            Pattern::Tuple(ps, _) => ps.iter().all(|p| self.pattern_irrefutable(p, None)),
+            _ => false,
+        }
+    }
+
+    /// Exhaustiveness of a `match`: `Ok(())` when every value is covered,
+    /// `Err(missing)` otherwise (`missing` lists the uncovered enum variants,
+    /// empty for scrutinee types where no finite list exists).
+    fn match_exhaustiveness(&self, scrutinee: &ValueType, cases: &[tinox_parser::MatchCase]) -> Result<(), Vec<String>> {
+        let enum_name = self.enum_of(scrutinee);
+        let mut covered: HashSet<String> = HashSet::new();
+        let (mut saw_true, mut saw_false) = (false, false);
+        for case in cases {
+            if case.guard.is_some() {
+                continue;
+            }
+            if self.pattern_irrefutable(&case.pattern, enum_name.as_deref()) {
+                return Ok(());
+            }
+            match &case.pattern {
+                Pattern::EnumVariant { enum_name: en, variant, args, .. } => {
+                    let name = if variant.is_empty() { en } else { variant };
+                    if args.iter().all(|a| self.pattern_irrefutable(a, None)) {
+                        covered.insert(name.clone());
+                    }
+                }
+                Pattern::Ident(name, _, _) => {
+                    covered.insert(name.clone());
+                }
+                Pattern::Literal(Literal::Bool(true), _) => saw_true = true,
+                Pattern::Literal(Literal::Bool(false), _) => saw_false = true,
+                _ => {}
+            }
+        }
+        if let Some(en) = enum_name {
+            let missing: Vec<String> = self.enums[&en].iter().filter(|v| !covered.contains(*v)).cloned().collect();
+            return if missing.is_empty() { Ok(()) } else { Err(missing) };
+        }
+        if *scrutinee == ValueType::Bool && saw_true && saw_false {
+            return Ok(());
+        }
+        Err(Vec::new())
+    }
+
     fn bind_pattern_vars(&mut self, pattern: &Pattern, scrutinee: &ValueType) {
         match pattern {
             Pattern::Ident(name, inner, _) => {
@@ -6769,6 +6947,62 @@ return 0 }");
             "  }\n",
             "}"
         ));
+    }
+
+    #[test]
+    fn test_non_exhaustive_enum_match_is_error() {
+        err_contains(
+            concat!(
+                "enum Dir { North\nSouth\nEast }\n",
+                "fn label(d: Dir) -> String {\n",
+                "  match d {\n",
+                "    Dir::North => return \"N\"\n",
+                "    Dir::South => return \"S\"\n",
+                "  }\n",
+                "}"
+            ),
+            "missing East",
+        );
+    }
+
+    #[test]
+    fn test_enum_match_with_wildcard_is_exhaustive() {
+        ok(concat!(
+            "enum Dir { North\nSouth\nEast }\n",
+            "fn label(d: Dir) -> String {\n",
+            "  match d {\n",
+            "    Dir::North => return \"N\"\n",
+            "    _ => return \"?\"\n",
+            "  }\n",
+            "}"
+        ));
+    }
+
+    #[test]
+    fn test_int_match_without_catch_all_needs_return() {
+        err_contains(
+            "fn f(x: Int64) -> Int64 {\n match x {\n 1 => return 10\n 2 => return 20\n }\n}",
+            "missing return statement",
+        );
+    }
+
+    #[test]
+    fn test_block_bodied_match_arms_count_as_returning() {
+        ok("fn f(x: Int64) -> Int64 {\n match x {\n 1 => { return 1 }\n _ => { return 2 }\n }\n}");
+    }
+
+    #[test]
+    fn test_infinite_loops_without_break_do_not_need_a_return() {
+        ok("fn a(x: Int64) -> Int64 {\n while (true) {\n return 1\n }\n}");
+        ok("fn b(x: Int64) -> Int64 {\n loop {\n return 1\n }\n}");
+    }
+
+    #[test]
+    fn test_infinite_loop_with_break_still_needs_a_return() {
+        err_contains(
+            "fn a(x: Int64) -> Int64 {\n while (true) {\n break\n }\n}",
+            "missing return statement",
+        );
     }
 
     // ================================================================
