@@ -3045,7 +3045,9 @@ impl TypeChecker {
                         .push(TypeError::IndexNotInteger(expr.span).to_error());
                 }
                 match obj_ty {
-                    ValueType::String => ValueType::String,
+                    // `s[i]` is the byte value at `i` (the runtime result, -1 when
+                    // out of range), same as `s.charCodeAt(i)` (issue #458).
+                    ValueType::String => ValueType::Int,
                     ValueType::Array(e) => *e,
                     ValueType::Map(v) => *v,
                     _ => ValueType::Any,

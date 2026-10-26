@@ -9539,7 +9539,8 @@ tr_done_{idx}:"#).unwrap();
                                 // a character, Int32 values numerically
                                 // (sext + int).
                                 let is_char_lit =
-                                    matches!(&args[0].node, ExprKind::Literal(Literal::Char(_)));
+                                    matches!(&args[0].node, ExprKind::Literal(Literal::Char(_)))
+                                        || self.semantic_type(args[0].id) == Some(tinox_typecheck::ValueType::Char);
                                 let llvm_fn = match ty.as_str() {
                                     "i8*" => "tinox_print_string",
                                     "double" => "tinox_print_float",
