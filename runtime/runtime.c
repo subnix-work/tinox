@@ -483,6 +483,12 @@ int64_t* tinox_array_insert(int64_t* h, int64_t idx, int64_t val) {
 }
 
 char* tinox_char_at(const char* s, int64_t i) {
+    int64_t len = s ? (int64_t)strlen(s) : 0;
+    if (i < 0 || i >= len) {
+        fprintf(stderr, "runtime error: string index out of bounds: %lld (length %lld)\n",
+                (long long)i, (long long)len);
+        exit(1);
+    }
     char* result = malloc(2);
     result[0] = s[i];
     result[1] = '\0';
@@ -2466,9 +2472,12 @@ int64_t tinox_string_char_code_at(const char* s, int64_t idx) {
 
 char* tinox_string_substring(const char* s, int64_t from, int64_t to) {
     int64_t len = (int64_t)strlen(s);
-    if (from < 0) from = 0;
-    if (to > len) to = len;
-    if (from >= to) { char* r = malloc(1); r[0] = '\0'; return r; }
+    if (from < 0 || to > len || from > to) {
+        fprintf(stderr, "runtime error: substring range out of bounds: [%lld, %lld) (length %lld)\n",
+                (long long)from, (long long)to, (long long)len);
+        exit(1);
+    }
+    if (from == to) { char* r = malloc(1); r[0] = '\0'; return r; }
     int64_t slen = to - from;
     char* result = malloc(slen + 1);
     memcpy(result, s + from, slen);
