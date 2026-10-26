@@ -629,6 +629,8 @@
     "String_contains": "(s: String, p: String) -> Bool",
     "String_endsWith": "(s: String, p: String) -> Bool",
     "String_indexOf": "(s: String, p: String) -> Int64",
+    "String_isFloat": "(s: String) -> Bool",
+    "String_isInt": "(s: String) -> Bool",
     "String_lastIndexOf": "(s: String, p: String) -> Int64",
     "String_len": "(s: String) -> Int64",
     "String_padLeft": "(s: String, n: Int64, c: String) -> String",

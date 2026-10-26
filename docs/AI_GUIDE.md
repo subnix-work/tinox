@@ -10,7 +10,7 @@ The entry point is `class Main` in `Main.tnx` with
 `fnc main() -> Int32`. Return `0` for success. `fnc` declares static methods;
 `fn` declares instance methods. Call static methods with `Type::method()`;
 call instance methods with `object.method()`. Use `const` for immutable bindings and `var`
-for mutable bindings. Statements end with `;`. Types include `Int64`, `Int32`,
+for mutable bindings. A statement ends at the end of its line; a trailing `;` is a compile error. Types include `Int64`, `Int32`,
 `Float64`, `Bool`, `String`, `Nothing`, `List<T>` and `Map<K, V>`.
 Prefer annotations for supported wiring and generated accessors.
 
