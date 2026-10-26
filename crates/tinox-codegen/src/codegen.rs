@@ -351,6 +351,13 @@ pub struct CodeGen {
     class_parents: HashMap<String, String>,
     /// class_name -> number of entries in its vtable global (computed during emit_vtable_globals)
     vtable_sizes: HashMap<String, usize>,
+    /// Issue #455: class -> virtual method names (shared by every class of one
+    /// inheritance tree that has overrides, sorted). Such classes carry a vtable
+    /// whose virtual entries sit at `virtual_iface_base + position`, after the
+    /// (padded) interface entries.
+    virtual_classes: HashMap<String, Vec<String>>,
+    virtual_iface_base: usize,
+    virtual_fallbacks: HashSet<String>,
     /// ClassName_methodName -> OwnerClassName_methodName (resolved through inheritance)
     method_impl: HashMap<String, String>,
     /// Classes for which a named LLVM struct type `%class.<name>` was emitted
@@ -638,6 +645,9 @@ impl CodeGen {
             interface_method_ret_types: HashMap::new(),
             class_parents: HashMap::new(),
             vtable_sizes: HashMap::new(),
+            virtual_classes: HashMap::new(),
+            virtual_iface_base: 0,
+            virtual_fallbacks: HashSet::new(),
             method_impl: HashMap::new(),
             class_named_types: HashSet::new(),
             spec_type_defs: String::new(),
@@ -1476,6 +1486,71 @@ impl CodeGen {
     }
 
     /// Resolve method call to the class that actually implements it (walks parent chain).
+    /// Issue #455: find inheritance trees where a subclass overrides an
+    /// inherited instance method; every class of such a tree gets a vtable
+    /// slot so calls on the base type (including `this.m()` inside inherited
+    /// methods) dispatch on the dynamic class.
+    fn compute_virtual_hierarchies(
+        &mut self,
+        classes: &[tinox_parser::Class],
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) {
+        let root_of = |name: &str| -> Option<String> {
+            let mut cur = name.to_string();
+            let mut guard = 0;
+            loop {
+                let c = class_map.get(&cur)?;
+                if !c.type_params.is_empty() { return None; }
+                match &c.extends {
+                    Some(p) if class_map.contains_key(p) => cur = p.clone(),
+                    Some(_) => return None,
+                    None => return Some(cur),
+                }
+                guard += 1;
+                if guard > 64 { return None; }
+            }
+        };
+        let mut names_by_root: HashMap<String, HashSet<String>> = HashMap::new();
+        for c in classes {
+            let Some(parent) = &c.extends else { continue };
+            let Some(root) = root_of(&c.name) else { continue };
+            for m in &c.methods {
+                if m.static_ || !m.type_params.is_empty() { continue; }
+                let mut anc = Some(parent.clone());
+                while let Some(a) = anc {
+                    let Some(ac) = class_map.get(&a) else { break };
+                    if ac.methods.iter().any(|am| am.name == m.name && !am.static_ && am.type_params.is_empty()) {
+                        names_by_root.entry(root.clone()).or_default().insert(m.name.clone());
+                        break;
+                    }
+                    anc = ac.extends.clone();
+                }
+            }
+        }
+        if names_by_root.is_empty() { return; }
+        for c in classes {
+            if let Some(root) = root_of(&c.name) {
+                if let Some(names) = names_by_root.get(&root) {
+                    let mut v: Vec<String> = names.iter().cloned().collect();
+                    v.sort();
+                    self.virtual_classes.insert(c.name.clone(), v);
+                    self.classes_with_vtable.insert(c.name.clone());
+                }
+            }
+        }
+        let mut base = 0usize;
+        for c in classes {
+            let mut seen: HashSet<String> = HashSet::new();
+            for iface in &c.implements {
+                if let Some(ms) = self.vtable_layouts.get(iface) {
+                    for m in ms { seen.insert(m.clone()); }
+                }
+            }
+            base = base.max(seen.len());
+        }
+        self.virtual_iface_base = base;
+    }
+
     fn resolve_method_owner(
         class: &str,
         method: &str,
@@ -1981,6 +2056,7 @@ impl CodeGen {
         }).collect();
 
         self.configure_lifecycle(&all_classes);
+        self.compute_virtual_hierarchies(&all_classes, &class_ast_map);
 
         self.synchronized_classes = all_classes.iter()
             .filter(|c| c.annotations.iter().any(|a| a.name == "Synchronized"))
@@ -2085,6 +2161,9 @@ impl CodeGen {
                         }
                     }
                     self.vtable_sizes.insert(c.name.clone(), vtable_methods.len());
+                    if let Some(vm) = self.virtual_classes.get(&c.name) {
+                        self.vtable_sizes.insert(c.name.clone(), self.virtual_iface_base + vm.len());
+                    }
                 }
                 fields.extend(Self::collect_inherited_fields(&c.name, &class_ast_map));
                 if c.annotations.iter().any(|a| a.name == "Log") {
@@ -7822,29 +7901,25 @@ tr_done_{idx}:"#).unwrap();
 
     /// Emit a vtable global for each class that implements at least one interface.
     fn emit_vtable_globals(&mut self, source: &SourceFile) {
-        let class_names: Vec<(String, Vec<String>)> = source
-            .decls
-            .iter()
-            .flat_map(|d| {
-                let mut v = Vec::new();
-                match &d.node {
-                    DeclKind::Class(c) if !c.implements.is_empty() => {
-                        v.push((c.name.clone(), c.implements.clone()));
-                    }
-                    DeclKind::Namespace(ns) => {
-                        for inner in &ns.decls {
-                            if let DeclKind::Class(c) = &inner.node {
-                                if !c.implements.is_empty() {
-                                    v.push((c.name.clone(), c.implements.clone()));
-                                }
-                            }
+        let mut class_names: Vec<(String, Vec<String>)> = Vec::new();
+        let mut push = |c: &tinox_parser::Class, virt: &HashMap<String, Vec<String>>| {
+            if !c.implements.is_empty() || virt.contains_key(&c.name) {
+                class_names.push((c.name.clone(), c.implements.clone()));
+            }
+        };
+        for d in &source.decls {
+            match &d.node {
+                DeclKind::Class(c) => push(c, &self.virtual_classes),
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        if let DeclKind::Class(c) = &inner.node {
+                            push(c, &self.virtual_classes);
                         }
                     }
-                    _ => {}
                 }
-                v
-            })
-            .collect();
+                _ => {}
+            }
+        }
 
         for (class_name, implements) in class_names {
             let mut vtable_methods: Vec<String> = Vec::new();
@@ -7858,27 +7933,42 @@ tr_done_{idx}:"#).unwrap();
                     }
                 }
             }
+            let virtual_methods = self.virtual_classes.get(&class_name).cloned();
 
-            if vtable_methods.is_empty() {
+            if vtable_methods.is_empty() && virtual_methods.is_none() {
                 continue;
             }
 
-            let n = vtable_methods.len();
-            let mut entries = String::new();
-            for (i, method_name) in vtable_methods.iter().enumerate() {
-                if i > 0 {
-                    entries.push_str(", ");
+            let mut entries: Vec<String> = vtable_methods
+                .iter()
+                .map(|m| {
+                    format!(
+                        "i64 ptrtoint (i64* (i64*)* @{}_{} to i64)",
+                        class_name, m
+                    )
+                })
+                .collect();
+            if let Some(vm) = virtual_methods {
+                while entries.len() < self.virtual_iface_base {
+                    entries.push("i64 0".to_string());
                 }
-                let full_fn = format!("{}_{}", class_name, method_name);
-                entries.push_str(&format!(
-                    "i64 ptrtoint (i64* (i64*)* @{} to i64)",
-                    full_fn
-                ));
+                for m in &vm {
+                    let key = format!("{}_{}", class_name, m);
+                    match self.method_impl.get(&key) {
+                        Some(f) => entries.push(format!(
+                            "i64 ptrtoint (i64* (i64*)* @{} to i64)",
+                            f
+                        )),
+                        None => entries.push("i64 0".to_string()),
+                    }
+                }
             }
             writeln!(
                 &mut self.ir,
                 "@{}_vtable = global [{} x i64] [{}]",
-                class_name, n, entries
+                class_name,
+                entries.len(),
+                entries.join(", ")
             )
             .unwrap();
         }
@@ -11166,6 +11256,75 @@ tr_done_{idx}:"#).unwrap();
                             result, ret_ty, casted_fn, full_args_str
                         )
                         .unwrap();
+                        Ok((result, ret_ty))
+                    }
+                } else if let Some(virt_slot) = declared_type.as_deref().and_then(|dt| {
+                    let vm = self.virtual_classes.get(dt)?;
+                    let k = vm.iter().position(|m| m == method)?;
+                    let key = format!("{}_{}", dt, method);
+                    if self.static_method_keys.contains(&key) || !self.method_impl.contains_key(&key) {
+                        return None;
+                    }
+                    Some(self.virtual_iface_base + k)
+                }).filter(|_| obj_ty == "i64*" || obj_ty == "i64") {
+                    // Issue #455: virtual dispatch through the object's vtable.
+                    let dt = declared_type.clone().unwrap();
+                    let logical = format!("{}_{}", dt, method);
+                    let static_impl = self.method_impl.get(&logical).cloned().unwrap_or(logical);
+                    let ret_ty = self
+                        .method_ret_types
+                        .get(&static_impl)
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string());
+                    let obj_ptr = if obj_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, obj_ptr).unwrap();
+                        c
+                    } else {
+                        obj_ptr.clone()
+                    };
+                    let mut call_args = format!("i64* {}", obj_ptr);
+                    let mut param_types = vec!["i64*".to_string()];
+                    for (val, ty) in &extra_args {
+                        call_args.push_str(&format!(", {} {}", ty, val));
+                        param_types.push(ty.clone());
+                    }
+                    // Objects allocated by a path that does not install the vtable
+                    // (slot 0 == 0) fall back to the statically resolved method.
+                    let fb = format!("__virt_fb_{}", static_impl);
+                    if self.virtual_fallbacks.insert(fb.clone()) {
+                        writeln!(
+                            &mut self.lambda_ir,
+                            "@{} = internal global i64 ptrtoint (i64* (i64*)* @{} to i64)",
+                            fb, static_impl
+                        )
+                        .unwrap();
+                    }
+                    let vt_i64 = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", vt_i64, obj_ptr).unwrap();
+                    let is_null = self.temp();
+                    writeln!(&mut self.ir, "{} = icmp eq i64 {}, 0", is_null, vt_i64).unwrap();
+                    let vt_ptr = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", vt_ptr, vt_i64).unwrap();
+                    let slot_ptr = self.temp();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", slot_ptr, vt_ptr, virt_slot).unwrap();
+                    let chosen = self.temp();
+                    writeln!(&mut self.ir, "{} = select i1 {}, i64* @{}, i64* {}", chosen, is_null, fb, slot_ptr).unwrap();
+                    let fn_i64 = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", fn_i64, chosen).unwrap();
+                    let casted_fn = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = inttoptr i64 {} to {} ({})*",
+                        casted_fn, fn_i64, ret_ty, param_types.join(", ")
+                    )
+                    .unwrap();
+                    if ret_ty == "void" {
+                        writeln!(&mut self.ir, "call void {}({})", casted_fn, call_args).unwrap();
+                        Ok((self.temp(), ret_ty))
+                    } else {
+                        let result = self.temp();
+                        writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, casted_fn, call_args).unwrap();
                         Ok((result, ret_ty))
                     }
                 } else if let Some(fn_sig) = declared_type.as_deref()
