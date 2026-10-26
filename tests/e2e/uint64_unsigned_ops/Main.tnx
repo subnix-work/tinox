@@ -1,0 +1,26 @@
+// Regression test for #473: UInt64 compares, divides, takes remainders and
+// prints as an unsigned value.
+// expect: true
+// expect: 9223372036854775807
+// expect: 5
+// expect: 18446744073709551615
+// expect: 18446744073709551615
+// expect: -4
+// expect: 9223372036854775804
+class Main
+{
+    fnc main() -> Int32
+    {
+        var u: UInt64 = 0
+        u = u - 1
+        println(u > 1)
+        println(u / 2)
+        println(u % 10)
+        println(u)
+        println(u.toString())
+        var x: Int64 = -8
+        println(x >>> 1)
+        println(x >> 1)
+        return 0
+    }
+}

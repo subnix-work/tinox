@@ -1672,6 +1672,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "@__tinox_err = thread_local global i64 0").unwrap();
         writeln!(&mut self.ir).unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_int(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_print_uint(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_shift_out_of_range(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_uint_to_string(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_string(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_float(double)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_bool(i1)").unwrap();
@@ -9554,12 +9557,15 @@ tr_done_{idx}:"#).unwrap();
                         writeln!(&mut self.ir, "{} = xor {} {}, {}", result, lt, l, r).unwrap()
                     }
                     tinox_parser::BinaryOp::Shl => {
+                        self.check_shift_count(&r, &rt, &lt, rhs)?;
                         writeln!(&mut self.ir, "{} = shl {} {}, {}", result, lt, l, r).unwrap()
                     }
                     tinox_parser::BinaryOp::Shr => {
+                        self.check_shift_count(&r, &rt, &lt, rhs)?;
                         writeln!(&mut self.ir, "{} = lshr {} {}, {}", result, lt, l, r).unwrap()
                     }
                     tinox_parser::BinaryOp::ShrArith => {
+                        self.check_shift_count(&r, &rt, &lt, rhs)?;
                         writeln!(&mut self.ir, "{} = ashr {} {}, {}", result, lt, l, r).unwrap()
                     }
                 }
@@ -9677,6 +9683,7 @@ tr_done_{idx}:"#).unwrap();
                                         args_str = format!("i64 {}", c);
                                         "tinox_print_int"
                                     }
+                                    "i64" if self.semantic_type(args[0].id).is_some_and(|t| t.is_unsigned()) => "tinox_print_uint",
                                     _ => "tinox_print_int",
                                 };
                                 writeln!(&mut self.ir, "call void @{}({})", llvm_fn, args_str).unwrap();
@@ -10818,7 +10825,10 @@ tr_done_{idx}:"#).unwrap();
                         match obj_ty.as_str() {
                             "double" => { writeln!(&mut self.ir, "{} = call i8* @tinox_float_to_string(double {})", result, obj_ptr).unwrap(); }
                             "i1" => { writeln!(&mut self.ir, "{} = call i8* @tinox_bool_to_string(i1 {})", result, obj_ptr).unwrap(); }
-                            "i64" => { writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, obj_ptr).unwrap(); }
+                            "i64" => {
+                                let func = if self.semantic_type(obj.id).is_some_and(|t| t.is_unsigned()) { "tinox_uint_to_string" } else { "tinox_int_to_string" };
+                                writeln!(&mut self.ir, "{} = call i8* @{}(i64 {})", result, func, obj_ptr).unwrap();
+                            }
                             _ => {
                                 let ext = self.temp();
                                 writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, obj_ty, obj_ptr).unwrap();
@@ -16188,6 +16198,42 @@ tr_done_{idx}:"#).unwrap();
     /// for any int width: divide-by-zero and INT_MIN/-1 overflow become a hard
     /// error instead of LLVM UB (garbage). i64 calls the checked runtime fn
     /// directly; i8/i16/i32 widen → check → narrow; other types fall back to raw.
+    /// Issue #473: a shift count outside `0..bit width` is LLVM poison.
+    /// Constant counts are compile errors, dynamic ones abort at run time.
+    fn check_shift_count(&mut self, count: &str, count_ty: &str, value_ty: &str, rhs: &Expr) -> Result<(), ErrorBag> {
+        let bits: i64 = value_ty.strip_prefix('i').and_then(|b| b.parse().ok()).unwrap_or(64);
+        let literal = match &rhs.node {
+            ExprKind::Literal(Literal::Integer(n)) => Some(*n),
+            ExprKind::Unary { op: tinox_parser::UnaryOp::Neg, operand } => match &operand.node {
+                ExprKind::Literal(Literal::Integer(n)) => Some(-*n),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(n) = literal {
+            if n < 0 || n >= bits {
+                let mut bag = ErrorBag::new();
+                bag.push(Error::new(rhs.span, format!("shift count {} is out of range for a {}-bit value (0..{})", n, bits, bits - 1)));
+                return Err(bag);
+            }
+            return Ok(());
+        }
+        let wide = if count_ty == "i64" { count.to_string() } else {
+            let c = self.temp();
+            writeln!(&mut self.ir, "{} = sext {} {} to i64", c, count_ty, count).unwrap();
+            c
+        };
+        let ok = self.temp();
+        writeln!(&mut self.ir, "{} = icmp ult i64 {}, {}", ok, wide, bits).unwrap();
+        let ok_bb = self.new_bb("shift_ok");
+        let bad_bb = self.new_bb("shift_bad");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", ok, ok_bb, bad_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", bad_bb).unwrap();
+        writeln!(&mut self.ir, "call void @tinox_shift_out_of_range(i64 {}, i64 {})\nunreachable", wide, bits).unwrap();
+        writeln!(&mut self.ir, "{}:", ok_bb).unwrap();
+        Ok(())
+    }
+
     fn emit_semantic_idiv(&mut self, result: &str, ty: &str, l: &str, r: &str, remainder: bool, unsigned: bool) {
         if !unsigned { self.emit_checked_idiv(result, ty, l, r, remainder); return; }
         let zero = self.temp();

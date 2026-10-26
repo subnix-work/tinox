@@ -136,6 +136,10 @@ void tinox_print_int(int64_t val) {
     printf("%ld", val);
 }
 
+void tinox_print_uint(int64_t val) {
+    printf("%lu", (uint64_t)val);
+}
+
 void tinox_print_float(double val) {
     printf("%g", val);
 }
@@ -335,6 +339,10 @@ int64_t* tinox_array_new(int64_t len, int64_t cap) {
 // Checked integer division / modulo. Division by zero was LLVM UB (the optimizer
 // folded `10/0` to a garbage value); INT64_MIN/-1 overflows and is also UB. Both
 // are now a hard error / defined result instead of silent garbage.
+void tinox_shift_out_of_range(int64_t count, int64_t bits) {
+    fprintf(stderr, "runtime error: shift count %ld out of range for a %ld-bit value\n", (long)count, (long)bits);
+    exit(1);
+}
 int64_t tinox_checked_sdiv(int64_t a, int64_t b) {
     if (b == 0) {
         fprintf(stderr, "runtime error: division by zero\n");
@@ -400,6 +408,17 @@ char* tinox_int_to_string(int64_t val) {
     if (neg) val = -val;
     do { buf[len++] = '0' + (val % 10); val /= 10; } while (val > 0);
     if (neg) buf[len++] = '-';
+    char* result = malloc(len + 1);
+    for (int i = 0; i < len; i++) result[i] = buf[len - 1 - i];
+    result[len] = '\0';
+    return result;
+}
+
+char* tinox_uint_to_string(int64_t sval) {
+    uint64_t val = (uint64_t)sval;
+    char buf[32];
+    int len = 0;
+    do { buf[len++] = '0' + (val % 10); val /= 10; } while (val > 0);
     char* result = malloc(len + 1);
     for (int i = 0; i < len; i++) result[i] = buf[len - 1 - i];
     result[len] = '\0';
