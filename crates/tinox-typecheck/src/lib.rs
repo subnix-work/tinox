@@ -1495,6 +1495,191 @@ impl TypeChecker {
         }
     }
 
+    /// Collects, for a closure body: names assigned (`x = ...`, `x += ...`) and
+    /// names declared inside it (issue #425: assignments to captured variables
+    /// are lost, since closures capture by value).
+    fn collect_closure_writes(expr: &Expr, assigned: &mut Vec<(String, Span)>, declared: &mut HashSet<String>) {
+        let visit_expr = |e: &Expr, a: &mut Vec<(String, Span)>, d: &mut HashSet<String>| Self::collect_closure_writes(e, a, d);
+        match &expr.node {
+            ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
+                if let ExprKind::Ident(name) = &target.node {
+                    assigned.push((name.clone(), expr.span));
+                } else {
+                    visit_expr(target, assigned, declared);
+                }
+                visit_expr(value, assigned, declared);
+            }
+            ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::Channel | ExprKind::Break
+            | ExprKind::Continue | ExprKind::This => {}
+            ExprKind::Binary { lhs, rhs, .. } => {
+                visit_expr(lhs, assigned, declared);
+                visit_expr(rhs, assigned, declared);
+            }
+            ExprKind::Unary { operand, .. } => visit_expr(operand, assigned, declared),
+            ExprKind::Call { func, args } => {
+                visit_expr(func, assigned, declared);
+                for a in args { visit_expr(a, assigned, declared); }
+            }
+            ExprKind::MethodCall { obj, args, .. } => {
+                visit_expr(obj, assigned, declared);
+                for a in args { visit_expr(a, assigned, declared); }
+            }
+            ExprKind::SuperCall { args, .. } | ExprKind::New { args, .. } | ExprKind::EnumValue { args, .. } => {
+                for a in args { visit_expr(a, assigned, declared); }
+            }
+            ExprKind::Index { obj, index } => {
+                visit_expr(obj, assigned, declared);
+                visit_expr(index, assigned, declared);
+            }
+            ExprKind::FieldAccess { obj, .. } => visit_expr(obj, assigned, declared),
+            ExprKind::ArrayLiteral(es) | ExprKind::Tuple(es) => {
+                for e in es { visit_expr(e, assigned, declared); }
+            }
+            ExprKind::MapLiteral(kvs) => {
+                for (k, v) in kvs {
+                    visit_expr(k, assigned, declared);
+                    visit_expr(v, assigned, declared);
+                }
+            }
+            ExprKind::StructLiteral { fields, .. } => {
+                for (_, v) in fields { visit_expr(v, assigned, declared); }
+            }
+            ExprKind::Block(stmts) => {
+                for st in stmts { Self::collect_closure_writes_stmt(st, assigned, declared); }
+            }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                visit_expr(cond, assigned, declared);
+                visit_expr(then_branch, assigned, declared);
+                if let Some(e) = else_branch { visit_expr(e, assigned, declared); }
+            }
+            ExprKind::While { cond, body } => {
+                visit_expr(cond, assigned, declared);
+                visit_expr(body, assigned, declared);
+            }
+            ExprKind::For { var, iter, body } => {
+                declared.insert(var.clone());
+                visit_expr(iter, assigned, declared);
+                visit_expr(body, assigned, declared);
+            }
+            ExprKind::Loop { body } => visit_expr(body, assigned, declared),
+            ExprKind::Match { expr: scrutinee, cases } => {
+                visit_expr(scrutinee, assigned, declared);
+                for c in cases {
+                    Self::collect_pattern_names(&c.pattern, declared);
+                    if let Some(g) = &c.guard { visit_expr(g, assigned, declared); }
+                    visit_expr(&c.body, assigned, declared);
+                }
+            }
+            ExprKind::Return(v) => {
+                if let Some(v) = v { visit_expr(v, assigned, declared); }
+            }
+            ExprKind::Throw(e) | ExprKind::Spawn(e) | ExprKind::Await(e) | ExprKind::Recv(e)
+            | ExprKind::Cast { expr: e, .. } | ExprKind::Is { expr: e, .. }
+            | ExprKind::TupleIndex { tuple: e, .. } => visit_expr(e, assigned, declared),
+            ExprKind::Send { channel, value } => {
+                visit_expr(channel, assigned, declared);
+                visit_expr(value, assigned, declared);
+            }
+            ExprKind::Range { start, end, .. } => {
+                visit_expr(start, assigned, declared);
+                visit_expr(end, assigned, declared);
+            }
+            ExprKind::Try { body, catches, finally } => {
+                visit_expr(body, assigned, declared);
+                for c in catches {
+                    declared.insert(c.param.clone());
+                    Self::collect_closure_writes_stmt(&c.body, assigned, declared);
+                }
+                if let Some(f) = finally { visit_expr(f, assigned, declared); }
+            }
+            // A nested closure has its own parameters; its writes are checked
+            // when that closure is itself inferred.
+            ExprKind::Lambda { params, body, .. } => {
+                for p in params { declared.insert(p.name.clone()); }
+                visit_expr(body, assigned, declared);
+            }
+        }
+    }
+
+    fn collect_pattern_names(pattern: &Pattern, declared: &mut HashSet<String>) {
+        match pattern {
+            Pattern::Ident(name, inner, _) => {
+                declared.insert(name.clone());
+                if let Some(inner) = inner { Self::collect_pattern_names(inner, declared); }
+            }
+            Pattern::EnumVariant { args, .. } => {
+                for a in args { Self::collect_pattern_names(a, declared); }
+            }
+            Pattern::Tuple(ps, _) => {
+                for p in ps { Self::collect_pattern_names(p, declared); }
+            }
+            Pattern::Wildcard(_) | Pattern::Literal(..) => {}
+        }
+    }
+
+    fn collect_closure_writes_stmt(stmt: &Stmt, assigned: &mut Vec<(String, Span)>, declared: &mut HashSet<String>) {
+        match &stmt.node {
+            StmtKind::Expr(e) => Self::collect_closure_writes(e, assigned, declared),
+            StmtKind::Let { name, value, .. } | StmtKind::Var { name, value, .. } => {
+                declared.insert(name.clone());
+                if let Some(v) = value { Self::collect_closure_writes(v, assigned, declared); }
+            }
+            StmtKind::Assignment { target, value } => {
+                if let ExprKind::Ident(name) = &target.node {
+                    assigned.push((name.clone(), stmt.span));
+                } else {
+                    Self::collect_closure_writes(target, assigned, declared);
+                }
+                Self::collect_closure_writes(value, assigned, declared);
+            }
+            StmtKind::If { cond, then_branch, else_branch } => {
+                Self::collect_closure_writes(cond, assigned, declared);
+                Self::collect_closure_writes_stmt(then_branch, assigned, declared);
+                if let Some(e) = else_branch { Self::collect_closure_writes_stmt(e, assigned, declared); }
+            }
+            StmtKind::While { cond, body } => {
+                Self::collect_closure_writes(cond, assigned, declared);
+                Self::collect_closure_writes_stmt(body, assigned, declared);
+            }
+            StmtKind::For { var, iter, body } => {
+                declared.insert(var.clone());
+                Self::collect_closure_writes(iter, assigned, declared);
+                Self::collect_closure_writes_stmt(body, assigned, declared);
+            }
+            StmtKind::ForC { init, cond, update, body } => {
+                if let Some(i) = init { Self::collect_closure_writes_stmt(i, assigned, declared); }
+                if let Some(c) = cond { Self::collect_closure_writes(c, assigned, declared); }
+                if let Some(u) = update { Self::collect_closure_writes(u, assigned, declared); }
+                Self::collect_closure_writes_stmt(body, assigned, declared);
+            }
+            StmtKind::Loop { body } | StmtKind::Defer(body) => Self::collect_closure_writes_stmt(body, assigned, declared),
+            StmtKind::Return(v) => {
+                if let Some(v) = v { Self::collect_closure_writes(v, assigned, declared); }
+            }
+            StmtKind::Throw(e) => Self::collect_closure_writes(e, assigned, declared),
+            StmtKind::Try { body, catches, finally } => {
+                Self::collect_closure_writes_stmt(body, assigned, declared);
+                for c in catches {
+                    declared.insert(c.param.clone());
+                    Self::collect_closure_writes_stmt(&c.body, assigned, declared);
+                }
+                if let Some(f) = finally { Self::collect_closure_writes_stmt(f, assigned, declared); }
+            }
+            StmtKind::Block(stmts) => {
+                for s in stmts { Self::collect_closure_writes_stmt(s, assigned, declared); }
+            }
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    declared.insert(arm.var.clone());
+                    Self::collect_closure_writes(&arm.channel, assigned, declared);
+                    Self::collect_closure_writes_stmt(&arm.body, assigned, declared);
+                }
+                if let Some(d) = default { Self::collect_closure_writes_stmt(d, assigned, declared); }
+            }
+            StmtKind::Break | StmtKind::Continue | StmtKind::Empty => {}
+        }
+    }
+
     fn expr_uses_this(expr: &Expr) -> bool {
         match &expr.node {
             ExprKind::This => true,
@@ -3439,6 +3624,7 @@ impl TypeChecker {
                 ret_type,
                 body,
             } => {
+                self.check_closure_writes(params, body);
                 let saved_vars = self.symbols.enter_scope();
                 for param in params {
                     self.symbols.variables.insert(
@@ -4340,6 +4526,26 @@ impl TypeChecker {
     /// bound to its hint, then the body is inferred (memoized per node
     /// ID — the rich typing is preserved for later inference and the
     /// codegen export). None if the expression isn't a lambda.
+    /// Issue #425: closures capture by value, so assigning to a captured local
+    /// would be silently lost. Reject it instead.
+    fn check_closure_writes(&mut self, params: &[tinox_parser::Param], body: &Expr) {
+        let mut assigned = Vec::new();
+        let mut declared: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        Self::collect_closure_writes(body, &mut assigned, &mut declared);
+        for (name, span) in assigned {
+            if !declared.contains(&name) && !name.contains('.') && self.symbols.variables.contains_key(&name) {
+                self.errors.push(Error::new(
+                    span,
+                    format!(
+                        "closures capture variables by value: assigning to captured variable '{}' would be lost. \
+                         Keep the state in an object or list (e.g. `{}[0] = ...`) or return the new value instead",
+                        name, name
+                    ),
+                ));
+            }
+        }
+    }
+
     fn infer_lambda_with_param_hints(
         &mut self,
         expr: &Expr,
@@ -4348,6 +4554,7 @@ impl TypeChecker {
         let ExprKind::Lambda { params, ret_type, body } = &expr.node else {
             return None;
         };
+        self.check_closure_writes(params, body);
         let saved_vars = self.symbols.enter_scope();
         let mut parameter_types = Vec::new();
         for (i, p) in params.iter().enumerate() {
@@ -7078,6 +7285,17 @@ return 0 }");
     #[test]
     fn test_binding_a_nothing_result_is_error() {
         err_contains("fn f() { let r = println(\"x\") }", "cannot bind a value of type Nothing");
+    }
+
+    #[test]
+    fn test_assignment_to_captured_variable_in_closure_is_error() {
+        err_contains(
+            "fn f() { var count = 0\n const bump = fnc(d: Int64) -> Nothing { count = count + d }\n }",
+            "closures capture variables by value",
+        );
+        // local to the closure, and field/element mutation, are fine
+        ok("fn g() { const f = fnc(d: Int64) -> Int64 { return d }\n }");
+        ok("fn h() { var xs = [1, 2]\n const f = fnc(d: Int64) -> Nothing { xs[0] = d }\n }");
     }
 
     #[test]
