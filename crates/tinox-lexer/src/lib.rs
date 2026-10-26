@@ -651,6 +651,14 @@ impl<'a> Lexer<'a> {
                     return Err(Error::new(self.mk_span(), "unterminated escape sequence"));
                 }
                 let escaped = self.read_escape()?;
+                // Strings are NUL-terminated C strings at runtime: an embedded
+                // NUL would silently truncate the literal (issue #472).
+                if escaped == '\0' {
+                    return Err(Error::new(
+                        self.mk_span(),
+                        "string literals cannot contain a NUL character (\\0 / \\x00): strings are NUL-terminated; use a List<Int64> of bytes for binary data",
+                    ));
+                }
                 current_str.push(escaped);
             } else {
                 current_str.push(ch);
@@ -1493,8 +1501,8 @@ mod tests {
 
     #[test]
     fn test_string_escape_null() {
-        let toks = lex_kinds(r#""\0""#);
-        assert!(matches!(&toks[0], TokenKind::String(s) if s == "\0"));
+        // A NUL would silently truncate the NUL-terminated runtime string (#472).
+        assert!(Lexer::new(r#""a\0b""#).tokenize().is_err());
     }
 
     // --- Interpolated strings ---
@@ -2095,8 +2103,7 @@ mod tests {
 
     #[test]
     fn test_string_escape_nul_char() {
-        let toks = lex_kinds(r#""\0""#);
-        assert!(matches!(&toks[0], TokenKind::String(s) if s.contains('\0')));
+        assert!(Lexer::new(r#""\x00""#).tokenize().is_err());
     }
 
     #[test]

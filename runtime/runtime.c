@@ -2553,11 +2553,35 @@ int64_t tinox_string_char_code_at(const char* s, int64_t idx) {
     return (int64_t)(unsigned char)s[idx];
 }
 
+// 1 when the whole NUL-terminated string is well-formed UTF-8.
+static int tinox_utf8_valid(const unsigned char* s) {
+    while (*s) {
+        int n;
+        if (*s < 0x80) n = 1;
+        else if ((*s & 0xE0) == 0xC0 && *s >= 0xC2) n = 2;
+        else if ((*s & 0xF0) == 0xE0) n = 3;
+        else if ((*s & 0xF8) == 0xF0 && *s <= 0xF4) n = 4;
+        else return 0;
+        for (int i = 1; i < n; i++) if ((s[i] & 0xC0) != 0x80) return 0;
+        s += n;
+    }
+    return 1;
+}
+
 char* tinox_string_substring(const char* s, int64_t from, int64_t to) {
     int64_t len = (int64_t)strlen(s);
     if (from < 0 || to > len || from > to) {
         fprintf(stderr, "runtime error: substring range out of bounds: [%lld, %lld) (length %lld)\n",
                 (long long)from, (long long)to, (long long)len);
+        exit(1);
+    }
+    // Strings are byte strings: slicing is by byte offset. Cutting through the
+    // middle of a multi-byte character of a valid UTF-8 string would silently
+    // produce invalid UTF-8, so that is an error (issue #472).
+    if (((from < len && ((unsigned char)s[from] & 0xC0) == 0x80) || (to < len && ((unsigned char)s[to] & 0xC0) == 0x80))
+        && tinox_utf8_valid((const unsigned char*)s)) {
+        fprintf(stderr, "runtime error: substring [%lld, %lld) splits a multi-byte UTF-8 character (offsets are bytes)\n",
+                (long long)from, (long long)to);
         exit(1);
     }
     if (from == to) { char* r = malloc(1); r[0] = '\0'; return r; }
