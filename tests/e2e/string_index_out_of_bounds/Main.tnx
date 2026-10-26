@@ -2,8 +2,8 @@
 // instead of reading adjacent memory or clamping silently.
 // expect: b
 // expect: bc
+// expect: runtime error: string index out of bounds: 5 (length 3)
 // expect-exit: 1
-// expect-contains: string index out of bounds: 5 (length 3)
 class Main
 {
     fnc main() -> Int32
