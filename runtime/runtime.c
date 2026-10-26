@@ -8948,17 +8948,24 @@ int64_t* jsonGetArray(int64_t* value) {
 // (JsonValue::asList()) builds a real List<JsonValue> by looping these two.
 int64_t jsonArrayLen(int64_t* value) {
     TinoxJsonValue* v = (TinoxJsonValue*)value;
-    if (!v || v->type != JSON_ARRAY || !v->arr_val) return 0;
+    if (!v || (v->type != JSON_ARRAY && v->type != JSON_INT_ARRAY) || !v->arr_val) return 0;
     return v->arr_val[-1];
 }
 
 int64_t* jsonArrayGet(int64_t* value, int64_t index) {
     TinoxJsonValue* v = (TinoxJsonValue*)value;
-    int64_t len = (v && v->type == JSON_ARRAY && v->arr_val) ? v->arr_val[-1] : 0;
+    int is_arr = v && (v->type == JSON_ARRAY || v->type == JSON_INT_ARRAY) && v->arr_val;
+    int64_t len = is_arr ? v->arr_val[-1] : 0;
     if (!v || index < 0 || index >= len) {
         fprintf(stderr, "runtime error: JSON array index out of bounds: %lld (length %lld)\n",
                 (long long)index, (long long)len);
         exit(1);
+    }
+    if (v->type == JSON_INT_ARRAY) {
+        // Fast-path arrays store raw int64s; box the element as a JSON_INT value.
+        TinoxJsonValue* e = json_alloc(JSON_INT);
+        e->int_val = v->arr_val[index];
+        return (int64_t*)e;
     }
     return (int64_t*)(uintptr_t)v->arr_val[index];
 }
@@ -8969,7 +8976,7 @@ int64_t jsonIsInt(int64_t* value)    { return (value && ((TinoxJsonValue*)value)
 int64_t jsonIsFloat(int64_t* value)  { return (value && ((TinoxJsonValue*)value)->type == JSON_FLOAT)  ? 1 : 0; }
 int64_t jsonIsBool(int64_t* value)   { return (value && ((TinoxJsonValue*)value)->type == JSON_BOOL)   ? 1 : 0; }
 int64_t jsonIsObject(int64_t* value) { return (value && ((TinoxJsonValue*)value)->type == JSON_OBJECT) ? 1 : 0; }
-int64_t jsonIsArray(int64_t* value)  { return (value && ((TinoxJsonValue*)value)->type == JSON_ARRAY)  ? 1 : 0; }
+int64_t jsonIsArray(int64_t* value)  { return (value && (((TinoxJsonValue*)value)->type == JSON_ARRAY || ((TinoxJsonValue*)value)->type == JSON_INT_ARRAY)) ? 1 : 0; }
 
 int64_t* jsonGetField(int64_t* obj, const char* key) {
     TinoxJsonValue* v = (TinoxJsonValue*)obj;

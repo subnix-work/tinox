@@ -1,0 +1,24 @@
+// Regression test for #476: JsonValue.isArray()/len()/get() must accept the
+// parser's int-array fast path and the empty array.
+// expect: a arr=true len=0
+// expect: b arr=true len=2
+// expect: s arr=true len=2
+// expect: m arr=true len=2
+// expect: 2
+import tinox.core.json
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let o: JsonValue = Json::parse("{\"a\":[],\"b\":[1,2],\"s\":[\"x\",\"y\"],\"m\":[1,\"x\"]}")
+        for k in ["a", "b", "s", "m"]
+        {
+            let f: JsonValue = o.getField(k)
+            println(k + " arr=" + f.isArray().toString() + " len=" + f.len().toString())
+        }
+        let b: JsonValue = o.getField("b")
+        println(b.get(1).asInt().toString())
+        return 0
+    }
+}
