@@ -2017,7 +2017,52 @@ impl TypeChecker {
 
                     // Walk the ancestor chain and collect inherited fields/methods.
                     let mut ancestor = parent_name.clone();
+                    let mut override_checked: HashSet<String> = HashSet::new();
                     while let Some(pc) = class_map.get(&ancestor) {
+                        // Issue #456: an override must keep the parameter
+                        // types and return a compatible type. Checked against
+                        // the nearest ancestor declaring the method only.
+                        if c.type_params.is_empty() && pc.type_params.is_empty() {
+                            for base_m in &pc.methods {
+                                if !override_checked.insert(base_m.name.clone()) {
+                                    continue;
+                                }
+                                let Some(child_m) = c.methods.iter().find(|m| m.name == base_m.name) else {
+                                    continue;
+                                };
+                                if child_m.static_ || base_m.static_
+                                    || !child_m.type_params.is_empty() || !base_m.type_params.is_empty()
+                                {
+                                    continue;
+                                }
+                                let sig_str = |m: &tinox_parser::Method| {
+                                    format!(
+                                        "{}({}) -> {}",
+                                        m.name,
+                                        m.params.iter().map(|p| Self::type_to_value(&p.param_type).to_string()).collect::<Vec<_>>().join(", "),
+                                        Self::type_to_value(&m.ret_type)
+                                    )
+                                };
+                                let params_same = child_m.params.len() == base_m.params.len()
+                                    && child_m.params.iter().zip(&base_m.params).all(|(a, b)| {
+                                        Self::type_to_value(&a.param_type) == Self::type_to_value(&b.param_type)
+                                    });
+                                let child_ret = Self::type_to_value(&child_m.ret_type);
+                                let base_ret = Self::type_to_value(&base_m.ret_type);
+                                let ret_ok = child_ret == base_ret
+                                    || matches!((&child_ret, &base_ret), (ValueType::Named(cr, _), ValueType::Named(br, _)) if self.is_subclass_or_equal(cr, br));
+                                if !params_same || !ret_ok {
+                                    self.errors.push(Error::new(
+                                        child_m.span,
+                                        format!(
+                                            "method '{}.{}' overrides '{}.{}' (declared at {}:{}) with an incompatible signature: {} vs. {}; an override must keep the parameter types and return the same type (or a subclass of it)",
+                                            name, child_m.name, ancestor, base_m.name, base_m.file, base_m.span.start.line,
+                                            sig_str(child_m), sig_str(base_m)
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
                         for field in &pc.fields {
                             if child_own_fields.contains(&field.name) {
                                 continue;
@@ -4958,6 +5003,30 @@ class Counter {
         ok(r#"
 class Animal { fn speak() { } }
 class Dog extends Animal { fn bark() { } }
+"#);
+    }
+
+    #[test]
+    fn test_override_with_different_return_type_is_rejected() {
+        err_contains(r#"
+class Base { fn who() -> String { return "b" } }
+class Derived extends Base { fn who() -> Int64 { return 1 } }
+"#, "incompatible signature");
+    }
+
+    #[test]
+    fn test_override_with_different_params_is_rejected() {
+        err_contains(r#"
+class Base { fn speak() { } }
+class Derived extends Base { fn speak(loud: Bool) { } }
+"#, "incompatible signature");
+    }
+
+    #[test]
+    fn test_override_with_covariant_return_is_ok() {
+        ok(r#"
+class Animal { fn me() -> Animal { return this } }
+class Dog extends Animal { fn me() -> Dog { return this } }
 "#);
     }
 
