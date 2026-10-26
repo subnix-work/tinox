@@ -2900,6 +2900,28 @@ impl TypeChecker {
 
                 let method_name = format!("{}_{}", class_name, method);
 
+                // Issue #474: a static method (`fnc`) called through an instance
+                // used to be reported as a confusing argument-count mismatch
+                // (the receiver was counted as an argument).
+                if matches!(obj_ty, ValueType::Named(..))
+                    && self.known_class_names.contains(&class_name)
+                    && self.symbols.functions.get(&method_name).is_some_and(|sig| {
+                        !sig.params.first().is_some_and(|(n, _)| n == "self")
+                    })
+                {
+                    self.errors.push(Error::new(
+                        expr.span,
+                        format!(
+                            "'{}.{}' is a static method (declared with `fnc`): call it as `{}::{}(...)`, not on an instance",
+                            class_name, method, class_name, method
+                        ),
+                    ));
+                    for arg in args {
+                        self.infer_type(arg);
+                    }
+                    return self.symbols.functions[&method_name].return_type.clone();
+                }
+
                 if let Some(vis) = self.method_visibility.get(&method_name).cloned() {
                     self.check_member_visibility(&class_name, method, &vis, expr.span);
                 }
@@ -3685,14 +3707,21 @@ impl TypeChecker {
         };
         if !count_ok {
             let expected = if uses_this { declared + 1 } else { declared };
-            self.errors.push(
-                TypeError::InvalidArgumentCount {
-                    expected,
-                    found: args.len(),
-                    span,
-                }
-                .to_error(),
-            );
+            let message = if uses_this {
+                format!(
+                    "'{}::{}' is an instance method that uses `this`: pass the receiver as the first argument \
+                     ({} arguments including the receiver, found {}) or call it as `value.{}(...)`",
+                    class_name, method_name, expected, args.len(), method_name
+                )
+            } else if !is_instance {
+                format!(
+                    "static method '{}::{}' takes {} arguments, found {}",
+                    class_name, method_name, declared, args.len()
+                )
+            } else {
+                format!("expected {} arguments, found {}", expected, args.len())
+            };
+            self.errors.push(Error::new(span, message));
         }
         let skip_self = usize::from(is_instance && args.len() == declared);
         for (index, arg) in args.iter().enumerate() {
