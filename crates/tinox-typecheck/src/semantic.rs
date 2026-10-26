@@ -90,9 +90,9 @@ impl ValueType {
             match ty {
                 ValueType::Integer { bits, signed: true } => {
                     let b = *bits as u32;
-                    v >= -(1i128 << (b - 1)) && v <= (1i128 << (b - 1)) - 1
+                    v >= -(1i128 << (b - 1)) && v < (1i128 << (b - 1))
                 }
-                ValueType::Integer { bits, signed: false } => v >= 0 && v <= (1i128 << *bits as u32) - 1,
+                ValueType::Integer { bits, signed: false } => v >= 0 && v < (1i128 << *bits as u32),
                 _ => false,
             }
         }
