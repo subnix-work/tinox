@@ -5664,6 +5664,7 @@ tr_done_{idx}:"#).unwrap();
             timed_metric: None,
             transactional_commit: None,
             finally_targets: Vec::new(),
+            loop_finally_depth: HashMap::new(),
         };
 
         for (i, p) in f.params.iter().enumerate() {
@@ -5789,6 +5790,7 @@ tr_done_{idx}:"#).unwrap();
             timed_metric: None,
             transactional_commit: None,
             finally_targets: Vec::new(),
+            loop_finally_depth: HashMap::new(),
         };
 
         let mut params_str = if method.static_ {
@@ -8456,7 +8458,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(loop_bb.clone());
+                ctx.loop_finally_depth.insert(loop_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
@@ -8531,12 +8535,12 @@ tr_done_{idx}:"#).unwrap();
             }
             StmtKind::Break => {
                 if let Some(ref break_bb) = ctx.break_target.clone() {
-                    writeln!(&mut self.ir, "br label %{}", break_bb).unwrap();
+                    self.emit_loop_jump(ctx, break_bb);
                 }
             }
             StmtKind::Continue => {
                 if let Some(ref cont_bb) = ctx.continue_target.clone() {
-                    writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
+                    self.emit_loop_jump(ctx, cont_bb);
                 }
             }
             StmtKind::Throw(expr) => {
@@ -8676,7 +8680,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(cond_bb.clone());
+                ctx.loop_finally_depth.insert(cond_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
@@ -8748,7 +8754,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(loop_bb.clone());
+                ctx.loop_finally_depth.insert(loop_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
@@ -11700,7 +11708,7 @@ tr_done_{idx}:"#).unwrap();
             }
             ExprKind::Break => {
                 if let Some(ref break_bb) = ctx.break_target.clone() {
-                    writeln!(&mut self.ir, "br label %{}", break_bb).unwrap();
+                    self.emit_loop_jump(ctx, break_bb);
                 }
                 let dead_bb = self.new_bb("break_dead");
                 writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
@@ -11708,7 +11716,7 @@ tr_done_{idx}:"#).unwrap();
             }
             ExprKind::Continue => {
                 if let Some(ref cont_bb) = ctx.continue_target.clone() {
-                    writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
+                    self.emit_loop_jump(ctx, cont_bb);
                 }
                 let dead_bb = self.new_bb("cont_dead");
                 writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
@@ -12365,7 +12373,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(loop_bb.clone());
+                ctx.loop_finally_depth.insert(loop_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
@@ -12420,7 +12430,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(cond_bb.clone());
+                ctx.loop_finally_depth.insert(cond_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
@@ -12459,7 +12471,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(loop_bb.clone());
+                ctx.loop_finally_depth.insert(loop_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
@@ -13375,6 +13389,7 @@ tr_done_{idx}:"#).unwrap();
             timed_metric: None,
             transactional_commit: None,
             finally_targets: Vec::new(),
+            loop_finally_depth: HashMap::new(),
         };
         for (i, p) in params.iter().enumerate() {
             lambda_ctx.callable_types.remove(&p.name);
@@ -14020,6 +14035,16 @@ tr_done_{idx}:"#).unwrap();
 
         writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
         writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
+        let mut catch_rethrow: Option<(String, String)> = None;
+        let rethrow_var = if finally.is_some() && !catches.is_empty() {
+            let v = format!("%__rethrow_{}__", self.temp_count);
+            self.temp_count += 1;
+            writeln!(&mut self.ir, "{} = alloca i64", v).unwrap();
+            writeln!(&mut self.ir, "store i64 0, i64* {}", v).unwrap();
+            Some(v)
+        } else {
+            None
+        };
 
         // Issue #193: a `return` anywhere inside the try body OR a catch
         // clause must run this finally block before actually returning —
@@ -14042,7 +14067,11 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{} = alloca {}", slot, ctx.ret_type).unwrap();
                 Some(slot)
             };
-            FinallyTarget { finally_bb: fb.clone(), pending_flag, return_slot }
+            let jump_slot = format!("%__finally_jump_{}__", self.temp_count);
+            self.temp_count += 1;
+            writeln!(&mut self.ir, "{} = alloca i64", jump_slot).unwrap();
+            writeln!(&mut self.ir, "store i64 0, i64* {}", jump_slot).unwrap();
+            FinallyTarget { finally_bb: fb.clone(), pending_flag, return_slot, jump_slot, jumps: Vec::new() }
         });
         if let Some(target) = &finally_target {
             ctx.finally_targets.push(target.clone());
@@ -14092,6 +14121,17 @@ tr_done_{idx}:"#).unwrap();
             // Dispatch: jump to first clause.
             writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
             writeln!(&mut self.ir, "br label %{}", clause_bbs[0]).unwrap();
+
+            // Issue #454: a throw from inside a catch clause must still run
+            // `finally` before it propagates. Route it to its own slot/label
+            // (re-thrown at the convergence point, after finally).
+            if let Some(var) = &rethrow_var {
+                catch_rethrow = Some((var.clone(), self.new_bb("catch_rethrow")));
+            }
+            let saved_error_catch = ctx.error_catch.take();
+            if let Some((var, bb)) = &catch_rethrow {
+                ctx.error_catch = Some((bb.clone(), var.clone(), try_defer_depth));
+            }
 
             for (i, catch) in catches.iter().enumerate() {
                 let llvm_ty = Self::type_to_llvm(&catch.ty);
@@ -14145,6 +14185,11 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{}:", guard_bb).unwrap();
                 writeln!(&mut self.ir, "br label %{}", next).unwrap();
             }
+            ctx.error_catch = saved_error_catch;
+            if let Some((_, bb)) = &catch_rethrow {
+                writeln!(&mut self.ir, "{}:", bb).unwrap();
+                writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
+            }
         }
 
         // --- finally block ---
@@ -14155,9 +14200,11 @@ tr_done_{idx}:"#).unwrap();
         // a `return` inside `finally { ... }` sees only any FURTHER-out
         // enclosing finally (never re-enters this same one).
         if let Some(fb) = &finally_bb {
-            if finally_target.is_some() {
-                ctx.finally_targets.pop();
-            }
+            let popped_jumps = if finally_target.is_some() {
+                ctx.finally_targets.pop().map(|t| t.jumps).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             writeln!(&mut self.ir, "{}:", fb).unwrap();
             if let Some(finally_stmt) = finally {
                 self.gen_stmt_body(finally_stmt, ctx)?;
@@ -14201,12 +14248,39 @@ tr_done_{idx}:"#).unwrap();
             }
 
             writeln!(&mut self.ir, "{}:", normal_bb).unwrap();
-            writeln!(&mut self.ir, "br label %{}", converge_bb).unwrap();
+            if popped_jumps.is_empty() {
+                writeln!(&mut self.ir, "br label %{}", converge_bb).unwrap();
+            } else {
+                // A `break`/`continue` routed through this finally (issue
+                // #454): resume it now, via any further-out finally first.
+                let jv = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", jv, target.jump_slot).unwrap();
+                let resume_bbs: Vec<String> = popped_jumps.iter().map(|_| self.new_bb("finally_resume")).collect();
+                let cases: Vec<String> = popped_jumps
+                    .iter()
+                    .zip(&resume_bbs)
+                    .map(|((code, _, _), bb)| format!("i64 {}, label %{}", code, bb))
+                    .collect();
+                writeln!(&mut self.ir, "switch i64 {}, label %{} [ {} ]", jv, converge_bb, cases.join(" ")).unwrap();
+                for ((code, label, depth), bb) in popped_jumps.iter().zip(&resume_bbs) {
+                    writeln!(&mut self.ir, "{}:", bb).unwrap();
+                    if ctx.finally_targets.len() > *depth {
+                        let idx = ctx.finally_targets.len() - 1;
+                        ctx.finally_targets[idx].jumps.push((*code, label.clone(), *depth));
+                        let outer = ctx.finally_targets[idx].clone();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", code, outer.jump_slot).unwrap();
+                        writeln!(&mut self.ir, "br label %{}", outer.finally_bb).unwrap();
+                    } else {
+                        writeln!(&mut self.ir, "br label %{}", label).unwrap();
+                    }
+                }
+            }
         }
 
         // --- convergence / re-throw ---
         writeln!(&mut self.ir, "{}:", converge_bb).unwrap();
-        if catches.is_empty() {
+        let error_var = rethrow_var.clone().unwrap_or(error_var);
+        if catches.is_empty() || rethrow_var.is_some() {
             // A try without catch clauses does not handle the error: if one
             // reached here (error_var != 0, set on the error path; 0 on the
             // normal path), re-throw it now — AFTER finally has run (Bug 42).
@@ -14239,6 +14313,23 @@ tr_done_{idx}:"#).unwrap();
 
         writeln!(&mut self.ir, "{}:", end_bb).unwrap();
         Ok(())
+    }
+
+    /// Emits a `break`/`continue` jump to `label`, first routing it through
+    /// every `finally` block entered since that loop began (issue #454).
+    fn emit_loop_jump(&mut self, ctx: &mut GenCtx, label: &str) {
+        let depth = ctx.loop_finally_depth.get(label).copied().unwrap_or(0);
+        if ctx.finally_targets.len() > depth {
+            self.temp_count += 1;
+            let code = self.temp_count;
+            let idx = ctx.finally_targets.len() - 1;
+            ctx.finally_targets[idx].jumps.push((code, label.to_string(), depth));
+            let target = ctx.finally_targets[idx].clone();
+            writeln!(&mut self.ir, "store i64 {}, i64* {}", code, target.jump_slot).unwrap();
+            writeln!(&mut self.ir, "br label %{}", target.finally_bb).unwrap();
+        } else {
+            writeln!(&mut self.ir, "br label %{}", label).unwrap();
+        }
     }
 
     /// The single point every `return` statement's codegen funnels through
@@ -16191,6 +16282,10 @@ pub struct GenCtx {
     /// all — nothing needs to run before such a `return` proceeds, same as
     /// before this field existed.
     finally_targets: Vec<FinallyTarget>,
+    /// Loop target label (break/continue destination) -> `finally_targets.len()`
+    /// when that loop was entered. A `break`/`continue` only has to run the
+    /// finally blocks pushed AFTER that depth (issue #454).
+    loop_finally_depth: HashMap<String, usize>,
 }
 
 /// One entry in `GenCtx.finally_targets` — see that field's doc comment.
@@ -16207,6 +16302,12 @@ struct FinallyTarget {
     /// for a `void`-returning function — nothing to carry, `pending_flag`
     /// alone is enough.
     return_slot: Option<String>,
+    /// i64 alloca: nonzero = a `break`/`continue` routed through this finally
+    /// and the code identifies which jump (see `jumps`) to resume afterwards.
+    jump_slot: String,
+    /// (code, destination label, finally depth of the destination's loop)
+    /// recorded while generating the try body/catch clauses (issue #454).
+    jumps: Vec<(usize, String, usize)>,
 }
 
 // ─── ORM: compile-time lambda→SQL translation ────────────────────────────────
