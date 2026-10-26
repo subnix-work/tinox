@@ -1,0 +1,19 @@
+// Regression test for #458: s[i] is the byte value (Int64) at compile time
+// and at runtime; println of a Char variable prints the character.
+// expect: 98
+// expect: true
+// expect: a
+// expect: a
+class Main
+{
+    fnc main() -> Int32
+    {
+        const s = "abc"
+        println(s[1])
+        println(s[0] == 97)
+        const c: Char = 'a'
+        println(c)
+        println('a')
+        return 0
+    }
+}

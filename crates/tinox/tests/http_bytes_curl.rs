@@ -98,7 +98,7 @@ class BlobController
     std::fs::write(
         workdir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.6.0\"\nname = \"http_bytes\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n",
+            "[package]\ncompiler = \"2.7.0\"\nname = \"http_bytes\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n",
             extended_module_version("http_server"),
         ),
     )

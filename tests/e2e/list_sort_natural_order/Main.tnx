@@ -1,0 +1,32 @@
+// Regression test for #459: sort() orders Strings by content and Float64
+// numerically.
+// expect: Date
+// expect: apple
+// expect: banana
+// expect: cherry
+// expect: fig
+// expect: pear
+// expect: -3.5
+// expect: -2.5
+// expect: -1.5
+// expect: 0
+// expect: 1.5
+// expect: 1
+// expect: 2
+// expect: 3
+class Main
+{
+    fnc main() -> Int32
+    {
+        var s: List<String> = ["pear", "apple", "fig", "banana", "cherry", "Date"]
+        const b = s.sort()
+        for x in b { println(x) }
+        var f: List<Float64> = [-1.5, -2.5, -3.5, 1.5, 0.0]
+        const g = f.sort()
+        for x in g { println(x) }
+        var n: List<Int64> = [3, 1, 2]
+        n = n.sort()
+        for x in n { println(x) }
+        return 0
+    }
+}

@@ -1,10 +1,10 @@
 # Tinox Programming Language Specification
 
-**Version:** 2.1.0
+**Version:** 2.7.0
 **Status:** Actively developed — self-hosting tooling (LSP, `tinox fmt`, package
 registry client, dev dashboard) and 70+ documented bugfixes deep, not an early
 draft. This document was last verified against the actual compiler/runtime
-source on 2026-08-12; where a feature exists as a lexer/parser keyword but has
+source on 2026-10-26; where a feature exists as a lexer/parser keyword but has
 no real-world usage in the codebase, that is called out explicitly rather than
 presented as a working feature.
 
@@ -71,9 +71,12 @@ binary      ::= '0' ('b' | 'B') bindigit+
 
 #### Float Literals
 ```
-float-literal ::= digit+ '.' digit* exponent?
+float-literal ::= digit+ '.' digit+ exponent?
 exponent      ::= ('e' | 'E') ('+' | '-')? digit+
 ```
+
+A float literal needs digits on both sides of the dot (`5.0`, not `5.`, which
+starts a member access) and always contains a dot (`1.0e3`, not `1e3`).
 
 #### String Literals
 ```
@@ -170,7 +173,7 @@ class Point
 
     fn distanceTo(other: Point) -> Float64
     {
-        if this.x == other.x
+        if (this.x == other.x)
         {
             return 0.0
         }
@@ -225,7 +228,7 @@ Ref<T>               Mutable reference to T
 T?                    Nullable type (parsed and type-checked; new library
                       lookup APIs use Option<T> for absence; legacy APIs
                       may still return sentinels)
-Fn(P1, P2) -> R       Function type
+fnc(P1, P2) -> R      Function type (e.g. `const g: fnc(Int64) -> Int64 = x => x * 3`)
 ```
 
 `List<T>` (not `Array<T>`) is what almost all real code reaches for — see
@@ -640,12 +643,12 @@ finally
 ### Control Flow
 
 ```tinox
-// If-else
-if x > 0
+// If-else (the condition must be parenthesized)
+if (x > 0)
 {
     print("positive")
 }
-else if x < 0
+else if (x < 0)
 {
     print("negative")
 }
@@ -671,7 +674,7 @@ for item in collection
 // Loop (infinite)
 loop
 {
-    if done { break }
+    if (done) { break }
 }
 ```
 
@@ -849,6 +852,56 @@ go stale here.
 
 ---
 
+## Numeric Semantics
+
+- **Conversions.** Only value-preserving widening is implicit: `Int8 -> Int16
+  -> Int32 -> Int64`, `UInt8 -> UInt16 -> UInt32 -> UInt64`, an unsigned type
+  to any wider signed type, `Float32 -> Float64`. Narrowing, `Float -> Int`,
+  and `Int64 -> Float` are compile errors for variables and literals; convert
+  explicitly (`x as Int32`, `x.toFloat()`, `f.toInt()`). An integer literal is
+  range-checked against the declared type (`const b: Int8 = 200` is an error)
+  and may initialize any float type; an integral float literal may initialize
+  an integer type. Integer arguments may feed float parameters.
+- **Unsigned.** `UInt64` compares, divides, takes remainders and prints as an
+  unsigned value. When a `UInt64` meets any other integer, the `UInt64` wins.
+- **Shifts.** `<<` shifts left, `>>` is a *logical* (zero-filling) right shift
+  and `>>>` an *arithmetic* (sign-extending) right shift. This is the reverse
+  of Java and JavaScript. The shift count must be in `0..bit width`: a
+  constant count outside it is a compile error, a dynamic one aborts the
+  program with a runtime error.
+- **Overflow.** Integer `+ - *` wrap in two's complement; narrow types are
+  computed in 64 bits and truncated when stored. Division and remainder by
+  zero abort. There is no trapping overflow check.
+
+## Strings
+
+A `String` is a sequence of bytes, not of code points. `s.len()` counts bytes
+and `s[i]` is the byte at index `i` (an `Int64`). `charAt`/`substring` abort
+when an index is out of range, and `substring` aborts rather than split a
+multi-byte UTF-8 sequence. NUL escapes (`\0`, `\x00`) are rejected in string
+literals because strings are NUL-terminated at runtime. `toInt()`/`toFloat()`
+are strict: malformed text aborts; test with `isInt()`/`isFloat()` first.
+
+## Regular Expressions
+
+The regex module uses POSIX extended syntax. The Perl classes `\d \D \s \S \w
+\W` are translated to POSIX bracket expressions; an invalid pattern aborts the
+program.
+
+## Call Shape
+
+`fnc` declares a static method (call it as `Type::m()`), `fn` an instance
+method (call it as `value.m()`). An instance `fn` that never uses `this` may
+also be called statically; mixing the two shapes otherwise is an error whose
+message names the correct form. `static`, `ref` and `for (x in xs)` are not
+Tinox syntax: use `fnc`, a different identifier, and `for x in xs`.
+
+## Tooling Notes
+
+`tinox fmt` is a layout-only formatter: it re-indents and normalizes spacing
+and keeps comments and token order. `tinox check` without arguments checks
+every file under `src/` and `tests/`.
+
 ## Future / Known-Incomplete Areas
 
 - `trait` — reserved keyword, unimplemented in practice (no real usage
@@ -860,5 +913,5 @@ go stale here.
   but not exercised in real code.
 - `T?` (nullable types) — parsed and type-checked, but most stdlib APIs
   prefer sentinel returns over nullable types in practice.
-- Pattern-matching exhaustiveness checking.
+- Pattern-matching exhaustiveness is checked for enum `match` only; other scrutinee types are not checked.
 - Macros.

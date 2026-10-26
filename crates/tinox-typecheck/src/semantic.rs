@@ -79,6 +79,12 @@ impl ValueType {
             left.clone()
         } else if left.is_float() || right.is_float() {
             Self::Float
+        } else if matches!(left, Self::Integer { bits: 64, signed: false })
+            || matches!(right, Self::Integer { bits: 64, signed: false })
+        {
+            // A 64-bit unsigned operand wins (as in C): comparisons, division
+            // and remainder must be unsigned or large values turn negative.
+            Self::Integer { bits: 64, signed: false }
         } else {
             Self::Int
         })

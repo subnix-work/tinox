@@ -165,7 +165,7 @@ fn print_help() {
 /// declaration (#159).
 fn new_project_files(name: &str) -> (String, String, String, String) {
     let toml = format!(
-        "[package]\ncompiler = \"2.6.0\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n",
+        "[package]\ncompiler = \"2.7.0\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n",
         pm::COMPILER_VERSION
     );
     let main_tnx = format!(
@@ -260,30 +260,31 @@ fn fmt(args: &[String]) {
         }
     };
 
-    let mut lexer = Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(errors) => {
-            eprintln!("Lex error: {:?}", errors);
+    // The file must parse (reported like any other compiler diagnostic), but the
+    // formatting itself is layout-only: it keeps every token and comment.
+    let formatted = (|| -> Result<String, Failure> {
+        let mut lexer = Lexer::new(&source);
+        let tokens = lexer
+            .tokenize()
+            .map_err(|errors| Failure::errors(errors, "lex", Some(input_file)))?;
+        Parser::new(tokens)
+            .parse()
+            .map_err(|bag| Failure::errors(bag.errors, "parse", Some(input_file)))?;
+        tinox_parser::format_source(&source)
+            .map_err(|errors| Failure::errors(errors, "lex", Some(input_file)))
+    })();
+    let formatted = match formatted {
+        Ok(f) => f,
+        Err(failure) => {
+            diagnostics::finish(args, Err(failure));
             return;
         }
     };
-
-    let mut parser = Parser::new(tokens);
-    let ast = match parser.parse() {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("Parse error: {:?}", e);
-            return;
-        }
-    };
-
-    let mut formatter = Formatter::new();
-    let formatted = formatter.format(&ast);
 
     if write_mode {
         if let Err(e) = fs::write(input_file, &formatted) {
             eprintln!("error: cannot write '{}': {}", input_file, e);
+            std::process::exit(1);
         }
     } else {
         print!("{}", formatted);
@@ -2022,13 +2023,69 @@ fn check(args: &[String]) {
         diagnostics::finish(args, Err(Failure::new("driver", None, None, "No entry file found")));
         std::process::exit(1);
     });
-    let result = prepare_program(&input).and_then(|(ast, _)| {
-        let ann = tinox_typecheck::annotations::process_annotations(&ast);
-        validate_program_annotations(&ast, &ann, &input)?;
-        for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
-        Ok(())
+    let check_one = |input: &str| -> Result<(), Failure> {
+        prepare_program(input).and_then(|(ast, _)| {
+            let ann = tinox_typecheck::annotations::process_annotations(&ast);
+            validate_program_annotations(&ast, &ann, input)?;
+            for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
+            Ok(())
+        })
+    };
+    // Issue #475: without a file argument, check every source file of the
+    // project, not only the code reachable from the entry point.
+    let explicit_file = args.iter().enumerate().any(|(i, a)| {
+        !a.starts_with('-') && (i == 0 || !matches!(args[i - 1].as_str(), "-o" | "--output" | "--error-format"))
     });
-    diagnostics::finish_with_message(args, result, &format!("{input}: no errors"));
+    if !explicit_file {
+        let files = project_source_files(&input);
+        let mut diagnostics_all: Vec<tinox_common::diagnostic::Diagnostic> = Vec::new();
+        let mut seen_diagnostics: HashSet<String> = HashSet::new();
+        for file in &files {
+            if let Err(failure) = check_one(file) {
+                for d in failure.0 {
+                    if seen_diagnostics.insert(serde_json::to_string(&d).unwrap_or_default()) {
+                        diagnostics_all.push(d);
+                    }
+                }
+            }
+        }
+        let result = if diagnostics_all.is_empty() { Ok(()) } else { Err(Failure(diagnostics_all)) };
+        diagnostics::finish_with_message(args, result, &format!("checked {} source files: no errors", files.len()));
+        return;
+    }
+    diagnostics::finish_with_message(args, check_one(&input), &format!("{input}: no errors"));
+}
+
+/// The entry file plus every `.tnx` under the project's `src/` and `tests/`
+/// directories (the entry file's project = nearest `tinox.toml`).
+fn project_source_files(entry: &str) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if !name.starts_with('.') && name != "target" {
+                    walk(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "tnx") {
+                out.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let mut files = vec![entry.to_string()];
+    if let Some(root) = pm::find_project_root_from(Path::new(entry)) {
+        for sub in ["src", "tests"] {
+            walk(&root.join(sub), &mut files);
+        }
+    }
+    let mut seen = HashSet::new();
+    files.retain(|f| {
+        let canonical = fs::canonicalize(f).unwrap_or_else(|_| PathBuf::from(f));
+        seen.insert(canonical)
+    });
+    files
 }
 
 fn print_error(file: &str, lines: &[&str], span: tinox_common::Span, message: &str) {
@@ -3105,6 +3162,8 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     cg.set_migration_payload(test_migration_payload(db_cfg_test.as_ref()).map_err(|e| format!("changelog: {e}"))?);
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
+    cg.check_undefined_callees()
+        .map_err(|e| format!("codegen: {}", e.errors.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")))?;
 
     let ir = cg.into_ir();
     let ir_path = format!("{exe}.ll");
@@ -4934,6 +4993,9 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     codegen
         .gen(&ast)
         .map_err(|e| Failure::errors(e.errors, "codegen", Some(input_path)))?;
+    codegen
+        .check_undefined_callees()
+        .map_err(|e| Failure::errors(e.errors, "codegen", Some(input_path)))?;
 
     Ok(codegen)
 }
@@ -5320,7 +5382,7 @@ mod namespace_path_matches_tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.6.0\"\nname = \"t\"\n").unwrap();
+        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.7.0\"\nname = \"t\"\n").unwrap();
         if with_src {
             fs::create_dir_all(dir.join("src")).unwrap();
         }
@@ -5497,25 +5559,25 @@ mod read_project_entry_tests {
 
     #[test]
     fn entry_field_found() {
-        let toml = "[package]\ncompiler = \"2.6.0\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
     #[test]
     fn no_entry_field_returns_none() {
-        let toml = "[package]\ncompiler = \"2.6.0\"\nname = \"foo\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_outside_package_section_ignored() {
-        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.6.0\"\nname = \"foo\"\n";
+        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_field_whitespace_tolerant() {
-        let toml = "[package]\ncompiler = \"2.6.0\"\nentry=\"src/Main.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.7.0\"\nentry=\"src/Main.tnx\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
@@ -5526,7 +5588,7 @@ mod read_project_entry_tests {
     // of them (issue #257).
     #[test]
     fn undeclared_entry_prefers_capital_main_then_lowercase() {
-        let toml = "[package]\ncompiler = \"2.6.0\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
+        let toml = "[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
         assert_eq!(
             entry_candidates(toml),
             vec!["src/Main.tnx".to_string(), "src/main.tnx".to_string()]
@@ -5536,7 +5598,7 @@ mod read_project_entry_tests {
     #[test]
     fn declared_entry_is_the_only_candidate() {
         // No silent fallback to a default when an explicit entry is wrong.
-        let toml = "[package]\ncompiler = \"2.6.0\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
         assert_eq!(entry_candidates(toml), vec!["src/Cli.tnx".to_string()]);
     }
 }

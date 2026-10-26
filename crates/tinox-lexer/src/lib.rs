@@ -340,6 +340,16 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn tokenize(&mut self) -> Result<Vec<Token>, Vec<Error>> {
+        self.tokenize_impl(false)
+    }
+
+    /// Like `tokenize`, but keeps whitespace, newline and comment tokens
+    /// (used by the layout formatter, which must not lose comments).
+    pub fn tokenize_with_trivia(&mut self) -> Result<Vec<Token>, Vec<Error>> {
+        self.tokenize_impl(true)
+    }
+
+    fn tokenize_impl(&mut self, keep_trivia: bool) -> Result<Vec<Token>, Vec<Error>> {
         let mut tokens = Vec::new();
         let mut errors = Vec::new();
 
@@ -359,7 +369,7 @@ impl<'a> Lexer<'a> {
                 break;
             }
 
-            if !token.kind.is_trivia() {
+            if keep_trivia || !token.kind.is_trivia() {
                 tokens.push(token);
             }
         }
@@ -641,6 +651,14 @@ impl<'a> Lexer<'a> {
                     return Err(Error::new(self.mk_span(), "unterminated escape sequence"));
                 }
                 let escaped = self.read_escape()?;
+                // Strings are NUL-terminated C strings at runtime: an embedded
+                // NUL would silently truncate the literal (issue #472).
+                if escaped == '\0' {
+                    return Err(Error::new(
+                        self.mk_span(),
+                        "string literals cannot contain a NUL character (\\0 / \\x00): strings are NUL-terminated; use a List<Int64> of bytes for binary data",
+                    ));
+                }
                 current_str.push(escaped);
             } else {
                 current_str.push(ch);
@@ -1483,8 +1501,8 @@ mod tests {
 
     #[test]
     fn test_string_escape_null() {
-        let toks = lex_kinds(r#""\0""#);
-        assert!(matches!(&toks[0], TokenKind::String(s) if s == "\0"));
+        // A NUL would silently truncate the NUL-terminated runtime string (#472).
+        assert!(Lexer::new(r#""a\0b""#).tokenize().is_err());
     }
 
     // --- Interpolated strings ---
@@ -2085,8 +2103,7 @@ mod tests {
 
     #[test]
     fn test_string_escape_nul_char() {
-        let toks = lex_kinds(r#""\0""#);
-        assert!(matches!(&toks[0], TokenKind::String(s) if s.contains('\0')));
+        assert!(Lexer::new(r#""\x00""#).tokenize().is_err());
     }
 
     #[test]

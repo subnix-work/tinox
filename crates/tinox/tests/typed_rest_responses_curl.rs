@@ -59,7 +59,7 @@ fn verify(http3: bool) {
         copy_tree(&root.join("crates/tinox-core-ext").join(module).join("tinox"),
             &work.0.join(".tinox/deps/tinox.core").join(module).join("checkout/tinox"));
     }
-    std::fs::write(work.0.join("tinox.toml"), "[package]\ncompiler = \"2.6.0\"\nname = \"typed_response\"\nversion = \"0.0.0\"\n").unwrap();
+    std::fs::write(work.0.join("tinox.toml"), "[package]\ncompiler = \"2.7.0\"\nname = \"typed_response\"\nversion = \"0.0.0\"\n").unwrap();
     std::fs::write(work.0.join("Main.tnx"), "import Ctrl\nclass Main { fnc main() -> Int32 { return 0 } }\n").unwrap();
     std::fs::write(work.0.join("User.tnx"), "import tinox.core.json\n@JsonSerializable class User { var name: String }\n").unwrap();
     let tcp = TcpListener::bind("127.0.0.1:0").unwrap();

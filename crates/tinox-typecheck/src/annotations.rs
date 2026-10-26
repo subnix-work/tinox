@@ -1816,6 +1816,15 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
                 }
             }
             for method in &c.methods {
+                // Issue #475: a @Test method reports its result as a Bool.
+                if let Some(test) = method.annotations.iter().find(|a| a.name == "Test") {
+                    if !matches!(method.ret_type, Type::Bool) {
+                        errors.push(Error::new(
+                            test.span,
+                            format!("@Test method '{}' must return Bool (true = pass), but returns a different type", method.name),
+                        ));
+                    }
+                }
                 for hook in method.annotations.iter().filter(|a| {
                     matches!(
                         a.name.as_str(),
@@ -2320,8 +2329,14 @@ mod tests {
 
     #[test]
     fn test_validate_test_on_method_ok() {
-        let errors = valid("class Suite { @Test(\"should pass\")\nfn myTest() -> Nothing {} }");
+        let errors = valid("class Suite { @Test(\"should pass\")\nfn myTest() -> Bool { return true } }");
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_test_method_must_return_bool() {
+        let errors = valid("class Suite { @Test(\"should pass\")\nfn myTest() -> Nothing {} }");
+        assert!(errors.iter().any(|e| e.message.contains("must return Bool")), "{:?}", errors);
     }
 
     #[test]

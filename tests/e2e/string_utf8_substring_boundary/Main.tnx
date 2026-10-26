@@ -1,0 +1,19 @@
+// Regression test for #472: strings are byte strings; substring must not cut a
+// multi-byte UTF-8 character in half.
+// expect: 6
+// expect: h
+// expect: hé
+// expect: runtime error: substring [0, 2) splits a multi-byte UTF-8 character (offsets are bytes)
+// expect-exit: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        const s = "héllo"
+        println(s.len())
+        println(s.substring(0, 1))
+        println(s.substring(0, 3))
+        println(s.substring(0, 2))
+        return 0
+    }
+}

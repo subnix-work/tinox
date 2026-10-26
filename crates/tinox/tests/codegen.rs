@@ -634,7 +634,7 @@ fn test_try_catch() {
 fn main() -> Int64 {
     try {
         println("try")
-    } catch e: Int64 {
+    } catch e: String {
         println("catch")
     } finally {
         println("finally")

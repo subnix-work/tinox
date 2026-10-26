@@ -136,6 +136,10 @@ void tinox_print_int(int64_t val) {
     printf("%ld", val);
 }
 
+void tinox_print_uint(int64_t val) {
+    printf("%lu", (uint64_t)val);
+}
+
 void tinox_print_float(double val) {
     printf("%g", val);
 }
@@ -335,6 +339,10 @@ int64_t* tinox_array_new(int64_t len, int64_t cap) {
 // Checked integer division / modulo. Division by zero was LLVM UB (the optimizer
 // folded `10/0` to a garbage value); INT64_MIN/-1 overflows and is also UB. Both
 // are now a hard error / defined result instead of silent garbage.
+void tinox_shift_out_of_range(int64_t count, int64_t bits) {
+    fprintf(stderr, "runtime error: shift count %ld out of range for a %ld-bit value\n", (long)count, (long)bits);
+    exit(1);
+}
 int64_t tinox_checked_sdiv(int64_t a, int64_t b) {
     if (b == 0) {
         fprintf(stderr, "runtime error: division by zero\n");
@@ -363,6 +371,17 @@ int64_t tinox_array_get(int64_t* handle, int64_t idx) {
         exit(1);
     }
     return a->data[idx];
+}
+
+// Bounds check for index assignment (`a[i] = v`): a store past the end used to
+// write into adjacent heap memory.
+void tinox_array_check_index(int64_t* handle, int64_t idx) {
+    TinoxArray* a = (TinoxArray*)handle;
+    if (!a || idx < 0 || idx >= a->len) {
+        fprintf(stderr, "runtime error: array index out of bounds: %ld (length %ld)\n",
+                (long)idx, a ? (long)a->len : 0L);
+        exit(1);
+    }
 }
 
 // String functions
@@ -395,6 +414,17 @@ char* tinox_int_to_string(int64_t val) {
     return result;
 }
 
+char* tinox_uint_to_string(int64_t sval) {
+    uint64_t val = (uint64_t)sval;
+    char buf[32];
+    int len = 0;
+    do { buf[len++] = '0' + (val % 10); val /= 10; } while (val > 0);
+    char* result = malloc(len + 1);
+    for (int i = 0; i < len; i++) result[i] = buf[len - 1 - i];
+    result[len] = '\0';
+    return result;
+}
+
 char* tinox_float_to_string(double val) {
     char* result = malloc(40);
     // shortest representation that round-trips exactly
@@ -408,10 +438,12 @@ char* tinox_float_to_string(double val) {
 int64_t* tinox_array_slice(int64_t* h, int64_t from, int64_t to) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_slice");
     TinoxArray* a = (TinoxArray*)h;
-    if (from < 0) from = 0;
-    if (to > a->len) to = a->len;
+    if (from < 0 || to > a->len || from > to) {
+        fprintf(stderr, "runtime error: slice range out of bounds: [%ld, %ld) (length %ld)\n",
+                (long)from, (long)to, (long)a->len);
+        exit(1);
+    }
     int64_t len = to - from;
-    if (len < 0) len = 0;
     int64_t* nh = tinox_array_new(len, 0);
     if (len > 0) memcpy(((TinoxArray*)nh)->data, a->data + from, (size_t)len * sizeof(int64_t));
     return nh;
@@ -434,7 +466,11 @@ int64_t* tinox_array_push(int64_t* h, int64_t val) {
 int64_t* tinox_array_pop(int64_t* h) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_pop");
     TinoxArray* a = (TinoxArray*)h;
-    if (a->len > 0) a->len--;
+    if (a->len == 0) {
+        fprintf(stderr, "runtime error: pop() on an empty list\n");
+        exit(1);
+    }
+    a->len--;
     return h;
 }
 
@@ -463,12 +499,15 @@ char* tinox_json_list_serialize(int64_t* h, char* (*to_json)(void*)) {
     return out;
 }
 
-// Insert val at index idx (clamped to [0, len]), shifting the tail right.
+// Insert val at index idx (0..=len), shifting the tail right.
 int64_t* tinox_array_insert(int64_t* h, int64_t idx, int64_t val) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_insert");
     TinoxArray* a = (TinoxArray*)h;
-    if (idx < 0) idx = 0;
-    if (idx > a->len) idx = a->len;
+    if (idx < 0 || idx > a->len) {
+        fprintf(stderr, "runtime error: insert index out of bounds: %ld (length %ld)\n",
+                (long)idx, (long)a->len);
+        exit(1);
+    }
     if (a->len == a->cap) {
         int64_t ncap = a->cap < 4 ? 4 : a->cap * 2;
         int64_t* nd = (int64_t*)GC_malloc((size_t)ncap * sizeof(int64_t));
@@ -483,6 +522,12 @@ int64_t* tinox_array_insert(int64_t* h, int64_t idx, int64_t val) {
 }
 
 char* tinox_char_at(const char* s, int64_t i) {
+    int64_t len = s ? (int64_t)strlen(s) : 0;
+    if (i < 0 || i >= len) {
+        fprintf(stderr, "runtime error: string index out of bounds: %lld (length %lld)\n",
+                (long long)i, (long long)len);
+        exit(1);
+    }
     char* result = malloc(2);
     result[0] = s[i];
     result[1] = '\0';
@@ -501,21 +546,71 @@ void tinox_print_char(int32_t c) {
     printf("%c", (char)c);
 }
 
-int64_t tinox_string_to_int(const char* s) {
-    int64_t result = 0;
+// Strict whole-string integer parse (optional sign, digits only), with
+// overflow detection. Returns 1 and writes *out on success.
+static int tinox_parse_i64_strict(const char* s, int64_t* out) {
+    if (!s || !*s) return 0;
+    const char* p = s;
     int neg = 0;
-    if (*s == '-') { neg = 1; s++; }
-    while (*s >= '0' && *s <= '9') { result = result * 10 + (*s++ - '0'); }
-    return neg ? -result : result;
+    if (*p == '-' || *p == '+') { neg = (*p == '-'); p++; }
+    if (!*p) return 0; // just a sign, no digits
+    int64_t result = 0;
+    while (*p) {
+        if (*p < '0' || *p > '9') return 0;
+        int digit = *p - '0';
+        // Accumulate negatively so INT64_MIN is representable.
+        if (__builtin_mul_overflow(result, (int64_t)10, &result)) return 0;
+        if (__builtin_sub_overflow(result, (int64_t)digit, &result)) return 0;
+        p++;
+    }
+    if (!neg) {
+        if (result == INT64_MIN) return 0;
+        result = -result;
+    }
+    *out = result;
+    return 1;
 }
 
+// String.toInt(): aborts on anything that is not a complete, in-range
+// integer (use String.isInt() to validate untrusted input first).
+int64_t tinox_string_to_int(const char* s) {
+    int64_t v;
+    if (!tinox_parse_i64_strict(s, &v)) {
+        fprintf(stderr, "runtime error: cannot convert \"%s\" to Int64 (invalid or out of range)\n", s ? s : "(null)");
+        exit(1);
+    }
+    return v;
+}
+
+int64_t tinox_string_is_int(const char* s) {
+    int64_t v;
+    return tinox_parse_i64_strict(s, &v) ? 1 : 0;
+}
+
+static int tinox_parse_f64_strict(const char* s, double* out) {
+    if (!s || !*s) return 0;
+    char* end = NULL;
+    errno = 0;
+    double result = strtod(s, &end);
+    if (end == s || *end != '\0' || errno == ERANGE) return 0;
+    if (isspace((unsigned char)*s)) return 0; // strtod skips leading whitespace
+    *out = result;
+    return 1;
+}
+
+// String.toFloat(): aborts on invalid input (use String.isFloat() first).
 double tinox_string_to_float(const char* s) {
-    // strtod validates and stops at the first non-numeric char. The old
-    // hand-rolled parser did `result*10 + (*s - '0')` for EVERY char without a
-    // digit check, so "xyz" produced garbage (72→793→8004). strtod also handles
-    // scientific notation and leading +/-. Invalid input → 0.0.
-    if (!s) return 0.0;
-    return strtod(s, NULL);
+    double v;
+    if (!tinox_parse_f64_strict(s, &v)) {
+        fprintf(stderr, "runtime error: cannot convert \"%s\" to Float64 (invalid or out of range)\n", s ? s : "(null)");
+        exit(1);
+    }
+    return v;
+}
+
+int64_t tinox_string_is_float(const char* s) {
+    double v;
+    return tinox_parse_f64_strict(s, &v) ? 1 : 0;
 }
 
 // Strict variants for @PathParam/@QueryParam binding (emit_route_shim_body,
@@ -526,28 +621,11 @@ double tinox_string_to_float(const char* s) {
 // on failure (empty string or any non-numeric content), so the caller can
 // tell "absent/invalid" apart from "genuinely zero".
 int tinox_parse_int_checked(const char* s, int64_t* out) {
-    if (!s || !*s) return 0;
-    const char* p = s;
-    int neg = 0;
-    if (*p == '-' || *p == '+') { neg = (*p == '-'); p++; }
-    if (!*p) return 0; // just a sign, no digits
-    int64_t result = 0;
-    while (*p) {
-        if (*p < '0' || *p > '9') return 0;
-        result = result * 10 + (*p - '0');
-        p++;
-    }
-    *out = neg ? -result : result;
-    return 1;
+    return tinox_parse_i64_strict(s, out);
 }
 
 int tinox_parse_float_checked(const char* s, double* out) {
-    if (!s || !*s) return 0;
-    char* end = NULL;
-    double result = strtod(s, &end);
-    if (end == s || *end != '\0') return 0; // no digits consumed, or trailing garbage
-    *out = result;
-    return 1;
+    return tinox_parse_f64_strict(s, out);
 }
 
 int tinox_parse_bool_checked(const char* s, int* out) {
@@ -730,6 +808,32 @@ int64_t* tinox_array_sort(int64_t* h) {
     return nh;
 }
 
+// Natural-order sorts for String (by content) and Float64 (numerically) lists;
+// tinox_array_sort above compares the raw words as signed integers (#459).
+static int tinox_cmp_str_word(const void* a, const void* b) {
+    const char* x = (const char*)(intptr_t)*(const int64_t*)a;
+    const char* y = (const char*)(intptr_t)*(const int64_t*)b;
+    return strcmp(x, y);
+}
+static int tinox_cmp_f64_word(const void* a, const void* b) {
+    double x, y;
+    memcpy(&x, a, sizeof x);
+    memcpy(&y, b, sizeof y);
+    return (x > y) - (x < y);
+}
+static int64_t* tinox_array_sort_with(int64_t* h, int (*cmp)(const void*, const void*)) {
+    TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_sort");
+    TinoxArray* a = (TinoxArray*)h;
+    int64_t len = a->len;
+    int64_t* nh = tinox_array_new(len, 0);
+    int64_t* nd = ((TinoxArray*)nh)->data;
+    if (len > 0) memcpy(nd, a->data, (size_t)len * sizeof(int64_t));
+    if (len > 1) qsort(nd, (size_t)len, sizeof(int64_t), cmp);
+    return nh;
+}
+int64_t* tinox_array_sort_str(int64_t* h) { return tinox_array_sort_with(h, tinox_cmp_str_word); }
+int64_t* tinox_array_sort_f64(int64_t* h) { return tinox_array_sort_with(h, tinox_cmp_f64_word); }
+
 int64_t* tinox_array_reverse(int64_t* h) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_reverse");
     TinoxArray* a = (TinoxArray*)h;
@@ -772,7 +876,11 @@ int64_t tinox_array_index_of(int64_t* h, int64_t val) {
 int64_t* tinox_array_remove_at(int64_t* h, int64_t idx) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_removeAt");
     TinoxArray* a = (TinoxArray*)h;
-    if (idx < 0 || idx >= a->len) return h;
+    if (idx < 0 || idx >= a->len) {
+        fprintf(stderr, "runtime error: removeAt index out of bounds: %ld (length %ld)\n",
+                (long)idx, (long)a->len);
+        exit(1);
+    }
     for (int64_t i = idx; i < a->len - 1; i++) a->data[i] = a->data[i + 1];
     a->len--;
     return h;
@@ -2464,15 +2572,80 @@ int64_t tinox_string_char_code_at(const char* s, int64_t idx) {
     return (int64_t)(unsigned char)s[idx];
 }
 
+// 1 when the whole NUL-terminated string is well-formed UTF-8.
+static int tinox_utf8_valid(const unsigned char* s) {
+    while (*s) {
+        int n;
+        if (*s < 0x80) n = 1;
+        else if ((*s & 0xE0) == 0xC0 && *s >= 0xC2) n = 2;
+        else if ((*s & 0xF0) == 0xE0) n = 3;
+        else if ((*s & 0xF8) == 0xF0 && *s <= 0xF4) n = 4;
+        else return 0;
+        for (int i = 1; i < n; i++) if ((s[i] & 0xC0) != 0x80) return 0;
+        s += n;
+    }
+    return 1;
+}
+
 char* tinox_string_substring(const char* s, int64_t from, int64_t to) {
     int64_t len = (int64_t)strlen(s);
-    if (from < 0) from = 0;
-    if (to > len) to = len;
-    if (from >= to) { char* r = malloc(1); r[0] = '\0'; return r; }
+    if (from < 0 || to > len || from > to) {
+        fprintf(stderr, "runtime error: substring range out of bounds: [%lld, %lld) (length %lld)\n",
+                (long long)from, (long long)to, (long long)len);
+        exit(1);
+    }
+    // Strings are byte strings: slicing is by byte offset. Cutting through the
+    // middle of a multi-byte character of a valid UTF-8 string would silently
+    // produce invalid UTF-8, so that is an error (issue #472).
+    if (((from < len && ((unsigned char)s[from] & 0xC0) == 0x80) || (to < len && ((unsigned char)s[to] & 0xC0) == 0x80))
+        && tinox_utf8_valid((const unsigned char*)s)) {
+        fprintf(stderr, "runtime error: substring [%lld, %lld) splits a multi-byte UTF-8 character (offsets are bytes)\n",
+                (long long)from, (long long)to);
+        exit(1);
+    }
+    if (from == to) { char* r = malloc(1); r[0] = '\0'; return r; }
     int64_t slen = to - from;
     char* result = malloc(slen + 1);
     memcpy(result, s + from, slen);
     result[slen] = '\0';
+    return result;
+}
+
+char* tinox_string_repeat(const char* s, int64_t n) {
+    size_t len = strlen(s);
+    if (n < 0 || (len > 0 && (uint64_t)n > (uint64_t)INT32_MAX * 1024ULL / len)) {
+        fprintf(stderr, "runtime error: String.repeat count out of range: %lld\n", (long long)n);
+        exit(1);
+    }
+    char* result = malloc(len * (size_t)n + 1);
+    for (int64_t i = 0; i < n; i++) memcpy(result + (size_t)i * len, s, len);
+    result[len * (size_t)n] = '\0';
+    return result;
+}
+
+// Pads `s` to `width` bytes with repetitions of `pad` (truncated to fit) on the
+// left or right. A string already at least `width` long is returned unchanged.
+char* tinox_string_pad(const char* s, int64_t width, const char* pad, int64_t left) {
+    size_t len = strlen(s), plen = strlen(pad);
+    if (plen == 0) {
+        fprintf(stderr, "runtime error: String.pad* needs a non-empty pad string\n");
+        exit(1);
+    }
+    if (width < 0 || (uint64_t)width > (uint64_t)INT32_MAX * 1024ULL) {
+        fprintf(stderr, "runtime error: String.pad* width out of range: %lld\n", (long long)width);
+        exit(1);
+    }
+    size_t total = (size_t)width > len ? (size_t)width : len;
+    char* result = malloc(total + 1);
+    size_t fill = total - len;
+    if (left) {
+        for (size_t i = 0; i < fill; i++) result[i] = pad[i % plen];
+        memcpy(result + fill, s, len);
+    } else {
+        memcpy(result, s, len);
+        for (size_t i = 0; i < fill; i++) result[len + i] = pad[i % plen];
+    }
+    result[total] = '\0';
     return result;
 }
 
@@ -5168,11 +5341,98 @@ char* tinoxBytesToString(int64_t* bytes) {
 
 #include <regex.h>
 
+// tinox.core.regex dialect: POSIX extended regular expressions plus the Perl
+// style classes \d \D \s \S \w \W (translated below; \b \B come from glibc).
+// Backreferences, lookaround and lazy quantifiers are not supported.
+static char* tinox_regex_translate(const char* pattern) {
+    size_t n = strlen(pattern);
+    char* out = (char*)GC_malloc(n * 12 + 1);
+    size_t o = 0;
+    int in_bracket = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = pattern[i];
+        if (in_bracket) {
+            if (c == '\\' && i + 1 < n && strchr("dsw", pattern[i + 1])) {
+                const char* rep = pattern[i + 1] == 'd' ? "0-9" : pattern[i + 1] == 's' ? "[:space:]" : "[:alnum:]_";
+                size_t rl = strlen(rep);
+                memcpy(out + o, rep, rl);
+                o += rl;
+                i++;
+                continue;
+            }
+            if (c == '\\' && i + 1 < n && strchr("DSW", pattern[i + 1])) {
+                fprintf(stderr, "runtime error: invalid regular expression \"%s\": \\%c inside [...] is not supported\n", pattern, pattern[i + 1]);
+                exit(1);
+            }
+            if (c == '[' && i + 1 < n && pattern[i + 1] == ':') {
+                // copy a [:class:] whole
+                const char* end = strstr(pattern + i + 2, ":]");
+                if (end) {
+                    size_t len = (size_t)(end + 2 - (pattern + i));
+                    memcpy(out + o, pattern + i, len);
+                    o += len;
+                    i += len - 1;
+                    continue;
+                }
+            }
+            if (c == ']') in_bracket = 0;
+            out[o++] = c;
+            continue;
+        }
+        if (c == '\\' && i + 1 < n) {
+            const char* rep = NULL;
+            switch (pattern[i + 1]) {
+                case 'd': rep = "[0-9]"; break;
+                case 'D': rep = "[^0-9]"; break;
+                case 's': rep = "[[:space:]]"; break;
+                case 'S': rep = "[^[:space:]]"; break;
+                case 'w': rep = "[[:alnum:]_]"; break;
+                case 'W': rep = "[^[:alnum:]_]"; break;
+                default: break;
+            }
+            if (rep) {
+                size_t rl = strlen(rep);
+                memcpy(out + o, rep, rl);
+                o += rl;
+            } else {
+                out[o++] = c;
+                out[o++] = pattern[i + 1];
+            }
+            i++;
+            continue;
+        }
+        if (c == '[') {
+            in_bracket = 1;
+            out[o++] = c;
+            // a leading ^ and/or ] are literal parts of the bracket expression
+            if (i + 1 < n && pattern[i + 1] == '^') out[o++] = pattern[++i];
+            if (i + 1 < n && pattern[i + 1] == ']') out[o++] = pattern[++i];
+            continue;
+        }
+        out[o++] = c;
+    }
+    out[o] = '\0';
+    return out;
+}
+
+// Compiles `pattern` (see dialect above). An invalid pattern is a hard error:
+// it used to be indistinguishable from "no match" (issue #468).
+static void tinox_regcomp(regex_t* re, const char* pattern, int cflags) {
+    char* translated = tinox_regex_translate(pattern);
+    int rc = regcomp(re, translated, cflags);
+    if (rc != 0) {
+        char msg[200];
+        regerror(rc, re, msg, sizeof msg);
+        fprintf(stderr, "runtime error: invalid regular expression \"%s\": %s\n", pattern, msg);
+        exit(1);
+    }
+}
+
 int64_t regexIsMatch(int64_t pattern_i64, int64_t subject_i64) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return 0;
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
     int r = regexec(&re, subject, 0, NULL, 0);
     regfree(&re);
     return (r == 0) ? 1 : 0;
@@ -5183,7 +5443,7 @@ int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
     const char* subject = (const char*)subject_i64;
     int64_t* nh = tinox_array_new(0, 8);
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return (int64_t)nh;
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
     const char* s = subject;
     regmatch_t m;
     while (*s && regexec(&re, s, 1, &m, 0) == 0) {
@@ -5205,7 +5465,7 @@ int64_t regexReplace(int64_t pattern_i64, int64_t subject_i64, int64_t replaceme
     const char* replacement = (const char*)replacement_i64;
     // Simple replacement — replace first match
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return subject_i64;
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
     regmatch_t m;
     if (regexec(&re, subject, 1, &m, 0) != 0) { regfree(&re); return subject_i64; }
     size_t pre = m.rm_so, rep_len = strlen(replacement), suf = strlen(subject) - m.rm_eo;
@@ -5227,7 +5487,7 @@ int64_t regexFindFirst(int64_t pattern_i64, int64_t subject_i64) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return (int64_t)GC_strdup("");
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
     regmatch_t m;
     if (regexec(&re, subject, 1, &m, 0) != 0) {
         regfree(&re);
@@ -5248,7 +5508,7 @@ int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replac
     const char* subject = (const char*)subject_i64;
     const char* replacement = (const char*)replacement_i64;
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return subject_i64;
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
 
     size_t rep_len = strlen(replacement);
     size_t cap = strlen(subject) + rep_len + 16;
@@ -5311,7 +5571,7 @@ int64_t* regexMatchGroups(const char* pattern, const char* subject, int64_t offs
 
     regex_t re;
     int cflags = REG_EXTENDED | (icase ? REG_ICASE : 0);
-    if (regcomp(&re, pattern, cflags) != 0) return empty;
+    tinox_regcomp(&re, pattern, cflags);
 
     size_t ngroups = re.re_nsub + 1;
     regmatch_t* m = (regmatch_t*)GC_malloc(sizeof(regmatch_t) * ngroups);
@@ -8948,17 +9208,24 @@ int64_t* jsonGetArray(int64_t* value) {
 // (JsonValue::asList()) builds a real List<JsonValue> by looping these two.
 int64_t jsonArrayLen(int64_t* value) {
     TinoxJsonValue* v = (TinoxJsonValue*)value;
-    if (!v || v->type != JSON_ARRAY || !v->arr_val) return 0;
+    if (!v || (v->type != JSON_ARRAY && v->type != JSON_INT_ARRAY) || !v->arr_val) return 0;
     return v->arr_val[-1];
 }
 
 int64_t* jsonArrayGet(int64_t* value, int64_t index) {
     TinoxJsonValue* v = (TinoxJsonValue*)value;
-    int64_t len = (v && v->type == JSON_ARRAY && v->arr_val) ? v->arr_val[-1] : 0;
+    int is_arr = v && (v->type == JSON_ARRAY || v->type == JSON_INT_ARRAY) && v->arr_val;
+    int64_t len = is_arr ? v->arr_val[-1] : 0;
     if (!v || index < 0 || index >= len) {
         fprintf(stderr, "runtime error: JSON array index out of bounds: %lld (length %lld)\n",
                 (long long)index, (long long)len);
         exit(1);
+    }
+    if (v->type == JSON_INT_ARRAY) {
+        // Fast-path arrays store raw int64s; box the element as a JSON_INT value.
+        TinoxJsonValue* e = json_alloc(JSON_INT);
+        e->int_val = v->arr_val[index];
+        return (int64_t*)e;
     }
     return (int64_t*)(uintptr_t)v->arr_val[index];
 }
@@ -8969,7 +9236,7 @@ int64_t jsonIsInt(int64_t* value)    { return (value && ((TinoxJsonValue*)value)
 int64_t jsonIsFloat(int64_t* value)  { return (value && ((TinoxJsonValue*)value)->type == JSON_FLOAT)  ? 1 : 0; }
 int64_t jsonIsBool(int64_t* value)   { return (value && ((TinoxJsonValue*)value)->type == JSON_BOOL)   ? 1 : 0; }
 int64_t jsonIsObject(int64_t* value) { return (value && ((TinoxJsonValue*)value)->type == JSON_OBJECT) ? 1 : 0; }
-int64_t jsonIsArray(int64_t* value)  { return (value && ((TinoxJsonValue*)value)->type == JSON_ARRAY)  ? 1 : 0; }
+int64_t jsonIsArray(int64_t* value)  { return (value && (((TinoxJsonValue*)value)->type == JSON_ARRAY || ((TinoxJsonValue*)value)->type == JSON_INT_ARRAY)) ? 1 : 0; }
 
 int64_t* jsonGetField(int64_t* obj, const char* key) {
     TinoxJsonValue* v = (TinoxJsonValue*)obj;

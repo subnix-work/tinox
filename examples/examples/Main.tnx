@@ -255,7 +255,7 @@ class Main
     {
         for i in 0..10
         {
-            const fib: Int32 = fibonacci(i)
+            const fib: Int32 = fibonacci(i as Int32)
             print(fib)
             print(" ")
         }

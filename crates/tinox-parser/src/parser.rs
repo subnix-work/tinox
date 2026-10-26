@@ -3221,6 +3221,14 @@ impl Parser {
                     // resource's ObjectMeta.namespace) despite also being
                     // this language's `namespace { ... }` block keyword.
                     Keyword::Namespace => "namespace",
+                    Keyword::Static => return Err(Error::new(
+                        self.mk_span(),
+                        "`static` is not supported: declare static methods with `fnc`",
+                    )),
+                    Keyword::Ref => return Err(Error::new(
+                        self.mk_span(),
+                        "`ref` is a reserved word and cannot be used as an identifier; pick another name",
+                    )),
                     _ => return Err(Error::new(self.mk_span(), "expected identifier")),
                 };
                 self.bump();

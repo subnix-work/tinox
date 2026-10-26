@@ -1,0 +1,9 @@
+import Base
+
+class Mid extends Base
+{
+    fn hook() -> String
+    {
+        return "mid"
+    }
+}

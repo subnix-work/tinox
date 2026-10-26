@@ -1,0 +1,15 @@
+// Regression test for #473: a dynamic shift count outside 0..width aborts
+// instead of producing an LLVM poison value.
+// expect: 8
+// expect: runtime error: shift count 70 out of range for a 64-bit value
+// expect-exit: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        const sh = "70".toInt()
+        println(1 << 3)
+        println(1 << sh)
+        return 0
+    }
+}

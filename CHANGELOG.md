@@ -4,7 +4,7 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
-## [2.6.0] - 2026-10-24
+## [2.7.0] - 2026-10-25
 
 ### Changed (breaking)
 
@@ -13,6 +13,11 @@ All notable changes to Tinox are documented in this file.
   (`tinox new` writes it). An installed dependency declaring a different compiler
   version is rejected too. After bumping the workspace version run
   `scripts/set_compiler_version.py`.
+
+## [2.6.0] - 2026-10-24
+
+### Changed (breaking)
+
 - **Statements end at the end of the line; `;` is gone** (#445). A `;` that
   terminates a statement is a hard compile error with a migration hint, several
   statements on one line are rejected, and a statement continues on the next line

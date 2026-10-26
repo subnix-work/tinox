@@ -1,0 +1,33 @@
+// Regression test for #455: this.method() and calls through a base-class
+// typed value dispatch on the dynamic class.
+// expect: b:base:1
+// expect: m:mid:1
+// expect: l:leaf+mid:3
+// expect: b:base:1
+// expect: m:mid:1
+// expect: l:leaf+mid:3
+import Base
+import Mid
+import Leaf
+
+class Main
+{
+    fnc show(x: Base) -> Nothing
+    {
+        println(x.run())
+    }
+
+    fnc main() -> Int32
+    {
+        const b = Base { name: "b" }
+        const m = Mid { name: "m" }
+        const l = Leaf { name: "l" }
+        println(b.run())
+        println(m.run())
+        println(l.run())
+        Main::show(b)
+        Main::show(m)
+        Main::show(l)
+        return 0
+    }
+}

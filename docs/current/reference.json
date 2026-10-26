@@ -629,6 +629,8 @@
     "String_contains": "(s: String, p: String) -> Bool",
     "String_endsWith": "(s: String, p: String) -> Bool",
     "String_indexOf": "(s: String, p: String) -> Int64",
+    "String_isFloat": "(s: String) -> Bool",
+    "String_isInt": "(s: String) -> Bool",
     "String_lastIndexOf": "(s: String, p: String) -> Int64",
     "String_len": "(s: String) -> Int64",
     "String_padLeft": "(s: String, n: Int64, c: String) -> String",
@@ -883,7 +885,7 @@
     "zipListEntries": "(path: String) -> Array",
     "zipRemoveFile": "(path: String) -> Nothing"
   },
-  "compiler_version": "2.6.0",
+  "compiler_version": "2.7.0",
   "schema_version": 1,
   "sources": {}
 }
