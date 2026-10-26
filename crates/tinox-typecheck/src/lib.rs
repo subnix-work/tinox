@@ -3776,6 +3776,17 @@ impl TypeChecker {
                 // (`arr: any_array()`) is deliberately permissive for
                 // element type, so this can't be caught by the generic
                 // arg-type-compatibility loop below.
+                // Issue #429: len/contains/indexOf over a scalar reached codegen
+                // as an LLVM type error. Reject at the source level.
+                if matches!(name.as_str(), "len" | "contains" | "indexOf") && !args.is_empty() {
+                    let container = self.infer_type(&args[0]);
+                    if matches!(container, ValueType::Int | ValueType::Float | ValueType::Bool) {
+                        self.errors.push(Error::new(
+                            args[0].span,
+                            format!("{}() expects a String, List or Map, found {}", name, container.display()),
+                        ));
+                    }
+                }
                 // Issue #469: printing a List/Map used to print the raw
                 // handle address as an integer. Reject at compile time.
                 if (name == "println" || name == "print") && args.len() == 1 {

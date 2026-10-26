@@ -3105,6 +3105,8 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     cg.set_migration_payload(test_migration_payload(db_cfg_test.as_ref()).map_err(|e| format!("changelog: {e}"))?);
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
+    cg.check_undefined_callees()
+        .map_err(|e| format!("codegen: {}", e.errors.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")))?;
 
     let ir = cg.into_ir();
     let ir_path = format!("{exe}.ll");
@@ -4933,6 +4935,9 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     }
     codegen
         .gen(&ast)
+        .map_err(|e| Failure::errors(e.errors, "codegen", Some(input_path)))?;
+    codegen
+        .check_undefined_callees()
         .map_err(|e| Failure::errors(e.errors, "codegen", Some(input_path)))?;
 
     Ok(codegen)

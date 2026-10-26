@@ -1495,6 +1495,69 @@ impl CodeGen {
     }
 
     pub fn gen(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
+        self.gen_inner(source)
+    }
+
+    /// Issue #429: a builtin that the type checker advertises but codegen
+    /// never implemented used to reach LLVM as a call to an undefined
+    /// symbol ("internal compiler error: generated invalid LLVM IR").
+    /// Report it as a normal diagnostic instead.
+    pub fn check_undefined_callees(&self) -> Result<(), ErrorBag> {
+        fn symbol_after(line: &str, from: usize) -> Option<&str> {
+            let rest = &line[from..];
+            let at = rest.find('@')?;
+            let name = &rest[at + 1..];
+            if name.starts_with('"') {
+                return None;
+            }
+            let end = name
+                .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$' | '-')))
+                .unwrap_or(name.len());
+            Some(&name[..end])
+        }
+        let mut defined: HashSet<&str> = HashSet::new();
+        for text in [&self.ir, &self.lambda_ir] {
+            for line in text.lines() {
+                if line.starts_with("define ") || line.starts_with("declare ") {
+                    if let Some(name) = symbol_after(line, 0) {
+                        defined.insert(name);
+                    }
+                }
+            }
+        }
+        let mut missing: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for text in [&self.ir, &self.lambda_ir] {
+            for line in text.lines() {
+                let trimmed = line.trim_start();
+                let call_at = if trimmed.starts_with("call ") {
+                    Some(0)
+                } else {
+                    trimmed.find(" = call ").map(|i| i + " = ".len())
+                };
+                let Some(call_at) = call_at else { continue };
+                if let Some(name) = symbol_after(trimmed, call_at + "call ".len()) {
+                    if !name.is_empty() && !defined.contains(name) && !name.starts_with("llvm.") {
+                        missing.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let mut bag = ErrorBag::new();
+        bag.push(Error::new(
+            Span::dummy(),
+            format!(
+                "unsupported builtin: {} {} advertised by the type checker but not implemented by the code generator",
+                missing.iter().cloned().collect::<Vec<_>>().join(", "),
+                if missing.len() == 1 { "is" } else { "are" }
+            ),
+        ));
+        Err(bag)
+    }
+
+    fn gen_inner(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
         if !self.semantics.ambiguous_declarations.is_empty() {
             let mut symbols: Vec<_> = self.semantics.ambiguous_declarations.iter().collect();
             symbols.sort_by_key(|(symbol, _)| *symbol);
@@ -1564,6 +1627,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_bool_to_string(i1)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_to_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare double @tinox_string_to_float(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_repeat(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_pad(i8*, i64, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_is_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_is_float(i8*)").unwrap();
         // Strict @PathParam/@QueryParam conversion + bare-string JSON
@@ -5585,6 +5650,17 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
+    /// Converts an integer-typed LLVM value to `double` for the math builtins
+    /// (`floor(1)`, `pow(2, 3)`, ...), which are declared over doubles.
+    fn int_to_double_if_needed(&mut self, val: String, ty: &str) -> String {
+        if !matches!(ty, "i64" | "i32" | "i16" | "i8") {
+            return val;
+        }
+        let c = self.temp();
+        writeln!(&mut self.ir, "{} = sitofp {} {} to double", c, ty, val).unwrap();
+        c
+    }
+
     pub fn into_ir(self) -> String {
         // Splice generic-specialization struct types in at the marker (before any
         // function body) so they're defined before their getelementptr uses.
@@ -9601,7 +9677,8 @@ tr_done_{idx}:"#).unwrap();
                             }
                         }
                         "sqrt" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @sqrt(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
@@ -9619,13 +9696,15 @@ tr_done_{idx}:"#).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "log" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @log(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "exp" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @exp(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
@@ -9705,26 +9784,31 @@ tr_done_{idx}:"#).unwrap();
                             return Ok((result, "i8*".to_string()));
                         }
                         "pow" => {
-                            let (base, _) = self.gen_expr(&args[0], ctx)?;
-                            let (exp, _) = self.gen_expr(&args[1], ctx)?;
+                            let (base, base_ty) = self.gen_expr(&args[0], ctx)?;
+                            let (exp, exp_ty) = self.gen_expr(&args[1], ctx)?;
+                            let base = self.int_to_double_if_needed(base, &base_ty);
+                            let exp = self.int_to_double_if_needed(exp, &exp_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @pow(double {}, double {})", result, base, exp).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "floor" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @llvm.floor.f64(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "ceil" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @llvm.ceil.f64(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "round" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @llvm.round.f64(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
@@ -10631,6 +10715,23 @@ tr_done_{idx}:"#).unwrap();
                     }
                 }
 
+                // Int64.toFloat(): handled before the String dispatch below, which
+                // would otherwise reinterpret an i64 receiver as a string pointer.
+                if method == "toFloat"
+                    && args.is_empty()
+                    && matches!(obj_ty.as_str(), "i64" | "i32" | "i16" | "i8")
+                    && self.semantic_type(obj.id).is_some_and(|t| t.is_integer())
+                {
+                    let wide = if obj_ty == "i64" { obj_ptr.clone() } else {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = sext {} {} to i64", c, obj_ty, obj_ptr).unwrap();
+                        c
+                    };
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "{} = sitofp i64 {} to double", result, wide).unwrap();
+                    return Ok((result, "double".to_string()));
+                }
+
                 // String method dispatch (obj_ty == "i8*", or i64 stored string pointer)
                 let str_methods = ["len","toUpper","toUpperCase","toLower","toLowerCase",
                     "trim","contains","startsWith","endsWith","split","substring","indexOf",
@@ -10773,6 +10874,27 @@ tr_done_{idx}:"#).unwrap();
                             writeln!(&mut self.ir, "{} = call double @tinox_string_to_float(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "double".to_string()));
                         }
+                        "toString" if args.is_empty() => {
+                            return Ok((obj_ptr.clone(), "i8*".to_string()));
+                        }
+                        "repeat" => {
+                            let (n, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_repeat(i8* {}, i64 {})", result, obj_ptr, n).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "padLeft" | "padRight" => {
+                            let (width, _) = self.gen_expr(&args[0], ctx)?;
+                            let (pad, pad_ty) = self.gen_expr(&args[1], ctx)?;
+                            let pad = if pad_ty == "i8*" { pad } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, pad).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_pad(i8* {}, i64 {}, i8* {}, i64 {})", result, obj_ptr, width, pad, if method == "padLeft" { 1 } else { 0 }).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
                         "isInt" | "isFloat" => {
                             let rt = if method == "isInt" { "tinox_string_is_int" } else { "tinox_string_is_float" };
                             let raw = self.temp();
@@ -10853,6 +10975,27 @@ tr_done_{idx}:"#).unwrap();
                         // have no `.toInt()` method registered in typecheck at
                         // all (correctly rejected at the typecheck stage, not a
                         // bug), so there is nothing else for this arm to cover.
+                        "abs" | "floor" | "ceil" | "round" if args.is_empty() && obj_ty == "double" => {
+                            let intrinsic = match method.as_str() {
+                                "abs" => "llvm.fabs.f64",
+                                "floor" => "llvm.floor.f64",
+                                "ceil" => "llvm.ceil.f64",
+                                _ => "llvm.round.f64",
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @{}(double {})", result, intrinsic, obj_ptr).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "toFloat" if args.is_empty() && obj_ty != "double" && obj_ty != "i1" => {
+                            let wide = if obj_ty == "i64" { obj_ptr.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = sext {} {} to i64", c, obj_ty, obj_ptr).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = sitofp i64 {} to double", result, wide).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
                         "toInt" if args.is_empty() && obj_ty == "double" => {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = fptosi double {} to i64", result, obj_ptr).unwrap();
@@ -16485,6 +16628,20 @@ mod tests {
     use super::*;
     use tinox_lexer::Lexer;
     use tinox_parser::Parser;
+
+    #[test]
+    fn test_unimplemented_builtin_is_a_diagnostic_not_an_ice() {
+        // A call to a symbol that is neither defined nor declared must be
+        // reported by the code generator itself (issue #429).
+        let mut lexer = Lexer::new("fn f() -> Int64 { return noSuchBuiltinXyz(1) }\n");
+        let tokens = lexer.tokenize().expect("lex failed");
+        let ast = Parser::new(tokens).parse().expect("parse failed");
+        let mut cg = CodeGen::new();
+        cg.gen(&ast).expect("codegen failed");
+        let err = cg.check_undefined_callees().expect_err("must fail");
+        assert!(err.errors[0].message.contains("noSuchBuiltinXyz"), "{:?}", err.errors);
+        assert!(err.errors[0].message.contains("not implemented"));
+    }
 
     fn compile_to_ir(src: &str) -> String {
         let mut lexer = Lexer::new(src);

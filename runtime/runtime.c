@@ -2568,6 +2568,44 @@ char* tinox_string_substring(const char* s, int64_t from, int64_t to) {
     return result;
 }
 
+char* tinox_string_repeat(const char* s, int64_t n) {
+    size_t len = strlen(s);
+    if (n < 0 || (len > 0 && (uint64_t)n > (uint64_t)INT32_MAX * 1024ULL / len)) {
+        fprintf(stderr, "runtime error: String.repeat count out of range: %lld\n", (long long)n);
+        exit(1);
+    }
+    char* result = malloc(len * (size_t)n + 1);
+    for (int64_t i = 0; i < n; i++) memcpy(result + (size_t)i * len, s, len);
+    result[len * (size_t)n] = '\0';
+    return result;
+}
+
+// Pads `s` to `width` bytes with repetitions of `pad` (truncated to fit) on the
+// left or right. A string already at least `width` long is returned unchanged.
+char* tinox_string_pad(const char* s, int64_t width, const char* pad, int64_t left) {
+    size_t len = strlen(s), plen = strlen(pad);
+    if (plen == 0) {
+        fprintf(stderr, "runtime error: String.pad* needs a non-empty pad string\n");
+        exit(1);
+    }
+    if (width < 0 || (uint64_t)width > (uint64_t)INT32_MAX * 1024ULL) {
+        fprintf(stderr, "runtime error: String.pad* width out of range: %lld\n", (long long)width);
+        exit(1);
+    }
+    size_t total = (size_t)width > len ? (size_t)width : len;
+    char* result = malloc(total + 1);
+    size_t fill = total - len;
+    if (left) {
+        for (size_t i = 0; i < fill; i++) result[i] = pad[i % plen];
+        memcpy(result + fill, s, len);
+    } else {
+        memcpy(result, s, len);
+        for (size_t i = 0; i < fill; i++) result[len + i] = pad[i % plen];
+    }
+    result[total] = '\0';
+    return result;
+}
+
 char* tinox_string_replace(const char* s, const char* from, const char* to) {
     if (!from || !*from) { size_t l = strlen(s); char* r = malloc(l+1); memcpy(r,s,l+1); return r; }
     size_t flen = strlen(from), tlen = strlen(to), slen = strlen(s);
