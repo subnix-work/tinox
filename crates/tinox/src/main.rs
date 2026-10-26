@@ -2023,13 +2023,69 @@ fn check(args: &[String]) {
         diagnostics::finish(args, Err(Failure::new("driver", None, None, "No entry file found")));
         std::process::exit(1);
     });
-    let result = prepare_program(&input).and_then(|(ast, _)| {
-        let ann = tinox_typecheck::annotations::process_annotations(&ast);
-        validate_program_annotations(&ast, &ann, &input)?;
-        for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
-        Ok(())
+    let check_one = |input: &str| -> Result<(), Failure> {
+        prepare_program(input).and_then(|(ast, _)| {
+            let ann = tinox_typecheck::annotations::process_annotations(&ast);
+            validate_program_annotations(&ast, &ann, input)?;
+            for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
+            Ok(())
+        })
+    };
+    // Issue #475: without a file argument, check every source file of the
+    // project, not only the code reachable from the entry point.
+    let explicit_file = args.iter().enumerate().any(|(i, a)| {
+        !a.starts_with('-') && (i == 0 || !matches!(args[i - 1].as_str(), "-o" | "--output" | "--error-format"))
     });
-    diagnostics::finish_with_message(args, result, &format!("{input}: no errors"));
+    if !explicit_file {
+        let files = project_source_files(&input);
+        let mut diagnostics_all: Vec<tinox_common::diagnostic::Diagnostic> = Vec::new();
+        let mut seen_diagnostics: HashSet<String> = HashSet::new();
+        for file in &files {
+            if let Err(failure) = check_one(file) {
+                for d in failure.0 {
+                    if seen_diagnostics.insert(serde_json::to_string(&d).unwrap_or_default()) {
+                        diagnostics_all.push(d);
+                    }
+                }
+            }
+        }
+        let result = if diagnostics_all.is_empty() { Ok(()) } else { Err(Failure(diagnostics_all)) };
+        diagnostics::finish_with_message(args, result, &format!("checked {} source files: no errors", files.len()));
+        return;
+    }
+    diagnostics::finish_with_message(args, check_one(&input), &format!("{input}: no errors"));
+}
+
+/// The entry file plus every `.tnx` under the project's `src/` and `tests/`
+/// directories (the entry file's project = nearest `tinox.toml`).
+fn project_source_files(entry: &str) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if !name.starts_with('.') && name != "target" {
+                    walk(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "tnx") {
+                out.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let mut files = vec![entry.to_string()];
+    if let Some(root) = pm::find_project_root_from(Path::new(entry)) {
+        for sub in ["src", "tests"] {
+            walk(&root.join(sub), &mut files);
+        }
+    }
+    let mut seen = HashSet::new();
+    files.retain(|f| {
+        let canonical = fs::canonicalize(f).unwrap_or_else(|_| PathBuf::from(f));
+        seen.insert(canonical)
+    });
+    files
 }
 
 fn print_error(file: &str, lines: &[&str], span: tinox_common::Span, message: &str) {
