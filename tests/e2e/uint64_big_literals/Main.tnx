@@ -1,0 +1,18 @@
+// Regression test for #473: decimal literals above Int64::MAX are UInt64 values.
+// expect: 18446744073709551615
+// expect: 9223372036854775807
+// expect: true
+// expect: 14695981039346656037
+class Main
+{
+    fnc main() -> Int32
+    {
+        const u: UInt64 = 18446744073709551615
+        println(u)
+        println(u / 2)
+        println(u > 1)
+        const h: UInt64 = 14695981039346656037
+        println(h)
+        return 0
+    }
+}

@@ -1,0 +1,28 @@
+// Regression test for #473: arithmetic with an integer literal is computed in
+// the declared width of the other operand, so narrow types wrap there instead
+// of being widened to 64 bits and truncated only on store.
+// expect: -128
+// expect: -128
+// expect: 0
+// expect: -2147483648
+// expect: -2
+// expect: -128
+class Main
+{
+    fnc main() -> Int32
+    {
+        const a: Int8 = 127
+        const c = a + 1
+        println(c)
+        const d: Int8 = a + 1
+        println(d)
+        const u: UInt8 = 255
+        println(u + 1)
+        const x: Int32 = 2147483647
+        println(x + 1)
+        println(x * 2)
+        const m: Int8 = -128
+        println(m / -1)
+        return 0
+    }
+}

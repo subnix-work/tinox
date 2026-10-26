@@ -2320,6 +2320,14 @@ impl Parser {
                 self.expect(TokenKind::RBracket)?;
                 Ok(Spanned::new(ExprKind::ArrayLiteral(elements), token.span))
             }
+            TokenKind::BigInteger(n) => {
+                // Above Int64::MAX: carry the bit pattern as an Int64 literal and
+                // reinterpret it as UInt64, the only type that can hold it.
+                let bits = *n as i64;
+                self.bump();
+                let literal = Spanned::new(ExprKind::Literal(Literal::Integer(bits)), token.span);
+                Ok(Spanned::new(ExprKind::Cast { expr: Box::new(literal), ty: Type::UInt64 }, token.span))
+            }
             TokenKind::Integer(n) => {
                 self.bump();
                 Ok(Spanned::new(

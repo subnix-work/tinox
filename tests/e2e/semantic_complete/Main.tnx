@@ -2,7 +2,7 @@ import Cell
 import Tools
 import Scalar
 import Reading
-// expect: 256
+// expect: 0
 // expect: 3.5
 // expect: 127
 // expect: true
@@ -15,7 +15,7 @@ import Reading
 // expect: 1.5
 // expect: 2.5
 // expect: 2.5
-// expect: 256
+// expect: 0
 // expect: 1.5
 // expect: 2
 // expect: 1.5

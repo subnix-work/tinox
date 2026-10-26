@@ -191,7 +191,7 @@ fn graph(
     }
     synthesize_accessors(&mut program, &roots[0].to_string_lossy())?;
     tinox_parser::assign_node_ids(&mut program);
-    tinox_typecheck::cache::check_program_cached(&program)
+    tinox_typecheck::cache::check_program_cached(&program, None)
         .map_err(|e| format!("Type error:\n{e}"))?;
 
     let mut paths: Vec<_> = visited.into_iter().collect();
