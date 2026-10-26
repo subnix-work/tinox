@@ -2566,6 +2566,19 @@ impl TypeChecker {
                 let body_returns = self.check_stmt(body);
                 let mut catches_return = true;
                 for catch in catches {
+                    // Issue #436: only String can be thrown, so a clause for
+                    // any other type could never match yet used to catch
+                    // everything and re-type the value.
+                    let catch_ty = Self::type_to_value(&catch.ty);
+                    if catch_ty != ValueType::String && catch_ty != ValueType::Any {
+                        self.errors.push(Error::new(
+                            catch.span,
+                            format!(
+                                "catch clause type must be String (the only throwable type), found {}",
+                                catch_ty.display()
+                            ),
+                        ));
+                    }
                     self.symbols
                         .variables
                         .insert(catch.param.clone(), (Self::type_to_value(&catch.ty), false));
@@ -6947,6 +6960,12 @@ return 0 }");
             "  }\n",
             "}"
         ));
+    }
+
+    #[test]
+    fn test_catch_clause_type_must_be_string() {
+        err_contains("fn f() { try { throw \"a\" } catch e: Int64 { } }", "catch clause type must be String");
+        ok("fn g() { try { throw \"a\" } catch e: String { } }");
     }
 
     #[test]
