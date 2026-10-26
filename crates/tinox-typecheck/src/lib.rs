@@ -3939,10 +3939,6 @@ impl TypeChecker {
         ValueType::Any
     }
 
-    /// Binds pattern variables with the type of the matched value:
-    /// enum-payload arguments get the declared payload types (from
-    /// enum_variant_payloads), top-level idents get the scrutinee type.
-    /// Unknowns stay Any.
     // --- Definite-return / reachability analysis (issues #426, #427) ---
 
     /// True when `stmt` can never complete normally (return/throw on every
@@ -4078,6 +4074,10 @@ impl TypeChecker {
         Err(Vec::new())
     }
 
+    /// Binds pattern variables with the type of the matched value:
+    /// enum-payload arguments get the declared payload types (from
+    /// enum_variant_payloads), top-level idents get the scrutinee type.
+    /// Unknowns stay Any.
     fn bind_pattern_vars(&mut self, pattern: &Pattern, scrutinee: &ValueType) {
         match pattern {
             Pattern::Ident(name, inner, _) => {

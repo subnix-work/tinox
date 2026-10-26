@@ -260,30 +260,31 @@ fn fmt(args: &[String]) {
         }
     };
 
-    let mut lexer = Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(errors) => {
-            eprintln!("Lex error: {:?}", errors);
+    // The file must parse (reported like any other compiler diagnostic), but the
+    // formatting itself is layout-only: it keeps every token and comment.
+    let formatted = (|| -> Result<String, Failure> {
+        let mut lexer = Lexer::new(&source);
+        let tokens = lexer
+            .tokenize()
+            .map_err(|errors| Failure::errors(errors, "lex", Some(input_file)))?;
+        Parser::new(tokens)
+            .parse()
+            .map_err(|bag| Failure::errors(bag.errors, "parse", Some(input_file)))?;
+        tinox_parser::format_source(&source)
+            .map_err(|errors| Failure::errors(errors, "lex", Some(input_file)))
+    })();
+    let formatted = match formatted {
+        Ok(f) => f,
+        Err(failure) => {
+            diagnostics::finish(args, Err(failure));
             return;
         }
     };
-
-    let mut parser = Parser::new(tokens);
-    let ast = match parser.parse() {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("Parse error: {:?}", e);
-            return;
-        }
-    };
-
-    let mut formatter = Formatter::new();
-    let formatted = formatter.format(&ast);
 
     if write_mode {
         if let Err(e) = fs::write(input_file, &formatted) {
             eprintln!("error: cannot write '{}': {}", input_file, e);
+            std::process::exit(1);
         }
     } else {
         print!("{}", formatted);

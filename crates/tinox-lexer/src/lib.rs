@@ -340,6 +340,16 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn tokenize(&mut self) -> Result<Vec<Token>, Vec<Error>> {
+        self.tokenize_impl(false)
+    }
+
+    /// Like `tokenize`, but keeps whitespace, newline and comment tokens
+    /// (used by the layout formatter, which must not lose comments).
+    pub fn tokenize_with_trivia(&mut self) -> Result<Vec<Token>, Vec<Error>> {
+        self.tokenize_impl(true)
+    }
+
+    fn tokenize_impl(&mut self, keep_trivia: bool) -> Result<Vec<Token>, Vec<Error>> {
         let mut tokens = Vec::new();
         let mut errors = Vec::new();
 
@@ -359,7 +369,7 @@ impl<'a> Lexer<'a> {
                 break;
             }
 
-            if !token.kind.is_trivia() {
+            if keep_trivia || !token.kind.is_trivia() {
                 tokens.push(token);
             }
         }
