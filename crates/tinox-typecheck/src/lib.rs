@@ -4280,6 +4280,12 @@ impl TypeChecker {
             }
         }
         if let Some(en) = enum_name {
+            // An arm naming a variant this enum lacks means the enum name
+            // resolved ambiguously (same-named enums in different modules):
+            // do not guess, skip the check.
+            if covered.iter().any(|c| !self.enums[&en].contains(c)) {
+                return Ok(());
+            }
             let missing: Vec<String> = self.enums[&en].iter().filter(|v| !covered.contains(*v)).cloned().collect();
             return if missing.is_empty() { Ok(()) } else { Err(missing) };
         }
