@@ -1542,7 +1542,7 @@ mod repl_semantics_tests {
     fn repl_preserves_checked_generic_types_and_numeric_promotions() {
         let source = "fn identity<T>(value: T) -> T { return value } fn main() -> Int64 { const byte: UInt8 = 255\nprintln(identity(byte) + 1)\nprintln(identity(1.5))\nreturn 0 }";
         let output = super::repl_compile_and_run(source, std::process::id() as usize).unwrap();
-        assert_eq!(output.trim(), "256\n1.5");
+        assert_eq!(output.trim(), "0\n1.5");
     }
 
 }
@@ -2495,6 +2495,10 @@ fn gen_call_graph(args: &[String]) {
 
     tinox_parser::assign_node_ids(&mut ast);
     let mut typechecker = tinox_typecheck::TypeChecker::new();
+    if let Ok(entry) = Path::new(&input_file).canonicalize() {
+        let root = pm::find_project_root_from(&entry).or_else(|| entry.parent().map(Path::to_path_buf));
+        if let Some(root) = root { typechecker.set_project_root(root); }
+    }
     if let Err(e) = typechecker.check(&ast) {
         eprintln!("error: type error:\n{}", e);
         std::process::exit(1);
@@ -2997,7 +3001,7 @@ fn highlight_tinox_source(src: &str) -> String {
         let class = match &tok.kind {
             TokenKind::Keyword(_) | TokenKind::Bool(_) => Some("kw"),
             TokenKind::String(_) | TokenKind::RawString(_) | TokenKind::InterpString(_) | TokenKind::Char(_) => Some("str"),
-            TokenKind::Integer(_) | TokenKind::Float(_) | TokenKind::IntegerSuffix(_) | TokenKind::FloatSuffix(_) => Some("num"),
+            TokenKind::Integer(_) | TokenKind::BigInteger(_) | TokenKind::Float(_) | TokenKind::IntegerSuffix(_) | TokenKind::FloatSuffix(_) => Some("num"),
             TokenKind::Comment(_) | TokenKind::DocComment(_) => Some("cmt"),
             TokenKind::Ident(name) if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) => Some("type"),
             _ => None,
@@ -4474,8 +4478,12 @@ fn prepare_program(input_path: &str) -> Result<(tinox_parser::SourceFile, tinox_
     // NodeIds for the type table (typecheck → codegen)
     tinox_parser::assign_node_ids(&mut ast);
 
-    let checked = tinox_typecheck::cache::check_program_cached(&ast)
+    let project_root = Path::new(input_path).canonicalize().ok().and_then(|entry| {
+        pm::find_project_root_from(&entry).or_else(|| entry.parent().map(Path::to_path_buf))
+    });
+    let checked = tinox_typecheck::cache::check_program_cached(&ast, project_root.as_deref())
         .map_err(|e| Failure::errors(e.errors, "type", Some(input_path)))?;
+    for warning in &checked.warnings { eprintln!("warning: {warning}"); }
     Ok((ast, checked))
 }
 

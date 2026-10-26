@@ -1,7 +1,7 @@
 //! Explicit semantic facts carried across the cached frontend/lowering boundary.
 use crate::{TypeChecker, ValueType};
 use std::collections::HashMap;
-use tinox_parser::{Expr, ExprKind, Type};
+use tinox_parser::{Expr, ExprKind, Literal, Type, UnaryOp};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedCall {
@@ -69,6 +69,38 @@ pub struct NumericOperation {
 impl ValueType {
     pub fn with_bindings(&self, bindings: &HashMap<String, ValueType>) -> Self {
         TypeChecker::substitute_bindings(self, bindings)
+    }
+
+    /// Operand type of a binary operation when one side is an integer literal:
+    /// the literal adopts the other operand's narrower integer type (`Int8 + 1`
+    /// stays `Int8`) as long as its value fits. `None` falls back to the general
+    /// promotion.
+    pub fn literal_adapted_promotion(left: &Self, lhs: &Expr, right: &Self, rhs: &Expr) -> Option<Self> {
+        fn literal(e: &Expr) -> Option<i128> {
+            match &e.node {
+                ExprKind::Literal(Literal::Integer(v)) => Some(*v as i128),
+                ExprKind::Unary { op: UnaryOp::Neg, operand } => match &operand.node {
+                    ExprKind::Literal(Literal::Integer(v)) => Some(-(*v as i128)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+        fn fits(ty: &ValueType, v: i128) -> bool {
+            match ty {
+                ValueType::Integer { bits, signed: true } => {
+                    let b = *bits as u32;
+                    v >= -(1i128 << (b - 1)) && v < (1i128 << (b - 1))
+                }
+                ValueType::Integer { bits, signed: false } => v >= 0 && v < (1i128 << *bits as u32),
+                _ => false,
+            }
+        }
+        match (literal(lhs), literal(rhs)) {
+            (None, Some(v)) if matches!(left, Self::Integer { .. }) && matches!(right, Self::Int) && fits(left, v) => Some(left.clone()),
+            (Some(v), None) if matches!(right, Self::Integer { .. }) && matches!(left, Self::Int) && fits(right, v) => Some(right.clone()),
+            _ => None,
+        }
     }
 
     pub fn numeric_promotion(left: &Self, right: &Self) -> Option<Self> {
@@ -348,7 +380,9 @@ impl TypeChecker {
         if let ExprKind::Binary { lhs, rhs, .. } = &expr.node {
             let left = node_type(lhs);
             let right = node_type(rhs);
-            if let Some(operand) = ValueType::numeric_promotion(&left, &right) {
+            if let Some(operand) = ValueType::literal_adapted_promotion(&left, lhs, &right, rhs)
+                .or_else(|| ValueType::numeric_promotion(&left, &right))
+            {
                 self.semantic_facts.numeric_operations.insert(
                     expr.id,
                     NumericOperation {

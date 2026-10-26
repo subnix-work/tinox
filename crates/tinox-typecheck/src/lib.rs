@@ -482,6 +482,14 @@ pub struct TypeChecker {
     /// disambiguates the two `Class::method(obj, …)` calling styles (Bug 38)
     /// deterministically, so the arg-count check can be exact (Bug 47).
     method_uses_this: HashSet<String>,
+    /// Project root whose own instance `fn`s are held to the syntactic call-shape
+    /// rule (issue #474); `None` disables it (stdlib, LSP, tools).
+    project_root: Option<std::path::PathBuf>,
+    /// Non-fatal diagnostics (currently the #474 call-shape warning), deduplicated.
+    warnings: Vec<String>,
+    /// `ClassName_method` keys of project-owned instance `fn`s that never use
+    /// `this`: they must be declared `fnc` to be called as `Class::m(args)`.
+    this_less_owned_fns: HashSet<String>,
     /// The inferred type of every visited expression, keyed by NodeId
     /// (assign_node_ids; ID 0 = unassigned, not recorded). Exported to
     /// codegen via expr_value_types() — since phase 3, the ONLY
@@ -1376,6 +1384,9 @@ impl TypeChecker {
             generic_class_names: HashSet::new(),
             class_type_params: HashMap::new(),
             method_uses_this: HashSet::new(),
+            project_root: None,
+            warnings: Vec::new(),
+            this_less_owned_fns: HashSet::new(),
             expr_types: HashMap::new(),
             semantic_facts: semantic::SemanticFacts::default(),
             generic_method_param_types: HashMap::new(),
@@ -1850,6 +1861,8 @@ impl TypeChecker {
                         let key = format!("{}_{}", c.name, method.name);
                         if !method.static_ && Self::stmt_uses_this(&method.body) {
                             self.method_uses_this.insert(key.clone());
+                        } else if !method.static_ && self.is_project_owned(&method.file) {
+                            self.this_less_owned_fns.insert(key.clone());
                         }
                         // B2 step 2: for generic methods, additionally
                         // store the UNERASED param types (self carries
@@ -2567,7 +2580,10 @@ impl TypeChecker {
                         }                        else { self.check_numeric_conversion(&ann_ty, &val_ty, v, false); }
                         Some(ann_ty)
                     }
-                    (Some(v), None) => Some(self.infer_type(v)),
+                    (Some(v), None) => {
+                        self.require_typed_lambda_params(v);
+                        Some(self.infer_type(v))
+                    }
                     (None, Some(t)) => Some(Self::type_to_value(t)),
                     (None, None) => None,
                 };
@@ -2613,7 +2629,10 @@ impl TypeChecker {
                         }                        else { self.check_numeric_conversion(&ann_ty, &val_ty, v, false); }
                         Some(ann_ty)
                     }
-                    (Some(v), None) => Some(self.infer_type(v)),
+                    (Some(v), None) => {
+                        self.require_typed_lambda_params(v);
+                        Some(self.infer_type(v))
+                    }
                     (None, Some(t)) => Some(Self::type_to_value(t)),
                     (None, None) => None,
                 };
@@ -2961,7 +2980,11 @@ impl TypeChecker {
                 let lhs_ty = self.infer_type(lhs);
                 let rhs_ty = self.infer_type(rhs);
                 self.check_binary_op(op, &lhs_ty, &rhs_ty, expr.span);
-                Self::binary_result_type(op, &lhs_ty, &rhs_ty)
+                let arithmetic = matches!(op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod);
+                match ValueType::literal_adapted_promotion(&lhs_ty, lhs, &rhs_ty, rhs) {
+                    Some(narrow) if arithmetic => narrow,
+                    _ => Self::binary_result_type(op, &lhs_ty, &rhs_ty),
+                }
             }
             ExprKind::Unary { op, operand } => {
                 let op_ty = self.infer_type(operand);
@@ -3900,6 +3923,15 @@ impl TypeChecker {
         } else {
             args.len() == declared || args.len() == declared + 1
         };
+        if count_ok && is_instance && !uses_this && args.len() == declared
+            && self.this_less_owned_fns.contains(&static_key)
+        {
+            self.warnings.push(format!(
+                "'{}::{}' is an instance method (`fn`) that never uses `this`; declare it with `fnc` \
+                 to call it as a static method (called at line {})",
+                class_name, method_name, span.start.line
+            ));
+        }
         if !count_ok {
             let expected = if uses_this { declared + 1 } else { declared };
             let message = if uses_this {
@@ -3935,6 +3967,46 @@ impl TypeChecker {
             return Some(resolved);
         }
         Some(sig.return_type.clone())
+    }
+
+    /// A lambda bound to an unannotated `const`/`var` has no context to infer its
+    /// parameter types from; an untyped parameter would be an unchecked raw word
+    /// (issue #460), so it must be annotated.
+    fn require_typed_lambda_params(&mut self, value: &Expr) {
+        let ExprKind::Lambda { params, .. } = &value.node else { return };
+        for p in params {
+            if Self::type_to_value(&p.param_type) == ValueType::Any {
+                self.errors.push(Error::new(
+                    value.span,
+                    format!(
+                        "cannot infer the type of lambda parameter '{}': annotate it (e.g. `({}: Int64) => ...`) \
+                         or give the binding a function type",
+                        p.name, p.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// True when `file` belongs to the project being compiled (not the stdlib and
+    /// not an installed dependency). Always false without a project root.
+    fn is_project_owned(&self, file: &str) -> bool {
+        let Some(root) = &self.project_root else { return false };
+        let path = std::path::Path::new(file);
+        path.starts_with(root)
+            && !path.components().any(|c| c.as_os_str() == ".tinox" || c.as_os_str() == "tinox-core")
+    }
+
+    /// Non-fatal diagnostics gathered while checking, in source order, deduplicated.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        self.warnings.iter().filter(|w| seen.insert((*w).clone())).cloned().collect()
+    }
+
+    /// Enables the call-shape warning for instance `fn`s declared under
+    /// `root` (issue #474).
+    pub fn set_project_root(&mut self, root: std::path::PathBuf) {
+        self.project_root = Some(root);
     }
 
     /// Call-site generic-return unification, shared by
@@ -4809,13 +4881,18 @@ impl TypeChecker {
     /// call-argument rule that integer arguments may feed float parameters.
     fn check_numeric_conversion(&mut self, expected: &ValueType, actual: &ValueType, expr: &Expr, allow_int_to_float: bool) {
         if self.lenient_dependency { return; }
-        // Arithmetic and call results are not typed precisely yet (Int32
-        // operands yield Int64, Float32 math yields Float64), so only values
-        // whose declared type is certain are checked: literals and variables.
+        // Every inferred numeric type is exact or wider than the real one
+        // (operands promote upwards, literals adopt the other operand's type),
+        // and erased generics are `Any`, which is never checked. So the
+        // conversion rules apply to all of these, not just names. Call results
+        // stay unchecked: downstream code returns `Int64` from `Int32` entry
+        // points (`return app.run()`), which is a migration of its own.
         let precise = |e: &Expr| -> bool {
             match &e.node {
-                ExprKind::Literal(_) | ExprKind::Ident(_) => true,
-                ExprKind::Unary { op: UnaryOp::Neg, operand } => matches!(operand.node, ExprKind::Literal(_)),
+                ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::Cast { .. }
+                | ExprKind::FieldAccess { .. } | ExprKind::Index { .. } => true,
+                ExprKind::Binary { op, .. } => matches!(op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod),
+                ExprKind::Unary { op: UnaryOp::Neg, operand } => matches!(operand.node, ExprKind::Literal(_) | ExprKind::Ident(_)),
                 _ => false,
             }
         };
@@ -6832,8 +6909,8 @@ println("c") }"#);
 
     #[test]
     fn test_add_int_float_not_detected() {
-        // BUG: mixed int+float arithmetic silently passes typecheck
-        ok("fn f() -> Int64 { return 1 + 2.0 }");
+        // Mixed int+float arithmetic is Float64; returning it as Int64 is a lossy conversion (#453).
+        err_contains("fn f() -> Int64 { return 1 + 2.0 }", "cannot implicitly convert Float64 to Int64");
     }
 
     #[test]
@@ -7398,6 +7475,23 @@ return 0 }");
         err_contains("fn f(x: Float64) { var y: Float32 = 1.5\n y = x }", "may lose precision");
         ok("fn f(x: UInt8) { const a: Int64 = x\n const b: Int16 = x\n const c: Float64 = 5 }");
         ok("fn f(x: Int8) { const a: Int64 = x\n const b: Int8 = 127\n const c: Int8 = -128 }");
+    }
+
+    #[test]
+    fn test_narrowing_through_arithmetic_and_calls_is_error() {
+        err_contains("fn f(a: Int32, b: Int64) { const c: Int32 = a + b }", "may lose data");
+        err_contains("fn f(a: Int8) { const c: Int8 = a + 200 }", "may lose data");
+        ok("fn f(a: Int8) { const c: Int8 = a + 1\n const d: Int8 = a * 2 }");
+        ok("fn f(a: Int32, b: Int32) { const c: Int32 = a + b }");
+        err_contains("fn f() { const u: UInt64 = 18446744073709551615\n const i: Int64 = u }", "may lose data");
+        ok("fn f() { const u: UInt64 = 18446744073709551615 }");
+    }
+
+    #[test]
+    fn test_untyped_lambda_parameter_without_context_is_error() {
+        err_contains("fn f() { const z = (a, b) => a + b }", "cannot infer the type of lambda parameter");
+        err_contains("fn f() { const g = x => x.len() }", "cannot infer the type of lambda parameter 'x'");
+        ok("fn f() { const z = (a: Int64, b: Int64) => a + b }");
     }
 
     #[test]

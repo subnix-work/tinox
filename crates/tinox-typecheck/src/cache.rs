@@ -12,14 +12,19 @@ pub struct CheckedProgram {
     pub semantics: crate::semantic::SemanticFacts,
     pub interface_methods: HashMap<String, Vec<String>>,
     pub class_implements: HashMap<String, Vec<String>>,
+    pub warnings: Vec<String>,
 }
 
 /// Exact ordered AST (including fresh node numbering) is the key. Cached type
 /// tables can ONLY be used with that numbering; a changed graph always misses.
-pub fn check_program_cached(source: &SourceFile) -> Result<CheckedProgram, ErrorBag> {
+pub fn check_program_cached(
+    source: &SourceFile,
+    project_root: Option<&std::path::Path>,
+) -> Result<CheckedProgram, ErrorBag> {
     let _stage = tinox_common::frontend::Stage::new("typecheck");
-    tinox_common::frontend::query("program", source, || {
+    tinox_common::frontend::query("program", &(source, project_root.map(|p| p.to_string_lossy().into_owned())), || {
         let mut checker = TypeChecker::new();
+        if let Some(root) = project_root { checker.set_project_root(root.to_path_buf()); }
         checker.check(source)?;
         let (interface_methods, class_implements) = checker.interface_info();
         Ok(CheckedProgram {
@@ -27,6 +32,7 @@ pub fn check_program_cached(source: &SourceFile) -> Result<CheckedProgram, Error
             semantics: checker.semantic_facts(),
             interface_methods,
             class_implements,
+            warnings: checker.warnings(),
         })
     })
 }

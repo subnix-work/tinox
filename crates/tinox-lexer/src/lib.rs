@@ -11,6 +11,8 @@ pub enum InterpPart {
 pub enum TokenKind {
     // Literals
     Integer(i64),
+    /// Decimal literal above `i64::MAX` that still fits `u64` (UInt64 only).
+    BigInteger(u64),
     IntegerSuffix(IntSuffix),
     Float(f64),
     FloatSuffix(FloatType),
@@ -921,8 +923,13 @@ impl<'a> Lexer<'a> {
         let text: String = self.chars[start..num_end].iter().filter(|c| **c != '_').collect();
         // An integer literal exceeding i64 previously became 0 via unwrap_or(0)
         // (silent garbage, Bug 51). Report it as a clean lexer error instead.
-        let value: i64 = text.parse()
-            .map_err(|_| Error::new(self.mk_span(), format!("integer literal out of range for Int64: {}", text)))?;
+        let value: i64 = match text.parse() {
+            Ok(v) => v,
+            Err(_) => match (suffix.is_none(), text.parse::<u64>()) {
+                (true, Ok(big)) => return Ok(Token::new(TokenKind::BigInteger(big), self.mk_span())),
+                _ => return Err(Error::new(self.mk_span(), format!("integer literal out of range for UInt64: {}", text))),
+            },
+        };
         
         match suffix {
             Some(s) => Ok(Token::new(TokenKind::IntegerSuffix(s), self.mk_span())),

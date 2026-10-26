@@ -141,7 +141,7 @@ fn missing_checked_callback_data_is_an_actionable_lowering_error() {
 #[test]
 fn complete_semantic_compositions_run_in_all_modes() {
     let work = Work::new();
-    let expected = "256\n3.5\n127\ntrue\n255\n-1\ntext\nnested\n255\n2.5\n1.5\n2.5\n2.5\n256\n1.5\n2\n1.5\n255\n1.5\n3.5\n4.5\n4.5\n3.5\n7.5\n6.5\n255\n1.5\nb\n3.5\n255\n255\n";
+    let expected = "0\n3.5\n127\ntrue\n255\n-1\ntext\nnested\n255\n2.5\n1.5\n2.5\n2.5\n0\n1.5\n2\n1.5\n255\n1.5\n3.5\n4.5\n4.5\n3.5\n7.5\n6.5\n255\n1.5\nb\n3.5\n255\n255\n";
     for flags in [vec!["--debug"], vec![], vec!["--checked"]] {
         let executable = work.0.join("complete");
         let build = work

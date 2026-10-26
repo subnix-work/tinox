@@ -857,21 +857,33 @@ go stale here.
 - **Conversions.** Only value-preserving widening is implicit: `Int8 -> Int16
   -> Int32 -> Int64`, `UInt8 -> UInt16 -> UInt32 -> UInt64`, an unsigned type
   to any wider signed type, `Float32 -> Float64`. Narrowing, `Float -> Int`,
-  and `Int64 -> Float` are compile errors for variables and literals; convert
-  explicitly (`x as Int32`, `x.toFloat()`, `f.toInt()`). An integer literal is
+  and `Int64 -> Float` are compile errors for any expression (names, literals,
+  arithmetic, fields, elements; call results are not checked yet); convert explicitly (`x as Int32`, `x.toFloat()`, `f.toInt()`). An integer literal is
   range-checked against the declared type (`const b: Int8 = 200` is an error)
   and may initialize any float type; an integral float literal may initialize
   an integer type. Integer arguments may feed float parameters.
 - **Unsigned.** `UInt64` compares, divides, takes remainders and prints as an
   unsigned value. When a `UInt64` meets any other integer, the `UInt64` wins.
+  A decimal literal above `Int64` max (up to `18446744073709551615`) has type
+  `UInt64`; assigning it to a signed type is a compile error.
 - **Shifts.** `<<` shifts left, `>>` is a *logical* (zero-filling) right shift
   and `>>>` an *arithmetic* (sign-extending) right shift. This is the reverse
   of Java and JavaScript. The shift count must be in `0..bit width`: a
   constant count outside it is a compile error, a dynamic one aborts the
   program with a runtime error.
-- **Overflow.** Integer `+ - *` wrap in two's complement; narrow types are
-  computed in 64 bits and truncated when stored. Division and remainder by
-  zero abort. There is no trapping overflow check.
+- **Overflow.** Integer `+ - *` wrap in two's complement in the width of the
+  operand type: `Int8 127 + 1` is `-128`, `UInt8 255 + 1` is `0`. An integer
+  literal operand adopts the other operand's narrower integer type when its
+  value fits; mixing two different integer types promotes to `Int64` (or to
+  `UInt64` if one side is `UInt64`). Division and remainder by zero abort.
+  There is deliberately no trapping overflow check: hashes and checksums in
+  the standard library rely on wrapping.
+
+Lambda parameters need a type unless the context supplies it: `const f = (a, b)
+=> a + b` is an error ("cannot infer the type of lambda parameter"), while
+`xs.map(x => x * 2)` and a binding with a declared function type infer it.
+Assigning to a variable captured from an enclosing function inside a closure is
+a compile error (closures capture by value).
 
 ## Strings
 
@@ -892,8 +904,10 @@ program.
 
 `fnc` declares a static method (call it as `Type::m()`), `fn` an instance
 method (call it as `value.m()`). An instance `fn` that never uses `this` may
-also be called statically; mixing the two shapes otherwise is an error whose
-message names the correct form. `static`, `ref` and `for (x in xs)` are not
+still be called statically (the standard library relies on it), but the
+compiler warns for such methods declared in the project itself: declare them
+with `fnc`. An instance `fn` that does use `this` needs its receiver; mixing
+the two shapes is an error whose message names the correct form. `static`, `ref` and `for (x in xs)` are not
 Tinox syntax: use `fnc`, a different identifier, and `for x in xs`.
 
 ## Tooling Notes
