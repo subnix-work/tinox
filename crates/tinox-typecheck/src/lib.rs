@@ -441,6 +441,9 @@ pub struct TypeChecker {
     errors: Vec<Error>,
     symbols: SymbolTable,
     enums: HashMap<String, Vec<String>>, // enum_name -> list of variant names
+    /// Enum names declared more than once with different variants (their
+    /// variant lists are unioned, so exhaustiveness cannot be judged).
+    ambiguous_enums: HashSet<String>,
     /// Match expression ids (Expr.id) whose every path returns/throws: the
     /// match is exhaustive AND all arms diverge (issues #426/#427).
     match_diverges: HashSet<u32>,
@@ -1355,6 +1358,7 @@ impl TypeChecker {
             errors: Vec::new(),
             symbols,
             enums: HashMap::new(),
+            ambiguous_enums: HashSet::new(),
             match_diverges: HashSet::new(),
             lenient_dependency: false,
             enum_variant_payloads: HashMap::new(),
@@ -1927,6 +1931,11 @@ impl TypeChecker {
                 DeclKind::Enum(e) => {
                     let variant_names: Vec<String> =
                         e.variants.iter().map(|v| v.name.clone()).collect();
+                    if self.enums.get(&e.name).is_some_and(|old| {
+                        old.len() != variant_names.len() || variant_names.iter().any(|v| !old.contains(v))
+                    }) {
+                        self.ambiguous_enums.insert(e.name.clone());
+                    }
                     Self::register_enum_variants(&mut self.enums, &e.name, &variant_names);
                     for variant in &e.variants {
                         self.enum_variant_payloads.insert(
@@ -4283,7 +4292,7 @@ impl TypeChecker {
             // An arm naming a variant this enum lacks means the enum name
             // resolved ambiguously (same-named enums in different modules):
             // do not guess, skip the check.
-            if covered.iter().any(|c| !self.enums[&en].contains(c)) {
+            if self.ambiguous_enums.contains(&en) || covered.iter().any(|c| !self.enums[&en].contains(c)) {
                 return Ok(());
             }
             let missing: Vec<String> = self.enums[&en].iter().filter(|v| !covered.contains(*v)).cloned().collect();
