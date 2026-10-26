@@ -5322,11 +5322,98 @@ char* tinoxBytesToString(int64_t* bytes) {
 
 #include <regex.h>
 
+// tinox.core.regex dialect: POSIX extended regular expressions plus the Perl
+// style classes \d \D \s \S \w \W (translated below; \b \B come from glibc).
+// Backreferences, lookaround and lazy quantifiers are not supported.
+static char* tinox_regex_translate(const char* pattern) {
+    size_t n = strlen(pattern);
+    char* out = (char*)GC_malloc(n * 12 + 1);
+    size_t o = 0;
+    int in_bracket = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = pattern[i];
+        if (in_bracket) {
+            if (c == '\\' && i + 1 < n && strchr("dsw", pattern[i + 1])) {
+                const char* rep = pattern[i + 1] == 'd' ? "0-9" : pattern[i + 1] == 's' ? "[:space:]" : "[:alnum:]_";
+                size_t rl = strlen(rep);
+                memcpy(out + o, rep, rl);
+                o += rl;
+                i++;
+                continue;
+            }
+            if (c == '\\' && i + 1 < n && strchr("DSW", pattern[i + 1])) {
+                fprintf(stderr, "runtime error: invalid regular expression \"%s\": \\%c inside [...] is not supported\n", pattern, pattern[i + 1]);
+                exit(1);
+            }
+            if (c == '[' && i + 1 < n && pattern[i + 1] == ':') {
+                // copy a [:class:] whole
+                const char* end = strstr(pattern + i + 2, ":]");
+                if (end) {
+                    size_t len = (size_t)(end + 2 - (pattern + i));
+                    memcpy(out + o, pattern + i, len);
+                    o += len;
+                    i += len - 1;
+                    continue;
+                }
+            }
+            if (c == ']') in_bracket = 0;
+            out[o++] = c;
+            continue;
+        }
+        if (c == '\\' && i + 1 < n) {
+            const char* rep = NULL;
+            switch (pattern[i + 1]) {
+                case 'd': rep = "[0-9]"; break;
+                case 'D': rep = "[^0-9]"; break;
+                case 's': rep = "[[:space:]]"; break;
+                case 'S': rep = "[^[:space:]]"; break;
+                case 'w': rep = "[[:alnum:]_]"; break;
+                case 'W': rep = "[^[:alnum:]_]"; break;
+                default: break;
+            }
+            if (rep) {
+                size_t rl = strlen(rep);
+                memcpy(out + o, rep, rl);
+                o += rl;
+            } else {
+                out[o++] = c;
+                out[o++] = pattern[i + 1];
+            }
+            i++;
+            continue;
+        }
+        if (c == '[') {
+            in_bracket = 1;
+            out[o++] = c;
+            // a leading ^ and/or ] are literal parts of the bracket expression
+            if (i + 1 < n && pattern[i + 1] == '^') out[o++] = pattern[++i];
+            if (i + 1 < n && pattern[i + 1] == ']') out[o++] = pattern[++i];
+            continue;
+        }
+        out[o++] = c;
+    }
+    out[o] = '\0';
+    return out;
+}
+
+// Compiles `pattern` (see dialect above). An invalid pattern is a hard error:
+// it used to be indistinguishable from "no match" (issue #468).
+static void tinox_regcomp(regex_t* re, const char* pattern, int cflags) {
+    char* translated = tinox_regex_translate(pattern);
+    int rc = regcomp(re, translated, cflags);
+    if (rc != 0) {
+        char msg[200];
+        regerror(rc, re, msg, sizeof msg);
+        fprintf(stderr, "runtime error: invalid regular expression \"%s\": %s\n", pattern, msg);
+        exit(1);
+    }
+}
+
 int64_t regexIsMatch(int64_t pattern_i64, int64_t subject_i64) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return 0;
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
     int r = regexec(&re, subject, 0, NULL, 0);
     regfree(&re);
     return (r == 0) ? 1 : 0;
@@ -5337,7 +5424,7 @@ int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
     const char* subject = (const char*)subject_i64;
     int64_t* nh = tinox_array_new(0, 8);
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return (int64_t)nh;
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
     const char* s = subject;
     regmatch_t m;
     while (*s && regexec(&re, s, 1, &m, 0) == 0) {
@@ -5359,7 +5446,7 @@ int64_t regexReplace(int64_t pattern_i64, int64_t subject_i64, int64_t replaceme
     const char* replacement = (const char*)replacement_i64;
     // Simple replacement — replace first match
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return subject_i64;
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
     regmatch_t m;
     if (regexec(&re, subject, 1, &m, 0) != 0) { regfree(&re); return subject_i64; }
     size_t pre = m.rm_so, rep_len = strlen(replacement), suf = strlen(subject) - m.rm_eo;
@@ -5381,7 +5468,7 @@ int64_t regexFindFirst(int64_t pattern_i64, int64_t subject_i64) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return (int64_t)GC_strdup("");
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
     regmatch_t m;
     if (regexec(&re, subject, 1, &m, 0) != 0) {
         regfree(&re);
@@ -5402,7 +5489,7 @@ int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replac
     const char* subject = (const char*)subject_i64;
     const char* replacement = (const char*)replacement_i64;
     regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED) != 0) return subject_i64;
+    tinox_regcomp(&re, pattern, REG_EXTENDED);
 
     size_t rep_len = strlen(replacement);
     size_t cap = strlen(subject) + rep_len + 16;
@@ -5465,7 +5552,7 @@ int64_t* regexMatchGroups(const char* pattern, const char* subject, int64_t offs
 
     regex_t re;
     int cflags = REG_EXTENDED | (icase ? REG_ICASE : 0);
-    if (regcomp(&re, pattern, cflags) != 0) return empty;
+    tinox_regcomp(&re, pattern, cflags);
 
     size_t ngroups = re.re_nsub + 1;
     regmatch_t* m = (regmatch_t*)GC_malloc(sizeof(regmatch_t) * ngroups);

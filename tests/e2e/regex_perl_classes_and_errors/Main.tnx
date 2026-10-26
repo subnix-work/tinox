@@ -1,0 +1,26 @@
+// Regression test for #468: \d \s \w (and negations) work, and an invalid
+// pattern is a hard error instead of "no match".
+// expect: true
+// expect: false
+// expect: 123
+// expect: 3.14
+// expect: true
+// expect: true
+// expect: runtime error: invalid regular expression "(": Unmatched ( or \(
+// expect-exit: 1
+import tinox.core.regex
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        println(Regex::isMatch("^\\d+$", "123"))
+        println(Regex::isMatch("^\\d+$", "ddd"))
+        println(Regex::findFirst("\\d+", "ab 123 cd"))
+        println(Regex::findFirst("[\\d.]+", "v 3.14x"))
+        println(Regex::isMatch("^\\w+\\s\\S+$", "ab cd"))
+        println(Regex::isMatch("\\\\d", "\\d"))
+        println(Regex::isMatch("(", "x"))
+        return 0
+    }
+}
