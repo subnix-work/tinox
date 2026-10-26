@@ -1645,6 +1645,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_map_create()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_map_set(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_get(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_array_check_index(i64*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_contains(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_map_remove(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_len(i8*)").unwrap();
@@ -12863,6 +12864,7 @@ tr_done_{idx}:"#).unwrap();
             } else {
                 base_ptr.to_string()
             };
+            writeln!(&mut self.ir, "call void @tinox_array_check_index(i64* {}, i64 {})", base_arr, idx_val).unwrap();
             let data_ptr = self.emit_array_data(&base_arr);
             let ptr_name = self.temp();
             writeln!(

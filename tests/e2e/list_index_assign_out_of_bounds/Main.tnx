@@ -1,0 +1,17 @@
+// Regression test for #469: index assignment past the end aborts instead of
+// writing into adjacent heap memory.
+// expect: 9
+// expect: runtime error: array index out of bounds: 5 (length 3)
+// expect-exit: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        var a: List<Int64> = [1, 2, 3]
+        a[1] = 9
+        println(a[1])
+        a[5] = 9
+        println("unreachable")
+        return 0
+    }
+}

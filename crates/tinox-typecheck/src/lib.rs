@@ -3695,6 +3695,20 @@ impl TypeChecker {
                 // (`arr: any_array()`) is deliberately permissive for
                 // element type, so this can't be caught by the generic
                 // arg-type-compatibility loop below.
+                // Issue #469: printing a List/Map used to print the raw
+                // handle address as an integer. Reject at compile time.
+                if (name == "println" || name == "print") && args.len() == 1 {
+                    let printed = self.infer_type(&args[0]);
+                    if matches!(printed, ValueType::Array(_) | ValueType::Map(_)) {
+                        self.errors.push(Error::new(
+                            args[0].span,
+                            format!(
+                                "cannot print a value of type {} (it would print a raw handle address); print its elements, e.g. join() or Json::stringify",
+                                printed.display()
+                            ),
+                        ));
+                    }
+                }
                 if (name == "join" || name == "Array_join") && !args.is_empty() {
                     if let ValueType::Array(elem) = self.infer_type(&args[0]) {
                         if *elem != ValueType::String && *elem != ValueType::Any {

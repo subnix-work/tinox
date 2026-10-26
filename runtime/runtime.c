@@ -365,6 +365,17 @@ int64_t tinox_array_get(int64_t* handle, int64_t idx) {
     return a->data[idx];
 }
 
+// Bounds check for index assignment (`a[i] = v`): a store past the end used to
+// write into adjacent heap memory.
+void tinox_array_check_index(int64_t* handle, int64_t idx) {
+    TinoxArray* a = (TinoxArray*)handle;
+    if (!a || idx < 0 || idx >= a->len) {
+        fprintf(stderr, "runtime error: array index out of bounds: %ld (length %ld)\n",
+                (long)idx, a ? (long)a->len : 0L);
+        exit(1);
+    }
+}
+
 // String functions
 int64_t tinox_string_length(const char* str) {
     int64_t len = 0;
@@ -408,10 +419,12 @@ char* tinox_float_to_string(double val) {
 int64_t* tinox_array_slice(int64_t* h, int64_t from, int64_t to) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_slice");
     TinoxArray* a = (TinoxArray*)h;
-    if (from < 0) from = 0;
-    if (to > a->len) to = a->len;
+    if (from < 0 || to > a->len || from > to) {
+        fprintf(stderr, "runtime error: slice range out of bounds: [%ld, %ld) (length %ld)\n",
+                (long)from, (long)to, (long)a->len);
+        exit(1);
+    }
     int64_t len = to - from;
-    if (len < 0) len = 0;
     int64_t* nh = tinox_array_new(len, 0);
     if (len > 0) memcpy(((TinoxArray*)nh)->data, a->data + from, (size_t)len * sizeof(int64_t));
     return nh;
@@ -434,7 +447,11 @@ int64_t* tinox_array_push(int64_t* h, int64_t val) {
 int64_t* tinox_array_pop(int64_t* h) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_pop");
     TinoxArray* a = (TinoxArray*)h;
-    if (a->len > 0) a->len--;
+    if (a->len == 0) {
+        fprintf(stderr, "runtime error: pop() on an empty list\n");
+        exit(1);
+    }
+    a->len--;
     return h;
 }
 
@@ -463,12 +480,15 @@ char* tinox_json_list_serialize(int64_t* h, char* (*to_json)(void*)) {
     return out;
 }
 
-// Insert val at index idx (clamped to [0, len]), shifting the tail right.
+// Insert val at index idx (0..=len), shifting the tail right.
 int64_t* tinox_array_insert(int64_t* h, int64_t idx, int64_t val) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_insert");
     TinoxArray* a = (TinoxArray*)h;
-    if (idx < 0) idx = 0;
-    if (idx > a->len) idx = a->len;
+    if (idx < 0 || idx > a->len) {
+        fprintf(stderr, "runtime error: insert index out of bounds: %ld (length %ld)\n",
+                (long)idx, (long)a->len);
+        exit(1);
+    }
     if (a->len == a->cap) {
         int64_t ncap = a->cap < 4 ? 4 : a->cap * 2;
         int64_t* nd = (int64_t*)GC_malloc((size_t)ncap * sizeof(int64_t));
@@ -811,7 +831,11 @@ int64_t tinox_array_index_of(int64_t* h, int64_t val) {
 int64_t* tinox_array_remove_at(int64_t* h, int64_t idx) {
     TINOX_CK_EXPECT(h, TINOX_KIND_ARRAY, "array_removeAt");
     TinoxArray* a = (TinoxArray*)h;
-    if (idx < 0 || idx >= a->len) return h;
+    if (idx < 0 || idx >= a->len) {
+        fprintf(stderr, "runtime error: removeAt index out of bounds: %ld (length %ld)\n",
+                (long)idx, (long)a->len);
+        exit(1);
+    }
     for (int64_t i = idx; i < a->len - 1; i++) a->data[i] = a->data[i + 1];
     a->len--;
     return h;
