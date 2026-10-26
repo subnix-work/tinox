@@ -1564,6 +1564,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_bool_to_string(i1)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_to_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare double @tinox_string_to_float(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_is_int(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_is_float(i8*)").unwrap();
         // Strict @PathParam/@QueryParam conversion + bare-string JSON
         // encoding for auto-serialize REST responses (emit_route_shim_body).
         writeln!(&mut self.ir, "declare i32 @tinox_parse_int_checked(i8*, i64*)").unwrap();
@@ -10623,7 +10625,7 @@ tr_done_{idx}:"#).unwrap();
                 // String method dispatch (obj_ty == "i8*", or i64 stored string pointer)
                 let str_methods = ["len","toUpper","toUpperCase","toLower","toLowerCase",
                     "trim","contains","startsWith","endsWith","split","substring","indexOf",
-                    "replace","toString","toInt","toFloat","toBool","repeat","padLeft","padRight",
+                    "replace","toString","toInt","toFloat","isInt","isFloat","toBool","repeat","padLeft","padRight",
                     "count","charAt","toInt64","toFloat64","toBytes","fromBytes","format","encode",
                     "decode","hash","md5","sha256","base64Encode","base64Decode","urlEncode",
                     "urlDecode","isNumeric","isEmpty","isBlank","lines","words","reverse",
@@ -10761,6 +10763,14 @@ tr_done_{idx}:"#).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @tinox_string_to_float(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "double".to_string()));
+                        }
+                        "isInt" | "isFloat" => {
+                            let rt = if method == "isInt" { "tinox_string_is_int" } else { "tinox_string_is_float" };
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @{}(i8* {})", raw, rt, obj_ptr).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
+                            return Ok((result, "i1".to_string()));
                         }
                         "split" => {
                             let (delim, delim_ty) = self.gen_expr(&args[0], ctx)?;

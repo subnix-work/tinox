@@ -732,6 +732,9 @@ impl TypeChecker {
         symbols.functions.insert("String_charAt".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("i".to_string(), ValueType::Int)], return_type: ValueType::String });
         symbols.functions.insert("String_toInt".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Int });
         symbols.functions.insert("String_toFloat".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Float });
+        for name in ["String_isInt", "String_isFloat"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Bool });
+        }
         symbols.functions.insert("String_toString".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::String });
         symbols.functions.insert("String_contains".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
         symbols.functions.insert("String_indexOf".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Int });

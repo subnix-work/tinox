@@ -507,21 +507,71 @@ void tinox_print_char(int32_t c) {
     printf("%c", (char)c);
 }
 
-int64_t tinox_string_to_int(const char* s) {
-    int64_t result = 0;
+// Strict whole-string integer parse (optional sign, digits only), with
+// overflow detection. Returns 1 and writes *out on success.
+static int tinox_parse_i64_strict(const char* s, int64_t* out) {
+    if (!s || !*s) return 0;
+    const char* p = s;
     int neg = 0;
-    if (*s == '-') { neg = 1; s++; }
-    while (*s >= '0' && *s <= '9') { result = result * 10 + (*s++ - '0'); }
-    return neg ? -result : result;
+    if (*p == '-' || *p == '+') { neg = (*p == '-'); p++; }
+    if (!*p) return 0; // just a sign, no digits
+    int64_t result = 0;
+    while (*p) {
+        if (*p < '0' || *p > '9') return 0;
+        int digit = *p - '0';
+        // Accumulate negatively so INT64_MIN is representable.
+        if (__builtin_mul_overflow(result, (int64_t)10, &result)) return 0;
+        if (__builtin_sub_overflow(result, (int64_t)digit, &result)) return 0;
+        p++;
+    }
+    if (!neg) {
+        if (result == INT64_MIN) return 0;
+        result = -result;
+    }
+    *out = result;
+    return 1;
 }
 
+// String.toInt(): aborts on anything that is not a complete, in-range
+// integer (use String.isInt() to validate untrusted input first).
+int64_t tinox_string_to_int(const char* s) {
+    int64_t v;
+    if (!tinox_parse_i64_strict(s, &v)) {
+        fprintf(stderr, "runtime error: cannot convert \"%s\" to Int64 (invalid or out of range)\n", s ? s : "(null)");
+        exit(1);
+    }
+    return v;
+}
+
+int64_t tinox_string_is_int(const char* s) {
+    int64_t v;
+    return tinox_parse_i64_strict(s, &v) ? 1 : 0;
+}
+
+static int tinox_parse_f64_strict(const char* s, double* out) {
+    if (!s || !*s) return 0;
+    char* end = NULL;
+    errno = 0;
+    double result = strtod(s, &end);
+    if (end == s || *end != '\0' || errno == ERANGE) return 0;
+    if (isspace((unsigned char)*s)) return 0; // strtod skips leading whitespace
+    *out = result;
+    return 1;
+}
+
+// String.toFloat(): aborts on invalid input (use String.isFloat() first).
 double tinox_string_to_float(const char* s) {
-    // strtod validates and stops at the first non-numeric char. The old
-    // hand-rolled parser did `result*10 + (*s - '0')` for EVERY char without a
-    // digit check, so "xyz" produced garbage (72→793→8004). strtod also handles
-    // scientific notation and leading +/-. Invalid input → 0.0.
-    if (!s) return 0.0;
-    return strtod(s, NULL);
+    double v;
+    if (!tinox_parse_f64_strict(s, &v)) {
+        fprintf(stderr, "runtime error: cannot convert \"%s\" to Float64 (invalid or out of range)\n", s ? s : "(null)");
+        exit(1);
+    }
+    return v;
+}
+
+int64_t tinox_string_is_float(const char* s) {
+    double v;
+    return tinox_parse_f64_strict(s, &v) ? 1 : 0;
 }
 
 // Strict variants for @PathParam/@QueryParam binding (emit_route_shim_body,
@@ -532,28 +582,11 @@ double tinox_string_to_float(const char* s) {
 // on failure (empty string or any non-numeric content), so the caller can
 // tell "absent/invalid" apart from "genuinely zero".
 int tinox_parse_int_checked(const char* s, int64_t* out) {
-    if (!s || !*s) return 0;
-    const char* p = s;
-    int neg = 0;
-    if (*p == '-' || *p == '+') { neg = (*p == '-'); p++; }
-    if (!*p) return 0; // just a sign, no digits
-    int64_t result = 0;
-    while (*p) {
-        if (*p < '0' || *p > '9') return 0;
-        result = result * 10 + (*p - '0');
-        p++;
-    }
-    *out = neg ? -result : result;
-    return 1;
+    return tinox_parse_i64_strict(s, out);
 }
 
 int tinox_parse_float_checked(const char* s, double* out) {
-    if (!s || !*s) return 0;
-    char* end = NULL;
-    double result = strtod(s, &end);
-    if (end == s || *end != '\0') return 0; // no digits consumed, or trailing garbage
-    *out = result;
-    return 1;
+    return tinox_parse_f64_strict(s, out);
 }
 
 int tinox_parse_bool_checked(const char* s, int* out) {
