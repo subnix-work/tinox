@@ -714,6 +714,25 @@ or `GC_strdup` (`<gc.h>`, the collector Tinox links against). Memory from
 `malloc` is never freed by the collector, and `free`ing it from C afterwards
 leaves the `String` dangling. Embedded NUL bytes cannot cross the boundary.
 
+**Threads.** `tinox_main` runs on the process main thread, and `spawn`ed tasks
+are ordinary pthreads known to the garbage collector. An `extern fn` may block
+the calling thread for as long as it likes (a GUI toolkit's `exec()` on the
+main thread) while other tasks keep running and collecting; the collector
+interrupts blocked threads with signals, so a blocking native call must
+tolerate `EINTR` (every libc blocking call restarts transparently).
+
+A thread the runtime did not create (a toolkit worker, a C library's
+callback thread) must bracket its use of Tinox heap memory with
+`tinox_thread_attach()` / `tinox_thread_detach()` from `runtime.h` (C sources
+listed under `[native] sources` get the runtime directory on their include
+path). Attach returns `0` when it attached the thread, `1` when the thread was
+already known (the main thread, a `spawn`ed task) and a negative value when
+the collector has no thread support; calls nest. Without it a collection
+neither scans that thread's stack nor stops it, which crashes or corrupts
+memory. **Never keep the only reference to a Tinox heap object in memory the
+collector does not scan** (`malloc`, C++ objects, a plain C queue): copy the
+data out or hand Tinox an `Int64` handle instead.
+
 **Heap objects** (classes, lists, maps) are Tinox-internal layouts; only
 functions provided by the Tinox runtime should read them. For your own
 libraries pass `Int64` handles or primitives instead.

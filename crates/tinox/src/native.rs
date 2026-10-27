@@ -132,8 +132,10 @@ fn parse_string_array(value: &str) -> Option<Vec<String>> {
 
 impl NativeConfig {
     /// Validates the configuration, compiles `sources`, and returns the
-    /// extra linker arguments in link order.
-    pub fn link_flags(&self) -> Result<Vec<String>, String> {
+    /// extra linker arguments in link order. `runtime_dir` (the directory
+    /// holding `runtime.h`) is put on the include path of compiled sources
+    /// so C code can `#include <runtime.h>` for the foreign-thread API.
+    pub fn link_flags(&self, runtime_dir: Option<&Path>) -> Result<Vec<String>, String> {
         for dir in &self.lib_dirs {
             if !dir.is_dir() {
                 return Err(format!("[native] lib_dirs entry `{}` is not a directory", dir.display()));
@@ -152,6 +154,9 @@ impl NativeConfig {
 
         let mut pkg_libs = Vec::new();
         let mut pkg_cflags = Vec::new();
+        if let Some(dir) = runtime_dir {
+            pkg_cflags.push(format!("-I{}", dir.display()));
+        }
         for pkg in &self.pkg_config {
             pkg_libs.extend(pkg_config_output(pkg, "--libs")?);
             pkg_cflags.extend(pkg_config_output(pkg, "--cflags")?);
@@ -378,7 +383,7 @@ driver = "sqlite"
     #[test]
     fn missing_library_is_reported_clearly() {
         let cfg = NativeConfig { libs: vec!["definitely_not_a_real_lib_xyz".into()], ..Default::default() };
-        let err = cfg.link_flags().unwrap_err();
+        let err = cfg.link_flags(None).unwrap_err();
         assert!(err.contains("library `definitely_not_a_real_lib_xyz` not found"), "{err}");
     }
 

@@ -11388,6 +11388,13 @@ extern __thread int64_t __tinox_err;
     X(service_hook_stack) \
     X(__tinox_err)
 
+#ifndef TINOX_NO_GC
+// Per-thread one-shot guard; file scope (not a function-local static) so
+// tinox_gc_unregister_thread_roots can clear it and a thread can be
+// attached again after a detach (issue #487).
+static __thread int tinox_gc_roots_registered = 0;
+#endif
+
 static void tinox_gc_register_thread_roots(void) {
 #ifndef TINOX_NO_GC
     // GC_add_roots is a Boehm-GC-specific API (<gc.h>, only included in
@@ -11401,9 +11408,8 @@ static void tinox_gc_register_thread_roots(void) {
     // this function's body was written assuming <gc.h> is always
     // included, which stopped being true the moment TINOX_NO_GC gained
     // its own code path (this function predates it).
-    static __thread int registered = 0;
-    if (registered) return;
-    registered = 1;
+    if (tinox_gc_roots_registered) return;
+    tinox_gc_roots_registered = 1;
 #define TINOX_GC_ROOT(var) GC_add_roots(&(var), (char*)&(var) + sizeof(var) + 1);
     TINOX_GC_THREAD_ROOTS(TINOX_GC_ROOT)
 #undef TINOX_GC_ROOT
@@ -11433,11 +11439,61 @@ static void tinox_gc_unregister_thread_roots(void) {
     TINOX_GC_THREAD_ROOTS(TINOX_GC_ROOT_SPAN)
 #undef TINOX_GC_ROOT_SPAN
     GC_remove_roots(lo, hi);
+    tinox_gc_roots_registered = 0;
+#endif
+}
+
+// ---- Foreign threads (issue #487) ----
+//
+// A thread NOT created by this runtime (a GUI toolkit's worker, a C
+// library's callback thread) is unknown to the collector. Before it may
+// allocate Tinox heap memory, hold a pointer into it, or call anything
+// that does, it must be attached; otherwise a collection neither scans its
+// stack nor stops it, which is undefined behaviour. Calls nest: every
+// attach that returned 0 needs one detach.
+//
+// Returns 0 when the calling thread was attached by this call, 1 when the
+// thread was already known to the collector (the main thread, a `spawn`ed
+// task) -- nothing to undo then, and detach is a harmless no-op -- and a
+// negative value when the collector has no thread support.
+#ifndef TINOX_NO_GC
+static __thread int tinox_foreign_attach_depth = 0;
+#endif
+
+int tinox_thread_attach(void) {
+#ifndef TINOX_NO_GC
+    if (tinox_foreign_attach_depth > 0) {
+        tinox_foreign_attach_depth++;
+        return 0;
+    }
+    struct GC_stack_base sb;
+    if (GC_get_stack_base(&sb) != GC_SUCCESS) return -1;
+    int rc = GC_register_my_thread(&sb);
+    if (rc == GC_DUPLICATE) return 1;
+    if (rc != GC_SUCCESS) return -1;
+    tinox_foreign_attach_depth = 1;
+    tinox_gc_register_thread_roots();
+    return 0;
+#else
+    return 1;
+#endif
+}
+
+void tinox_thread_detach(void) {
+#ifndef TINOX_NO_GC
+    if (tinox_foreign_attach_depth == 0) return;
+    if (--tinox_foreign_attach_depth > 0) return;
+    tinox_gc_unregister_thread_roots();
+    GC_unregister_my_thread();
 #endif
 }
 
 int main(int argc, char** argv) {
     GC_INIT();
+#ifndef TINOX_NO_GC
+    // Lets foreign threads join the collector via tinox_thread_attach().
+    GC_allow_register_threads();
+#endif
     tinox_gc_register_thread_roots();
     // Issue #224: conn_close() now calls shutdown(fd, SHUT_RDWR) on every
     // connection teardown (not just tinox_HttpServer_listen's epoll loop,

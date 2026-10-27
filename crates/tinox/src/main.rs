@@ -5326,7 +5326,7 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
     // objects and extra C/C++ sources. Linked after Tinox's own libraries
     // and before the TINOX_CFLAGS escape hatch.
     let native_flags: Vec<String> = match native::read_native_config()? {
-        Some(cfg) => cfg.link_flags()?,
+        Some(cfg) => cfg.link_flags(runtime_c_path().as_deref().and_then(Path::parent))?,
         None => Vec::new(),
     };
     link_args.extend(native_flags.iter().map(|s| s.as_str()));
