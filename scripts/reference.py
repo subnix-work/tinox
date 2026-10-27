@@ -9,6 +9,7 @@ from collections import Counter
 from html.parser import HTMLParser
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -48,6 +49,60 @@ class Inventory(HTMLParser):
             self.links.append(href)
             if href.startswith('#mod-'):
                 self.modules.append(href[1:])
+
+
+DECL_START = re.compile(r'^(import\b|class\b|enum\b|interface\b|trait\b|abstract\b|namespace\b|@)')
+
+
+def indent(text, prefix):
+    return ''.join(prefix + line + '\n' if line.strip() else '\n' for line in text.splitlines())
+
+
+def spec_candidates(block):
+    """Ways to read a SPEC snippet as a program: as-is, as statements inside a
+    method, as members of a class, or split into top-level declarations plus
+    statements (imports + a class followed by the statements using it)."""
+    wrap = 'class Main\n{\n    fnc main() -> Int32\n    {\n%s        return 0\n    }\n}\n'
+    decls, stmts, chunk = [], [], None
+    for line in block.splitlines():
+        if chunk is not None:
+            chunk.append(line)
+            if line.startswith('}'):
+                decls.append('\n'.join(chunk)); chunk = None
+        elif DECL_START.match(line):
+            if line.startswith('import'):
+                decls.append(line)
+            else:
+                chunk = [line]
+                if line.rstrip().endswith('}') and '{' in line:
+                    decls.append(line); chunk = None
+        else:
+            stmts.append(line)
+    if chunk is not None:
+        decls.append('\n'.join(chunk))
+    yield block
+    yield wrap % indent(block, '        ')
+    yield 'class Main\n{\n' + block + '\n}\n'
+    yield '\n'.join(decls) + '\n' + wrap % indent('\n'.join(stmts), '        ')
+
+
+def check_spec_snippets(root, binary):
+    """Every ```tinox block in docs/SPEC.md must parse (#470): `tinox fmt`
+    parses without type-checking, so illustrative names are fine but invalid
+    syntax such as `val` is not."""
+    text = (root / 'docs/SPEC.md').read_text()
+    failures = []
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = Path(tmp) / 'Snippet.tnx'
+        for match in re.finditer(r'^```tinox\n(.*?)^```', text, re.S | re.M):
+            for candidate in spec_candidates(match.group(1)):
+                probe.write_text(candidate)
+                if subprocess.run([str(binary), 'fmt', str(probe)], capture_output=True).returncode == 0:
+                    break
+            else:
+                failures.append(text[:match.start()].count('\n') + 2)
+    if failures:
+        raise ValueError('docs/SPEC.md: tinox blocks that do not parse (first line of each): ' + ', '.join(map(str, failures)))
 
 
 def check_inventories(root):
@@ -242,6 +297,8 @@ def main():
                     path.write_text(content)
                 elif not path.is_file() or path.read_text() != content:
                     raise ValueError(f'{name} is stale; run make docs-generate')
+            if args.command == 'check':
+                check_spec_snippets(ROOT, binary)
         print(f'reference {args.command}: OK')
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, f'error: {error}\n')
