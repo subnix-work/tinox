@@ -20,7 +20,7 @@ fn full_delta_and_range() {
 
     let full = lsp.request("textDocument/semanticTokens/full", json!({"textDocument": {"uri": uri}}));
     let data = full["data"].as_array().unwrap();
-    assert!(!data.is_empty() && data.len() % 5 == 0);
+    assert!(!data.is_empty() && data.len().is_multiple_of(5));
     let id = full["resultId"].as_str().unwrap().to_string();
 
     // unchanged document: an empty edit list

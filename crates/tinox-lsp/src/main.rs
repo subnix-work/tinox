@@ -1,7 +1,9 @@
+mod actions;
 mod analysis;
 mod formatting;
 mod navigation;
 mod semantic;
+mod signature;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,7 +40,11 @@ const EMBEDDED_STDLIB: &[(&str, &str)] = &[
     )),
     ("env",           include_str!("../../tinox-core/tinox/core/env/Env.tnx")),
     ("fmt",           include_str!("../../tinox-core/tinox/core/fmt/Fmt.tnx")),
-    ("fs",            include_str!("../../tinox-core/tinox/core/fs/Fs.tnx")),
+    ("fs",            concat!(
+        include_str!("../../tinox-core/tinox/core/fs/Fs.tnx"),
+        include_str!("../../tinox-core/tinox/core/fs/WatchEvent.tnx"),
+        include_str!("../../tinox-core/tinox/core/fs/Watcher.tnx"),
+    )),
     ("hash",          include_str!("../../tinox-core/tinox/core/hash/Hash.tnx")),
     ("http",          concat!(
         include_str!("../../tinox-core-ext/http/tinox/core/http/Http.tnx"),
@@ -77,7 +83,11 @@ const EMBEDDED_STDLIB: &[(&str, &str)] = &[
     ("math",          include_str!("../../tinox-core/tinox/core/math/Math.tnx")),
     ("mathf",         include_str!("../../tinox-core/tinox/core/mathf/Mathf.tnx")),
     ("option",        include_str!("../../tinox-core/tinox/core/option/Option.tnx")),
-    ("process",       include_str!("../../tinox-core/tinox/core/process/Process.tnx")),
+    ("process",       concat!(
+        include_str!("../../tinox-core/tinox/core/process/InteractiveProcess.tnx"),
+        include_str!("../../tinox-core/tinox/core/process/Process.tnx"),
+        include_str!("../../tinox-core/tinox/core/process/ProcessResult.tnx"),
+    )),
     ("random",        include_str!("../../tinox-core/tinox/core/random/Random.tnx")),
     ("regex",         include_str!("../../tinox-core/tinox/core/regex/Regex.tnx")),
     // Keyed "client", not "rest.client": module_names_from_imports() below
@@ -145,6 +155,8 @@ struct Backend {
     /// Last semantic-token answer per document, for `full/delta`.
     semantic_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
     semantic_counter: std::sync::atomic::AtomicU64,
+    /// (import path, class names) for every embedded standard-library module.
+    stdlib_import_map: Vec<(String, Vec<String>)>,
 }
 
 impl Backend {
@@ -169,6 +181,17 @@ impl Backend {
             .values()
             .flat_map(|c| c.fields.iter().map(|f| f.name.clone()).chain(c.methods.iter().map(|m| m.name.clone())))
             .collect();
+        let mut stdlib_import_map: Vec<(String, Vec<String>)> = stdlib_asts
+            .iter()
+            .map(|(key, ast)| {
+                // the embedded key is the import path's last segment
+                let path = if key == "client" { "tinox.core.rest.client".to_string() } else { format!("tinox.core.{key}") };
+                let mut classes: Vec<String> = build_registry_from_source(ast).into_keys().collect();
+                classes.sort();
+                (path, classes)
+            })
+            .collect();
+        stdlib_import_map.sort();
         Self {
             client,
             docs: DashMap::new(),
@@ -179,6 +202,7 @@ impl Backend {
             client_renames_files: std::sync::atomic::AtomicBool::new(false),
             semantic_cache: DashMap::new(),
             semantic_counter: std::sync::atomic::AtomicU64::new(0),
+            stdlib_import_map,
         }
     }
 
@@ -190,6 +214,28 @@ impl Backend {
         let id = self.semantic_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string();
         self.semantic_cache.insert(uri.clone(), (id.clone(), tokens.clone()));
         Some((id, tokens))
+    }
+
+    /// Standard-library classes plus the project's own, and the project's
+    /// top-level functions (name, signature, doc).
+    fn project_signatures(&self, uri: &Url) -> (TypeRegistry, Vec<(String, String, Option<String>)>) {
+        let mut registry = self.stdlib_registry.clone();
+        let mut functions = Vec::new();
+        for (_, text) in self.project_files(uri) {
+            let Ok(ast) = tinox_parser::parse_source_cached(&text) else { continue };
+            registry.extend(build_registry_from_source(&ast));
+            fn top_level(decls: &[tinox_parser::ast::Decl], out: &mut Vec<(String, String, Option<String>)>) {
+                for d in decls {
+                    match &d.node {
+                        tinox_parser::ast::DeclKind::Function(f) => out.push((f.name.clone(), analysis::fn_signature(f), f.doc.clone())),
+                        tinox_parser::ast::DeclKind::Namespace(ns) => top_level(&ns.decls, out),
+                        _ => {}
+                    }
+                }
+            }
+            top_level(&ast.decls, &mut functions);
+        }
+        (registry, functions)
     }
 
     fn nav_ctx(&self) -> navigation::Ctx {
@@ -627,6 +673,16 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 })),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".into(), ",".into()]),
+                    retrigger_characters: Some(vec![")".into()]),
+                    work_done_progress_options: Default::default(),
+                }),
+                code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+                    code_action_kinds: Some(vec![CodeActionKind::QUICKFIX, CodeActionKind::SOURCE_ORGANIZE_IMPORTS]),
+                    work_done_progress_options: Default::default(),
+                    resolve_provider: Some(false),
+                })),
                 semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
                     work_done_progress_options: Default::default(),
                     legend: semantic::legend(),
@@ -903,6 +959,57 @@ impl LanguageServer for Backend {
         Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens { result_id: None, data: semantic::encode(&part) })))
     }
 
+    async fn signature_help(&self, p: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = &p.text_document_position_params.text_document.uri;
+        let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
+        let offset = lsp_pos_to_offset(&text, p.text_document_position_params.position) as usize;
+        let Some(ctx) = signature::call_context(&text, offset) else { return Ok(None) };
+        let (registry, functions) = self.project_signatures(uri);
+        Ok(signature::build(&ctx, signature::candidates(&ctx.callee, &registry, &functions)))
+    }
+
+    async fn code_action(&self, p: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = p.text_document.uri.clone();
+        let Some(text) = self.docs.get(&uri).map(|t| t.clone()) else { return Ok(None) };
+        let wants = |kind: &CodeActionKind| p.context.only.as_ref().is_none_or(|only| only.iter().any(|k| kind.as_str().starts_with(k.as_str())));
+        let edit = |edits: Vec<TextEdit>| WorkspaceEdit { changes: Some(HashMap::from([(uri.clone(), edits)])), document_changes: None, change_annotations: None };
+        let mut out: CodeActionResponse = Vec::new();
+        if wants(&CodeActionKind::QUICKFIX) {
+            let project: Vec<(String, String)> = self.project_files(&uri).into_iter().map(|(u, t)| (u.to_string(), t)).collect();
+            let project_refs: Vec<(String, &str)> = project.iter().map(|(u, t)| (u.clone(), t.as_str())).collect();
+            let mut seen = std::collections::HashSet::new();
+            for diag in &p.context.diagnostics {
+                let Some(name) = actions::missing_import_name(&diag.message) else { continue };
+                let candidates = actions::import_candidates(&name, &project_refs, &self.stdlib_import_map);
+                let preferred = candidates.len() == 1;
+                for path in candidates {
+                    if !seen.insert((name.clone(), path.clone())) {
+                        continue;
+                    }
+                    out.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Import {path}"),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diag.clone()]),
+                        edit: Some(edit(vec![actions::add_import_edit(&text, &path)])),
+                        is_preferred: Some(preferred),
+                        ..Default::default()
+                    }));
+                }
+            }
+        }
+        if wants(&CodeActionKind::SOURCE_ORGANIZE_IMPORTS) {
+            if let Some(e) = actions::organize_imports(&text) {
+                out.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: "Organize imports".into(),
+                    kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+                    edit: Some(edit(vec![e])),
+                    ..Default::default()
+                }));
+            }
+        }
+        Ok(if out.is_empty() { None } else { Some(out) })
+    }
+
     async fn document_symbol(
         &self,
         p: DocumentSymbolParams,
@@ -962,6 +1069,9 @@ mod tests {
         println!("embedded stdlib classes: {:?}", reg.keys().collect::<Vec<_>>());
         assert!(reg.contains_key("HttpContext"), "HttpContext must be in embedded stdlib");
         assert!(reg.contains_key("HttpResponse"), "HttpResponse must be in embedded stdlib");
+        for class in ["Watcher", "WatchEvent", "InteractiveProcess", "ProcessResult"] {
+            assert!(reg.contains_key(class), "{class} must be in embedded stdlib");
+        }
     }
 
     /// Regression coverage for the exact shape of a real-world false

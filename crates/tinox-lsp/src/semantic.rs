@@ -123,12 +123,12 @@ fn local_kinds(f: &FileIndex, start: usize, end: usize) -> HashMap<String, (u32,
             }
         } else if prev.is(&TokenKind::LParen) && i >= 2 && f.toks[i - 2].kw(Keyword::For) {
             out.entry(n.to_string()).or_insert((T_VARIABLE, M_READONLY));
-        } else if f.toks.get(i + 1).is_some_and(|t| t.is(&TokenKind::Colon))
+        } else if (f.toks.get(i + 1).is_some_and(|t| t.is(&TokenKind::Colon))
             && (prev.is(&TokenKind::LParen) || prev.is(&TokenKind::Comma))
-            && f.struct_literal_key_of(i).is_none()
+            && f.struct_literal_key_of(i).is_none())
+            || f.toks.get(i + 1).is_some_and(|t| t.is(&TokenKind::FatArrow))
         {
-            out.entry(n.to_string()).or_insert((T_PARAMETER, 0));
-        } else if f.toks.get(i + 1).is_some_and(|t| t.is(&TokenKind::FatArrow)) {
+            // typed or lambda parameter
             out.entry(n.to_string()).or_insert((T_PARAMETER, 0));
         }
     }
