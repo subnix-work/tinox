@@ -80,7 +80,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: subnix-work/jgrep-tinox
-          ref: f1bdc7c9a837c4fd15bb517b79e3efa0c34363eb # main, as of 2026-10-25 (v1.0.10, compiler 2.7.0, #449)
+          ref: 20f00591f5018fea74dd5c00acc3e052c345b725 # main, as of 2026-10-27 (v1.0.11, compiler 2.8.0)
           path: jgrep-tinox
 
       - name: Install system toolchain

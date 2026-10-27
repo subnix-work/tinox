@@ -42,7 +42,7 @@ fn build_fixture(fixture_dir: &str, workdir_name: &str, database_toml: &str) -> 
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.7.0"
+compiler = "2.8.0"
 name = "{workdir_name}"
 version = "0.1.0"
 {database_toml}

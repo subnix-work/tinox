@@ -1,5 +1,5 @@
 [package]
-compiler = "2.7.0"
+compiler = "2.8.0"
 name = "amqp091-fuzz-driver"
 version = "0.1.0"
 description = "Local-only manifest so Amqp091Driver.tnx can pull in the real tinox.core.amqp091 module as a dependency."

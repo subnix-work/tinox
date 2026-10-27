@@ -4,6 +4,37 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-27
+
+### Added
+
+- **`DB::raw(sql, params)`** in `tinox.core.db` 1.2.1 (#480): a parameterized raw-SQL
+  escape hatch returning `List<Map<String, String>>` (NULL columns are absent from
+  the row map). PostgreSQL only; any other driver is a compile error. Values must go
+  through `params`, never be concatenated into `sql`.
+- `make docs-check` parse-checks every ```` ```tinox ```` block in `docs/SPEC.md` (#470).
+- Dedicated parser diagnostic for `for (x in xs)` (#470).
+
+### Fixed
+
+- Numeric conversions: lossy implicit conversions are rejected on all expressions,
+  including call results; widening converts correctly; declared-width literal
+  arithmetic; `UInt64` literals and unsigned compare/div/rem/print (#453, #473).
+- Closures: assignment to a captured variable is a compile error (#460); lambda
+  parameter typing (#474 diagnostics for static/instance call-shape mistakes).
+- Control flow: `finally` runs on `break`, `continue` and rethrow from a catch
+  (#454); exhaustive enum `match` and definite-return analysis (#426, #427);
+  catch clause type must be `String` (#436); branch type checks (#428).
+- Virtual dispatch for overridden class methods (#455); incompatible override
+  signatures are rejected (#456).
+- Strings/lists: bounds checks for `charAt`/`substring` and `List` writes (#422,
+  #469); byte-string model enforced (#472); `toInt`/`toFloat` validate input
+  (#466); decoders reject malformed input (#467); `List.sort` orders by content
+  (#459); `s[i]` is the byte value (#458); regex classes `\d \s \w` (#468).
+- `tinox fmt` is a comment- and token-preserving formatter (#465); `tinox check`
+  covers every project source file (#475); unimplemented builtins are diagnostics
+  (#429); `JsonValue` int-array fast path (#476).
+
 ## [2.7.0] - 2026-10-25
 
 ### Changed (breaking)
