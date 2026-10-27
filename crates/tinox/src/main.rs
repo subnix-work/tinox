@@ -3743,28 +3743,22 @@ fn has_class_named_main(decls: &[tinox_parser::Decl]) -> bool {
     })
 }
 
-/// Whether `expr` is itself a `DB.raw(...)` call — deliberately mirrors
+/// Whether `expr` is itself a `DB::raw(...)` call — deliberately mirrors
 /// `gen_orm_raw`'s own interception shape in `tinox-codegen/src/codegen.rs`
 /// (`obj == Ident("DB") && method == "raw"`) so this compile-time gate and
 /// what codegen actually intercepts can never disagree.
 fn expr_is_db_raw_call(expr: &tinox_parser::Expr) -> bool {
-    if let tinox_parser::ExprKind::MethodCall { obj, method, .. } = &expr.node {
-        if method == "raw" {
-            if let tinox_parser::ExprKind::Ident(name) = &obj.node {
-                return name == "DB";
-            }
-        }
-    }
-    false
+    matches!(&expr.node, tinox_parser::ExprKind::EnumValue { enum_name, variant, .. }
+        if enum_name == "DB" && variant == "raw")
 }
 
-/// Finds any `DB.raw(...)` call anywhere in a method body, no matter how
+/// Finds any `DB::raw(...)` call anywhere in a method body, no matter how
 /// deeply nested (inside a lambda, match arm, try/catch, loop, ...).
 /// Exhaustive over every `ExprKind`/`StmtKind` variant, mirroring
 /// `callgraph.rs`'s `walk_stmt`/`walk_expr` (built for a different purpose —
 /// call-graph edges — but the same full-coverage shape), simplified to a
 /// plain boolean short-circuit since call-target resolution isn't needed
-/// here, only "does a `DB.raw` call exist anywhere in this body".
+/// here, only "does a `DB::raw` call exist anywhere in this body".
 fn stmt_uses_db_raw(stmt: &tinox_parser::Stmt) -> bool {
     use tinox_parser::StmtKind;
     match &stmt.node {
@@ -3856,7 +3850,7 @@ fn expr_uses_db_raw(expr: &tinox_parser::Expr) -> bool {
     }
 }
 
-/// First `(class, method)` anywhere in the program with a `DB.raw(...)` call
+/// First `(class, method)` anywhere in the program with a `DB::raw(...)` call
 /// in its body, if any — used only for the postgres-only compile-time gate
 /// below, mirroring how `has_class_named_main` walks `Class`/`Namespace`
 /// decls.
@@ -4738,17 +4732,17 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
             )));
         }
     }
-    // DB.raw(...) is postgres-only in v1, same reasoning and same check shape
+    // DB::raw(...) is postgres-only in v1, same reasoning and same check shape
     // as @Transactional above (its connection-pool/PQexecParams machinery only
-    // exists for that driver). `DB.raw` is a plain call expression, not an
+    // exists for that driver). `DB::raw` is a plain call expression, not an
     // annotation, so it is found with a dedicated AST walk.
     if let Some((class_name, method_name)) = find_db_raw_usage(&ast.decls) {
         let driver_cfg = read_database_config();
         let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
         if driver != "postgres" {
             return Err(annotation_error(&[class_name.as_str()], format!(
-                "'{class_name}.{method_name}' calls DB.raw(...), but [database] driver is {} -- \
-                 DB.raw(...) is only supported for driver = \"postgres\" in this version",
+                "'{class_name}.{method_name}' calls DB::raw(...), but [database] driver is {} -- \
+                 DB::raw(...) is only supported for driver = \"postgres\" in this version",
                 if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
             )));
         }

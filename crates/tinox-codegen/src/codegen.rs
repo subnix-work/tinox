@@ -7429,7 +7429,7 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir, "{ok_bb}:").unwrap();
     }
 
-    /// `DB.raw(sql, params)` — arbitrary parameterized SQL against the pool.
+    /// `DB::raw(sql, params)` — arbitrary parameterized SQL against the pool.
     /// Unlike `gen_orm_query`, there's no static entity schema to generate a
     /// `_fromRow`-style function from, so row marshaling (Postgres result ->
     /// `List<Map<String,String>>`) happens in one C runtime helper
@@ -7490,7 +7490,7 @@ tr_done_{idx}:"#).unwrap();
         .unwrap();
         writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
         // A failed statement aborts visibly instead of yielding an empty list.
-        self.emit_orm_failure_check(&result_reg, "DB.raw", "tinox_orm_query_failed");
+        self.emit_orm_failure_check(&result_reg, "DB::raw", "tinox_orm_query_failed");
 
         let rows = self.temp();
         writeln!(&mut self.ir, "  {rows} = call i64* @tinox_db_result_to_row_maps(i8* {result_reg})").unwrap();
@@ -10544,24 +10544,6 @@ tr_done_{idx}:"#).unwrap();
                     }
                 }
 
-                // DB.raw(sql, params) — raw-SQL escape hatch, hangs directly
-                // off `DB` (no `.of(...)` chain to unwind, unlike save/delete
-                // above). Real static types (String / List<String> ->
-                // List<Map<String,String>>), so unlike `of/filter/...` this
-                // isn't reached via an Any-typed receiver bypass — it's
-                // recognized here purely to swap out the (never-executed)
-                // stub body for real SQL execution, the same reason
-                // save/delete are special-cased above.
-                if method == "raw" && args.len() == 2 {
-                    if let ExprKind::Ident(db_name) = &obj.node {
-                        if db_name == "DB" {
-                            let sql_arg = args[0].clone();
-                            let params_arg = args[1].clone();
-                            return self.gen_orm_raw(&sql_arg, &params_arg, ctx);
-                        }
-                    }
-                }
-
                 // Static method call: ClassName.fnc(args) — obj is a class name, not an instance
                 if let ExprKind::Ident(class_name) = &obj.node {
                     let method_key = format!("{}_{}", class_name, method);
@@ -12006,6 +11988,16 @@ tr_done_{idx}:"#).unwrap();
                 type_args,
                 args,
             } => {
+                // `DB::raw(sql, params)` — raw-SQL escape hatch, hangs
+                // directly off `DB` (no `DB::of(...)` chain to unwind).
+                // It has real static types (String / List<String> ->
+                // List<Map<String,String>>); it is recognized here only to
+                // swap the never-executed stub body for real SQL execution,
+                // the same reason save/delete are special-cased.
+                if enum_name == "DB" && variant == "raw" && args.len() == 2 {
+                    let (sql_arg, params_arg) = (args[0].clone(), args[1].clone());
+                    return self.gen_orm_raw(&sql_arg, &params_arg, ctx);
+                }
                 // Resolve the type-parameter alias: inside a
                 // specialization, `T::fromJson` is a call on the bound
                 // class.

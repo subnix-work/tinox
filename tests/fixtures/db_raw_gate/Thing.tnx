@@ -4,7 +4,7 @@ class Thing
 {
     fn doit() -> Nothing
     {
-        let rows = DB.raw("SELECT 1", [])
+        let rows = DB::raw("SELECT 1", [])
         println(rows.len().toString())
     }
 }

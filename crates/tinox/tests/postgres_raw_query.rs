@@ -1,4 +1,4 @@
-//! `DB.raw(sql, params)` (ai-vault prerequisite: a raw-SQL escape hatch for
+//! `DB::raw(sql, params)` (ai-vault prerequisite: a raw-SQL escape hatch for
 //! `tinox.core.db`, added because the `filter()/orderBy()/...` ORM DSL can't
 //! express a pgvector `ORDER BY embedding <-> $1` query), verified against a
 //! REAL Postgres (docker), not a simulated/mocked driver -- same "verify
@@ -52,9 +52,10 @@ fn raw_query_binds_params_and_omits_null_columns() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
+compiler = "2.7.0"
 name = "postgres_raw_query"
 version = "0.1.0"
-description = "DB.raw e2e fixture"
+description = "DB::raw e2e fixture"
 
 [database]
 driver = "postgres"
@@ -64,9 +65,15 @@ pool = 3
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.0.0"
+version = "1.1.0"
+
+[[overrides]]
+group = "tinox.core"
+artifactId = "db"
+path = "{db_dir}"
 "#,
-            pg.url()
+            pg.url(),
+            db_dir = repo_root().join("crates/tinox-core-ext/db").display()
         ),
     )
     .expect("write tinox.toml");
@@ -122,7 +129,7 @@ version = "1.0.0"
     assert!(stdout.contains("none: 0"), "stdout: {stdout}");
 
     // Independent verification against real Postgres state, not just the
-    // program's own claims: the seed data is exactly as inserted (DB.raw is
+    // program's own claims: the seed data is exactly as inserted (DB::raw is
     // read-only here, nothing should have changed it).
     let count = pg.psql("SELECT count(*) FROM items;");
     assert_eq!(count, "3", "psql: {count}");

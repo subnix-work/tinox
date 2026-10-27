@@ -6,7 +6,7 @@ class Main
     {
         // Multiple rows, WHERE param, ORDER BY -- exercises the full
         // params: List<String> -> $N binding path.
-        let rows: List<Map<String, String>> = DB.raw(
+        let rows: List<Map<String, String>> = DB::raw(
             "SELECT id, name, note FROM items WHERE price > $1 ORDER BY id",
             ["5.00"]
         )
@@ -20,7 +20,7 @@ class Main
         }
 
         // No WHERE match -- must come back as an empty list, not an error.
-        let none: List<Map<String, String>> = DB.raw(
+        let none: List<Map<String, String>> = DB::raw(
             "SELECT id FROM items WHERE price > $1",
             ["999999.00"]
         )

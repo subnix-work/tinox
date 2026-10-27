@@ -830,14 +830,14 @@ browse the published packages on tinox-central — this spec intentionally
 does not duplicate that list, since it is added to frequently and would
 go stale here.
 
-### Raw SQL: `DB.raw`
+### Raw SQL: `DB::raw`
 
-`DB.raw(sql, params)` (package `tinox.core.db` 1.2.0) runs one parameterized
+`DB::raw(sql, params)` (`tinox.core.db`, unreleased; in the package after 1.1.0) runs one parameterized
 statement for queries the ORM DSL cannot express (for example a pgvector
 `ORDER BY embedding <-> $1`):
 
 ```tinox
-const rows: List<Map<String, String>> = DB.raw(
+const rows: List<Map<String, String>> = DB::raw(
     "SELECT id, name, note FROM items WHERE price > $1 ORDER BY id",
     ["5.00"]
 )
