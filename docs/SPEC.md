@@ -747,7 +747,9 @@ deferred, because every use so far fits a polled queue (Tinox asks the library f
 the next event) without exposing a Tinox function as a C function pointer.
 
 Declaring the same `extern fn` in several files is allowed when the
-signatures are identical; differing signatures are an error.
+signatures are identical; differing signatures are an error. The same holds
+for a runtime symbol the compiler declares itself: redeclaring it identically
+is harmless, a different signature is reported at the `extern fn`.
 
 ## Concurrency
 

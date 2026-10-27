@@ -37,6 +37,10 @@ All notable changes to Tinox are documented in this file.
 
 ### Fixed
 
+- An `extern fn` naming a runtime symbol the compiler already declares (for example
+  `tinox_clock_nanos`) no longer ends in an internal LLVM verifier error (#504): an
+  identical declaration is emitted once, a different signature is a compile error that
+  names both.
 - `lsp_pos_to_offset` counted LSP columns in code points instead of UTF-16 units.
 
 ## [2.8.0] - 2026-10-27
