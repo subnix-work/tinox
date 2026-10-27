@@ -112,6 +112,28 @@ impl Lsp {
         }
     }
 
+    /// Collects everything the server sends during the next `ms` milliseconds.
+    pub fn drain(&mut self, ms: u64) {
+        let deadline = Instant::now() + Duration::from_millis(ms);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.rx.recv_timeout(left) {
+                Ok(m) => self.inbox.push(m),
+                Err(_) => return,
+            }
+        }
+    }
+
+    /// All `publishDiagnostics` payloads for `path` received so far, oldest first.
+    pub fn published(&self, path: &Path) -> Vec<Vec<Value>> {
+        let uri = url(path);
+        self.inbox
+            .iter()
+            .filter(|m| m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri)
+            .map(|m| m["params"]["diagnostics"].as_array().cloned().unwrap_or_default())
+            .collect()
+    }
+
     pub fn shutdown(mut self) {
         let _ = self.request_raw("shutdown", json!(null));
         self.notify("exit", json!(null));

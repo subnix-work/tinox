@@ -142,7 +142,10 @@ fn load_embedded_module(module: &str, registry: &mut TypeRegistry) {
     }
 }
 
-struct Backend {
+/// Quiet period after the last keystroke before a document is re-analysed.
+const DEBOUNCE_MS: u64 = 120;
+
+struct Inner {
     client: Client,
     docs: DashMap<Url, String>,
     asts: DashMap<Url, SourceFile>,
@@ -155,11 +158,15 @@ struct Backend {
     /// Last semantic-token answer per document, for `full/delta`.
     semantic_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
     semantic_counter: std::sync::atomic::AtomicU64,
+    /// Bumped on every change of a document; superseded analyses drop their result.
+    generations: DashMap<Url, u64>,
+    /// Latest client version seen per document (out-of-order changes are ignored).
+    doc_versions: DashMap<Url, i32>,
     /// (import path, class names) for every embedded standard-library module.
     stdlib_import_map: Vec<(String, Vec<String>)>,
 }
 
-impl Backend {
+impl Inner {
     fn new(client: Client) -> Self {
         // Start with embedded stdlib; optionally supplement from filesystem if TINOX_STDLIB is set.
         let mut stdlib_registry = build_embedded_stdlib();
@@ -203,6 +210,8 @@ impl Backend {
             semantic_cache: DashMap::new(),
             semantic_counter: std::sync::atomic::AtomicU64::new(0),
             stdlib_import_map,
+            generations: DashMap::new(),
+            doc_versions: DashMap::new(),
         }
     }
 
@@ -236,6 +245,39 @@ impl Backend {
             top_level(&ast.decls, &mut functions);
         }
         (registry, functions)
+    }
+
+    fn overlay(&self) -> impl Fn(&Path) -> Option<String> + '_ {
+        move |path: &Path| Url::from_file_path(path).ok().and_then(|u| self.docs.get(&u).map(|t| t.clone()))
+    }
+
+    fn bump(&self, uri: &Url) -> u64 {
+        let mut g = self.generations.entry(uri.clone()).or_insert(0);
+        *g += 1;
+        *g
+    }
+
+    fn generation(&self, uri: &Url) -> u64 {
+        self.generations.get(uri).map(|g| *g).unwrap_or(0)
+    }
+
+    /// Re-analyses the other open documents that directly import `changed`,
+    /// so a fix (or a break) in one file shows up in its users at once.
+    async fn refresh_dependents(&self, changed: &Url) {
+        let Ok(changed_path) = changed.to_file_path() else { return };
+        let changed_canon = changed_path.canonicalize().unwrap_or(changed_path);
+        let open: Vec<(Url, String)> = self.docs.iter().filter(|e| e.key() != changed).map(|e| (e.key().clone(), e.value().clone())).collect();
+        for (uri, text) in open {
+            let Ok(path) = uri.to_file_path() else { continue };
+            let Ok(ast) = tinox_parser::parse_source_cached(&text) else { continue };
+            let imports_changed = import_paths(&ast).iter().any(|ip| {
+                resolve_project_local_import(ip, &path).and_then(|p| p.canonicalize().ok()).is_some_and(|p| p == changed_canon)
+            });
+            if imports_changed {
+                let generation = self.bump(&uri);
+                self.update(uri, text, None, generation).await;
+            }
+        }
     }
 
     fn nav_ctx(&self) -> navigation::Ctx {
@@ -285,6 +327,23 @@ impl Backend {
             }
         }
         out
+    }
+}
+
+/// The language server: shared state behind an `Arc` so debounced analyses
+/// can run as background tasks instead of occupying a request-handler slot.
+struct Backend(std::sync::Arc<Inner>);
+
+impl std::ops::Deref for Backend {
+    type Target = Inner;
+    fn deref(&self) -> &Inner {
+        &self.0
+    }
+}
+
+impl Backend {
+    fn new(client: Client) -> Self {
+        Backend(std::sync::Arc::new(Inner::new(client)))
     }
 }
 
@@ -395,6 +454,10 @@ fn resolve_project_local_import(path: &[String], file_path: &Path) -> Option<Pat
     None
 }
 
+/// Unsaved editor buffers: returns the open document's text for a path, if any,
+/// so imported files are analysed as the user sees them, not as saved.
+type Overlay<'a> = &'a dyn Fn(&Path) -> Option<String>;
+
 /// Recursively resolves `source`'s own project-local imports (and THEIR
 /// project-local imports, and so on) into parsed ASTs — the project-local
 /// counterpart to `self.stdlib_asts`, built fresh per `update()` call
@@ -403,7 +466,7 @@ fn resolve_project_local_import(path: &[String], file_path: &Path) -> Option<Pat
 /// `visited` guards against an import cycle (two files importing each
 /// other) looping forever — same purpose as `tinox`'s own `resolve_imports`
 /// `visited: &mut HashSet<PathBuf>` parameter.
-fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path: &Path) -> Vec<SourceFile> {
+fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path: &Path, overlay: Overlay) -> Vec<SourceFile> {
     let mut out = Vec::new();
     let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     if let Ok(canon) = file_path.canonicalize() {
@@ -419,7 +482,7 @@ fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path
         if !visited.insert(canon) {
             continue;
         }
-        let Ok(src) = std::fs::read_to_string(&target) else { continue };
+        let Some(src) = overlay(&target).or_else(|| std::fs::read_to_string(&target).ok()) else { continue };
         let Ok(ast) = tinox_parser::parse_source_cached(&src) else { continue };
         for p in import_paths(&ast) {
             queue.push((p, target.clone()));
@@ -432,7 +495,7 @@ fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path
 
 /// Load package imports from the exact graph used by the CLI. Local sources
 /// are parsed fresh on every update, so unpublished edits are immediately used.
-fn load_package_preludes(source: &SourceFile, file: &Path, dirs: &[PathBuf]) -> std::result::Result<Vec<SourceFile>, String> {
+fn load_package_preludes(source: &SourceFile, file: &Path, dirs: &[PathBuf], overlay: Overlay) -> std::result::Result<Vec<SourceFile>, String> {
     let mut out = Vec::new();
     let mut visited = std::collections::HashSet::new();
     visited.insert(file.canonicalize().unwrap_or_else(|_| file.to_path_buf()));
@@ -466,7 +529,10 @@ fn load_package_preludes(source: &SourceFile, file: &Path, dirs: &[PathBuf]) -> 
         for target in targets {
             let target = target.canonicalize().map_err(|e| e.to_string())?;
             if !visited.insert(target.clone()) { continue; }
-            let text = std::fs::read_to_string(&target).map_err(|e| e.to_string())?;
+            let text = match overlay(&target) {
+                Some(text) => text,
+                None => std::fs::read_to_string(&target).map_err(|e| e.to_string())?,
+            };
             let ast = tinox_parser::parse_source_cached(&text).map_err(|e| format!("{}: {e:?}", target.display()))?;
             queue.extend(import_paths(&ast).into_iter().map(|path| (path, target.clone())));
             // A type import also brings in its own namespace siblings, matching
@@ -534,8 +600,8 @@ fn load_stdlib(path: &Path) -> TypeRegistry {
     registry
 }
 
-impl Backend {
-    async fn update(&self, uri: Url, text: String) {
+impl Inner {
+    async fn update(&self, uri: Url, text: String, version: Option<i32>, generation: u64) {
         // Quick pre-parse to extract import names for stdlib prelude resolution.
         let parsed = tinox_parser::parse_source_cached(&text).ok();
         let import_names = parsed.as_ref().map(module_names_from_imports).unwrap_or_default();
@@ -547,7 +613,7 @@ impl Backend {
             }
         };
         let packages = match (&parsed, uri.to_file_path()) {
-            (Some(ast), Ok(file)) => load_package_preludes(ast, &file, &package_dirs),
+            (Some(ast), Ok(file)) => load_package_preludes(ast, &file, &package_dirs, &self.overlay()),
             _ => Ok(Vec::new()),
         };
         let packages = match packages {
@@ -586,7 +652,7 @@ impl Backend {
         // stack frame so `preludes`' borrows stay valid for the `compile`
         // call below.
         let project_local: Vec<SourceFile> = match (&parsed, uri.to_file_path()) {
-            (Some(ast), Ok(file_path)) => load_project_local_preludes(ast, &file_path),
+            (Some(ast), Ok(file_path)) => load_project_local_preludes(ast, &file_path, &self.overlay()),
             _ => Vec::new(),
         };
         preludes.extend(project_local.iter());
@@ -596,25 +662,56 @@ impl Backend {
         });
         diags.extend(provenance.into_iter().map(|message| package_diagnostic(message, DiagnosticSeverity::INFORMATION)));
         self.docs.insert(uri.clone(), text);
-        self.client.publish_diagnostics(uri, diags, None).await;
+        // A newer edit arrived while this analysis ran: its result is stale.
+        if self.generation(&uri) != generation {
+            return;
+        }
+        self.client.publish_diagnostics(uri, diags, version).await;
     }
 }
 
-fn err_to_diag(diagnostic: CompilerDiagnostic, source: &str) -> Diagnostic {
-    let range = diagnostic.range.unwrap_or_else(tinox_common::Span::dummy);
-    // Compiler columns count Unicode scalar values; LSP uses UTF-16 units.
+/// Compiler span (columns count Unicode scalar values) to an LSP range
+/// (columns count UTF-16 units) over `source`.
+fn lsp_range(span: tinox_common::Span, source: &str) -> Range {
     let position = |pos: tinox_common::Pos| Position {
         line: pos.line.saturating_sub(1),
         character: source.lines().nth(pos.line.saturating_sub(1) as usize)
             .unwrap_or("").chars().take(pos.column.saturating_sub(1) as usize)
             .map(|c| c.len_utf16() as u32).sum(),
     };
+    Range { start: position(span.start), end: position(span.end) }
+}
+
+fn err_to_diag(diagnostic: CompilerDiagnostic, source: &str) -> Diagnostic {
+    let range = diagnostic.range.unwrap_or_else(tinox_common::Span::dummy);
+    // Secondary locations (e.g. the declaration a mismatch refers to). Their
+    // text is only needed for UTF-16 columns: the open buffer when it is the
+    // same file, otherwise the saved file.
+    let related: Vec<DiagnosticRelatedInformation> = diagnostic
+        .related
+        .iter()
+        .filter_map(|r| {
+            let uri = Url::from_file_path(&r.file).ok()?;
+            let text = if diagnostic.file.as_deref() == Some(r.file.as_str()) {
+                source.to_string()
+            } else {
+                std::fs::read_to_string(&r.file).unwrap_or_default()
+            };
+            Some(DiagnosticRelatedInformation { location: Location { uri, range: lsp_range(r.range, &text) }, message: r.message.clone() })
+        })
+        .collect();
     Diagnostic {
-        range: Range { start: position(range.start), end: position(range.end) },
-        severity: Some(DiagnosticSeverity::ERROR),
+        range: lsp_range(range, source),
+        severity: Some(match diagnostic.severity.as_str() {
+            "warning" => DiagnosticSeverity::WARNING,
+            "info" | "information" => DiagnosticSeverity::INFORMATION,
+            "hint" => DiagnosticSeverity::HINT,
+            _ => DiagnosticSeverity::ERROR,
+        }),
         code: Some(NumberOrString::String(diagnostic.code.clone())),
         message: diagnostic.message.clone(),
         source: Some("tinox".into()),
+        related_information: (!related.is_empty()).then_some(related),
         data: Some(serde_json::json!({ "schema_version": SCHEMA_VERSION, "diagnostic": diagnostic })),
         ..Default::default()
     }
@@ -711,13 +808,37 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, p: DidOpenTextDocumentParams) {
-        self.update(p.text_document.uri, p.text_document.text).await;
+        let uri = p.text_document.uri;
+        self.doc_versions.insert(uri.clone(), p.text_document.version);
+        self.docs.insert(uri.clone(), p.text_document.text.clone());
+        let generation = self.bump(&uri);
+        self.update(uri.clone(), p.text_document.text, Some(p.text_document.version), generation).await;
+        self.refresh_dependents(&uri).await;
     }
 
     async fn did_change(&self, p: DidChangeTextDocumentParams) {
-        if let Some(change) = p.content_changes.into_iter().last() {
-            self.update(p.text_document.uri, change.text).await;
+        let uri = p.text_document.uri;
+        let version = p.text_document.version;
+        let Some(change) = p.content_changes.into_iter().last() else { return };
+        if self.doc_versions.get(&uri).is_some_and(|v| *v > version) {
+            return; // an older change delivered late
         }
+        self.doc_versions.insert(uri.clone(), version);
+        // Other features see the new text at once; only the analysis waits.
+        self.docs.insert(uri.clone(), change.text.clone());
+        let generation = self.bump(&uri);
+        // Analyse in the background after a quiet period: the handler returns
+        // at once, so a burst of edits never queues behind the server's
+        // request-concurrency limit.
+        let inner = std::sync::Arc::clone(&self.0);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
+            if inner.generation(&uri) != generation {
+                return; // superseded by a later keystroke
+            }
+            inner.update(uri.clone(), change.text, Some(version), generation).await;
+            inner.refresh_dependents(&uri).await;
+        });
     }
 
     async fn did_save(&self, p: DidSaveTextDocumentParams) {
@@ -725,13 +846,21 @@ impl LanguageServer for Backend {
         let text = p.text
             .or_else(|| self.docs.get(&uri).map(|t| t.clone()))
             .unwrap_or_default();
-        self.update(uri, text).await;
+        let generation = self.bump(&uri);
+        self.update(uri.clone(), text, None, generation).await;
+        self.refresh_dependents(&uri).await;
     }
 
     async fn did_close(&self, p: DidCloseTextDocumentParams) {
-        self.docs.remove(&p.text_document.uri);
-        self.asts.remove(&p.text_document.uri);
-        self.semantic_cache.remove(&p.text_document.uri);
+        let uri = p.text_document.uri;
+        self.bump(&uri); // cancels a pending analysis
+        self.docs.remove(&uri);
+        self.asts.remove(&uri);
+        self.semantic_cache.remove(&uri);
+        self.doc_versions.remove(&uri);
+        // Leave no stale diagnostics behind for a document that is no longer open.
+        self.client.publish_diagnostics(uri.clone(), Vec::new(), None).await;
+        self.refresh_dependents(&uri).await;
     }
 
     async fn hover(&self, p: HoverParams) -> Result<Option<Hover>> {
@@ -804,7 +933,7 @@ impl LanguageServer for Backend {
             }
             if let (Some(ast), Ok(file)) = (fresh_ast.as_ref(), uri.to_file_path()) {
                 if let Ok((dirs, _)) = package_context(&file) {
-                    if let Ok(packages) = load_package_preludes(ast, &file, &dirs) {
+                    if let Ok(packages) = load_package_preludes(ast, &file, &dirs, &self.overlay()) {
                         for package in packages {
                             reg.extend(build_registry_from_source(&package));
                         }
@@ -1148,7 +1277,7 @@ mod tests {
         let tokens = Lexer::new(&text).tokenize().unwrap();
         let ast = Parser::new(tokens).parse().unwrap();
 
-        let preludes_owned = load_project_local_preludes(&ast, &file_path);
+        let preludes_owned = load_project_local_preludes(&ast, &file_path, &|_| None);
         assert_eq!(preludes_owned.len(), 2, "expected PersonDao.tnx and Person.tnx to both resolve");
 
         let preludes: Vec<&SourceFile> = preludes_owned.iter().collect();
@@ -1184,6 +1313,35 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn related_locations_and_severity_reach_lsp() {
+        let dir = std::env::temp_dir().join(format!("tinox-lsp-related-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("Other.tnx");
+        // an emoji before the target pushes its UTF-16 column past its scalar column
+        std::fs::write(&other, "// 😀 class Other\nclass Other {}\n").unwrap();
+        let main = dir.join("Main.tnx");
+        let span = |l: u32, c0: u32, c1: u32| tinox_common::Span {
+            start: tinox_common::Pos { offset: 0, line: l, column: c0 },
+            end: tinox_common::Pos { offset: 0, line: l, column: c1 },
+        };
+        let mut d = CompilerDiagnostic::new("type", Some(main.to_str().unwrap()), Some(span(1, 7, 12)), "mismatch");
+        d.severity = "warning".into();
+        d.related.push(tinox_common::diagnostic::RelatedLocation {
+            file: other.canonicalize().unwrap().to_string_lossy().into_owned(),
+            range: span(2, 7, 12),
+            message: "declared here".into(),
+        });
+        let lsp = err_to_diag(d, "class Main {}\n");
+        assert_eq!(lsp.severity, Some(DiagnosticSeverity::WARNING));
+        let rel = lsp.related_information.unwrap();
+        assert_eq!(rel.len(), 1);
+        assert_eq!(rel[0].message, "declared here");
+        assert!(rel[0].location.uri.path().ends_with("Other.tnx"));
+        assert_eq!((rel[0].location.range.start.line, rel[0].location.range.start.character), (1, 6));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn parser_and_annotation_categories_match_the_cli() {
         for (source, category) in [("class Main {", "syntax"), ("`", "lex"), ("@Unknown class Main {}", "annotation")] {
             let diagnostics = compile(source, None, &[], |_| {});
@@ -1210,11 +1368,11 @@ mod diagnostic_tests {
         assert_eq!(dirs, cli_dirs);
         assert_eq!(provenance, tinox::pm::source_provenance(&root, &cli_dirs).unwrap());
         assert!(provenance[0].contains("local override: tinox.core:json:1.0.0"));
-        let packages = load_package_preludes(&ast, &entry, &dirs).unwrap();
+        let packages = load_package_preludes(&ast, &entry, &dirs, &|_| None).unwrap();
         let preludes: Vec<_> = packages.iter().collect();
         assert!(compile(source, entry.to_str(), &preludes, |_| {}).is_empty());
         std::fs::write(local.join("LocalJson.tnx"), "namespace tinox.core.json { class LocalJson { fnc changed() -> Int64 { return 43 } } }").unwrap();
-        let packages = load_package_preludes(&ast, &entry, &dirs).unwrap();
+        let packages = load_package_preludes(&ast, &entry, &dirs, &|_| None).unwrap();
         let preludes: Vec<_> = packages.iter().collect();
         assert!(!compile(source, entry.to_str(), &preludes, |_| {}).is_empty());
         std::fs::remove_dir_all(&root).unwrap();
