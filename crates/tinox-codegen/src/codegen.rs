@@ -266,6 +266,15 @@ pub struct EntityEntry {
     pub fields: Vec<EntityFieldEntry>,
 }
 
+/// The `!DISubprogram` a function body's instruction locations belong to.
+#[derive(Clone, Copy)]
+struct DbgScope {
+    sp_id: u32,
+    #[allow(dead_code)]
+    file_id: u32,
+    line: u32,
+}
+
 pub struct CodeGen {
     ir: String,
     lambda_ir: String,
@@ -5671,9 +5680,9 @@ tr_done_{idx}:"#).unwrap();
     /// real per-statement info, but enough for `gdb`/`addr2line` to
     /// resolve a crash to the right function, file, and roughly which
     /// declared line, matching this issue's actual goal.
-    fn dbg_suffix(&mut self, name: &str, file: &Arc<str>, line: u32) -> (String, String) {
+    fn dbg_suffix(&mut self, name: &str, file: &Arc<str>, line: u32) -> (String, Option<DbgScope>) {
         if file.as_ref() == tinox_parser::UNKNOWN_FILE {
-            return (String::new(), String::new());
+            return (String::new(), None);
         }
         let cu_id = self.di_compile_unit_id(file);
         let file_id = self.di_file_id(file);
@@ -5684,45 +5693,64 @@ tr_done_{idx}:"#).unwrap();
             "!{sp_id} = distinct !DISubprogram(name: \"{}\", scope: !{file_id}, file: !{file_id}, line: {line}, type: !{subty_id}, spFlags: DISPFlagDefinition, unit: !{cu_id})",
             Self::escape_di_string(name)
         ));
-        let loc_id = self.di_next_id;
-        self.di_next_id += 1;
-        self.di_metadata.push(format!(
-            "!{loc_id} = !DILocation(line: {line}, column: 1, scope: !{sp_id})"
-        ));
-        (format!(" !dbg !{sp_id}"), format!(", !dbg !{loc_id}"))
+        (format!(" !dbg !{sp_id}"), Some(DbgScope { sp_id, file_id, line }))
     }
 
-    /// Appends `call_suffix` (see `dbg_suffix`) to every `call`
-    /// instruction line in `ir[body_start..]`, in place. Scoped to text
-    /// generated between a function's `define` line and its closing `}`
-    /// — a targeted post-process instead of threading a suffix through
-    /// the ~300 individual call-emission sites across this file, since
-    /// every one of them already produces exactly one `call ...` per
-    /// line (never split across lines, never emits the substring
-    /// `" call "`/a leading `"call "` any other way — string literals
-    /// are hoisted to module-level globals, never inlined as instruction
-    /// text, so this can't misfire on user data).
-    fn attach_call_dbg(ir: &mut String, body_start: usize, call_suffix: &str) {
-        if call_suffix.is_empty() {
-            return;
-        }
-        let body = &ir[body_start..];
-        let mut out = String::with_capacity(body.len() + call_suffix.len() * 8);
+    /// Gives every instruction of a finished function body (`ir[body_start..]`)
+    /// a `!dbg` location (issues #114, #498). `; @tnxdbg LINE COL` markers,
+    /// written at the start of each statement, set the location of the
+    /// instructions that follow; instructions before the first marker use the
+    /// function's own line. LLVM requires every call in a function with debug
+    /// info to carry a location, and gives breakpoints and stepping something
+    /// to land on for the rest. Every instruction is one line; trailing
+    /// comments are kept after the attachment.
+    fn attach_dbg(&mut self, body_start: usize, scope: Option<DbgScope>) {
+        let Some(scope) = scope else { return };
+        let mut locs: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut loc_for = |this: &mut Self, line: u32, col: u32| -> u32 {
+            *locs.entry((line, col)).or_insert_with(|| {
+                let id = this.di_next_id;
+                this.di_next_id += 1;
+                this.di_metadata.push(format!("!{id} = !DILocation(line: {line}, column: {col}, scope: !{})", scope.sp_id));
+                id
+            })
+        };
+        let mut cur = loc_for(self, scope.line, 1);
+        let body = self.ir[body_start..].to_string();
+        let mut out = String::with_capacity(body.len() + body.len() / 6);
         for line in body.split_inclusive('\n') {
             let (content, ending) = match line.strip_suffix('\n') {
                 Some(c) => (c, "\n"),
                 None => (line, ""),
             };
-            let trimmed = content.trim_start();
-            if trimmed.starts_with("call ") || trimmed.contains(" = call ") {
-                out.push_str(content);
-                out.push_str(call_suffix);
-            } else {
-                out.push_str(content);
+            let t = content.trim_start();
+            if let Some(rest) = t.strip_prefix("; @tnxdbg ") {
+                let mut it = rest.split_whitespace().filter_map(|x| x.parse::<u32>().ok());
+                if let (Some(l), Some(c)) = (it.next(), it.next()) {
+                    cur = loc_for(self, l, c);
+                }
+                out.push_str(line);
+                continue;
+            }
+            let is_label = t.split(';').next().unwrap_or("").trim_end().strip_suffix(':').is_some_and(|l| !l.contains(char::is_whitespace));
+            if t.is_empty() || t.starts_with(';') || t == "}" || is_label || t.starts_with("define ") || content.contains("!dbg") {
+                out.push_str(line);
+                continue;
+            }
+            let (code, comment) = match content.find(';') {
+                Some(i) => (content[..i].trim_end(), &content[i..]),
+                None => (content, ""),
+            };
+            out.push_str(code);
+            out.push_str(&format!(", !dbg !{cur}"));
+            if !comment.is_empty() {
+                out.push(' ');
+                out.push_str(comment);
             }
             out.push_str(ending);
         }
-        ir.replace_range(body_start.., &out);
+        self.ir.truncate(body_start);
+        self.ir.push_str(&out);
     }
 
     fn capitalize_first(s: &str) -> String {
@@ -5884,7 +5912,7 @@ tr_done_{idx}:"#).unwrap();
         // method with a non-void return type — see #162.
         let fn_attrs = if is_inline { " alwaysinline" } else { "" };
 
-        let (dbg, call_dbg) = self.dbg_suffix(&f.name, &f.file, f.span.start.line);
+        let (dbg, dbg_scope) = self.dbg_suffix(&f.name, &f.file, f.span.start.line);
         writeln!(
             &mut self.ir,
             "define {} @{}({}){}{} {{",
@@ -5915,7 +5943,7 @@ tr_done_{idx}:"#).unwrap();
 
         self.gen_stmt_body(&f.body, &mut ctx)?;
 
-        let has_terminator = self.ir.lines().last().is_some_and(|l| {
+        let has_terminator = Self::last_code_line(&self.ir).is_some_and(|l| {
             let t = l.trim();
             t.starts_with("ret ") || t.starts_with("br ")
         });
@@ -5934,7 +5962,7 @@ tr_done_{idx}:"#).unwrap();
 
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
-        Self::attach_call_dbg(&mut self.ir, body_start, &call_dbg);
+        self.attach_dbg(body_start, dbg_scope);
 
         Ok(())
     }
@@ -6009,7 +6037,7 @@ tr_done_{idx}:"#).unwrap();
         let fn_attrs = if is_inline { " alwaysinline" } else { "" };
 
         let dbg_name = format!("{}.{}", class_name, method.name);
-        let (dbg, call_dbg) = self.dbg_suffix(&dbg_name, &method.file, method.span.start.line);
+        let (dbg, dbg_scope) = self.dbg_suffix(&dbg_name, &method.file, method.span.start.line);
         writeln!(
             &mut self.ir,
             "define {} @{}({}){}{} {{",
@@ -6048,7 +6076,7 @@ tr_done_{idx}:"#).unwrap();
             self.gen_stmt_body(&method.body, &mut ctx)?;
         }
 
-        let has_terminator = self.ir.lines().last().is_some_and(|l| {
+        let has_terminator = Self::last_code_line(&self.ir).is_some_and(|l| {
             let t = l.trim();
             t.starts_with("ret ") || t.starts_with("br ")
         });
@@ -6068,7 +6096,7 @@ tr_done_{idx}:"#).unwrap();
 
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
-        Self::attach_call_dbg(&mut self.ir, body_start, &call_dbg);
+        self.attach_dbg(body_start, dbg_scope);
         if synchronized {
             writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
@@ -8065,6 +8093,14 @@ tr_done_{idx}:"#).unwrap();
     }
 
     fn gen_stmt_body(&mut self, stmt: &Stmt, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
+        // Statement-level debug location (issue #498): a comment marker that
+        // `attach_dbg` turns into `!dbg` attachments once the function body
+        // is complete. A comment survives the IR buffer swaps used for
+        // lambdas and specializations; functions without debug info simply
+        // keep it as a comment.
+        if !matches!(stmt.node, StmtKind::Block(_) | StmtKind::Empty) && stmt.span.start.line > 0 {
+            writeln!(&mut self.ir, "; @tnxdbg {} {}", stmt.span.start.line, stmt.span.start.column.max(1)).unwrap();
+        }
         match &stmt.node {
             StmtKind::Defer(inner) => {
                 if let Some(scope) = ctx.defer_stack.last_mut() {
@@ -13996,7 +14032,7 @@ tr_done_{idx}:"#).unwrap();
             &Spanned::new(StmtKind::Return(Some(body.clone())), Span::dummy()),
             &mut lambda_ctx,
         )?;
-        let has_terminator = self.ir.lines().last().is_some_and(|l| {
+        let has_terminator = Self::last_code_line(&self.ir).is_some_and(|l| {
             l.trim().starts_with("ret ") || l.trim().starts_with("br ")
         });
         if !has_terminator {
@@ -14240,10 +14276,15 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
+    /// Last IR line that is not a `; @tnxdbg` location marker or other comment.
+    fn last_code_line(ir: &str) -> Option<&str> {
+        ir.lines().rev().find(|l| !l.trim_start().starts_with(';'))
+    }
+
     /// True if the last emitted IR line already terminates the current basic
     /// block, so no further instructions may be appended to it.
     fn last_is_terminator(&self) -> bool {
-        self.ir.lines().last().is_some_and(|l| {
+        Self::last_code_line(&self.ir).is_some_and(|l| {
             let t = l.trim();
             t.starts_with("ret ") || t == "ret void" || t.starts_with("br ")
                 || t == "unreachable" || t.starts_with("switch ")
@@ -17301,6 +17342,40 @@ mod tests {
         let call_line = ir.lines().find(|l| l.contains("call i64 @add")).expect("call site should exist");
         assert!(call_line.contains(", !dbg !"), "call site must carry a !dbg location: {call_line}");
         assert!(ir.contains("!DILocation("));
+    }
+
+    #[test]
+    fn test_debug_info_statements_get_their_own_lines() {
+        // Issue #498: every statement of a body gets a DILocation with its
+        // own line, so breakpoints and stepping have rows to land on.
+        let src = "fn work(n: Int64) -> Int64 {\n  var total: Int64 = 0\n  var i: Int64 = 0\n  while (i < n) {\n    total = total + i\n    i = i + 1\n  }\n  return total\n}\nfn main() -> Int64 {\n  return work(3)\n}";
+        let ir = compile_to_ir_with_file(src, "/tmp/probe.tnx");
+        let lines: std::collections::BTreeSet<u32> = ir
+            .lines()
+            .filter(|l| l.contains("= !DILocation("))
+            .filter_map(|l| l.split("line: ").nth(1)?.split(',').next()?.parse().ok())
+            .collect();
+        for expected in [2, 3, 4, 5, 6, 8] {
+            assert!(lines.contains(&expected), "missing a DILocation for line {expected}: {lines:?}");
+        }
+        // an instruction from the loop body carries a location, and so does the terminator
+        let store = ir.lines().find(|l| l.trim_start().starts_with("store") && l.contains("!dbg")).expect("a located store");
+        assert!(store.contains(", !dbg !"), "{store}");
+        let ret = ir.lines().find(|l| l.trim_start().starts_with("ret i64 ") && !l.contains("work") && l.contains("!dbg"));
+        assert!(ret.is_some(), "ret must be located");
+        // markers stay comments: nothing but a comment may contain the marker text
+        assert!(ir.lines().filter(|l| l.contains("@tnxdbg")).all(|l| l.trim_start().starts_with(';')));
+    }
+
+    #[test]
+    fn test_debug_info_comment_after_instruction_is_preserved() {
+        // The attachment goes before a trailing comment, never inside it.
+        let src = "fn main() -> Int64 {\n  return 1\n}";
+        let ir = compile_to_ir_with_file(src, "/tmp/probe.tnx");
+        for l in ir.lines().filter(|l| l.contains("!dbg") && l.contains(';')) {
+            let (code, comment) = l.split_once(';').unwrap();
+            assert!(code.contains("!dbg") || !comment.contains("!dbg") || code.is_empty(), "{l}");
+        }
     }
 
     #[test]
