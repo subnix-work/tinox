@@ -742,6 +742,10 @@ function pointer), tuples, nullable types, `Channel`/`Task` handles, `Nothing`
 as a parameter, structs by value, variadic functions and out-pointers. Wrap
 those in a C function with a supported signature.
 
+Calls from C back into Tinox (callbacks) are not supported: evaluated in #488 and
+deferred, because every use so far fits a polled queue (Tinox asks the library for
+the next event) without exposing a Tinox function as a C function pointer.
+
 Declaring the same `extern fn` in several files is allowed when the
 signatures are identical; differing signatures are an error.
 

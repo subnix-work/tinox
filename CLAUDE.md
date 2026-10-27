@@ -1996,3 +1996,33 @@ startup failure, never a silent fallback.
 - For explicit critical sections, use semaphore-module locks with `defer`
   immediately after successful acquisition. Existing low-level native lock
   operations remain blocking and are not implicit cancellation points.
+
+## IDE Support Surface (issues #485-#497, since 2026-10-27)
+
+Built for the Tinox IDE (`subnix-work/tinox-ide`), useful to any tool author.
+
+- **`[native]` in tinox.toml** (`crates/tinox/src/native.rs`): `libs`, `lib_dirs`,
+  `rpath`, `pkg_config`, `objects`, `sources`, `cflags`; unknown keys, missing
+  files and libraries are hard errors. Sources compile to `<project>/.tinox/native/`
+  (object reused only while source and `-MMD` headers are older). The runtime
+  directory is on the include path, so C sources can `#include <runtime.h>`. The
+  build-cache fingerprint hashes the content of `-L`-resolved libraries and objects.
+- **`extern fn` ABI**: sub-32-bit scalars get `zeroext`/`signext`; unsupported
+  signature types fail in `check_extern_signature` (typecheck). The contract is in
+  SPEC.md "Foreign Function Interface". C-returned strings are adopted without a
+  copy: they must be static or GC-allocated.
+- **Foreign threads**: `tinox_thread_attach/detach` (nesting, `1` = already known).
+  `GC_allow_register_threads()` runs in `main`. The per-thread GC root guard is a
+  file-scope `__thread` flag so a detached thread can attach again.
+- **`tinox-lsp` navigation is token based** (`navigation.rs`): no receiver types, so
+  member rename is refused unless exactly one project type declares the name and it
+  cannot be a stdlib/builtin member (`BUILTIN_MEMBERS`); lexer offsets are CHARACTER
+  indices, converted to bytes in `FileIndex::build`; LSP columns are UTF-16. The
+  analysis debounce runs in a spawned task on purpose: tower-lsp handlers are capped
+  at four concurrent requests, so sleeping inside `did_change` does not debounce.
+- **Process groups**: pipe-mode `InteractiveProcess` children lead their own group;
+  signal the group only while the leader is unreaped (pid reuse), see `processSignal`.
+- **`--message-format=json`** emits NDJSON events with `reason` + `schema_version`;
+  `diagnostics::emit` is the only writer, stdout stays free of anything else.
+- **Debugger**: DWARF is function-level only (docs/debugging.md); stepping and
+  locals need the codegen work tracked in the follow-up issues.
