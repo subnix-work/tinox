@@ -1,5 +1,5 @@
 [package]
-compiler = "2.7.0"
+compiler = "2.8.0"
 name = "http"
 version = "1.1.0"
 description = "tinox.core.http, split out of the bundled stdlib as a standalone tinox-central package."

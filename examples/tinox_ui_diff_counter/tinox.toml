@@ -1,5 +1,5 @@
 [package]
-compiler = "2.7.0"
+compiler = "2.8.0"
 name = "tinox_ui_diff_counter"
 version = "0.1.0"
 description = "Tinox-UI click counter using diff-based rendering (TinoxUIRuntime.diff/sendPatch) instead of full-tree resend."

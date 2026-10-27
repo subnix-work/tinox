@@ -1,5 +1,5 @@
 {
-  "compiler_version": "2.7.0",
+  "compiler_version": "2.8.0",
   "module_sections": [
     "mod-amqp091",
     "mod-amqp10",
@@ -134,11 +134,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/db/1-2-0/docs.html",
+      "docs": "docs/tinox-core/db/1-2-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/db/tinox.toml",
       "name": "db",
-      "version": "1.2.0"
+      "version": "1.2.1"
     },
     {
       "dependencies": [],
