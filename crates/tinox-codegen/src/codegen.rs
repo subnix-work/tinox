@@ -352,6 +352,8 @@ pub struct CodeGen {
     /// DI type nodes by a stable description, so each is emitted once.
     di_type_cache: HashMap<String, u32>,
     struct_layouts: HashMap<String, Vec<String>>,
+    /// Declared Tinox type of every field per class (inherited ones included), for debug info.
+    struct_field_decl_types: HashMap<String, HashMap<String, Type>>,
     /// Per class: the `var x: T = <literal>;` defaults declared on its
     /// fields, in declaration order. Only populated for classes that
     /// actually declare one.
@@ -673,6 +675,7 @@ impl CodeGen {
             dbg_declare_used: false,
             di_type_cache: HashMap::new(),
             struct_layouts: HashMap::new(),
+            struct_field_decl_types: HashMap::new(),
             field_defaults: HashMap::new(),
             closure_envs: HashMap::new(),
             method_ret_types: HashMap::new(),
@@ -998,6 +1001,22 @@ impl CodeGen {
     }
 
     /// Collect field_name -> llvm_type for all fields (including inherited).
+    fn collect_field_decl_types(
+        name: &str,
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) -> HashMap<String, Type> {
+        let Some(c) = class_map.get(name) else { return HashMap::new(); };
+        let mut result = if let Some(parent) = &c.extends {
+            Self::collect_field_decl_types(parent, class_map)
+        } else {
+            HashMap::new()
+        };
+        for f in &c.fields {
+            result.insert(f.name.clone(), f.field_type.clone());
+        }
+        result
+    }
+
     fn collect_field_llvm_types(
         name: &str,
         class_map: &HashMap<String, tinox_parser::Class>,
@@ -2143,6 +2162,7 @@ impl CodeGen {
                 .map(|f| (f.name.clone(), Self::type_to_llvm(&f.param_type)))
                 .collect();
             self.struct_field_llvm_types.insert(u.name.clone(), fllt);
+            self.struct_field_decl_types.insert(u.name.clone(), u.fields.iter().map(|f| (f.name.clone(), f.param_type.clone())).collect());
             let fn_sigs: HashMap<String, (String, Vec<String>)> = u.fields.iter()
                 .filter_map(|f| {
                     if let tinox_parser::Type::Fn { params, ret } = &f.param_type {
@@ -2243,6 +2263,7 @@ impl CodeGen {
                     return Err(bag);
                 }
                 self.struct_layouts.insert(c.name.clone(), fields);
+                self.struct_field_decl_types.insert(c.name.clone(), Self::collect_field_decl_types(&c.name, &class_ast_map));
                 // Field `= <literal>` defaults, kept alongside the layout so
                 // emit_field_defaults can reach them from the generated
                 // bootstrap code (which runs outside any class AST scope).
@@ -5740,6 +5761,130 @@ tr_done_{idx}:"#).unwrap();
         id
     }
 
+    /// Whether a value of this type occupies a full 8-byte slot, so a pointer
+    /// to it can index the runtime's `int64_t` element arrays.
+    fn is_wide_slot(ty: &Type) -> bool {
+        !matches!(
+            ty,
+            Type::Bool | Type::Char | Type::Int8 | Type::Int16 | Type::Int32 | Type::UInt8 | Type::UInt16 | Type::UInt32 | Type::Float32
+        )
+    }
+
+    /// Type of a container element or map value as seen through the
+    /// runtime's 8-byte slots.
+    fn di_slot_type(&mut self, ty: &Type) -> u32 {
+        if Self::is_wide_slot(ty) {
+            let llvm = self.type_to_llvm_inst(ty);
+            self.di_type(Some(ty), &llvm, None)
+        } else {
+            self.di_basic("Int64", 64, "DW_ATE_signed")
+        }
+    }
+
+    fn di_member(&mut self, scope: u32, name: &str, base: u32, size: u32, offset: u32) -> u32 {
+        let id = self.di_next_id;
+        self.di_next_id += 1;
+        self.di_metadata.push(format!(
+            "!{id} = !DIDerivedType(tag: DW_TAG_member, name: \"{}\", scope: !{scope}, baseType: !{base}, size: {size}, offset: {offset})",
+            Self::escape_di_string(name)
+        ));
+        id
+    }
+
+    /// `typedef NAME` -> pointer -> structure with `members`. The typedef
+    /// carries the Tinox name a pretty-printer keys on. `build` receives the
+    /// structure's id and returns `(member ids, size in bits)`; the typedef is
+    /// cached BEFORE it runs, so self-referential types terminate.
+    fn di_named_struct(
+        &mut self,
+        key: String,
+        name: &str,
+        build: impl FnOnce(&mut Self, u32) -> (Vec<u32>, u32),
+    ) -> u32 {
+        if let Some(id) = self.di_type_cache.get(&key) {
+            return *id;
+        }
+        let (td, ptr, comp) = (self.di_next_id, self.di_next_id + 1, self.di_next_id + 2);
+        self.di_next_id += 3;
+        self.di_type_cache.insert(key, td);
+        let (members, size) = build(self, comp);
+        let elems = self.di_next_id;
+        self.di_next_id += 1;
+        let list = members.iter().map(|m| format!("!{m}")).collect::<Vec<_>>().join(", ");
+        self.di_metadata.push(format!("!{elems} = !{{{list}}}"));
+        let esc = Self::escape_di_string(name);
+        self.di_metadata.push(format!("!{comp} = distinct !DICompositeType(tag: DW_TAG_structure_type, name: \"{esc}\", size: {size}, elements: !{elems})"));
+        self.di_metadata.push(format!("!{ptr} = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{comp}, size: 64)"));
+        self.di_metadata.push(format!("!{td} = !DIDerivedType(tag: DW_TAG_typedef, name: \"{esc}\", baseType: !{ptr})"));
+        td
+    }
+
+    /// Debug type of a user class or immutable: a typedef to a pointer to
+    /// its field layout (8 bytes per field, in declaration order).
+    fn di_class(&mut self, name: &str) -> Option<u32> {
+        let layout = self.struct_layouts.get(name)?.clone();
+        let decls = self.struct_field_decl_types.get(name).cloned().unwrap_or_default();
+        let llvms = self.struct_field_llvm_types.get(name).cloned().unwrap_or_default();
+        Some(self.di_named_struct(format!("class|{name}"), name, |this, comp| {
+            let mut members = Vec::new();
+            for (i, field) in layout.iter().enumerate() {
+                let base = match decls.get(field) {
+                    Some(t) => {
+                        let llvm = llvms.get(field).cloned().unwrap_or_else(|| this.type_to_llvm_inst(t));
+                        // a slot is 8 bytes wide whatever the declared width
+                        if Self::is_wide_slot(t) { this.di_type(Some(t), &llvm, None) } else { this.di_basic("Int64", 64, "DW_ATE_signed") }
+                    }
+                    None => this.di_pointer("pointer", None),
+                };
+                let m = this.di_member(comp, field, base, 64, (i as u32) * 64);
+                members.push(m);
+            }
+            (members, layout.len() as u32 * 64)
+        }))
+    }
+
+    /// `List<T>` / `Array`: the runtime's `{len, cap, data}` array handle.
+    fn di_array(&mut self, elem: &Type, name: &str) -> u32 {
+        let elem = elem.clone();
+        self.di_named_struct(format!("array|{name}"), name, |this, comp| {
+            let int = this.di_basic("Int64", 64, "DW_ATE_signed");
+            let slot = this.di_slot_type(&elem);
+            let data = this.di_pointer("", Some(slot));
+            let m = vec![
+                this.di_member(comp, "len", int, 64, 0),
+                this.di_member(comp, "cap", int, 64, 64),
+                this.di_member(comp, "data", data, 64, 128),
+            ];
+            (m, 192)
+        })
+    }
+
+    /// `Map<String, V>`: the runtime's open-addressing table.
+    fn di_map(&mut self, value: &Type, name: &str) -> u32 {
+        let value = value.clone();
+        self.di_named_struct(format!("map|{name}"), name, |this, comp| {
+            let uint = this.di_basic("UInt64", 64, "DW_ATE_unsigned");
+            let int32 = this.di_basic("Int32", 32, "DW_ATE_signed");
+            let ch = this.di_basic("char", 8, "DW_ATE_signed_char");
+            let key = this.di_pointer("String", Some(ch));
+            let val = this.di_slot_type(&value);
+            // entry: { key, value }; key NULL = empty slot, 1 = tombstone
+            let entry = this.di_named_struct(format!("mapentry|{name}"), &format!("{name}.entry"), |t2, ec| {
+                let k = t2.di_member(ec, "key", key, 64, 0);
+                let v = t2.di_member(ec, "value", val, 64, 64);
+                (vec![k, v], 128)
+            });
+            // di_named_struct returns the typedef (pointer to entry): exactly `entries`
+            let m = vec![
+                this.di_member(comp, "entries", entry, 64, 0),
+                this.di_member(comp, "cap", uint, 64, 64),
+                this.di_member(comp, "len", uint, 64, 128),
+                this.di_member(comp, "borrowed_keys", int32, 32, 192),
+            ];
+            (m, 256)
+        })
+    }
+
     /// A named 64-bit `!DIDerivedType` pointer to `base` (or `void*`).
     fn di_pointer(&mut self, name: &str, base: Option<u32>) -> u32 {
         let key = format!("ptr|{name}|{base:?}");
@@ -5788,6 +5933,26 @@ tr_done_{idx}:"#).unwrap();
             // enums and anything else stored in an integer slot
             (_, "i8" | "i16" | "i32" | "i64") => self.di_basic(&format!("Int{size}"), size, "DW_ATE_signed"),
             // pointers: classes, containers, maps, closures
+            (Some(Type::Named(n)), _) if self.struct_layouts.contains_key(n) => match self.di_class(n) {
+                Some(id) => id,
+                None => self.di_pointer(n, None),
+            },
+            (None, _) if class.is_some_and(|c| self.struct_layouts.contains_key(c)) => {
+                let c = class.unwrap().to_string();
+                self.di_class(&c).unwrap_or_else(|| self.di_pointer("pointer", None))
+            }
+            (Some(Type::Array(inner)), _) => {
+                let name = format!("List<{}>", tinox_parser::api::type_name(inner));
+                self.di_array(inner, &name)
+            }
+            (Some(Type::Generic { name: g, args }), _) if (g == "List" || g == "Array") && args.len() == 1 => {
+                let name = format!("List<{}>", tinox_parser::api::type_name(&args[0]));
+                self.di_array(&args[0], &name)
+            }
+            (Some(m @ Type::Map(_, v)), _) => {
+                let name = tinox_parser::api::type_name(m);
+                self.di_map(v, &name)
+            }
             (_, _) => {
                 let name = match (ty, class) {
                     (Some(Type::Named(n)), _) => n.clone(),

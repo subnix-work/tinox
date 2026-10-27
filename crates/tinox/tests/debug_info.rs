@@ -100,3 +100,37 @@ fn release_builds_carry_no_variable_info() {
         assert!(!text.contains("DW_TAG_variable") && !text.contains("DW_TAG_formal_parameter"), "release builds must not describe variables");
     }
 }
+
+const TYPES_MAIN: &str = "import Person\nimport Node\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        const p = Person { id: 7, label: \"seven\" }\n        const xs: List<Int64> = [1, 2, 3]\n        const names: List<String> = [\"a\", \"b\"]\n        var ages: Map<String, Int64> = Map::new()\n        ages.set(\"ann\", 31)\n        const n = Node { value: 1, next: Node { value: 2, next: null } }\n        const name: String = \"tinox\"\n        println(name + p.label)\n        return 0\n    }\n}\n";
+
+fn printers() -> String {
+    format!("source {}/../../runtime/tinox-gdb.py", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn classes_lists_and_maps_print_readably_with_the_pretty_printers() {
+    if !gdb_available() {
+        eprintln!("SKIP: gdb not installed");
+        return;
+    }
+    let (d, exe) = build_debug(
+        "types",
+        &[
+            ("Main.tnx", TYPES_MAIN),
+            ("Person.tnx", "class Person\n{\n    var id: Int64\n    var label: String\n}\n"),
+            ("Node.tnx", "class Node\n{\n    var value: Int64\n    var next: Node\n}\n"),
+        ],
+    );
+    let src = printers();
+    let out = gdb(&d, &exe, &[&src, "break Main.tnx:16", "run", "info locals", "print *p", "print xs"]);
+    assert!(out.contains("p = {id = 7, label = \"seven\"}"), "{out}");
+    assert!(out.contains("xs = {1, 2, 3}"), "{out}");
+    assert!(out.contains("names = {\"a\", \"b\"}"), "{out}");
+    assert!(out.contains("ages = {[\"ann\"] = 31}"), "{out}");
+    assert!(out.contains("n = {value = 1, next = {value = 2, next = null}}"), "self-referential classes terminate: {out}");
+    assert!(out.contains("name = 0x") && out.contains("\"tinox\""), "{out}");
+    assert!(out.contains("$2 = {1, 2, 3}"), "{out}");
+    // without the printers the raw structure is still inspectable
+    let raw = gdb(&d, &exe, &["break Main.tnx:16", "run", "print *xs", "print *p"]);
+    assert!(raw.contains("{len = 3, cap = 4, data = 0x") && raw.contains("{id = 7, label = 0x"), "{raw}");
+}
