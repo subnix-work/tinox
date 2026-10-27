@@ -4376,7 +4376,7 @@ static void tinox_growbuf_append(TinoxGrowBuf* b, const char* data, size_t n) {
 // inherited values; bare KEY removes a value. Never mutate the host environment
 // or call setenv/malloc after fork in a multithreaded runtime.
 static pid_t tinox_spawn_piped(char** argv, const char* cwd, TinoxArray* changes,
-                                int in_pipe[2], int out_pipe[2], int err_pipe[2]) {
+                                int in_pipe[2], int out_pipe[2], int err_pipe[2], int new_group) {
     extern char** environ;
     size_t count = 0;
     while (environ[count]) count++;
@@ -4405,6 +4405,8 @@ static pid_t tinox_spawn_piped(char** argv, const char* cwd, TinoxArray* changes
     if (error) { errno = error; perror("process spawn actions"); exit(1); }
     #define PROCESS_ACTION(action) do { error = (action); if (error) { \
         errno = error; perror("process spawn action"); exit(1); } } while (0)
+    #define PROCESS_ATTR_CHECK(call) do { error = (call); if (error) { \
+        errno = error; perror("process spawn attributes"); exit(1); } } while (0)
     PROCESS_ACTION(posix_spawn_file_actions_adddup2(&actions, in_pipe[0], STDIN_FILENO));
     PROCESS_ACTION(posix_spawn_file_actions_adddup2(&actions, out_pipe[1], STDOUT_FILENO));
     PROCESS_ACTION(posix_spawn_file_actions_adddup2(&actions, err_pipe[1], STDERR_FILENO));
@@ -4415,8 +4417,21 @@ static pid_t tinox_spawn_piped(char** argv, const char* cwd, TinoxArray* changes
     }
     if (cwd && *cwd) PROCESS_ACTION(posix_spawn_file_actions_addchdir_np(&actions, cwd));
     #undef PROCESS_ACTION
+    // Long-lived interactive children get their own process group so
+    // kill/terminate reach the whole tree (a build tool and the compilers
+    // it started), not just the leader. Process::run keeps the caller's
+    // group so a terminal Ctrl-C still reaches it.
+    posix_spawnattr_t attr;
+    posix_spawnattr_t* attrp = NULL;
+    if (new_group) {
+        PROCESS_ATTR_CHECK(posix_spawnattr_init(&attr));
+        PROCESS_ATTR_CHECK(posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP));
+        PROCESS_ATTR_CHECK(posix_spawnattr_setpgroup(&attr, 0));
+        attrp = &attr;
+    }
     pid_t pid;
-    error = posix_spawnp(&pid, argv[0], &actions, NULL, argv, env);
+    error = posix_spawnp(&pid, argv[0], &actions, attrp, argv, env);
+    if (attrp) posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&actions);
     free(env);
     if (error) {
@@ -4471,7 +4486,7 @@ int64_t processRunWithOptions(int64_t* argv_handle, int64_t timeout_ms, const ch
         exit(1);
     }
 
-    pid_t pid = tinox_spawn_piped(argv, cwd, (TinoxArray*)env_handle, in_pipe, out_pipe, err_pipe);
+    pid_t pid = tinox_spawn_piped(argv, cwd, (TinoxArray*)env_handle, in_pipe, out_pipe, err_pipe, 0);
     if (pid < 0) {
         for (int i = 0; i < 2; i++) { close(in_pipe[i]); close(out_pipe[i]); close(err_pipe[i]); }
         free(argv);
@@ -4829,7 +4844,7 @@ int64_t processSpawnPiped(int64_t* argv_handle, const char* cwd, int64_t* env_ha
     if (pipe2(input, O_CLOEXEC) || pipe2(output, O_CLOEXEC) || pipe2(error, O_CLOEXEC)) {
         perror("process pipes"); exit(1);
     }
-    pid_t pid = tinox_spawn_piped(argv, cwd, (TinoxArray*)env_handle, input, output, error);
+    pid_t pid = tinox_spawn_piped(argv, cwd, (TinoxArray*)env_handle, input, output, error, 1);
     free(argv);
     close(input[0]); close(output[1]); close(error[1]);
     TinoxInteractiveProcess* p = GC_malloc(sizeof(*p));
@@ -4975,9 +4990,64 @@ int64_t processExitCode(int64_t handle) {
     return ((TinoxInteractiveProcess*)(intptr_t)handle)->exit_code;
 }
 
+// Sends `sig` to a still-running process; pipe-mode children get it
+// through their process group, so helpers they started receive it too.
+// Once the child itself has exited nothing is signalled any more.
+// Returns 1 when a signal was delivered, 0 when there was nothing to signal.
+int64_t processSignal(int64_t handle, int64_t sig) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    if (sig < 1 || sig > 64) {
+        fprintf(stderr, "runtime error: processSignal: invalid signal number %ld\n", (long)sig);
+        exit(1);
+    }
+    // Only while the leader is unreaped: a zombie still owns its pid, so
+    // -pid cannot name a recycled, unrelated process group.
+    if (!processIsAlive(handle)) return 0;
+    if (p->piped) return kill(-p->pid, (int)sig) == 0 ? 1 : 0;
+    return kill(p->pid, (int)sig) == 0 ? 1 : 0;
+}
+
+// Waits up to timeoutMs (< 0 forever, 0 polls) until stdout or stderr of a
+// pipe-mode child has data or reached EOF, buffering what it reads so the
+// matching read call returns immediately. Result bit mask: 1 = stdout data
+// buffered, 2 = stderr data buffered, 4 = both streams are at EOF and
+// drained. 0 = timeout. Callers must serialise it with the other reads.
+int64_t processWaitReadable(int64_t handle, int64_t timeout) {
+    TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
+    if (!p->piped) return 0;
+    int64_t deadline = tinox_process_millis() + (timeout > 0 ? timeout : 0);
+    for (;;) {
+        int64_t mask = 0;
+        if (p->output[0].len) mask |= 1;
+        if (p->output[1].len) mask |= 2;
+        if (!mask && p->fd < 0 && p->stderr_fd < 0) mask = 4;
+        if (mask) return mask;
+        int64_t remaining = deadline - tinox_process_millis();
+        int wait = timeout < 0 ? -1 : remaining > INT_MAX ? INT_MAX : remaining > 0 ? (int)remaining : 0;
+        struct pollfd fds[2] = {{p->fd, POLLIN, 0}, {p->stderr_fd, POLLIN, 0}};
+        int ready = poll(fds, 2, wait);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) return 0;
+        for (int i = 0; i < 2; i++) {
+            if (!(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            char buf[8192];
+            ssize_t n = read(fds[i].fd, buf, sizeof(buf));
+            if (n > 0) tinox_growbuf_append(&p->output[i], buf, (size_t)n);
+            else if (n == 0 || (errno != EINTR && errno != EAGAIN)) {
+                close(fds[i].fd);
+                if (i) p->stderr_fd = -1; else p->fd = -1;
+            }
+        }
+    }
+}
+
 void processKillInteractive(int64_t handle) {
     TinoxInteractiveProcess* p = (TinoxInteractiveProcess*)(intptr_t)handle;
     if (processIsAlive(handle)) {
+        // A pipe-mode child leads its own group: take down everything it
+        // started. (Not after the leader was reaped: the group id could be
+        // recycled by then, see processSignal.)
+        if (p->piped) kill(-p->pid, SIGKILL);
         kill(p->pid, SIGKILL);
         int status = 0;
         pid_t r;
