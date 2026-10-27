@@ -9,8 +9,16 @@ this). They apply to the typedefs a `tinox build --debug` binary describes:
 
 `String` needs no printer: it is described as `char *`.
 """
+import builtins
+
 import gdb
 import gdb.printing
+
+# `tinox dap` sets this before sourcing the script. A DAP client shows a
+# variable's value string and its children separately, so there every printer
+# also returns a one-line summary; the gdb CLI already renders the children,
+# so there the summary would only duplicate them.
+DAP = bool(getattr(builtins, "TINOX_DAP", False))
 
 # Never walk more than this many elements of a container.
 LIMIT = 200
@@ -32,6 +40,25 @@ def _struct_of(val):
     return t.name, st
 
 
+def _inline(v, depth=1):
+    """One-line rendering of a value for a DAP variables pane."""
+    t = v.type.strip_typedefs()
+    try:
+        if t.code == gdb.TYPE_CODE_PTR:
+            if int(v) == 0:
+                return "null"
+            if t.target().strip_typedefs().sizeof == 1:
+                return '"%s"' % v.string(errors="replace", length=60)
+            if depth > 0:
+                lookup_result = lookup(v)
+                if lookup_result is not None and hasattr(lookup_result, "summary"):
+                    return lookup_result.summary(depth - 1)
+            return "0x%x" % int(v)
+        return str(v)
+    except gdb.error:
+        return "<unavailable>"
+
+
 def _nice(v):
     """Show `char *` (Tinox String) values as text only, without the address."""
     t = v.type.strip_typedefs()
@@ -48,8 +75,17 @@ class ClassPrinter:
         self.val = val
         self.struct = struct
 
+    def summary(self, depth=1):
+        if int(self.val) == 0:
+            return "null"
+        obj = self.val.dereference()
+        parts = ["%s = %s" % (f.name, _inline(obj[f.name], depth)) for f in list(self.struct.fields())[:6]]
+        return "%s {%s}" % (self.struct.name, ", ".join(parts))
+
     def to_string(self):
-        return "null" if int(self.val) == 0 else None
+        if int(self.val) == 0:
+            return "null"
+        return self.summary() if DAP else None
 
     def children(self):
         if int(self.val) == 0:
@@ -73,12 +109,23 @@ class ListPrinter:
         n = int(obj["len"])
         return obj, n if 0 <= n <= MAX_LEN else -1
 
+    def summary(self, depth=1):
+        obj, n = self._bounds()
+        if obj is None:
+            return "null"
+        if n < 0:
+            return "<invalid List: length not initialised>"
+        shown = [_inline(obj["data"][i], depth) for i in range(min(n, 8))]
+        return "[%s%s] (len=%d)" % (", ".join(shown), ", ..." if n > 8 else "", n)
+
     def to_string(self):
         obj, n = self._bounds()
         if obj is None:
             return "null"
         if n < 0:
             return "<invalid List: length not initialised>"
+        if DAP:
+            return self.summary()
         return None if n <= LIMIT else "len=%d (first %d)" % (n, LIMIT)
 
     def children(self):
@@ -100,9 +147,27 @@ class MapPrinter:
     def _obj(self):
         return None if int(self.val) == 0 else self.val.dereference()
 
+    def summary(self, depth=1):
+        obj = self._obj()
+        if obj is None:
+            return "null"
+        cap = int(obj["cap"])
+        items = []
+        if 0 < cap <= MAX_LEN and int(obj["entries"]) != 0:
+            for i in range(cap):
+                e = obj["entries"][i]
+                if int(e["key"]) in (0, 1):
+                    continue
+                items.append("%s: %s" % (_inline(e["key"], depth), _inline(e["value"], depth)))
+                if len(items) >= 5:
+                    break
+        return "{%s%s} (len=%d)" % (", ".join(items), ", ..." if int(obj["len"]) > len(items) else "", int(obj["len"]))
+
     def to_string(self):
         obj = self._obj()
-        return "null" if obj is None else None
+        if obj is None:
+            return "null"
+        return self.summary() if DAP else None
 
     def children(self):
         obj = self._obj()

@@ -9,6 +9,7 @@ use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Formatter, Parser};
 
 mod callgraph;
+mod dap;
 mod contract;
 mod dockerfile;
 mod migrate;
@@ -60,6 +61,7 @@ fn run() {
         "run"   => run_file(&args[2..]),
         "dev"   => dev_mode(&args[2..]),
         "test"  => run_tests(&args[2..]),
+        "dap"   => dap::run(&args[2..]),
         "doc"   => gen_docs(&args[2..]),
         "reference" => {
             if let Err(e) = reference::run(&args[2..]) {
@@ -127,6 +129,7 @@ fn print_help() {
     println!("  tinox run   [file]         Compile and run (uses tinox.toml if no file)");
     println!("  tinox dev   [file]         Dev mode: hot-reload on file changes");
     println!("  tinox test  [file]         Run all @Test-annotated methods");
+    println!("  tinox dap [--check|--launch-json [exe]]  Debug adapter: gdb --interpreter=dap with Tinox defaults");
     println!("  tinox test --watch         Re-run tests on file changes (TDD mode)");
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox reference [path]     Export compiler reference metadata as JSON");

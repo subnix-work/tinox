@@ -30,6 +30,10 @@ All notable changes to Tinox are documented in this file.
   events, plus `tinox test --list` and `--format json` with per-test results and
   durations (`docs/compiler-diagnostics.md`).
 - Debugger investigation (#497): `docs/debugging.md` and `scripts/debug-probe.sh`.
+- **Debugging** (#498-#501): a DWARF line table per statement (breakpoints on any line,
+  stepping), arguments and locals, class/`List`/`Map` types with gdb pretty-printers
+  (`runtime/tinox-gdb.py`) in `--debug` builds, and `tinox dap`, a launcher for gdb's
+  built-in DAP server with Tinox defaults.
 
 ### Fixed
 

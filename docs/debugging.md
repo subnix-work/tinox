@@ -1,32 +1,52 @@
-# Debugger support: findings and plan (issue #497)
+# Debugging Tinox programs
 
-`scripts/debug-probe.sh` builds a small program with `tinox build --debug` and
-reports what a debugger can do with it. Findings with gdb 18.1 (no lldb was
-available on the test machine) on x86-64 Linux:
+Build with `tinox build --debug` and debug with gdb 14 or newer. Everything
+below is verified by `crates/tinox/tests/debug_info.rs` and
+`crates/tinox/tests/dap_launcher.rs`.
 
-| Capability | Today |
+| Capability | Status |
 |---|---|
-| Debug info present | Yes: one `DW_TAG_compile_unit` and one `DW_TAG_subprogram` per user function (`Class.method`, e.g. `Main.work`), see issue #114. |
-| Break on function name | Works (`break Main.work`). The address is the function entry, not the first statement. |
-| Break on `file:line` | Only the line of a function's declaration resolves (`Main.tnx:15` for `main`). Lines inside a body do not, because `.debug_line` has one row per function and none per statement. |
-| Backtrace | Function names for user frames and the runtime (`tinox_main`, `main`); no line numbers beyond the function line. |
-| Step over / into | Not usable: "Single stepping until exit from function ..., which has no line number information". |
-| Locals / arguments | None: no `DW_TAG_variable`/`DW_TAG_formal_parameter`, so `info locals` prints "No locals." |
-| Types, strings, lists | No `DW_TAG_*_type` entries at all. `String` is a plain `char*`; `List`/`Map`/classes are runtime heap layouts that need pretty-printers. |
-| Threads | The runtime starts a worker pool (15 threads in the sample); `spawn`ed tasks are ordinary pthreads without names. |
-| Protocol | `gdb --interpreter=dap` (built into gdb 14+) completes `initialize`, `launch`, `setFunctionBreakpoints`, `configurationDone` and reports a `stopped` event with reason `breakpoint`. Set breakpoints after the adapter's `initialized` event. |
+| Breakpoints on any source line, step over / into / out | Works: every statement has a `DILocation` (issue #498). |
+| Backtraces | Function names with arguments and source lines, e.g. `Main.work (n=4) at Main.tnx:10`. |
+| Arguments and locals | Works in `--debug` builds (#499): integers, floats, `Bool`, `Char`, `String` (as text), `this` in methods. Release builds describe functions only. |
+| Classes, lists, maps | Works in `--debug` builds (#500): fields at their real offsets, `List<T>` as `{len, cap, data}`, `Map<String, V>` as its entry table. With `runtime/tinox-gdb.py` they print as `{id = 7, label = "seven"}`, `{1, 2, 3}`, `{["ann"] = 31}`. |
+| Debug Adapter Protocol | `tinox dap` (#501), see below. |
 
-## Decision: go, with gdb's native DAP and richer DWARF
+## Using it
 
-Use `gdb --interpreter=dap` as the debug adapter instead of writing one. The
-IDE (or any DAP client) speaks standard DAP to it; the gaps above are all on
-the compiler side and are what makes the debugger worth having:
+```sh
+tinox build --debug -o app
+gdb -q app
+(gdb) source /usr/share/tinox/tinox-gdb.py      # or runtime/tinox-gdb.py in a checkout
+(gdb) break Main.tnx:12
+(gdb) run
+(gdb) info locals
+```
 
-1. **Statement-level line table** (`!DILocation` on instructions): step over/in/out, breakpoints on any line.
-2. **Variables**: `DILocalVariable` + `llvm.dbg.declare` for parameters and locals of primitive type.
-3. **Types and pretty-printers**: `DICompositeType` for classes and fields, and a gdb Python pretty-printer script for `String`, `List`, `Map` (the heap layouts documented in `runtime/runtime.c`).
-4. **`tinox dap` launcher**: execs `gdb --interpreter=dap` with the Tinox pretty-printers pre-sourced and the right default settings (`debuginfod` off, no pagination), so clients configure one command.
-5. **lldb-dap** as an alternative only if gdb proves insufficient; not needed for the first version.
+## DAP clients: `tinox dap`
 
-The IDE side (breakpoint gutter, variables/stack views, debug console) is
-tracked in the `tinox-ide` repository and depends on items 1 to 4.
+`tinox dap` replaces itself with `gdb --interpreter=dap` and the Tinox
+defaults (`debuginfod` off, no pagination, the pretty-printers loaded, and
+one-line value summaries for the variables pane). Configure your client with
+the adapter command `tinox dap` and a `launch` request whose `program` is the
+`--debug` executable:
+
+```sh
+tinox dap --check               # gdb version, printer script, the exact command
+tinox dap --launch-json ./app   # adapter command + launch request as JSON
+```
+
+DAP order matters with gdb: set breakpoints after the adapter's `initialized`
+event, then send `configurationDone`; the `launch` response arrives after
+that. A breakpoint is reported as pending until the program is loaded and
+resolves when it starts.
+
+## Known limits
+
+* Variables are scoped to the function, not the block: a name declared in a
+  nested block is visible (uninitialised) before its declaration.
+* A generic class instantiation (`Box<Int64>`) is described as a plain pointer.
+* Enums appear as integers; `Char` is shown as its code point.
+* `spawn`ed tasks are ordinary pthreads without names; the runtime's worker
+  pool shows as extra threads.
+* `scripts/debug-probe.sh` reports the debug-info coverage of a small sample.

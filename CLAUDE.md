@@ -2024,5 +2024,12 @@ Built for the Tinox IDE (`subnix-work/tinox-ide`), useful to any tool author.
   signal the group only while the leader is unreaped (pid reuse), see `processSignal`.
 - **`--message-format=json`** emits NDJSON events with `reason` + `schema_version`;
   `diagnostics::emit` is the only writer, stdout stays free of anything else.
-- **Debugger**: DWARF is function-level only (docs/debugging.md); stepping and
-  locals need the codegen work tracked in the follow-up issues.
+- **Debugger** (#498-#501, docs/debugging.md): each statement writes a
+  `; @tnxdbg LINE COL` comment marker (comments survive the IR buffer swaps);
+  `attach_dbg` turns them into `!dbg` on every instruction once a function is done.
+  Anything inspecting the IR tail must use `last_code_line`. Locals and parameters
+  (`DILocalVariable` + `llvm.dbg.declare`) and class/List/Map types exist only for
+  `OptLevel::Debug` (`set_debug_variables`); lists and maps mirror the runtime layouts
+  (`TinoxArray`, `TinoxMap`), keep them in sync. `runtime/tinox-gdb.py` keys on typedefs
+  whose name equals their struct's name. `tinox dap` sets `TINOX_DAP` so printers also
+  return one-line summaries (a DAP client shows "None" without `to_string`).
