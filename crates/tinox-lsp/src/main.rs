@@ -1,4 +1,5 @@
 mod analysis;
+mod formatting;
 mod navigation;
 
 use std::collections::HashMap;
@@ -610,6 +611,8 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 })),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
+                document_range_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -837,6 +840,16 @@ impl LanguageServer for Backend {
         Ok(Some(navigation::workspace_symbols(&files, &p.query)))
     }
 
+    async fn formatting(&self, p: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let Some(text) = self.docs.get(&p.text_document.uri).map(|t| t.clone()) else { return Ok(None) };
+        formatting::format_edits(&text).map(Some).map_err(format_failed)
+    }
+
+    async fn range_formatting(&self, p: DocumentRangeFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let Some(text) = self.docs.get(&p.text_document.uri).map(|t| t.clone()) else { return Ok(None) };
+        formatting::format_range_edits(&text, p.range).map(Some).map_err(format_failed)
+    }
+
     async fn document_symbol(
         &self,
         p: DocumentSymbolParams,
@@ -847,6 +860,11 @@ impl LanguageServer for Backend {
         };
         Ok(Some(DocumentSymbolResponse::Nested(document_symbols(&ast))))
     }
+}
+
+/// LSP `RequestFailed`: the request was understood but cannot be carried out.
+fn format_failed(message: String) -> tower_lsp::jsonrpc::Error {
+    tower_lsp::jsonrpc::Error { code: tower_lsp::jsonrpc::ErrorCode::ServerError(-32803), message: message.into(), data: None }
 }
 
 /// Parse the text for completion by blanking out the line that contains the cursor.
