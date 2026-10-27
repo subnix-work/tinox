@@ -108,3 +108,51 @@ fn unknown_native_key_is_rejected() {
     let err = build_and_run(&d).unwrap_err();
     assert!(err.contains("unknown [native] key `lib`"), "{err}");
 }
+
+// Issue #506: `[native.test]` replaces keys of `[native]` for `tinox test` only.
+#[test]
+fn native_test_section_links_a_different_library_for_tests_only() {
+    let d = std::env::temp_dir().join(format!("tinox_native_testsec_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("lib")).unwrap();
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    std::fs::create_dir_all(d.join("tests")).unwrap();
+    std::fs::write(
+        d.join("tinox.toml"),
+        format!(
+            "[package]\nname = \"native_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n\n[native]\nlibs = [\"natreal\"]\nlib_dirs = [\"lib\"]\nrpath = [\"lib\"]\n\n[native.test]\nlibs = [\"nattest\"]\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .unwrap();
+    // the real library adds, the test double multiplies
+    for (name, body) in [("natreal", "return a + b;"), ("nattest", "return a * b;")] {
+        let src = d.join(format!("{name}.c"));
+        std::fs::write(&src, format!("#include <stdint.h>\nint64_t nat_add(int64_t a, int64_t b) {{ {body} }}\n")).unwrap();
+        let st = Command::new("cc").args(["-shared", "-fPIC", "-o"]).arg(d.join(format!("lib/lib{name}.so"))).arg(&src).status().unwrap();
+        assert!(st.success());
+    }
+    std::fs::write(
+        d.join("src/Main.tnx"),
+        "extern fn nat_add(a: Int64, b: Int64) -> Int64\n\nclass Main\n{\n    fnc main() -> Int32 {\n        println(nat_add(40, 2).toString())\n        return 0\n    }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("tests/NatTest.tnx"),
+        "extern fn nat_add(a: Int64, b: Int64) -> Int64\n\nclass NatTest\n{\n    @Test(\"the test double is linked\")\n    fn testDouble() -> Bool\n    {\n        return nat_add(40, 2) == 80\n    }\n}\n",
+    )
+    .unwrap();
+
+    // build links the real library
+    let out = d.join("app");
+    let b = tinox().current_dir(&d).args(["build", "-o", out.to_str().unwrap()]).output().unwrap();
+    assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
+    let run = Command::new(&out).env_remove("LD_LIBRARY_PATH").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "42");
+
+    // test links the replacement: nat_add(40, 2) == 80 only holds for the double
+    let t = tinox().current_dir(&d).args(["test"]).output().unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&t.stdout), String::from_utf8_lossy(&t.stderr));
+    assert!(t.status.success(), "{text}");
+    assert!(text.contains("PASS  the test double is linked"), "{text}");
+}

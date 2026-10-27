@@ -12,11 +12,15 @@
 //! cflags     = ["-O2", "-Ivendor"]     # only used to compile `sources`
 //! ```
 //!
+//! A `[native.test]` table overrides keys of `[native]` for `tinox test` only (issue #506),
+//! e.g. to link a headless mock library instead of the real one.
+//!
 //! Every problem is a hard error with an actionable message: unknown keys,
 //! missing files, a library the linker cannot find, a pkg-config package
 //! that does not exist.
 
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,8 +38,16 @@ pub struct NativeConfig {
     pub cflags: Vec<String>,
 }
 
+static TEST_MODE: AtomicBool = AtomicBool::new(false);
+
+/// `tinox test` calls this once: from then on `[native.test]` overrides `[native]`.
+pub fn set_test_mode(on: bool) {
+    TEST_MODE.store(on, Ordering::Relaxed);
+}
+
 /// Looks for the nearest `tinox.toml` from the current directory upwards
-/// (same lookup as every other tinox.toml reader) and parses `[native]`.
+/// (same lookup as every other tinox.toml reader) and parses `[native]`
+/// (plus `[native.test]` when running tests).
 pub fn read_native_config() -> Result<Option<NativeConfig>, String> {
     let Ok(mut dir) = std::env::current_dir() else { return Ok(None) };
     loop {
@@ -43,7 +55,7 @@ pub fn read_native_config() -> Result<Option<NativeConfig>, String> {
         if toml_path.exists() {
             let content = fs::read_to_string(&toml_path)
                 .map_err(|e| format!("cannot read {}: {e}", toml_path.display()))?;
-            return parse(&content, &dir);
+            return parse(&content, &dir, TEST_MODE.load(Ordering::Relaxed));
         }
         if !dir.pop() {
             return Ok(None);
@@ -51,12 +63,42 @@ pub fn read_native_config() -> Result<Option<NativeConfig>, String> {
     }
 }
 
-/// Parses the `[native]` table out of a tinox.toml's text. Returns `None`
-/// when the file has no such section.
-pub fn parse(content: &str, root: &Path) -> Result<Option<NativeConfig>, String> {
-    let mut cfg = NativeConfig { root: root.to_path_buf(), ..Default::default() };
-    let mut in_native = false;
-    let mut found = false;
+#[derive(Default)]
+struct Raw {
+    libs: Option<Vec<String>>,
+    lib_dirs: Option<Vec<String>>,
+    rpath: Option<Vec<String>>,
+    pkg_config: Option<Vec<String>>,
+    objects: Option<Vec<String>>,
+    sources: Option<Vec<String>>,
+    cflags: Option<Vec<String>>,
+}
+
+impl Raw {
+    /// Keys present in `over` replace the ones here.
+    fn overridden_by(mut self, over: Raw) -> Raw {
+        macro_rules! take {
+            ($($f:ident),*) => { $(if over.$f.is_some() { self.$f = over.$f; })* };
+        }
+        take!(libs, lib_dirs, rpath, pkg_config, objects, sources, cflags);
+        self
+    }
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum Section {
+    Other,
+    Native,
+    NativeTest,
+}
+
+/// Parses the `[native]` table (and, with `test_mode`, the `[native.test]`
+/// overrides) out of a tinox.toml's text. Returns `None` when the file has
+/// neither section.
+pub fn parse(content: &str, root: &Path, test_mode: bool) -> Result<Option<NativeConfig>, String> {
+    let (mut base, mut over) = (Raw::default(), Raw::default());
+    let mut section = Section::Other;
+    let (mut found_base, mut found_test) = (false, false);
     let mut lines = content.lines().enumerate();
     while let Some((idx, raw)) = lines.next() {
         let line = strip_comment(raw).trim().to_string();
@@ -64,45 +106,70 @@ pub fn parse(content: &str, root: &Path) -> Result<Option<NativeConfig>, String>
             continue;
         }
         if line.starts_with('[') {
-            in_native = line == "[native]";
-            found |= in_native;
+            section = match line.as_str() {
+                "[native]" => {
+                    found_base = true;
+                    Section::Native
+                }
+                "[native.test]" => {
+                    found_test = true;
+                    Section::NativeTest
+                }
+                _ => Section::Other,
+            };
             continue;
         }
-        if !in_native {
+        if section == Section::Other {
             continue;
         }
+        let table = if section == Section::NativeTest { "native.test" } else { "native" };
         let (key, value) = line
             .split_once('=')
-            .ok_or_else(|| format!("tinox.toml line {}: [native] expects `key = value`", idx + 1))?;
+            .ok_or_else(|| format!("tinox.toml line {}: [{table}] expects `key = value`", idx + 1))?;
         let key = key.trim();
         let mut value = value.trim().to_string();
         // Arrays may span several lines.
         while value.starts_with('[') && !value.contains(']') {
             let (_, next) = lines
                 .next()
-                .ok_or_else(|| format!("tinox.toml: unterminated array for [native] {key}"))?;
+                .ok_or_else(|| format!("tinox.toml: unterminated array for [{table}] {key}"))?;
             value.push(' ');
             value.push_str(strip_comment(next).trim());
         }
         let items = parse_string_array(&value)
-            .ok_or_else(|| format!("tinox.toml line {}: [native] {key} must be an array of strings", idx + 1))?;
+            .ok_or_else(|| format!("tinox.toml line {}: [{table}] {key} must be an array of strings", idx + 1))?;
+        let target = if section == Section::NativeTest { &mut over } else { &mut base };
         match key {
-            "libs" => cfg.libs = items,
-            "lib_dirs" => cfg.lib_dirs = items.iter().map(|s| root.join(s)).collect(),
-            "rpath" => cfg.rpath = items,
-            "pkg_config" => cfg.pkg_config = items,
-            "objects" => cfg.objects = items.iter().map(|s| root.join(s)).collect(),
-            "sources" => cfg.sources = items.iter().map(|s| root.join(s)).collect(),
-            "cflags" => cfg.cflags = items,
+            "libs" => target.libs = Some(items),
+            "lib_dirs" => target.lib_dirs = Some(items),
+            "rpath" => target.rpath = Some(items),
+            "pkg_config" => target.pkg_config = Some(items),
+            "objects" => target.objects = Some(items),
+            "sources" => target.sources = Some(items),
+            "cflags" => target.cflags = Some(items),
             other => {
                 return Err(format!(
-                    "tinox.toml line {}: unknown [native] key `{other}` (expected libs, lib_dirs, rpath, pkg_config, objects, sources, cflags)",
+                    "tinox.toml line {}: unknown [{table}] key `{other}` (expected libs, lib_dirs, rpath, pkg_config, objects, sources, cflags)",
                     idx + 1
                 ))
             }
         }
     }
-    Ok(found.then_some(cfg))
+    if !found_base && !(test_mode && found_test) {
+        return Ok(None);
+    }
+    let effective = if test_mode { base.overridden_by(over) } else { base };
+    let paths = |v: Option<Vec<String>>| v.unwrap_or_default().iter().map(|s| root.join(s)).collect::<Vec<_>>();
+    Ok(Some(NativeConfig {
+        root: root.to_path_buf(),
+        libs: effective.libs.unwrap_or_default(),
+        lib_dirs: paths(effective.lib_dirs),
+        rpath: effective.rpath.unwrap_or_default(),
+        pkg_config: effective.pkg_config.unwrap_or_default(),
+        objects: paths(effective.objects),
+        sources: paths(effective.sources),
+        cflags: effective.cflags.unwrap_or_default(),
+    }))
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -353,7 +420,7 @@ cflags = ["-O1", "-Ivendor"]
 [database]
 driver = "sqlite"
 "#;
-        let cfg = parse(toml, Path::new("/proj")).unwrap().unwrap();
+        let cfg = parse(toml, Path::new("/proj"), false).unwrap().unwrap();
         assert_eq!(cfg.libs, ["a", "b"]);
         assert_eq!(cfg.lib_dirs, [PathBuf::from("/proj/build"), PathBuf::from("/proj/vendor/lib")]);
         assert_eq!(cfg.rpath, ["build", "$ORIGIN/../lib"]);
@@ -364,19 +431,43 @@ driver = "sqlite"
     }
 
     #[test]
+    fn native_test_overrides_only_in_test_mode_and_inherits_the_rest() {
+        let toml = "[native]\nlibs = [\"real\"]\nlib_dirs = [\"build\"]\nrpath = [\"build\"]\n\n[native.test]\nlibs = [\"mock\"]\n";
+        let build = parse(toml, Path::new("/p"), false).unwrap().unwrap();
+        assert_eq!(build.libs, ["real"]);
+        let test = parse(toml, Path::new("/p"), true).unwrap().unwrap();
+        assert_eq!(test.libs, ["mock"]);
+        assert_eq!(test.lib_dirs, [PathBuf::from("/p/build")], "not overridden: inherited");
+        assert_eq!(test.rpath, ["build"]);
+    }
+
+    #[test]
+    fn manifest_with_only_native_test_works_for_tests_alone() {
+        let toml = "[native.test]\nlibs = [\"mock\"]\n";
+        assert!(parse(toml, Path::new("/p"), false).unwrap().is_none(), "builds ignore it");
+        assert_eq!(parse(toml, Path::new("/p"), true).unwrap().unwrap().libs, ["mock"]);
+    }
+
+    #[test]
+    fn native_test_validates_like_native() {
+        let err = parse("[native.test]\nlib = [\"a\"]\n", Path::new("/p"), true).unwrap_err();
+        assert!(err.contains("unknown [native.test] key `lib`"), "{err}");
+    }
+
+    #[test]
     fn missing_section_is_none() {
-        assert!(parse("[package]\nname = \"x\"\n", Path::new("/p")).unwrap().is_none());
+        assert!(parse("[package]\nname = \"x\"\n", Path::new("/p"), false).unwrap().is_none());
     }
 
     #[test]
     fn unknown_key_is_an_error() {
-        let err = parse("[native]\nlib = [\"a\"]\n", Path::new("/p")).unwrap_err();
+        let err = parse("[native]\nlib = [\"a\"]\n", Path::new("/p"), false).unwrap_err();
         assert!(err.contains("unknown [native] key `lib`"), "{err}");
     }
 
     #[test]
     fn non_array_value_is_an_error() {
-        let err = parse("[native]\nlibs = \"a\"\n", Path::new("/p")).unwrap_err();
+        let err = parse("[native]\nlibs = \"a\"\n", Path::new("/p"), false).unwrap_err();
         assert!(err.contains("array of strings"), "{err}");
     }
 

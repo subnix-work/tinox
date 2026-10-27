@@ -2110,6 +2110,8 @@ fn print_error(file: &str, lines: &[&str], span: tinox_common::Span, message: &s
 }
 
 fn run_tests(args: &[String]) {
+    // `[native.test]` in tinox.toml overrides `[native]` for the test programs (issue #506)
+    native::set_test_mode(true);
     let watch_mode = args.iter().any(|a| a == "--watch" || a == "-w");
     let filtered_args: Vec<String> = args.iter()
         .filter(|a| *a != "--watch" && *a != "-w")

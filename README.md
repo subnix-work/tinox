@@ -251,6 +251,19 @@ sources    = ["native/shim.c"]     # compiled to .tinox/native/ (.c via cc, .cc/
 cflags     = ["-O2", "-Ivendor"]   # used only to compile `sources`
 ```
 
+A `[native.test]` table overrides keys of `[native]` for `tinox test` only, for
+example to link a headless test double with the same symbols instead of the real
+library; keys it leaves out are inherited, `build`/`run`/`check` ignore it:
+
+```toml
+[native]
+libs = ["tinoxkde"]
+lib_dirs = ["bridge/build/bin"]
+
+[native.test]
+libs = ["tinoxkde-mock"]
+```
+
 Every mistake is a hard error: unknown keys, missing files, a library the
 linker cannot find, a missing pkg-config package. Compiled `sources` are
 reused while the source and the headers reported by the compiler are
