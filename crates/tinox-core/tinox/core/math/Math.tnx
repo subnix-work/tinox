@@ -97,11 +97,15 @@ namespace tinox.core.math
          */
         fn pow(base: Int64, exp: Int64) -> Int64
         {
+            if (exp < 0)
+            {
+                throw "Math.pow: negative exponent"
+            }
             var result: Int64 = 1
             var i: Int64 = 0
             while i < exp
             {
-                result = result * base
+                result = Math::mulChecked(result, base)
                 i = i + 1
             }
             return result
@@ -109,23 +113,43 @@ namespace tinox.core.math
 
         /**
          * Returns the factorial of n (n!)
-         * Computes n * (n-1) * ... * 2 * 1 recursively.
-         * For n <= 1, returns 1.
+         * Computes n * (n-1) * ... * 2 * 1.
          * @param n the input value (must be non-negative)
-         * @return n factorial
+         * @return n factorial; throws on a negative argument or Int64 overflow
          */
         fn factorial(n: Int64) -> Int64
         {
-            if (n <= 1)
+            if (n < 0)
             {
-                return 1
+                throw "Math.factorial: negative argument"
             }
             var result: Int64 = 1
-            for i in 2..(n+1)
+            var i: Int64 = 2
+            while i <= n
             {
-                result = result * i
+                result = Math::mulChecked(result, i)
+                i = i + 1
             }
             return result
+        }
+
+        /**
+         * a * b, throwing instead of silently wrapping on Int64 overflow.
+         */
+        fn mulChecked(a: Int64, b: Int64) -> Int64
+        {
+            if (a == 0 || b == 0)
+            {
+                return 0
+            }
+            const limit: Int64 = 9223372036854775807
+            const absA: Int64 = a < 0 ? 0 - a : a
+            const absB: Int64 = b < 0 ? 0 - b : b
+            if (absA < 0 || absB < 0 || absA > limit / absB)
+            {
+                throw "Math: Int64 overflow"
+            }
+            return a * b
         }
 
         /**

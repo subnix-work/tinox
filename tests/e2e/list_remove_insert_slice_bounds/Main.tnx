@@ -1,0 +1,13 @@
+// Regression test for #469: removeAt/insert/slice with out-of-range arguments abort.
+// expect: runtime error: removeAt index out of bounds: 7 (length 3)
+// expect-exit: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        var a: List<Int64> = [1, 2, 3]
+        a.removeAt(7)
+        println("unreachable")
+        return 0
+    }
+}

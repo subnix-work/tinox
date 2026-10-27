@@ -82,7 +82,7 @@ fn extended_module_declared_but_not_installed_fails_with_run_install_error() {
     let dir = workdir("declared-not-installed");
     fs::write(
         dir.join("tinox.toml"),
-        "[package]\ncompiler = \"2.7.0\"\nname = \"gatetest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.1.0\"\n",
+        "[package]\ncompiler = \"2.8.0\"\nname = \"gatetest\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"1.1.0\"\n",
     )
     .unwrap();
     fs::write(

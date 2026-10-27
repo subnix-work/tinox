@@ -1,0 +1,17 @@
+// Regression test for #469: pop() on an empty list is a hard error.
+// expect: 2
+// expect: runtime error: pop() on an empty list
+// expect-exit: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        var e: List<Int64> = [1, 2]
+        e.pop()
+        e.pop()
+        println(e.len() + 2)
+        e.pop()
+        println("unreachable")
+        return 0
+    }
+}

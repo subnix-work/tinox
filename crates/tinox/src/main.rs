@@ -165,7 +165,7 @@ fn print_help() {
 /// declaration (#159).
 fn new_project_files(name: &str) -> (String, String, String, String) {
     let toml = format!(
-        "[package]\ncompiler = \"2.7.0\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n",
+        "[package]\ncompiler = \"2.8.0\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n",
         pm::COMPILER_VERSION
     );
     let main_tnx = format!(
@@ -260,30 +260,31 @@ fn fmt(args: &[String]) {
         }
     };
 
-    let mut lexer = Lexer::new(&source);
-    let tokens = match lexer.tokenize() {
-        Ok(t) => t,
-        Err(errors) => {
-            eprintln!("Lex error: {:?}", errors);
+    // The file must parse (reported like any other compiler diagnostic), but the
+    // formatting itself is layout-only: it keeps every token and comment.
+    let formatted = (|| -> Result<String, Failure> {
+        let mut lexer = Lexer::new(&source);
+        let tokens = lexer
+            .tokenize()
+            .map_err(|errors| Failure::errors(errors, "lex", Some(input_file)))?;
+        Parser::new(tokens)
+            .parse()
+            .map_err(|bag| Failure::errors(bag.errors, "parse", Some(input_file)))?;
+        tinox_parser::format_source(&source)
+            .map_err(|errors| Failure::errors(errors, "lex", Some(input_file)))
+    })();
+    let formatted = match formatted {
+        Ok(f) => f,
+        Err(failure) => {
+            diagnostics::finish(args, Err(failure));
             return;
         }
     };
-
-    let mut parser = Parser::new(tokens);
-    let ast = match parser.parse() {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("Parse error: {:?}", e);
-            return;
-        }
-    };
-
-    let mut formatter = Formatter::new();
-    let formatted = formatter.format(&ast);
 
     if write_mode {
         if let Err(e) = fs::write(input_file, &formatted) {
             eprintln!("error: cannot write '{}': {}", input_file, e);
+            std::process::exit(1);
         }
     } else {
         print!("{}", formatted);
@@ -1541,7 +1542,7 @@ mod repl_semantics_tests {
     fn repl_preserves_checked_generic_types_and_numeric_promotions() {
         let source = "fn identity<T>(value: T) -> T { return value } fn main() -> Int64 { const byte: UInt8 = 255\nprintln(identity(byte) + 1)\nprintln(identity(1.5))\nreturn 0 }";
         let output = super::repl_compile_and_run(source, std::process::id() as usize).unwrap();
-        assert_eq!(output.trim(), "256\n1.5");
+        assert_eq!(output.trim(), "0\n1.5");
     }
 
 }
@@ -2022,13 +2023,69 @@ fn check(args: &[String]) {
         diagnostics::finish(args, Err(Failure::new("driver", None, None, "No entry file found")));
         std::process::exit(1);
     });
-    let result = prepare_program(&input).and_then(|(ast, _)| {
-        let ann = tinox_typecheck::annotations::process_annotations(&ast);
-        validate_program_annotations(&ast, &ann, &input)?;
-        for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
-        Ok(())
+    let check_one = |input: &str| -> Result<(), Failure> {
+        prepare_program(input).and_then(|(ast, _)| {
+            let ann = tinox_typecheck::annotations::process_annotations(&ast);
+            validate_program_annotations(&ast, &ann, input)?;
+            for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
+            Ok(())
+        })
+    };
+    // Issue #475: without a file argument, check every source file of the
+    // project, not only the code reachable from the entry point.
+    let explicit_file = args.iter().enumerate().any(|(i, a)| {
+        !a.starts_with('-') && (i == 0 || !matches!(args[i - 1].as_str(), "-o" | "--output" | "--error-format"))
     });
-    diagnostics::finish_with_message(args, result, &format!("{input}: no errors"));
+    if !explicit_file {
+        let files = project_source_files(&input);
+        let mut diagnostics_all: Vec<tinox_common::diagnostic::Diagnostic> = Vec::new();
+        let mut seen_diagnostics: HashSet<String> = HashSet::new();
+        for file in &files {
+            if let Err(failure) = check_one(file) {
+                for d in failure.0 {
+                    if seen_diagnostics.insert(serde_json::to_string(&d).unwrap_or_default()) {
+                        diagnostics_all.push(d);
+                    }
+                }
+            }
+        }
+        let result = if diagnostics_all.is_empty() { Ok(()) } else { Err(Failure(diagnostics_all)) };
+        diagnostics::finish_with_message(args, result, &format!("checked {} source files: no errors", files.len()));
+        return;
+    }
+    diagnostics::finish_with_message(args, check_one(&input), &format!("{input}: no errors"));
+}
+
+/// The entry file plus every `.tnx` under the project's `src/` and `tests/`
+/// directories (the entry file's project = nearest `tinox.toml`).
+fn project_source_files(entry: &str) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if !name.starts_with('.') && name != "target" {
+                    walk(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "tnx") {
+                out.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let mut files = vec![entry.to_string()];
+    if let Some(root) = pm::find_project_root_from(Path::new(entry)) {
+        for sub in ["src", "tests"] {
+            walk(&root.join(sub), &mut files);
+        }
+    }
+    let mut seen = HashSet::new();
+    files.retain(|f| {
+        let canonical = fs::canonicalize(f).unwrap_or_else(|_| PathBuf::from(f));
+        seen.insert(canonical)
+    });
+    files
 }
 
 fn print_error(file: &str, lines: &[&str], span: tinox_common::Span, message: &str) {
@@ -2438,6 +2495,10 @@ fn gen_call_graph(args: &[String]) {
 
     tinox_parser::assign_node_ids(&mut ast);
     let mut typechecker = tinox_typecheck::TypeChecker::new();
+    if let Ok(entry) = Path::new(&input_file).canonicalize() {
+        let root = pm::find_project_root_from(&entry).or_else(|| entry.parent().map(Path::to_path_buf));
+        if let Some(root) = root { typechecker.set_project_root(root); }
+    }
     if let Err(e) = typechecker.check(&ast) {
         eprintln!("error: type error:\n{}", e);
         std::process::exit(1);
@@ -2940,7 +3001,7 @@ fn highlight_tinox_source(src: &str) -> String {
         let class = match &tok.kind {
             TokenKind::Keyword(_) | TokenKind::Bool(_) => Some("kw"),
             TokenKind::String(_) | TokenKind::RawString(_) | TokenKind::InterpString(_) | TokenKind::Char(_) => Some("str"),
-            TokenKind::Integer(_) | TokenKind::Float(_) | TokenKind::IntegerSuffix(_) | TokenKind::FloatSuffix(_) => Some("num"),
+            TokenKind::Integer(_) | TokenKind::BigInteger(_) | TokenKind::Float(_) | TokenKind::IntegerSuffix(_) | TokenKind::FloatSuffix(_) => Some("num"),
             TokenKind::Comment(_) | TokenKind::DocComment(_) => Some("cmt"),
             TokenKind::Ident(name) if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) => Some("type"),
             _ => None,
@@ -3105,6 +3166,8 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     cg.set_migration_payload(test_migration_payload(db_cfg_test.as_ref()).map_err(|e| format!("changelog: {e}"))?);
     cg.set_test_entry(class_name.to_string(), method_name.to_string());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
+    cg.check_undefined_callees()
+        .map_err(|e| format!("codegen: {}", e.errors.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")))?;
 
     let ir = cg.into_ir();
     let ir_path = format!("{exe}.ll");
@@ -3678,6 +3741,138 @@ fn has_class_named_main(decls: &[tinox_parser::Decl]) -> bool {
         DeclKind::Namespace(ns) => has_class_named_main(&ns.decls),
         _ => false,
     })
+}
+
+/// Whether `expr` is itself a `DB::raw(...)` call — deliberately mirrors
+/// `gen_orm_raw`'s own interception shape in `tinox-codegen/src/codegen.rs`
+/// (`obj == Ident("DB") && method == "raw"`) so this compile-time gate and
+/// what codegen actually intercepts can never disagree.
+fn expr_is_db_raw_call(expr: &tinox_parser::Expr) -> bool {
+    matches!(&expr.node, tinox_parser::ExprKind::EnumValue { enum_name, variant, .. }
+        if enum_name == "DB" && variant == "raw")
+}
+
+/// Finds any `DB::raw(...)` call anywhere in a method body, no matter how
+/// deeply nested (inside a lambda, match arm, try/catch, loop, ...).
+/// Exhaustive over every `ExprKind`/`StmtKind` variant, mirroring
+/// `callgraph.rs`'s `walk_stmt`/`walk_expr` (built for a different purpose —
+/// call-graph edges — but the same full-coverage shape), simplified to a
+/// plain boolean short-circuit since call-target resolution isn't needed
+/// here, only "does a `DB::raw` call exist anywhere in this body".
+fn stmt_uses_db_raw(stmt: &tinox_parser::Stmt) -> bool {
+    use tinox_parser::StmtKind;
+    match &stmt.node {
+        StmtKind::Expr(e) => expr_uses_db_raw(e),
+        StmtKind::Let { value, .. } | StmtKind::Var { value, .. } => {
+            value.as_ref().is_some_and(expr_uses_db_raw)
+        }
+        StmtKind::Assignment { target, value } => expr_uses_db_raw(target) || expr_uses_db_raw(value),
+        StmtKind::If { cond, then_branch, else_branch } => {
+            expr_uses_db_raw(cond)
+                || stmt_uses_db_raw(then_branch)
+                || else_branch.as_deref().is_some_and(stmt_uses_db_raw)
+        }
+        StmtKind::While { cond, body } => expr_uses_db_raw(cond) || stmt_uses_db_raw(body),
+        StmtKind::For { iter, body, .. } => expr_uses_db_raw(iter) || stmt_uses_db_raw(body),
+        StmtKind::ForC { init, cond, update, body } => {
+            init.as_deref().is_some_and(stmt_uses_db_raw)
+                || cond.as_ref().is_some_and(expr_uses_db_raw)
+                || update.as_ref().is_some_and(expr_uses_db_raw)
+                || stmt_uses_db_raw(body)
+        }
+        StmtKind::Loop { body } => stmt_uses_db_raw(body),
+        StmtKind::Return(e) => e.as_ref().is_some_and(expr_uses_db_raw),
+        StmtKind::Throw(e) => expr_uses_db_raw(e),
+        StmtKind::Try { body, catches, finally } => {
+            stmt_uses_db_raw(body)
+                || catches.iter().any(|c| stmt_uses_db_raw(&c.body))
+                || finally.as_deref().is_some_and(stmt_uses_db_raw)
+        }
+        StmtKind::Defer(inner) => stmt_uses_db_raw(inner),
+        StmtKind::Block(stmts) => stmts.iter().any(stmt_uses_db_raw),
+        StmtKind::Select { arms, default } => {
+            arms.iter().any(|a| expr_uses_db_raw(&a.channel) || stmt_uses_db_raw(&a.body))
+                || default.as_deref().is_some_and(stmt_uses_db_raw)
+        }
+        StmtKind::Break | StmtKind::Continue | StmtKind::Empty => false,
+    }
+}
+
+fn expr_uses_db_raw(expr: &tinox_parser::Expr) -> bool {
+    use tinox_parser::ExprKind;
+    if expr_is_db_raw_call(expr) {
+        return true;
+    }
+    match &expr.node {
+        ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::This | ExprKind::Break
+        | ExprKind::Continue | ExprKind::Channel => false,
+        ExprKind::ArrayLiteral(items) | ExprKind::Tuple(items) => items.iter().any(expr_uses_db_raw),
+        ExprKind::MapLiteral(pairs) => pairs.iter().any(|(k, v)| expr_uses_db_raw(k) || expr_uses_db_raw(v)),
+        ExprKind::Binary { lhs, rhs, .. } => expr_uses_db_raw(lhs) || expr_uses_db_raw(rhs),
+        ExprKind::Unary { operand, .. } => expr_uses_db_raw(operand),
+        ExprKind::Call { func, args } => expr_uses_db_raw(func) || args.iter().any(expr_uses_db_raw),
+        ExprKind::MethodCall { obj, args, .. } => expr_uses_db_raw(obj) || args.iter().any(expr_uses_db_raw),
+        ExprKind::Index { obj, index } => expr_uses_db_raw(obj) || expr_uses_db_raw(index),
+        ExprKind::FieldAccess { obj, .. } => expr_uses_db_raw(obj),
+        ExprKind::SuperCall { args, .. } => args.iter().any(expr_uses_db_raw),
+        ExprKind::New { args, .. } => args.iter().any(expr_uses_db_raw),
+        ExprKind::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| expr_uses_db_raw(v)),
+        ExprKind::Block(stmts) => stmts.iter().any(stmt_uses_db_raw),
+        ExprKind::If { cond, then_branch, else_branch } => {
+            expr_uses_db_raw(cond)
+                || expr_uses_db_raw(then_branch)
+                || else_branch.as_deref().is_some_and(expr_uses_db_raw)
+        }
+        ExprKind::While { cond, body } => expr_uses_db_raw(cond) || expr_uses_db_raw(body),
+        ExprKind::For { iter, body, .. } => expr_uses_db_raw(iter) || expr_uses_db_raw(body),
+        ExprKind::Loop { body } => expr_uses_db_raw(body),
+        ExprKind::Match { expr: scrutinee, cases } => {
+            expr_uses_db_raw(scrutinee)
+                || cases.iter().any(|c| c.guard.as_ref().is_some_and(expr_uses_db_raw) || expr_uses_db_raw(&c.body))
+        }
+        ExprKind::Return(e) => e.as_deref().is_some_and(expr_uses_db_raw),
+        ExprKind::Throw(e) => expr_uses_db_raw(e),
+        ExprKind::Try { body, catches, finally } => {
+            expr_uses_db_raw(body)
+                || catches.iter().any(|c| stmt_uses_db_raw(&c.body))
+                || finally.as_deref().is_some_and(expr_uses_db_raw)
+        }
+        ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
+            expr_uses_db_raw(target) || expr_uses_db_raw(value)
+        }
+        ExprKind::Lambda { body, .. } => expr_uses_db_raw(body),
+        ExprKind::Spawn(e) | ExprKind::Await(e) | ExprKind::Recv(e) => expr_uses_db_raw(e),
+        ExprKind::Send { channel, value } => expr_uses_db_raw(channel) || expr_uses_db_raw(value),
+        ExprKind::Cast { expr: inner, .. } | ExprKind::Is { expr: inner, .. } => expr_uses_db_raw(inner),
+        ExprKind::Range { start, end, .. } => expr_uses_db_raw(start) || expr_uses_db_raw(end),
+        ExprKind::TupleIndex { tuple, .. } => expr_uses_db_raw(tuple),
+        ExprKind::EnumValue { args, .. } => args.iter().any(expr_uses_db_raw),
+    }
+}
+
+/// First `(class, method)` anywhere in the program with a `DB::raw(...)` call
+/// in its body, if any — used only for the postgres-only compile-time gate
+/// below, mirroring how `has_class_named_main` walks `Class`/`Namespace`
+/// decls.
+fn find_db_raw_usage(decls: &[tinox_parser::Decl]) -> Option<(String, String)> {
+    for d in decls {
+        match &d.node {
+            DeclKind::Class(c) => {
+                for m in &c.methods {
+                    if stmt_uses_db_raw(&m.body) {
+                        return Some((c.name.clone(), m.name.clone()));
+                    }
+                }
+            }
+            DeclKind::Namespace(ns) => {
+                if let Some(found) = find_db_raw_usage(&ns.decls) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Issue #149 stage 3: hard-enforces "no top-level `fn` with a body" — the
@@ -4415,8 +4610,12 @@ fn prepare_program(input_path: &str) -> Result<(tinox_parser::SourceFile, tinox_
     // NodeIds for the type table (typecheck → codegen)
     tinox_parser::assign_node_ids(&mut ast);
 
-    let checked = tinox_typecheck::cache::check_program_cached(&ast)
+    let project_root = Path::new(input_path).canonicalize().ok().and_then(|entry| {
+        pm::find_project_root_from(&entry).or_else(|| entry.parent().map(Path::to_path_buf))
+    });
+    let checked = tinox_typecheck::cache::check_program_cached(&ast, project_root.as_deref())
         .map_err(|e| Failure::errors(e.errors, "type", Some(input_path)))?;
+    for warning in &checked.warnings { eprintln!("warning: {warning}"); }
     Ok((ast, checked))
 }
 
@@ -4529,6 +4728,21 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
             return Err(annotation_error(&[class_name.as_str()], format!(
                 "'{class_name}.{method_name}' is @Transactional, but [database] driver is {} -- \
                  @Transactional is only supported for driver = \"postgres\" in this version",
+                if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
+            )));
+        }
+    }
+    // DB::raw(...) is postgres-only in v1, same reasoning and same check shape
+    // as @Transactional above (its connection-pool/PQexecParams machinery only
+    // exists for that driver). `DB::raw` is a plain call expression, not an
+    // annotation, so it is found with a dedicated AST walk.
+    if let Some((class_name, method_name)) = find_db_raw_usage(&ast.decls) {
+        let driver_cfg = read_database_config();
+        let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
+        if driver != "postgres" {
+            return Err(annotation_error(&[class_name.as_str()], format!(
+                "'{class_name}.{method_name}' calls DB::raw(...), but [database] driver is {} -- \
+                 DB::raw(...) is only supported for driver = \"postgres\" in this version",
                 if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
             )));
         }
@@ -4934,6 +5148,9 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     codegen
         .gen(&ast)
         .map_err(|e| Failure::errors(e.errors, "codegen", Some(input_path)))?;
+    codegen
+        .check_undefined_callees()
+        .map_err(|e| Failure::errors(e.errors, "codegen", Some(input_path)))?;
 
     Ok(codegen)
 }
@@ -5320,7 +5537,7 @@ mod namespace_path_matches_tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.7.0\"\nname = \"t\"\n").unwrap();
+        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.8.0\"\nname = \"t\"\n").unwrap();
         if with_src {
             fs::create_dir_all(dir.join("src")).unwrap();
         }
@@ -5497,25 +5714,25 @@ mod read_project_entry_tests {
 
     #[test]
     fn entry_field_found() {
-        let toml = "[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
     #[test]
     fn no_entry_field_returns_none() {
-        let toml = "[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_outside_package_section_ignored() {
-        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\n";
+        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_field_whitespace_tolerant() {
-        let toml = "[package]\ncompiler = \"2.7.0\"\nentry=\"src/Main.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.8.0\"\nentry=\"src/Main.tnx\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
@@ -5526,7 +5743,7 @@ mod read_project_entry_tests {
     // of them (issue #257).
     #[test]
     fn undeclared_entry_prefers_capital_main_then_lowercase() {
-        let toml = "[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
+        let toml = "[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
         assert_eq!(
             entry_candidates(toml),
             vec!["src/Main.tnx".to_string(), "src/main.tnx".to_string()]
@@ -5536,7 +5753,7 @@ mod read_project_entry_tests {
     #[test]
     fn declared_entry_is_the_only_candidate() {
         // No silent fallback to a default when an explicit entry is wrong.
-        let toml = "[package]\ncompiler = \"2.7.0\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
         assert_eq!(entry_candidates(toml), vec!["src/Cli.tnx".to_string()]);
     }
 }

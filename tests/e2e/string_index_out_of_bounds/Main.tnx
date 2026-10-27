@@ -1,0 +1,17 @@
+// Regression test for #422: charAt/substring abort on out-of-range arguments
+// instead of reading adjacent memory or clamping silently.
+// expect: b
+// expect: bc
+// expect: runtime error: string index out of bounds: 5 (length 3)
+// expect-exit: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        const s = "abc"
+        println(s.charAt(1))
+        println(s.substring(1, 3))
+        println(s.charAt(5))
+        return 0
+    }
+}

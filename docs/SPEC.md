@@ -1,10 +1,10 @@
 # Tinox Programming Language Specification
 
-**Version:** 2.1.0
+**Version:** 2.7.0
 **Status:** Actively developed — self-hosting tooling (LSP, `tinox fmt`, package
 registry client, dev dashboard) and 70+ documented bugfixes deep, not an early
 draft. This document was last verified against the actual compiler/runtime
-source on 2026-08-12; where a feature exists as a lexer/parser keyword but has
+source on 2026-10-26; where a feature exists as a lexer/parser keyword but has
 no real-world usage in the codebase, that is called out explicitly rather than
 presented as a working feature.
 
@@ -71,9 +71,12 @@ binary      ::= '0' ('b' | 'B') bindigit+
 
 #### Float Literals
 ```
-float-literal ::= digit+ '.' digit* exponent?
+float-literal ::= digit+ '.' digit+ exponent?
 exponent      ::= ('e' | 'E') ('+' | '-')? digit+
 ```
+
+A float literal needs digits on both sides of the dot (`5.0`, not `5.`, which
+starts a member access) and always contains a dot (`1.0e3`, not `1e3`).
 
 #### String Literals
 ```
@@ -170,7 +173,7 @@ class Point
 
     fn distanceTo(other: Point) -> Float64
     {
-        if this.x == other.x
+        if (this.x == other.x)
         {
             return 0.0
         }
@@ -225,7 +228,7 @@ Ref<T>               Mutable reference to T
 T?                    Nullable type (parsed and type-checked; new library
                       lookup APIs use Option<T> for absence; legacy APIs
                       may still return sentinels)
-Fn(P1, P2) -> R       Function type
+fnc(P1, P2) -> R      Function type (e.g. `const g: fnc(Int64) -> Int64 = x => x * 3`)
 ```
 
 `List<T>` (not `Array<T>`) is what almost all real code reaches for — see
@@ -240,7 +243,7 @@ Fn(P1, P2) -> R       Function type
 ```tinox
 // Immutable variable (`let` is still accepted as a deprecated alias for `const`)
 const x: Int32 = 42
-val y: Int64 = 100
+const y: Int64 = 100
 
 // Mutable variable
 var counter: Int32 = 0
@@ -640,12 +643,12 @@ finally
 ### Control Flow
 
 ```tinox
-// If-else
-if x > 0
+// If-else (the condition must be parenthesized)
+if (x > 0)
 {
     print("positive")
 }
-else if x < 0
+else if (x < 0)
 {
     print("negative")
 }
@@ -671,7 +674,7 @@ for item in collection
 // Loop (infinite)
 loop
 {
-    if done { break }
+    if (done) { break }
 }
 ```
 
@@ -827,6 +830,34 @@ browse the published packages on tinox-central — this spec intentionally
 does not duplicate that list, since it is added to frequently and would
 go stale here.
 
+### Raw SQL: `DB::raw`
+
+`DB::raw(sql, params)` (package `tinox.core.db` 1.2.1) runs one parameterized
+statement for queries the ORM DSL cannot express (for example a pgvector
+`ORDER BY embedding <-> $1`):
+
+```tinox
+const rows: List<Map<String, String>> = DB::raw(
+    "SELECT id, name, note FROM items WHERE price > $1 ORDER BY id",
+    ["5.00"]
+)
+for row in rows
+{
+    println(row.get("name") + " " + row.contains("note").toString())
+}
+```
+
+- `$1`, `$2`, ... are bound from `params` (a `List<String>`; Postgres converts the
+  text). **Always pass values through `params`**: the SQL text itself is not
+  checked, so building it from untrusted input is an SQL injection.
+- Each row is a `Map<String, String>` from column name to text value. A `NULL`
+  column is absent from its row's map: test it with `row.contains(col)`.
+- No matching rows give an empty list. A failed statement aborts the program with
+  the database error, like a failed ORM query.
+- Inside `@Transactional` it runs on the transaction's connection; otherwise it
+  uses a pooled connection per call.
+- Postgres only: with any other `[database] driver` (or none) the build fails.
+
 ---
 
 ## Tooling
@@ -849,6 +880,70 @@ go stale here.
 
 ---
 
+## Numeric Semantics
+
+- **Conversions.** Only value-preserving widening is implicit: `Int8 -> Int16
+  -> Int32 -> Int64`, `UInt8 -> UInt16 -> UInt32 -> UInt64`, an unsigned type
+  to any wider signed type, `Float32 -> Float64`. Narrowing, `Float -> Int`,
+  and `Int64 -> Float` are compile errors for any expression (names, literals,
+  arithmetic, fields, elements, call results); convert explicitly (`x as Int32`, `x.toFloat()`, `f.toInt()`). An integer literal is
+  range-checked against the declared type (`const b: Int8 = 200` is an error)
+  and may initialize any float type; an integral float literal may initialize
+  an integer type. Integer arguments may feed float parameters.
+- **Unsigned.** `UInt64` compares, divides, takes remainders and prints as an
+  unsigned value. When a `UInt64` meets any other integer, the `UInt64` wins.
+  A decimal literal above `Int64` max (up to `18446744073709551615`) has type
+  `UInt64`; assigning it to a signed type is a compile error.
+- **Shifts.** `<<` shifts left, `>>` is a *logical* (zero-filling) right shift
+  and `>>>` an *arithmetic* (sign-extending) right shift. This is the reverse
+  of Java and JavaScript. The shift count must be in `0..bit width`: a
+  constant count outside it is a compile error, a dynamic one aborts the
+  program with a runtime error.
+- **Overflow.** Integer `+ - *` wrap in two's complement in the width of the
+  operand type: `Int8 127 + 1` is `-128`, `UInt8 255 + 1` is `0`. An integer
+  literal operand adopts the other operand's narrower integer type when its
+  value fits; mixing two different integer types promotes to `Int64` (or to
+  `UInt64` if one side is `UInt64`). Division and remainder by zero abort.
+  There is deliberately no trapping overflow check: hashes and checksums in
+  the standard library rely on wrapping.
+
+Lambda parameters need a type unless the context supplies it: `const f = (a, b)
+=> a + b` is an error ("cannot infer the type of lambda parameter"), while
+`xs.map(x => x * 2)` and a binding with a declared function type infer it.
+Assigning to a variable captured from an enclosing function inside a closure is
+a compile error (closures capture by value).
+
+## Strings
+
+A `String` is a sequence of bytes, not of code points. `s.len()` counts bytes
+and `s[i]` is the byte at index `i` (an `Int64`). `charAt`/`substring` abort
+when an index is out of range, and `substring` aborts rather than split a
+multi-byte UTF-8 sequence. NUL escapes (`\0`, `\x00`) are rejected in string
+literals because strings are NUL-terminated at runtime. `toInt()`/`toFloat()`
+are strict: malformed text aborts; test with `isInt()`/`isFloat()` first.
+
+## Regular Expressions
+
+The regex module uses POSIX extended syntax. The Perl classes `\d \D \s \S \w
+\W` are translated to POSIX bracket expressions; an invalid pattern aborts the
+program.
+
+## Call Shape
+
+`fnc` declares a static method (call it as `Type::m()`), `fn` an instance
+method (call it as `value.m()`). An instance `fn` that never uses `this` may
+still be called statically (the standard library relies on it), but the
+compiler warns for such methods declared in the project itself: declare them
+with `fnc`. An instance `fn` that does use `this` needs its receiver; mixing
+the two shapes is an error whose message names the correct form. `static`, `ref` and `for (x in xs)` are not
+Tinox syntax: use `fnc`, a different identifier, and `for x in xs`.
+
+## Tooling Notes
+
+`tinox fmt` is a layout-only formatter: it re-indents and normalizes spacing
+and keeps comments and token order. `tinox check` without arguments checks
+every file under `src/` and `tests/`.
+
 ## Future / Known-Incomplete Areas
 
 - `trait` — reserved keyword, unimplemented in practice (no real usage
@@ -860,5 +955,5 @@ go stale here.
   but not exercised in real code.
 - `T?` (nullable types) — parsed and type-checked, but most stdlib APIs
   prefer sentinel returns over nullable types in practice.
-- Pattern-matching exhaustiveness checking.
+- Pattern-matching exhaustiveness is checked for enum `match` only; other scrutinee types are not checked.
 - Macros.

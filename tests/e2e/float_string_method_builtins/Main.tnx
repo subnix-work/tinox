@@ -1,0 +1,36 @@
+// Regression test for #429: Float64.abs/floor/ceil/round, String.repeat/
+// padLeft/padRight/toString and Int64.toFloat are implemented, and the math
+// builtins accept integer arguments.
+// expect: 2.5
+// expect: -3
+// expect: -2
+// expect: -3
+// expect: ababab
+// expect: 00x
+// expect: xab
+// expect: abc
+// expect: 3
+// expect: 1
+// expect: 1024
+// expect: 4
+class Main
+{
+    fnc main() -> Int32
+    {
+        const x: Float64 = -2.5
+        println(x.abs())
+        println(x.floor())
+        println(x.ceil())
+        println(x.round())
+        println("ab".repeat(3))
+        println("x".padLeft(3, "0"))
+        println("x".padRight(3, "ab"))
+        println("abc".toString())
+        const n: Int64 = 3
+        println(n.toFloat())
+        println(floor(1))
+        println(pow(2, 10))
+        println(sqrt(16))
+        return 0
+    }
+}

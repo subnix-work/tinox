@@ -1,0 +1,14 @@
+import Mid
+
+class Leaf extends Mid
+{
+    fn hook() -> String
+    {
+        return "leaf+" + super.hook()
+    }
+
+    fn count() -> Int64
+    {
+        return 3
+    }
+}

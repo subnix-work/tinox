@@ -97,7 +97,7 @@ class Main
         var sum: Int32 = 0
         for i in 1..11
         {
-            sum = sum + i
+            sum = sum + (i as Int32)
         }
         print("Sum 1-10: ")
         print(sum)
@@ -255,7 +255,7 @@ class Main
     {
         for i in 0..10
         {
-            const fib: Int32 = fibonacci(i)
+            const fib: Int32 = fibonacci(i as Int32)
             print(fib)
             print(" ")
         }

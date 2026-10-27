@@ -351,6 +351,13 @@ pub struct CodeGen {
     class_parents: HashMap<String, String>,
     /// class_name -> number of entries in its vtable global (computed during emit_vtable_globals)
     vtable_sizes: HashMap<String, usize>,
+    /// Issue #455: class -> virtual method names (shared by every class of one
+    /// inheritance tree that has overrides, sorted). Such classes carry a vtable
+    /// whose virtual entries sit at `virtual_iface_base + position`, after the
+    /// (padded) interface entries.
+    virtual_classes: HashMap<String, Vec<String>>,
+    virtual_iface_base: usize,
+    virtual_fallbacks: HashSet<String>,
     /// ClassName_methodName -> OwnerClassName_methodName (resolved through inheritance)
     method_impl: HashMap<String, String>,
     /// Classes for which a named LLVM struct type `%class.<name>` was emitted
@@ -638,6 +645,9 @@ impl CodeGen {
             interface_method_ret_types: HashMap::new(),
             class_parents: HashMap::new(),
             vtable_sizes: HashMap::new(),
+            virtual_classes: HashMap::new(),
+            virtual_iface_base: 0,
+            virtual_fallbacks: HashSet::new(),
             method_impl: HashMap::new(),
             class_named_types: HashSet::new(),
             spec_type_defs: String::new(),
@@ -1476,6 +1486,71 @@ impl CodeGen {
     }
 
     /// Resolve method call to the class that actually implements it (walks parent chain).
+    /// Issue #455: find inheritance trees where a subclass overrides an
+    /// inherited instance method; every class of such a tree gets a vtable
+    /// slot so calls on the base type (including `this.m()` inside inherited
+    /// methods) dispatch on the dynamic class.
+    fn compute_virtual_hierarchies(
+        &mut self,
+        classes: &[tinox_parser::Class],
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) {
+        let root_of = |name: &str| -> Option<String> {
+            let mut cur = name.to_string();
+            let mut guard = 0;
+            loop {
+                let c = class_map.get(&cur)?;
+                if !c.type_params.is_empty() { return None; }
+                match &c.extends {
+                    Some(p) if class_map.contains_key(p) => cur = p.clone(),
+                    Some(_) => return None,
+                    None => return Some(cur),
+                }
+                guard += 1;
+                if guard > 64 { return None; }
+            }
+        };
+        let mut names_by_root: HashMap<String, HashSet<String>> = HashMap::new();
+        for c in classes {
+            let Some(parent) = &c.extends else { continue };
+            let Some(root) = root_of(&c.name) else { continue };
+            for m in &c.methods {
+                if m.static_ || !m.type_params.is_empty() { continue; }
+                let mut anc = Some(parent.clone());
+                while let Some(a) = anc {
+                    let Some(ac) = class_map.get(&a) else { break };
+                    if ac.methods.iter().any(|am| am.name == m.name && !am.static_ && am.type_params.is_empty()) {
+                        names_by_root.entry(root.clone()).or_default().insert(m.name.clone());
+                        break;
+                    }
+                    anc = ac.extends.clone();
+                }
+            }
+        }
+        if names_by_root.is_empty() { return; }
+        for c in classes {
+            if let Some(root) = root_of(&c.name) {
+                if let Some(names) = names_by_root.get(&root) {
+                    let mut v: Vec<String> = names.iter().cloned().collect();
+                    v.sort();
+                    self.virtual_classes.insert(c.name.clone(), v);
+                    self.classes_with_vtable.insert(c.name.clone());
+                }
+            }
+        }
+        let mut base = 0usize;
+        for c in classes {
+            let mut seen: HashSet<String> = HashSet::new();
+            for iface in &c.implements {
+                if let Some(ms) = self.vtable_layouts.get(iface) {
+                    for m in ms { seen.insert(m.clone()); }
+                }
+            }
+            base = base.max(seen.len());
+        }
+        self.virtual_iface_base = base;
+    }
+
     fn resolve_method_owner(
         class: &str,
         method: &str,
@@ -1495,6 +1570,69 @@ impl CodeGen {
     }
 
     pub fn gen(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
+        self.gen_inner(source)
+    }
+
+    /// Issue #429: a builtin that the type checker advertises but codegen
+    /// never implemented used to reach LLVM as a call to an undefined
+    /// symbol ("internal compiler error: generated invalid LLVM IR").
+    /// Report it as a normal diagnostic instead.
+    pub fn check_undefined_callees(&self) -> Result<(), ErrorBag> {
+        fn symbol_after(line: &str, from: usize) -> Option<&str> {
+            let rest = &line[from..];
+            let at = rest.find('@')?;
+            let name = &rest[at + 1..];
+            if name.starts_with('"') {
+                return None;
+            }
+            let end = name
+                .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$' | '-')))
+                .unwrap_or(name.len());
+            Some(&name[..end])
+        }
+        let mut defined: HashSet<&str> = HashSet::new();
+        for text in [&self.ir, &self.lambda_ir] {
+            for line in text.lines() {
+                if line.starts_with("define ") || line.starts_with("declare ") {
+                    if let Some(name) = symbol_after(line, 0) {
+                        defined.insert(name);
+                    }
+                }
+            }
+        }
+        let mut missing: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for text in [&self.ir, &self.lambda_ir] {
+            for line in text.lines() {
+                let trimmed = line.trim_start();
+                let call_at = if trimmed.starts_with("call ") {
+                    Some(0)
+                } else {
+                    trimmed.find(" = call ").map(|i| i + " = ".len())
+                };
+                let Some(call_at) = call_at else { continue };
+                if let Some(name) = symbol_after(trimmed, call_at + "call ".len()) {
+                    if !name.is_empty() && !defined.contains(name) && !name.starts_with("llvm.") {
+                        missing.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let mut bag = ErrorBag::new();
+        bag.push(Error::new(
+            Span::dummy(),
+            format!(
+                "unsupported builtin: {} {} advertised by the type checker but not implemented by the code generator",
+                missing.iter().cloned().collect::<Vec<_>>().join(", "),
+                if missing.len() == 1 { "is" } else { "are" }
+            ),
+        ));
+        Err(bag)
+    }
+
+    fn gen_inner(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
         if !self.semantics.ambiguous_declarations.is_empty() {
             let mut symbols: Vec<_> = self.semantics.ambiguous_declarations.iter().collect();
             symbols.sort_by_key(|(symbol, _)| *symbol);
@@ -1534,6 +1672,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "@__tinox_err = thread_local global i64 0").unwrap();
         writeln!(&mut self.ir).unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_int(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_print_uint(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_shift_out_of_range(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_uint_to_string(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_string(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_float(double)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_bool(i1)").unwrap();
@@ -1564,6 +1705,10 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_bool_to_string(i1)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_to_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare double @tinox_string_to_float(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_repeat(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_pad(i8*, i64, i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_is_int(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_is_float(i8*)").unwrap();
         // Strict @PathParam/@QueryParam conversion + bare-string JSON
         // encoding for auto-serialize REST responses (emit_route_shim_body).
         writeln!(&mut self.ir, "declare i32 @tinox_parse_int_checked(i8*, i64*)").unwrap();
@@ -1643,6 +1788,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_map_create()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_map_set(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_get(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_array_check_index(i64*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_sort_str(i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_array_sort_f64(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_contains(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_map_remove(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_map_len(i8*)").unwrap();
@@ -1743,6 +1891,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_db_error(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8** @tinox_params_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_params_set(i8**, i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_db_result_to_row_maps(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_int_to_param(i64)").unwrap();
         // float math builtins
         writeln!(&mut self.ir, "declare double @log(double)").unwrap();
@@ -1911,6 +2060,7 @@ impl CodeGen {
         }).collect();
 
         self.configure_lifecycle(&all_classes);
+        self.compute_virtual_hierarchies(&all_classes, &class_ast_map);
 
         self.synchronized_classes = all_classes.iter()
             .filter(|c| c.annotations.iter().any(|a| a.name == "Synchronized"))
@@ -2015,6 +2165,9 @@ impl CodeGen {
                         }
                     }
                     self.vtable_sizes.insert(c.name.clone(), vtable_methods.len());
+                    if let Some(vm) = self.virtual_classes.get(&c.name) {
+                        self.vtable_sizes.insert(c.name.clone(), self.virtual_iface_base + vm.len());
+                    }
                 }
                 fields.extend(Self::collect_inherited_fields(&c.name, &class_ast_map));
                 if c.annotations.iter().any(|a| a.name == "Log") {
@@ -5580,6 +5733,17 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
+    /// Converts an integer-typed LLVM value to `double` for the math builtins
+    /// (`floor(1)`, `pow(2, 3)`, ...), which are declared over doubles.
+    fn int_to_double_if_needed(&mut self, val: String, ty: &str) -> String {
+        if !matches!(ty, "i64" | "i32" | "i16" | "i8") {
+            return val;
+        }
+        let c = self.temp();
+        writeln!(&mut self.ir, "{} = sitofp {} {} to double", c, ty, val).unwrap();
+        c
+    }
+
     pub fn into_ir(self) -> String {
         // Splice generic-specialization struct types in at the marker (before any
         // function body) so they're defined before their getelementptr uses.
@@ -5664,6 +5828,7 @@ tr_done_{idx}:"#).unwrap();
             timed_metric: None,
             transactional_commit: None,
             finally_targets: Vec::new(),
+            loop_finally_depth: HashMap::new(),
         };
 
         for (i, p) in f.params.iter().enumerate() {
@@ -5789,6 +5954,7 @@ tr_done_{idx}:"#).unwrap();
             timed_metric: None,
             transactional_commit: None,
             finally_targets: Vec::new(),
+            loop_finally_depth: HashMap::new(),
         };
 
         let mut params_str = if method.static_ {
@@ -7263,6 +7429,76 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir, "{ok_bb}:").unwrap();
     }
 
+    /// `DB::raw(sql, params)` — arbitrary parameterized SQL against the pool.
+    /// Unlike `gen_orm_query`, there's no static entity schema to generate a
+    /// `_fromRow`-style function from, so row marshaling (Postgres result ->
+    /// `List<Map<String,String>>`) happens in one C runtime helper
+    /// (`tinox_db_result_to_row_maps`) rather than a hand-emitted nested
+    /// row/column loop here. The params side (`List<String>` -> `char**`)
+    /// DOES stay in codegen, mirroring the row loop `gen_orm_query`'s "list"
+    /// terminal already emits (5652-5680 above) — the existing
+    /// `tinox_array_get`/`tinox_params_set` primitives are already exactly
+    /// what's needed, no new runtime function earns its keep there.
+    fn gen_orm_raw(
+        &mut self,
+        sql_arg: &Expr,
+        params_arg: &Expr,
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        let (sql_val, _sql_ty) = self.gen_expr(sql_arg, ctx)?;
+        let (params_val, _params_ty) = self.gen_expr(params_arg, ctx)?;
+
+        let n_params = self.emit_array_len(&params_val);
+        let params_arr = self.temp();
+        writeln!(&mut self.ir, "  {params_arr} = call i8** @tinox_params_alloc(i64 {n_params})").unwrap();
+
+        // Loop: i = 0; while i < n_params { params_arr[i] = params[i]; i++ }
+        let loop_bb = self.new_bb("raw_params_loop");
+        let body_bb = self.new_bb("raw_params_body");
+        let exit_bb = self.new_bb("raw_params_exit");
+
+        let idx_alloc = self.temp();
+        writeln!(&mut self.ir, "  {idx_alloc} = alloca i64").unwrap();
+        writeln!(&mut self.ir, "  store i64 0, i64* {idx_alloc}").unwrap();
+        writeln!(&mut self.ir, "  br label %{loop_bb}").unwrap();
+        writeln!(&mut self.ir, "{loop_bb}:").unwrap();
+        let cur_i = self.temp();
+        writeln!(&mut self.ir, "  {cur_i} = load i64, i64* {idx_alloc}").unwrap();
+        let cond = self.temp();
+        writeln!(&mut self.ir, "  {cond} = icmp slt i64 {cur_i}, {n_params}").unwrap();
+        writeln!(&mut self.ir, "  br i1 {cond}, label %{body_bb}, label %{exit_bb}").unwrap();
+        writeln!(&mut self.ir, "{body_bb}:").unwrap();
+
+        let elem_i64 = self.temp();
+        writeln!(&mut self.ir, "  {elem_i64} = call i64 @tinox_array_get(i64* {params_val}, i64 {cur_i})").unwrap();
+        let elem_ptr = self.temp();
+        writeln!(&mut self.ir, "  {elem_ptr} = inttoptr i64 {elem_i64} to i8*").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {params_arr}, i64 {cur_i}, i8* {elem_ptr})").unwrap();
+        let next_i = self.temp();
+        writeln!(&mut self.ir, "  {next_i} = add i64 {cur_i}, 1").unwrap();
+        writeln!(&mut self.ir, "  store i64 {next_i}, i64* {idx_alloc}").unwrap();
+        writeln!(&mut self.ir, "  br label %{loop_bb}").unwrap();
+        writeln!(&mut self.ir, "{exit_bb}:").unwrap();
+
+        let conn_reg = self.temp();
+        let result_reg = self.temp();
+        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
+        writeln!(
+            &mut self.ir,
+            "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_val}, i8** {params_arr}, i64 {n_params})"
+        )
+        .unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
+        // A failed statement aborts visibly instead of yielding an empty list.
+        self.emit_orm_failure_check(&result_reg, "DB::raw", "tinox_orm_query_failed");
+
+        let rows = self.temp();
+        writeln!(&mut self.ir, "  {rows} = call i64* @tinox_db_result_to_row_maps(i8* {result_reg})").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+
+        Ok((rows, "i64*".to_string()))
+    }
+
     /// Emit SQL-constant getter functions and row-mapping helpers for all @Entity classes.
     fn emit_entity_code(&mut self) {
         // Emit DB init via @llvm.global_ctors if a connection URL is configured
@@ -7739,29 +7975,25 @@ tr_done_{idx}:"#).unwrap();
 
     /// Emit a vtable global for each class that implements at least one interface.
     fn emit_vtable_globals(&mut self, source: &SourceFile) {
-        let class_names: Vec<(String, Vec<String>)> = source
-            .decls
-            .iter()
-            .flat_map(|d| {
-                let mut v = Vec::new();
-                match &d.node {
-                    DeclKind::Class(c) if !c.implements.is_empty() => {
-                        v.push((c.name.clone(), c.implements.clone()));
-                    }
-                    DeclKind::Namespace(ns) => {
-                        for inner in &ns.decls {
-                            if let DeclKind::Class(c) = &inner.node {
-                                if !c.implements.is_empty() {
-                                    v.push((c.name.clone(), c.implements.clone()));
-                                }
-                            }
+        let mut class_names: Vec<(String, Vec<String>)> = Vec::new();
+        let mut push = |c: &tinox_parser::Class, virt: &HashMap<String, Vec<String>>| {
+            if !c.implements.is_empty() || virt.contains_key(&c.name) {
+                class_names.push((c.name.clone(), c.implements.clone()));
+            }
+        };
+        for d in &source.decls {
+            match &d.node {
+                DeclKind::Class(c) => push(c, &self.virtual_classes),
+                DeclKind::Namespace(ns) => {
+                    for inner in &ns.decls {
+                        if let DeclKind::Class(c) = &inner.node {
+                            push(c, &self.virtual_classes);
                         }
                     }
-                    _ => {}
                 }
-                v
-            })
-            .collect();
+                _ => {}
+            }
+        }
 
         for (class_name, implements) in class_names {
             let mut vtable_methods: Vec<String> = Vec::new();
@@ -7775,27 +8007,42 @@ tr_done_{idx}:"#).unwrap();
                     }
                 }
             }
+            let virtual_methods = self.virtual_classes.get(&class_name).cloned();
 
-            if vtable_methods.is_empty() {
+            if vtable_methods.is_empty() && virtual_methods.is_none() {
                 continue;
             }
 
-            let n = vtable_methods.len();
-            let mut entries = String::new();
-            for (i, method_name) in vtable_methods.iter().enumerate() {
-                if i > 0 {
-                    entries.push_str(", ");
+            let mut entries: Vec<String> = vtable_methods
+                .iter()
+                .map(|m| {
+                    format!(
+                        "i64 ptrtoint (i64* (i64*)* @{}_{} to i64)",
+                        class_name, m
+                    )
+                })
+                .collect();
+            if let Some(vm) = virtual_methods {
+                while entries.len() < self.virtual_iface_base {
+                    entries.push("i64 0".to_string());
                 }
-                let full_fn = format!("{}_{}", class_name, method_name);
-                entries.push_str(&format!(
-                    "i64 ptrtoint (i64* (i64*)* @{} to i64)",
-                    full_fn
-                ));
+                for m in &vm {
+                    let key = format!("{}_{}", class_name, m);
+                    match self.method_impl.get(&key) {
+                        Some(f) => entries.push(format!(
+                            "i64 ptrtoint (i64* (i64*)* @{} to i64)",
+                            f
+                        )),
+                        None => entries.push("i64 0".to_string()),
+                    }
+                }
             }
             writeln!(
                 &mut self.ir,
                 "@{}_vtable = global [{} x i64] [{}]",
-                class_name, n, entries
+                class_name,
+                entries.len(),
+                entries.join(", ")
             )
             .unwrap();
         }
@@ -8036,6 +8283,18 @@ tr_done_{idx}:"#).unwrap();
 
                 if let Some(val) = value {
                     let (v, val_ty) = self.gen_expr(val, ctx)?;
+                    // Issue #453: explicit numeric annotation -> convert the
+                    // value (widening, int literal -> float) instead of storing
+                    // it with the wrong LLVM type.
+                    let (v, val_ty) = match ty.as_ref().map(tinox_typecheck::ValueType::from_parser_type) {
+                        Some(expected) if (expected.is_integer() || expected.is_float())
+                            && !is_heap_ptr && !val_ty.contains('*') && val_ty != "void" =>
+                        {
+                            let src_unsigned = self.semantic_type(val.id).is_some_and(|t| t.is_unsigned());
+                            self.convert_semantic_value(v, val_ty, &expected, src_unsigned)
+                        }
+                        _ => (v, val_ty),
+                    };
                     if let Some(cls) = generic_let_alias.take() {
                         self.type_param_aliases.remove(&cls);
                     }
@@ -8282,6 +8541,16 @@ tr_done_{idx}:"#).unwrap();
 
                 if let Some(val) = value {
                     let (v, val_ty) = self.gen_expr(val, ctx)?;
+                    // Issue #453: see the matching conversion in Let.
+                    let (v, val_ty) = match ty.as_ref().map(tinox_typecheck::ValueType::from_parser_type) {
+                        Some(expected) if (expected.is_integer() || expected.is_float())
+                            && !is_ptr && !val_ty.contains('*') && val_ty != "void" =>
+                        {
+                            let src_unsigned = self.semantic_type(val.id).is_some_and(|t| t.is_unsigned());
+                            self.convert_semantic_value(v, val_ty, &expected, src_unsigned)
+                        }
+                        _ => (v, val_ty),
+                    };
                     let actual_ty = if matches!(&val.node, ExprKind::Lambda { .. }) {
                         val_ty.clone()
                     } else if is_ptr {
@@ -8414,6 +8683,19 @@ tr_done_{idx}:"#).unwrap();
                         ctx.local_types.insert(name.clone(), sn.clone());
                     }
                     writeln!(&mut self.ir, "%{} = alloca {}", slot_name, llvm_ty).unwrap();
+                    // Issue #428: a `var` without initializer used to hold
+                    // stack garbage. Give it its type's default value.
+                    let zero = if llvm_ty == "i8*" && struct_name.is_none() && ty.as_ref().is_some_and(|t| matches!(t, Type::String)) {
+                        let (empty, _) = self.gen_literal(&Literal::String(String::new()))?;
+                        empty
+                    } else if Self::is_float(&llvm_ty) {
+                        "0.0".to_string()
+                    } else if llvm_ty == "i1" || llvm_ty.starts_with('i') && !llvm_ty.ends_with('*') {
+                        if llvm_ty == "i1" { "false".to_string() } else { "0".to_string() }
+                    } else {
+                        "null".to_string()
+                    };
+                    writeln!(&mut self.ir, "store {} {}, {}* %{}", llvm_ty, zero, llvm_ty, slot_name).unwrap();
                 }
             }
             StmtKind::If {
@@ -8456,7 +8738,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(loop_bb.clone());
+                ctx.loop_finally_depth.insert(loop_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
@@ -8531,12 +8815,12 @@ tr_done_{idx}:"#).unwrap();
             }
             StmtKind::Break => {
                 if let Some(ref break_bb) = ctx.break_target.clone() {
-                    writeln!(&mut self.ir, "br label %{}", break_bb).unwrap();
+                    self.emit_loop_jump(ctx, break_bb);
                 }
             }
             StmtKind::Continue => {
                 if let Some(ref cont_bb) = ctx.continue_target.clone() {
-                    writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
+                    self.emit_loop_jump(ctx, cont_bb);
                 }
             }
             StmtKind::Throw(expr) => {
@@ -8676,7 +8960,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(cond_bb.clone());
+                ctx.loop_finally_depth.insert(cond_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
@@ -8748,7 +9034,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(loop_bb.clone());
+                ctx.loop_finally_depth.insert(loop_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
@@ -8858,8 +9146,14 @@ tr_done_{idx}:"#).unwrap();
                                 _ => None,
                             }
                         };
+                        let numeric_target = self.semantic_type(target.id)
+                            .filter(|t| (t.is_integer() || t.is_float()) && !val_ty.contains('*') && !ty.contains('*') && val_ty != "void");
                         let store_val = if val_ty == ty || val_ty.is_empty() || ty.is_empty() {
                             val
+                        } else if let Some(expected) = numeric_target.filter(|_| Self::is_float(&ty) || Self::is_float(&val_ty) || self.semantic_type(value.id).is_some_and(|t| t.is_unsigned())) {
+                            // Issue #453: float<->int and unsigned widening need real conversions.
+                            let src_unsigned = self.semantic_type(value.id).is_some_and(|t| t.is_unsigned());
+                            self.convert_semantic_value(val, val_ty.clone(), &expected, src_unsigned).0
                         } else if val_ty == "i64" && (ty.ends_with('*') || ty == "ptr") {
                             let c = self.temp();
                             writeln!(&mut self.ir, "{} = inttoptr i64 {} to {}", c, val, ty).unwrap();
@@ -9334,12 +9628,15 @@ tr_done_{idx}:"#).unwrap();
                         writeln!(&mut self.ir, "{} = xor {} {}, {}", result, lt, l, r).unwrap()
                     }
                     tinox_parser::BinaryOp::Shl => {
+                        self.check_shift_count(&r, &rt, &lt, rhs)?;
                         writeln!(&mut self.ir, "{} = shl {} {}, {}", result, lt, l, r).unwrap()
                     }
                     tinox_parser::BinaryOp::Shr => {
+                        self.check_shift_count(&r, &rt, &lt, rhs)?;
                         writeln!(&mut self.ir, "{} = lshr {} {}, {}", result, lt, l, r).unwrap()
                     }
                     tinox_parser::BinaryOp::ShrArith => {
+                        self.check_shift_count(&r, &rt, &lt, rhs)?;
                         writeln!(&mut self.ir, "{} = ashr {} {}, {}", result, lt, l, r).unwrap()
                     }
                 }
@@ -9437,7 +9734,8 @@ tr_done_{idx}:"#).unwrap();
                                 // a character, Int32 values numerically
                                 // (sext + int).
                                 let is_char_lit =
-                                    matches!(&args[0].node, ExprKind::Literal(Literal::Char(_)));
+                                    matches!(&args[0].node, ExprKind::Literal(Literal::Char(_)))
+                                        || self.semantic_type(args[0].id) == Some(tinox_typecheck::ValueType::Char);
                                 let llvm_fn = match ty.as_str() {
                                     "i8*" => "tinox_print_string",
                                     "double" => "tinox_print_float",
@@ -9456,6 +9754,7 @@ tr_done_{idx}:"#).unwrap();
                                         args_str = format!("i64 {}", c);
                                         "tinox_print_int"
                                     }
+                                    "i64" if self.semantic_type(args[0].id).is_some_and(|t| t.is_unsigned()) => "tinox_print_uint",
                                     _ => "tinox_print_int",
                                 };
                                 writeln!(&mut self.ir, "call void @{}({})", llvm_fn, args_str).unwrap();
@@ -9588,7 +9887,8 @@ tr_done_{idx}:"#).unwrap();
                             }
                         }
                         "sqrt" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @sqrt(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
@@ -9606,13 +9906,15 @@ tr_done_{idx}:"#).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "log" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @log(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "exp" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @exp(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
@@ -9692,26 +9994,31 @@ tr_done_{idx}:"#).unwrap();
                             return Ok((result, "i8*".to_string()));
                         }
                         "pow" => {
-                            let (base, _) = self.gen_expr(&args[0], ctx)?;
-                            let (exp, _) = self.gen_expr(&args[1], ctx)?;
+                            let (base, base_ty) = self.gen_expr(&args[0], ctx)?;
+                            let (exp, exp_ty) = self.gen_expr(&args[1], ctx)?;
+                            let base = self.int_to_double_if_needed(base, &base_ty);
+                            let exp = self.int_to_double_if_needed(exp, &exp_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @pow(double {}, double {})", result, base, exp).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "floor" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @llvm.floor.f64(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "ceil" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @llvm.ceil.f64(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
                         }
                         "round" => {
-                            let (val, _) = self.gen_expr(&args[0], ctx)?;
+                            let (val, val_ty) = self.gen_expr(&args[0], ctx)?;
+                            let val = self.int_to_double_if_needed(val, &val_ty);
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @llvm.round.f64(double {})", result, val).unwrap();
                             return Ok((result, "double".to_string()));
@@ -10400,7 +10707,13 @@ tr_done_{idx}:"#).unwrap();
                         }
                         "sort" => {
                             let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64* @tinox_array_sort(i64* {})", result, obj_ptr).unwrap();
+                            let sorter = match self.semantic_type(obj.id) {
+                                Some(tinox_typecheck::ValueType::Array(elem)) if *elem == tinox_typecheck::ValueType::String => "tinox_array_sort_str",
+                                Some(tinox_typecheck::ValueType::Array(elem)) if elem.is_float() => "tinox_array_sort_f64",
+                                _ if is_str => "tinox_array_sort_str",
+                                _ => "tinox_array_sort",
+                            };
+                            writeln!(&mut self.ir, "{} = call i64* @{}(i64* {})", result, sorter, obj_ptr).unwrap();
                             return Ok((result, "i64*".to_string()));
                         }
                         "reverse" => {
@@ -10583,7 +10896,10 @@ tr_done_{idx}:"#).unwrap();
                         match obj_ty.as_str() {
                             "double" => { writeln!(&mut self.ir, "{} = call i8* @tinox_float_to_string(double {})", result, obj_ptr).unwrap(); }
                             "i1" => { writeln!(&mut self.ir, "{} = call i8* @tinox_bool_to_string(i1 {})", result, obj_ptr).unwrap(); }
-                            "i64" => { writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, obj_ptr).unwrap(); }
+                            "i64" => {
+                                let func = if self.semantic_type(obj.id).is_some_and(|t| t.is_unsigned()) { "tinox_uint_to_string" } else { "tinox_int_to_string" };
+                                writeln!(&mut self.ir, "{} = call i8* @{}(i64 {})", result, func, obj_ptr).unwrap();
+                            }
                             _ => {
                                 let ext = self.temp();
                                 writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, obj_ty, obj_ptr).unwrap();
@@ -10612,10 +10928,27 @@ tr_done_{idx}:"#).unwrap();
                     }
                 }
 
+                // Int64.toFloat(): handled before the String dispatch below, which
+                // would otherwise reinterpret an i64 receiver as a string pointer.
+                if method == "toFloat"
+                    && args.is_empty()
+                    && matches!(obj_ty.as_str(), "i64" | "i32" | "i16" | "i8")
+                    && self.semantic_type(obj.id).is_some_and(|t| t.is_integer())
+                {
+                    let wide = if obj_ty == "i64" { obj_ptr.clone() } else {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = sext {} {} to i64", c, obj_ty, obj_ptr).unwrap();
+                        c
+                    };
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "{} = sitofp i64 {} to double", result, wide).unwrap();
+                    return Ok((result, "double".to_string()));
+                }
+
                 // String method dispatch (obj_ty == "i8*", or i64 stored string pointer)
                 let str_methods = ["len","toUpper","toUpperCase","toLower","toLowerCase",
                     "trim","contains","startsWith","endsWith","split","substring","indexOf",
-                    "replace","toString","toInt","toFloat","toBool","repeat","padLeft","padRight",
+                    "replace","toString","toInt","toFloat","isInt","isFloat","toBool","repeat","padLeft","padRight",
                     "count","charAt","toInt64","toFloat64","toBytes","fromBytes","format","encode",
                     "decode","hash","md5","sha256","base64Encode","base64Decode","urlEncode",
                     "urlDecode","isNumeric","isEmpty","isBlank","lines","words","reverse",
@@ -10754,6 +11087,35 @@ tr_done_{idx}:"#).unwrap();
                             writeln!(&mut self.ir, "{} = call double @tinox_string_to_float(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "double".to_string()));
                         }
+                        "toString" if args.is_empty() => {
+                            return Ok((obj_ptr.clone(), "i8*".to_string()));
+                        }
+                        "repeat" => {
+                            let (n, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_repeat(i8* {}, i64 {})", result, obj_ptr, n).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "padLeft" | "padRight" => {
+                            let (width, _) = self.gen_expr(&args[0], ctx)?;
+                            let (pad, pad_ty) = self.gen_expr(&args[1], ctx)?;
+                            let pad = if pad_ty == "i8*" { pad } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, pad).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_pad(i8* {}, i64 {}, i8* {}, i64 {})", result, obj_ptr, width, pad, if method == "padLeft" { 1 } else { 0 }).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "isInt" | "isFloat" => {
+                            let rt = if method == "isInt" { "tinox_string_is_int" } else { "tinox_string_is_float" };
+                            let raw = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64 @{}(i8* {})", raw, rt, obj_ptr).unwrap();
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", result, raw).unwrap();
+                            return Ok((result, "i1".to_string()));
+                        }
                         "split" => {
                             let (delim, delim_ty) = self.gen_expr(&args[0], ctx)?;
                             let delim_str = if delim_ty == "i8*" { delim.clone() } else {
@@ -10826,6 +11188,27 @@ tr_done_{idx}:"#).unwrap();
                         // have no `.toInt()` method registered in typecheck at
                         // all (correctly rejected at the typecheck stage, not a
                         // bug), so there is nothing else for this arm to cover.
+                        "abs" | "floor" | "ceil" | "round" if args.is_empty() && obj_ty == "double" => {
+                            let intrinsic = match method.as_str() {
+                                "abs" => "llvm.fabs.f64",
+                                "floor" => "llvm.floor.f64",
+                                "ceil" => "llvm.ceil.f64",
+                                _ => "llvm.round.f64",
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call double @{}(double {})", result, intrinsic, obj_ptr).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
+                        "toFloat" if args.is_empty() && obj_ty != "double" && obj_ty != "i1" => {
+                            let wide = if obj_ty == "i64" { obj_ptr.clone() } else {
+                                let c = self.temp();
+                                writeln!(&mut self.ir, "{} = sext {} {} to i64", c, obj_ty, obj_ptr).unwrap();
+                                c
+                            };
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = sitofp i64 {} to double", result, wide).unwrap();
+                            return Ok((result, "double".to_string()));
+                        }
                         "toInt" if args.is_empty() && obj_ty == "double" => {
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = fptosi double {} to i64", result, obj_ptr).unwrap();
@@ -10982,6 +11365,75 @@ tr_done_{idx}:"#).unwrap();
                             result, ret_ty, casted_fn, full_args_str
                         )
                         .unwrap();
+                        Ok((result, ret_ty))
+                    }
+                } else if let Some(virt_slot) = declared_type.as_deref().and_then(|dt| {
+                    let vm = self.virtual_classes.get(dt)?;
+                    let k = vm.iter().position(|m| m == method)?;
+                    let key = format!("{}_{}", dt, method);
+                    if self.static_method_keys.contains(&key) || !self.method_impl.contains_key(&key) {
+                        return None;
+                    }
+                    Some(self.virtual_iface_base + k)
+                }).filter(|_| obj_ty == "i64*" || obj_ty == "i64") {
+                    // Issue #455: virtual dispatch through the object's vtable.
+                    let dt = declared_type.clone().unwrap();
+                    let logical = format!("{}_{}", dt, method);
+                    let static_impl = self.method_impl.get(&logical).cloned().unwrap_or(logical);
+                    let ret_ty = self
+                        .method_ret_types
+                        .get(&static_impl)
+                        .cloned()
+                        .unwrap_or_else(|| "i64".to_string());
+                    let obj_ptr = if obj_ty == "i64" {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", c, obj_ptr).unwrap();
+                        c
+                    } else {
+                        obj_ptr.clone()
+                    };
+                    let mut call_args = format!("i64* {}", obj_ptr);
+                    let mut param_types = vec!["i64*".to_string()];
+                    for (val, ty) in &extra_args {
+                        call_args.push_str(&format!(", {} {}", ty, val));
+                        param_types.push(ty.clone());
+                    }
+                    // Objects allocated by a path that does not install the vtable
+                    // (slot 0 == 0) fall back to the statically resolved method.
+                    let fb = format!("__virt_fb_{}", static_impl);
+                    if self.virtual_fallbacks.insert(fb.clone()) {
+                        writeln!(
+                            &mut self.lambda_ir,
+                            "@{} = internal global i64 ptrtoint (i64* (i64*)* @{} to i64)",
+                            fb, static_impl
+                        )
+                        .unwrap();
+                    }
+                    let vt_i64 = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", vt_i64, obj_ptr).unwrap();
+                    let is_null = self.temp();
+                    writeln!(&mut self.ir, "{} = icmp eq i64 {}, 0", is_null, vt_i64).unwrap();
+                    let vt_ptr = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", vt_ptr, vt_i64).unwrap();
+                    let slot_ptr = self.temp();
+                    writeln!(&mut self.ir, "{} = getelementptr i64, i64* {}, i64 {}", slot_ptr, vt_ptr, virt_slot).unwrap();
+                    let chosen = self.temp();
+                    writeln!(&mut self.ir, "{} = select i1 {}, i64* @{}, i64* {}", chosen, is_null, fb, slot_ptr).unwrap();
+                    let fn_i64 = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", fn_i64, chosen).unwrap();
+                    let casted_fn = self.temp();
+                    writeln!(
+                        &mut self.ir,
+                        "{} = inttoptr i64 {} to {} ({})*",
+                        casted_fn, fn_i64, ret_ty, param_types.join(", ")
+                    )
+                    .unwrap();
+                    if ret_ty == "void" {
+                        writeln!(&mut self.ir, "call void {}({})", casted_fn, call_args).unwrap();
+                        Ok((self.temp(), ret_ty))
+                    } else {
+                        let result = self.temp();
+                        writeln!(&mut self.ir, "{} = call {} {}({})", result, ret_ty, casted_fn, call_args).unwrap();
                         Ok((result, ret_ty))
                     }
                 } else if let Some(fn_sig) = declared_type.as_deref()
@@ -11536,6 +11988,16 @@ tr_done_{idx}:"#).unwrap();
                 type_args,
                 args,
             } => {
+                // `DB::raw(sql, params)` — raw-SQL escape hatch, hangs
+                // directly off `DB` (no `DB::of(...)` chain to unwind).
+                // It has real static types (String / List<String> ->
+                // List<Map<String,String>>); it is recognized here only to
+                // swap the never-executed stub body for real SQL execution,
+                // the same reason save/delete are special-cased.
+                if enum_name == "DB" && variant == "raw" && args.len() == 2 {
+                    let (sql_arg, params_arg) = (args[0].clone(), args[1].clone());
+                    return self.gen_orm_raw(&sql_arg, &params_arg, ctx);
+                }
                 // Resolve the type-parameter alias: inside a
                 // specialization, `T::fromJson` is a call on the bound
                 // class.
@@ -11700,7 +12162,7 @@ tr_done_{idx}:"#).unwrap();
             }
             ExprKind::Break => {
                 if let Some(ref break_bb) = ctx.break_target.clone() {
-                    writeln!(&mut self.ir, "br label %{}", break_bb).unwrap();
+                    self.emit_loop_jump(ctx, break_bb);
                 }
                 let dead_bb = self.new_bb("break_dead");
                 writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
@@ -11708,7 +12170,7 @@ tr_done_{idx}:"#).unwrap();
             }
             ExprKind::Continue => {
                 if let Some(ref cont_bb) = ctx.continue_target.clone() {
-                    writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
+                    self.emit_loop_jump(ctx, cont_bb);
                 }
                 let dead_bb = self.new_bb("cont_dead");
                 writeln!(&mut self.ir, "{}:", dead_bb).unwrap();
@@ -12365,7 +12827,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(loop_bb.clone());
+                ctx.loop_finally_depth.insert(loop_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
@@ -12420,7 +12884,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(cond_bb.clone());
+                ctx.loop_finally_depth.insert(cond_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
@@ -12459,7 +12925,9 @@ tr_done_{idx}:"#).unwrap();
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
                 ctx.continue_target = Some(loop_bb.clone());
+                ctx.loop_finally_depth.insert(loop_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
@@ -12839,6 +13307,7 @@ tr_done_{idx}:"#).unwrap();
             } else {
                 base_ptr.to_string()
             };
+            writeln!(&mut self.ir, "call void @tinox_array_check_index(i64* {}, i64 {})", base_arr, idx_val).unwrap();
             let data_ptr = self.emit_array_data(&base_arr);
             let ptr_name = self.temp();
             writeln!(
@@ -13375,6 +13844,7 @@ tr_done_{idx}:"#).unwrap();
             timed_metric: None,
             transactional_commit: None,
             finally_targets: Vec::new(),
+            loop_finally_depth: HashMap::new(),
         };
         for (i, p) in params.iter().enumerate() {
             lambda_ctx.callable_types.remove(&p.name);
@@ -14020,6 +14490,16 @@ tr_done_{idx}:"#).unwrap();
 
         writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
         writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
+        let mut catch_rethrow: Option<(String, String)> = None;
+        let rethrow_var = if finally.is_some() && !catches.is_empty() {
+            let v = format!("%__rethrow_{}__", self.temp_count);
+            self.temp_count += 1;
+            writeln!(&mut self.ir, "{} = alloca i64", v).unwrap();
+            writeln!(&mut self.ir, "store i64 0, i64* {}", v).unwrap();
+            Some(v)
+        } else {
+            None
+        };
 
         // Issue #193: a `return` anywhere inside the try body OR a catch
         // clause must run this finally block before actually returning —
@@ -14042,7 +14522,11 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{} = alloca {}", slot, ctx.ret_type).unwrap();
                 Some(slot)
             };
-            FinallyTarget { finally_bb: fb.clone(), pending_flag, return_slot }
+            let jump_slot = format!("%__finally_jump_{}__", self.temp_count);
+            self.temp_count += 1;
+            writeln!(&mut self.ir, "{} = alloca i64", jump_slot).unwrap();
+            writeln!(&mut self.ir, "store i64 0, i64* {}", jump_slot).unwrap();
+            FinallyTarget { finally_bb: fb.clone(), pending_flag, return_slot, jump_slot, jumps: Vec::new() }
         });
         if let Some(target) = &finally_target {
             ctx.finally_targets.push(target.clone());
@@ -14092,6 +14576,17 @@ tr_done_{idx}:"#).unwrap();
             // Dispatch: jump to first clause.
             writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
             writeln!(&mut self.ir, "br label %{}", clause_bbs[0]).unwrap();
+
+            // Issue #454: a throw from inside a catch clause must still run
+            // `finally` before it propagates. Route it to its own slot/label
+            // (re-thrown at the convergence point, after finally).
+            if let Some(var) = &rethrow_var {
+                catch_rethrow = Some((var.clone(), self.new_bb("catch_rethrow")));
+            }
+            let saved_error_catch = ctx.error_catch.take();
+            if let Some((var, bb)) = &catch_rethrow {
+                ctx.error_catch = Some((bb.clone(), var.clone(), try_defer_depth));
+            }
 
             for (i, catch) in catches.iter().enumerate() {
                 let llvm_ty = Self::type_to_llvm(&catch.ty);
@@ -14145,6 +14640,11 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "{}:", guard_bb).unwrap();
                 writeln!(&mut self.ir, "br label %{}", next).unwrap();
             }
+            ctx.error_catch = saved_error_catch;
+            if let Some((_, bb)) = &catch_rethrow {
+                writeln!(&mut self.ir, "{}:", bb).unwrap();
+                writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
+            }
         }
 
         // --- finally block ---
@@ -14155,9 +14655,11 @@ tr_done_{idx}:"#).unwrap();
         // a `return` inside `finally { ... }` sees only any FURTHER-out
         // enclosing finally (never re-enters this same one).
         if let Some(fb) = &finally_bb {
-            if finally_target.is_some() {
-                ctx.finally_targets.pop();
-            }
+            let popped_jumps = if finally_target.is_some() {
+                ctx.finally_targets.pop().map(|t| t.jumps).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             writeln!(&mut self.ir, "{}:", fb).unwrap();
             if let Some(finally_stmt) = finally {
                 self.gen_stmt_body(finally_stmt, ctx)?;
@@ -14201,12 +14703,39 @@ tr_done_{idx}:"#).unwrap();
             }
 
             writeln!(&mut self.ir, "{}:", normal_bb).unwrap();
-            writeln!(&mut self.ir, "br label %{}", converge_bb).unwrap();
+            if popped_jumps.is_empty() {
+                writeln!(&mut self.ir, "br label %{}", converge_bb).unwrap();
+            } else {
+                // A `break`/`continue` routed through this finally (issue
+                // #454): resume it now, via any further-out finally first.
+                let jv = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", jv, target.jump_slot).unwrap();
+                let resume_bbs: Vec<String> = popped_jumps.iter().map(|_| self.new_bb("finally_resume")).collect();
+                let cases: Vec<String> = popped_jumps
+                    .iter()
+                    .zip(&resume_bbs)
+                    .map(|((code, _, _), bb)| format!("i64 {}, label %{}", code, bb))
+                    .collect();
+                writeln!(&mut self.ir, "switch i64 {}, label %{} [ {} ]", jv, converge_bb, cases.join(" ")).unwrap();
+                for ((code, label, depth), bb) in popped_jumps.iter().zip(&resume_bbs) {
+                    writeln!(&mut self.ir, "{}:", bb).unwrap();
+                    if ctx.finally_targets.len() > *depth {
+                        let idx = ctx.finally_targets.len() - 1;
+                        ctx.finally_targets[idx].jumps.push((*code, label.clone(), *depth));
+                        let outer = ctx.finally_targets[idx].clone();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", code, outer.jump_slot).unwrap();
+                        writeln!(&mut self.ir, "br label %{}", outer.finally_bb).unwrap();
+                    } else {
+                        writeln!(&mut self.ir, "br label %{}", label).unwrap();
+                    }
+                }
+            }
         }
 
         // --- convergence / re-throw ---
         writeln!(&mut self.ir, "{}:", converge_bb).unwrap();
-        if catches.is_empty() {
+        let error_var = rethrow_var.clone().unwrap_or(error_var);
+        if catches.is_empty() || rethrow_var.is_some() {
             // A try without catch clauses does not handle the error: if one
             // reached here (error_var != 0, set on the error path; 0 on the
             // normal path), re-throw it now — AFTER finally has run (Bug 42).
@@ -14239,6 +14768,23 @@ tr_done_{idx}:"#).unwrap();
 
         writeln!(&mut self.ir, "{}:", end_bb).unwrap();
         Ok(())
+    }
+
+    /// Emits a `break`/`continue` jump to `label`, first routing it through
+    /// every `finally` block entered since that loop began (issue #454).
+    fn emit_loop_jump(&mut self, ctx: &mut GenCtx, label: &str) {
+        let depth = ctx.loop_finally_depth.get(label).copied().unwrap_or(0);
+        if ctx.finally_targets.len() > depth {
+            self.temp_count += 1;
+            let code = self.temp_count;
+            let idx = ctx.finally_targets.len() - 1;
+            ctx.finally_targets[idx].jumps.push((code, label.to_string(), depth));
+            let target = ctx.finally_targets[idx].clone();
+            writeln!(&mut self.ir, "store i64 {}, i64* {}", code, target.jump_slot).unwrap();
+            writeln!(&mut self.ir, "br label %{}", target.finally_bb).unwrap();
+        } else {
+            writeln!(&mut self.ir, "br label %{}", label).unwrap();
+        }
     }
 
     /// The single point every `return` statement's codegen funnels through
@@ -15733,6 +16279,42 @@ tr_done_{idx}:"#).unwrap();
     /// for any int width: divide-by-zero and INT_MIN/-1 overflow become a hard
     /// error instead of LLVM UB (garbage). i64 calls the checked runtime fn
     /// directly; i8/i16/i32 widen → check → narrow; other types fall back to raw.
+    /// Issue #473: a shift count outside `0..bit width` is LLVM poison.
+    /// Constant counts are compile errors, dynamic ones abort at run time.
+    fn check_shift_count(&mut self, count: &str, count_ty: &str, value_ty: &str, rhs: &Expr) -> Result<(), ErrorBag> {
+        let bits: i64 = value_ty.strip_prefix('i').and_then(|b| b.parse().ok()).unwrap_or(64);
+        let literal = match &rhs.node {
+            ExprKind::Literal(Literal::Integer(n)) => Some(*n),
+            ExprKind::Unary { op: tinox_parser::UnaryOp::Neg, operand } => match &operand.node {
+                ExprKind::Literal(Literal::Integer(n)) => Some(-*n),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(n) = literal {
+            if n < 0 || n >= bits {
+                let mut bag = ErrorBag::new();
+                bag.push(Error::new(rhs.span, format!("shift count {} is out of range for a {}-bit value (0..{})", n, bits, bits - 1)));
+                return Err(bag);
+            }
+            return Ok(());
+        }
+        let wide = if count_ty == "i64" { count.to_string() } else {
+            let c = self.temp();
+            writeln!(&mut self.ir, "{} = sext {} {} to i64", c, count_ty, count).unwrap();
+            c
+        };
+        let ok = self.temp();
+        writeln!(&mut self.ir, "{} = icmp ult i64 {}, {}", ok, wide, bits).unwrap();
+        let ok_bb = self.new_bb("shift_ok");
+        let bad_bb = self.new_bb("shift_bad");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", ok, ok_bb, bad_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", bad_bb).unwrap();
+        writeln!(&mut self.ir, "call void @tinox_shift_out_of_range(i64 {}, i64 {})\nunreachable", wide, bits).unwrap();
+        writeln!(&mut self.ir, "{}:", ok_bb).unwrap();
+        Ok(())
+    }
+
     fn emit_semantic_idiv(&mut self, result: &str, ty: &str, l: &str, r: &str, remainder: bool, unsigned: bool) {
         if !unsigned { self.emit_checked_idiv(result, ty, l, r, remainder); return; }
         let zero = self.temp();
@@ -16191,6 +16773,10 @@ pub struct GenCtx {
     /// all — nothing needs to run before such a `return` proceeds, same as
     /// before this field existed.
     finally_targets: Vec<FinallyTarget>,
+    /// Loop target label (break/continue destination) -> `finally_targets.len()`
+    /// when that loop was entered. A `break`/`continue` only has to run the
+    /// finally blocks pushed AFTER that depth (issue #454).
+    loop_finally_depth: HashMap<String, usize>,
 }
 
 /// One entry in `GenCtx.finally_targets` — see that field's doc comment.
@@ -16207,6 +16793,12 @@ struct FinallyTarget {
     /// for a `void`-returning function — nothing to carry, `pending_flag`
     /// alone is enough.
     return_slot: Option<String>,
+    /// i64 alloca: nonzero = a `break`/`continue` routed through this finally
+    /// and the code identifies which jump (see `jumps`) to resume afterwards.
+    jump_slot: String,
+    /// (code, destination label, finally depth of the destination's loop)
+    /// recorded while generating the try body/catch clauses (issue #454).
+    jumps: Vec<(usize, String, usize)>,
 }
 
 // ─── ORM: compile-time lambda→SQL translation ────────────────────────────────
@@ -16364,6 +16956,20 @@ mod tests {
     use super::*;
     use tinox_lexer::Lexer;
     use tinox_parser::Parser;
+
+    #[test]
+    fn test_unimplemented_builtin_is_a_diagnostic_not_an_ice() {
+        // A call to a symbol that is neither defined nor declared must be
+        // reported by the code generator itself (issue #429).
+        let mut lexer = Lexer::new("fn f() -> Int64 { return noSuchBuiltinXyz(1) }\n");
+        let tokens = lexer.tokenize().expect("lex failed");
+        let ast = Parser::new(tokens).parse().expect("parse failed");
+        let mut cg = CodeGen::new();
+        cg.gen(&ast).expect("codegen failed");
+        let err = cg.check_undefined_callees().expect_err("must fail");
+        assert!(err.errors[0].message.contains("noSuchBuiltinXyz"), "{:?}", err.errors);
+        assert!(err.errors[0].message.contains("not implemented"));
+    }
 
     fn compile_to_ir(src: &str) -> String {
         let mut lexer = Lexer::new(src);

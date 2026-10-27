@@ -50,7 +50,7 @@ namespace tinox.core.uri
             if (code >= 48 && code <= 57) { return code - 48 }
             if (code >= 65 && code <= 70) { return code - 55 }
             if (code >= 97 && code <= 102) { return code - 87 }
-            return 0
+            throw "Uri: invalid hex digit '" + c + "' in percent-escape"
         }
 
         fn encodeComponent(s: String) -> String
@@ -106,8 +106,12 @@ namespace tinox.core.uri
             while i < len
             {
                 const c: String = s.substring(i, i + 1)
-                if (c == "%" && i + 2 < len)
+                if (c == "%")
                 {
+                    if (i + 2 >= len)
+                    {
+                        throw "Uri: truncated percent-escape"
+                    }
                     const hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2))
                     const lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3))
                     bytes.push((hi << 4) | lo)
@@ -133,8 +137,12 @@ namespace tinox.core.uri
             while i < len
             {
                 const c: String = s.substring(i, i + 1)
-                if (c == "%" && i + 2 < len)
+                if (c == "%")
                 {
+                    if (i + 2 >= len)
+                    {
+                        throw "Uri: truncated percent-escape"
+                    }
                     const hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2))
                     const lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3))
                     bytes.push((hi << 4) | lo)

@@ -1,20 +1,21 @@
-// Bug 60: "xyz".toFloat() returned 8004 (garbage) — the hand-written parser computed
-// result*10 + (*s - '0') for EVERY character without a digit check ('x'-'0'=72 → 8004).
-// Now via strtod: validates, stops at the first non-digit character, supports
-// scientific notation, invalid → 0.0.
+// Bug 60 / #466: toFloat() validates the whole string (strtod) and aborts on
+// invalid input instead of returning garbage or a silent 0; isFloat() lets
+// callers check first.
 // expect: 3.14
 // expect: -2.5
 // expect: 1500
-// expect: 0
-// expect: 12.5
+// expect: false
+// expect: false
+// expect: true
 class Main
 {
     fnc main() -> Int32 {
         println("3.14".toFloat().toString())     // 3.14
         println("-2.5".toFloat().toString())      // -2.5
         println("1.5e3".toFloat().toString())     // 1500 (scientific)
-        println("xyz".toFloat().toString())       // 0 (used to be 8004)
-        println("12.5abc".toFloat().toString())   // 12.5 (partial)
+        println("xyz".isFloat())                  // false
+        println("12.5abc".isFloat())              // false (trailing garbage)
+        println("12.5".isFloat())                 // true
         return 0
     }
 }

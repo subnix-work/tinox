@@ -1,0 +1,114 @@
+// Regression test for #454: finally must run on break, continue and a throw from a catch clause.
+// expect: b1 finally 1
+// expect: b1 finally 2
+// expect: 2
+// expect: c1 body 1
+// expect: c1 finally 1
+// expect: c1 finally 2
+// expect: c1 body 3
+// expect: c1 finally 3
+// expect: 3
+// expect: inner 1
+// expect: outer 1
+// expect: inner 2
+// expect: outer 2
+// expect: 2
+// expect: t2 finally
+// expect: main caught b
+class Main
+{
+    fnc b1() -> Int64
+    {
+        var i = 0
+        while (i < 5)
+        {
+            try
+            {
+                i = i + 1
+                if (i == 2) { break }
+            }
+            finally
+            {
+                println("b1 finally " + i.toString())
+            }
+        }
+        return i
+    }
+
+    fnc c1() -> Int64
+    {
+        var i = 0
+        while (i < 3)
+        {
+            i = i + 1
+            try
+            {
+                if (i == 2) { continue }
+                println("c1 body " + i.toString())
+            }
+            finally
+            {
+                println("c1 finally " + i.toString())
+            }
+        }
+        return i
+    }
+
+    fnc nested() -> Int64
+    {
+        var n = 0
+        while (n < 3)
+        {
+            n = n + 1
+            try
+            {
+                try
+                {
+                    if (n == 2) { break }
+                }
+                finally
+                {
+                    println("inner " + n.toString())
+                }
+            }
+            finally
+            {
+                println("outer " + n.toString())
+            }
+        }
+        return n
+    }
+
+    fnc t2() -> Int64
+    {
+        try
+        {
+            throw "a"
+        }
+        catch e: String
+        {
+            throw "b"
+        }
+        finally
+        {
+            println("t2 finally")
+        }
+        return 0
+    }
+
+    fnc main() -> Int32
+    {
+        println(Main::b1())
+        println(Main::c1())
+        println(Main::nested())
+        try
+        {
+            println(Main::t2())
+        }
+        catch e: String
+        {
+            println("main caught " + e)
+        }
+        return 0
+    }
+}

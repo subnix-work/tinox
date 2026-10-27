@@ -25,7 +25,7 @@ class Main
         print("\n")
         var sum: Int32 = 0
         for i in 1..11 {
-            sum = sum + i
+            sum = sum + (i as Int32)
         }
         print(sum)
         print("\n")

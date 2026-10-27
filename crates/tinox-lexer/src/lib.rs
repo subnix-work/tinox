@@ -11,6 +11,8 @@ pub enum InterpPart {
 pub enum TokenKind {
     // Literals
     Integer(i64),
+    /// Decimal literal above `i64::MAX` that still fits `u64` (UInt64 only).
+    BigInteger(u64),
     IntegerSuffix(IntSuffix),
     Float(f64),
     FloatSuffix(FloatType),
@@ -340,6 +342,16 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn tokenize(&mut self) -> Result<Vec<Token>, Vec<Error>> {
+        self.tokenize_impl(false)
+    }
+
+    /// Like `tokenize`, but keeps whitespace, newline and comment tokens
+    /// (used by the layout formatter, which must not lose comments).
+    pub fn tokenize_with_trivia(&mut self) -> Result<Vec<Token>, Vec<Error>> {
+        self.tokenize_impl(true)
+    }
+
+    fn tokenize_impl(&mut self, keep_trivia: bool) -> Result<Vec<Token>, Vec<Error>> {
         let mut tokens = Vec::new();
         let mut errors = Vec::new();
 
@@ -359,7 +371,7 @@ impl<'a> Lexer<'a> {
                 break;
             }
 
-            if !token.kind.is_trivia() {
+            if keep_trivia || !token.kind.is_trivia() {
                 tokens.push(token);
             }
         }
@@ -641,6 +653,14 @@ impl<'a> Lexer<'a> {
                     return Err(Error::new(self.mk_span(), "unterminated escape sequence"));
                 }
                 let escaped = self.read_escape()?;
+                // Strings are NUL-terminated C strings at runtime: an embedded
+                // NUL would silently truncate the literal (issue #472).
+                if escaped == '\0' {
+                    return Err(Error::new(
+                        self.mk_span(),
+                        "string literals cannot contain a NUL character (\\0 / \\x00): strings are NUL-terminated; use a List<Int64> of bytes for binary data",
+                    ));
+                }
                 current_str.push(escaped);
             } else {
                 current_str.push(ch);
@@ -903,8 +923,13 @@ impl<'a> Lexer<'a> {
         let text: String = self.chars[start..num_end].iter().filter(|c| **c != '_').collect();
         // An integer literal exceeding i64 previously became 0 via unwrap_or(0)
         // (silent garbage, Bug 51). Report it as a clean lexer error instead.
-        let value: i64 = text.parse()
-            .map_err(|_| Error::new(self.mk_span(), format!("integer literal out of range for Int64: {}", text)))?;
+        let value: i64 = match text.parse() {
+            Ok(v) => v,
+            Err(_) => match (suffix.is_none(), text.parse::<u64>()) {
+                (true, Ok(big)) => return Ok(Token::new(TokenKind::BigInteger(big), self.mk_span())),
+                _ => return Err(Error::new(self.mk_span(), format!("integer literal out of range for UInt64: {}", text))),
+            },
+        };
         
         match suffix {
             Some(s) => Ok(Token::new(TokenKind::IntegerSuffix(s), self.mk_span())),
@@ -1483,8 +1508,8 @@ mod tests {
 
     #[test]
     fn test_string_escape_null() {
-        let toks = lex_kinds(r#""\0""#);
-        assert!(matches!(&toks[0], TokenKind::String(s) if s == "\0"));
+        // A NUL would silently truncate the NUL-terminated runtime string (#472).
+        assert!(Lexer::new(r#""a\0b""#).tokenize().is_err());
     }
 
     // --- Interpolated strings ---
@@ -2085,8 +2110,7 @@ mod tests {
 
     #[test]
     fn test_string_escape_nul_char() {
-        let toks = lex_kinds(r#""\0""#);
-        assert!(matches!(&toks[0], TokenKind::String(s) if s.contains('\0')));
+        assert!(Lexer::new(r#""\x00""#).tokenize().is_err());
     }
 
     #[test]

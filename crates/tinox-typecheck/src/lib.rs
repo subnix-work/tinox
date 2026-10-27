@@ -441,6 +441,16 @@ pub struct TypeChecker {
     errors: Vec<Error>,
     symbols: SymbolTable,
     enums: HashMap<String, Vec<String>>, // enum_name -> list of variant names
+    /// Enum names declared more than once with different variants (their
+    /// variant lists are unioned, so exhaustiveness cannot be judged).
+    ambiguous_enums: HashSet<String>,
+    /// Match expression ids (Expr.id) whose every path returns/throws: the
+    /// match is exhaustive AND all arms diverge (issues #426/#427).
+    match_diverges: HashSet<u32>,
+    /// True while checking a declaration from an installed dependency
+    /// (a `.tinox` path component): old, published code keeps the lenient
+    /// pre-#426 match rules.
+    lenient_dependency: bool,
     /// "Enum::Variant" -> payload types — for typed match bindings
     enum_variant_payloads: HashMap<String, Vec<ValueType>>,
     interfaces: HashMap<String, Vec<(String, FunctionSignature)>>, // interface_name -> [(method_name, signature)]
@@ -472,6 +482,14 @@ pub struct TypeChecker {
     /// disambiguates the two `Class::method(obj, …)` calling styles (Bug 38)
     /// deterministically, so the arg-count check can be exact (Bug 47).
     method_uses_this: HashSet<String>,
+    /// Project root whose own instance `fn`s are held to the syntactic call-shape
+    /// rule (issue #474); `None` disables it (stdlib, LSP, tools).
+    project_root: Option<std::path::PathBuf>,
+    /// Non-fatal diagnostics (currently the #474 call-shape warning), deduplicated.
+    warnings: Vec<String>,
+    /// `ClassName_method` keys of project-owned instance `fn`s that never use
+    /// `this`: they must be declared `fnc` to be called as `Class::m(args)`.
+    this_less_owned_fns: HashSet<String>,
     /// The inferred type of every visited expression, keyed by NodeId
     /// (assign_node_ids; ID 0 = unassigned, not recorded). Exported to
     /// codegen via expr_value_types() — since phase 3, the ONLY
@@ -732,6 +750,9 @@ impl TypeChecker {
         symbols.functions.insert("String_charAt".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("i".to_string(), ValueType::Int)], return_type: ValueType::String });
         symbols.functions.insert("String_toInt".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Int });
         symbols.functions.insert("String_toFloat".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Float });
+        for name in ["String_isInt", "String_isFloat"] {
+            symbols.functions.insert(name.to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::Bool });
+        }
         symbols.functions.insert("String_toString".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String)], return_type: ValueType::String });
         symbols.functions.insert("String_contains".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Bool });
         symbols.functions.insert("String_indexOf".to_string(), FunctionSignature { params: vec![("s".to_string(), ValueType::String), ("p".to_string(), ValueType::String)], return_type: ValueType::Int });
@@ -1345,6 +1366,9 @@ impl TypeChecker {
             errors: Vec::new(),
             symbols,
             enums: HashMap::new(),
+            ambiguous_enums: HashSet::new(),
+            match_diverges: HashSet::new(),
+            lenient_dependency: false,
             enum_variant_payloads: HashMap::new(),
             interfaces: HashMap::new(),
             interface_extends: HashMap::new(),
@@ -1360,6 +1384,9 @@ impl TypeChecker {
             generic_class_names: HashSet::new(),
             class_type_params: HashMap::new(),
             method_uses_this: HashSet::new(),
+            project_root: None,
+            warnings: Vec::new(),
+            this_less_owned_fns: HashSet::new(),
             expr_types: HashMap::new(),
             semantic_facts: semantic::SemanticFacts::default(),
             generic_method_param_types: HashMap::new(),
@@ -1480,6 +1507,191 @@ impl TypeChecker {
                     || default.as_ref().is_some_and(|d| Self::stmt_uses_this(d))
             }
             StmtKind::Break | StmtKind::Continue | StmtKind::Empty => false,
+        }
+    }
+
+    /// Collects, for a closure body: names assigned (`x = ...`, `x += ...`) and
+    /// names declared inside it (issue #425: assignments to captured variables
+    /// are lost, since closures capture by value).
+    fn collect_closure_writes(expr: &Expr, assigned: &mut Vec<(String, Span)>, declared: &mut HashSet<String>) {
+        let visit_expr = |e: &Expr, a: &mut Vec<(String, Span)>, d: &mut HashSet<String>| Self::collect_closure_writes(e, a, d);
+        match &expr.node {
+            ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
+                if let ExprKind::Ident(name) = &target.node {
+                    assigned.push((name.clone(), expr.span));
+                } else {
+                    visit_expr(target, assigned, declared);
+                }
+                visit_expr(value, assigned, declared);
+            }
+            ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::Channel | ExprKind::Break
+            | ExprKind::Continue | ExprKind::This => {}
+            ExprKind::Binary { lhs, rhs, .. } => {
+                visit_expr(lhs, assigned, declared);
+                visit_expr(rhs, assigned, declared);
+            }
+            ExprKind::Unary { operand, .. } => visit_expr(operand, assigned, declared),
+            ExprKind::Call { func, args } => {
+                visit_expr(func, assigned, declared);
+                for a in args { visit_expr(a, assigned, declared); }
+            }
+            ExprKind::MethodCall { obj, args, .. } => {
+                visit_expr(obj, assigned, declared);
+                for a in args { visit_expr(a, assigned, declared); }
+            }
+            ExprKind::SuperCall { args, .. } | ExprKind::New { args, .. } | ExprKind::EnumValue { args, .. } => {
+                for a in args { visit_expr(a, assigned, declared); }
+            }
+            ExprKind::Index { obj, index } => {
+                visit_expr(obj, assigned, declared);
+                visit_expr(index, assigned, declared);
+            }
+            ExprKind::FieldAccess { obj, .. } => visit_expr(obj, assigned, declared),
+            ExprKind::ArrayLiteral(es) | ExprKind::Tuple(es) => {
+                for e in es { visit_expr(e, assigned, declared); }
+            }
+            ExprKind::MapLiteral(kvs) => {
+                for (k, v) in kvs {
+                    visit_expr(k, assigned, declared);
+                    visit_expr(v, assigned, declared);
+                }
+            }
+            ExprKind::StructLiteral { fields, .. } => {
+                for (_, v) in fields { visit_expr(v, assigned, declared); }
+            }
+            ExprKind::Block(stmts) => {
+                for st in stmts { Self::collect_closure_writes_stmt(st, assigned, declared); }
+            }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                visit_expr(cond, assigned, declared);
+                visit_expr(then_branch, assigned, declared);
+                if let Some(e) = else_branch { visit_expr(e, assigned, declared); }
+            }
+            ExprKind::While { cond, body } => {
+                visit_expr(cond, assigned, declared);
+                visit_expr(body, assigned, declared);
+            }
+            ExprKind::For { var, iter, body } => {
+                declared.insert(var.clone());
+                visit_expr(iter, assigned, declared);
+                visit_expr(body, assigned, declared);
+            }
+            ExprKind::Loop { body } => visit_expr(body, assigned, declared),
+            ExprKind::Match { expr: scrutinee, cases } => {
+                visit_expr(scrutinee, assigned, declared);
+                for c in cases {
+                    Self::collect_pattern_names(&c.pattern, declared);
+                    if let Some(g) = &c.guard { visit_expr(g, assigned, declared); }
+                    visit_expr(&c.body, assigned, declared);
+                }
+            }
+            ExprKind::Return(v) => {
+                if let Some(v) = v { visit_expr(v, assigned, declared); }
+            }
+            ExprKind::Throw(e) | ExprKind::Spawn(e) | ExprKind::Await(e) | ExprKind::Recv(e)
+            | ExprKind::Cast { expr: e, .. } | ExprKind::Is { expr: e, .. }
+            | ExprKind::TupleIndex { tuple: e, .. } => visit_expr(e, assigned, declared),
+            ExprKind::Send { channel, value } => {
+                visit_expr(channel, assigned, declared);
+                visit_expr(value, assigned, declared);
+            }
+            ExprKind::Range { start, end, .. } => {
+                visit_expr(start, assigned, declared);
+                visit_expr(end, assigned, declared);
+            }
+            ExprKind::Try { body, catches, finally } => {
+                visit_expr(body, assigned, declared);
+                for c in catches {
+                    declared.insert(c.param.clone());
+                    Self::collect_closure_writes_stmt(&c.body, assigned, declared);
+                }
+                if let Some(f) = finally { visit_expr(f, assigned, declared); }
+            }
+            // A nested closure has its own parameters; its writes are checked
+            // when that closure is itself inferred.
+            ExprKind::Lambda { params, body, .. } => {
+                for p in params { declared.insert(p.name.clone()); }
+                visit_expr(body, assigned, declared);
+            }
+        }
+    }
+
+    fn collect_pattern_names(pattern: &Pattern, declared: &mut HashSet<String>) {
+        match pattern {
+            Pattern::Ident(name, inner, _) => {
+                declared.insert(name.clone());
+                if let Some(inner) = inner { Self::collect_pattern_names(inner, declared); }
+            }
+            Pattern::EnumVariant { args, .. } => {
+                for a in args { Self::collect_pattern_names(a, declared); }
+            }
+            Pattern::Tuple(ps, _) => {
+                for p in ps { Self::collect_pattern_names(p, declared); }
+            }
+            Pattern::Wildcard(_) | Pattern::Literal(..) => {}
+        }
+    }
+
+    fn collect_closure_writes_stmt(stmt: &Stmt, assigned: &mut Vec<(String, Span)>, declared: &mut HashSet<String>) {
+        match &stmt.node {
+            StmtKind::Expr(e) => Self::collect_closure_writes(e, assigned, declared),
+            StmtKind::Let { name, value, .. } | StmtKind::Var { name, value, .. } => {
+                declared.insert(name.clone());
+                if let Some(v) = value { Self::collect_closure_writes(v, assigned, declared); }
+            }
+            StmtKind::Assignment { target, value } => {
+                if let ExprKind::Ident(name) = &target.node {
+                    assigned.push((name.clone(), stmt.span));
+                } else {
+                    Self::collect_closure_writes(target, assigned, declared);
+                }
+                Self::collect_closure_writes(value, assigned, declared);
+            }
+            StmtKind::If { cond, then_branch, else_branch } => {
+                Self::collect_closure_writes(cond, assigned, declared);
+                Self::collect_closure_writes_stmt(then_branch, assigned, declared);
+                if let Some(e) = else_branch { Self::collect_closure_writes_stmt(e, assigned, declared); }
+            }
+            StmtKind::While { cond, body } => {
+                Self::collect_closure_writes(cond, assigned, declared);
+                Self::collect_closure_writes_stmt(body, assigned, declared);
+            }
+            StmtKind::For { var, iter, body } => {
+                declared.insert(var.clone());
+                Self::collect_closure_writes(iter, assigned, declared);
+                Self::collect_closure_writes_stmt(body, assigned, declared);
+            }
+            StmtKind::ForC { init, cond, update, body } => {
+                if let Some(i) = init { Self::collect_closure_writes_stmt(i, assigned, declared); }
+                if let Some(c) = cond { Self::collect_closure_writes(c, assigned, declared); }
+                if let Some(u) = update { Self::collect_closure_writes(u, assigned, declared); }
+                Self::collect_closure_writes_stmt(body, assigned, declared);
+            }
+            StmtKind::Loop { body } | StmtKind::Defer(body) => Self::collect_closure_writes_stmt(body, assigned, declared),
+            StmtKind::Return(v) => {
+                if let Some(v) = v { Self::collect_closure_writes(v, assigned, declared); }
+            }
+            StmtKind::Throw(e) => Self::collect_closure_writes(e, assigned, declared),
+            StmtKind::Try { body, catches, finally } => {
+                Self::collect_closure_writes_stmt(body, assigned, declared);
+                for c in catches {
+                    declared.insert(c.param.clone());
+                    Self::collect_closure_writes_stmt(&c.body, assigned, declared);
+                }
+                if let Some(f) = finally { Self::collect_closure_writes_stmt(f, assigned, declared); }
+            }
+            StmtKind::Block(stmts) => {
+                for s in stmts { Self::collect_closure_writes_stmt(s, assigned, declared); }
+            }
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    declared.insert(arm.var.clone());
+                    Self::collect_closure_writes(&arm.channel, assigned, declared);
+                    Self::collect_closure_writes_stmt(&arm.body, assigned, declared);
+                }
+                if let Some(d) = default { Self::collect_closure_writes_stmt(d, assigned, declared); }
+            }
+            StmtKind::Break | StmtKind::Continue | StmtKind::Empty => {}
         }
     }
 
@@ -1649,6 +1861,8 @@ impl TypeChecker {
                         let key = format!("{}_{}", c.name, method.name);
                         if !method.static_ && Self::stmt_uses_this(&method.body) {
                             self.method_uses_this.insert(key.clone());
+                        } else if !method.static_ && self.is_project_owned(&method.file) {
+                            self.this_less_owned_fns.insert(key.clone());
                         }
                         // B2 step 2: for generic methods, additionally
                         // store the UNERASED param types (self carries
@@ -1730,6 +1944,11 @@ impl TypeChecker {
                 DeclKind::Enum(e) => {
                     let variant_names: Vec<String> =
                         e.variants.iter().map(|v| v.name.clone()).collect();
+                    if self.enums.get(&e.name).is_some_and(|old| {
+                        old.len() != variant_names.len() || variant_names.iter().any(|v| !old.contains(v))
+                    }) {
+                        self.ambiguous_enums.insert(e.name.clone());
+                    }
                     Self::register_enum_variants(&mut self.enums, &e.name, &variant_names);
                     for variant in &e.variants {
                         self.enum_variant_payloads.insert(
@@ -2017,7 +2236,52 @@ impl TypeChecker {
 
                     // Walk the ancestor chain and collect inherited fields/methods.
                     let mut ancestor = parent_name.clone();
+                    let mut override_checked: HashSet<String> = HashSet::new();
                     while let Some(pc) = class_map.get(&ancestor) {
+                        // Issue #456: an override must keep the parameter
+                        // types and return a compatible type. Checked against
+                        // the nearest ancestor declaring the method only.
+                        if c.type_params.is_empty() && pc.type_params.is_empty() {
+                            for base_m in &pc.methods {
+                                if !override_checked.insert(base_m.name.clone()) {
+                                    continue;
+                                }
+                                let Some(child_m) = c.methods.iter().find(|m| m.name == base_m.name) else {
+                                    continue;
+                                };
+                                if child_m.static_ || base_m.static_
+                                    || !child_m.type_params.is_empty() || !base_m.type_params.is_empty()
+                                {
+                                    continue;
+                                }
+                                let sig_str = |m: &tinox_parser::Method| {
+                                    format!(
+                                        "{}({}) -> {}",
+                                        m.name,
+                                        m.params.iter().map(|p| Self::type_to_value(&p.param_type).to_string()).collect::<Vec<_>>().join(", "),
+                                        Self::type_to_value(&m.ret_type)
+                                    )
+                                };
+                                let params_same = child_m.params.len() == base_m.params.len()
+                                    && child_m.params.iter().zip(&base_m.params).all(|(a, b)| {
+                                        Self::type_to_value(&a.param_type) == Self::type_to_value(&b.param_type)
+                                    });
+                                let child_ret = Self::type_to_value(&child_m.ret_type);
+                                let base_ret = Self::type_to_value(&base_m.ret_type);
+                                let ret_ok = child_ret == base_ret
+                                    || matches!((&child_ret, &base_ret), (ValueType::Named(cr, _), ValueType::Named(br, _)) if self.is_subclass_or_equal(cr, br));
+                                if !params_same || !ret_ok {
+                                    self.errors.push(Error::new(
+                                        child_m.span,
+                                        format!(
+                                            "method '{}.{}' overrides '{}.{}' (declared at {}:{}) with an incompatible signature: {} vs. {}; an override must keep the parameter types and return the same type (or a subclass of it)",
+                                            name, child_m.name, ancestor, base_m.name, base_m.file, base_m.span.start.line,
+                                            sig_str(child_m), sig_str(base_m)
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
                         for field in &pc.fields {
                             if child_own_fields.contains(&field.name) {
                                 continue;
@@ -2094,6 +2358,10 @@ impl TypeChecker {
 
         for decl in Self::flatten_decls(source) {
             let first_error = self.errors.len();
+            self.lenient_dependency = decl
+                .file
+                .as_deref()
+                .is_some_and(|f| std::path::Path::new(f).components().any(|c| c.as_os_str() == ".tinox"));
             match &decl.node {
                 DeclKind::Function(f) => {
                     self.check_function(f);
@@ -2106,6 +2374,9 @@ impl TypeChecker {
             for error in &mut self.errors[first_error..] {
                 error.file = decl.file.as_deref().map(Into::into);
             }
+            // Installed (published, immutable) dependencies predate the
+            // exhaustive-match rule (#426): keep them compiling.
+            self.lenient_dependency = false;
         }
 
         // Annotation validation pass
@@ -2306,14 +2577,20 @@ impl TypeChecker {
                                 }
                                 .to_error(),
                             );
-                        }
+                        }                        else { self.check_numeric_conversion(&ann_ty, &val_ty, v, false); }
                         Some(ann_ty)
                     }
-                    (Some(v), None) => Some(self.infer_type(v)),
+                    (Some(v), None) => {
+                        self.require_typed_lambda_params(v);
+                        Some(self.infer_type(v))
+                    }
                     (None, Some(t)) => Some(Self::type_to_value(t)),
                     (None, None) => None,
                 };
                 if let Some(t) = final_type {
+                    if t == ValueType::Nothing && value.is_some() {
+                        self.errors.push(Error::new(stmt.span, "cannot bind a value of type Nothing"));
+                    }
                     self.symbols.variables.insert(name.clone(), (t, false));
                 } else {
                     self.errors
@@ -2349,14 +2626,20 @@ impl TypeChecker {
                                 }
                                 .to_error(),
                             );
-                        }
+                        }                        else { self.check_numeric_conversion(&ann_ty, &val_ty, v, false); }
                         Some(ann_ty)
                     }
-                    (Some(v), None) => Some(self.infer_type(v)),
+                    (Some(v), None) => {
+                        self.require_typed_lambda_params(v);
+                        Some(self.infer_type(v))
+                    }
                     (None, Some(t)) => Some(Self::type_to_value(t)),
                     (None, None) => None,
                 };
                 if let Some(t) = inferred_type {
+                    if t == ValueType::Nothing && value.is_some() {
+                        self.errors.push(Error::new(stmt.span, "cannot bind a value of type Nothing"));
+                    }
                     self.symbols.variables.insert(name.clone(), (t, *mutable));
                 } else {
                     self.errors
@@ -2376,7 +2659,7 @@ impl TypeChecker {
                         }
                         .to_error(),
                     );
-                }
+                }                else { self.check_numeric_conversion(&target_ty, &value_ty, value, false); }
                 if let ExprKind::Ident(name) = &target.node {
                     if let Some((_, mutable)) = self.symbols.variables.get(name) {
                         if !mutable {
@@ -2429,7 +2712,8 @@ impl TypeChecker {
                 self.symbols.in_loop = true;
                 self.check_stmt(body);
                 self.symbols.in_loop = was_in_loop;
-                false
+                // `while (true)` without a `break` never falls through (#427).
+                matches!(&cond.node, ExprKind::Literal(Literal::Bool(true))) && !Self::stmt_has_break(body)
             }
             StmtKind::For { var, iter, body } => {
                 let iter_ty = self.infer_type(iter);
@@ -2452,7 +2736,7 @@ impl TypeChecker {
                 self.symbols.in_loop = true;
                 self.check_stmt(body);
                 self.symbols.in_loop = was_in_loop;
-                false
+                !Self::stmt_has_break(body)
             }
             StmtKind::Return(opt_expr) => {
                 if let Some(expr) = opt_expr {
@@ -2465,7 +2749,7 @@ impl TypeChecker {
                                 found: val_ty.display(),
                                 span: expr.span,
                             }.to_error());
-                        }
+                        } else { self.check_numeric_conversion(&expected, &val_ty, expr, false); }
                     }
                 }
                 true
@@ -2501,6 +2785,19 @@ impl TypeChecker {
                 let body_returns = self.check_stmt(body);
                 let mut catches_return = true;
                 for catch in catches {
+                    // Issue #436: only String can be thrown, so a clause for
+                    // any other type could never match yet used to catch
+                    // everything and re-type the value.
+                    let catch_ty = Self::type_to_value(&catch.ty);
+                    if catch_ty != ValueType::String && catch_ty != ValueType::Any {
+                        self.errors.push(Error::new(
+                            catch.span,
+                            format!(
+                                "catch clause type must be String (the only throwable type), found {}",
+                                catch_ty.display()
+                            ),
+                        ));
+                    }
                     self.symbols
                         .variables
                         .insert(catch.param.clone(), (Self::type_to_value(&catch.ty), false));
@@ -2522,17 +2819,33 @@ impl TypeChecker {
             }
             StmtKind::Expr(expr) => {
                 let ty = self.infer_type(expr);
-                ty == ValueType::Never
+                let diverges = ty == ValueType::Never && !matches!(expr.node, ExprKind::Match { .. })
+                    || self.expr_diverges(expr);
+                // Issue #459: sort()/reverse() return a NEW list; as a bare
+                // statement they used to be a silent no-op.
+                if let ExprKind::MethodCall { obj, method, .. } = &expr.node {
+                    if matches!(method.as_str(), "sort" | "reverse")
+                        && matches!(self.infer_type(obj), ValueType::Array(_))
+                    {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!(
+                                "the result of {}() is unused: it returns a new list and does not modify the receiver (write `x = x.{}()`)",
+                                method, method
+                            ),
+                        ));
+                    }
+                }
+                diverges
             }
             StmtKind::Block(stmts) => {
                 let saved_vars = self.symbols.enter_scope();
-                let mut last_returns = false;
                 for s in stmts {
-                    last_returns = self.check_stmt(s);
+                    self.check_stmt(s);
                 }
                 self.symbols.exit_scope(saved_vars);
-                // Block returns only if the LAST statement causes a return
-                last_returns
+                // Block returns if any statement guarantees a return/throw
+                stmts.iter().any(|s| self.stmt_diverges(s))
             }
             StmtKind::Empty => false,
             StmtKind::Defer(stmt) => {
@@ -2667,7 +2980,11 @@ impl TypeChecker {
                 let lhs_ty = self.infer_type(lhs);
                 let rhs_ty = self.infer_type(rhs);
                 self.check_binary_op(op, &lhs_ty, &rhs_ty, expr.span);
-                Self::binary_result_type(op, &lhs_ty, &rhs_ty)
+                let arithmetic = matches!(op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod);
+                match ValueType::literal_adapted_promotion(&lhs_ty, lhs, &rhs_ty, rhs) {
+                    Some(narrow) if arithmetic => narrow,
+                    _ => Self::binary_result_type(op, &lhs_ty, &rhs_ty),
+                }
             }
             ExprKind::Unary { op, operand } => {
                 let op_ty = self.infer_type(operand);
@@ -2800,6 +3117,28 @@ impl TypeChecker {
 
                 let method_name = format!("{}_{}", class_name, method);
 
+                // Issue #474: a static method (`fnc`) called through an instance
+                // used to be reported as a confusing argument-count mismatch
+                // (the receiver was counted as an argument).
+                if matches!(obj_ty, ValueType::Named(..))
+                    && self.known_class_names.contains(&class_name)
+                    && self.symbols.functions.get(&method_name).is_some_and(|sig| {
+                        !sig.params.first().is_some_and(|(n, _)| n == "self")
+                    })
+                {
+                    self.errors.push(Error::new(
+                        expr.span,
+                        format!(
+                            "'{}.{}' is a static method (declared with `fnc`): call it as `{}::{}(...)`, not on an instance",
+                            class_name, method, class_name, method
+                        ),
+                    ));
+                    for arg in args {
+                        self.infer_type(arg);
+                    }
+                    return self.symbols.functions[&method_name].return_type.clone();
+                }
+
                 if let Some(vis) = self.method_visibility.get(&method_name).cloned() {
                     self.check_member_visibility(&class_name, method, &vis, expr.span);
                 }
@@ -2891,6 +3230,16 @@ impl TypeChecker {
                     {
                         (**e).clone()
                     }
+                    (ValueType::Array(e), "sort")
+                        if !matches!(**e, ValueType::Any | ValueType::Int | ValueType::Float | ValueType::String | ValueType::Bool)
+                            && !e.is_integer() && !e.is_float() =>
+                    {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!("List<{}> cannot be sorted: the element type has no natural order", e.display()),
+                        ));
+                        ValueType::Array(e.clone())
+                    }
                     (ValueType::Array(e), "pop" | "sort" | "reverse" | "slice" | "unique"
                         | "take" | "skip" | "toList")
                         if **e != ValueType::Any =>
@@ -2935,7 +3284,9 @@ impl TypeChecker {
                         .push(TypeError::IndexNotInteger(expr.span).to_error());
                 }
                 match obj_ty {
-                    ValueType::String => ValueType::String,
+                    // `s[i]` is the byte value at `i` (the runtime result, -1 when
+                    // out of range), same as `s.charCodeAt(i)` (issue #458).
+                    ValueType::String => ValueType::Int,
                     ValueType::Array(e) => *e,
                     ValueType::Map(v) => *v,
                     _ => ValueType::Any,
@@ -3057,7 +3408,7 @@ impl TypeChecker {
                             }
                             .to_error(),
                         );
-                    }
+                    }                    else { self.check_numeric_conversion(expected_ty, &arg_ty, arg, true); }
                 }
                 sig.return_type.clone()
             }
@@ -3173,6 +3524,17 @@ impl TypeChecker {
                 let then_ty = self.infer_type(then_branch);
                 if let Some(else_br) = else_branch {
                     let else_ty = self.infer_type(else_br);
+                    // Issue #428: unrelated branch types used to unify to Any.
+                    if self.unrelated_types(&then_ty, &else_ty) {
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!(
+                                "branches have incompatible types {} and {}",
+                                then_ty.display(),
+                                else_ty.display()
+                            ),
+                        ));
+                    }
                     Self::lub(&then_ty, &else_ty)
                 } else {
                     ValueType::Nothing
@@ -3203,15 +3565,40 @@ impl TypeChecker {
                 self.infer_type(body);
                 ValueType::Never
             }
-            ExprKind::Match { expr, cases } => {
-                let scrutinee_ty = self.infer_type(expr);
+            ExprKind::Match { expr: scrutinee_expr, cases } => {
+                let scrutinee_ty = self.infer_type(scrutinee_expr);
                 let mut result_types = Vec::new();
+                let mut all_arms_diverge = true;
                 for case in cases {
                     let saved = self.symbols.enter_scope();
                     self.bind_pattern_vars(&case.pattern, &scrutinee_ty);
                     let case_ty = self.infer_type(&case.body);
                     self.symbols.exit_scope(saved);
+                    all_arms_diverge &= self.expr_diverges(&case.body) || case_ty == ValueType::Never;
                     result_types.push(case_ty);
+                }
+                // Issue #426: an enum match must cover every variant (or have
+                // a catch-all arm). For other scrutinee types the match is
+                // only treated as terminating when it has a catch-all arm.
+                let exhaustive = match self.match_exhaustiveness(&scrutinee_ty, cases) {
+                    Ok(()) => true,
+                    Err(_) if self.lenient_dependency => true,
+                    Err(missing) => {
+                        if !missing.is_empty() {
+                            self.errors.push(Error::new(
+                                expr.span,
+                                format!(
+                                    "non-exhaustive match on enum '{}': missing {}; add the missing variants or a `_` arm",
+                                    self.enum_of(&scrutinee_ty).unwrap_or_default(),
+                                    missing.join(", ")
+                                ),
+                            ));
+                        }
+                        false
+                    }
+                };
+                if exhaustive && all_arms_diverge && !cases.is_empty() {
+                    self.match_diverges.insert(expr.id);
                 }
                 if result_types.is_empty() {
                     return ValueType::Any;
@@ -3269,6 +3656,7 @@ impl TypeChecker {
                 ret_type,
                 body,
             } => {
+                self.check_closure_writes(params, body);
                 let saved_vars = self.symbols.enter_scope();
                 for param in params {
                     self.symbols.variables.insert(
@@ -3460,6 +3848,14 @@ impl TypeChecker {
                 let mut elem: Option<ValueType> = None;
                 for e in elements {
                     let t = self.infer_type(e);
+                    if let Some(acc) = &elem {
+                        if self.unrelated_types(acc, &t) {
+                            self.errors.push(Error::new(
+                                e.span,
+                                format!("list elements have incompatible types {} and {}", acc.display(), t.display()),
+                            ));
+                        }
+                    }
                     elem = Some(match elem {
                         Some(acc) => Self::lub(&acc, &t),
                         None => t,
@@ -3527,16 +3923,32 @@ impl TypeChecker {
         } else {
             args.len() == declared || args.len() == declared + 1
         };
+        if count_ok && is_instance && !uses_this && args.len() == declared
+            && self.this_less_owned_fns.contains(&static_key)
+        {
+            self.warnings.push(format!(
+                "'{}::{}' is an instance method (`fn`) that never uses `this`; declare it with `fnc` \
+                 to call it as a static method (called at line {})",
+                class_name, method_name, span.start.line
+            ));
+        }
         if !count_ok {
             let expected = if uses_this { declared + 1 } else { declared };
-            self.errors.push(
-                TypeError::InvalidArgumentCount {
-                    expected,
-                    found: args.len(),
-                    span,
-                }
-                .to_error(),
-            );
+            let message = if uses_this {
+                format!(
+                    "'{}::{}' is an instance method that uses `this`: pass the receiver as the first argument \
+                     ({} arguments including the receiver, found {}) or call it as `value.{}(...)`",
+                    class_name, method_name, expected, args.len(), method_name
+                )
+            } else if !is_instance {
+                format!(
+                    "static method '{}::{}' takes {} arguments, found {}",
+                    class_name, method_name, declared, args.len()
+                )
+            } else {
+                format!("expected {} arguments, found {}", expected, args.len())
+            };
+            self.errors.push(Error::new(span, message));
         }
         let skip_self = usize::from(is_instance && args.len() == declared);
         for (index, arg) in args.iter().enumerate() {
@@ -3544,7 +3956,7 @@ impl TypeChecker {
                 let actual = self.infer_argument(arg, expected);
                 if !self.types_compatible(expected, &actual) {
                     self.errors.push(TypeError::TypeMismatch { expected: expected.display(), found: actual.display(), span: arg.span }.to_error());
-                }
+                } else { let e = expected.clone(); self.check_numeric_conversion(&e, &actual, arg, true); }
             } else { self.infer_type(arg); }
         }
         // B2 step 2 / #158 — type-argument inference for unannotated
@@ -3555,6 +3967,46 @@ impl TypeChecker {
             return Some(resolved);
         }
         Some(sig.return_type.clone())
+    }
+
+    /// A lambda bound to an unannotated `const`/`var` has no context to infer its
+    /// parameter types from; an untyped parameter would be an unchecked raw word
+    /// (issue #460), so it must be annotated.
+    fn require_typed_lambda_params(&mut self, value: &Expr) {
+        let ExprKind::Lambda { params, .. } = &value.node else { return };
+        for p in params {
+            if Self::type_to_value(&p.param_type) == ValueType::Any {
+                self.errors.push(Error::new(
+                    value.span,
+                    format!(
+                        "cannot infer the type of lambda parameter '{}': annotate it (e.g. `({}: Int64) => ...`) \
+                         or give the binding a function type",
+                        p.name, p.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// True when `file` belongs to the project being compiled (not the stdlib and
+    /// not an installed dependency). Always false without a project root.
+    fn is_project_owned(&self, file: &str) -> bool {
+        let Some(root) = &self.project_root else { return false };
+        let path = std::path::Path::new(file);
+        path.starts_with(root)
+            && !path.components().any(|c| c.as_os_str() == ".tinox" || c.as_os_str() == "tinox-core")
+    }
+
+    /// Non-fatal diagnostics gathered while checking, in source order, deduplicated.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        self.warnings.iter().filter(|w| seen.insert((*w).clone())).cloned().collect()
+    }
+
+    /// Enables the call-shape warning for instance `fn`s declared under
+    /// `root` (issue #474).
+    pub fn set_project_root(&mut self, root: std::path::PathBuf) {
+        self.project_root = Some(root);
     }
 
     /// Call-site generic-return unification, shared by
@@ -3647,6 +4099,31 @@ impl TypeChecker {
                 // (`arr: any_array()`) is deliberately permissive for
                 // element type, so this can't be caught by the generic
                 // arg-type-compatibility loop below.
+                // Issue #429: len/contains/indexOf over a scalar reached codegen
+                // as an LLVM type error. Reject at the source level.
+                if matches!(name.as_str(), "len" | "contains" | "indexOf") && !args.is_empty() {
+                    let container = self.infer_type(&args[0]);
+                    if matches!(container, ValueType::Int | ValueType::Float | ValueType::Bool) {
+                        self.errors.push(Error::new(
+                            args[0].span,
+                            format!("{}() expects a String, List or Map, found {}", name, container.display()),
+                        ));
+                    }
+                }
+                // Issue #469: printing a List/Map used to print the raw
+                // handle address as an integer. Reject at compile time.
+                if (name == "println" || name == "print") && args.len() == 1 {
+                    let printed = self.infer_type(&args[0]);
+                    if matches!(printed, ValueType::Array(_) | ValueType::Map(_)) {
+                        self.errors.push(Error::new(
+                            args[0].span,
+                            format!(
+                                "cannot print a value of type {} (it would print a raw handle address); print its elements, e.g. join() or Json::stringify",
+                                printed.display()
+                            ),
+                        ));
+                    }
+                }
                 if (name == "join" || name == "Array_join") && !args.is_empty() {
                     if let ValueType::Array(elem) = self.infer_type(&args[0]) {
                         if *elem != ValueType::String && *elem != ValueType::Any {
@@ -3707,7 +4184,7 @@ impl TypeChecker {
                             }
                             .to_error(),
                         );
-                    }
+                    }                    else { self.check_numeric_conversion(expected_ty, &arg_ty, arg, true); }
                 }
                 return self.unify_generic_return(name, &sig.return_type, args, &[]).unwrap_or(sig.return_type);
             }
@@ -3756,6 +4233,147 @@ impl TypeChecker {
             self.infer_type(arg);
         }
         ValueType::Any
+    }
+
+    // --- Definite-return / reachability analysis (issues #426, #427) ---
+
+    /// True when `stmt` can never complete normally (return/throw on every
+    /// path, or an infinite loop with no `break`).
+    fn stmt_diverges(&self, stmt: &Stmt) -> bool {
+        match &stmt.node {
+            StmtKind::Return(_) | StmtKind::Throw(_) => true,
+            StmtKind::Block(stmts) => stmts.iter().any(|s| self.stmt_diverges(s)),
+            StmtKind::If { then_branch, else_branch: Some(else_branch), .. } => {
+                self.stmt_diverges(then_branch) && self.stmt_diverges(else_branch)
+            }
+            StmtKind::While { cond, body } => {
+                matches!(&cond.node, ExprKind::Literal(Literal::Bool(true))) && !Self::stmt_has_break(body)
+            }
+            StmtKind::Loop { body } => !Self::stmt_has_break(body),
+            StmtKind::Try { body, catches, finally } => {
+                finally.as_ref().is_some_and(|f| self.stmt_diverges(f))
+                    || (self.stmt_diverges(body) && catches.iter().all(|c| self.stmt_diverges(&c.body)))
+            }
+            StmtKind::Expr(e) => self.expr_diverges(e),
+            _ => false,
+        }
+    }
+
+    fn expr_diverges(&self, expr: &Expr) -> bool {
+        match &expr.node {
+            ExprKind::Return(_) | ExprKind::Throw(_) => true,
+            ExprKind::Block(stmts) => stmts.iter().any(|s| self.stmt_diverges(s)),
+            ExprKind::If { then_branch, else_branch: Some(else_branch), .. } => {
+                self.expr_diverges(then_branch) && self.expr_diverges(else_branch)
+            }
+            ExprKind::While { cond, body } => {
+                matches!(&cond.node, ExprKind::Literal(Literal::Bool(true))) && !Self::expr_has_break(body)
+            }
+            ExprKind::Loop { body } => !Self::expr_has_break(body),
+            ExprKind::Try { body, catches, finally } => {
+                finally.as_ref().is_some_and(|f| self.expr_diverges(f))
+                    || (self.expr_diverges(body) && catches.iter().all(|c| self.stmt_diverges(&c.body)))
+            }
+            ExprKind::Match { .. } => self.match_diverges.contains(&expr.id),
+            _ => false,
+        }
+    }
+
+    /// Does `stmt` contain a `break` that targets the loop being analysed
+    /// (i.e. not one inside a nested loop or lambda)?
+    fn stmt_has_break(stmt: &Stmt) -> bool {
+        match &stmt.node {
+            StmtKind::Break => true,
+            StmtKind::Block(stmts) => stmts.iter().any(Self::stmt_has_break),
+            StmtKind::If { then_branch, else_branch, .. } => {
+                Self::stmt_has_break(then_branch) || else_branch.as_ref().is_some_and(|e| Self::stmt_has_break(e))
+            }
+            StmtKind::Try { body, catches, finally } => {
+                Self::stmt_has_break(body)
+                    || catches.iter().any(|c| Self::stmt_has_break(&c.body))
+                    || finally.as_ref().is_some_and(|f| Self::stmt_has_break(f))
+            }
+            StmtKind::Expr(e) => Self::expr_has_break(e),
+            StmtKind::Defer(s) => Self::stmt_has_break(s),
+            _ => false,
+        }
+    }
+
+    fn expr_has_break(expr: &Expr) -> bool {
+        match &expr.node {
+            ExprKind::Break => true,
+            ExprKind::Block(stmts) => stmts.iter().any(Self::stmt_has_break),
+            ExprKind::If { then_branch, else_branch, .. } => {
+                Self::expr_has_break(then_branch) || else_branch.as_ref().is_some_and(|e| Self::expr_has_break(e))
+            }
+            ExprKind::Match { cases, .. } => cases.iter().any(|c| Self::expr_has_break(&c.body)),
+            ExprKind::Try { body, catches, finally } => {
+                Self::expr_has_break(body)
+                    || catches.iter().any(|c| Self::stmt_has_break(&c.body))
+                    || finally.as_ref().is_some_and(|f| Self::expr_has_break(f))
+            }
+            _ => false,
+        }
+    }
+
+    /// An irrefutable sub-pattern (matches every value).
+    fn pattern_irrefutable(&self, pattern: &Pattern, enum_name: Option<&str>) -> bool {
+        match pattern {
+            Pattern::Wildcard(_) => true,
+            Pattern::Ident(name, inner, _) => {
+                let is_variant = enum_name
+                    .and_then(|e| self.enums.get(e))
+                    .is_some_and(|vs| vs.contains(name));
+                !is_variant && inner.as_ref().is_none_or(|p| self.pattern_irrefutable(p, enum_name))
+            }
+            Pattern::Tuple(ps, _) => ps.iter().all(|p| self.pattern_irrefutable(p, None)),
+            _ => false,
+        }
+    }
+
+    /// Exhaustiveness of a `match`: `Ok(())` when every value is covered,
+    /// `Err(missing)` otherwise (`missing` lists the uncovered enum variants,
+    /// empty for scrutinee types where no finite list exists).
+    fn match_exhaustiveness(&self, scrutinee: &ValueType, cases: &[tinox_parser::MatchCase]) -> Result<(), Vec<String>> {
+        let enum_name = self.enum_of(scrutinee);
+        let mut covered: HashSet<String> = HashSet::new();
+        let (mut saw_true, mut saw_false) = (false, false);
+        for case in cases {
+            if case.guard.is_some() {
+                continue;
+            }
+            if self.pattern_irrefutable(&case.pattern, enum_name.as_deref()) {
+                return Ok(());
+            }
+            match &case.pattern {
+                Pattern::EnumVariant { enum_name: en, variant, args, .. } => {
+                    let name = if variant.is_empty() { en } else { variant };
+                    if args.iter().all(|a| self.pattern_irrefutable(a, None)) {
+                        covered.insert(name.clone());
+                    }
+                }
+                Pattern::Ident(name, _, _) => {
+                    covered.insert(name.clone());
+                }
+                Pattern::Literal(Literal::Bool(true), _) => saw_true = true,
+                Pattern::Literal(Literal::Bool(false), _) => saw_false = true,
+                _ => {}
+            }
+        }
+        if let Some(en) = enum_name {
+            // An arm naming a variant this enum lacks means the enum name
+            // resolved ambiguously (same-named enums in different modules):
+            // do not guess, skip the check.
+            if self.ambiguous_enums.contains(&en) || covered.iter().any(|c| !self.enums[&en].contains(c)) {
+                return Ok(());
+            }
+            let missing: Vec<String> = self.enums[&en].iter().filter(|v| !covered.contains(*v)).cloned().collect();
+            return if missing.is_empty() { Ok(()) } else { Err(missing) };
+        }
+        if *scrutinee == ValueType::Bool && saw_true && saw_false {
+            return Ok(());
+        }
+        Err(Vec::new())
     }
 
     /// Binds pattern variables with the type of the matched value:
@@ -3995,6 +4613,26 @@ impl TypeChecker {
     /// bound to its hint, then the body is inferred (memoized per node
     /// ID — the rich typing is preserved for later inference and the
     /// codegen export). None if the expression isn't a lambda.
+    /// Issue #425: closures capture by value, so assigning to a captured local
+    /// would be silently lost. Reject it instead.
+    fn check_closure_writes(&mut self, params: &[tinox_parser::Param], body: &Expr) {
+        let mut assigned = Vec::new();
+        let mut declared: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        Self::collect_closure_writes(body, &mut assigned, &mut declared);
+        for (name, span) in assigned {
+            if !declared.contains(&name) && !name.contains('.') && self.symbols.variables.contains_key(&name) {
+                self.errors.push(Error::new(
+                    span,
+                    format!(
+                        "closures capture variables by value: assigning to captured variable '{}' would be lost. \
+                         Keep the state in an object or list (e.g. `{}[0] = ...`) or return the new value instead",
+                        name, name
+                    ),
+                ));
+            }
+        }
+    }
+
     fn infer_lambda_with_param_hints(
         &mut self,
         expr: &Expr,
@@ -4003,6 +4641,7 @@ impl TypeChecker {
         let ExprKind::Lambda { params, ret_type, body } = &expr.node else {
             return None;
         };
+        self.check_closure_writes(params, body);
         let saved_vars = self.symbols.enter_scope();
         let mut parameter_types = Vec::new();
         for (i, p) in params.iter().enumerate() {
@@ -4236,6 +4875,84 @@ impl TypeChecker {
         }
     }
 
+    /// Issue #453: reject implicit numeric conversions that can lose data.
+    /// Only value-preserving widening is implicit; integer literals are
+    /// range-checked against the target. `allow_int_to_float` keeps the
+    /// call-argument rule that integer arguments may feed float parameters.
+    fn check_numeric_conversion(&mut self, expected: &ValueType, actual: &ValueType, expr: &Expr, allow_int_to_float: bool) {
+        if self.lenient_dependency { return; }
+        // Every inferred numeric type is exact or wider than the real one
+        // (operands promote upwards, literals adopt the other operand's type),
+        // and erased generics are `Any`, which is never checked. So the
+        // conversion rules apply to all of these, not just names.
+        let precise = |e: &Expr| -> bool {
+            match &e.node {
+                ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::Cast { .. }
+                | ExprKind::FieldAccess { .. } | ExprKind::Index { .. }
+                | ExprKind::Call { .. } | ExprKind::MethodCall { .. } => true,
+                ExprKind::Binary { op, .. } => matches!(op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod),
+                ExprKind::Unary { op: UnaryOp::Neg, operand } => matches!(operand.node, ExprKind::Literal(_) | ExprKind::Ident(_)),
+                _ => false,
+            }
+        };
+        if !precise(expr) { return; }
+        let int_bits = |t: &ValueType| -> Option<(u32, bool)> {
+            match t {
+                ValueType::Int => Some((64, true)),
+                ValueType::Integer { bits, signed } => Some((*bits as u32, *signed)),
+                _ => None,
+            }
+        };
+        let literal = |e: &Expr| -> Option<i128> {
+            match &e.node {
+                ExprKind::Literal(Literal::Integer(v)) => Some(*v as i128),
+                ExprKind::Unary { op: UnaryOp::Neg, operand } => match &operand.node {
+                    ExprKind::Literal(Literal::Integer(v)) => Some(-(*v as i128)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let exp_int = int_bits(expected);
+        let act_int = int_bits(actual);
+        let msg = if let Some((eb, es)) = exp_int {
+            if let Some(v) = literal(expr) {
+                let (min, max): (i128, i128) = if es {
+                    (-(1i128 << (eb - 1)), (1i128 << (eb - 1)) - 1)
+                } else {
+                    (0, (1i128 << eb) - 1)
+                };
+                if v < min || v > max {
+                    Some(format!("integer literal {} is out of range for {}", v, expected.display()))
+                } else { None }
+            } else if let Some((ab, asg)) = act_int {
+                let ok = if es == asg { eb >= ab } else { !asg && es && eb > ab };
+                if ok { None } else {
+                    Some(format!("implicit conversion from {} to {} may lose data; convert explicitly with `as {}`", actual.display(), expected.display(), expected.display()))
+                }
+            } else if actual.is_float() {
+                let integral_literal = match &expr.node {
+                    ExprKind::Literal(Literal::Float(f)) => f.fract() == 0.0,
+                    _ => false,
+                };
+                if integral_literal { None } else {
+                Some(format!("cannot implicitly convert {} to {}; use an explicit conversion (`.toInt()` or `as {}`)", actual.display(), expected.display(), expected.display()))
+                }
+            } else { None }
+        } else if expected.is_float() {
+            if let Some((ab, _)) = act_int {
+                if literal(expr).is_some() || allow_int_to_float || ab <= 16 || (ab <= 32 && *expected == ValueType::Float) { None } else {
+                    Some(format!("cannot implicitly convert {} to {}; use `.toFloat()` or `as {}`", actual.display(), expected.display(), expected.display()))
+                }
+            } else if *actual == ValueType::Float && *expected == ValueType::Float32 && !matches!(expr.node, ExprKind::Literal(_)) {
+                Some("implicit conversion from Float64 to Float32 may lose precision; use `as Float32`".to_string())
+            } else { None }
+        } else { None };
+        if let Some(m) = msg {
+            self.errors.push(Error::new(expr.span, m));
+        }
+    }
+
     fn types_compatible(&self, a: &ValueType, b: &ValueType) -> bool {
         if a == b || ((a.is_integer() || a.is_float()) && (b.is_integer() || b.is_float())) {
             return true;
@@ -4288,6 +5005,33 @@ impl TypeChecker {
             (ValueType::Named(name, _), ValueType::Int) if name == "Channel" => true,
             _ => false,
         }
+    }
+
+    /// Two concrete types with no conversion in either direction (a branch /
+    /// element pair whose least upper bound would silently degrade to `Any`).
+    fn unrelated_types(&self, a: &ValueType, b: &ValueType) -> bool {
+        let skip = |t: &ValueType| {
+            matches!(
+                t,
+                ValueType::Any
+                    | ValueType::Never
+                    | ValueType::Nothing
+                    | ValueType::Null
+                    | ValueType::Nullable(_)
+                    | ValueType::Callable { .. }
+                    | ValueType::Fn
+                    | ValueType::TupleOf(_)
+            ) || matches!(t, ValueType::Named(n, _) if self.type_param_scope.contains(n))
+        };
+        if skip(a) || skip(b) {
+            return false;
+        }
+        // Two class types may share an interface or base class that this
+        // pairwise check cannot see; only flag class-vs-other mixes.
+        if matches!((a, b), (ValueType::Named(..), ValueType::Named(..))) {
+            return false;
+        }
+        !(self.types_compatible(a, b) || self.types_compatible(b, a))
     }
 
     fn lub(a: &ValueType, b: &ValueType) -> ValueType {
@@ -4958,6 +5702,30 @@ class Counter {
         ok(r#"
 class Animal { fn speak() { } }
 class Dog extends Animal { fn bark() { } }
+"#);
+    }
+
+    #[test]
+    fn test_override_with_different_return_type_is_rejected() {
+        err_contains(r#"
+class Base { fn who() -> String { return "b" } }
+class Derived extends Base { fn who() -> Int64 { return 1 } }
+"#, "incompatible signature");
+    }
+
+    #[test]
+    fn test_override_with_different_params_is_rejected() {
+        err_contains(r#"
+class Base { fn speak() { } }
+class Derived extends Base { fn speak(loud: Bool) { } }
+"#, "incompatible signature");
+    }
+
+    #[test]
+    fn test_override_with_covariant_return_is_ok() {
+        ok(r#"
+class Animal { fn me() -> Animal { return this } }
+class Dog extends Animal { fn me() -> Dog { return this } }
 "#);
     }
 
@@ -6140,8 +6908,8 @@ println("c") }"#);
 
     #[test]
     fn test_add_int_float_not_detected() {
-        // BUG: mixed int+float arithmetic silently passes typecheck
-        ok("fn f() -> Int64 { return 1 + 2.0 }");
+        // Mixed int+float arithmetic is Float64; returning it as Int64 is a lossy conversion (#453).
+        err_contains("fn f() -> Int64 { return 1 + 2.0 }", "cannot implicitly convert Float64 to Int64");
     }
 
     #[test]
@@ -6658,6 +7426,129 @@ return 0 }");
             "  }\n",
             "}"
         ));
+    }
+
+    #[test]
+    fn test_catch_clause_type_must_be_string() {
+        err_contains("fn f() { try { throw \"a\" } catch e: Int64 { } }", "catch clause type must be String");
+        ok("fn g() { try { throw \"a\" } catch e: String { } }");
+    }
+
+    #[test]
+    fn test_conditional_with_unrelated_branch_types_is_error() {
+        err_contains("fn f() { let c = 5 > 3 ? \"y\" : 1 }", "incompatible types");
+        ok("fn g() { let c = 5 > 3 ? 1 : 2 }");
+        ok("fn h() { let c = 5 > 3 ? 1 : 2.5 }");
+    }
+
+    #[test]
+    fn test_heterogeneous_list_literal_is_error() {
+        err_contains("fn f() { let xs = [1, \"x\", true] }", "list elements have incompatible types");
+        ok("fn g() { let xs = [1, 2, 3] }");
+    }
+
+    #[test]
+    fn test_binding_a_nothing_result_is_error() {
+        err_contains("fn f() { let r = println(\"x\") }", "cannot bind a value of type Nothing");
+    }
+
+    #[test]
+    fn test_assignment_to_captured_variable_in_closure_is_error() {
+        err_contains(
+            "fn f() { var count = 0\n const bump = fnc(d: Int64) -> Nothing { count = count + d }\n }",
+            "closures capture variables by value",
+        );
+        // local to the closure, and field/element mutation, are fine
+        ok("fn g() { const f = fnc(d: Int64) -> Int64 { return d }\n }");
+        ok("fn h() { var xs = [1, 2]\n const f = fnc(d: Int64) -> Nothing { xs[0] = d }\n }");
+    }
+
+    #[test]
+    fn test_implicit_numeric_narrowing_is_error() {
+        err_contains("fn f(x: Int64) { const y: Int32 = x }", "may lose data");
+        err_contains("fn f(x: UInt8) { const y: Int8 = x }", "may lose data");
+        err_contains("fn f(x: Float64) { const y: Int64 = x }", "cannot implicitly convert Float64");
+        err_contains("fn f(x: Int64) { const y: Float64 = x }", "toFloat");
+        err_contains("fn f() { const b: Int8 = 200 }", "out of range");
+        err_contains("fn f() { const b: UInt8 = -1 }", "out of range");
+        err_contains("fn f(x: Float64) { var y: Float32 = 1.5\n y = x }", "may lose precision");
+        ok("fn f(x: UInt8) { const a: Int64 = x\n const b: Int16 = x\n const c: Float64 = 5 }");
+        ok("fn f(x: Int8) { const a: Int64 = x\n const b: Int8 = 127\n const c: Int8 = -128 }");
+    }
+
+    #[test]
+    fn test_narrowing_through_arithmetic_and_calls_is_error() {
+        err_contains("fn f(a: Int32, b: Int64) { const c: Int32 = a + b }", "may lose data");
+        err_contains("fn f(a: Int8) { const c: Int8 = a + 200 }", "may lose data");
+        ok("fn f(a: Int8) { const c: Int8 = a + 1\n const d: Int8 = a * 2 }");
+        ok("fn f(a: Int32, b: Int32) { const c: Int32 = a + b }");
+        err_contains("fn f() { const u: UInt64 = 18446744073709551615\n const i: Int64 = u }", "may lose data");
+        ok("fn f() { const u: UInt64 = 18446744073709551615 }");
+        err_contains("fn g() -> Int64 { return 1 }\nfn f() { const c: Int32 = g() }", "may lose data");
+        ok("fn g() -> Int32 { return 1 }\nfn f() { const c: Int64 = g() }");
+    }
+
+    #[test]
+    fn test_untyped_lambda_parameter_without_context_is_error() {
+        err_contains("fn f() { const z = (a, b) => a + b }", "cannot infer the type of lambda parameter");
+        err_contains("fn f() { const g = x => x.len() }", "cannot infer the type of lambda parameter 'x'");
+        ok("fn f() { const z = (a: Int64, b: Int64) => a + b }");
+    }
+
+    #[test]
+    fn test_non_exhaustive_enum_match_is_error() {
+        err_contains(
+            concat!(
+                "enum Dir { North\nSouth\nEast }\n",
+                "fn label(d: Dir) -> String {\n",
+                "  match d {\n",
+                "    Dir::North => return \"N\"\n",
+                "    Dir::South => return \"S\"\n",
+                "  }\n",
+                "}"
+            ),
+            "missing East",
+        );
+    }
+
+    #[test]
+    fn test_enum_match_with_wildcard_is_exhaustive() {
+        ok(concat!(
+            "enum Dir { North\nSouth\nEast }\n",
+            "fn label(d: Dir) -> String {\n",
+            "  match d {\n",
+            "    Dir::North => return \"N\"\n",
+            "    _ => return \"?\"\n",
+            "  }\n",
+            "}"
+        ));
+    }
+
+    #[test]
+    fn test_int_match_without_catch_all_needs_return() {
+        err_contains(
+            "fn f(x: Int64) -> Int64 {\n match x {\n 1 => return 10\n 2 => return 20\n }\n}",
+            "missing return statement",
+        );
+    }
+
+    #[test]
+    fn test_block_bodied_match_arms_count_as_returning() {
+        ok("fn f(x: Int64) -> Int64 {\n match x {\n 1 => { return 1 }\n _ => { return 2 }\n }\n}");
+    }
+
+    #[test]
+    fn test_infinite_loops_without_break_do_not_need_a_return() {
+        ok("fn a(x: Int64) -> Int64 {\n while (true) {\n return 1\n }\n}");
+        ok("fn b(x: Int64) -> Int64 {\n loop {\n return 1\n }\n}");
+    }
+
+    #[test]
+    fn test_infinite_loop_with_break_still_needs_a_return() {
+        err_contains(
+            "fn a(x: Int64) -> Int64 {\n while (true) {\n break\n }\n}",
+            "missing return statement",
+        );
     }
 
     // ================================================================

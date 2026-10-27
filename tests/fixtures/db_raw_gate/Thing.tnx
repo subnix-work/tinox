@@ -1,0 +1,10 @@
+import tinox.core.db
+
+class Thing
+{
+    fn doit() -> Nothing
+    {
+        let rows = DB::raw("SELECT 1", [])
+        println(rows.len().toString())
+    }
+}

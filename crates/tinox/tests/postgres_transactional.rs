@@ -15,169 +15,10 @@
 //! pattern) if `docker` or `psql` aren't available -- this is real
 //! infrastructure the dev/CI machine must provide, not something to fake.
 
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::process::Command;
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repo root")
-}
-
-fn tool_available(cmd: &str, args: &[&str]) -> bool {
-    Command::new(cmd)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-struct PgContainer {
-    name: String,
-    port: u16,
-}
-
-impl PgContainer {
-    fn start() -> Self {
-        let name = format!("tinox-pg-transactional-test-{}", std::process::id());
-        let _ = Command::new("docker").args(["rm", "-f", &name]).output();
-        let status = Command::new("docker")
-            .args([
-                "run", "-d", "--rm",
-                "--name", &name,
-                "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
-                "-P", // publish exposed ports to random host ports -- no
-                      // hardcoded literal, same "no manually-picked port"
-                      // convention CLAUDE.md's e2e fixtures already use.
-                "postgres:16-alpine",
-            ])
-            .stdout(Stdio::null())
-            .status()
-            .expect("spawn docker run");
-        assert!(status.success(), "docker run postgres failed");
-
-        let port_out = Command::new("docker")
-            .args(["port", &name, "5432/tcp"])
-            .output()
-            .expect("docker port");
-        assert!(port_out.status.success(), "docker port failed");
-        let port_str = String::from_utf8_lossy(&port_out.stdout);
-        // "0.0.0.0:54321\n[::]:54321\n" -- take the first line's port.
-        let port: u16 = port_str
-            .lines()
-            .next()
-            .and_then(|l| l.rsplit(':').next())
-            .and_then(|p| p.trim().parse().ok())
-            .unwrap_or_else(|| panic!("could not parse docker port output: {port_str}"));
-
-        let container = PgContainer { name, port };
-        container.wait_ready();
-        container
-    }
-
-    fn wait_ready(&self) {
-        // Probes the way this test itself will actually connect -- a real
-        // query, from the HOST, over the MAPPED port.
-        //
-        // `docker exec pg_isready` (what this used to do) is not enough,
-        // and that gap made this test genuinely flaky in CI: it failed
-        // once with "psql: server closed the connection unexpectedly ...
-        // server terminated abnormally before or while processing the
-        // request" while the very same commit passed on a rerun. The
-        // official postgres image runs a TEMPORARY server during
-        // initdb/init-script processing, deliberately started with
-        // `listen_addresses=''` so it's reachable only over the
-        // container's own unix socket -- which is exactly what an
-        // in-container pg_isready talks to. So pg_isready reports "ready"
-        // during a phase where the published TCP port isn't serving the
-        // final server at all; the entrypoint then shuts that temporary
-        // server down and starts the real one. A host-side connect
-        // landing in that window gets accepted and then dropped, which is
-        // precisely the observed error.
-        //
-        // Checking for an answered query (not just an accepted TCP
-        // connection) is what closes the window completely: it cannot
-        // succeed against the temporary server (not listening on TCP),
-        // and it cannot succeed during the restart gap either.
-        //
-        // Mechanism verified directly against a real PostgreSQL 18.6
-        // rather than inferred from the image's entrypoint script: with a
-        // server started `-c listen_addresses=''` (exactly what the
-        // temporary init server uses), `pg_isready` over the unix socket
-        // reports "accepting connections" and exits 0, while a host-side
-        // TCP connect at the same moment gets "Connection refused". The
-        // old check returned on precisely that signal.
-        for _ in 0..120 {
-            if self.try_query("SELECT 1").is_some() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        panic!(
-            "postgres container never became ready on 127.0.0.1:{}",
-            self.port
-        );
-    }
-
-    /// Non-panicking counterpart to `psql` below: returns `None` while the
-    /// server isn't answering (yet), rather than failing the test. Only
-    /// used for readiness polling -- every real assertion goes through
-    /// `psql`, which still treats a failure as fatal.
-    fn try_query(&self, sql: &str) -> Option<String> {
-        let out = Command::new("psql")
-            .args([
-                "-h", "127.0.0.1",
-                "-p", &self.port.to_string(),
-                "-U", "postgres",
-                "-d", "postgres",
-                "-t", "-A",
-                "-c", sql,
-            ])
-            .env("PGPASSWORD", "postgres")
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }
-
-    fn psql(&self, sql: &str) -> String {
-        let out = Command::new("psql")
-            .args([
-                "-h", "127.0.0.1",
-                "-p", &self.port.to_string(),
-                "-U", "postgres",
-                "-d", "postgres",
-                "-t", "-A", // tuples-only, unaligned -- easy to parse
-                "-c", sql,
-            ])
-            .env("PGPASSWORD", "postgres")
-            .output()
-            .expect("spawn psql");
-        assert!(
-            out.status.success(),
-            "psql failed:\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    fn url(&self) -> String {
-        format!("postgres://postgres:postgres@127.0.0.1:{}/postgres", self.port)
-    }
-}
-
-impl Drop for PgContainer {
-    fn drop(&mut self) {
-        let _ = Command::new("docker").args(["rm", "-f", &self.name]).output();
-    }
-}
+mod pg_common;
+use pg_common::{repo_root, tool_available, PgContainer};
 
 #[test]
 fn transactional_commits_on_success_and_rolls_back_on_error() {
@@ -190,7 +31,7 @@ fn transactional_commits_on_success_and_rolls_back_on_error() {
         return;
     }
 
-    let pg = PgContainer::start();
+    let pg = PgContainer::start("postgres:16-alpine");
     pg.psql("CREATE TABLE accounts (id SERIAL PRIMARY KEY, name TEXT NOT NULL, balance BIGINT NOT NULL);");
     pg.psql("INSERT INTO accounts (name, balance) VALUES ('Alice', 1000), ('Bob', 200);");
 
@@ -213,7 +54,7 @@ fn transactional_commits_on_success_and_rolls_back_on_error() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.7.0"
+compiler = "2.8.0"
 name = "postgres_transactional"
 version = "0.1.0"
 description = "issue #191 e2e fixture"

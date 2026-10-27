@@ -1,0 +1,31 @@
+import tinox.core.db
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        // Multiple rows, WHERE param, ORDER BY -- exercises the full
+        // params: List<String> -> $N binding path.
+        let rows: List<Map<String, String>> = DB::raw(
+            "SELECT id, name, note FROM items WHERE price > $1 ORDER BY id",
+            ["5.00"]
+        )
+        println("rows: " + rows.len().toString())
+        for row in rows
+        {
+            let id: String = row.get("id")
+            let name: String = row.get("name")
+            let hasNote: Bool = row.contains("note")
+            println("row id=" + id + " name=" + name + " hasNote=" + hasNote.toString())
+        }
+
+        // No WHERE match -- must come back as an empty list, not an error.
+        let none: List<Map<String, String>> = DB::raw(
+            "SELECT id FROM items WHERE price > $1",
+            ["999999.00"]
+        )
+        println("none: " + none.len().toString())
+
+        return 0
+    }
+}

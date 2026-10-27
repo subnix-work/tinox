@@ -1,0 +1,46 @@
+// Regression test for #467: decoders throw on malformed input, unpadded Base64 is accepted,
+// Math.pow/factorial detect overflow and invalid arguments.
+// expect: hello
+// expect: hello
+// expect: he
+// expect: AB
+// expect: a b
+// expect: 4611686018427387904
+// expect: 2432902008176640000
+// expect: caught Base64: invalid character '!'
+// expect: caught Hex: odd number of digits
+// expect: caught Hex: invalid digit 'z'
+// expect: caught Uri: invalid hex digit 'z' in percent-escape
+// expect: caught Uri: truncated percent-escape
+// expect: caught Math: Int64 overflow
+// expect: caught Math.pow: negative exponent
+// expect: caught Math: Int64 overflow
+// expect: caught Math.factorial: negative argument
+import tinox.core.base64
+import tinox.core.hex
+import tinox.core.uri
+import tinox.core.math
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        println(Base64::decode("aGVsbG8="))
+        println(Base64::decode("aGVsbG8"))
+        println(Base64::decode("aGV"))
+        println(Hex::decode("4142"))
+        println(Uri::decodeComponent("a%20b"))
+        println(Math::pow(2, 62))
+        println(Math::factorial(20))
+        try { println(Base64::decode("!!!!")) } catch e: String { println("caught " + e) }
+        try { println(Hex::decode("414")) } catch e: String { println("caught " + e) }
+        try { println(Hex::decode("zz")) } catch e: String { println("caught " + e) }
+        try { println(Uri::decodeComponent("a%zzb")) } catch e: String { println("caught " + e) }
+        try { println(Uri::decodeComponent("a%2")) } catch e: String { println("caught " + e) }
+        try { println(Math::pow(2, 64)) } catch e: String { println("caught " + e) }
+        try { println(Math::pow(2, -1)) } catch e: String { println("caught " + e) }
+        try { println(Math::factorial(25)) } catch e: String { println("caught " + e) }
+        try { println(Math::factorial(-1)) } catch e: String { println("caught " + e) }
+        return 0
+    }
+}

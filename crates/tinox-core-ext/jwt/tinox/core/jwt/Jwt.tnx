@@ -75,7 +75,21 @@ namespace tinox.core.jwt
             return payload
         }
 
+        // verify() never throws: a malformed token (bad base64url segment,
+        // invalid JSON, ...) simply does not verify (issue #467).
         fn verify(token: String, secret: String) -> Bool
+        {
+            try
+            {
+                return Jwt::verifyUnchecked(token, secret)
+            }
+            catch e: String
+            {
+                return false
+            }
+        }
+
+        fn verifyUnchecked(token: String, secret: String) -> Bool
         {
             const parts: List<String> = token.split(".")
             if (parts.len() != 3)
@@ -141,6 +155,18 @@ namespace tinox.core.jwt
         }
 
         fn verifyRs256(token: String, n: String, e: String) -> Bool
+        {
+            try
+            {
+                return Jwt::verifyRs256Unchecked(token, n, e)
+            }
+            catch err: String
+            {
+                return false
+            }
+        }
+
+        fn verifyRs256Unchecked(token: String, n: String, e: String) -> Bool
         {
             const parts: List<String> = token.split(".")
             if (parts.len() != 3)

@@ -1438,6 +1438,14 @@ impl Parser {
             let body = Box::new(self.parse_block()?);
             return Ok(StmtKind::For { var, iter, body });
         }
+        if matches!(self.peek_ahead(1).map(|t| t.kind), Some(TokenKind::Ident(_)))
+            && matches!(self.peek_ahead(2).map(|t| t.kind), Some(TokenKind::Keyword(Keyword::In)))
+        {
+            return Err(Error::new(
+                self.mk_span(),
+                "`for (x in xs)` is not Tinox syntax: iterate with `for x in xs { ... }` (no parentheses), or use the C-style `for (init; cond; update)`",
+            ));
+        }
         self.expect(TokenKind::LParen)?;
 
         let init = if !self.check(TokenKind::Semicolon) {
@@ -2319,6 +2327,14 @@ impl Parser {
                 }
                 self.expect(TokenKind::RBracket)?;
                 Ok(Spanned::new(ExprKind::ArrayLiteral(elements), token.span))
+            }
+            TokenKind::BigInteger(n) => {
+                // Above Int64::MAX: carry the bit pattern as an Int64 literal and
+                // reinterpret it as UInt64, the only type that can hold it.
+                let bits = *n as i64;
+                self.bump();
+                let literal = Spanned::new(ExprKind::Literal(Literal::Integer(bits)), token.span);
+                Ok(Spanned::new(ExprKind::Cast { expr: Box::new(literal), ty: Type::UInt64 }, token.span))
             }
             TokenKind::Integer(n) => {
                 self.bump();
@@ -3221,6 +3237,14 @@ impl Parser {
                     // resource's ObjectMeta.namespace) despite also being
                     // this language's `namespace { ... }` block keyword.
                     Keyword::Namespace => "namespace",
+                    Keyword::Static => return Err(Error::new(
+                        self.mk_span(),
+                        "`static` is not supported: declare static methods with `fnc`",
+                    )),
+                    Keyword::Ref => return Err(Error::new(
+                        self.mk_span(),
+                        "`ref` is a reserved word and cannot be used as an identifier; pick another name",
+                    )),
                     _ => return Err(Error::new(self.mk_span(), "expected identifier")),
                 };
                 self.bump();
@@ -4256,6 +4280,15 @@ mod tests {
         assert_eq!(u.fields.len(), 2);
         assert_eq!(u.fields[0].name, "x");
         assert_eq!(u.fields[1].name, "y");
+    }
+
+    #[test]
+    fn test_for_in_with_parentheses_has_dedicated_diagnostic() {
+        let tokens = Lexer::new("fn f() { for (x in xs) { } }").tokenize().expect("lex error");
+        let msg = format!("{:?}", Parser::new(tokens).parse().expect_err("must not parse"));
+        assert!(msg.contains("`for (x in xs)` is not Tinox syntax"), "{msg}");
+        assert!(!parse_err("class C { fn f() { for x in 0..3 { println(x) } } }"));
+        assert!(!parse_err("class C { fn f() { for (var i = 0; i < 3; i = i + 1) { } } }"));
     }
 
     // --- Static method (fnc in class) ---

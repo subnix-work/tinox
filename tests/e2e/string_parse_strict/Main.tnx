@@ -1,0 +1,28 @@
+// Regression test for #466: toInt()/toFloat() abort on invalid or
+// out-of-range input; isInt()/isFloat() validate first.
+// expect: 43
+// expect: 5
+// expect: -9223372036854775808
+// expect: false
+// expect: false
+// expect: true
+// expect: false
+// expect: 1.5
+// expect: runtime error: cannot convert "4x" to Int64 (invalid or out of range)
+// expect-exit: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        println("42".toInt() + 1)
+        println("+5".toInt())
+        println("-9223372036854775808".toInt())
+        println("4x".isInt())
+        println("99999999999999999999".isInt())
+        println("1.5e3".isFloat())
+        println("abc".isFloat())
+        println("1.5".toFloat())
+        println("4x".toInt())
+        return 0
+    }
+}

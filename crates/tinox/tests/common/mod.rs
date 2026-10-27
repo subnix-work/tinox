@@ -1,4 +1,6 @@
 //! Shared helpers for the golden-test harnesses (e2e.rs, matrix.rs).
+//! (Real-Postgres-via-docker tests have their own `pg_common.rs` sibling
+//! module instead of living here — see its doc comment for why.)
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -335,7 +337,7 @@ pub fn run_case(case: &Case) -> Result<(), String> {
             toml.push_str("[database]\ndriver = \"sqlite\"\nurl = \"test.db\"\n");
         }
         if !extended_deps.is_empty() {
-            toml.push_str("[package]\ncompiler = \"2.7.0\"\nname = \"");
+            toml.push_str("[package]\ncompiler = \"2.8.0\"\nname = \"");
             toml.push_str(&case.name);
             toml.push_str("\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
             // Skip a module that's already a transitive dependency of
