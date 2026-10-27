@@ -22,6 +22,7 @@ mod reference;
 
 mod runtime_cache;
 mod build_cache;
+mod native;
 mod describe;
 mod explain;
 mod diagnostics;
@@ -5321,6 +5322,14 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
         link_args.push("-lngtcp2_crypto_ossl");
         link_args.push("-lnghttp3");
     }
+    // `[native]` in tinox.toml (issue #485): user-supplied libraries,
+    // objects and extra C/C++ sources. Linked after Tinox's own libraries
+    // and before the TINOX_CFLAGS escape hatch.
+    let native_flags: Vec<String> = match native::read_native_config()? {
+        Some(cfg) => cfg.link_flags()?,
+        None => Vec::new(),
+    };
+    link_args.extend(native_flags.iter().map(|s| s.as_str()));
     link_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     Ok(RuntimeOptions {
         target,

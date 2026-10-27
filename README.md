@@ -234,6 +234,30 @@ Measure disabled, cold and warm builds (including output verification) with
 Use `--debug` for debug application builds. Results include raw timings and host/
 compiler metadata; they describe this machine, not a service-readiness guarantee.
 
+### Native libraries (`[native]`)
+
+A project can link its own C/C++ libraries, objects and extra source files
+through a `[native]` table in `tinox.toml` (paths are relative to the
+`tinox.toml`). Tinox functions bind to the C symbols via `extern fn`.
+
+```toml
+[native]
+libs       = ["tinoxkde"]          # -l<name>
+lib_dirs   = ["bridge/build"]      # -L<dir>
+rpath      = ["bridge/build"]      # -Wl,-rpath; `$ORIGIN/...` is kept verbatim
+pkg_config = ["Qt6Widgets"]        # pkg-config --libs (+ --cflags for `sources`)
+objects    = ["vendor/shim.o"]     # linked as-is
+sources    = ["native/shim.c"]     # compiled to .tinox/native/ (.c via cc, .cc/.cpp/.cxx via c++)
+cflags     = ["-O2", "-Ivendor"]   # used only to compile `sources`
+```
+
+Every mistake is a hard error: unknown keys, missing files, a library the
+linker cannot find, a missing pkg-config package. Compiled `sources` are
+reused while the source and the headers reported by the compiler are
+unchanged; a changed object or library invalidates the application build
+cache. The C++ standard library is added automatically when a C++ source is
+compiled.
+
 ### Package Manager
 
 `tinox install`/`tinox add` resolve dependencies declared in a project's
