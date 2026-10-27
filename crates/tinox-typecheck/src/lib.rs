@@ -2384,6 +2384,44 @@ impl TypeChecker {
         self.errors.extend(ann_errors);
     }
 
+    /// `extern fn` signatures cross the C ABI (issue #486): reject types with
+    /// no C representation here, by name, instead of letting them fall
+    /// through to a silently wrong `i64` in the generated `declare`.
+    fn check_extern_signature(&mut self, f: &Function) {
+        fn unsupported(ty: &Type) -> Option<&'static str> {
+            match ty {
+                Type::Fn { .. } => Some("function types (a closure is not a C function pointer)"),
+                Type::Tuple(_) => Some("tuples"),
+                Type::Nullable(_) => Some("nullable types (use a sentinel value instead)"),
+                Type::Any | Type::Infer | Type::Never => Some("untyped or `Never` values"),
+                Type::Generic { name, .. } if name == "Channel" || name == "Task" => {
+                    Some("Channel/Task handles")
+                }
+                Type::Named(name) if name == "Channel" => Some("Channel/Task handles"),
+                _ => None,
+            }
+        }
+        for p in &f.params {
+            if matches!(p.param_type, Type::Nothing) {
+                self.errors.push(Error::new(
+                    f.span,
+                    format!("extern fn `{}`: parameter `{}` cannot be `Nothing`", f.name, p.name),
+                ));
+            } else if let Some(what) = unsupported(&p.param_type) {
+                self.errors.push(Error::new(
+                    f.span,
+                    format!("extern fn `{}`: parameter `{}` uses {what}, which has no C ABI representation", f.name, p.name),
+                ));
+            }
+        }
+        if let Some(what) = unsupported(&f.ret_type) {
+            self.errors.push(Error::new(
+                f.span,
+                format!("extern fn `{}`: return type uses {what}, which has no C ABI representation", f.name),
+            ));
+        }
+    }
+
     fn check_function(&mut self, f: &Function) {
         let saved_vars = self.symbols.enter_scope();
         let saved_type_params = std::mem::take(&mut self.type_param_scope);
@@ -2397,6 +2435,9 @@ impl TypeChecker {
             );
         }
         let is_extern = matches!(f.body.node, StmtKind::Empty);
+        if is_extern {
+            self.check_extern_signature(f);
+        }
         let expected = self.resolve_type(&f.ret_type);
         let saved_return_type = self.current_return_type.replace(expected.clone());
         let has_return = self.check_stmt(&f.body);

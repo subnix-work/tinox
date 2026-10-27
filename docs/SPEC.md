@@ -680,6 +680,52 @@ loop
 
 ---
 
+## Foreign Function Interface
+
+`extern fn` declares a C function; the linker resolves the symbol. Link the
+library with the `[native]` table of `tinox.toml` (`libs`, `lib_dirs`,
+`rpath`, `pkg_config`, `objects`, `sources`; see the README).
+
+```tinox
+extern fn getpid() -> Int64
+extern fn ffi_greet(name: String) -> String
+extern fn ffi_not(b: Bool) -> Bool
+```
+
+**Type mapping (x86-64 / AArch64 System V):**
+
+| Tinox | C |
+|-------|---|
+| `Int8` / `UInt8` | `int8_t` / `uint8_t` (sign/zero-extended at the call) |
+| `Int16` / `UInt16` | `int16_t` / `uint16_t` (sign/zero-extended at the call) |
+| `Int32` / `UInt32` / `Char` | `int32_t` / `uint32_t` / `uint32_t` code point |
+| `Int64` / `UInt64`, enums | `int64_t` / `uint64_t` |
+| `Float32` / `Float64` | `float` / `double` |
+| `Bool` | `bool` (`_Bool`), zero-extended |
+| `String` | `char*`, NUL-terminated UTF-8 |
+| `Nothing` (return) | `void` |
+| classes, `List<T>`, `Map<K,V>`, `Array` | opaque pointer to a Tinox heap object |
+
+**Strings.** Tinox to C: the pointer is borrowed for the duration of the call;
+C must not keep it. C to Tinox: the returned pointer is adopted as the
+`String` without a copy, so it must be NUL-terminated and stay valid for the
+life of the value: return a literal/static, or memory from `GC_malloc_atomic`
+or `GC_strdup` (`<gc.h>`, the collector Tinox links against). Memory from
+`malloc` is never freed by the collector, and `free`ing it from C afterwards
+leaves the `String` dangling. Embedded NUL bytes cannot cross the boundary.
+
+**Heap objects** (classes, lists, maps) are Tinox-internal layouts; only
+functions provided by the Tinox runtime should read them. For your own
+libraries pass `Int64` handles or primitives instead.
+
+**Not supported** (compile-time error): function types (a closure is not a C
+function pointer), tuples, nullable types, `Channel`/`Task` handles, `Nothing`
+as a parameter, structs by value, variadic functions and out-pointers. Wrap
+those in a C function with a supported signature.
+
+Declaring the same `extern fn` in several files is allowed when the
+signatures are identical; differing signatures are an error.
+
 ## Concurrency
 
 Real concurrency in Tinox is `spawn`/`await`, backed directly by POSIX
