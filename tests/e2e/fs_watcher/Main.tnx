@@ -28,9 +28,32 @@ class Main
         return false
     }
 
+    // Events of one action may arrive split over several batches under load:
+    // collect "created" paths until all wanted ones were seen or time ran out.
+    fnc gather(w: Watcher, want: List<String>) -> List<String> {
+        var found: List<String> = []
+        var tries: Int64 = 0
+        while (found.len() < want.len() && tries < 50) {
+            const ev: List<WatchEvent> = Watcher::poll(w, 200)
+            for p in want {
+                if (Main::has(ev, "created", p)) { found.push(p) }
+            }
+            tries = tries + 1
+        }
+        return found
+    }
+
+    fnc contains(xs: List<String>, x: String) -> Bool {
+        for y in xs {
+            if (y == x) { return true }
+        }
+        return false
+    }
+
     fnc main() -> Int32 {
         const root: String = "/tmp/tinox_fs_watcher_e2e"
-        dirDelete(root)
+        // dirDelete only removes empty directories: clear leftovers of an earlier run
+        Process::run(["rm", "-rf", root], 5000, "")
         dirCreate(root)
         const w = Watcher::create(30)
         Watcher::watch(w, root, true)
@@ -55,15 +78,15 @@ class Main
 
         dirCreate(root + "/sub")
         fileWriteAllText(root + "/sub/inner.txt", "x")
-        ev = Watcher::poll(w, 3000)
-        println("sub-created=" + Main::has(ev, "created", root + "/sub").toString())
-        println("inner-created=" + Main::has(ev, "created", root + "/sub/inner.txt").toString())
+        const first: List<String> = Main::gather(w, [root + "/sub", root + "/sub/inner.txt"])
+        println("sub-created=" + Main::contains(first, root + "/sub").toString())
+        println("inner-created=" + Main::contains(first, root + "/sub/inner.txt").toString())
 
         dirCreate(root + "/sub/deeper")
-        Watcher::poll(w, 3000)
+        Main::gather(w, [root + "/sub/deeper"])
         fileWriteAllText(root + "/sub/deeper/x.txt", "x")
-        ev = Watcher::poll(w, 3000)
-        println("deep=" + Main::has(ev, "created", root + "/sub/deeper/x.txt").toString())
+        const deep: List<String> = Main::gather(w, [root + "/sub/deeper/x.txt"])
+        println("deep=" + Main::contains(deep, root + "/sub/deeper/x.txt").toString())
 
         // A burst of writes to one file arrives as a single coalesced event.
         var i: Int64 = 0
@@ -89,7 +112,7 @@ class Main
         println("missing-error=" + failed.toString())
 
         Watcher::close(w)
-        dirDelete(root)
+        Process::run(["rm", "-rf", root], 5000, "")
         return 0
     }
 }
