@@ -7,6 +7,33 @@ pub fn json(args: &[String]) -> bool {
         || args
             .windows(2)
             .any(|pair| pair == ["--error-format", "json"])
+        || ndjson(args)
+}
+
+/// `--message-format=json` (also `--message-format json`): a stream of one
+/// JSON object per line instead of the single `--json` document.
+pub fn ndjson(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--message-format=json")
+        || args.windows(2).any(|pair| pair == ["--message-format", "json"])
+}
+
+/// Build artifact reported by the closing `build-finished` event.
+static ARTIFACT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_artifact(path: &str) {
+    if let Ok(mut a) = ARTIFACT.lock() {
+        *a = Some(path.to_string());
+    }
+}
+
+/// One line of the `--message-format=json` stream. Every event carries
+/// `reason` and `schema_version`.
+pub fn emit(reason: &str, mut fields: serde_json::Value) {
+    if let Some(obj) = fields.as_object_mut() {
+        obj.insert("reason".into(), reason.into());
+        obj.insert("schema_version".into(), SCHEMA_VERSION.into());
+    }
+    println!("{fields}");
 }
 
 pub fn finish(args: &[String], result: Result<(), Failure>) {
@@ -15,6 +42,16 @@ pub fn finish(args: &[String], result: Result<(), Failure>) {
 
 pub fn validate_format(args: &[String]) -> Result<(), Failure> {
     for (index, arg) in args.iter().enumerate() {
+        let message_format = if arg == "--message-format" {
+            Some(args.get(index + 1).map(String::as_str).unwrap_or(""))
+        } else {
+            arg.strip_prefix("--message-format=")
+        };
+        if let Some(value) = message_format {
+            if !matches!(value, "json" | "text" | "human") {
+                return Err(Failure::new("driver", None, None, "--message-format requires json, text or human"));
+            }
+        }
         let value = if arg == "--error-format" {
             Some(args.get(index + 1).map(String::as_str).unwrap_or(""))
         } else {
@@ -37,7 +74,21 @@ pub fn validate_format(args: &[String]) -> Result<(), Failure> {
 pub fn finish_with_message(args: &[String], result: Result<(), Failure>, success_message: &str) {
     let success = result.is_ok();
     let diagnostics = result.err().map(|e| e.0).unwrap_or_default();
-    if json(args) {
+    if ndjson(args) {
+        for d in &diagnostics {
+            emit("compiler-message", serde_json::json!({ "diagnostic": d }));
+        }
+        let artifact = if success { ARTIFACT.lock().ok().and_then(|a| a.clone()) } else { None };
+        emit(
+            "build-finished",
+            serde_json::json!({
+                "command": std::env::args().nth(1).unwrap_or_default(),
+                "success": success,
+                "exit_code": if success { 0 } else { 1 },
+                "artifact": artifact,
+            }),
+        );
+    } else if json(args) {
         println!(
             "{}",
             serde_json::json!({

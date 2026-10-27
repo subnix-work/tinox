@@ -1,0 +1,21 @@
+module tinox.core.fs
+
+namespace tinox.core.fs
+{
+    /**
+     * One file-system change reported by a Watcher.
+     *
+     * kind is one of "created", "modified", "deleted", "moved" or "overflow".
+     * An "overflow" event (empty path) means the kernel dropped events: treat
+     * every watched tree as changed and rescan it. For "moved", path is the
+     * new location and oldPath the previous one; a path moved into or out of
+     * the watched tree is reported as "created" or "deleted" instead.
+     */
+    class WatchEvent
+    {
+        var kind: String
+        var path: String
+        var oldPath: String
+        var isDirectory: Bool
+    }
+}

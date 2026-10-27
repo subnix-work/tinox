@@ -1,0 +1,118 @@
+// Watcher: create/modify/delete/move, recursive follow of new directories,
+// debounce coalescing, unwatch and the error for a missing path.
+// expect: created=file a.txt dir=false
+// expect: modified=a.txt
+// expect: moved=b.txt from a.txt
+// expect: deleted=b.txt
+// expect: sub-created=true
+// expect: inner-created=true
+// expect: deep=true
+// expect: burst-events=1
+// expect: timeout-empty=true
+// expect: after-unwatch-empty=true
+// expect: missing-error=true
+import tinox.core.fs
+import tinox.core.process
+
+class Main
+{
+    fnc rel(root: String, p: String) -> String {
+        if (p.len() > root.len() + 1) { return p.substring(root.len() + 1, p.len()) }
+        return p
+    }
+
+    fnc has(events: List<WatchEvent>, kind: String, path: String) -> Bool {
+        for e in events {
+            if (e.kind == kind && e.path == path) { return true }
+        }
+        return false
+    }
+
+    // Events of one action may arrive split over several batches under load:
+    // collect "created" paths until all wanted ones were seen or time ran out.
+    fnc gather(w: Watcher, want: List<String>) -> List<String> {
+        var found: List<String> = []
+        var tries: Int64 = 0
+        while (found.len() < want.len() && tries < 50) {
+            const ev: List<WatchEvent> = Watcher::poll(w, 200)
+            for p in want {
+                if (Main::has(ev, "created", p)) { found.push(p) }
+            }
+            tries = tries + 1
+        }
+        return found
+    }
+
+    fnc contains(xs: List<String>, x: String) -> Bool {
+        for y in xs {
+            if (y == x) { return true }
+        }
+        return false
+    }
+
+    fnc main() -> Int32 {
+        const root: String = "/tmp/tinox_fs_watcher_e2e"
+        // dirDelete only removes empty directories: clear leftovers of an earlier run
+        Process::run(["rm", "-rf", root], 5000, "")
+        dirCreate(root)
+        const w = Watcher::create(30)
+        Watcher::watch(w, root, true)
+
+        fileWriteAllText(root + "/a.txt", "one")
+        var ev: List<WatchEvent> = Watcher::poll(w, 3000)
+        for e in ev {
+            if (e.kind == "created") { println("created=file " + Main::rel(root, e.path) + " dir=" + e.isDirectory.toString()) }
+        }
+
+        fileWriteAllText(root + "/a.txt", "two")
+        ev = Watcher::poll(w, 3000)
+        println("modified=" + Main::rel(root, ev[0].path))
+
+        Process::run(["mv", root + "/a.txt", root + "/b.txt"], 5000, "")
+        ev = Watcher::poll(w, 3000)
+        println("moved=" + Main::rel(root, ev[0].path) + " from " + Main::rel(root, ev[0].oldPath))
+
+        deleteFile(root + "/b.txt")
+        ev = Watcher::poll(w, 3000)
+        println("deleted=" + Main::rel(root, ev[0].path))
+
+        dirCreate(root + "/sub")
+        fileWriteAllText(root + "/sub/inner.txt", "x")
+        const first: List<String> = Main::gather(w, [root + "/sub", root + "/sub/inner.txt"])
+        println("sub-created=" + Main::contains(first, root + "/sub").toString())
+        println("inner-created=" + Main::contains(first, root + "/sub/inner.txt").toString())
+
+        dirCreate(root + "/sub/deeper")
+        Main::gather(w, [root + "/sub/deeper"])
+        fileWriteAllText(root + "/sub/deeper/x.txt", "x")
+        const deep: List<String> = Main::gather(w, [root + "/sub/deeper/x.txt"])
+        println("deep=" + Main::contains(deep, root + "/sub/deeper/x.txt").toString())
+
+        // A burst of writes to one file arrives as a single coalesced event.
+        var i: Int64 = 0
+        while (i < 20) {
+            fileWriteAllText(root + "/burst.txt", "v" + i.toString())
+            i = i + 1
+        }
+        ev = Watcher::poll(w, 3000)
+        var burst: Int64 = 0
+        for e in ev {
+            if (e.path == root + "/burst.txt") { burst = burst + 1 }
+        }
+        println("burst-events=" + burst.toString())
+
+        println("timeout-empty=" + (Watcher::poll(w, 100).len() == 0).toString())
+
+        Watcher::unwatch(w, root)
+        fileWriteAllText(root + "/after.txt", "x")
+        println("after-unwatch-empty=" + (Watcher::poll(w, 200).len() == 0).toString())
+
+        var failed: Bool = false
+        try { Watcher::watch(w, root + "/does/not/exist", false) } catch (e: String) { failed = e.contains("does/not/exist") }
+        println("missing-error=" + failed.toString())
+
+        Watcher::close(w)
+        Process::run(["rm", "-rf", root], 5000, "")
+        return 0
+    }
+}

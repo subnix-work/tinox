@@ -22,6 +22,7 @@ mod reference;
 
 mod runtime_cache;
 mod build_cache;
+mod native;
 mod describe;
 mod explain;
 mod diagnostics;
@@ -136,6 +137,7 @@ fn print_help() {
     println!("  tinox explain --bootstrap [file]  Explain generated wiring (--json)");
     println!("  tinox describe <Symbol>    Describe a resolved API (--json, --member name)");
     println!("  tinox check/build --json    Emit versioned JSON diagnostics on stdout");
+    println!("  tinox check/build/test --message-format=json  Line-delimited JSON events (test: --list, --format json)");
     println!("  tinox fmt   <file>         Format a Tinox file (print to stdout)");
     println!("  tinox fmt --write <file>   Format a Tinox file in place");
     println!("  tinox repl                 Start interactive REPL");
@@ -348,7 +350,7 @@ fn entry_candidates(content: &str) -> Vec<String> {
 /// the naming rule, so a project really can have a lowercase entry script,
 /// and silently ignoring it would trade one broken default for another.
 fn resolve_entry_file(args: &[String]) -> Option<String> {
-    if let Some(f) = args.iter().enumerate().find(|(i, a)| !a.starts_with('-') && (*i == 0 || !matches!(args[*i - 1].as_str(), "-o" | "--output" | "--error-format"))).map(|(_, a)| a) {
+    if let Some(f) = args.iter().enumerate().find(|(i, a)| !a.starts_with('-') && (*i == 0 || !matches!(args[*i - 1].as_str(), "-o" | "--output" | "--error-format" | "--message-format"))).map(|(_, a)| a) {
         return Some(f.clone());
     }
     // Project mode: look for tinox.toml in current dir or parents
@@ -423,7 +425,11 @@ fn build(args: &[String]) {
     });
 
     match compile_file(&input_file, &output_name, opt) {
-        Ok(_) => diagnostics::finish_with_message(args, Ok(()), &format!("Compiled successfully: {} ({:?})", output_name, opt)),
+        Ok(_) => {
+            let artifact = Path::new(&output_name).canonicalize().unwrap_or_else(|_| PathBuf::from(&output_name));
+            diagnostics::set_artifact(&artifact.to_string_lossy());
+            diagnostics::finish_with_message(args, Ok(()), &format!("Compiled successfully: {} ({:?})", output_name, opt))
+        }
         Err(e) => diagnostics::finish(args, Err(e)),
     }
 }
@@ -2034,7 +2040,7 @@ fn check(args: &[String]) {
     // Issue #475: without a file argument, check every source file of the
     // project, not only the code reachable from the entry point.
     let explicit_file = args.iter().enumerate().any(|(i, a)| {
-        !a.starts_with('-') && (i == 0 || !matches!(args[i - 1].as_str(), "-o" | "--output" | "--error-format"))
+        !a.starts_with('-') && (i == 0 || !matches!(args[i - 1].as_str(), "-o" | "--output" | "--error-format" | "--message-format"))
     });
     if !explicit_file {
         let files = project_source_files(&input);
@@ -2209,16 +2215,39 @@ fn collect_test_files(args: &[String]) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
+/// `--format json` / `--message-format=json` for `tinox test`.
+fn test_json_mode(args: &[String]) -> bool {
+    diagnostics::ndjson(args) || args.windows(2).any(|pair| pair == ["--format", "json"]) || args.iter().any(|a| a == "--format=json")
+}
+
+/// Last `max` bytes of captured test output, as lossy UTF-8.
+fn tail_output(bytes: &[u8], max: usize) -> String {
+    let start = bytes.len().saturating_sub(max);
+    String::from_utf8_lossy(&bytes[start..]).into_owned()
+}
+
 fn run_tests_once(args: &[String]) -> bool {
+    let json = test_json_mode(args);
+    let list_only = args.iter().any(|a| a == "--list");
     let source_files = match collect_test_files(args) {
         Ok(files) => files,
         Err(e) => {
-            eprintln!("error discovering tests: {}", e);
+            if json {
+                diagnostics::emit("test-collection-error", serde_json::json!({ "file": null, "message": e }));
+                diagnostics::emit("test-run-finished", serde_json::json!({ "total": 0, "passed": 0, "failed": 0, "collection_errors": 1, "success": false }));
+            } else {
+                eprintln!("error discovering tests: {}", e);
+            }
             return false;
         }
     };
     if source_files.is_empty() {
-        eprintln!("error: no test files found — run from a project directory or pass a file");
+        if json {
+            diagnostics::emit("test-collection-error", serde_json::json!({ "file": null, "message": "no test files found" }));
+            diagnostics::emit("test-run-finished", serde_json::json!({ "total": 0, "passed": 0, "failed": 0, "collection_errors": 1, "success": false }));
+        } else {
+            eprintln!("error: no test files found — run from a project directory or pass a file");
+        }
         return false;
     }
 
@@ -2231,54 +2260,134 @@ fn run_tests_once(args: &[String]) -> bool {
         let test_entries = match collect_tests(source_path) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("error processing {}: {}", source_path, e);
+                if json {
+                    diagnostics::emit("test-collection-error", serde_json::json!({ "file": source_path, "message": e }));
+                } else {
+                    eprintln!("error processing {}: {}", source_path, e);
+                }
                 collection_errors += 1;
                 continue;
             }
         };
         if test_entries.is_empty() { continue; }
 
-        println!("Running {} test{} from {}",
-            test_entries.len(),
-            if test_entries.len() == 1 { "" } else { "s" },
-            source_path);
+        let describe = |t: &tinox_typecheck::annotations::TestInfo| serde_json::json!({
+            "file": source_path, "class": t.class_name, "method": t.method_name,
+            "description": t.description, "line": t.line, "column": t.column,
+        });
+
+        // Discovery mode: report what exists without compiling or running anything.
+        if list_only {
+            for t in &test_entries {
+                total += 1;
+                if json {
+                    diagnostics::emit("test-discovered", describe(t));
+                } else {
+                    println!("{}:{}: {} ({}::{})", source_path, t.line, t.description, t.class_name, t.method_name);
+                }
+            }
+            continue;
+        }
+
+        if !json {
+            println!("Running {} test{} from {}",
+                test_entries.len(),
+                if test_entries.len() == 1 { "" } else { "s" },
+                source_path);
+        }
 
         for t in &test_entries {
             total += 1;
+            if json {
+                diagnostics::emit("test-started", describe(t));
+            }
+            let started = std::time::Instant::now();
             let exe = format!(".tinox_test_{}_{}", std::process::id(), total);
             let result = compile_test_exe(source_path, &t.class_name, &t.method_name, &exe);
             if let Err(e) = result {
-                println!("  FAIL  {} — compile error: {}", t.description, e);
+                if json {
+                    let mut ev = describe(t);
+                    ev["phase"] = "compile".into();
+                    ev["message"] = format!("compile error: {e}").into();
+                    ev["duration_ms"] = (started.elapsed().as_millis() as u64).into();
+                    diagnostics::emit("test-failed", ev);
+                } else {
+                    println!("  FAIL  {} — compile error: {}", t.description, e);
+                }
                 failed += 1;
                 continue;
             }
-            let status = Command::new(format!("./{exe}")).status();
+            // JSON mode captures the program's output so stdout stays a pure event stream.
+            let outcome = if json {
+                Command::new(format!("./{exe}")).stdin(std::process::Stdio::null()).output().map(|o| (o.status, tail_output(&[o.stdout, o.stderr].concat(), 65536)))
+            } else {
+                Command::new(format!("./{exe}")).status().map(|s| (s, String::new()))
+            };
             let _ = fs::remove_file(&exe);
             let _ = fs::remove_file(format!("{exe}.ll"));
-            match status {
-                Ok(s) if s.code() == Some(0) => {
-                    println!("  PASS  {}", t.description);
+            let ms = started.elapsed().as_millis() as u64;
+            match outcome {
+                Ok((s, output)) if s.code() == Some(0) => {
+                    if json {
+                        let mut ev = describe(t);
+                        ev["duration_ms"] = ms.into();
+                        ev["output"] = output.into();
+                        diagnostics::emit("test-passed", ev);
+                    } else {
+                        println!("  PASS  {}", t.description);
+                    }
                     passed += 1;
                 }
-                Ok(s) => {
-                    println!("  FAIL  {} — exit code {}", t.description, s.code().unwrap_or(-1));
+                Ok((s, output)) => {
+                    if json {
+                        let mut ev = describe(t);
+                        ev["phase"] = "run".into();
+                        ev["message"] = format!("exit code {}", s.code().unwrap_or(-1)).into();
+                        ev["exit_code"] = s.code().unwrap_or(-1).into();
+                        ev["duration_ms"] = ms.into();
+                        ev["output"] = output.into();
+                        diagnostics::emit("test-failed", ev);
+                    } else {
+                        println!("  FAIL  {} — exit code {}", t.description, s.code().unwrap_or(-1));
+                    }
                     failed += 1;
                 }
                 Err(e) => {
-                    println!("  FAIL  {} — {}", t.description, e);
+                    if json {
+                        let mut ev = describe(t);
+                        ev["phase"] = "run".into();
+                        ev["message"] = e.to_string().into();
+                        ev["duration_ms"] = ms.into();
+                        diagnostics::emit("test-failed", ev);
+                    } else {
+                        println!("  FAIL  {} — {}", t.description, e);
+                    }
                     failed += 1;
                 }
             }
         }
     }
 
-    println!();
-    println!("{total} test{} — {passed} passed, {failed} failed",
-        if total == 1 { "" } else { "s" });
+    if json {
+        diagnostics::emit("test-run-finished", serde_json::json!({
+            "total": total, "passed": passed, "failed": failed, "collection_errors": collection_errors,
+            "listed_only": list_only,
+            "success": collection_errors == 0 && failed == 0 && (list_only || total > 0),
+        }));
+    } else if list_only {
+        println!("{total} test{} found", if total == 1 { "" } else { "s" });
+    } else {
+        println!();
+        println!("{total} test{} — {passed} passed, {failed} failed",
+            if total == 1 { "" } else { "s" });
 
-    println!("{collection_errors} collection errors");
-    if total == 0 {
-        eprintln!("error: no @Test methods found");
+        println!("{collection_errors} collection errors");
+        if total == 0 {
+            eprintln!("error: no @Test methods found");
+        }
+    }
+    if list_only {
+        return collection_errors == 0;
     }
     total > 0 && failed == 0 && collection_errors == 0
 }
@@ -5321,6 +5430,14 @@ fn runtime_options() -> Result<RuntimeOptions, String> {
         link_args.push("-lngtcp2_crypto_ossl");
         link_args.push("-lnghttp3");
     }
+    // `[native]` in tinox.toml (issue #485): user-supplied libraries,
+    // objects and extra C/C++ sources. Linked after Tinox's own libraries
+    // and before the TINOX_CFLAGS escape hatch.
+    let native_flags: Vec<String> = match native::read_native_config()? {
+        Some(cfg) => cfg.link_flags(runtime_c_path().as_deref().and_then(Path::parent))?,
+        None => Vec::new(),
+    };
+    link_args.extend(native_flags.iter().map(|s| s.as_str()));
     link_args.extend(extra_cflags.iter().map(|s| s.as_str()));
     Ok(RuntimeOptions {
         target,

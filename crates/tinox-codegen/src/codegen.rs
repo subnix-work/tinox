@@ -5779,9 +5779,25 @@ tr_done_{idx}:"#).unwrap();
     fn gen_fn(&mut self, f: &tinox_parser::Function) -> Result<(), ErrorBag> {
         // extern fn — no body, emit a declare instead of a define
         if matches!(f.body.node, tinox_parser::StmtKind::Empty) {
-            let ret_type = self.type_to_llvm_inst(&f.ret_type);
+            // C ABI (issue #486): a callee compiled by clang/gcc assumes
+            // `_Bool`/`char`/`short` arguments arrive already extended to
+            // 32 bits, and expects the same of what it returns. Plain
+            // `i1`/`i8`/`i16` without an extension attribute leaves the
+            // upper bits undefined.
+            let ret_ext = Self::extern_abi_ext(&f.ret_type);
+            let ret_type = if ret_ext.is_empty() {
+                self.type_to_llvm_inst(&f.ret_type)
+            } else {
+                format!("{} {}", ret_ext, self.type_to_llvm_inst(&f.ret_type))
+            };
             let params_str = f.params.iter()
-                .map(|p| self.type_to_llvm_inst(&p.param_type))
+                .map(|p| {
+                    let ty = self.type_to_llvm_inst(&p.param_type);
+                    match Self::extern_abi_ext(&p.param_type) {
+                        "" => ty,
+                        ext => format!("{ty} {ext}"),
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             let declare_line = format!("declare {} @{}({})", ret_type, f.name, params_str);
@@ -14080,6 +14096,17 @@ tr_done_{idx}:"#).unwrap();
             format!("i64* {}", env_val)
         } else {
             format!("{}, i64* {}", a, env_val)
+        }
+    }
+
+    /// LLVM extension attribute a sub-32-bit scalar needs at an `extern fn`
+    /// boundary so it follows the platform C ABI. The caller places it
+    /// before the type for a return value and after it for a parameter.
+    fn extern_abi_ext(ty: &Type) -> &'static str {
+        match ty {
+            Type::Bool | Type::UInt8 | Type::UInt16 => "zeroext",
+            Type::Int8 | Type::Int16 => "signext",
+            _ => "",
         }
     }
 

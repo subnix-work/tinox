@@ -680,6 +680,75 @@ loop
 
 ---
 
+## Foreign Function Interface
+
+`extern fn` declares a C function; the linker resolves the symbol. Link the
+library with the `[native]` table of `tinox.toml` (`libs`, `lib_dirs`,
+`rpath`, `pkg_config`, `objects`, `sources`; see the README).
+
+```tinox
+extern fn getpid() -> Int64
+extern fn ffi_greet(name: String) -> String
+extern fn ffi_not(b: Bool) -> Bool
+```
+
+**Type mapping (x86-64 / AArch64 System V):**
+
+| Tinox | C |
+|-------|---|
+| `Int8` / `UInt8` | `int8_t` / `uint8_t` (sign/zero-extended at the call) |
+| `Int16` / `UInt16` | `int16_t` / `uint16_t` (sign/zero-extended at the call) |
+| `Int32` / `UInt32` / `Char` | `int32_t` / `uint32_t` / `uint32_t` code point |
+| `Int64` / `UInt64`, enums | `int64_t` / `uint64_t` |
+| `Float32` / `Float64` | `float` / `double` |
+| `Bool` | `bool` (`_Bool`), zero-extended |
+| `String` | `char*`, NUL-terminated UTF-8 |
+| `Nothing` (return) | `void` |
+| classes, `List<T>`, `Map<K,V>`, `Array` | opaque pointer to a Tinox heap object |
+
+**Strings.** Tinox to C: the pointer is borrowed for the duration of the call;
+C must not keep it. C to Tinox: the returned pointer is adopted as the
+`String` without a copy, so it must be NUL-terminated and stay valid for the
+life of the value: return a literal/static, or memory from `GC_malloc_atomic`
+or `GC_strdup` (`<gc.h>`, the collector Tinox links against). Memory from
+`malloc` is never freed by the collector, and `free`ing it from C afterwards
+leaves the `String` dangling. Embedded NUL bytes cannot cross the boundary.
+
+**Threads.** `tinox_main` runs on the process main thread, and `spawn`ed tasks
+are ordinary pthreads known to the garbage collector. An `extern fn` may block
+the calling thread for as long as it likes (a GUI toolkit's `exec()` on the
+main thread) while other tasks keep running and collecting; the collector
+interrupts blocked threads with signals, so a blocking native call must
+tolerate `EINTR` (every libc blocking call restarts transparently).
+
+A thread the runtime did not create (a toolkit worker, a C library's
+callback thread) must bracket its use of Tinox heap memory with
+`tinox_thread_attach()` / `tinox_thread_detach()` from `runtime.h` (C sources
+listed under `[native] sources` get the runtime directory on their include
+path). Attach returns `0` when it attached the thread, `1` when the thread was
+already known (the main thread, a `spawn`ed task) and a negative value when
+the collector has no thread support; calls nest. Without it a collection
+neither scans that thread's stack nor stops it, which crashes or corrupts
+memory. **Never keep the only reference to a Tinox heap object in memory the
+collector does not scan** (`malloc`, C++ objects, a plain C queue): copy the
+data out or hand Tinox an `Int64` handle instead.
+
+**Heap objects** (classes, lists, maps) are Tinox-internal layouts; only
+functions provided by the Tinox runtime should read them. For your own
+libraries pass `Int64` handles or primitives instead.
+
+**Not supported** (compile-time error): function types (a closure is not a C
+function pointer), tuples, nullable types, `Channel`/`Task` handles, `Nothing`
+as a parameter, structs by value, variadic functions and out-pointers. Wrap
+those in a C function with a supported signature.
+
+Calls from C back into Tinox (callbacks) are not supported: evaluated in #488 and
+deferred, because every use so far fits a polled queue (Tinox asks the library for
+the next event) without exposing a Tinox function as a C function pointer.
+
+Declaring the same `extern fn` in several files is allowed when the
+signatures are identical; differing signatures are an error.
+
 ## Concurrency
 
 Real concurrency in Tinox is `spawn`/`await`, backed directly by POSIX
