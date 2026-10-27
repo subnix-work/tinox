@@ -3401,6 +3401,342 @@ int64_t* tinoxDirEntriesSorted(const char* path) {
     return h;
 }
 
+// ---- File-system watching (issue #489, Linux inotify) ----
+//
+// Handles are small indices into a fixed table (the table lives in the
+// data segment, so the GC keeps every watcher reachable). One watcher owns
+// one inotify instance; `recursive` roots are expanded to one watch per
+// directory, and directories created later are added on the fly (their
+// existing contents are reported as created, closing the race between the
+// mkdir and the new watch). Operations on one watcher are serialised by its
+// mutex; the blocking wait in watchPoll does not hold it.
+#include <sys/inotify.h>
+
+typedef struct {
+    int wd;
+    char* path;
+    bool recursive;
+} tinox_watch_entry;
+
+typedef struct {
+    int fd;
+    tinox_watch_entry* entries;
+    size_t n, cap;
+    pthread_mutex_t mu;
+} tinox_watcher;
+
+typedef struct {
+    const char* kind;
+    bool is_dir;
+    char* path;
+    char* old_path;
+} tinox_watch_event;
+
+typedef struct {
+    tinox_watch_event* v;
+    size_t n, cap;
+} tinox_watch_batch;
+
+#define TINOX_WATCHERS_MAX 64
+static tinox_watcher* tinox_watchers[TINOX_WATCHERS_MAX];
+static pthread_mutex_t tinox_watchers_mu = PTHREAD_MUTEX_INITIALIZER;
+static __thread char tinox_watch_err[256];
+
+char* watchLastError(void) { return GC_strdup(tinox_watch_err); }
+
+static tinox_watcher* tinox_watcher_get(int64_t h) {
+    tinox_watcher* w = NULL;
+    pthread_mutex_lock(&tinox_watchers_mu);
+    if (h >= 1 && h <= TINOX_WATCHERS_MAX) w = tinox_watchers[h - 1];
+    pthread_mutex_unlock(&tinox_watchers_mu);
+    if (!w) {
+        fprintf(stderr, "runtime error: invalid or closed file watcher handle\n");
+        exit(1);
+    }
+    return w;
+}
+
+// Returns a handle >= 1, or 0 with watchLastError() set.
+int64_t watchCreate(void) {
+    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (fd < 0) {
+        snprintf(tinox_watch_err, sizeof tinox_watch_err, "inotify_init1 failed: %s", strerror(errno));
+        return 0;
+    }
+    tinox_watcher* w = (tinox_watcher*)GC_malloc(sizeof(tinox_watcher));
+    w->fd = fd;
+    pthread_mutex_init(&w->mu, NULL);
+    pthread_mutex_lock(&tinox_watchers_mu);
+    for (int i = 0; i < TINOX_WATCHERS_MAX; i++) {
+        if (!tinox_watchers[i]) {
+            tinox_watchers[i] = w;
+            pthread_mutex_unlock(&tinox_watchers_mu);
+            return i + 1;
+        }
+    }
+    pthread_mutex_unlock(&tinox_watchers_mu);
+    close(fd);
+    snprintf(tinox_watch_err, sizeof tinox_watch_err, "too many open file watchers (max %d)", TINOX_WATCHERS_MAX);
+    return 0;
+}
+
+static char* tinox_watch_join(const char* dir, const char* name) {
+    size_t dl = strlen(dir), nl = strlen(name);
+    char* out = (char*)GC_malloc_atomic(dl + nl + 2);
+    memcpy(out, dir, dl);
+    size_t o = dl;
+    if (nl > 0) {
+        if (dl == 0 || dir[dl - 1] != '/') out[o++] = '/';
+        memcpy(out + o, name, nl);
+        o += nl;
+    }
+    out[o] = '\0';
+    return out;
+}
+
+static char* tinox_watch_normalize(const char* path) {
+    char* p = GC_strdup(path);
+    size_t l = strlen(p);
+    while (l > 1 && p[l - 1] == '/') p[--l] = '\0';
+    return p;
+}
+
+static tinox_watch_entry* tinox_watch_by_wd(tinox_watcher* w, int wd) {
+    for (size_t i = 0; i < w->n; i++) if (w->entries[i].wd == wd) return &w->entries[i];
+    return NULL;
+}
+
+// Adds (or re-labels) one inotify watch. 0 = ok, -1 = failed (message set).
+static int tinox_watch_add_one(tinox_watcher* w, const char* path, bool recursive) {
+    uint32_t mask = IN_CREATE | IN_DELETE | IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_FROM |
+                    IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF | IN_EXCL_UNLINK;
+    int wd = inotify_add_watch(w->fd, path, mask);
+    if (wd < 0) {
+        if (errno == ENOSPC) {
+            snprintf(tinox_watch_err, sizeof tinox_watch_err,
+                     "inotify watch limit reached while watching %s (raise fs.inotify.max_user_watches)", path);
+        } else {
+            snprintf(tinox_watch_err, sizeof tinox_watch_err, "cannot watch %s: %s", path, strerror(errno));
+        }
+        return -1;
+    }
+    tinox_watch_entry* e = tinox_watch_by_wd(w, wd);
+    if (!e) {
+        if (w->n == w->cap) {
+            w->cap = w->cap ? w->cap * 2 : 16;
+            w->entries = (tinox_watch_entry*)GC_realloc(w->entries, w->cap * sizeof(tinox_watch_entry));
+        }
+        e = &w->entries[w->n++];
+        e->wd = wd;
+    }
+    e->path = GC_strdup(path);
+    e->recursive = recursive;
+    return 0;
+}
+
+static int tinox_watch_add_tree(tinox_watcher* w, const char* path, bool recursive) {
+    if (tinox_watch_add_one(w, path, recursive) != 0) return -1;
+    if (!recursive) return 0;
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return 0;
+    DIR* d = opendir(path);
+    if (!d) return 0;
+    struct dirent* ent;
+    int rc = 0;
+    while (rc == 0 && (ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        char* child = tinox_watch_join(path, ent->d_name);
+        struct stat cst;
+        if (lstat(child, &cst) == 0 && S_ISDIR(cst.st_mode)) rc = tinox_watch_add_tree(w, child, true);
+    }
+    closedir(d);
+    return rc;
+}
+
+// Returns "" on success or an error message.
+char* watchAdd(int64_t h, const char* path, bool recursive) {
+    tinox_watcher* w = tinox_watcher_get(h);
+    pthread_mutex_lock(&w->mu);
+    tinox_watch_err[0] = '\0';
+    char* p = tinox_watch_normalize(path);
+    int rc = tinox_watch_add_tree(w, p, recursive);
+    pthread_mutex_unlock(&w->mu);
+    return GC_strdup(rc == 0 ? "" : tinox_watch_err);
+}
+
+static bool tinox_watch_under(const char* path, const char* root) {
+    size_t rl = strlen(root);
+    return strncmp(path, root, rl) == 0 && (path[rl] == '\0' || path[rl] == '/' || (rl == 1 && root[0] == '/'));
+}
+
+static void tinox_watch_drop_tree(tinox_watcher* w, const char* root) {
+    size_t out = 0;
+    for (size_t i = 0; i < w->n; i++) {
+        if (tinox_watch_under(w->entries[i].path, root)) {
+            inotify_rm_watch(w->fd, w->entries[i].wd);
+        } else {
+            w->entries[out++] = w->entries[i];
+        }
+    }
+    w->n = out;
+}
+
+void watchRemove(int64_t h, const char* path) {
+    tinox_watcher* w = tinox_watcher_get(h);
+    pthread_mutex_lock(&w->mu);
+    tinox_watch_drop_tree(w, tinox_watch_normalize(path));
+    pthread_mutex_unlock(&w->mu);
+}
+
+void watchClose(int64_t h) {
+    tinox_watcher* w = tinox_watcher_get(h);
+    pthread_mutex_lock(&tinox_watchers_mu);
+    tinox_watchers[h - 1] = NULL;
+    pthread_mutex_unlock(&tinox_watchers_mu);
+    pthread_mutex_lock(&w->mu);
+    close(w->fd);
+    w->fd = -1;
+    w->n = 0;
+    pthread_mutex_unlock(&w->mu);
+}
+
+static void tinox_watch_push(tinox_watch_batch* b, const char* kind, bool is_dir, char* path, char* old_path) {
+    // Coalesce: an identical event, or a modification of a path that was
+    // just created in the same batch, adds no information.
+    for (size_t i = 0; i < b->n; i++) {
+        tinox_watch_event* e = &b->v[i];
+        if (strcmp(e->path, path) != 0) continue;
+        if (strcmp(e->kind, kind) == 0) return;
+        if (strcmp(kind, "modified") == 0 && strcmp(e->kind, "created") == 0) return;
+    }
+    if (b->n == b->cap) {
+        b->cap = b->cap ? b->cap * 2 : 16;
+        b->v = (tinox_watch_event*)GC_realloc(b->v, b->cap * sizeof(tinox_watch_event));
+    }
+    b->v[b->n++] = (tinox_watch_event){kind, is_dir, path, old_path};
+}
+
+// Reports everything already inside a freshly created/moved-in directory.
+static void tinox_watch_scan_new(tinox_watcher* w, tinox_watch_batch* b, const char* dir) {
+    DIR* d = opendir(dir);
+    if (!d) return;
+    struct dirent* ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        char* child = tinox_watch_join(dir, ent->d_name);
+        struct stat st;
+        bool is_dir = lstat(child, &st) == 0 && S_ISDIR(st.st_mode);
+        tinox_watch_push(b, "created", is_dir, child, GC_strdup(""));
+        if (is_dir) {
+            if (tinox_watch_add_one(w, child, true) == 0) tinox_watch_scan_new(w, b, child);
+        }
+    }
+    closedir(d);
+}
+
+typedef struct { uint32_t cookie; char* path; bool is_dir; bool used; } tinox_watch_pending;
+
+static void tinox_watch_drain(tinox_watcher* w, tinox_watch_batch* b) {
+    char buf[16384] __attribute__((aligned(__alignof__(struct inotify_event))));
+    tinox_watch_pending pend[64];
+    size_t npend = 0;
+    for (;;) {
+        ssize_t len = read(w->fd, buf, sizeof buf);
+        if (len <= 0) break;
+        for (char* ptr = buf; ptr < buf + len;) {
+            struct inotify_event* ev = (struct inotify_event*)ptr;
+            ptr += sizeof(struct inotify_event) + ev->len;
+            if (ev->mask & IN_Q_OVERFLOW) {
+                tinox_watch_push(b, "overflow", false, GC_strdup(""), GC_strdup(""));
+                continue;
+            }
+            tinox_watch_entry* dir = tinox_watch_by_wd(w, ev->wd);
+            if (ev->mask & IN_IGNORED) {
+                if (dir) *dir = w->entries[--w->n];
+                continue;
+            }
+            if (!dir) continue;
+            bool is_dir = (ev->mask & IN_ISDIR) != 0;
+            char* path = tinox_watch_join(dir->path, ev->len ? ev->name : "");
+            bool recursive = dir->recursive;
+            if (ev->mask & IN_DELETE_SELF) {
+                tinox_watch_push(b, "deleted", true, path, GC_strdup(""));
+            } else if (ev->mask & IN_MOVE_SELF) {
+                continue;  /* the parent's MOVED_FROM/MOVED_TO describes it */
+            } else if (ev->mask & IN_CREATE) {
+                tinox_watch_push(b, "created", is_dir, path, GC_strdup(""));
+                if (is_dir && recursive && tinox_watch_add_one(w, path, true) == 0) tinox_watch_scan_new(w, b, path);
+            } else if (ev->mask & IN_DELETE) {
+                tinox_watch_push(b, "deleted", is_dir, path, GC_strdup(""));
+            } else if (ev->mask & (IN_MODIFY | IN_CLOSE_WRITE)) {
+                tinox_watch_push(b, "modified", is_dir, path, GC_strdup(""));
+            } else if (ev->mask & IN_MOVED_FROM) {
+                if (npend < 64) pend[npend++] = (tinox_watch_pending){ev->cookie, path, is_dir, false};
+                else tinox_watch_push(b, "deleted", is_dir, path, GC_strdup(""));
+            } else if (ev->mask & IN_MOVED_TO) {
+                tinox_watch_pending* from = NULL;
+                for (size_t i = 0; i < npend; i++) if (!pend[i].used && pend[i].cookie == ev->cookie) { from = &pend[i]; break; }
+                if (from) {
+                    from->used = true;
+                    tinox_watch_push(b, "moved", is_dir, path, from->path);
+                    if (is_dir) {
+                        /* Re-label the watches below the old path. */
+                        size_t ol = strlen(from->path);
+                        for (size_t i = 0; i < w->n; i++) {
+                            if (tinox_watch_under(w->entries[i].path, from->path)) {
+                                w->entries[i].path = tinox_watch_join(path, w->entries[i].path + ol);
+                            }
+                        }
+                    }
+                } else {
+                    tinox_watch_push(b, "created", is_dir, path, GC_strdup(""));
+                    if (is_dir && recursive && tinox_watch_add_one(w, path, true) == 0) tinox_watch_scan_new(w, b, path);
+                }
+            }
+        }
+    }
+    for (size_t i = 0; i < npend; i++) {
+        if (pend[i].used) continue;
+        tinox_watch_push(b, "deleted", pend[i].is_dir, pend[i].path, GC_strdup(""));
+        if (pend[i].is_dir) tinox_watch_drop_tree(w, pend[i].path);
+    }
+}
+
+// Waits up to timeoutMs (< 0: forever, 0: poll) for the first event, then
+// keeps collecting until the stream has been quiet for debounceMs (bounded
+// at one extra second). Returns a flat list of 4 strings per event:
+// kind ("created"|"modified"|"deleted"|"moved"|"overflow"), "1"/"0" for
+// is-directory, path, old path ("" unless moved).
+int64_t* watchPoll(int64_t h, int64_t timeout_ms, int64_t debounce_ms) {
+    tinox_watcher* w = tinox_watcher_get(h);
+    struct pollfd pfd = {.fd = w->fd, .events = POLLIN};
+    int pr;
+    do { pr = poll(&pfd, 1, timeout_ms < 0 ? -1 : (int)timeout_ms); } while (pr < 0 && errno == EINTR);
+    int64_t* out = tinox_array_new(0, 16);
+    if (pr <= 0) return out;
+    tinox_watch_batch b = {0};
+    pthread_mutex_lock(&w->mu);
+    if (w->fd < 0) { pthread_mutex_unlock(&w->mu); return out; }
+    tinox_watch_drain(w, &b);
+    int64_t extra = 0;
+    while (debounce_ms > 0 && extra < 1000) {
+        pthread_mutex_unlock(&w->mu);
+        do { pr = poll(&pfd, 1, (int)debounce_ms); } while (pr < 0 && errno == EINTR);
+        pthread_mutex_lock(&w->mu);
+        if (pr <= 0 || w->fd < 0) break;
+        tinox_watch_drain(w, &b);
+        extra += debounce_ms;
+    }
+    pthread_mutex_unlock(&w->mu);
+    for (size_t i = 0; i < b.n; i++) {
+        tinox_array_push(out, (int64_t)GC_strdup(b.v[i].kind));
+        tinox_array_push(out, (int64_t)GC_strdup(b.v[i].is_dir ? "1" : "0"));
+        tinox_array_push(out, (int64_t)b.v[i].path);
+        tinox_array_push(out, (int64_t)b.v[i].old_path);
+    }
+    return out;
+}
+
 // Canonical absolute path (symlinks resolved), or "" if it can't be
 // resolved (e.g. doesn't exist).
 char* tinoxRealPath(const char* path) {

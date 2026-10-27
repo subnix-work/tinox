@@ -1,0 +1,95 @@
+// Watcher: create/modify/delete/move, recursive follow of new directories,
+// debounce coalescing, unwatch and the error for a missing path.
+// expect: created=file a.txt dir=false
+// expect: modified=a.txt
+// expect: moved=b.txt from a.txt
+// expect: deleted=b.txt
+// expect: sub-created=true
+// expect: inner-created=true
+// expect: deep=true
+// expect: burst-events=1
+// expect: timeout-empty=true
+// expect: after-unwatch-empty=true
+// expect: missing-error=true
+import tinox.core.fs
+import tinox.core.process
+
+class Main
+{
+    fnc rel(root: String, p: String) -> String {
+        if (p.len() > root.len() + 1) { return p.substring(root.len() + 1, p.len()) }
+        return p
+    }
+
+    fnc has(events: List<WatchEvent>, kind: String, path: String) -> Bool {
+        for e in events {
+            if (e.kind == kind && e.path == path) { return true }
+        }
+        return false
+    }
+
+    fnc main() -> Int32 {
+        const root: String = "/tmp/tinox_fs_watcher_e2e"
+        dirDelete(root)
+        dirCreate(root)
+        const w = Watcher::create(30)
+        Watcher::watch(w, root, true)
+
+        fileWriteAllText(root + "/a.txt", "one")
+        var ev: List<WatchEvent> = Watcher::poll(w, 3000)
+        for e in ev {
+            if (e.kind == "created") { println("created=file " + Main::rel(root, e.path) + " dir=" + e.isDirectory.toString()) }
+        }
+
+        fileWriteAllText(root + "/a.txt", "two")
+        ev = Watcher::poll(w, 3000)
+        println("modified=" + Main::rel(root, ev[0].path))
+
+        Process::run(["mv", root + "/a.txt", root + "/b.txt"], 5000, "")
+        ev = Watcher::poll(w, 3000)
+        println("moved=" + Main::rel(root, ev[0].path) + " from " + Main::rel(root, ev[0].oldPath))
+
+        deleteFile(root + "/b.txt")
+        ev = Watcher::poll(w, 3000)
+        println("deleted=" + Main::rel(root, ev[0].path))
+
+        dirCreate(root + "/sub")
+        fileWriteAllText(root + "/sub/inner.txt", "x")
+        ev = Watcher::poll(w, 3000)
+        println("sub-created=" + Main::has(ev, "created", root + "/sub").toString())
+        println("inner-created=" + Main::has(ev, "created", root + "/sub/inner.txt").toString())
+
+        dirCreate(root + "/sub/deeper")
+        Watcher::poll(w, 3000)
+        fileWriteAllText(root + "/sub/deeper/x.txt", "x")
+        ev = Watcher::poll(w, 3000)
+        println("deep=" + Main::has(ev, "created", root + "/sub/deeper/x.txt").toString())
+
+        // A burst of writes to one file arrives as a single coalesced event.
+        var i: Int64 = 0
+        while (i < 20) {
+            fileWriteAllText(root + "/burst.txt", "v" + i.toString())
+            i = i + 1
+        }
+        ev = Watcher::poll(w, 3000)
+        var burst: Int64 = 0
+        for e in ev {
+            if (e.path == root + "/burst.txt") { burst = burst + 1 }
+        }
+        println("burst-events=" + burst.toString())
+
+        println("timeout-empty=" + (Watcher::poll(w, 100).len() == 0).toString())
+
+        Watcher::unwatch(w, root)
+        fileWriteAllText(root + "/after.txt", "x")
+        println("after-unwatch-empty=" + (Watcher::poll(w, 200).len() == 0).toString())
+
+        var failed: Bool = false
+        try { Watcher::watch(w, root + "/does/not/exist", false) } catch (e: String) { failed = e.contains("does/not/exist") }
+        println("missing-error=" + failed.toString())
+
+        Watcher::close(w)
+        dirDelete(root)
+        return 0
+    }
+}

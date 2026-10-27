@@ -1,0 +1,89 @@
+module tinox.core.fs
+
+namespace tinox.core.fs
+{
+    extern fn watchCreate() -> Int64
+    extern fn watchLastError() -> String
+    extern fn watchAdd(handle: Int64, path: String, recursive: Bool) -> String
+    extern fn watchRemove(handle: Int64, path: String)
+    extern fn watchPoll(handle: Int64, timeoutMs: Int64, debounceMs: Int64) -> List<String>
+    extern fn watchClose(handle: Int64)
+
+    /**
+     * Watches files and directories for changes (Linux inotify). Typical
+     * use is one task looping on poll():
+     *
+     *     const w = Watcher::create(50)
+     *     Watcher::watch(w, "/path/to/project", true)
+     *     while (running) {
+     *         for (e in Watcher::poll(w, 1000)) { ... }
+     *     }
+     *     Watcher::close(w)
+     *
+     * Recursive watches follow directories created later. Operations on one
+     * Watcher are serialised; poll() blocks only its own caller. Watches
+     * count against the kernel's fs.inotify.max_user_watches; hitting that
+     * limit is reported as an error from watch(), never silently ignored.
+     */
+    class Watcher
+    {
+        var handle: Int64
+        var debounceMs: Int64
+
+        /**
+         * debounceMs > 0 makes poll() keep collecting after the first event
+         * until the stream has been quiet for that long (at most one extra
+         * second), so a burst such as a git checkout arrives as one batch.
+         * Identical events within a batch are reported once.
+         */
+        fn create(debounceMs: Int64) -> Watcher
+        {
+            const handle: Int64 = watchCreate()
+            if (handle == 0)
+            {
+                throw watchLastError()
+            }
+            return Watcher { handle: handle, debounceMs: debounceMs }
+        }
+
+        /** Watches path (a file or a directory); recursive also covers every sub-directory. Throws a String if path cannot be watched. */
+        fn watch(w: Watcher, path: String, recursive: Bool) -> Nothing
+        {
+            const err: String = watchAdd(w.handle, path, recursive)
+            if (err != "")
+            {
+                throw err
+            }
+        }
+
+        /** Stops watching path and, if it is a directory, everything below it. */
+        fn unwatch(w: Watcher, path: String) -> Nothing
+        {
+            watchRemove(w.handle, path)
+        }
+
+        /**
+         * Waits up to timeoutMs (< 0 forever, 0 polls) for changes and returns
+         * them in order; an empty list means timeout. See WatchEvent for the
+         * event kinds, including the "overflow" rescan signal.
+         */
+        fn poll(w: Watcher, timeoutMs: Int64) -> List<WatchEvent>
+        {
+            const flat: List<String> = watchPoll(w.handle, timeoutMs, w.debounceMs)
+            var events: List<WatchEvent> = []
+            var i: Int64 = 0
+            while (i + 3 < flat.len())
+            {
+                events.push(WatchEvent { kind: flat[i], isDirectory: flat[i + 1] == "1", path: flat[i + 2], oldPath: flat[i + 3] })
+                i = i + 4
+            }
+            return events
+        }
+
+        /** Releases the inotify instance. Further use of the Watcher is a runtime error. */
+        fn close(w: Watcher) -> Nothing
+        {
+            watchClose(w.handle)
+        }
+    }
+}
