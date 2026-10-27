@@ -480,6 +480,8 @@ pub struct CodeGen {
     /// conflict, not a duplicate, and stays a hard compile error rather than
     /// silently keeping whichever one happened to be emitted first.
     declared_externs: HashMap<String, String>,
+    /// Source span of every user `extern fn`, to point conflict errors at it (issue #504).
+    extern_spans: HashMap<String, Span>,
     /// Set of all enum variant names (for bare-name match patterns)
     known_enum_variants: HashSet<String>,
     /// variant name → payload kind per argument ("String" | "Map" | "List" | "Other"),
@@ -708,6 +710,7 @@ impl CodeGen {
             generic_classes: HashMap::new(),
             generated_specializations: HashSet::new(),
             declared_externs: HashMap::new(),
+            extern_spans: HashMap::new(),
             known_enum_variants: HashSet::new(),
             enum_variant_payloads: HashMap::new(),
             known_enum_types: HashSet::new(),
@@ -1629,7 +1632,59 @@ impl CodeGen {
     }
 
     pub fn gen(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
-        self.gen_inner(source)
+        self.gen_inner(source)?;
+        self.reconcile_declares()
+    }
+
+    /// `symbol` and a comparable form of a `declare` line (without the
+    /// leading keyword): ABI extension attributes are not part of the identity.
+    fn declare_key(rest: &str) -> Option<(String, String)> {
+        let at = rest.find('@')?;
+        let paren = at + rest[at..].find('(')?;
+        let name = rest[at + 1..paren].to_string();
+        let norm = rest
+            .split_whitespace()
+            .filter(|t| *t != "zeroext" && *t != "signext")
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some((name, norm))
+    }
+
+    /// The compiler declares the runtime symbols it uses, and a user
+    /// `extern fn` may name one of them (issue #504). LLVM rejects a symbol
+    /// declared twice, so an identical later declaration is dropped, and a
+    /// different one is reported at the `extern fn` instead of surfacing as an
+    /// internal compiler error from the verifier.
+    fn reconcile_declares(&mut self) -> Result<(), ErrorBag> {
+        let mut seen: HashMap<String, String> = HashMap::new();
+        let mut errors = ErrorBag::new();
+        for buffer in 0..2 {
+            let text = std::mem::take(if buffer == 0 { &mut self.ir } else { &mut self.lambda_ir });
+            let mut out = String::with_capacity(text.len());
+            for line in text.split_inclusive('\n') {
+                if let Some((name, norm)) = line.strip_prefix("declare ").and_then(Self::declare_key) {
+                    match seen.get(&name) {
+                        None => {
+                            seen.insert(name, norm);
+                        }
+                        Some(prev) if *prev == norm => continue,
+                        Some(prev) => {
+                            if let Some(span) = self.extern_spans.get(&name) {
+                                errors.push(Error::new(
+                                    *span,
+                                    format!(
+                                        "extern fn `{name}` conflicts with the declaration the compiler already emits for that symbol: `declare {prev}` vs `declare {norm}`"
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+                out.push_str(line);
+            }
+            *(if buffer == 0 { &mut self.ir } else { &mut self.lambda_ir }) = out;
+        }
+        if errors.errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 
     /// Issue #429: a builtin that the type checker advertises but codegen
@@ -6167,6 +6222,7 @@ tr_done_{idx}:"#).unwrap();
                 return Ok(());
             }
             self.declared_externs.insert(f.name.clone(), declare_line.clone());
+            self.extern_spans.insert(f.name.clone(), f.span);
             writeln!(&mut self.ir, "{}", declare_line).unwrap();
             return Ok(());
         }
@@ -17401,13 +17457,17 @@ mod tests {
     }
 
     fn compile_to_ir(src: &str) -> String {
+        compile_to_ir_result(src).expect("codegen failed")
+    }
+
+    fn compile_to_ir_result(src: &str) -> Result<String, ErrorBag> {
         let mut lexer = Lexer::new(src);
         let tokens = lexer.tokenize().expect("lex failed");
         let mut parser = Parser::new(tokens);
         let ast = parser.parse().expect("parse failed");
         let mut cg = CodeGen::new();
-        cg.gen(&ast).expect("codegen failed");
-        cg.into_ir()
+        cg.gen(&ast)?;
+        Ok(cg.into_ir())
     }
 
     /// Mirrors `stamp_file_identity`/`stamp_file_identity_with` in
@@ -17663,6 +17723,16 @@ mod tests {
         let ir = compile_to_ir(src);
         let count = ir.matches("call i8* @tinox_int_to_string(i64").count();
         assert!(count >= 2, "expected both the [1]= write and the [1] read to stringify the key: {ir}");
+    }
+
+    #[test]
+    fn test_extern_redeclaring_a_codegen_declared_symbol_is_deduplicated() {
+        // Issue #504: identical -> one declare; different -> a clear error.
+        let ir = compile_to_ir("extern fn tinox_clock_nanos() -> Int64\nfn main() -> Int64 { return tinox_clock_nanos() }");
+        assert_eq!(ir.matches("declare i64 @tinox_clock_nanos()").count(), 1, "{ir}");
+        let ok = compile_to_ir_result("extern fn tinox_clock_nanos() -> Int32\nfn main() -> Int64 { return 0 }");
+        let err = ok.expect_err("conflicting signature must be rejected");
+        assert!(err.errors.iter().any(|e| e.message.contains("conflicts with the declaration the compiler already emits")), "{:?}", err.errors);
     }
 
     // --- DWARF debug info (issue #114) ---

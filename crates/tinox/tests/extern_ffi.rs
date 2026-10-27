@@ -141,3 +141,33 @@ fn extern_fn_rejects_types_without_a_c_representation() {
     check_fails("extern fn f() -> Int64?", "return type uses nullable types");
     check_fails("extern fn f(x: Nothing) -> Int64", "cannot be `Nothing`");
 }
+
+fn build_source(name: &str, source: &str) -> std::process::Output {
+    let d = std::env::temp_dir().join(format!("tinox_extern_redecl_{}_{}", name, std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("Main.tnx"), source).unwrap();
+    tinox().current_dir(&d).args(["build", "Main.tnx", "-o", "app"]).output().unwrap()
+}
+
+// Issue #504: the compiler declares the runtime symbols it uses itself; an
+// `extern fn` naming one of them used to reach LLVM as a second `declare` and
+// fail as an internal compiler error.
+#[test]
+fn extern_fn_may_redeclare_a_runtime_symbol_with_the_same_signature() {
+    let src = "extern fn tinox_clock_nanos() -> Int64\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        const a: Int64 = tinox_clock_nanos()\n        const b: Int64 = tinox_clock_nanos()\n        println((b >= a).toString())\n        return 0\n    }\n}\n";
+    let out = build_source("same", src);
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let run = Command::new(std::env::temp_dir().join(format!("tinox_extern_redecl_same_{}", std::process::id())).join("app")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "true");
+}
+
+#[test]
+fn extern_fn_with_a_different_signature_than_a_runtime_symbol_is_a_clear_error() {
+    let src = "extern fn tinox_clock_nanos() -> Int32\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        return tinox_clock_nanos()\n    }\n}\n";
+    let out = build_source("different", src);
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(!out.status.success());
+    assert!(text.contains("extern fn `tinox_clock_nanos` conflicts with the declaration the compiler already emits"), "{text}");
+    assert!(text.contains("declare i64 @tinox_clock_nanos()") && text.contains("declare i32 @tinox_clock_nanos()"), "both signatures are named: {text}");
+    assert!(!text.contains("internal compiler error"), "{text}");
+}
