@@ -1,4 +1,5 @@
 mod analysis;
+mod navigation;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -135,6 +136,10 @@ struct Backend {
     asts: DashMap<Url, SourceFile>,
     stdlib_registry: TypeRegistry,
     stdlib_asts: HashMap<String, SourceFile>,
+    /// Member names of every standard-library class (rename safety check).
+    stdlib_member_names: std::collections::HashSet<String>,
+    /// Whether the client can apply `RenameFile` workspace-edit operations.
+    client_renames_files: std::sync::atomic::AtomicBool,
 }
 
 impl Backend {
@@ -155,13 +160,68 @@ impl Backend {
                 }
             }
         }
+        let stdlib_member_names = stdlib_registry
+            .values()
+            .flat_map(|c| c.fields.iter().map(|f| f.name.clone()).chain(c.methods.iter().map(|m| m.name.clone())))
+            .collect();
         Self {
             client,
             docs: DashMap::new(),
             asts: DashMap::new(),
             stdlib_registry,
             stdlib_asts,
+            stdlib_member_names,
+            client_renames_files: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    fn nav_ctx(&self) -> navigation::Ctx {
+        navigation::Ctx { stdlib_member_names: self.stdlib_member_names.clone() }
+    }
+
+    /// Every `.tnx` file of the project containing `uri` (nearest
+    /// `tinox.toml` upwards; just the file's directory tree otherwise),
+    /// with open documents overriding what is on disk.
+    fn project_files(&self, uri: &Url) -> Vec<(Url, String)> {
+        let mut out: Vec<(Url, String)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        if let Ok(path) = uri.to_file_path() {
+            let dir = path.parent().unwrap_or(Path::new("."));
+            let root = find_project_root(dir).unwrap_or_else(|| dir.to_path_buf());
+            let mut stack = vec![root];
+            while let Some(d) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&d) else { continue };
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let Ok(ft) = entry.file_type() else { continue };
+                    if ft.is_dir() {
+                        if !name.starts_with('.') && name != "target" && name != "node_modules" {
+                            stack.push(p);
+                        }
+                    } else if ft.is_file() && p.extension().is_some_and(|e| e == "tnx") && out.len() < 5000 {
+                        if let Ok(u) = Url::from_file_path(&p) {
+                            let text = match self.docs.get(&u) {
+                                Some(t) => t.clone(),
+                                None => match std::fs::read_to_string(&p) {
+                                    Ok(t) => t,
+                                    Err(_) => continue,
+                                },
+                            };
+                            seen.insert(u.clone());
+                            out.push((u, text));
+                        }
+                    }
+                }
+            }
+        }
+        // open documents that are not on disk (untitled) or outside the tree
+        for entry in self.docs.iter() {
+            if !seen.contains(entry.key()) && (entry.key() == uri || entry.key().scheme() == "file") {
+                out.push((entry.key().clone(), entry.value().clone()));
+            }
+        }
+        out
     }
 }
 
@@ -516,7 +576,15 @@ fn compile(src: &str, file: Option<&str>, preludes: &[&SourceFile], on_ast: impl
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        let renames = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.workspace_edit.as_ref())
+            .and_then(|e| e.resource_operations.as_ref())
+            .is_some_and(|ops| ops.contains(&ResourceOperationKind::Rename));
+        self.client_renames_files.store(renames, std::sync::atomic::Ordering::Relaxed);
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -536,6 +604,12 @@ impl LanguageServer for Backend {
                 }),
                 definition_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -687,6 +761,80 @@ impl LanguageServer for Backend {
         let offset = lsp_pos_to_offset(&text, pos);
         let loc = definition_at(&ast, uri, offset);
         Ok(loc.map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn references(&self, p: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = &p.text_document_position.text_document.uri;
+        let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
+        let offset = lsp_pos_to_offset(&text, p.text_document_position.position) as usize;
+        let files = self.project_files(uri);
+        match navigation::references(&files, uri, offset, p.context.include_declaration, &self.nav_ctx()) {
+            Ok(locations) => Ok(Some(locations)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    async fn prepare_rename(&self, p: TextDocumentPositionParams) -> Result<Option<PrepareRenameResponse>> {
+        let uri = &p.text_document.uri;
+        let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
+        let offset = lsp_pos_to_offset(&text, p.position) as usize;
+        let files = self.project_files(uri);
+        match navigation::prepare_rename(&files, uri, offset, &self.nav_ctx()) {
+            Ok(r) => Ok(Some(PrepareRenameResponse::RangeWithPlaceholder { range: r.range, placeholder: r.placeholder })),
+            Err(message) => Err(tower_lsp::jsonrpc::Error::invalid_params(message)),
+        }
+    }
+
+    async fn rename(&self, p: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = &p.text_document_position.text_document.uri;
+        let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
+        let offset = lsp_pos_to_offset(&text, p.text_document_position.position) as usize;
+        let files = self.project_files(uri);
+        let result = navigation::rename(&files, uri, offset, &p.new_name, &self.nav_ctx())
+            .map_err(tower_lsp::jsonrpc::Error::invalid_params)?;
+        let text_edits = |edits: Vec<TextEdit>, uri: Url| TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+            edits: edits.into_iter().map(OneOf::Left).collect(),
+        };
+        match result.file_rename {
+            Some((old, new)) if self.client_renames_files.load(std::sync::atomic::Ordering::Relaxed) => {
+                // Edit first (old URI), then rename the file.
+                let mut ops: Vec<DocumentChangeOperation> = result
+                    .edits
+                    .into_iter()
+                    .map(|(u, e)| DocumentChangeOperation::Edit(text_edits(e, u)))
+                    .collect();
+                ops.push(DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
+                    old_uri: old,
+                    new_uri: new,
+                    options: None,
+                    annotation_id: None,
+                })));
+                Ok(Some(WorkspaceEdit { changes: None, document_changes: Some(DocumentChanges::Operations(ops)), change_annotations: None }))
+            }
+            other => {
+                if let Some((old, new)) = other {
+                    self.client
+                        .show_message(
+                            MessageType::WARNING,
+                            format!(
+                                "Tinox requires one type per file named like the type: rename {} to {} yourself (this editor cannot rename files through the language server).",
+                                old.path(),
+                                new.path()
+                            ),
+                        )
+                        .await;
+                }
+                Ok(Some(WorkspaceEdit { changes: Some(result.edits), document_changes: None, change_annotations: None }))
+            }
+        }
+    }
+
+    async fn symbol(&self, p: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
+        // Any open document locates the project; without one there is nothing to search.
+        let Some(any) = self.docs.iter().next().map(|e| e.key().clone()) else { return Ok(None) };
+        let files = self.project_files(&any);
+        Ok(Some(navigation::workspace_symbols(&files, &p.query)))
     }
 
     async fn document_symbol(

@@ -79,7 +79,8 @@ pub fn lsp_pos_to_offset(src: &str, pos: Position) -> u32 {
             line += 1;
             col = 0;
         } else {
-            col += 1;
+            // LSP columns count UTF-16 code units.
+            col += ch.len_utf16() as u32;
         }
         offset += ch.len_utf8() as u32;
     }
