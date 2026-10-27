@@ -47,63 +47,63 @@ pub enum DeclType {
 }
 
 #[derive(Debug, Clone)]
-struct Tok {
-    kind: TokenKind,
-    start: usize,
-    end: usize,
-    nl_before: bool,
+pub(crate) struct Tok {
+    pub(crate) kind: TokenKind,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) nl_before: bool,
 }
 
 impl Tok {
-    fn ident(&self) -> Option<&str> {
+    pub(crate) fn ident(&self) -> Option<&str> {
         match &self.kind {
             TokenKind::Ident(s) => Some(s),
             _ => None,
         }
     }
-    fn is(&self, k: &TokenKind) -> bool {
+    pub(crate) fn is(&self, k: &TokenKind) -> bool {
         &self.kind == k
     }
-    fn kw(&self, k: Keyword) -> bool {
+    pub(crate) fn kw(&self, k: Keyword) -> bool {
         self.kind == TokenKind::Keyword(k)
     }
 }
 
 #[derive(Debug, Clone)]
-struct DeclSite {
-    name: String,
-    kind: DeclType,
-    container: Option<String>,
-    tok: usize,
+pub(crate) struct DeclSite {
+    pub(crate) name: String,
+    pub(crate) kind: DeclType,
+    pub(crate) container: Option<String>,
+    pub(crate) tok: usize,
     /// Class-level annotation names of the declaring class (members only).
-    class_annotations: Vec<String>,
-    is_extern: bool,
+    pub(crate) class_annotations: Vec<String>,
+    pub(crate) is_extern: bool,
 }
 
 #[derive(Debug, Clone)]
-struct FnRange {
-    name_tok: usize,
+pub(crate) struct FnRange {
+    pub(crate) name_tok: usize,
     /// First token of the scope (the parameter list's `(`).
-    start: usize,
+    pub(crate) start: usize,
     /// Last token of the scope (body `}` or the parameter list's `)`).
-    end: usize,
+    pub(crate) end: usize,
 }
 
-struct FileIndex {
-    uri: Url,
-    text: String,
-    line_starts: Vec<usize>,
-    toks: Vec<Tok>,
-    decls: Vec<DeclSite>,
-    fns: Vec<FnRange>,
+pub(crate) struct FileIndex {
+    pub(crate) uri: Url,
+    pub(crate) text: String,
+    pub(crate) line_starts: Vec<usize>,
+    pub(crate) toks: Vec<Tok>,
+    pub(crate) decls: Vec<DeclSite>,
+    pub(crate) fns: Vec<FnRange>,
     /// Matching bracket index for `(`/`)`, `{`/`}`, `[`/`]`.
-    close_of: HashMap<usize, usize>,
-    open_of: HashMap<usize, usize>,
-    class_ranges: Vec<(String, usize, usize)>,
+    pub(crate) close_of: HashMap<usize, usize>,
+    pub(crate) open_of: HashMap<usize, usize>,
+    pub(crate) class_ranges: Vec<(String, usize, usize)>,
 }
 
 impl FileIndex {
-    fn build(uri: Url, text: String) -> Option<Self> {
+    pub(crate) fn build(uri: Url, text: String) -> Option<Self> {
         let raw = Lexer::new(&text).tokenize_with_trivia().ok()?;
         // The lexer reports character indices; everything here works on bytes.
         let byte_of = char_to_byte(&text);
@@ -148,7 +148,7 @@ impl FileIndex {
         Some(idx)
     }
 
-    fn match_brackets(&mut self) {
+    pub(crate) fn match_brackets(&mut self) {
         let mut stack: Vec<(usize, TokenKind)> = Vec::new();
         for (i, t) in self.toks.iter().enumerate() {
             match t.kind {
@@ -171,7 +171,7 @@ impl FileIndex {
         }
     }
 
-    fn annotations_before(&self, kw_idx: usize) -> Vec<String> {
+    pub(crate) fn annotations_before(&self, kw_idx: usize) -> Vec<String> {
         // `@Name` / `@Name(args)` groups directly in front of a declaration.
         let mut out = Vec::new();
         let mut i = kw_idx;
@@ -207,7 +207,7 @@ impl FileIndex {
         out
     }
 
-    fn scan_decls(&mut self) {
+    pub(crate) fn scan_decls(&mut self) {
         let n = self.toks.len();
         // Pass 1: types and their body ranges.
         let mut i = 0;
@@ -386,7 +386,7 @@ impl FileIndex {
         i
     }
 
-    fn innermost_class(&self, tok: usize) -> Option<String> {
+    pub(crate) fn innermost_class(&self, tok: usize) -> Option<String> {
         self.class_ranges
             .iter()
             .filter(|(_, o, c)| *o < tok && tok < *c)
@@ -394,18 +394,18 @@ impl FileIndex {
             .map(|(n, _, _)| n.clone())
     }
 
-    fn inside_fn_body(&self, tok: usize) -> bool {
+    pub(crate) fn inside_fn_body(&self, tok: usize) -> bool {
         self.fns.iter().any(|f| f.start < tok && tok <= f.end && self.toks[f.end].is(&TokenKind::RBrace) && f.name_tok != tok)
     }
 
-    fn innermost_fn(&self, tok: usize) -> Option<&FnRange> {
+    pub(crate) fn innermost_fn(&self, tok: usize) -> Option<&FnRange> {
         self.fns
             .iter()
             .filter(|f| f.start <= tok && tok <= f.end)
             .min_by_key(|f| f.end - f.start)
     }
 
-    fn position(&self, byte: usize) -> Position {
+    pub(crate) fn position(&self, byte: usize) -> Position {
         let line = match self.line_starts.binary_search(&byte) {
             Ok(l) => l,
             Err(l) => l - 1,
@@ -414,19 +414,19 @@ impl FileIndex {
         Position { line: line as u32, character: character as u32 }
     }
 
-    fn range(&self, tok: &Tok) -> Range {
+    pub(crate) fn range(&self, tok: &Tok) -> Range {
         Range { start: self.position(tok.start), end: self.position(tok.end) }
     }
 
-    fn prev(&self, i: usize) -> Option<&Tok> {
+    pub(crate) fn prev(&self, i: usize) -> Option<&Tok> {
         i.checked_sub(1).map(|p| &self.toks[p])
     }
 
-    fn next(&self, i: usize) -> Option<&Tok> {
+    pub(crate) fn next(&self, i: usize) -> Option<&Tok> {
         self.toks.get(i + 1)
     }
 
-    fn in_import_or_header(&self, i: usize) -> bool {
+    pub(crate) fn in_import_or_header(&self, i: usize) -> bool {
         // `import a.b.C` and `namespace`/`module` lines: walk back to line start.
         let mut j = i;
         while j > 0 && !self.toks[j].nl_before {
@@ -435,7 +435,7 @@ impl FileIndex {
         matches!(self.toks[j].kind, TokenKind::Keyword(Keyword::Import | Keyword::Module | Keyword::Namespace))
     }
 
-    fn is_import(&self, i: usize) -> bool {
+    pub(crate) fn is_import(&self, i: usize) -> bool {
         let mut j = i;
         while j > 0 && !self.toks[j].nl_before {
             j -= 1;
@@ -445,7 +445,7 @@ impl FileIndex {
 
     /// `Type { key: value, ... }` -- returns the literal's type name when
     /// token `i` is a key of a struct literal.
-    fn struct_literal_key_of(&self, i: usize) -> Option<String> {
+    pub(crate) fn struct_literal_key_of(&self, i: usize) -> Option<String> {
         let next = self.next(i)?;
         if !next.is(&TokenKind::Colon) {
             return None;
@@ -482,7 +482,7 @@ impl FileIndex {
 }
 
 /// `table[i]` is the byte offset of character `i` (one extra entry for the end).
-fn char_to_byte(text: &str) -> Vec<usize> {
+pub(crate) fn char_to_byte(text: &str) -> Vec<usize> {
     let mut v: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
     v.push(text.len());
     v
@@ -602,7 +602,7 @@ fn resolve<'a>(files: &'a [FileIndex], at: &Url, offset: usize) -> Result<Target
 
 /// Number of declarations of `name` inside a function scope: parameters,
 /// `var/val/let/const`, `for x in`, `catch (x:`, and lambda parameters.
-fn local_decl_count(f: &FileIndex, func: &FnRange, name: &str) -> usize {
+pub(crate) fn local_decl_count(f: &FileIndex, func: &FnRange, name: &str) -> usize {
     let mut count = 0;
     for i in func.start..=func.end.min(f.toks.len() - 1) {
         if f.toks[i].ident() != Some(name) {

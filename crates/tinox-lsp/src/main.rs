@@ -1,6 +1,7 @@
 mod analysis;
 mod formatting;
 mod navigation;
+mod semantic;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -141,6 +142,9 @@ struct Backend {
     stdlib_member_names: std::collections::HashSet<String>,
     /// Whether the client can apply `RenameFile` workspace-edit operations.
     client_renames_files: std::sync::atomic::AtomicBool,
+    /// Last semantic-token answer per document, for `full/delta`.
+    semantic_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
+    semantic_counter: std::sync::atomic::AtomicU64,
 }
 
 impl Backend {
@@ -173,7 +177,19 @@ impl Backend {
             stdlib_asts,
             stdlib_member_names,
             client_renames_files: std::sync::atomic::AtomicBool::new(false),
+            semantic_cache: DashMap::new(),
+            semantic_counter: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Fresh semantic tokens for `uri`, remembered under a new result id.
+    fn semantic_for(&self, uri: &Url) -> Option<(String, Vec<SemanticToken>)> {
+        let text = self.docs.get(uri)?.clone();
+        let types = self.stdlib_registry.keys().cloned().collect();
+        let tokens = semantic::encode(&semantic::compute(&text, uri, &types)?);
+        let id = self.semantic_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string();
+        self.semantic_cache.insert(uri.clone(), (id.clone(), tokens.clone()));
+        Some((id, tokens))
     }
 
     fn nav_ctx(&self) -> navigation::Ctx {
@@ -611,6 +627,12 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 })),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                    work_done_progress_options: Default::default(),
+                    legend: semantic::legend(),
+                    range: Some(true),
+                    full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
+                })),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
@@ -653,6 +675,7 @@ impl LanguageServer for Backend {
     async fn did_close(&self, p: DidCloseTextDocumentParams) {
         self.docs.remove(&p.text_document.uri);
         self.asts.remove(&p.text_document.uri);
+        self.semantic_cache.remove(&p.text_document.uri);
     }
 
     async fn hover(&self, p: HoverParams) -> Result<Option<Hover>> {
@@ -848,6 +871,36 @@ impl LanguageServer for Backend {
     async fn range_formatting(&self, p: DocumentRangeFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let Some(text) = self.docs.get(&p.text_document.uri).map(|t| t.clone()) else { return Ok(None) };
         formatting::format_range_edits(&text, p.range).map(Some).map_err(format_failed)
+    }
+
+    async fn semantic_tokens_full(&self, p: SemanticTokensParams) -> Result<Option<SemanticTokensResult>> {
+        let uri = p.text_document.uri;
+        let Some((id, tokens)) = self.semantic_for(&uri) else { return Ok(None) };
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: Some(id), data: tokens })))
+    }
+
+    async fn semantic_tokens_full_delta(&self, p: SemanticTokensDeltaParams) -> Result<Option<SemanticTokensFullDeltaResult>> {
+        let uri = p.text_document.uri;
+        let previous = self.semantic_cache.get(&uri).filter(|c| c.0 == p.previous_result_id).map(|c| c.1.clone());
+        let Some((id, tokens)) = self.semantic_for(&uri) else { return Ok(None) };
+        Ok(Some(match previous {
+            Some(old) => {
+                let edits = semantic::delta(&old, &tokens)
+                    .map(|(start, delete_count, data)| vec![SemanticTokensEdit { start, delete_count, data: Some(data) }])
+                    .unwrap_or_default();
+                SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta { result_id: Some(id), edits })
+            }
+            None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens { result_id: Some(id), data: tokens }),
+        }))
+    }
+
+    async fn semantic_tokens_range(&self, p: SemanticTokensRangeParams) -> Result<Option<SemanticTokensRangeResult>> {
+        let Some(text) = self.docs.get(&p.text_document.uri).map(|t| t.clone()) else { return Ok(None) };
+        let types = self.stdlib_registry.keys().cloned().collect();
+        let Some(all) = semantic::compute(&text, &p.text_document.uri, &types) else { return Ok(None) };
+        let part = semantic::in_range(&all, p.range.start.line, p.range.end.line);
+        // relative encoding restarts at the first returned token
+        Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens { result_id: None, data: semantic::encode(&part) })))
     }
 
     async fn document_symbol(
