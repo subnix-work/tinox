@@ -832,7 +832,7 @@ go stale here.
 
 ### Raw SQL: `DB::raw`
 
-`DB::raw(sql, params)` (`tinox.core.db`, unreleased; in the package after 1.1.0) runs one parameterized
+`DB::raw(sql, params)` (package `tinox.core.db` 1.2.0) runs one parameterized
 statement for queries the ORM DSL cannot express (for example a pgvector
 `ORDER BY embedding <-> $1`):
 
