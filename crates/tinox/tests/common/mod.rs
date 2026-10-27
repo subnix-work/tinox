@@ -1,4 +1,6 @@
 //! Shared helpers for the golden-test harnesses (e2e.rs, matrix.rs).
+//! (Real-Postgres-via-docker tests have their own `pg_common.rs` sibling
+//! module instead of living here — see its doc comment for why.)
 
 use std::fs;
 use std::path::{Path, PathBuf};

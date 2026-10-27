@@ -1891,6 +1891,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_db_error(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8** @tinox_params_alloc(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_params_set(i8**, i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_db_result_to_row_maps(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_int_to_param(i64)").unwrap();
         // float math builtins
         writeln!(&mut self.ir, "declare double @log(double)").unwrap();
@@ -7428,6 +7429,76 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir, "{ok_bb}:").unwrap();
     }
 
+    /// `DB::raw(sql, params)` — arbitrary parameterized SQL against the pool.
+    /// Unlike `gen_orm_query`, there's no static entity schema to generate a
+    /// `_fromRow`-style function from, so row marshaling (Postgres result ->
+    /// `List<Map<String,String>>`) happens in one C runtime helper
+    /// (`tinox_db_result_to_row_maps`) rather than a hand-emitted nested
+    /// row/column loop here. The params side (`List<String>` -> `char**`)
+    /// DOES stay in codegen, mirroring the row loop `gen_orm_query`'s "list"
+    /// terminal already emits (5652-5680 above) — the existing
+    /// `tinox_array_get`/`tinox_params_set` primitives are already exactly
+    /// what's needed, no new runtime function earns its keep there.
+    fn gen_orm_raw(
+        &mut self,
+        sql_arg: &Expr,
+        params_arg: &Expr,
+        ctx: &mut GenCtx,
+    ) -> Result<(String, String), ErrorBag> {
+        let (sql_val, _sql_ty) = self.gen_expr(sql_arg, ctx)?;
+        let (params_val, _params_ty) = self.gen_expr(params_arg, ctx)?;
+
+        let n_params = self.emit_array_len(&params_val);
+        let params_arr = self.temp();
+        writeln!(&mut self.ir, "  {params_arr} = call i8** @tinox_params_alloc(i64 {n_params})").unwrap();
+
+        // Loop: i = 0; while i < n_params { params_arr[i] = params[i]; i++ }
+        let loop_bb = self.new_bb("raw_params_loop");
+        let body_bb = self.new_bb("raw_params_body");
+        let exit_bb = self.new_bb("raw_params_exit");
+
+        let idx_alloc = self.temp();
+        writeln!(&mut self.ir, "  {idx_alloc} = alloca i64").unwrap();
+        writeln!(&mut self.ir, "  store i64 0, i64* {idx_alloc}").unwrap();
+        writeln!(&mut self.ir, "  br label %{loop_bb}").unwrap();
+        writeln!(&mut self.ir, "{loop_bb}:").unwrap();
+        let cur_i = self.temp();
+        writeln!(&mut self.ir, "  {cur_i} = load i64, i64* {idx_alloc}").unwrap();
+        let cond = self.temp();
+        writeln!(&mut self.ir, "  {cond} = icmp slt i64 {cur_i}, {n_params}").unwrap();
+        writeln!(&mut self.ir, "  br i1 {cond}, label %{body_bb}, label %{exit_bb}").unwrap();
+        writeln!(&mut self.ir, "{body_bb}:").unwrap();
+
+        let elem_i64 = self.temp();
+        writeln!(&mut self.ir, "  {elem_i64} = call i64 @tinox_array_get(i64* {params_val}, i64 {cur_i})").unwrap();
+        let elem_ptr = self.temp();
+        writeln!(&mut self.ir, "  {elem_ptr} = inttoptr i64 {elem_i64} to i8*").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {params_arr}, i64 {cur_i}, i8* {elem_ptr})").unwrap();
+        let next_i = self.temp();
+        writeln!(&mut self.ir, "  {next_i} = add i64 {cur_i}, 1").unwrap();
+        writeln!(&mut self.ir, "  store i64 {next_i}, i64* {idx_alloc}").unwrap();
+        writeln!(&mut self.ir, "  br label %{loop_bb}").unwrap();
+        writeln!(&mut self.ir, "{exit_bb}:").unwrap();
+
+        let conn_reg = self.temp();
+        let result_reg = self.temp();
+        writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
+        writeln!(
+            &mut self.ir,
+            "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_val}, i8** {params_arr}, i64 {n_params})"
+        )
+        .unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
+        // A failed statement aborts visibly instead of yielding an empty list.
+        self.emit_orm_failure_check(&result_reg, "DB::raw", "tinox_orm_query_failed");
+
+        let rows = self.temp();
+        writeln!(&mut self.ir, "  {rows} = call i64* @tinox_db_result_to_row_maps(i8* {result_reg})").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+
+        Ok((rows, "i64*".to_string()))
+    }
+
     /// Emit SQL-constant getter functions and row-mapping helpers for all @Entity classes.
     fn emit_entity_code(&mut self) {
         // Emit DB init via @llvm.global_ctors if a connection URL is configured
@@ -11917,6 +11988,16 @@ tr_done_{idx}:"#).unwrap();
                 type_args,
                 args,
             } => {
+                // `DB::raw(sql, params)` — raw-SQL escape hatch, hangs
+                // directly off `DB` (no `DB::of(...)` chain to unwind).
+                // It has real static types (String / List<String> ->
+                // List<Map<String,String>>); it is recognized here only to
+                // swap the never-executed stub body for real SQL execution,
+                // the same reason save/delete are special-cased.
+                if enum_name == "DB" && variant == "raw" && args.len() == 2 {
+                    let (sql_arg, params_arg) = (args[0].clone(), args[1].clone());
+                    return self.gen_orm_raw(&sql_arg, &params_arg, ctx);
+                }
                 // Resolve the type-parameter alias: inside a
                 // specialization, `T::fromJson` is a call on the bound
                 // class.

@@ -3743,6 +3743,138 @@ fn has_class_named_main(decls: &[tinox_parser::Decl]) -> bool {
     })
 }
 
+/// Whether `expr` is itself a `DB::raw(...)` call — deliberately mirrors
+/// `gen_orm_raw`'s own interception shape in `tinox-codegen/src/codegen.rs`
+/// (`obj == Ident("DB") && method == "raw"`) so this compile-time gate and
+/// what codegen actually intercepts can never disagree.
+fn expr_is_db_raw_call(expr: &tinox_parser::Expr) -> bool {
+    matches!(&expr.node, tinox_parser::ExprKind::EnumValue { enum_name, variant, .. }
+        if enum_name == "DB" && variant == "raw")
+}
+
+/// Finds any `DB::raw(...)` call anywhere in a method body, no matter how
+/// deeply nested (inside a lambda, match arm, try/catch, loop, ...).
+/// Exhaustive over every `ExprKind`/`StmtKind` variant, mirroring
+/// `callgraph.rs`'s `walk_stmt`/`walk_expr` (built for a different purpose —
+/// call-graph edges — but the same full-coverage shape), simplified to a
+/// plain boolean short-circuit since call-target resolution isn't needed
+/// here, only "does a `DB::raw` call exist anywhere in this body".
+fn stmt_uses_db_raw(stmt: &tinox_parser::Stmt) -> bool {
+    use tinox_parser::StmtKind;
+    match &stmt.node {
+        StmtKind::Expr(e) => expr_uses_db_raw(e),
+        StmtKind::Let { value, .. } | StmtKind::Var { value, .. } => {
+            value.as_ref().is_some_and(expr_uses_db_raw)
+        }
+        StmtKind::Assignment { target, value } => expr_uses_db_raw(target) || expr_uses_db_raw(value),
+        StmtKind::If { cond, then_branch, else_branch } => {
+            expr_uses_db_raw(cond)
+                || stmt_uses_db_raw(then_branch)
+                || else_branch.as_deref().is_some_and(stmt_uses_db_raw)
+        }
+        StmtKind::While { cond, body } => expr_uses_db_raw(cond) || stmt_uses_db_raw(body),
+        StmtKind::For { iter, body, .. } => expr_uses_db_raw(iter) || stmt_uses_db_raw(body),
+        StmtKind::ForC { init, cond, update, body } => {
+            init.as_deref().is_some_and(stmt_uses_db_raw)
+                || cond.as_ref().is_some_and(expr_uses_db_raw)
+                || update.as_ref().is_some_and(expr_uses_db_raw)
+                || stmt_uses_db_raw(body)
+        }
+        StmtKind::Loop { body } => stmt_uses_db_raw(body),
+        StmtKind::Return(e) => e.as_ref().is_some_and(expr_uses_db_raw),
+        StmtKind::Throw(e) => expr_uses_db_raw(e),
+        StmtKind::Try { body, catches, finally } => {
+            stmt_uses_db_raw(body)
+                || catches.iter().any(|c| stmt_uses_db_raw(&c.body))
+                || finally.as_deref().is_some_and(stmt_uses_db_raw)
+        }
+        StmtKind::Defer(inner) => stmt_uses_db_raw(inner),
+        StmtKind::Block(stmts) => stmts.iter().any(stmt_uses_db_raw),
+        StmtKind::Select { arms, default } => {
+            arms.iter().any(|a| expr_uses_db_raw(&a.channel) || stmt_uses_db_raw(&a.body))
+                || default.as_deref().is_some_and(stmt_uses_db_raw)
+        }
+        StmtKind::Break | StmtKind::Continue | StmtKind::Empty => false,
+    }
+}
+
+fn expr_uses_db_raw(expr: &tinox_parser::Expr) -> bool {
+    use tinox_parser::ExprKind;
+    if expr_is_db_raw_call(expr) {
+        return true;
+    }
+    match &expr.node {
+        ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::This | ExprKind::Break
+        | ExprKind::Continue | ExprKind::Channel => false,
+        ExprKind::ArrayLiteral(items) | ExprKind::Tuple(items) => items.iter().any(expr_uses_db_raw),
+        ExprKind::MapLiteral(pairs) => pairs.iter().any(|(k, v)| expr_uses_db_raw(k) || expr_uses_db_raw(v)),
+        ExprKind::Binary { lhs, rhs, .. } => expr_uses_db_raw(lhs) || expr_uses_db_raw(rhs),
+        ExprKind::Unary { operand, .. } => expr_uses_db_raw(operand),
+        ExprKind::Call { func, args } => expr_uses_db_raw(func) || args.iter().any(expr_uses_db_raw),
+        ExprKind::MethodCall { obj, args, .. } => expr_uses_db_raw(obj) || args.iter().any(expr_uses_db_raw),
+        ExprKind::Index { obj, index } => expr_uses_db_raw(obj) || expr_uses_db_raw(index),
+        ExprKind::FieldAccess { obj, .. } => expr_uses_db_raw(obj),
+        ExprKind::SuperCall { args, .. } => args.iter().any(expr_uses_db_raw),
+        ExprKind::New { args, .. } => args.iter().any(expr_uses_db_raw),
+        ExprKind::StructLiteral { fields, .. } => fields.iter().any(|(_, v)| expr_uses_db_raw(v)),
+        ExprKind::Block(stmts) => stmts.iter().any(stmt_uses_db_raw),
+        ExprKind::If { cond, then_branch, else_branch } => {
+            expr_uses_db_raw(cond)
+                || expr_uses_db_raw(then_branch)
+                || else_branch.as_deref().is_some_and(expr_uses_db_raw)
+        }
+        ExprKind::While { cond, body } => expr_uses_db_raw(cond) || expr_uses_db_raw(body),
+        ExprKind::For { iter, body, .. } => expr_uses_db_raw(iter) || expr_uses_db_raw(body),
+        ExprKind::Loop { body } => expr_uses_db_raw(body),
+        ExprKind::Match { expr: scrutinee, cases } => {
+            expr_uses_db_raw(scrutinee)
+                || cases.iter().any(|c| c.guard.as_ref().is_some_and(expr_uses_db_raw) || expr_uses_db_raw(&c.body))
+        }
+        ExprKind::Return(e) => e.as_deref().is_some_and(expr_uses_db_raw),
+        ExprKind::Throw(e) => expr_uses_db_raw(e),
+        ExprKind::Try { body, catches, finally } => {
+            expr_uses_db_raw(body)
+                || catches.iter().any(|c| stmt_uses_db_raw(&c.body))
+                || finally.as_deref().is_some_and(expr_uses_db_raw)
+        }
+        ExprKind::Assign { target, value } | ExprKind::CompoundAssign { target, value, .. } => {
+            expr_uses_db_raw(target) || expr_uses_db_raw(value)
+        }
+        ExprKind::Lambda { body, .. } => expr_uses_db_raw(body),
+        ExprKind::Spawn(e) | ExprKind::Await(e) | ExprKind::Recv(e) => expr_uses_db_raw(e),
+        ExprKind::Send { channel, value } => expr_uses_db_raw(channel) || expr_uses_db_raw(value),
+        ExprKind::Cast { expr: inner, .. } | ExprKind::Is { expr: inner, .. } => expr_uses_db_raw(inner),
+        ExprKind::Range { start, end, .. } => expr_uses_db_raw(start) || expr_uses_db_raw(end),
+        ExprKind::TupleIndex { tuple, .. } => expr_uses_db_raw(tuple),
+        ExprKind::EnumValue { args, .. } => args.iter().any(expr_uses_db_raw),
+    }
+}
+
+/// First `(class, method)` anywhere in the program with a `DB::raw(...)` call
+/// in its body, if any — used only for the postgres-only compile-time gate
+/// below, mirroring how `has_class_named_main` walks `Class`/`Namespace`
+/// decls.
+fn find_db_raw_usage(decls: &[tinox_parser::Decl]) -> Option<(String, String)> {
+    for d in decls {
+        match &d.node {
+            DeclKind::Class(c) => {
+                for m in &c.methods {
+                    if stmt_uses_db_raw(&m.body) {
+                        return Some((c.name.clone(), m.name.clone()));
+                    }
+                }
+            }
+            DeclKind::Namespace(ns) => {
+                if let Some(found) = find_db_raw_usage(&ns.decls) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Issue #149 stage 3: hard-enforces "no top-level `fn` with a body" — the
 /// language has no implicit global function namespace anymore, every
 /// function must be a class method (`fn`/`fnc`). Mirrors
@@ -4596,6 +4728,21 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
             return Err(annotation_error(&[class_name.as_str()], format!(
                 "'{class_name}.{method_name}' is @Transactional, but [database] driver is {} -- \
                  @Transactional is only supported for driver = \"postgres\" in this version",
+                if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
+            )));
+        }
+    }
+    // DB::raw(...) is postgres-only in v1, same reasoning and same check shape
+    // as @Transactional above (its connection-pool/PQexecParams machinery only
+    // exists for that driver). `DB::raw` is a plain call expression, not an
+    // annotation, so it is found with a dedicated AST walk.
+    if let Some((class_name, method_name)) = find_db_raw_usage(&ast.decls) {
+        let driver_cfg = read_database_config();
+        let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
+        if driver != "postgres" {
+            return Err(annotation_error(&[class_name.as_str()], format!(
+                "'{class_name}.{method_name}' calls DB::raw(...), but [database] driver is {} -- \
+                 DB::raw(...) is only supported for driver = \"postgres\" in this version",
                 if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
             )));
         }

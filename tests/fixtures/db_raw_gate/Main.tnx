@@ -1,0 +1,11 @@
+import Thing
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        let t = new Thing()
+        t.doit()
+        return 0
+    }
+}
