@@ -4884,13 +4884,12 @@ impl TypeChecker {
         // Every inferred numeric type is exact or wider than the real one
         // (operands promote upwards, literals adopt the other operand's type),
         // and erased generics are `Any`, which is never checked. So the
-        // conversion rules apply to all of these, not just names. Call results
-        // stay unchecked: downstream code returns `Int64` from `Int32` entry
-        // points (`return app.run()`), which is a migration of its own.
+        // conversion rules apply to all of these, not just names.
         let precise = |e: &Expr| -> bool {
             match &e.node {
                 ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::Cast { .. }
-                | ExprKind::FieldAccess { .. } | ExprKind::Index { .. } => true,
+                | ExprKind::FieldAccess { .. } | ExprKind::Index { .. }
+                | ExprKind::Call { .. } | ExprKind::MethodCall { .. } => true,
                 ExprKind::Binary { op, .. } => matches!(op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod),
                 ExprKind::Unary { op: UnaryOp::Neg, operand } => matches!(operand.node, ExprKind::Literal(_) | ExprKind::Ident(_)),
                 _ => false,
@@ -7485,6 +7484,8 @@ return 0 }");
         ok("fn f(a: Int32, b: Int32) { const c: Int32 = a + b }");
         err_contains("fn f() { const u: UInt64 = 18446744073709551615\n const i: Int64 = u }", "may lose data");
         ok("fn f() { const u: UInt64 = 18446744073709551615 }");
+        err_contains("fn g() -> Int64 { return 1 }\nfn f() { const c: Int32 = g() }", "may lose data");
+        ok("fn g() -> Int32 { return 1 }\nfn f() { const c: Int64 = g() }");
     }
 
     #[test]
