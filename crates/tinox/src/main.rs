@@ -9,6 +9,7 @@ use tinox_lexer::Lexer;
 use tinox_parser::{DeclKind, Formatter, Parser};
 
 mod callgraph;
+mod dap;
 mod contract;
 mod dockerfile;
 mod migrate;
@@ -60,6 +61,7 @@ fn run() {
         "run"   => run_file(&args[2..]),
         "dev"   => dev_mode(&args[2..]),
         "test"  => run_tests(&args[2..]),
+        "dap"   => dap::run(&args[2..]),
         "doc"   => gen_docs(&args[2..]),
         "reference" => {
             if let Err(e) = reference::run(&args[2..]) {
@@ -127,6 +129,7 @@ fn print_help() {
     println!("  tinox run   [file]         Compile and run (uses tinox.toml if no file)");
     println!("  tinox dev   [file]         Dev mode: hot-reload on file changes");
     println!("  tinox test  [file]         Run all @Test-annotated methods");
+    println!("  tinox dap [--check|--launch-json [exe]]  Debug adapter: gdb --interpreter=dap with Tinox defaults");
     println!("  tinox test --watch         Re-run tests on file changes (TDD mode)");
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox reference [path]     Export compiler reference metadata as JSON");
@@ -5113,6 +5116,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
 
     let _backend_stage = tinox_common::frontend::Stage::new("backend");
     let mut codegen = CodeGen::new();
+    codegen.set_debug_variables(opt == OptLevel::Debug);
     codegen.set_expr_value_types(checked.expr_types);
     codegen.set_semantic_facts(checked.semantics);
     codegen.set_interface_info(iface_methods, class_implements);

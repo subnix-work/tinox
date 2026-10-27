@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=compiler /build/target/release/tinox /usr/local/bin/tinox
 COPY --from=compiler /build/runtime/runtime.c /usr/share/tinox/runtime.c
 COPY --from=compiler /build/runtime/runtime.h /usr/share/tinox/runtime.h
+COPY --from=compiler /build/runtime/tinox-gdb.py /usr/share/tinox/tinox-gdb.py
 COPY --from=compiler /build/crates/tinox-core /usr/share/tinox/core
 # Fail the image build, not a user's later build, if the tools tinox shells out
 # to aren't reachable under the unversioned names it invokes.
