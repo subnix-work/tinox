@@ -62,6 +62,41 @@ fn breakpoint_on_a_body_line_and_stepping_follow_the_source() {
     assert_eq!(&numbers[..5], &[9, 10, 7, 9, 10], "unexpected stepping order: {out}");
     // the backtrace names the line, not only the function
     let bt = gdb(&d, &exe, &["break Main.tnx:10", "run", "bt 2"]);
-    assert!(bt.contains("Main.work () at Main.tnx:10"), "{bt}");
+    assert!(bt.contains("Main.work (n=4) at Main.tnx:10"), "{bt}");
     assert!(bt.contains("Main.main ()") && bt.contains("Main.tnx:17"), "caller frame must show its call line: {bt}");
+}
+
+#[test]
+fn arguments_and_locals_show_with_their_values() {
+    if !gdb_available() {
+        eprintln!("SKIP: gdb not installed");
+        return;
+    }
+    let (d, exe) = build_debug("locals", &[("Main.tnx", MAIN)]);
+    let out = gdb(&d, &exe, &["break Main.tnx:9", "run", "info args", "info locals", "next", "next", "next", "print total", "print i", "up", "info locals"]);
+    assert!(out.contains("Main.work (n=4)"), "frame line shows the argument: {out}");
+    assert!(out.contains("n = 4"), "{out}");
+    assert!(out.contains("total = 0") && out.contains("i = 0"), "locals before the first iteration: {out}");
+    // after one pass through the loop body: total = 0 + 0, i = 1
+    assert!(out.contains("$1 = 0") && out.contains("$2 = 1"), "values advance with execution: {out}");
+    // the caller frame lists its own locals, including the declared one
+    let up = out.split("up").last().unwrap_or("");
+    assert!(out.contains("sum = ") || up.contains("sum"), "caller local missing: {out}");
+}
+
+#[test]
+fn release_builds_carry_no_variable_info() {
+    let d = std::env::temp_dir().join(format!("tinox_dbginfo_release_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("tinox.toml"), format!("[package]\ncompiler = \"{}\"\nname = \"r\"\nversion = \"0.1.0\"\n", env!("CARGO_PKG_VERSION"))).unwrap();
+    std::fs::write(d.join("Main.tnx"), MAIN).unwrap();
+    let exe = d.join("app");
+    let out = Command::new(env!("CARGO_BIN_EXE_tinox")).current_dir(&d).args(["build", "Main.tnx", "-o", exe.to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success());
+    if let Ok(dump) = Command::new("readelf").arg("--debug-dump=info").arg(&exe).output() {
+        let text = String::from_utf8_lossy(&dump.stdout);
+        assert!(text.contains("DW_TAG_subprogram"), "function-level info stays in release builds");
+        assert!(!text.contains("DW_TAG_variable") && !text.contains("DW_TAG_formal_parameter"), "release builds must not describe variables");
+    }
 }
