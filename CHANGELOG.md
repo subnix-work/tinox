@@ -10,6 +10,8 @@ All notable changes to Tinox are documented in this file.
   C/C++ sources (`libs`, `lib_dirs`, `rpath`, `pkg_config`, `objects`, `sources`,
   `cflags`). Sources are compiled into `.tinox/native/` with header dependency
   tracking; changed libraries and objects invalidate the application build cache.
+- **`[native.test]`** (#506): overrides keys of `[native]` for `tinox test` only, so tests can
+  link a test double of a native library; the rest is inherited.
 - **`extern fn` C ABI specified and tested** (#486): `Bool`/`Int8`/`Int16`/`UInt8`/`UInt16`
   parameters and returns carry `zeroext`/`signext`; function types, tuples, nullable
   types, `Channel`/`Task` and `Nothing` parameters are rejected at compile time; type
