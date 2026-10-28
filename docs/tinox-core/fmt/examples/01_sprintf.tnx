@@ -1,0 +1,11 @@
+import tinox.core.fmt
+class Main
+{
+    fnc main() -> Int32
+    {
+        const msg: String = Fmt::sprintf("Hello %s, you are %d years old", ["Alice", "30"])
+        println(msg)
+        Fmt::printlnf("balance: $%s (0x%x)", ["42", "255"])
+        return 0
+    }
+}

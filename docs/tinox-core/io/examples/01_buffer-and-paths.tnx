@@ -1,0 +1,16 @@
+import tinox.core.io
+class Main
+{
+    fnc main() -> Int32
+    {
+        const buf: Buffer = Buffer::new()
+        buf.appendLine("first line")
+        buf.append("second")
+        println(buf.toString())
+        Io::printHeader("Paths")
+        println(Paths::getExtension("archive.tar.gz"))
+        println(Paths::getFileName("/var/log/app.log"))
+        println(Paths::join("/var/log", "app.log"))
+        return 0
+    }
+}

@@ -1,0 +1,76 @@
+// Pipe-mode child: waitReadable follows stdout+stderr together, terminate()
+// reaches the whole process group, kill() takes down grandchildren, and a
+// finished child cannot be signalled.
+// expect: first-mask=1
+// expect: out=hello
+// expect: second-mask=2
+// expect: err=oops
+// expect: idle-mask=0
+// expect: terminated=true
+// expect: sigterm-exit=-15
+// expect: grandchild-gone=true
+// expect: signal-after-exit=false
+// expect: kill-grandchild-gone=true
+// expect: eof-mask=4
+import tinox.core.process
+
+class Main
+{
+    fnc alive(pid: String) -> Bool {
+        const r = Process::run(["kill", "-0", pid], 5000, "")
+        return r.exitCode == 0
+    }
+
+    fnc main() -> Int32 {
+        // 1. Ordered stdout / stderr readiness.
+        const p = InteractiveProcess::startPiped(["sh", "-c", "echo hello; sleep 0.3; echo oops >&2; sleep 0.3"], "", [])
+        println("first-mask=" + InteractiveProcess::waitReadable(p, 5000).toString())
+        println("out=" + InteractiveProcess::readLine(p, 0).trim())
+        println("second-mask=" + InteractiveProcess::waitReadable(p, 5000).toString())
+        println("err=" + InteractiveProcess::readStderr(p, 0).trim())
+        println("idle-mask=" + InteractiveProcess::waitReadable(p, 20).toString())
+        InteractiveProcess::kill(p)
+
+        // 2. terminate() reaches a grandchild through the process group.
+        const g = InteractiveProcess::startPiped(["sh", "-c", "sleep 300 & echo $!; wait"], "", [])
+        const gpid: String = InteractiveProcess::readLine(g, 5000).trim()
+        println("terminated=" + InteractiveProcess::terminate(g).toString())
+        var waited: Int64 = 0
+        while (InteractiveProcess::isAlive(g) && waited < 5000) {
+            sleep(20)
+            waited = waited + 20
+        }
+        println("sigterm-exit=" + InteractiveProcess::exitCode(g).toString())
+        var tries: Int64 = 0
+        while (Main::alive(gpid) && tries < 100) {
+            sleep(20)
+            tries = tries + 1
+        }
+        println("grandchild-gone=" + (!Main::alive(gpid)).toString())
+        println("signal-after-exit=" + InteractiveProcess::signal(g, 15).toString())
+        InteractiveProcess::kill(g)
+
+        // 3. kill() takes the whole group down while the leader is alive.
+        const k = InteractiveProcess::startPiped(["sh", "-c", "(trap '' TERM; sleep 300) & echo $!; wait"], "", [])
+        const kpid: String = InteractiveProcess::readLine(k, 5000).trim()
+        InteractiveProcess::kill(k)
+        var kt: Int64 = 0
+        while (Main::alive(kpid) && kt < 100) {
+            sleep(20)
+            kt = kt + 1
+        }
+        println("kill-grandchild-gone=" + (!Main::alive(kpid)).toString())
+
+        // 4. EOF on both streams.
+        const e = InteractiveProcess::startPiped(["true"], "", [])
+        var mask: Int64 = 0
+        var spins: Int64 = 0
+        while (mask != 4 && spins < 100) {
+            mask = InteractiveProcess::waitReadable(e, 200)
+            spins = spins + 1
+        }
+        println("eof-mask=" + mask.toString())
+        InteractiveProcess::kill(e)
+        return 0
+    }
+}

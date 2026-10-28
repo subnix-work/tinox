@@ -1,0 +1,23 @@
+import tinox.core.set
+class Main
+{
+    fnc main() -> Int32
+    {
+        const a: Set<Int64> = Set<Int64>::new()
+        Set::add(a, 1)
+        Set::add(a, 2)
+        Set::add(a, 3)
+        const b: Set<Int64> = Set<Int64>::new()
+        Set::add(b, 2)
+        Set::add(b, 3)
+        Set::add(b, 4)
+        println("a contains 2: " + Set::contains(a, 2).toString())
+        const union: Set<Int64> = Set::union(a, b)
+        println("union size: " + Set::size(union).toString())
+        const intersection: Set<Int64> = Set::intersection(a, b)
+        println("intersection size: " + Set::size(intersection).toString())
+        const difference: Set<Int64> = Set::difference(a, b)
+        println("a - b size: " + Set::size(difference).toString())
+        return 0
+    }
+}

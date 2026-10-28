@@ -1,0 +1,12 @@
+import tinox.core.base64
+class Main
+{
+    fnc main() -> Int32
+    {
+        const encoded: String = Base64::encode("hello, tinox!")
+        println(encoded)
+        const decoded: String = Base64::decode(encoded)
+        println(decoded)
+        return 0
+    }
+}

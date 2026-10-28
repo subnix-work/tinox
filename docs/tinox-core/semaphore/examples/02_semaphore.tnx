@@ -1,0 +1,20 @@
+import tinox.core.semaphore
+class Main
+{
+    fnc main() -> Int32
+    {
+        // At most 2 concurrent permits.
+        const sem: Semaphore = Semaphore::new(2)
+        Semaphore::acquire(sem)
+        Semaphore::acquire(sem)
+        println("both permits acquired")
+        if (Semaphore::tryAcquire(sem) == false)
+        {
+            println("no permits available")
+        }
+
+        Semaphore::release(sem)
+        println("permit available: " + Semaphore::tryAcquire(sem).toString())
+        return 0
+    }
+}

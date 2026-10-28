@@ -1,0 +1,16 @@
+import tinox.core.fs
+class Main
+{
+    fnc main() -> Int32
+    {
+        Fs::writeFile("/tmp/greeting.txt", "hello from tinox\n")
+        Fs::appendFile("/tmp/greeting.txt", "second line\n")
+        const content: String = Fs::readFile("/tmp/greeting.txt")
+        println(content)
+        Fs::copyFile("/tmp/greeting.txt", "/tmp/greeting-copy.txt")
+        const files: List<String> = Fs::listDirectory("/tmp")
+        println("entries: " + files.len().toString())
+        Fs::deleteFile("/tmp/greeting-copy.txt")
+        return 0
+    }
+}

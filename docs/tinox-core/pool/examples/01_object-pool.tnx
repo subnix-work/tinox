@@ -1,0 +1,12 @@
+import tinox.core.pool
+class Main
+{
+    fnc main() -> Int32
+    {
+        const connections: Pool<String> = Pool<String>::newWithFactory(5, \-> "new-connection")
+        const c1: String = Pool::acquire(connections)
+        println("acquired: " + c1)
+        Pool::release(connections, c1)
+        return 0
+    }
+}

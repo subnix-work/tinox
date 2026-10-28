@@ -1,0 +1,13 @@
+import tinox.core.base64
+class Main
+{
+    fnc main() -> Int32
+    {
+        const data: List<Int64> = [0, 1, 2, 255, 128]
+        const encoded: String = Base64::encodeBytes(data)
+        println(encoded)
+        const decoded: List<Int64> = Base64::decodeBytes(encoded)
+        println("roundtrip length: " + decoded.len().toString())
+        return 0
+    }
+}

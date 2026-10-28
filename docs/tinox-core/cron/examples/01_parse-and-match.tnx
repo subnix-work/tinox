@@ -1,0 +1,14 @@
+import tinox.core.cron
+import tinox.core.time
+class Main
+{
+    fnc main() -> Int32
+    {
+        // every day at 09:00
+        const expr: CronExpr = Cron::parse("0 9 * * *")
+        const now: Int64 = Time::now()
+        println("matches now: " + Cron::matches(expr, now).toString())
+        println("next run at: " + Cron::nextRun(expr).toString())
+        return 0
+    }
+}

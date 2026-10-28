@@ -1,0 +1,14 @@
+import tinox.core.process
+class Main
+{
+    fnc main() -> Int32
+    {
+        println("pid = " + Process::pid().toString())
+        const args: List<String> = Process::args()
+        println("arg count = " + args.len().toString())
+        Process::setEnv("MY_VAR", "hello")
+        println("MY_VAR = " + Process::env("MY_VAR"))
+        Process::sleep(1)
+        return 0
+    }
+}

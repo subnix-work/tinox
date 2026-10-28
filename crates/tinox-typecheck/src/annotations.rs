@@ -143,6 +143,9 @@ pub struct TestInfo {
     pub class_name: String,
     pub method_name: String,
     pub description: String,
+    /// One-based source position of the test method.
+    pub line: u32,
+    pub column: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1393,6 +1396,8 @@ impl AnnotationProcessor {
                             class_name: class.name.clone(),
                             method_name: method.name.clone(),
                             description,
+                            line: method.span.start.line,
+                            column: method.span.start.column,
                         });
                     }
                     "Timed" | "Counted" => {

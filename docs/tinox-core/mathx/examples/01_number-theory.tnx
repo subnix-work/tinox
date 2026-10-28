@@ -1,0 +1,13 @@
+import tinox.core.mathx
+class Main
+{
+    fnc main() -> Int32
+    {
+        println("gcd(48, 18) = " + Mathx::gcd(48, 18).toString())
+        println("isPrime(97) = " + Mathx::isPrime(97).toString())
+        println("nextPrime(100) = " + Mathx::nextPrime(100).toString())
+        println("fibonacci(10) = " + Mathx::fibonacci(10).toString())
+        println("combinations(5, 2) = " + Mathx::combinations(5, 2).toString())
+        return 0
+    }
+}

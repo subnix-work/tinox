@@ -10,6 +10,16 @@
 void* tinox_alloc(size_t size);
 void tinox_free(void* ptr);
 
+// Foreign threads (issue #487). A thread not created by the Tinox runtime
+// must call tinox_thread_attach() before it allocates Tinox heap memory or
+// keeps a pointer into it, and tinox_thread_detach() before it exits.
+// attach returns 0 (attached by this call), 1 (already known to the
+// collector: nothing to undo) or a negative value (no thread support).
+// Calls nest. Never store a pointer to Tinox heap memory only in memory the
+// collector does not scan (malloc, C++ objects): copy the data or use handles.
+int  tinox_thread_attach(void);
+void tinox_thread_detach(void);
+
 // Print functions
 void tinox_print_int(int64_t val);
 void tinox_print_float(double val);

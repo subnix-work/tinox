@@ -4,6 +4,47 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`[native]` in `tinox.toml`** (#485): link third-party libraries, objects and extra
+  C/C++ sources (`libs`, `lib_dirs`, `rpath`, `pkg_config`, `objects`, `sources`,
+  `cflags`). Sources are compiled into `.tinox/native/` with header dependency
+  tracking; changed libraries and objects invalidate the application build cache.
+- **`[native.test]`** (#506): overrides keys of `[native]` for `tinox test` only, so tests can
+  link a test double of a native library; the rest is inherited.
+- **`extern fn` C ABI specified and tested** (#486): `Bool`/`Int8`/`Int16`/`UInt8`/`UInt16`
+  parameters and returns carry `zeroext`/`signext`; function types, tuples, nullable
+  types, `Channel`/`Task` and `Nothing` parameters are rejected at compile time; type
+  mapping and string ownership are documented in `docs/SPEC.md`.
+- **Foreign threads** (#487): `tinox_thread_attach()` / `tinox_thread_detach()` in
+  `runtime.h` let threads the runtime did not create use Tinox heap memory; a blocked
+  main thread (GUI event loop) alongside `spawn`ed tasks is tested under GC stress.
+- **`tinox.core.fs` `Watcher`** (#489): inotify-based file watching with recursive
+  roots, move pairing, debounce and an overflow rescan event.
+- **`InteractiveProcess`** (#490): `terminate()`, `signal(n)` and `waitReadable()`;
+  pipe-mode children lead their own process group and `kill()` takes the whole tree down.
+- **`tinox-lsp`** (#491-#495): find references, rename (with safety refusals),
+  workspace symbols, document/range formatting, semantic tokens (full, delta, range),
+  signature help, code actions (add import, organize imports), debounced diagnostics
+  with related information, cleared on close, using unsaved buffers of imported files.
+  See `docs/language-server.md`.
+- **`--message-format=json`** for `tinox check`/`build`/`test` (#496): line-delimited JSON
+  events, plus `tinox test --list` and `--format json` with per-test results and
+  durations (`docs/compiler-diagnostics.md`).
+- Debugger investigation (#497): `docs/debugging.md` and `scripts/debug-probe.sh`.
+- **Debugging** (#498-#501): a DWARF line table per statement (breakpoints on any line,
+  stepping), arguments and locals, class/`List`/`Map` types with gdb pretty-printers
+  (`runtime/tinox-gdb.py`) in `--debug` builds, and `tinox dap`, a launcher for gdb's
+  built-in DAP server with Tinox defaults.
+
+### Fixed
+
+- An `extern fn` naming a runtime symbol the compiler already declares (for example
+  `tinox_clock_nanos`) no longer ends in an internal LLVM verifier error (#504): an
+  identical declaration is emitted once, a different signature is a compile error that
+  names both.
+- `lsp_pos_to_offset` counted LSP columns in code points instead of UTF-16 units.
+
 ## [2.8.0] - 2026-10-27
 
 ### Added

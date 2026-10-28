@@ -1,4 +1,9 @@
+mod actions;
 mod analysis;
+mod formatting;
+mod navigation;
+mod semantic;
+mod signature;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,7 +40,11 @@ const EMBEDDED_STDLIB: &[(&str, &str)] = &[
     )),
     ("env",           include_str!("../../tinox-core/tinox/core/env/Env.tnx")),
     ("fmt",           include_str!("../../tinox-core/tinox/core/fmt/Fmt.tnx")),
-    ("fs",            include_str!("../../tinox-core/tinox/core/fs/Fs.tnx")),
+    ("fs",            concat!(
+        include_str!("../../tinox-core/tinox/core/fs/Fs.tnx"),
+        include_str!("../../tinox-core/tinox/core/fs/WatchEvent.tnx"),
+        include_str!("../../tinox-core/tinox/core/fs/Watcher.tnx"),
+    )),
     ("hash",          include_str!("../../tinox-core/tinox/core/hash/Hash.tnx")),
     ("http",          concat!(
         include_str!("../../tinox-core-ext/http/tinox/core/http/Http.tnx"),
@@ -74,7 +83,11 @@ const EMBEDDED_STDLIB: &[(&str, &str)] = &[
     ("math",          include_str!("../../tinox-core/tinox/core/math/Math.tnx")),
     ("mathf",         include_str!("../../tinox-core/tinox/core/mathf/Mathf.tnx")),
     ("option",        include_str!("../../tinox-core/tinox/core/option/Option.tnx")),
-    ("process",       include_str!("../../tinox-core/tinox/core/process/Process.tnx")),
+    ("process",       concat!(
+        include_str!("../../tinox-core/tinox/core/process/InteractiveProcess.tnx"),
+        include_str!("../../tinox-core/tinox/core/process/Process.tnx"),
+        include_str!("../../tinox-core/tinox/core/process/ProcessResult.tnx"),
+    )),
     ("random",        include_str!("../../tinox-core/tinox/core/random/Random.tnx")),
     ("regex",         include_str!("../../tinox-core/tinox/core/regex/Regex.tnx")),
     // Keyed "client", not "rest.client": module_names_from_imports() below
@@ -129,15 +142,31 @@ fn load_embedded_module(module: &str, registry: &mut TypeRegistry) {
     }
 }
 
-struct Backend {
+/// Quiet period after the last keystroke before a document is re-analysed.
+const DEBOUNCE_MS: u64 = 120;
+
+struct Inner {
     client: Client,
     docs: DashMap<Url, String>,
     asts: DashMap<Url, SourceFile>,
     stdlib_registry: TypeRegistry,
     stdlib_asts: HashMap<String, SourceFile>,
+    /// Member names of every standard-library class (rename safety check).
+    stdlib_member_names: std::collections::HashSet<String>,
+    /// Whether the client can apply `RenameFile` workspace-edit operations.
+    client_renames_files: std::sync::atomic::AtomicBool,
+    /// Last semantic-token answer per document, for `full/delta`.
+    semantic_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
+    semantic_counter: std::sync::atomic::AtomicU64,
+    /// Bumped on every change of a document; superseded analyses drop their result.
+    generations: DashMap<Url, u64>,
+    /// Latest client version seen per document (out-of-order changes are ignored).
+    doc_versions: DashMap<Url, i32>,
+    /// (import path, class names) for every embedded standard-library module.
+    stdlib_import_map: Vec<(String, Vec<String>)>,
 }
 
-impl Backend {
+impl Inner {
     fn new(client: Client) -> Self {
         // Start with embedded stdlib; optionally supplement from filesystem if TINOX_STDLIB is set.
         let mut stdlib_registry = build_embedded_stdlib();
@@ -155,13 +184,166 @@ impl Backend {
                 }
             }
         }
+        let stdlib_member_names = stdlib_registry
+            .values()
+            .flat_map(|c| c.fields.iter().map(|f| f.name.clone()).chain(c.methods.iter().map(|m| m.name.clone())))
+            .collect();
+        let mut stdlib_import_map: Vec<(String, Vec<String>)> = stdlib_asts
+            .iter()
+            .map(|(key, ast)| {
+                // the embedded key is the import path's last segment
+                let path = if key == "client" { "tinox.core.rest.client".to_string() } else { format!("tinox.core.{key}") };
+                let mut classes: Vec<String> = build_registry_from_source(ast).into_keys().collect();
+                classes.sort();
+                (path, classes)
+            })
+            .collect();
+        stdlib_import_map.sort();
         Self {
             client,
             docs: DashMap::new(),
             asts: DashMap::new(),
             stdlib_registry,
             stdlib_asts,
+            stdlib_member_names,
+            client_renames_files: std::sync::atomic::AtomicBool::new(false),
+            semantic_cache: DashMap::new(),
+            semantic_counter: std::sync::atomic::AtomicU64::new(0),
+            stdlib_import_map,
+            generations: DashMap::new(),
+            doc_versions: DashMap::new(),
         }
+    }
+
+    /// Fresh semantic tokens for `uri`, remembered under a new result id.
+    fn semantic_for(&self, uri: &Url) -> Option<(String, Vec<SemanticToken>)> {
+        let text = self.docs.get(uri)?.clone();
+        let types = self.stdlib_registry.keys().cloned().collect();
+        let tokens = semantic::encode(&semantic::compute(&text, uri, &types)?);
+        let id = self.semantic_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string();
+        self.semantic_cache.insert(uri.clone(), (id.clone(), tokens.clone()));
+        Some((id, tokens))
+    }
+
+    /// Standard-library classes plus the project's own, and the project's
+    /// top-level functions (name, signature, doc).
+    fn project_signatures(&self, uri: &Url) -> (TypeRegistry, Vec<(String, String, Option<String>)>) {
+        let mut registry = self.stdlib_registry.clone();
+        let mut functions = Vec::new();
+        for (_, text) in self.project_files(uri) {
+            let Ok(ast) = tinox_parser::parse_source_cached(&text) else { continue };
+            registry.extend(build_registry_from_source(&ast));
+            fn top_level(decls: &[tinox_parser::ast::Decl], out: &mut Vec<(String, String, Option<String>)>) {
+                for d in decls {
+                    match &d.node {
+                        tinox_parser::ast::DeclKind::Function(f) => out.push((f.name.clone(), analysis::fn_signature(f), f.doc.clone())),
+                        tinox_parser::ast::DeclKind::Namespace(ns) => top_level(&ns.decls, out),
+                        _ => {}
+                    }
+                }
+            }
+            top_level(&ast.decls, &mut functions);
+        }
+        (registry, functions)
+    }
+
+    fn overlay(&self) -> impl Fn(&Path) -> Option<String> + '_ {
+        move |path: &Path| Url::from_file_path(path).ok().and_then(|u| self.docs.get(&u).map(|t| t.clone()))
+    }
+
+    fn bump(&self, uri: &Url) -> u64 {
+        let mut g = self.generations.entry(uri.clone()).or_insert(0);
+        *g += 1;
+        *g
+    }
+
+    fn generation(&self, uri: &Url) -> u64 {
+        self.generations.get(uri).map(|g| *g).unwrap_or(0)
+    }
+
+    /// Re-analyses the other open documents that directly import `changed`,
+    /// so a fix (or a break) in one file shows up in its users at once.
+    async fn refresh_dependents(&self, changed: &Url) {
+        let Ok(changed_path) = changed.to_file_path() else { return };
+        let changed_canon = changed_path.canonicalize().unwrap_or(changed_path);
+        let open: Vec<(Url, String)> = self.docs.iter().filter(|e| e.key() != changed).map(|e| (e.key().clone(), e.value().clone())).collect();
+        for (uri, text) in open {
+            let Ok(path) = uri.to_file_path() else { continue };
+            let Ok(ast) = tinox_parser::parse_source_cached(&text) else { continue };
+            let imports_changed = import_paths(&ast).iter().any(|ip| {
+                resolve_project_local_import(ip, &path).and_then(|p| p.canonicalize().ok()).is_some_and(|p| p == changed_canon)
+            });
+            if imports_changed {
+                let generation = self.bump(&uri);
+                self.update(uri, text, None, generation).await;
+            }
+        }
+    }
+
+    fn nav_ctx(&self) -> navigation::Ctx {
+        navigation::Ctx { stdlib_member_names: self.stdlib_member_names.clone() }
+    }
+
+    /// Every `.tnx` file of the project containing `uri` (nearest
+    /// `tinox.toml` upwards; just the file's directory tree otherwise),
+    /// with open documents overriding what is on disk.
+    fn project_files(&self, uri: &Url) -> Vec<(Url, String)> {
+        let mut out: Vec<(Url, String)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        if let Ok(path) = uri.to_file_path() {
+            let dir = path.parent().unwrap_or(Path::new("."));
+            let root = find_project_root(dir).unwrap_or_else(|| dir.to_path_buf());
+            let mut stack = vec![root];
+            while let Some(d) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&d) else { continue };
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let Ok(ft) = entry.file_type() else { continue };
+                    if ft.is_dir() {
+                        if !name.starts_with('.') && name != "target" && name != "node_modules" {
+                            stack.push(p);
+                        }
+                    } else if ft.is_file() && p.extension().is_some_and(|e| e == "tnx") && out.len() < 5000 {
+                        if let Ok(u) = Url::from_file_path(&p) {
+                            let text = match self.docs.get(&u) {
+                                Some(t) => t.clone(),
+                                None => match std::fs::read_to_string(&p) {
+                                    Ok(t) => t,
+                                    Err(_) => continue,
+                                },
+                            };
+                            seen.insert(u.clone());
+                            out.push((u, text));
+                        }
+                    }
+                }
+            }
+        }
+        // open documents that are not on disk (untitled) or outside the tree
+        for entry in self.docs.iter() {
+            if !seen.contains(entry.key()) && (entry.key() == uri || entry.key().scheme() == "file") {
+                out.push((entry.key().clone(), entry.value().clone()));
+            }
+        }
+        out
+    }
+}
+
+/// The language server: shared state behind an `Arc` so debounced analyses
+/// can run as background tasks instead of occupying a request-handler slot.
+struct Backend(std::sync::Arc<Inner>);
+
+impl std::ops::Deref for Backend {
+    type Target = Inner;
+    fn deref(&self) -> &Inner {
+        &self.0
+    }
+}
+
+impl Backend {
+    fn new(client: Client) -> Self {
+        Backend(std::sync::Arc::new(Inner::new(client)))
     }
 }
 
@@ -272,6 +454,10 @@ fn resolve_project_local_import(path: &[String], file_path: &Path) -> Option<Pat
     None
 }
 
+/// Unsaved editor buffers: returns the open document's text for a path, if any,
+/// so imported files are analysed as the user sees them, not as saved.
+type Overlay<'a> = &'a dyn Fn(&Path) -> Option<String>;
+
 /// Recursively resolves `source`'s own project-local imports (and THEIR
 /// project-local imports, and so on) into parsed ASTs — the project-local
 /// counterpart to `self.stdlib_asts`, built fresh per `update()` call
@@ -280,7 +466,7 @@ fn resolve_project_local_import(path: &[String], file_path: &Path) -> Option<Pat
 /// `visited` guards against an import cycle (two files importing each
 /// other) looping forever — same purpose as `tinox`'s own `resolve_imports`
 /// `visited: &mut HashSet<PathBuf>` parameter.
-fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path: &Path) -> Vec<SourceFile> {
+fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path: &Path, overlay: Overlay) -> Vec<SourceFile> {
     let mut out = Vec::new();
     let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     if let Ok(canon) = file_path.canonicalize() {
@@ -296,7 +482,7 @@ fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path
         if !visited.insert(canon) {
             continue;
         }
-        let Ok(src) = std::fs::read_to_string(&target) else { continue };
+        let Some(src) = overlay(&target).or_else(|| std::fs::read_to_string(&target).ok()) else { continue };
         let Ok(ast) = tinox_parser::parse_source_cached(&src) else { continue };
         for p in import_paths(&ast) {
             queue.push((p, target.clone()));
@@ -309,7 +495,7 @@ fn load_project_local_preludes(source: &tinox_parser::ast::SourceFile, file_path
 
 /// Load package imports from the exact graph used by the CLI. Local sources
 /// are parsed fresh on every update, so unpublished edits are immediately used.
-fn load_package_preludes(source: &SourceFile, file: &Path, dirs: &[PathBuf]) -> std::result::Result<Vec<SourceFile>, String> {
+fn load_package_preludes(source: &SourceFile, file: &Path, dirs: &[PathBuf], overlay: Overlay) -> std::result::Result<Vec<SourceFile>, String> {
     let mut out = Vec::new();
     let mut visited = std::collections::HashSet::new();
     visited.insert(file.canonicalize().unwrap_or_else(|_| file.to_path_buf()));
@@ -343,7 +529,10 @@ fn load_package_preludes(source: &SourceFile, file: &Path, dirs: &[PathBuf]) -> 
         for target in targets {
             let target = target.canonicalize().map_err(|e| e.to_string())?;
             if !visited.insert(target.clone()) { continue; }
-            let text = std::fs::read_to_string(&target).map_err(|e| e.to_string())?;
+            let text = match overlay(&target) {
+                Some(text) => text,
+                None => std::fs::read_to_string(&target).map_err(|e| e.to_string())?,
+            };
             let ast = tinox_parser::parse_source_cached(&text).map_err(|e| format!("{}: {e:?}", target.display()))?;
             queue.extend(import_paths(&ast).into_iter().map(|path| (path, target.clone())));
             // A type import also brings in its own namespace siblings, matching
@@ -411,8 +600,8 @@ fn load_stdlib(path: &Path) -> TypeRegistry {
     registry
 }
 
-impl Backend {
-    async fn update(&self, uri: Url, text: String) {
+impl Inner {
+    async fn update(&self, uri: Url, text: String, version: Option<i32>, generation: u64) {
         // Quick pre-parse to extract import names for stdlib prelude resolution.
         let parsed = tinox_parser::parse_source_cached(&text).ok();
         let import_names = parsed.as_ref().map(module_names_from_imports).unwrap_or_default();
@@ -424,7 +613,7 @@ impl Backend {
             }
         };
         let packages = match (&parsed, uri.to_file_path()) {
-            (Some(ast), Ok(file)) => load_package_preludes(ast, &file, &package_dirs),
+            (Some(ast), Ok(file)) => load_package_preludes(ast, &file, &package_dirs, &self.overlay()),
             _ => Ok(Vec::new()),
         };
         let packages = match packages {
@@ -463,7 +652,7 @@ impl Backend {
         // stack frame so `preludes`' borrows stay valid for the `compile`
         // call below.
         let project_local: Vec<SourceFile> = match (&parsed, uri.to_file_path()) {
-            (Some(ast), Ok(file_path)) => load_project_local_preludes(ast, &file_path),
+            (Some(ast), Ok(file_path)) => load_project_local_preludes(ast, &file_path, &self.overlay()),
             _ => Vec::new(),
         };
         preludes.extend(project_local.iter());
@@ -473,25 +662,56 @@ impl Backend {
         });
         diags.extend(provenance.into_iter().map(|message| package_diagnostic(message, DiagnosticSeverity::INFORMATION)));
         self.docs.insert(uri.clone(), text);
-        self.client.publish_diagnostics(uri, diags, None).await;
+        // A newer edit arrived while this analysis ran: its result is stale.
+        if self.generation(&uri) != generation {
+            return;
+        }
+        self.client.publish_diagnostics(uri, diags, version).await;
     }
 }
 
-fn err_to_diag(diagnostic: CompilerDiagnostic, source: &str) -> Diagnostic {
-    let range = diagnostic.range.unwrap_or_else(tinox_common::Span::dummy);
-    // Compiler columns count Unicode scalar values; LSP uses UTF-16 units.
+/// Compiler span (columns count Unicode scalar values) to an LSP range
+/// (columns count UTF-16 units) over `source`.
+fn lsp_range(span: tinox_common::Span, source: &str) -> Range {
     let position = |pos: tinox_common::Pos| Position {
         line: pos.line.saturating_sub(1),
         character: source.lines().nth(pos.line.saturating_sub(1) as usize)
             .unwrap_or("").chars().take(pos.column.saturating_sub(1) as usize)
             .map(|c| c.len_utf16() as u32).sum(),
     };
+    Range { start: position(span.start), end: position(span.end) }
+}
+
+fn err_to_diag(diagnostic: CompilerDiagnostic, source: &str) -> Diagnostic {
+    let range = diagnostic.range.unwrap_or_else(tinox_common::Span::dummy);
+    // Secondary locations (e.g. the declaration a mismatch refers to). Their
+    // text is only needed for UTF-16 columns: the open buffer when it is the
+    // same file, otherwise the saved file.
+    let related: Vec<DiagnosticRelatedInformation> = diagnostic
+        .related
+        .iter()
+        .filter_map(|r| {
+            let uri = Url::from_file_path(&r.file).ok()?;
+            let text = if diagnostic.file.as_deref() == Some(r.file.as_str()) {
+                source.to_string()
+            } else {
+                std::fs::read_to_string(&r.file).unwrap_or_default()
+            };
+            Some(DiagnosticRelatedInformation { location: Location { uri, range: lsp_range(r.range, &text) }, message: r.message.clone() })
+        })
+        .collect();
     Diagnostic {
-        range: Range { start: position(range.start), end: position(range.end) },
-        severity: Some(DiagnosticSeverity::ERROR),
+        range: lsp_range(range, source),
+        severity: Some(match diagnostic.severity.as_str() {
+            "warning" => DiagnosticSeverity::WARNING,
+            "info" | "information" => DiagnosticSeverity::INFORMATION,
+            "hint" => DiagnosticSeverity::HINT,
+            _ => DiagnosticSeverity::ERROR,
+        }),
         code: Some(NumberOrString::String(diagnostic.code.clone())),
         message: diagnostic.message.clone(),
         source: Some("tinox".into()),
+        related_information: (!related.is_empty()).then_some(related),
         data: Some(serde_json::json!({ "schema_version": SCHEMA_VERSION, "diagnostic": diagnostic })),
         ..Default::default()
     }
@@ -516,7 +736,15 @@ fn compile(src: &str, file: Option<&str>, preludes: &[&SourceFile], on_ast: impl
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        let renames = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|w| w.workspace_edit.as_ref())
+            .and_then(|e| e.resource_operations.as_ref())
+            .is_some_and(|ops| ops.contains(&ResourceOperationKind::Rename));
+        self.client_renames_files.store(renames, std::sync::atomic::Ordering::Relaxed);
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -536,6 +764,30 @@ impl LanguageServer for Backend {
                 }),
                 definition_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".into(), ",".into()]),
+                    retrigger_characters: Some(vec![")".into()]),
+                    work_done_progress_options: Default::default(),
+                }),
+                code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+                    code_action_kinds: Some(vec![CodeActionKind::QUICKFIX, CodeActionKind::SOURCE_ORGANIZE_IMPORTS]),
+                    work_done_progress_options: Default::default(),
+                    resolve_provider: Some(false),
+                })),
+                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                    work_done_progress_options: Default::default(),
+                    legend: semantic::legend(),
+                    range: Some(true),
+                    full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
+                })),
+                document_formatting_provider: Some(OneOf::Left(true)),
+                document_range_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -556,13 +808,37 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, p: DidOpenTextDocumentParams) {
-        self.update(p.text_document.uri, p.text_document.text).await;
+        let uri = p.text_document.uri;
+        self.doc_versions.insert(uri.clone(), p.text_document.version);
+        self.docs.insert(uri.clone(), p.text_document.text.clone());
+        let generation = self.bump(&uri);
+        self.update(uri.clone(), p.text_document.text, Some(p.text_document.version), generation).await;
+        self.refresh_dependents(&uri).await;
     }
 
     async fn did_change(&self, p: DidChangeTextDocumentParams) {
-        if let Some(change) = p.content_changes.into_iter().last() {
-            self.update(p.text_document.uri, change.text).await;
+        let uri = p.text_document.uri;
+        let version = p.text_document.version;
+        let Some(change) = p.content_changes.into_iter().last() else { return };
+        if self.doc_versions.get(&uri).is_some_and(|v| *v > version) {
+            return; // an older change delivered late
         }
+        self.doc_versions.insert(uri.clone(), version);
+        // Other features see the new text at once; only the analysis waits.
+        self.docs.insert(uri.clone(), change.text.clone());
+        let generation = self.bump(&uri);
+        // Analyse in the background after a quiet period: the handler returns
+        // at once, so a burst of edits never queues behind the server's
+        // request-concurrency limit.
+        let inner = std::sync::Arc::clone(&self.0);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
+            if inner.generation(&uri) != generation {
+                return; // superseded by a later keystroke
+            }
+            inner.update(uri.clone(), change.text, Some(version), generation).await;
+            inner.refresh_dependents(&uri).await;
+        });
     }
 
     async fn did_save(&self, p: DidSaveTextDocumentParams) {
@@ -570,12 +846,21 @@ impl LanguageServer for Backend {
         let text = p.text
             .or_else(|| self.docs.get(&uri).map(|t| t.clone()))
             .unwrap_or_default();
-        self.update(uri, text).await;
+        let generation = self.bump(&uri);
+        self.update(uri.clone(), text, None, generation).await;
+        self.refresh_dependents(&uri).await;
     }
 
     async fn did_close(&self, p: DidCloseTextDocumentParams) {
-        self.docs.remove(&p.text_document.uri);
-        self.asts.remove(&p.text_document.uri);
+        let uri = p.text_document.uri;
+        self.bump(&uri); // cancels a pending analysis
+        self.docs.remove(&uri);
+        self.asts.remove(&uri);
+        self.semantic_cache.remove(&uri);
+        self.doc_versions.remove(&uri);
+        // Leave no stale diagnostics behind for a document that is no longer open.
+        self.client.publish_diagnostics(uri.clone(), Vec::new(), None).await;
+        self.refresh_dependents(&uri).await;
     }
 
     async fn hover(&self, p: HoverParams) -> Result<Option<Hover>> {
@@ -648,7 +933,7 @@ impl LanguageServer for Backend {
             }
             if let (Some(ast), Ok(file)) = (fresh_ast.as_ref(), uri.to_file_path()) {
                 if let Ok((dirs, _)) = package_context(&file) {
-                    if let Ok(packages) = load_package_preludes(ast, &file, &dirs) {
+                    if let Ok(packages) = load_package_preludes(ast, &file, &dirs, &self.overlay()) {
                         for package in packages {
                             reg.extend(build_registry_from_source(&package));
                         }
@@ -689,6 +974,171 @@ impl LanguageServer for Backend {
         Ok(loc.map(GotoDefinitionResponse::Scalar))
     }
 
+    async fn references(&self, p: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = &p.text_document_position.text_document.uri;
+        let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
+        let offset = lsp_pos_to_offset(&text, p.text_document_position.position) as usize;
+        let files = self.project_files(uri);
+        match navigation::references(&files, uri, offset, p.context.include_declaration, &self.nav_ctx()) {
+            Ok(locations) => Ok(Some(locations)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    async fn prepare_rename(&self, p: TextDocumentPositionParams) -> Result<Option<PrepareRenameResponse>> {
+        let uri = &p.text_document.uri;
+        let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
+        let offset = lsp_pos_to_offset(&text, p.position) as usize;
+        let files = self.project_files(uri);
+        match navigation::prepare_rename(&files, uri, offset, &self.nav_ctx()) {
+            Ok(r) => Ok(Some(PrepareRenameResponse::RangeWithPlaceholder { range: r.range, placeholder: r.placeholder })),
+            Err(message) => Err(tower_lsp::jsonrpc::Error::invalid_params(message)),
+        }
+    }
+
+    async fn rename(&self, p: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = &p.text_document_position.text_document.uri;
+        let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
+        let offset = lsp_pos_to_offset(&text, p.text_document_position.position) as usize;
+        let files = self.project_files(uri);
+        let result = navigation::rename(&files, uri, offset, &p.new_name, &self.nav_ctx())
+            .map_err(tower_lsp::jsonrpc::Error::invalid_params)?;
+        let text_edits = |edits: Vec<TextEdit>, uri: Url| TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+            edits: edits.into_iter().map(OneOf::Left).collect(),
+        };
+        match result.file_rename {
+            Some((old, new)) if self.client_renames_files.load(std::sync::atomic::Ordering::Relaxed) => {
+                // Edit first (old URI), then rename the file.
+                let mut ops: Vec<DocumentChangeOperation> = result
+                    .edits
+                    .into_iter()
+                    .map(|(u, e)| DocumentChangeOperation::Edit(text_edits(e, u)))
+                    .collect();
+                ops.push(DocumentChangeOperation::Op(ResourceOp::Rename(RenameFile {
+                    old_uri: old,
+                    new_uri: new,
+                    options: None,
+                    annotation_id: None,
+                })));
+                Ok(Some(WorkspaceEdit { changes: None, document_changes: Some(DocumentChanges::Operations(ops)), change_annotations: None }))
+            }
+            other => {
+                if let Some((old, new)) = other {
+                    self.client
+                        .show_message(
+                            MessageType::WARNING,
+                            format!(
+                                "Tinox requires one type per file named like the type: rename {} to {} yourself (this editor cannot rename files through the language server).",
+                                old.path(),
+                                new.path()
+                            ),
+                        )
+                        .await;
+                }
+                Ok(Some(WorkspaceEdit { changes: Some(result.edits), document_changes: None, change_annotations: None }))
+            }
+        }
+    }
+
+    async fn symbol(&self, p: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
+        // Any open document locates the project; without one there is nothing to search.
+        let Some(any) = self.docs.iter().next().map(|e| e.key().clone()) else { return Ok(None) };
+        let files = self.project_files(&any);
+        Ok(Some(navigation::workspace_symbols(&files, &p.query)))
+    }
+
+    async fn formatting(&self, p: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let Some(text) = self.docs.get(&p.text_document.uri).map(|t| t.clone()) else { return Ok(None) };
+        formatting::format_edits(&text).map(Some).map_err(format_failed)
+    }
+
+    async fn range_formatting(&self, p: DocumentRangeFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let Some(text) = self.docs.get(&p.text_document.uri).map(|t| t.clone()) else { return Ok(None) };
+        formatting::format_range_edits(&text, p.range).map(Some).map_err(format_failed)
+    }
+
+    async fn semantic_tokens_full(&self, p: SemanticTokensParams) -> Result<Option<SemanticTokensResult>> {
+        let uri = p.text_document.uri;
+        let Some((id, tokens)) = self.semantic_for(&uri) else { return Ok(None) };
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: Some(id), data: tokens })))
+    }
+
+    async fn semantic_tokens_full_delta(&self, p: SemanticTokensDeltaParams) -> Result<Option<SemanticTokensFullDeltaResult>> {
+        let uri = p.text_document.uri;
+        let previous = self.semantic_cache.get(&uri).filter(|c| c.0 == p.previous_result_id).map(|c| c.1.clone());
+        let Some((id, tokens)) = self.semantic_for(&uri) else { return Ok(None) };
+        Ok(Some(match previous {
+            Some(old) => {
+                let edits = semantic::delta(&old, &tokens)
+                    .map(|(start, delete_count, data)| vec![SemanticTokensEdit { start, delete_count, data: Some(data) }])
+                    .unwrap_or_default();
+                SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta { result_id: Some(id), edits })
+            }
+            None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens { result_id: Some(id), data: tokens }),
+        }))
+    }
+
+    async fn semantic_tokens_range(&self, p: SemanticTokensRangeParams) -> Result<Option<SemanticTokensRangeResult>> {
+        let Some(text) = self.docs.get(&p.text_document.uri).map(|t| t.clone()) else { return Ok(None) };
+        let types = self.stdlib_registry.keys().cloned().collect();
+        let Some(all) = semantic::compute(&text, &p.text_document.uri, &types) else { return Ok(None) };
+        let part = semantic::in_range(&all, p.range.start.line, p.range.end.line);
+        // relative encoding restarts at the first returned token
+        Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens { result_id: None, data: semantic::encode(&part) })))
+    }
+
+    async fn signature_help(&self, p: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = &p.text_document_position_params.text_document.uri;
+        let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
+        let offset = lsp_pos_to_offset(&text, p.text_document_position_params.position) as usize;
+        let Some(ctx) = signature::call_context(&text, offset) else { return Ok(None) };
+        let (registry, functions) = self.project_signatures(uri);
+        Ok(signature::build(&ctx, signature::candidates(&ctx.callee, &registry, &functions)))
+    }
+
+    async fn code_action(&self, p: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = p.text_document.uri.clone();
+        let Some(text) = self.docs.get(&uri).map(|t| t.clone()) else { return Ok(None) };
+        let wants = |kind: &CodeActionKind| p.context.only.as_ref().is_none_or(|only| only.iter().any(|k| kind.as_str().starts_with(k.as_str())));
+        let edit = |edits: Vec<TextEdit>| WorkspaceEdit { changes: Some(HashMap::from([(uri.clone(), edits)])), document_changes: None, change_annotations: None };
+        let mut out: CodeActionResponse = Vec::new();
+        if wants(&CodeActionKind::QUICKFIX) {
+            let project: Vec<(String, String)> = self.project_files(&uri).into_iter().map(|(u, t)| (u.to_string(), t)).collect();
+            let project_refs: Vec<(String, &str)> = project.iter().map(|(u, t)| (u.clone(), t.as_str())).collect();
+            let mut seen = std::collections::HashSet::new();
+            for diag in &p.context.diagnostics {
+                let Some(name) = actions::missing_import_name(&diag.message) else { continue };
+                let candidates = actions::import_candidates(&name, &project_refs, &self.stdlib_import_map);
+                let preferred = candidates.len() == 1;
+                for path in candidates {
+                    if !seen.insert((name.clone(), path.clone())) {
+                        continue;
+                    }
+                    out.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Import {path}"),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![diag.clone()]),
+                        edit: Some(edit(vec![actions::add_import_edit(&text, &path)])),
+                        is_preferred: Some(preferred),
+                        ..Default::default()
+                    }));
+                }
+            }
+        }
+        if wants(&CodeActionKind::SOURCE_ORGANIZE_IMPORTS) {
+            if let Some(e) = actions::organize_imports(&text) {
+                out.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: "Organize imports".into(),
+                    kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+                    edit: Some(edit(vec![e])),
+                    ..Default::default()
+                }));
+            }
+        }
+        Ok(if out.is_empty() { None } else { Some(out) })
+    }
+
     async fn document_symbol(
         &self,
         p: DocumentSymbolParams,
@@ -699,6 +1149,11 @@ impl LanguageServer for Backend {
         };
         Ok(Some(DocumentSymbolResponse::Nested(document_symbols(&ast))))
     }
+}
+
+/// LSP `RequestFailed`: the request was understood but cannot be carried out.
+fn format_failed(message: String) -> tower_lsp::jsonrpc::Error {
+    tower_lsp::jsonrpc::Error { code: tower_lsp::jsonrpc::ErrorCode::ServerError(-32803), message: message.into(), data: None }
 }
 
 /// Parse the text for completion by blanking out the line that contains the cursor.
@@ -743,6 +1198,9 @@ mod tests {
         println!("embedded stdlib classes: {:?}", reg.keys().collect::<Vec<_>>());
         assert!(reg.contains_key("HttpContext"), "HttpContext must be in embedded stdlib");
         assert!(reg.contains_key("HttpResponse"), "HttpResponse must be in embedded stdlib");
+        for class in ["Watcher", "WatchEvent", "InteractiveProcess", "ProcessResult"] {
+            assert!(reg.contains_key(class), "{class} must be in embedded stdlib");
+        }
     }
 
     /// Regression coverage for the exact shape of a real-world false
@@ -819,7 +1277,7 @@ mod tests {
         let tokens = Lexer::new(&text).tokenize().unwrap();
         let ast = Parser::new(tokens).parse().unwrap();
 
-        let preludes_owned = load_project_local_preludes(&ast, &file_path);
+        let preludes_owned = load_project_local_preludes(&ast, &file_path, &|_| None);
         assert_eq!(preludes_owned.len(), 2, "expected PersonDao.tnx and Person.tnx to both resolve");
 
         let preludes: Vec<&SourceFile> = preludes_owned.iter().collect();
@@ -855,6 +1313,35 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn related_locations_and_severity_reach_lsp() {
+        let dir = std::env::temp_dir().join(format!("tinox-lsp-related-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("Other.tnx");
+        // an emoji before the target pushes its UTF-16 column past its scalar column
+        std::fs::write(&other, "// 😀 class Other\nclass Other {}\n").unwrap();
+        let main = dir.join("Main.tnx");
+        let span = |l: u32, c0: u32, c1: u32| tinox_common::Span {
+            start: tinox_common::Pos { offset: 0, line: l, column: c0 },
+            end: tinox_common::Pos { offset: 0, line: l, column: c1 },
+        };
+        let mut d = CompilerDiagnostic::new("type", Some(main.to_str().unwrap()), Some(span(1, 7, 12)), "mismatch");
+        d.severity = "warning".into();
+        d.related.push(tinox_common::diagnostic::RelatedLocation {
+            file: other.canonicalize().unwrap().to_string_lossy().into_owned(),
+            range: span(2, 7, 12),
+            message: "declared here".into(),
+        });
+        let lsp = err_to_diag(d, "class Main {}\n");
+        assert_eq!(lsp.severity, Some(DiagnosticSeverity::WARNING));
+        let rel = lsp.related_information.unwrap();
+        assert_eq!(rel.len(), 1);
+        assert_eq!(rel[0].message, "declared here");
+        assert!(rel[0].location.uri.path().ends_with("Other.tnx"));
+        assert_eq!((rel[0].location.range.start.line, rel[0].location.range.start.character), (1, 6));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn parser_and_annotation_categories_match_the_cli() {
         for (source, category) in [("class Main {", "syntax"), ("`", "lex"), ("@Unknown class Main {}", "annotation")] {
             let diagnostics = compile(source, None, &[], |_| {});
@@ -881,11 +1368,11 @@ mod diagnostic_tests {
         assert_eq!(dirs, cli_dirs);
         assert_eq!(provenance, tinox::pm::source_provenance(&root, &cli_dirs).unwrap());
         assert!(provenance[0].contains("local override: tinox.core:json:1.0.0"));
-        let packages = load_package_preludes(&ast, &entry, &dirs).unwrap();
+        let packages = load_package_preludes(&ast, &entry, &dirs, &|_| None).unwrap();
         let preludes: Vec<_> = packages.iter().collect();
         assert!(compile(source, entry.to_str(), &preludes, |_| {}).is_empty());
         std::fs::write(local.join("LocalJson.tnx"), "namespace tinox.core.json { class LocalJson { fnc changed() -> Int64 { return 43 } } }").unwrap();
-        let packages = load_package_preludes(&ast, &entry, &dirs).unwrap();
+        let packages = load_package_preludes(&ast, &entry, &dirs, &|_| None).unwrap();
         let preludes: Vec<_> = packages.iter().collect();
         assert!(!compile(source, entry.to_str(), &preludes, |_| {}).is_empty());
         std::fs::remove_dir_all(&root).unwrap();

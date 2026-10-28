@@ -1,0 +1,13 @@
+import tinox.core.validation
+class Main
+{
+    fnc main() -> Int32
+    {
+        println(Validation::isEmail("user@example.com").toString())   // true
+        println(Validation::isEmail("not-an-email").toString())       // false
+        println(Validation::minLength("hunter2", 6).toString())       // true
+        println(Validation::isInRange(42, 0, 100).toString())         // true
+        println(Validation::matchesPattern("v1.2.3", "^v[0-9]+\\.[0-9]+\\.[0-9]+$").toString())
+        return 0
+    }
+}

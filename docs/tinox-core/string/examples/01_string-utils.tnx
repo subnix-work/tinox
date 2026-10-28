@@ -1,0 +1,16 @@
+import tinox.core.string
+class Main
+{
+    fnc main() -> Int32
+    {
+        const s: String = "  Hello, Tinox!  "
+        println(Strings::trim(s))
+        println(Strings::toUpperCase(Strings::trim(s)))
+        println(Strings::contains(s, "Tinox").toString())
+        const parts: List<String> = Strings::split("a,b,c", ",")
+        println(Strings::join(parts, " | "))
+        println(Strings::repeat("ab", 3))
+        println(Strings::replace("foo bar foo", "foo", "baz"))
+        return 0
+    }
+}

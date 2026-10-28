@@ -1,0 +1,18 @@
+import tinox.core.iter
+class Main
+{
+    fnc main() -> Int32
+    {
+        const numbers: List<Int64> = [1, 2, 3, 4, 5]
+        const doubled: List<Int64> = Iter::map<Int64, Int64>(numbers, n => n * 2)
+        const evens: List<Int64> = Iter::filter(doubled, n => n % 4 == 0)
+        const sum: Int64 = Iter::reduce<Int64, Int64>(evens, 0, (acc, n) => acc + n)
+        println("sum: " + sum.toString())
+        const it: Iterator = Iter::range(0, 3)
+        while it.hasNext()
+        {
+            println(it.next().toString())
+        }
+        return 0
+    }
+}

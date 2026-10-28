@@ -41,6 +41,38 @@ reported compiler, input, or toolchain failure. An unexpected compiler panic
 retains status **101** and the Rust panic report on stderr; abrupt termination
 and panics are outside the completed-response protocol.
 
+## Event stream: `--message-format=json`
+
+`tinox check`, `tinox build` and `tinox test` also accept
+`--message-format=json` (or `--message-format json`). Instead of one document,
+stdout carries **one JSON object per line**, each with `reason` and
+`schema_version` (1). Stdout holds nothing else; the program's own output,
+progress and warnings go to stderr or, for tests, into the event.
+`--message-format=text|human` selects the default output; other values fail.
+
+`check` / `build`:
+
+| `reason` | Fields |
+| --- | --- |
+| `compiler-message` | `diagnostic`: the object described below |
+| `build-finished` | `command` (`check`/`build`), `success`, `exit_code` (0/1), `artifact` (absolute path of the executable on a successful build, otherwise `null`) |
+
+`tinox test --list` prints the discovered tests without compiling or running
+anything; `tinox test --format json` (alias: `--message-format=json`) runs them
+and streams:
+
+| `reason` | Fields |
+| --- | --- |
+| `test-discovered` | `file`, `class`, `method`, `description`, `line`, `column` (one-based position of the method) |
+| `test-started` | same as `test-discovered` |
+| `test-passed` | test fields plus `duration_ms`, `output` (captured stdout+stderr, last 64 KiB) |
+| `test-failed` | test fields plus `phase` (`compile` or `run`), `message`, `duration_ms`, and for `run` also `exit_code` and `output` |
+| `test-collection-error` | `file` (or `null`), `message`: the file could not be parsed or checked |
+| `test-run-finished` | `total`, `passed`, `failed`, `collection_errors`, `listed_only`, `success` |
+
+Exit status is the same as in text mode (1 when anything failed or could not be
+collected). In `--list` mode a project with no tests succeeds.
+
 ## Diagnostic fields
 
 - `code` is a stable identifier, independent of English message wording.

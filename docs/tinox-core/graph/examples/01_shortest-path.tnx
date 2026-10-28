@@ -1,0 +1,21 @@
+import tinox.core.graph
+class Main
+{
+    fnc main() -> Int32
+    {
+        const g: Graph<String> = Graph::new()
+        Graph::addNode(g, "a", "Start")
+        Graph::addNode(g, "b", "Middle")
+        Graph::addNode(g, "c", "End")
+        Graph::addEdge(g, "a", "b", 1.0)
+        Graph::addEdge(g, "b", "c", 2.0)
+        Graph::addEdge(g, "a", "c", 5.0)
+        const visitor: fnc(String) -> Nothing = id => {
+            println("visiting " + id)
+        }
+        Graph::bfs(g, "a", visitor)
+        const dist: Float64 = Graph::dijkstra(g, "a", "c")
+        println("shortest distance: " + dist.toString())
+        return 0
+    }
+}

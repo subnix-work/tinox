@@ -274,6 +274,12 @@ pub fn fingerprint(
     for flag in link_flags {
         field(&mut hash, flag.as_bytes());
     }
+    // Content of user-supplied native objects/libraries ([native] in
+    // tinox.toml): the flag text alone would not notice a rebuilt .so.
+    for path in crate::native::fingerprint_inputs(link_flags) {
+        field(&mut hash, path.as_os_str().as_encoded_bytes());
+        field(&mut hash, native_digest(&path)?.as_bytes());
+    }
     let mut environment: Vec<_> = env::vars_os().collect();
     environment.sort();
     for (name, value) in environment {

@@ -1,0 +1,16 @@
+import tinox.core.socket
+class Main
+{
+    fnc main() -> Int32
+    {
+        const client: Socket = Socket::createTcp()
+        if (Socket::connect(client, "localhost", 8080))
+        {
+            Socket::send(client, "Hello Server!")
+            const response: String = Socket::receive(client, 1024)
+            println(response)
+            Socket::close(client)
+        }
+        return 0
+    }
+}

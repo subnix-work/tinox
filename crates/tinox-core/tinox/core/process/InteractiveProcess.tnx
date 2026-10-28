@@ -1,5 +1,8 @@
 namespace tinox.core.process
 {
+    extern fn processSignal(handle: Int64, sig: Int64) -> Int64
+    extern fn processWaitReadable(handle: Int64, timeoutMs: Int64) -> Int64
+
     /**
      * A long-lived, incrementally-driven subprocess -- unlike
      * Process::run() (blocks until exit, returns the full captured
@@ -83,7 +86,38 @@ namespace tinox.core.process
             return processIsAlive(proc.handle) != 0
         }
 
-        /** Kills the process (if still running) and closes its pipes. Safe to call even if it already exited. */
+        /**
+         * Waits up to timeoutMs (< 0 forever, 0 polls) until a pipe-mode child
+         * has output on stdout and/or stderr, or both streams ended, and
+         * returns a bit mask: 1 = stdout data is ready, 2 = stderr data is
+         * ready, 4 = both streams are at EOF and drained, 0 = timeout. The
+         * data is buffered, so the following readOutput/readLine/readStderr
+         * call with timeout 0 returns it immediately. This lets ONE reader
+         * task follow stdout and stderr together without polling either.
+         */
+        fn waitReadable(proc: InteractiveProcess, timeoutMs: Int64) -> Int64
+        {
+            return processWaitReadable(proc.handle, timeoutMs)
+        }
+
+        /**
+         * Sends signal number sig (e.g. 2 = SIGINT, 15 = SIGTERM) to a running
+         * child. A pipe-mode child leads its own process group and the signal
+         * goes to the whole group, so tools it started receive it too. Returns
+         * false when there was nothing to signal (the child already exited).
+         */
+        fn signal(proc: InteractiveProcess, sig: Int64) -> Bool
+        {
+            return processSignal(proc.handle, sig) != 0
+        }
+
+        /** Asks the process (and, in pipe mode, its process group) to stop with SIGTERM; follow up with kill() if it does not exit. */
+        fn terminate(proc: InteractiveProcess) -> Bool
+        {
+            return processSignal(proc.handle, 15) != 0
+        }
+
+        /** Kills the process (if still running; in pipe mode its whole process group) and closes its pipes. Safe to call even if it already exited. */
         fn kill(proc: InteractiveProcess) -> Nothing
         {
             processKillInteractive(proc.handle)

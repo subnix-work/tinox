@@ -266,6 +266,34 @@ pub struct EntityEntry {
     pub fields: Vec<EntityFieldEntry>,
 }
 
+/// A local variable recorded while generating a function body (issue #499).
+struct DbgVar {
+    slot: String,
+    name: String,
+    ty: Option<Type>,
+    /// Tinox class name or container marker from `GenCtx::local_types`.
+    class: Option<String>,
+    line: u32,
+}
+
+/// A parameter of the function being generated (issue #499).
+#[derive(Clone)]
+struct DbgParam {
+    name: String,
+    llvm_ty: String,
+    ty: Option<Type>,
+    class: Option<String>,
+}
+
+/// The `!DISubprogram` a function body's instruction locations belong to.
+#[derive(Clone, Copy)]
+struct DbgScope {
+    sp_id: u32,
+    #[allow(dead_code)]
+    file_id: u32,
+    line: u32,
+}
+
 pub struct CodeGen {
     ir: String,
     lambda_ir: String,
@@ -315,7 +343,17 @@ pub struct CodeGen {
     /// used by every `!DISubprogram` — issue #114's scope is function-
     /// level (name/file/line), not per-argument/return type modeling.
     di_subroutine_type_id: Option<u32>,
+    /// Local-variable and parameter debug info (issue #499); on for `--debug`.
+    debug_variables: bool,
+    /// Variables declared in the function being generated: `(slot, name, ty, class, line)`.
+    dbg_vars: Vec<DbgVar>,
+    /// `llvm.dbg.declare` was used, so the module needs its declaration.
+    dbg_declare_used: bool,
+    /// DI type nodes by a stable description, so each is emitted once.
+    di_type_cache: HashMap<String, u32>,
     struct_layouts: HashMap<String, Vec<String>>,
+    /// Declared Tinox type of every field per class (inherited ones included), for debug info.
+    struct_field_decl_types: HashMap<String, HashMap<String, Type>>,
     /// Per class: the `var x: T = <literal>;` defaults declared on its
     /// fields, in declaration order. Only populated for classes that
     /// actually declare one.
@@ -442,6 +480,8 @@ pub struct CodeGen {
     /// conflict, not a duplicate, and stays a hard compile error rather than
     /// silently keeping whichever one happened to be emitted first.
     declared_externs: HashMap<String, String>,
+    /// Source span of every user `extern fn`, to point conflict errors at it (issue #504).
+    extern_spans: HashMap<String, Span>,
     /// Set of all enum variant names (for bare-name match patterns)
     known_enum_variants: HashSet<String>,
     /// variant name → payload kind per argument ("String" | "Map" | "List" | "Other"),
@@ -632,7 +672,12 @@ impl CodeGen {
             di_next_id: 0,
             di_compile_unit_id: None,
             di_subroutine_type_id: None,
+            debug_variables: false,
+            dbg_vars: Vec::new(),
+            dbg_declare_used: false,
+            di_type_cache: HashMap::new(),
             struct_layouts: HashMap::new(),
+            struct_field_decl_types: HashMap::new(),
             field_defaults: HashMap::new(),
             closure_envs: HashMap::new(),
             method_ret_types: HashMap::new(),
@@ -665,6 +710,7 @@ impl CodeGen {
             generic_classes: HashMap::new(),
             generated_specializations: HashSet::new(),
             declared_externs: HashMap::new(),
+            extern_spans: HashMap::new(),
             known_enum_variants: HashSet::new(),
             enum_variant_payloads: HashMap::new(),
             known_enum_types: HashSet::new(),
@@ -958,6 +1004,22 @@ impl CodeGen {
     }
 
     /// Collect field_name -> llvm_type for all fields (including inherited).
+    fn collect_field_decl_types(
+        name: &str,
+        class_map: &HashMap<String, tinox_parser::Class>,
+    ) -> HashMap<String, Type> {
+        let Some(c) = class_map.get(name) else { return HashMap::new(); };
+        let mut result = if let Some(parent) = &c.extends {
+            Self::collect_field_decl_types(parent, class_map)
+        } else {
+            HashMap::new()
+        };
+        for f in &c.fields {
+            result.insert(f.name.clone(), f.field_type.clone());
+        }
+        result
+    }
+
     fn collect_field_llvm_types(
         name: &str,
         class_map: &HashMap<String, tinox_parser::Class>,
@@ -1570,7 +1632,59 @@ impl CodeGen {
     }
 
     pub fn gen(&mut self, source: &SourceFile) -> Result<(), ErrorBag> {
-        self.gen_inner(source)
+        self.gen_inner(source)?;
+        self.reconcile_declares()
+    }
+
+    /// `symbol` and a comparable form of a `declare` line (without the
+    /// leading keyword): ABI extension attributes are not part of the identity.
+    fn declare_key(rest: &str) -> Option<(String, String)> {
+        let at = rest.find('@')?;
+        let paren = at + rest[at..].find('(')?;
+        let name = rest[at + 1..paren].to_string();
+        let norm = rest
+            .split_whitespace()
+            .filter(|t| *t != "zeroext" && *t != "signext")
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some((name, norm))
+    }
+
+    /// The compiler declares the runtime symbols it uses, and a user
+    /// `extern fn` may name one of them (issue #504). LLVM rejects a symbol
+    /// declared twice, so an identical later declaration is dropped, and a
+    /// different one is reported at the `extern fn` instead of surfacing as an
+    /// internal compiler error from the verifier.
+    fn reconcile_declares(&mut self) -> Result<(), ErrorBag> {
+        let mut seen: HashMap<String, String> = HashMap::new();
+        let mut errors = ErrorBag::new();
+        for buffer in 0..2 {
+            let text = std::mem::take(if buffer == 0 { &mut self.ir } else { &mut self.lambda_ir });
+            let mut out = String::with_capacity(text.len());
+            for line in text.split_inclusive('\n') {
+                if let Some((name, norm)) = line.strip_prefix("declare ").and_then(Self::declare_key) {
+                    match seen.get(&name) {
+                        None => {
+                            seen.insert(name, norm);
+                        }
+                        Some(prev) if *prev == norm => continue,
+                        Some(prev) => {
+                            if let Some(span) = self.extern_spans.get(&name) {
+                                errors.push(Error::new(
+                                    *span,
+                                    format!(
+                                        "extern fn `{name}` conflicts with the declaration the compiler already emits for that symbol: `declare {prev}` vs `declare {norm}`"
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+                out.push_str(line);
+            }
+            *(if buffer == 0 { &mut self.ir } else { &mut self.lambda_ir }) = out;
+        }
+        if errors.errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 
     /// Issue #429: a builtin that the type checker advertises but codegen
@@ -2103,6 +2217,7 @@ impl CodeGen {
                 .map(|f| (f.name.clone(), Self::type_to_llvm(&f.param_type)))
                 .collect();
             self.struct_field_llvm_types.insert(u.name.clone(), fllt);
+            self.struct_field_decl_types.insert(u.name.clone(), u.fields.iter().map(|f| (f.name.clone(), f.param_type.clone())).collect());
             let fn_sigs: HashMap<String, (String, Vec<String>)> = u.fields.iter()
                 .filter_map(|f| {
                     if let tinox_parser::Type::Fn { params, ret } = &f.param_type {
@@ -2203,6 +2318,7 @@ impl CodeGen {
                     return Err(bag);
                 }
                 self.struct_layouts.insert(c.name.clone(), fields);
+                self.struct_field_decl_types.insert(c.name.clone(), Self::collect_field_decl_types(&c.name, &class_ast_map));
                 // Field `= <literal>` defaults, kept alongside the layout so
                 // emit_field_defaults can reach them from the generated
                 // bootstrap code (which runs outside any class AST scope).
@@ -5671,9 +5787,9 @@ tr_done_{idx}:"#).unwrap();
     /// real per-statement info, but enough for `gdb`/`addr2line` to
     /// resolve a crash to the right function, file, and roughly which
     /// declared line, matching this issue's actual goal.
-    fn dbg_suffix(&mut self, name: &str, file: &Arc<str>, line: u32) -> (String, String) {
+    fn dbg_suffix(&mut self, name: &str, file: &Arc<str>, line: u32) -> (String, Option<DbgScope>) {
         if file.as_ref() == tinox_parser::UNKNOWN_FILE {
-            return (String::new(), String::new());
+            return (String::new(), None);
         }
         let cu_id = self.di_compile_unit_id(file);
         let file_id = self.di_file_id(file);
@@ -5684,45 +5800,323 @@ tr_done_{idx}:"#).unwrap();
             "!{sp_id} = distinct !DISubprogram(name: \"{}\", scope: !{file_id}, file: !{file_id}, line: {line}, type: !{subty_id}, spFlags: DISPFlagDefinition, unit: !{cu_id})",
             Self::escape_di_string(name)
         ));
-        let loc_id = self.di_next_id;
-        self.di_next_id += 1;
-        self.di_metadata.push(format!(
-            "!{loc_id} = !DILocation(line: {line}, column: 1, scope: !{sp_id})"
-        ));
-        (format!(" !dbg !{sp_id}"), format!(", !dbg !{loc_id}"))
+        (format!(" !dbg !{sp_id}"), Some(DbgScope { sp_id, file_id, line }))
     }
 
-    /// Appends `call_suffix` (see `dbg_suffix`) to every `call`
-    /// instruction line in `ir[body_start..]`, in place. Scoped to text
-    /// generated between a function's `define` line and its closing `}`
-    /// — a targeted post-process instead of threading a suffix through
-    /// the ~300 individual call-emission sites across this file, since
-    /// every one of them already produces exactly one `call ...` per
-    /// line (never split across lines, never emits the substring
-    /// `" call "`/a leading `"call "` any other way — string literals
-    /// are hoisted to module-level globals, never inlined as instruction
-    /// text, so this can't misfire on user data).
-    fn attach_call_dbg(ir: &mut String, body_start: usize, call_suffix: &str) {
-        if call_suffix.is_empty() {
-            return;
+    /// A `!DIBasicType`, emitted once per distinct (name, size, encoding).
+    fn di_basic(&mut self, name: &str, size: u32, encoding: &str) -> u32 {
+        let key = format!("basic|{name}|{size}|{encoding}");
+        if let Some(id) = self.di_type_cache.get(&key) {
+            return *id;
         }
-        let body = &ir[body_start..];
-        let mut out = String::with_capacity(body.len() + call_suffix.len() * 8);
+        let id = self.di_next_id;
+        self.di_next_id += 1;
+        self.di_metadata.push(format!("!{id} = !DIBasicType(name: \"{name}\", size: {size}, encoding: {encoding})"));
+        self.di_type_cache.insert(key, id);
+        id
+    }
+
+    /// Whether a value of this type occupies a full 8-byte slot, so a pointer
+    /// to it can index the runtime's `int64_t` element arrays.
+    fn is_wide_slot(ty: &Type) -> bool {
+        !matches!(
+            ty,
+            Type::Bool | Type::Char | Type::Int8 | Type::Int16 | Type::Int32 | Type::UInt8 | Type::UInt16 | Type::UInt32 | Type::Float32
+        )
+    }
+
+    /// Type of a container element or map value as seen through the
+    /// runtime's 8-byte slots.
+    fn di_slot_type(&mut self, ty: &Type) -> u32 {
+        if Self::is_wide_slot(ty) {
+            let llvm = self.type_to_llvm_inst(ty);
+            self.di_type(Some(ty), &llvm, None)
+        } else {
+            self.di_basic("Int64", 64, "DW_ATE_signed")
+        }
+    }
+
+    fn di_member(&mut self, scope: u32, name: &str, base: u32, size: u32, offset: u32) -> u32 {
+        let id = self.di_next_id;
+        self.di_next_id += 1;
+        self.di_metadata.push(format!(
+            "!{id} = !DIDerivedType(tag: DW_TAG_member, name: \"{}\", scope: !{scope}, baseType: !{base}, size: {size}, offset: {offset})",
+            Self::escape_di_string(name)
+        ));
+        id
+    }
+
+    /// `typedef NAME` -> pointer -> structure with `members`. The typedef
+    /// carries the Tinox name a pretty-printer keys on. `build` receives the
+    /// structure's id and returns `(member ids, size in bits)`; the typedef is
+    /// cached BEFORE it runs, so self-referential types terminate.
+    fn di_named_struct(
+        &mut self,
+        key: String,
+        name: &str,
+        build: impl FnOnce(&mut Self, u32) -> (Vec<u32>, u32),
+    ) -> u32 {
+        if let Some(id) = self.di_type_cache.get(&key) {
+            return *id;
+        }
+        let (td, ptr, comp) = (self.di_next_id, self.di_next_id + 1, self.di_next_id + 2);
+        self.di_next_id += 3;
+        self.di_type_cache.insert(key, td);
+        let (members, size) = build(self, comp);
+        let elems = self.di_next_id;
+        self.di_next_id += 1;
+        let list = members.iter().map(|m| format!("!{m}")).collect::<Vec<_>>().join(", ");
+        self.di_metadata.push(format!("!{elems} = !{{{list}}}"));
+        let esc = Self::escape_di_string(name);
+        self.di_metadata.push(format!("!{comp} = distinct !DICompositeType(tag: DW_TAG_structure_type, name: \"{esc}\", size: {size}, elements: !{elems})"));
+        self.di_metadata.push(format!("!{ptr} = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{comp}, size: 64)"));
+        self.di_metadata.push(format!("!{td} = !DIDerivedType(tag: DW_TAG_typedef, name: \"{esc}\", baseType: !{ptr})"));
+        td
+    }
+
+    /// Debug type of a user class or immutable: a typedef to a pointer to
+    /// its field layout (8 bytes per field, in declaration order).
+    fn di_class(&mut self, name: &str) -> Option<u32> {
+        let layout = self.struct_layouts.get(name)?.clone();
+        let decls = self.struct_field_decl_types.get(name).cloned().unwrap_or_default();
+        let llvms = self.struct_field_llvm_types.get(name).cloned().unwrap_or_default();
+        Some(self.di_named_struct(format!("class|{name}"), name, |this, comp| {
+            let mut members = Vec::new();
+            for (i, field) in layout.iter().enumerate() {
+                let base = match decls.get(field) {
+                    Some(t) => {
+                        let llvm = llvms.get(field).cloned().unwrap_or_else(|| this.type_to_llvm_inst(t));
+                        // a slot is 8 bytes wide whatever the declared width
+                        if Self::is_wide_slot(t) { this.di_type(Some(t), &llvm, None) } else { this.di_basic("Int64", 64, "DW_ATE_signed") }
+                    }
+                    None => this.di_pointer("pointer", None),
+                };
+                let m = this.di_member(comp, field, base, 64, (i as u32) * 64);
+                members.push(m);
+            }
+            (members, layout.len() as u32 * 64)
+        }))
+    }
+
+    /// `List<T>` / `Array`: the runtime's `{len, cap, data}` array handle.
+    fn di_array(&mut self, elem: &Type, name: &str) -> u32 {
+        let elem = elem.clone();
+        self.di_named_struct(format!("array|{name}"), name, |this, comp| {
+            let int = this.di_basic("Int64", 64, "DW_ATE_signed");
+            let slot = this.di_slot_type(&elem);
+            let data = this.di_pointer("", Some(slot));
+            let m = vec![
+                this.di_member(comp, "len", int, 64, 0),
+                this.di_member(comp, "cap", int, 64, 64),
+                this.di_member(comp, "data", data, 64, 128),
+            ];
+            (m, 192)
+        })
+    }
+
+    /// `Map<String, V>`: the runtime's open-addressing table.
+    fn di_map(&mut self, value: &Type, name: &str) -> u32 {
+        let value = value.clone();
+        self.di_named_struct(format!("map|{name}"), name, |this, comp| {
+            let uint = this.di_basic("UInt64", 64, "DW_ATE_unsigned");
+            let int32 = this.di_basic("Int32", 32, "DW_ATE_signed");
+            let ch = this.di_basic("char", 8, "DW_ATE_signed_char");
+            let key = this.di_pointer("String", Some(ch));
+            let val = this.di_slot_type(&value);
+            // entry: { key, value }; key NULL = empty slot, 1 = tombstone
+            let entry = this.di_named_struct(format!("mapentry|{name}"), &format!("{name}.entry"), |t2, ec| {
+                let k = t2.di_member(ec, "key", key, 64, 0);
+                let v = t2.di_member(ec, "value", val, 64, 64);
+                (vec![k, v], 128)
+            });
+            // di_named_struct returns the typedef (pointer to entry): exactly `entries`
+            let m = vec![
+                this.di_member(comp, "entries", entry, 64, 0),
+                this.di_member(comp, "cap", uint, 64, 64),
+                this.di_member(comp, "len", uint, 64, 128),
+                this.di_member(comp, "borrowed_keys", int32, 32, 192),
+            ];
+            (m, 256)
+        })
+    }
+
+    /// A named 64-bit `!DIDerivedType` pointer to `base` (or `void*`).
+    fn di_pointer(&mut self, name: &str, base: Option<u32>) -> u32 {
+        let key = format!("ptr|{name}|{base:?}");
+        if let Some(id) = self.di_type_cache.get(&key) {
+            return *id;
+        }
+        let id = self.di_next_id;
+        self.di_next_id += 1;
+        let base_text = base.map(|b| format!(", baseType: !{b}")).unwrap_or_else(|| ", baseType: null".to_string());
+        self.di_metadata.push(format!("!{id} = !DIDerivedType(tag: DW_TAG_pointer_type, name: \"{name}\"{base_text}, size: 64)"));
+        self.di_type_cache.insert(key, id);
+        id
+    }
+
+    /// Debug type of a variable or parameter whose storage has LLVM type
+    /// `llvm`. The declared Tinox type decides name and signedness; the LLVM
+    /// type decides the size, because that is what the slot really holds.
+    fn di_type(&mut self, ty: Option<&Type>, llvm: &str, class: Option<&str>) -> u32 {
+        let ty = match ty {
+            Some(Type::Mutable(inner)) | Some(Type::Nullable(inner)) => Some(&**inner),
+            other => other,
+        };
+        let size = match llvm {
+            "i1" | "i8" => 8,
+            "i16" => 16,
+            "i32" | "float" => 32,
+            _ => 64,
+        };
+        match (ty, llvm) {
+            (Some(Type::Bool), _) | (None, "i1") => self.di_basic("Bool", 8, "DW_ATE_boolean"),
+            (Some(Type::Char), _) => self.di_basic("Char", 32, "DW_ATE_UTF"),
+            (Some(Type::Float32), _) | (None, "float") => self.di_basic("Float32", 32, "DW_ATE_float"),
+            (Some(Type::Float64), _) | (None, "double") => self.di_basic("Float64", 64, "DW_ATE_float"),
+            (Some(Type::Int8), _) => self.di_basic("Int8", 8, "DW_ATE_signed"),
+            (Some(Type::Int16), _) => self.di_basic("Int16", 16, "DW_ATE_signed"),
+            (Some(Type::Int32), _) => self.di_basic("Int32", 32, "DW_ATE_signed"),
+            (Some(Type::Int64), _) => self.di_basic("Int64", 64, "DW_ATE_signed"),
+            (Some(Type::UInt8), _) => self.di_basic("UInt8", 8, "DW_ATE_unsigned"),
+            (Some(Type::UInt16), _) => self.di_basic("UInt16", 16, "DW_ATE_unsigned"),
+            (Some(Type::UInt32), _) => self.di_basic("UInt32", 32, "DW_ATE_unsigned"),
+            (Some(Type::UInt64), _) => self.di_basic("UInt64", 64, "DW_ATE_unsigned"),
+            (Some(Type::String), _) => {
+                let ch = self.di_basic("char", 8, "DW_ATE_signed_char");
+                self.di_pointer("String", Some(ch))
+            }
+            // enums and anything else stored in an integer slot
+            (_, "i8" | "i16" | "i32" | "i64") => self.di_basic(&format!("Int{size}"), size, "DW_ATE_signed"),
+            // pointers: classes, containers, maps, closures
+            (Some(Type::Named(n)), _) if self.struct_layouts.contains_key(n) => match self.di_class(n) {
+                Some(id) => id,
+                None => self.di_pointer(n, None),
+            },
+            (None, _) if class.is_some_and(|c| self.struct_layouts.contains_key(c)) => {
+                let c = class.unwrap().to_string();
+                self.di_class(&c).unwrap_or_else(|| self.di_pointer("pointer", None))
+            }
+            (Some(Type::Array(inner)), _) => {
+                let name = format!("List<{}>", tinox_parser::api::type_name(inner));
+                self.di_array(inner, &name)
+            }
+            (Some(Type::Generic { name: g, args }), _) if (g == "List" || g == "Array") && args.len() == 1 => {
+                let name = format!("List<{}>", tinox_parser::api::type_name(&args[0]));
+                self.di_array(&args[0], &name)
+            }
+            (Some(m @ Type::Map(_, v)), _) => {
+                let name = tinox_parser::api::type_name(m);
+                self.di_map(v, &name)
+            }
+            (_, _) => {
+                let name = match (ty, class) {
+                    (Some(Type::Named(n)), _) => n.clone(),
+                    (_, Some(c)) => c.to_string(),
+                    _ => "pointer".to_string(),
+                };
+                self.di_pointer(&name, None)
+            }
+        }
+    }
+
+    /// Gives every instruction of a finished function body (`ir[body_start..]`)
+    /// a `!dbg` location (issues #114, #498). `; @tnxdbg LINE COL` markers,
+    /// written at the start of each statement, set the location of the
+    /// instructions that follow; instructions before the first marker use the
+    /// function's own line. LLVM requires every call in a function with debug
+    /// info to carry a location, and gives breakpoints and stepping something
+    /// to land on for the rest. Every instruction is one line; trailing
+    /// comments are kept after the attachment.
+    fn attach_dbg(&mut self, body_start: usize, scope: Option<DbgScope>, params: &[DbgParam]) {
+        let vars = std::mem::take(&mut self.dbg_vars);
+        let Some(scope) = scope else { return };
+        let mut locs: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut loc_for = |this: &mut Self, line: u32, col: u32| -> u32 {
+            *locs.entry((line, col)).or_insert_with(|| {
+                let id = this.di_next_id;
+                this.di_next_id += 1;
+                this.di_metadata.push(format!("!{id} = !DILocation(line: {line}, column: {col}, scope: !{})", scope.sp_id));
+                id
+            })
+        };
+        let mut cur = loc_for(self, scope.line, 1);
+        let mut body = self.ir[body_start..].to_string();
+        // Parameters get a stack copy to describe (issue #499, `--debug` only).
+        if self.debug_variables {
+            let mut prologue = String::new();
+            for (i, p) in params.iter().enumerate() {
+                if p.llvm_ty == "void" {
+                    continue;
+                }
+                let ty = self.di_type(p.ty.as_ref(), &p.llvm_ty, p.class.as_deref());
+                let shown = if p.name == "self" { "this" } else { p.name.as_str() };
+                let var = self.di_next_id;
+                self.di_next_id += 1;
+                self.di_metadata.push(format!(
+                    "!{var} = !DILocalVariable(name: \"{shown}\", arg: {}, scope: !{}, file: !{}, line: {}, type: !{ty})",
+                    i + 1, scope.sp_id, scope.file_id, scope.line
+                ));
+                self.dbg_declare_used = true;
+                prologue.push_str(&format!(
+                    "%{n}.dbg.addr = alloca {t}\nstore {t} %{n}, {t}* %{n}.dbg.addr\ncall void @llvm.dbg.declare(metadata ptr %{n}.dbg.addr, metadata !{var}, metadata !DIExpression()), !dbg !{cur}\n",
+                    n = p.name, t = p.llvm_ty
+                ));
+            }
+            body.insert_str(0, &prologue);
+        }
+        let var_by_slot: HashMap<&str, &DbgVar> = vars.iter().map(|v| (v.slot.as_str(), v)).collect();
+        let mut out = String::with_capacity(body.len() + body.len() / 6);
         for line in body.split_inclusive('\n') {
             let (content, ending) = match line.strip_suffix('\n') {
                 Some(c) => (c, "\n"),
                 None => (line, ""),
             };
-            let trimmed = content.trim_start();
-            if trimmed.starts_with("call ") || trimmed.contains(" = call ") {
-                out.push_str(content);
-                out.push_str(call_suffix);
-            } else {
-                out.push_str(content);
+            let t = content.trim_start();
+            if let Some(rest) = t.strip_prefix("; @tnxdbg ") {
+                let mut it = rest.split_whitespace().filter_map(|x| x.parse::<u32>().ok());
+                if let (Some(l), Some(c)) = (it.next(), it.next()) {
+                    cur = loc_for(self, l, c);
+                }
+                out.push_str(line);
+                continue;
+            }
+            let is_label = t.split(';').next().unwrap_or("").trim_end().strip_suffix(':').is_some_and(|l| !l.contains(char::is_whitespace));
+            if t.is_empty() || t.starts_with(';') || t == "}" || is_label || t.starts_with("define ") || content.contains("!dbg") {
+                out.push_str(line);
+                continue;
+            }
+            let (code, comment) = match content.find(';') {
+                Some(i) => (content[..i].trim_end(), &content[i..]),
+                None => (content, ""),
+            };
+            out.push_str(code);
+            out.push_str(&format!(", !dbg !{cur}"));
+            if !comment.is_empty() {
+                out.push(' ');
+                out.push_str(comment);
             }
             out.push_str(ending);
+            // `%slot = alloca TY` of a recorded local: describe it right after.
+            if let Some((lhs, rhs)) = code.split_once(" = alloca ") {
+                if let Some(v) = var_by_slot.get(lhs.trim().trim_start_matches('%')) {
+                    let llvm = rhs.split(',').next().unwrap_or("").trim().to_string();
+                    let ty = self.di_type(v.ty.as_ref(), &llvm, v.class.as_deref());
+                    let var = self.di_next_id;
+                    self.di_next_id += 1;
+                    self.di_metadata.push(format!(
+                        "!{var} = !DILocalVariable(name: \"{}\", scope: !{}, file: !{}, line: {}, type: !{ty})",
+                        Self::escape_di_string(&v.name), scope.sp_id, scope.file_id, v.line
+                    ));
+                    self.dbg_declare_used = true;
+                    out.push_str(&format!(
+                        "call void @llvm.dbg.declare(metadata ptr %{}, metadata !{var}, metadata !DIExpression()), !dbg !{cur}\n",
+                        lhs.trim().trim_start_matches('%')
+                    ));
+                }
+            }
         }
-        ir.replace_range(body_start.., &out);
+        self.ir.truncate(body_start);
+        self.ir.push_str(&out);
     }
 
     fn capitalize_first(s: &str) -> String {
@@ -5744,6 +6138,11 @@ tr_done_{idx}:"#).unwrap();
         c
     }
 
+    /// Emit `DILocalVariable`s for parameters and locals (`--debug` builds).
+    pub fn set_debug_variables(&mut self, on: bool) {
+        self.debug_variables = on;
+    }
+
     pub fn into_ir(self) -> String {
         // Splice generic-specialization struct types in at the marker (before any
         // function body) so they're defined before their getelementptr uses.
@@ -5758,6 +6157,9 @@ tr_done_{idx}:"#).unwrap();
         // `!DISubprogram` (di_compile_unit_id set) — a program with no
         // user-authored fn/method bodies (unlikely, but e.g. a pure
         // `extern fn` declarations file) gets no debug info section.
+        if self.dbg_declare_used {
+            result.push_str("\ndeclare void @llvm.dbg.declare(metadata, metadata, metadata)\n");
+        }
         if let Some(cu_id) = self.di_compile_unit_id {
             result.push_str(&format!("\n!llvm.dbg.cu = !{{!{}}}\n", cu_id));
             result.push_str(&format!(
@@ -5779,9 +6181,25 @@ tr_done_{idx}:"#).unwrap();
     fn gen_fn(&mut self, f: &tinox_parser::Function) -> Result<(), ErrorBag> {
         // extern fn — no body, emit a declare instead of a define
         if matches!(f.body.node, tinox_parser::StmtKind::Empty) {
-            let ret_type = self.type_to_llvm_inst(&f.ret_type);
+            // C ABI (issue #486): a callee compiled by clang/gcc assumes
+            // `_Bool`/`char`/`short` arguments arrive already extended to
+            // 32 bits, and expects the same of what it returns. Plain
+            // `i1`/`i8`/`i16` without an extension attribute leaves the
+            // upper bits undefined.
+            let ret_ext = Self::extern_abi_ext(&f.ret_type);
+            let ret_type = if ret_ext.is_empty() {
+                self.type_to_llvm_inst(&f.ret_type)
+            } else {
+                format!("{} {}", ret_ext, self.type_to_llvm_inst(&f.ret_type))
+            };
             let params_str = f.params.iter()
-                .map(|p| self.type_to_llvm_inst(&p.param_type))
+                .map(|p| {
+                    let ty = self.type_to_llvm_inst(&p.param_type);
+                    match Self::extern_abi_ext(&p.param_type) {
+                        "" => ty,
+                        ext => format!("{ty} {ext}"),
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             let declare_line = format!("declare {} @{}({})", ret_type, f.name, params_str);
@@ -5804,6 +6222,7 @@ tr_done_{idx}:"#).unwrap();
                 return Ok(());
             }
             self.declared_externs.insert(f.name.clone(), declare_line.clone());
+            self.extern_spans.insert(f.name.clone(), f.span);
             writeln!(&mut self.ir, "{}", declare_line).unwrap();
             return Ok(());
         }
@@ -5868,7 +6287,14 @@ tr_done_{idx}:"#).unwrap();
         // method with a non-void return type — see #162.
         let fn_attrs = if is_inline { " alwaysinline" } else { "" };
 
-        let (dbg, call_dbg) = self.dbg_suffix(&f.name, &f.file, f.span.start.line);
+        let outer_vars = std::mem::take(&mut self.dbg_vars);
+        let dbg_params: Vec<DbgParam> = f.params.iter().map(|p| DbgParam {
+            name: p.name.clone(),
+            llvm_ty: self.type_to_llvm_inst(&p.param_type),
+            ty: Some(p.param_type.clone()),
+            class: ctx.local_types.get(&p.name).cloned(),
+        }).collect();
+        let (dbg, dbg_scope) = self.dbg_suffix(&f.name, &f.file, f.span.start.line);
         writeln!(
             &mut self.ir,
             "define {} @{}({}){}{} {{",
@@ -5899,7 +6325,7 @@ tr_done_{idx}:"#).unwrap();
 
         self.gen_stmt_body(&f.body, &mut ctx)?;
 
-        let has_terminator = self.ir.lines().last().is_some_and(|l| {
+        let has_terminator = Self::last_code_line(&self.ir).is_some_and(|l| {
             let t = l.trim();
             t.starts_with("ret ") || t.starts_with("br ")
         });
@@ -5918,7 +6344,8 @@ tr_done_{idx}:"#).unwrap();
 
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
-        Self::attach_call_dbg(&mut self.ir, body_start, &call_dbg);
+        self.attach_dbg(body_start, dbg_scope, &dbg_params);
+        self.dbg_vars = outer_vars;
 
         Ok(())
     }
@@ -5993,7 +6420,20 @@ tr_done_{idx}:"#).unwrap();
         let fn_attrs = if is_inline { " alwaysinline" } else { "" };
 
         let dbg_name = format!("{}.{}", class_name, method.name);
-        let (dbg, call_dbg) = self.dbg_suffix(&dbg_name, &method.file, method.span.start.line);
+        let outer_vars = std::mem::take(&mut self.dbg_vars);
+        let mut dbg_params: Vec<DbgParam> = Vec::new();
+        if !method.static_ {
+            dbg_params.push(DbgParam { name: "self".into(), llvm_ty: "i64*".into(), ty: None, class: Some(class_name.to_string()) });
+        }
+        for p in &method.params {
+            dbg_params.push(DbgParam {
+                name: p.name.clone(),
+                llvm_ty: self.type_to_llvm_inst(&p.param_type),
+                ty: Some(p.param_type.clone()),
+                class: ctx.local_types.get(&p.name).cloned(),
+            });
+        }
+        let (dbg, dbg_scope) = self.dbg_suffix(&dbg_name, &method.file, method.span.start.line);
         writeln!(
             &mut self.ir,
             "define {} @{}({}){}{} {{",
@@ -6032,7 +6472,7 @@ tr_done_{idx}:"#).unwrap();
             self.gen_stmt_body(&method.body, &mut ctx)?;
         }
 
-        let has_terminator = self.ir.lines().last().is_some_and(|l| {
+        let has_terminator = Self::last_code_line(&self.ir).is_some_and(|l| {
             let t = l.trim();
             t.starts_with("ret ") || t.starts_with("br ")
         });
@@ -6052,7 +6492,8 @@ tr_done_{idx}:"#).unwrap();
 
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
-        Self::attach_call_dbg(&mut self.ir, body_start, &call_dbg);
+        self.attach_dbg(body_start, dbg_scope, &dbg_params);
+        self.dbg_vars = outer_vars;
         if synchronized {
             writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
@@ -8049,6 +8490,34 @@ tr_done_{idx}:"#).unwrap();
     }
 
     fn gen_stmt_body(&mut self, stmt: &Stmt, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
+        // Statement-level debug location (issue #498): a comment marker that
+        // `attach_dbg` turns into `!dbg` attachments once the function body
+        // is complete. A comment survives the IR buffer swaps used for
+        // lambdas and specializations; functions without debug info simply
+        // keep it as a comment.
+        if !matches!(stmt.node, StmtKind::Block(_) | StmtKind::Empty) && stmt.span.start.line > 0 {
+            writeln!(&mut self.ir, "; @tnxdbg {} {}", stmt.span.start.line, stmt.span.start.column.max(1)).unwrap();
+        }
+        let declared = match &stmt.node {
+            StmtKind::Let { name, ty, .. } | StmtKind::Var { name, ty, .. } if self.debug_variables => Some((name.clone(), ty.clone())),
+            _ => None,
+        };
+        self.gen_stmt_inner(stmt, ctx)?;
+        if let Some((name, ty)) = declared {
+            if let Some(slot) = ctx.local_slots.get(&name) {
+                self.dbg_vars.push(DbgVar {
+                    slot: slot.clone(),
+                    class: ctx.local_types.get(&name).cloned(),
+                    name,
+                    ty,
+                    line: stmt.span.start.line,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn gen_stmt_inner(&mut self, stmt: &Stmt, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
         match &stmt.node {
             StmtKind::Defer(inner) => {
                 if let Some(scope) = ctx.defer_stack.last_mut() {
@@ -13980,7 +14449,7 @@ tr_done_{idx}:"#).unwrap();
             &Spanned::new(StmtKind::Return(Some(body.clone())), Span::dummy()),
             &mut lambda_ctx,
         )?;
-        let has_terminator = self.ir.lines().last().is_some_and(|l| {
+        let has_terminator = Self::last_code_line(&self.ir).is_some_and(|l| {
             l.trim().starts_with("ret ") || l.trim().starts_with("br ")
         });
         if !has_terminator {
@@ -14080,6 +14549,17 @@ tr_done_{idx}:"#).unwrap();
             format!("i64* {}", env_val)
         } else {
             format!("{}, i64* {}", a, env_val)
+        }
+    }
+
+    /// LLVM extension attribute a sub-32-bit scalar needs at an `extern fn`
+    /// boundary so it follows the platform C ABI. The caller places it
+    /// before the type for a return value and after it for a parameter.
+    fn extern_abi_ext(ty: &Type) -> &'static str {
+        match ty {
+            Type::Bool | Type::UInt8 | Type::UInt16 => "zeroext",
+            Type::Int8 | Type::Int16 => "signext",
+            _ => "",
         }
     }
 
@@ -14213,10 +14693,15 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
+    /// Last IR line that is not a `; @tnxdbg` location marker or other comment.
+    fn last_code_line(ir: &str) -> Option<&str> {
+        ir.lines().rev().find(|l| !l.trim_start().starts_with(';'))
+    }
+
     /// True if the last emitted IR line already terminates the current basic
     /// block, so no further instructions may be appended to it.
     fn last_is_terminator(&self) -> bool {
-        self.ir.lines().last().is_some_and(|l| {
+        Self::last_code_line(&self.ir).is_some_and(|l| {
             let t = l.trim();
             t.starts_with("ret ") || t == "ret void" || t.starts_with("br ")
                 || t == "unreachable" || t.starts_with("switch ")
@@ -16972,13 +17457,17 @@ mod tests {
     }
 
     fn compile_to_ir(src: &str) -> String {
+        compile_to_ir_result(src).expect("codegen failed")
+    }
+
+    fn compile_to_ir_result(src: &str) -> Result<String, ErrorBag> {
         let mut lexer = Lexer::new(src);
         let tokens = lexer.tokenize().expect("lex failed");
         let mut parser = Parser::new(tokens);
         let ast = parser.parse().expect("parse failed");
         let mut cg = CodeGen::new();
-        cg.gen(&ast).expect("codegen failed");
-        cg.into_ir()
+        cg.gen(&ast)?;
+        Ok(cg.into_ir())
     }
 
     /// Mirrors `stamp_file_identity`/`stamp_file_identity_with` in
@@ -17236,6 +17725,16 @@ mod tests {
         assert!(count >= 2, "expected both the [1]= write and the [1] read to stringify the key: {ir}");
     }
 
+    #[test]
+    fn test_extern_redeclaring_a_codegen_declared_symbol_is_deduplicated() {
+        // Issue #504: identical -> one declare; different -> a clear error.
+        let ir = compile_to_ir("extern fn tinox_clock_nanos() -> Int64\nfn main() -> Int64 { return tinox_clock_nanos() }");
+        assert_eq!(ir.matches("declare i64 @tinox_clock_nanos()").count(), 1, "{ir}");
+        let ok = compile_to_ir_result("extern fn tinox_clock_nanos() -> Int32\nfn main() -> Int64 { return 0 }");
+        let err = ok.expect_err("conflicting signature must be rejected");
+        assert!(err.errors.iter().any(|e| e.message.contains("conflicts with the declaration the compiler already emits")), "{:?}", err.errors);
+    }
+
     // --- DWARF debug info (issue #114) ---
 
     #[test]
@@ -17274,6 +17773,40 @@ mod tests {
         let call_line = ir.lines().find(|l| l.contains("call i64 @add")).expect("call site should exist");
         assert!(call_line.contains(", !dbg !"), "call site must carry a !dbg location: {call_line}");
         assert!(ir.contains("!DILocation("));
+    }
+
+    #[test]
+    fn test_debug_info_statements_get_their_own_lines() {
+        // Issue #498: every statement of a body gets a DILocation with its
+        // own line, so breakpoints and stepping have rows to land on.
+        let src = "fn work(n: Int64) -> Int64 {\n  var total: Int64 = 0\n  var i: Int64 = 0\n  while (i < n) {\n    total = total + i\n    i = i + 1\n  }\n  return total\n}\nfn main() -> Int64 {\n  return work(3)\n}";
+        let ir = compile_to_ir_with_file(src, "/tmp/probe.tnx");
+        let lines: std::collections::BTreeSet<u32> = ir
+            .lines()
+            .filter(|l| l.contains("= !DILocation("))
+            .filter_map(|l| l.split("line: ").nth(1)?.split(',').next()?.parse().ok())
+            .collect();
+        for expected in [2, 3, 4, 5, 6, 8] {
+            assert!(lines.contains(&expected), "missing a DILocation for line {expected}: {lines:?}");
+        }
+        // an instruction from the loop body carries a location, and so does the terminator
+        let store = ir.lines().find(|l| l.trim_start().starts_with("store") && l.contains("!dbg")).expect("a located store");
+        assert!(store.contains(", !dbg !"), "{store}");
+        let ret = ir.lines().find(|l| l.trim_start().starts_with("ret i64 ") && !l.contains("work") && l.contains("!dbg"));
+        assert!(ret.is_some(), "ret must be located");
+        // markers stay comments: nothing but a comment may contain the marker text
+        assert!(ir.lines().filter(|l| l.contains("@tnxdbg")).all(|l| l.trim_start().starts_with(';')));
+    }
+
+    #[test]
+    fn test_debug_info_comment_after_instruction_is_preserved() {
+        // The attachment goes before a trailing comment, never inside it.
+        let src = "fn main() -> Int64 {\n  return 1\n}";
+        let ir = compile_to_ir_with_file(src, "/tmp/probe.tnx");
+        for l in ir.lines().filter(|l| l.contains("!dbg") && l.contains(';')) {
+            let (code, comment) = l.split_once(';').unwrap();
+            assert!(code.contains("!dbg") || !comment.contains("!dbg") || code.is_empty(), "{l}");
+        }
     }
 
     #[test]

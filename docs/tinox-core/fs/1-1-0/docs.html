@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fs — Tinox Docs</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --bg:        #070b14;
+  --bg2:       rgba(17, 25, 43, 0.6);
+  --bg3:       rgba(34, 211, 238, 0.07);
+  --sidebar:   rgba(7, 11, 20, 0.72);
+  --border:    rgba(103, 232, 249, 0.16);
+  --accent:    #22d3ee;
+  --accent2:   #a78bfa;
+  --link:      #67e8f9;
+  --green:     #34d399;
+  --text:      #e2e8f0;
+  --text2:     #93a4bd;
+  --text3:     #64748b;
+  --code-bg:   rgba(5, 7, 13, 0.65);
+  --tag-bg:    rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+  background-attachment: fixed;
+  color: var(--text);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, black, transparent 75%);
+}
+nav { position: sticky; top: 0; z-index: 1; width: 270px; min-width: 270px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--border); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 32px 0; overflow-y: auto; flex-shrink: 0; }
+nav h1 { padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-family: 'Space Grotesk', 'JetBrains Mono', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+nav ul { list-style: none; }
+nav li.nav-section { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }
+nav li a { display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }
+nav li a:hover { color: var(--text); background: var(--bg3); border-left-color: var(--accent); }
+main { position: relative; z-index: 1; flex: 1; min-width: 0; padding: 56px clamp(2rem, 4vw, 4rem); }
+main h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }
+main > p.generated-by { color: var(--text3); margin-bottom: 28px; font-size: 0.78rem; }
+.tool-tag { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text3); }
+.item { border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.item-name { font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.kw { color: #c792ea; }
+.doc { color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }
+h3 { font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }
+table.members { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.members tr { border-bottom: 1px solid var(--border); }
+table.members td { padding: 8px 10px; vertical-align: top; }
+.member-name { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); width: 35%; }
+.member-type { color: #ffcb6b; width: 20%; }
+.method-sig { background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }
+.method-doc { color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }
+.ann { color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }
+code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--link); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>📦 fs</h1>
+  <ul><li class="nav-section">Overview</li><li><a href="#overview">Description</a></li><li class="nav-section">Examples</li><li><a href="#ex-read-write-file">Read write file</a></li><li class="nav-section">Classes</li><li><a href="#class-Fs">Fs</a></li><li><a href="#class-WatchEvent">WatchEvent</a></li><li><a href="#class-Watcher">Watcher</a></li><li class="nav-section">Functions</li><li><a href="#fn-watchCreate">watchCreate</a></li><li><a href="#fn-watchLastError">watchLastError</a></li><li><a href="#fn-watchAdd">watchAdd</a></li><li><a href="#fn-watchRemove">watchRemove</a></li><li><a href="#fn-watchPoll">watchPoll</a></li><li><a href="#fn-watchClose">watchClose</a></li></ul>
+</nav>
+<main>
+  <h1>fs</h1>
+  <p class="generated-by">Generated by <span class="tool-tag">tinox doc</span></p>
+  <section id="overview" class="item"><p class="doc" style="margin-bottom:0">tinox.core.fs, bundled with the compiler and also available as a standalone tinox-central package.</p></section><section id="ex-read-write-file" class="item"><h3 style="margin-top:0">Read write file</h3><pre><code><span class="kw">import</span> tinox.core.fs
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="type">Fs</span>::writeFile(<span class="str">&quot;/tmp/greeting.txt&quot;</span>, <span class="str">&quot;hello from tinox\n&quot;</span>)
+        <span class="type">Fs</span>::appendFile(<span class="str">&quot;/tmp/greeting.txt&quot;</span>, <span class="str">&quot;second line\n&quot;</span>)
+        <span class="kw">const</span> content: <span class="type">String</span> = <span class="type">Fs</span>::readFile(<span class="str">&quot;/tmp/greeting.txt&quot;</span>)
+        println(content)
+        <span class="type">Fs</span>::copyFile(<span class="str">&quot;/tmp/greeting.txt&quot;</span>, <span class="str">&quot;/tmp/greeting-copy.txt&quot;</span>)
+        <span class="kw">const</span> files: <span class="type">List</span>&lt;<span class="type">String</span>&gt; = <span class="type">Fs</span>::listDirectory(<span class="str">&quot;/tmp&quot;</span>)
+        println(<span class="str">&quot;entries: &quot;</span> + files.len().toString())
+        <span class="type">Fs</span>::deleteFile(<span class="str">&quot;/tmp/greeting-copy.txt&quot;</span>)
+        <span class="kw">return</span> <span class="num">0</span>
+    }
+}
+</code></pre></section><section id="class-Fs" class="item"><h2 class="item-name"><span class="kw">class</span> Fs</h2><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> readFile(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">String</span></div><div class="method-sig"><span class="kw">fn</span> writeFile(path: <span style="color:#ffcb6b">String</span>, content: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> appendFile(path: <span style="color:#ffcb6b">String</span>, content: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> deleteFile(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> copyFile(src: <span style="color:#ffcb6b">String</span>, dest: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> moveFile(src: <span style="color:#ffcb6b">String</span>, dest: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> listDirectory(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">List&lt;String&gt;</span></div><div class="method-sig"><span class="kw">fn</span> createDirectory(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> createDirectories(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> deleteDirectory(path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div></section><section id="class-WatchEvent" class="item"><h2 class="item-name"><span class="kw">class</span> WatchEvent</h2><p class="doc">
+     * One file-system change reported by a Watcher.
+     *
+     * kind is one of &quot;created&quot;, &quot;modified&quot;, &quot;deleted&quot;, &quot;moved&quot; or &quot;overflow&quot;.
+     * An &quot;overflow&quot; event (empty path) means the kernel dropped events: treat
+     * every watched tree as changed and rescan it. For &quot;moved&quot;, path is the
+     * new location and oldPath the previous one; a path moved into or out of
+     * the watched tree is reported as &quot;created&quot; or &quot;deleted&quot; instead.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>kind</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>path</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>oldPath</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>isDirectory</code></td><td class="member-type"><code>Bool</code></td><td></td></tr></table></section><section id="fn-watchCreate" class="item"><h2 class="item-name"><span class="kw">fn</span> watchCreate() → <span style="color:#ffcb6b">Int64</span></h2></section><section id="fn-watchLastError" class="item"><h2 class="item-name"><span class="kw">fn</span> watchLastError() → <span style="color:#ffcb6b">String</span></h2></section><section id="fn-watchAdd" class="item"><h2 class="item-name"><span class="kw">fn</span> watchAdd(handle: <span style="color:#ffcb6b">Int64</span>, path: <span style="color:#ffcb6b">String</span>, recursive: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">String</span></h2></section><section id="fn-watchRemove" class="item"><h2 class="item-name"><span class="kw">fn</span> watchRemove(handle: <span style="color:#ffcb6b">Int64</span>, path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></h2></section><section id="fn-watchPoll" class="item"><h2 class="item-name"><span class="kw">fn</span> watchPoll(handle: <span style="color:#ffcb6b">Int64</span>, timeoutMs: <span style="color:#ffcb6b">Int64</span>, debounceMs: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">List&lt;String&gt;</span></h2></section><section id="fn-watchClose" class="item"><h2 class="item-name"><span class="kw">fn</span> watchClose(handle: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></h2></section><section id="class-Watcher" class="item"><h2 class="item-name"><span class="kw">class</span> Watcher</h2><p class="doc">
+     * Watches files and directories for changes (Linux inotify). Typical
+     * use is one task looping on poll():
+     *
+     *     const w = Watcher::create(50)
+     *     Watcher::watch(w, &quot;/path/to/project&quot;, true)
+     *     while (running) {
+     *         for (e in Watcher::poll(w, 1000)) { ... }
+     *     }
+     *     Watcher::close(w)
+     *
+     * Recursive watches follow directories created later. Operations on one
+     * Watcher are serialised; poll() blocks only its own caller. Watches
+     * count against the kernel's fs.inotify.max_user_watches; hitting that
+     * limit is reported as an error from watch(), never silently ignored.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>handle</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>debounceMs</code></td><td class="member-type"><code>Int64</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> create(debounceMs: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Watcher</span></div><div class="method-doc">
+         * debounceMs &gt; 0 makes poll() keep collecting after the first event
+         * until the stream has been quiet for that long (at most one extra
+         * second), so a burst such as a git checkout arrives as one batch.
+         * Identical events within a batch are reported once.
+         </div><div class="method-sig"><span class="kw">fn</span> watch(w: <span style="color:#ffcb6b">Watcher</span>, path: <span style="color:#ffcb6b">String</span>, recursive: <span style="color:#ffcb6b">Bool</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc"> Watches path (a file or a directory); recursive also covers every sub-directory. Throws a String if path cannot be watched. </div><div class="method-sig"><span class="kw">fn</span> unwatch(w: <span style="color:#ffcb6b">Watcher</span>, path: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc"> Stops watching path and, if it is a directory, everything below it. </div><div class="method-sig"><span class="kw">fn</span> poll(w: <span style="color:#ffcb6b">Watcher</span>, timeoutMs: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">List&lt;WatchEvent&gt;</span></div><div class="method-doc">
+         * Waits up to timeoutMs (&lt; 0 forever, 0 polls) for changes and returns
+         * them in order; an empty list means timeout. See WatchEvent for the
+         * event kinds, including the &quot;overflow&quot; rescan signal.
+         </div><div class="method-sig"><span class="kw">fn</span> close(w: <span style="color:#ffcb6b">Watcher</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc"> Releases the inotify instance. Further use of the Watcher is a runtime error. </div></section>
+</main>
+</body>
+</html>
