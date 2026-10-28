@@ -1,7 +1,7 @@
 # Native service and AI development roadmap
 
 This is the repository delivery map for [issue #316](https://github.com/subnix-work/tinox/issues/316),
-reviewed against commit `37a746b` on 2026-10-22 (Tinox 2.4.0).
+reviewed against the Tinox 2.8.0 sources on 2026-10-28.
 The original review baseline was `044c773`. Issue state and follow-up work remain
 in GitHub; this page connects the proposals to code, contracts and verification
 in this checkout. A landed implementation does not establish that every
@@ -10,9 +10,10 @@ acceptance experiment has run.
 The original overview's next-item pointer to #297 is superseded: structured
 diagnostics landed in PR #324 (`4aeb95d`). The CLI and LSP share versioned
 diagnostic records, and their focused tests pass in this checkout. The next
-missing implementation in the original numerical sequence is #308. #315 is
-also absent here. Re-check the integration branch before starting either;
-commits on other branches are not evidence of delivery in this snapshot.
+missing implementation in the original numerical sequence is #308. #315 has
+an evaluation runner and protocol tests; measured model baselines and efficiency
+comparisons remain outstanding. Re-check the integration branch before starting
+follow-up work; commits on other branches are not evidence of delivery here.
 
 The prerequisite entry-discovery fixes #293/#317 landed through PR #319.
 Their historical completion is separate from the cache and frontend work below.
@@ -57,7 +58,7 @@ Their historical completion is separate from the cache and frontend work below.
 | Proposal | Delivery evidence in this checkout | Verification and boundary |
 | --- | --- | --- |
 | #314 Checked references and AI guide | [Shared metadata workflow](REFERENCE_WORKFLOW.md), [compact guide](AI_GUIDE.md), PR #393 | `make docs-check` checks current snapshots, canonical examples and documentation inventories. Immutable release pages have a separate staging workflow. |
-| #315 Reproducible AI task evaluations | **Remaining implementation in this snapshot.** | Use the same semantic metadata as compiler tools. Record model/configuration, task inputs, total tokens through independently verified completion, raw outcomes and reproducible controls. A green compiler gate is required before interpreting comparative results. |
+| #315 Reproducible AI task evaluations | [Runner and protocol](../benchmarks/ai/README.md), [protocol tests](../benchmarks/ai/runner_test.py), `make ai-eval-test` | Infrastructure exists for isolated task copies, independent acceptance checks, pinned model identity, usage/cost budgets, transcripts and controlled comparisons. Initial tasks cover arithmetic bug fixes, HTTP validation and in-memory CRUD. No measured model baseline or efficiency improvement is established; broader transactional, broker and concurrency tasks remain follow-ups. |
 
 ## Remaining delivery sequence
 
@@ -67,9 +68,12 @@ Their historical completion is separate from the cache and frontend work below.
 2. Complete independent deployment experiments for #309 and architecture coverage
    for #310; collect #312 measurements under enforced container memory limits.
    Keep environment limitations visible alongside results.
-3. Implement #315 with independently checked task outcomes. Compare feedback
-   latency and total tokens against reproducible baselines rather than treating
-   the existence of the guide or caches as evidence of AI efficiency.
+3. Complete #315's measurement phase using the existing evaluation runner and
+   independently checked task outcomes. Record model/configuration, task inputs,
+   total tokens through verified completion, raw outcomes and reproducible
+   controls. Compare feedback latency and total tokens against baselines; the
+   runner, guide and caches alone are not evidence of AI efficiency. A green
+   compiler gate is required before interpreting comparative results.
 4. Continue #306's API migration using the source inventory, re-checking later
    filesystem fixes before choosing the next operation. Keep absence distinct
    from recoverable failure and preserve documented compatibility.

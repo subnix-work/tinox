@@ -6,10 +6,11 @@ covers a price calculation bug fix, HTTP validation/not-found handling, and
 annotation-driven in-memory CRUD. Transactional updates, real broker consumers,
 and concurrent work are follow-up tasks, not represented by these results.
 
-Issue history rechecked on 2026-10-22: #315 remains proposed, without comments.
-#293 was fixed on develop via #319, but this checkout predates that fix. Checks
-here build and execute code directly and compare behavior using Python; they do
-not accept a model's test report or rely on `tinox test` discovery/exit status.
+The runner and its protocol tests are implemented; #315's measured model
+baselines and efficiency comparisons remain outstanding. Entry-discovery fix
+#293/#319 is present in this checkout. Acceptance checks still build and execute
+code directly and compare behavior using Python; they do not accept a model's
+test report or rely on `tinox test` discovery/exit status.
 
 ## Configure and run
 

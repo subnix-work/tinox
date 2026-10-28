@@ -1467,7 +1467,7 @@ impl Parser {
         let cond = if !self.check(TokenKind::Semicolon) {
             Some(self.parse_expr()?)
         } else {
-            self.bump();
+            // The shared end_stmt below consumes the separator, even for no condition.
             None
         };
         self.end_stmt()?;
@@ -4676,6 +4676,54 @@ mod tests {
         let DeclKind::Function(f) = d else { panic!() };
         let StmtKind::Block(stmts) = &f.body.node else { panic!() };
         assert!(matches!(stmts[0].node, StmtKind::ForC { .. }));
+    }
+
+    #[test]
+    fn test_for_c_optional_clauses() {
+        for has_init in [false, true] {
+            for has_cond in [false, true] {
+                for has_update in [false, true] {
+                    let init = if has_init { "var i = 0" } else { "" };
+                    let cond = if has_cond { "i < 3" } else { "" };
+                    let update = if has_update { "i += 1" } else { "" };
+                    let d = first_decl(&format!(
+                        "fn f() {{ for ({init}; {cond}; {update}) {{ break }} }}"
+                    ));
+                    let DeclKind::Function(f) = d else { panic!() };
+                    let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+                    let StmtKind::ForC { init, cond, update, .. } = &stmts[0].node else {
+                        panic!("expected C-style loop")
+                    };
+                    assert_eq!(init.is_some(), has_init);
+                    assert_eq!(cond.is_some(), has_cond);
+                    assert_eq!(update.is_some(), has_update);
+                }
+            }
+        }
+        // Line breaks inside a header still require the clause separators.
+        let d = first_decl("fn f() { for (var i = 0;\ni < 3;\ni += 1) { } }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        assert!(matches!(stmts[0].node, StmtKind::ForC {
+            init: Some(_), cond: Some(_), update: Some(_), ..
+        }));
+    }
+
+    #[test]
+    fn test_for_c_malformed_headers_still_fail() {
+        for header in [
+            "()",
+            "(;)",
+            "(;;;)",
+            "(var i = 0 i < 3; i += 1)",
+            "(; i < 3 i += 1)",
+            "(;; i += 1",
+            "(i in xs)",
+            "(var i = 0\ni < 3\ni += 1)",
+        ] {
+            assert!(parse_err(&format!("fn f() {{ for {header} {{ break }} }}")), "{header}");
+        }
+        assert!(parse_err("fn f() { let x = 1 let y = 2 }"));
     }
 
     // ================================================================

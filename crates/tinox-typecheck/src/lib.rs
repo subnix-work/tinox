@@ -2762,7 +2762,8 @@ impl TypeChecker {
                 let elem_ty = match iter_ty {
                     ValueType::Range => ValueType::Int,
                     ValueType::Array(e) => *e,
-                    ValueType::String => ValueType::String,
+                    // Match s[i]: strings iterate unsigned byte values, not strings.
+                    ValueType::String => ValueType::Int,
                     other => other,
                 };
                 let was_in_loop = self.symbols.in_loop;
@@ -5668,6 +5669,21 @@ interface IDrawable extends IDoesNotExist {
     #[test]
     fn test_while_bool_cond_ok() {
         ok("fn f() { while true { } }");
+    }
+
+    #[test]
+    fn test_string_iteration_elements_are_int64_bytes() {
+        ok(r#"fn f() { for byte in "é" { const value: Int64 = byte
+            println(byte == 195)
+            println(byte.toString())
+            println(byte.toFloat()) } }"#);
+    }
+
+    #[test]
+    fn test_string_iteration_rejects_string_operations() {
+        err_contains(r#"fn f() { for byte in "ab" { println(byte.len()) } }"#, "len");
+        err_contains(r#"fn f() { for byte in "ab" { const text: String = byte } }"#, "expected String");
+        err_contains(r#"fn f() { for byte in "ab" { println(byte == "a") } }"#, "cannot be applied");
     }
 
     #[test]

@@ -33,11 +33,24 @@ conventions.
 
 ## Scope notes
 
-Some stdlib modules explicitly document known, non-hardened gaps in their
-v1 implementation (e.g. no publisher confirms in `amqp091`, no
-fragmentation support in `websocket`, self-signed-certificate opt-outs in
-TLS clients via `verify=false`). These are tracked as design limitations
-in [GitHub issues](https://github.com/subnix-work/tinox/issues), not
-silent vulnerabilities — but reports pointing out cases where a
-documented limitation is worse than expected (e.g. exploitable, not just
-incomplete) are still very welcome.
+Current protocol support includes WebSocket fragment reassembly in
+[`Ws::readMessage`](crates/tinox-core-ext/websocket/tinox/core/websocket/Ws.tnx)
+and AMQP-091 publisher confirms through
+[`confirmSelect` / `waitForConfirm`](crates/tinox-core-ext/amqp091/tinox/core/amqp091/AmqpChannel091.tnx).
+The [fragmentation fixture](tests/e2e/ws_fragmentation/Main.tnx) covers
+continuations, interleaved control frames and invalid frame sequences; the
+[publisher-confirm fixture](tests/e2e/amqp091_publisher_confirms/Main.tnx)
+covers positive and negative broker acknowledgements. These checks do not
+constitute an independent security audit or exhaustive protocol validation.
+
+Known boundaries remain: AMQP-091 consume and confirm traffic on the same
+channel are not demultiplexed by method kind
+([issue #541](https://github.com/subnix-work/tinox/issues/541)), and the blocking
+confirm API does not provide a per-call deadline. TLS clients expose an explicit
+`verify=false` opt-out for self-signed test certificates; it disables certificate
+verification and must not be confused with authenticated TLS.
+
+Design limitations and deferred work are tracked in
+[GitHub issues](https://github.com/subnix-work/tinox/issues). Reports showing
+that a documented limitation has a security impact are welcome through the
+private reporting process above.

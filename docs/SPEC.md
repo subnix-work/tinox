@@ -1,12 +1,11 @@
 # Tinox Programming Language Specification
 
-**Version:** 2.7.0
+**Version:** 2.8.0
 **Status:** Actively developed — self-hosting tooling (LSP, `tinox fmt`, package
 registry client, dev dashboard) and 70+ documented bugfixes deep, not an early
 draft. This document was last verified against the actual compiler/runtime
-source on 2026-10-26; where a feature exists as a lexer/parser keyword but has
-no real-world usage in the codebase, that is called out explicitly rather than
-presented as a working feature.
+source on 2026-10-28. Concurrency and protocol capability summaries are tied to
+working fixtures; remaining limits are distinguished from implemented features.
 
 ---
 
@@ -52,9 +51,9 @@ sizeof      typeof      is          cast        null        Nothing
 Never       Any         true        false       immutable
 ```
 
-Several of these are reserved but have little or no real usage in the
-codebase today — see the notes under [Concurrency](#concurrency) (`channel`/
-`send`/`recv`) and [Trait Declarations](#trait-declarations) (`trait`).
+Some keywords remain reserved without a working implementation — see
+[Trait Declarations](#trait-declarations) (`trait`). The `channel`/`send`/`recv`
+primitives are implemented; see [Concurrency](#concurrency) for their boundaries.
 `case` is reserved but `match` arms do not currently use it (see
 [Match Expressions](#match-expressions)).
 
@@ -753,19 +752,19 @@ is harmless, a different signature is reported at the `extern fn`.
 
 ## Concurrency
 
-Real concurrency in Tinox is `spawn`/`await`, backed directly by POSIX
-threads (`pthread_create` in `tinox_task_spawn`, runtime.c) — genuine
-parallelism, not a cooperative/green-thread scheduler. `spawn` is a
-**unary expression applied to a call expression**, not a call to a
-`spawn(...)` function, and returns a handle used with `await`:
+`spawn`/`await` use POSIX threads (`pthread_create` in
+`tinox_task_spawn`, `runtime/runtime.c`) and provide real parallelism. Tasks
+are admitted under the runtime's task concurrency and queue-wait budgets;
+each admitted task creates a thread, rather than a coroutine. `spawn` is a
+unary expression applied to a call expression, and its result has type `Task<T>` for a call returning `T`:
 
 ```tinox
-const handle: Int64 = spawn fetchData(url)
+const handle: Task<Data> = spawn Main::fetchData(url)
 // ... do other work ...
 const result: Data = await handle
 ```
 
-`async fnc` marks a function as spawnable this way:
+A static asynchronous method uses `async fnc`:
 
 ```tinox
 async fnc fetchData(url: String) -> Data
@@ -774,14 +773,36 @@ async fnc fetchData(url: String) -> Data
 }
 ```
 
-Note the keyword is `async fnc` (static), matching real usage in the
-codebase — not `async fn`.
+`await` preserves the task's result type, including classes, collections,
+nullable values, narrow numeric values and `Nothing`. Repeated await returns
+the cached result. Legacy opaque `Int64` task handles are still accepted, but
+lose the result-type information; prefer `Task<T>` or inference. See the
+[typed task fixture](../tests/e2e/typed_tasks/Main.tnx).
 
-**`channel`/`send`/`recv`/`Channel<T>` are reserved keywords with parser
-support but no real usage anywhere in the codebase.** Every concurrency
-example in this repo uses `spawn`/`await` directly (commonly with a
-shared, GC-managed object for passing results back, not a channel). Do
-not assume `Channel<T>` is a working, tested primitive.
+`scope { ... }` provides structured task lifetime and joins its children on
+exit. Cancellation and deadlines are cooperative: blocking operations must
+participate in cancellation checks, and an unresponsive child can trigger a
+visible watchdog failure. See the [scope tests](../crates/tinox/tests/task_scopes.rs)
+and [deadline tests](../crates/tinox/tests/task_cancellation.rs).
+
+`channel`, `send` and `recv` are implemented message-passing primitives:
+
+```tinox
+const inbox: Channel<Int64> = channel
+send inbox -> 42
+const value: Int64 = recv inbox
+```
+
+The runtime uses a mutex-protected FIFO queue; send enqueues a value and recv
+waits for a value, checking task cancellation while blocked. `Channel<T>`
+annotations provide the received element type. Class-valued channels are used
+by the [AMQP-091 dispatcher](../crates/tinox-core-ext/amqp091/tinox/core/amqp091/AmqpConnection091.tnx),
+and [cancellation tests](../crates/tinox/tests/task_cancellation.rs) use channels
+for synchronization. Channels currently use opaque runtime handles and word
+values, and send does not enforce the declared element type. The queue has no
+capacity bound or close operation; these APIs do not establish a fully checked,
+bounded channel contract. Broader semantic coverage is tracked in
+[issue #518](https://github.com/subnix-work/tinox/issues/518).
 
 ---
 
@@ -987,7 +1008,10 @@ a compile error (closures capture by value).
 ## Strings
 
 A `String` is a sequence of bytes, not of code points. `s.len()` counts bytes
-and `s[i]` is the byte at index `i` (an `Int64`). `charAt`/`substring` abort
+and `s[i]` is the byte at index `i` (an `Int64`). Likewise, `for byte in s`
+iterates unsigned byte values as `Int64` (0–255), including each individual
+byte of a UTF-8 sequence; iteration elements are not `String` or Unicode
+scalar values. `charAt`/`substring` abort
 when an index is out of range, and `substring` aborts rather than split a
 multi-byte UTF-8 sequence. NUL escapes (`\0`, `\x00`) are rejected in string
 literals because strings are NUL-terminated at runtime. `toInt()`/`toFloat()`
@@ -1019,9 +1043,9 @@ every file under `src/` and `tests/`.
 
 - `trait` — reserved keyword, unimplemented in practice (no real usage
   found anywhere in the codebase).
-- `channel`/`send`/`recv`/`Channel<T>` — reserved keywords with parser
-  support, but no real usage; `spawn`/`await` is the concurrency
-  primitive actually used and tested throughout the codebase.
+- Channels are implemented and used, but still have weaker element checking
+  than `Task<T>`, an unbounded queue and no close operation; see
+  [Concurrency](#concurrency). Cancellation is cooperative rather than forced.
 - Generic bounds (`<T: X>` / `where` clauses) — parsed in some contexts
   but not exercised in real code.
 - `T?` (nullable types) — parsed and type-checked, but most stdlib APIs
