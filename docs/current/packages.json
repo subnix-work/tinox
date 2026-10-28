@@ -78,396 +78,730 @@
   "packages": [
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/amqp091/1-1-0/docs.html",
+      "docs": "docs/tinox-core/array/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/array/tinox.toml",
+      "name": "array",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/base64/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/base64/tinox.toml",
+      "name": "base64",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/cache/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/cache/tinox.toml",
+      "name": "cache",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/collections/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/collections/tinox.toml",
+      "name": "collections",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/complex/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/complex/tinox.toml",
+      "name": "complex",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/cron/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/cron/tinox.toml",
+      "name": "cron",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/debug/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/debug/tinox.toml",
+      "name": "debug",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/decimal/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/decimal/tinox.toml",
+      "name": "decimal",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/encoding/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/encoding/tinox.toml",
+      "name": "encoding",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/env/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/env/tinox.toml",
+      "name": "env",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/events/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/events/tinox.toml",
+      "name": "events",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/fmt/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/fmt/tinox.toml",
+      "name": "fmt",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/format/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/format/tinox.toml",
+      "name": "format",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/fs/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/fs/tinox.toml",
+      "name": "fs",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/graph/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/graph/tinox.toml",
+      "name": "graph",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/hash/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/hash/tinox.toml",
+      "name": "hash",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/heap/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/heap/tinox.toml",
+      "name": "heap",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/hex/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/hex/tinox.toml",
+      "name": "hex",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/io/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/io/tinox.toml",
+      "name": "io",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/iter/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/iter/tinox.toml",
+      "name": "iter",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/logger/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/logger/tinox.toml",
+      "name": "logger",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/math/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/math/tinox.toml",
+      "name": "math",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/mathf/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/mathf/tinox.toml",
+      "name": "mathf",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/mathx/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/mathx/tinox.toml",
+      "name": "mathx",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/option/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/option/tinox.toml",
+      "name": "option",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/pool/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/pool/tinox.toml",
+      "name": "pool",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/process/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/process/tinox.toml",
+      "name": "process",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/queue/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/queue/tinox.toml",
+      "name": "queue",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/random/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/random/tinox.toml",
+      "name": "random",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/regex/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/regex/tinox.toml",
+      "name": "regex",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/result/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/result/tinox.toml",
+      "name": "result",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/semaphore/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/semaphore/tinox.toml",
+      "name": "semaphore",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/set/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/set/tinox.toml",
+      "name": "set",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/socket/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/socket/tinox.toml",
+      "name": "socket",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/sort/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/sort/tinox.toml",
+      "name": "sort",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/string/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/string/tinox.toml",
+      "name": "string",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/time/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/time/tinox.toml",
+      "name": "time",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/trie/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/trie/tinox.toml",
+      "name": "trie",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/uri/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/uri/tinox.toml",
+      "name": "uri",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/uuid/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/uuid/tinox.toml",
+      "name": "uuid",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/validation/1-1-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core/packages/validation/tinox.toml",
+      "name": "validation",
+      "version": "1.1.0"
+    },
+    {
+      "dependencies": [],
+      "docs": "docs/tinox-core/amqp091/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/amqp091/tinox.toml",
       "name": "amqp091",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/amqp10/1-1-0/docs.html",
+      "docs": "docs/tinox-core/amqp10/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/amqp10/tinox.toml",
       "name": "amqp10",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/asm/1-1-0/docs.html",
+      "docs": "docs/tinox-core/asm/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/asm/tinox.toml",
       "name": "asm",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/bitmap/1-1-0/docs.html",
+      "docs": "docs/tinox-core/bitmap/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/bitmap/tinox.toml",
       "name": "bitmap",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/compress/1-1-0/docs.html",
+      "docs": "docs/tinox-core/compress/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/compress/tinox.toml",
       "name": "compress",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/crypto/1-1-0/docs.html",
+      "docs": "docs/tinox-core/crypto/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/crypto/tinox.toml",
       "name": "crypto",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/csv/1-1-0/docs.html",
+      "docs": "docs/tinox-core/csv/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/csv/tinox.toml",
       "name": "csv",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/db/1-2-1/docs.html",
+      "docs": "docs/tinox-core/db/1-2-2/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/db/tinox.toml",
       "name": "db",
-      "version": "1.2.1"
+      "version": "1.2.2"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/hpack/1-1-0/docs.html",
+      "docs": "docs/tinox-core/hpack/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/hpack/tinox.toml",
       "name": "hpack",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/http/1-1-0/docs.html",
+      "docs": "docs/tinox-core/http/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/http/tinox.toml",
       "name": "http",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [
         {
           "artifactId": "hpack",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "http_server",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/http2_server/1-1-0/docs.html",
+      "docs": "docs/tinox-core/http2_server/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/http2_server/tinox.toml",
       "name": "http2_server",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [
         {
           "artifactId": "http_server",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/http3_server/1-1-0/docs.html",
+      "docs": "docs/tinox-core/http3_server/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/http3_server/tinox.toml",
       "name": "http3_server",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [
         {
           "artifactId": "json",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/http_server/1-1-0/docs.html",
+      "docs": "docs/tinox-core/http_server/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/http_server/tinox.toml",
       "name": "http_server",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/ini/1-1-0/docs.html",
+      "docs": "docs/tinox-core/ini/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/ini/tinox.toml",
       "name": "ini",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/json/1-1-0/docs.html",
+      "docs": "docs/tinox-core/json/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/json/tinox.toml",
       "name": "json",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [
         {
           "artifactId": "http",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "json",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/jwt/1-1-0/docs.html",
+      "docs": "docs/tinox-core/jwt/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/jwt/tinox.toml",
       "name": "jwt",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [
         {
           "artifactId": "json",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "http",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "yaml",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/kubernetes/1-1-0/docs.html",
+      "docs": "docs/tinox-core/kubernetes/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/kubernetes/tinox.toml",
       "name": "kubernetes",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/metrics/1-1-0/docs.html",
+      "docs": "docs/tinox-core/metrics/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/metrics/tinox.toml",
       "name": "metrics",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/msgpack/1-1-0/docs.html",
+      "docs": "docs/tinox-core/msgpack/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/msgpack/tinox.toml",
       "name": "msgpack",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [
         {
           "artifactId": "crypto",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "http",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "json",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/oauth2/1-1-0/docs.html",
+      "docs": "docs/tinox-core/oauth2/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/oauth2/tinox.toml",
       "name": "oauth2",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [
         {
           "artifactId": "crypto",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "http_server",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "json",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "jwt",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "oauth2",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/oidc/1-1-0/docs.html",
+      "docs": "docs/tinox-core/oidc/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/oidc/tinox.toml",
       "name": "oidc",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/ratelimit/1-1-0/docs.html",
+      "docs": "docs/tinox-core/ratelimit/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/ratelimit/tinox.toml",
       "name": "ratelimit",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/redis/1-1-0/docs.html",
+      "docs": "docs/tinox-core/redis/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/redis/tinox.toml",
       "name": "redis",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [
         {
           "artifactId": "http",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "http_server",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "json",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "jwt",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/rest/1-1-0/docs.html",
+      "docs": "docs/tinox-core/rest/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/rest/tinox.toml",
       "name": "rest",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/smtp/1-1-0/docs.html",
+      "docs": "docs/tinox-core/smtp/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/smtp/tinox.toml",
       "name": "smtp",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/sse/1-1-0/docs.html",
+      "docs": "docs/tinox-core/sse/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/sse/tinox.toml",
       "name": "sse",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/toml/1-1-0/docs.html",
+      "docs": "docs/tinox-core/toml/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/toml/tinox.toml",
       "name": "toml",
-      "version": "1.1.0"
-    },
-    {
-      "dependencies": [],
-      "docs": "docs/tinox-core/tpl/1-1-0/docs.html",
-      "group": "tinox.core",
-      "manifest": "crates/tinox-core-ext/tpl/tinox.toml",
-      "name": "tpl",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [
         {
           "artifactId": "json",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
+        }
+      ],
+      "docs": "docs/tinox-core/tpl/1-1-1/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core-ext/tpl/tinox.toml",
+      "name": "tpl",
+      "version": "1.1.1"
+    },
+    {
+      "dependencies": [
+        {
+          "artifactId": "json",
+          "group": "tinox.core",
+          "version": "1.1.1"
         },
         {
           "artifactId": "http_server",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         },
         {
           "artifactId": "websocket",
           "group": "tinox.core",
-          "version": "1.1.0"
+          "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/ui/1-1-0/docs.html",
+      "docs": "docs/tinox-core/ui/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/ui/tinox.toml",
       "name": "ui",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/websocket/1-1-0/docs.html",
+      "docs": "docs/tinox-core/websocket/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/websocket/tinox.toml",
       "name": "websocket",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/xml/1-1-0/docs.html",
+      "docs": "docs/tinox-core/xml/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/xml/tinox.toml",
       "name": "xml",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/yaml/1-1-0/docs.html",
+      "docs": "docs/tinox-core/yaml/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/yaml/tinox.toml",
       "name": "yaml",
-      "version": "1.1.0"
+      "version": "1.1.1"
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/zip/1-1-0/docs.html",
+      "docs": "docs/tinox-core/zip/1-1-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/zip/tinox.toml",
       "name": "zip",
-      "version": "1.1.0"
+      "version": "1.1.1"
     }
   ]
 }

@@ -1,0 +1,14 @@
+import tinox.core.decimal
+class Main
+{
+    fnc main() -> Int32
+    {
+        const price: Decimal = Decimal::fromInt(1999)
+        const tax: Decimal = Decimal::fromInt(160)
+        const total: Decimal = Decimal::add(price, tax)
+        println(Decimal::toString(total))
+        const discounted: Decimal = Decimal::subtract(total, Decimal::fromInt(500))
+        println(Decimal::toString(discounted))
+        return 0
+    }
+}

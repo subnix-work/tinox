@@ -1,0 +1,15 @@
+import tinox.core.random
+class Main
+{
+    fnc main() -> Int32
+    {
+        println("dice roll: " + (Random::nextInt(6) + 1).toString())
+        println("coin flip: " + Random::nextBool().toString())
+        println("token: " + Random::generateString(12))
+        const names: List<String> = ["Ada", "Grace", "Alan", "Barbara"]
+        println("picked: " + Random::pickOne(names))
+        const shuffled: List<String> = Random::shuffle(names)
+        println("shuffled count: " + shuffled.len().toString())
+        return 0
+    }
+}

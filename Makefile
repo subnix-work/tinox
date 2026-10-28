@@ -219,7 +219,7 @@ docs-generate:
 
 docs-check:
 	cargo build --release -p tinox
-	python3 -m unittest discover -s tests -p 'reference_test.py'
+	python3 -m unittest discover -s tests -p '*_test.py'
 	python3 scripts/reference.py check
 
 docs-stage:

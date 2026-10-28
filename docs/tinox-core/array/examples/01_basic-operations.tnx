@@ -1,0 +1,14 @@
+import tinox.core.array
+class Main
+{
+    fnc main() -> Int32
+    {
+        const numbers: List<Int64> = Arrays::range(1, 6)
+        println("sum: " + Arrays::sum(numbers).toString())
+        println("max: " + Arrays::findMax(numbers).toString())
+        println("sorted: " + Arrays::isSorted(numbers).toString())
+        const sorted: List<Int64> = Arrays::bubbleSort([5, 3, 1, 4, 2])
+        println("contains 4: " + Arrays::containsInt(sorted, 4).toString())
+        return 0
+    }
+}

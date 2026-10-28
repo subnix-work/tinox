@@ -1,0 +1,29 @@
+import tinox.core.result
+class Main
+{
+    fnc divide(a: Int64, b: Int64) -> Result<Int64>
+    {
+        if (b == 0)
+        {
+            return Result<Int64>::err("division by zero")
+        }
+        return Result<Int64>::ok(a / b)
+    }
+
+    fnc main() -> Int32
+    {
+        const good: Result<Int64> = Main::divide(10, 2)
+        if (good.isOk())
+        {
+            println("10 / 2 = " + good.unwrap().toString())
+        }
+
+        const bad: Result<Int64> = Main::divide(10, 0)
+        if (bad.isErr())
+        {
+            println("error: " + bad.getError())
+        }
+        println("fallback: " + bad.unwrapOr(-1).toString())
+        return 0
+    }
+}

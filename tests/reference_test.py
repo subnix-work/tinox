@@ -11,6 +11,20 @@ SPEC.loader.exec_module(reference)
 
 
 class ReferenceChecks(unittest.TestCase):
+    def test_bundled_and_extended_release_manifests_resolve_their_own_sources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for directory, name in [('crates/tinox-core/packages', 'hex'),
+                                    ('crates/tinox-core-ext', 'crypto')]:
+                manifest = root / directory / name / 'tinox.toml'
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text(f'[package]\nname = "{name}"\nversion = "1.1.0"\n')
+            inventory = reference.packages(root)
+            self.assertEqual({p['name'] for p in inventory}, {'hex', 'crypto'})
+            sources = {p['name']: reference.package_source(root, p) for p in inventory}
+            self.assertEqual(sources['hex'], root / 'crates/tinox-core/tinox/core/hex')
+            self.assertEqual(sources['crypto'], root / 'crates/tinox-core-ext/crypto/tinox/core/crypto')
+
     def test_inventory_rejects_translation_drift_and_dangling_navigation(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

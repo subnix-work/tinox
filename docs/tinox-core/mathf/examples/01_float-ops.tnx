@@ -1,0 +1,13 @@
+import tinox.core.mathf
+class Main
+{
+    fnc main() -> Int32
+    {
+        const root: Float64 = Mathf::sqrt(2.0)
+        println("sqrt(2) = " + root.toString())
+        println("round(3.6) = " + Mathf::round(3.6).toString())
+        println("clamp(15.0, 0.0, 10.0) = " + Mathf::clamp(15.0, 0.0, 10.0).toString())
+        println("lerp(0.0, 100.0, 0.25) = " + Mathf::lerp(0.0, 100.0, 0.25).toString())
+        return 0
+    }
+}

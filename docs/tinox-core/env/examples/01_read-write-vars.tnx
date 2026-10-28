@@ -1,0 +1,13 @@
+import tinox.core.env
+class Main
+{
+    fnc main() -> Int32
+    {
+        Env::setVar("APP_MODE", "production")
+        const mode: String = Env::getVar("APP_MODE")
+        println("running in " + mode + " mode")
+        println("cwd: " + Env::currentDir())
+        Env::removeVar("APP_MODE")
+        return 0
+    }
+}

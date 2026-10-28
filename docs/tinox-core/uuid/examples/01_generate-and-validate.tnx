@@ -1,0 +1,12 @@
+import tinox.core.uuid
+class Main
+{
+    fnc main() -> Int32
+    {
+        const id: String = Uuid::generate()
+        println(id)
+        println(Uuid::isValid(id).toString())
+        println(Uuid::isValid("not-a-uuid").toString())
+        return 0
+    }
+}

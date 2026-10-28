@@ -1,0 +1,22 @@
+import tinox.core.sort
+class Main
+{
+    fnc main() -> Int32
+    {
+        const data: List<Int64> = [5, 3, 8, 1, 9, 2]
+        const quick: List<Int64> = Sort::quickSort(data)
+        println("quickSort: " + quick.len().toString() + " items")
+        const merged: List<Int64> = Sort::mergeSort(data)
+        println("mergeSort: " + merged.len().toString() + " items")
+        const inserted: List<Int64> = Sort::insertionSort(data)
+        println("insertionSort: " + inserted.len().toString() + " items")
+        var i: Int64 = 0
+        while i < quick.len()
+        {
+            println(quick[i].toString())
+            i = i + 1
+        }
+
+        return 0
+    }
+}

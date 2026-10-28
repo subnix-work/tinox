@@ -1,0 +1,14 @@
+import tinox.core.logger
+class Main
+{
+    fnc main() -> Int32
+    {
+        const log: Logger = Logger::new("Main")
+        Logger::setLevel(log, LogLevel::Warn)
+        Logger::debug(log, "this is filtered out")
+        Logger::info(log, "this is filtered out too")
+        Logger::warn(log, "disk usage above 80%")
+        Logger::error(log, "connection refused")
+        return 0
+    }
+}

@@ -1,0 +1,16 @@
+import tinox.core.heap
+class Main
+{
+    fnc main() -> Int32
+    {
+        // Heap::new() defaults to a min-heap comparator (a < b).
+        const h: Heap<Int64> = Heap::new()
+        Heap::push(h, 5)
+        Heap::push(h, 1)
+        Heap::push(h, 3)
+        println("smallest: " + Heap::peek(h).toString())
+        println("popped: " + Heap::pop(h).toString())
+        println("next smallest: " + Heap::peek(h).toString())
+        return 0
+    }
+}

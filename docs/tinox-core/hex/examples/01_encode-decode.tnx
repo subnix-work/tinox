@@ -1,0 +1,13 @@
+import tinox.core.hex
+class Main
+{
+    fnc main() -> Int32
+    {
+        const encoded: String = Hex::encode("Hi!")
+        println(encoded)
+        const decoded: String = Hex::decode(encoded)
+        println(decoded)
+        println(Hex::dump("Hi!"))
+        return 0
+    }
+}
