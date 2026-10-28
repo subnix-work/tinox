@@ -1881,6 +1881,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_string_compare(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_contains(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_index_of(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_index_of_from(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_last_index_of(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_reverse(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_to_upper(i8*)").unwrap();
@@ -1892,6 +1893,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_string_char_code_at(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_replace(i8*, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_string_split(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_string_chars(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_join(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_json_list_serialize(i64*, ptr)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_sort(i64*)").unwrap();
@@ -9736,6 +9738,43 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
+    /// Shared lowering keeps the direct builtin and instance call identical.
+    fn gen_string_index_of(&mut self, obj_ptr: &str, args: &[tinox_parser::Expr], ctx: &mut GenCtx) -> Result<(String, String), ErrorBag> {
+        let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
+        let arg_str = if arg_ty == "i8*" { arg.clone() } else {
+            let c = self.temp();
+            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, arg).unwrap();
+            c
+        };
+        let result = self.temp();
+        if let Some(from) = args.get(1) {
+            let unsigned = self.semantic_type(from.id).is_some_and(|ty| ty.is_unsigned());
+            let (from, from_ty) = self.gen_expr(from, ctx)?;
+            let from = if unsigned && from_ty != "i64" {
+                let wide = self.temp();
+                writeln!(&mut self.ir, "{} = zext {} {} to i64", wide, from_ty, from).unwrap();
+                wide
+            } else {
+                self.coerce_to_i64(&from, &from_ty)
+            };
+            // The runtime accepts signed offsets. Saturate
+            // UInt64 values above INT64_MAX to an offset
+            // beyond any addressable string, never to zero.
+            let from = if unsigned && from_ty == "i64" {
+                let large = self.temp();
+                let bounded = self.temp();
+                writeln!(&mut self.ir, "{} = icmp ugt i64 {}, 9223372036854775807", large, from).unwrap();
+                writeln!(&mut self.ir, "{} = select i1 {}, i64 9223372036854775807, i64 {}", bounded, large, from).unwrap();
+                bounded
+            } else { from };
+            writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of_from(i8* {}, i8* {}, i64 {})", result, obj_ptr, arg_str, from).unwrap();
+        } else {
+            writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, obj_ptr, arg_str).unwrap();
+        }
+        Ok((result, "i64".to_string()))
+    }
+
+
     /// Issue 71 — sub-statement throw granularity: a compound expression like
     /// `a() + b()` used to run `b()` even after `a()` already threw, because the
     /// only unwind check ran at the NEXT STATEMENT boundary (`emit_post_stmt_
@@ -10160,6 +10199,10 @@ tr_done_{idx}:"#).unwrap();
                 // `scope { }`, issue #301): spawn, hand the task to the
                 // scope, and yield the task handle unchanged.
                 if let ExprKind::Ident(name) = &func.node {
+                    if name == "String_indexOf" && (2..=3).contains(&args.len()) {
+                        let (haystack, _) = self.gen_expr(&args[0], ctx)?;
+                        return self.gen_string_index_of(&haystack, &args[1..], ctx);
+                    }
                     if name == "__scope_register" && args.len() == 2 {
                         let (scope, scope_ty) = self.gen_expr(&args[0], ctx)?;
                         let scope = self.coerce_to_i64(&scope, &scope_ty);
@@ -10443,6 +10486,11 @@ tr_done_{idx}:"#).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @{}()", result, name).unwrap();
                             return Ok((result, "double".to_string()));
+                        }
+                        "String_chars" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_string_chars(i8* {})", result, arg_vals[0]).unwrap();
+                            return Ok((result, "i64*".to_string()));
                         }
                         "charAt" => {
                             let (ptr, _) = self.gen_expr(&args[0], ctx)?;
@@ -11442,7 +11490,7 @@ tr_done_{idx}:"#).unwrap();
                 let str_methods = ["len","toUpper","toUpperCase","toLower","toLowerCase",
                     "trim","contains","startsWith","endsWith","split","substring","indexOf",
                     "replace","toString","toInt","toFloat","isInt","isFloat","toBool","repeat","padLeft","padRight",
-                    "count","charAt","toInt64","toFloat64","toBytes","fromBytes","format","encode",
+                    "count","charAt","chars","toInt64","toFloat64","toBytes","fromBytes","format","encode",
                     "decode","hash","md5","sha256","base64Encode","base64Decode","urlEncode",
                     "urlDecode","isNumeric","isEmpty","isBlank","lines","words","reverse",
                     "truncate","ellipsis","mask","redact","normalize"];
@@ -11516,15 +11564,7 @@ tr_done_{idx}:"#).unwrap();
                             return Ok((result, "i1".to_string()));
                         }
                         "indexOf" => {
-                            let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
-                            let arg_str = if arg_ty == "i8*" { arg.clone() } else {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, arg).unwrap();
-                                c
-                            };
-                            let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, obj_ptr, arg_str).unwrap();
-                            return Ok((result, "i64".to_string()));
+                            return self.gen_string_index_of(&obj_ptr, args, ctx);
                         }
                         "lastIndexOf" => {
                             let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
@@ -11541,6 +11581,11 @@ tr_done_{idx}:"#).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i8* @tinox_string_reverse(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "i8*".to_string()));
+                        }
+                        "chars" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_string_chars(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i64*".to_string()));
                         }
                         "charAt" => {
                             let (arg, _) = self.gen_expr(&args[0], ctx)?;
@@ -12481,6 +12526,12 @@ tr_done_{idx}:"#).unwrap();
                 type_args,
                 args,
             } => {
+                if enum_name == "String" && variant == "chars" {
+                    let (ptr, _) = self.gen_expr(&args[0], ctx)?;
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "{} = call i64* @tinox_string_chars(i8* {})", result, ptr).unwrap();
+                    return Ok((result, "i64*".to_string()));
+                }
                 // `DB::raw(sql, params)` — raw-SQL escape hatch, hangs
                 // directly off `DB` (no `DB::of(...)` chain to unwind).
                 // It has real static types (String / List<String> ->
@@ -18550,6 +18601,12 @@ return 0 }"#);
     // ================================================================
     // String method calls
     // ================================================================
+
+    #[test]
+    fn test_string_chars_method_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let cs = \"hé😀\".chars()\nfor c in cs { println(c) }\nreturn 0 }");
+        assert!(ir.contains("call i64* @tinox_string_chars(i8*"));
+    }
 
     #[test]
     fn test_string_length_method_ir() {

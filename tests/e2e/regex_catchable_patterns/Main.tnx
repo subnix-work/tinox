@@ -1,0 +1,144 @@
+// Regression for #568: all public operations reject invalid user patterns.
+// expect: false
+// expect: false
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: true
+// expect: false
+// expect: ABC
+// expect: 3
+// expect: X X X
+// expect: 3
+// expect: false
+// expect: 0
+// expect: 0
+// expect: 0
+// expect: 0
+// expect: isMatch: true
+// expect: isMatchWithOptions: true
+// expect: findFirst: true
+// expect: findFirstWithOptions: true
+// expect: findAll: true
+// expect: findAllWithOptions: true
+// expect: replaceAll: true
+// expect: replaceAllWithOptions: true
+// expect: split: true
+// expect: splitWithOptions: true
+// expect: true
+// expect: 0
+// expect: 0
+// expect: false
+// expect: false
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: false
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: false
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: after all errors
+import tinox.core.regex
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        println(Regex::isValid("("))
+        println(Regex::isValid("["))
+        println(Regex::isValid(""))
+        println(Regex::isValid("\\d+"))
+        println(Regex::isValidWithOptions("abc", true))
+        println(Regex::isMatch("abc", "ABC"))
+        println(Regex::isMatchWithOptions("abc", "ABC", true))
+        println(Regex::isMatchWithOptions("abc", "ABC", false))
+        println(Regex::findFirstWithOptions("[a-z]+", "123 ABC 456", true))
+        println(Regex::findAllWithOptions("abc", "ABC abc AbC", true).len())
+        println(Regex::replaceAllWithOptions("abc", "ABC abc AbC", "X", true))
+        println(Regex::splitWithOptions("abc", "ABC abc AbC", true).len())
+        println(Regex::isMatch("x", ""))
+        println(Regex::findFirst("x", "").len())
+        println(Regex::findAll("x", "").len())
+        println(Regex::replaceAll("x", "", "y").len())
+        println(Regex::split("x", "").len())
+        try { Regex::isMatch("(", "") } catch (e: String) { println("isMatch: " + e.contains("invalid regular expression").toString()) }
+        try { Regex::isMatchWithOptions("(", "", true) } catch (e: String) { println("isMatchWithOptions: " + e.contains("invalid regular expression").toString()) }
+        try { Regex::findFirst("(", "") } catch (e: String) { println("findFirst: " + e.contains("invalid regular expression").toString()) }
+        try { Regex::findFirstWithOptions("(", "", true) } catch (e: String) { println("findFirstWithOptions: " + e.contains("invalid regular expression").toString()) }
+        try { Regex::findAll("(", "") } catch (e: String) { println("findAll: " + e.contains("invalid regular expression").toString()) }
+        try { Regex::findAllWithOptions("(", "", true) } catch (e: String) { println("findAllWithOptions: " + e.contains("invalid regular expression").toString()) }
+        try { Regex::replaceAll("(", "", "X") } catch (e: String) { println("replaceAll: " + e.contains("invalid regular expression").toString()) }
+        try { Regex::replaceAllWithOptions("(", "", "X", true) } catch (e: String) { println("replaceAllWithOptions: " + e.contains("invalid regular expression").toString()) }
+        try { Regex::split("(", "") } catch (e: String) { println("split: " + e.contains("invalid regular expression").toString()) }
+        try { Regex::splitWithOptions("(", "", true) } catch (e: String) { println("splitWithOptions: " + e.contains("invalid regular expression").toString()) }
+        println(Regex::isMatch("", ""))
+        println(Regex::findFirst("", "").len())
+        println(Regex::findAll("", "").len())
+        println(Regex::isValid("[\\D]"))
+        println(Regex::isValidWithOptions("[\\D]", true))
+        try { Regex::isMatch("[\\D]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::isMatchWithOptions("[\\D]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findFirst("[\\D]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findFirstWithOptions("[\\D]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findAll("[\\D]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findAllWithOptions("[\\D]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::replaceAll("[\\D]", "", "X") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::replaceAllWithOptions("[\\D]", "", "X", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::split("[\\D]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::splitWithOptions("[\\D]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        println(Regex::isValid("[\\S]"))
+        println(Regex::isValidWithOptions("[\\S]", true))
+        try { Regex::isMatch("[\\S]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::isMatchWithOptions("[\\S]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findFirst("[\\S]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findFirstWithOptions("[\\S]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findAll("[\\S]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findAllWithOptions("[\\S]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::replaceAll("[\\S]", "", "X") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::replaceAllWithOptions("[\\S]", "", "X", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::split("[\\S]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::splitWithOptions("[\\S]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        println(Regex::isValid("[\\W]"))
+        println(Regex::isValidWithOptions("[\\W]", true))
+        try { Regex::isMatch("[\\W]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::isMatchWithOptions("[\\W]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findFirst("[\\W]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findFirstWithOptions("[\\W]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findAll("[\\W]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::findAllWithOptions("[\\W]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::replaceAll("[\\W]", "", "X") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::replaceAllWithOptions("[\\W]", "", "X", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::split("[\\W]", "") } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        try { Regex::splitWithOptions("[\\W]", "", true) } catch (e: String) { println(e.contains("inside [...] is not supported")) }
+        println("after all errors")
+        return 0
+    }
+}

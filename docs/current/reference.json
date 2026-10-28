@@ -626,6 +626,7 @@
     "Pool_factory": "(p: Any) -> Any",
     "String_charAt": "(s: String, i: Int64) -> String",
     "String_charCodeAt": "(s: String, i: Int64) -> Int64",
+    "String_chars": "(s: String) -> List<String>",
     "String_contains": "(s: String, p: String) -> Bool",
     "String_endsWith": "(s: String, p: String) -> Bool",
     "String_indexOf": "(s: String, p: String) -> Int64",

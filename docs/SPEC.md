@@ -1017,11 +1017,34 @@ multi-byte UTF-8 sequence. NUL escapes (`\0`, `\x00`) are rejected in string
 literals because strings are NUL-terminated at runtime. `toInt()`/`toFloat()`
 are strict: malformed text aborts; test with `isInt()`/`isFloat()` first.
 
+`s.indexOf(needle[, from])` returns the first matching byte offset at or after
+`from` (default 0), or -1 when absent. A negative `from` is treated as 0;
+`from > s.len()` returns -1, including for an empty needle. An empty needle
+matches at `from` when it is within `0..s.len()` (inclusive). The offset and
+result count bytes, including inside a UTF-8 sequence; this search does not
+extract or validate a substring. The needle must be a `String` and `from`
+must be an integer.
+
+`s.chars()` returns `List<String>` with one Unicode scalar value per element,
+validating the entire input as UTF-8 first. For example, `"hé…😀".chars()` has
+four elements, while `"é".chars()` has two (a letter and a combining accent).
+This is code point iteration, not grapheme segmentation or normalization.
+Empty input returns an empty list. Malformed UTF-8 from native APIs aborts with
+the first invalid byte offset. The operation takes O(bytes) time and allocates
+an O(code points) list plus a separate short string for every scalar value.
+Use `for ch in s.chars()` when a consumer needs complete Unicode characters;
+existing byte offsets and `charAt` retain their current behavior.
+
 ## Regular Expressions
 
 The regex module uses POSIX extended syntax. The Perl classes `\d \D \s \S \w
-\W` are translated to POSIX bracket expressions; an invalid pattern aborts the
-program.
+\W` are translated to POSIX bracket expressions. Public `Regex` methods throw
+a catchable String error for an invalid pattern; `Regex::isValid(pattern)` checks
+syntax without throwing. Existing methods are case-sensitive; the corresponding
+`WithOptions` methods accept an explicit `ignoreCase` Boolean. These guards
+compile the pattern before execution, which compiles it again. Legacy raw
+`regex*` builtins still abort on invalid patterns. See [Regex contracts](regex.md)
+for the matching, error and compatibility boundaries.
 
 ## Call Shape
 

@@ -1,0 +1,31 @@
+// Unicode scalar iteration is additive; combining marks remain distinct.
+// expect: 4
+// expect: h
+// expect: é
+// expect: …
+// expect: 😀
+// expect: 2
+// expect: e
+// expect: ́
+// expect: 0
+// expect: hé…😀
+// expect: 10
+// expect: é
+// expect: 😀
+class Main {
+    fnc main() -> Int32 {
+        const text = "hé…😀"
+        const cs: List<String> = text.chars()
+        println(cs.len())
+        for ch in cs { println(ch) }
+        const combined = "é".chars()
+        println(combined.len())
+        for ch in combined { println(ch) }
+        println("".chars().len())
+        println(cs.join(""))
+        println(text.len())
+        println(String_chars("é").join(""))
+        println(String::chars("😀").join(""))
+        return 0
+    }
+}

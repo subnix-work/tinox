@@ -1255,6 +1255,16 @@ class Api {
       </tbody>
     </table>
 
+    <p><code>s.chars()</code> liefert <code>List&lt;String&gt;</code> mit einem
+      Unicode-Skalarwert pro Element. Mit <code>for ch in s.chars()</code> lassen
+      sich vollständige UTF-8-Zeichen verarbeiten. Kombinierende Zeichen und
+      Emoji-Sequenzen können mehrere Elemente umfassen; Normalisierung und
+      Graphemsegmentierung finden nicht statt. Leere Eingabe liefert eine leere
+      Liste; ungültiges UTF-8 bricht mit dem Byte-Offset ab. Länge, Indizierung,
+      <code>charAt</code> und direkte String-Iteration behalten ihre Byte-Semantik.
+      Der Aufruf benötigt O(Bytes) Zeit und reserviert eine Liste sowie einen
+      kurzen String pro Skalarwert.</p>
+
     <h3>Zusammengesetzte Typen</h3>
     <pre><code><span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]                 <span class="cmt">// Array</span>
 <span class="kw">const</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>}  <span class="cmt">// Map/Dictionary</span>
@@ -2460,6 +2470,7 @@ epoll_fd = epoll_create1(0)
     <div class="mod-section" id="mod-regex">
 
   <h2>regex</h2>
+  <p>Aktueller Workspace: <code>Regex</code>-Methoden werfen bei ungültigen Mustern catchbare Fehler; <code>isValid</code> und <code>WithOptions</code>-Varianten sind verfügbar. <a href="docs/regex.md">Aktueller Regex-Vertrag</a>. Die eingebettete Seite beschreibt die veröffentlichte Paketversion.</p>
   <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/regex/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/regex/1-0-0/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/regex/1-0-0/docs.html" loading="lazy" title="tinox.core:regex Dokumentation"></iframe>
   </div>
@@ -2472,6 +2483,7 @@ epoll_fd = epoll_create1(0)
   </div>
 
     <div class="mod-section" id="mod-fs">
+  <p><a href="docs/filesystem.md">Aktuelle Workspace-Ergänzungen: Metadaten, atomisches Umbenennen und sichere Verzeichnisoperationen.</a></p>
 
   <h2>fs</h2>
   <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/fs/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/fs/1-0-0/docs.html</a></p>

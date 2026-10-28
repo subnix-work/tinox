@@ -785,6 +785,10 @@ impl TypeChecker {
             params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
             return_type: ValueType::Array(Box::new(ValueType::String)),
         });
+        symbols.functions.insert("String_chars".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String)],
+            return_type: ValueType::Array(Box::new(ValueType::String)),
+        });
         symbols.functions.insert("String_split".to_string(), FunctionSignature {
             params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
             return_type: ValueType::Array(Box::new(ValueType::String)),
@@ -4180,6 +4184,30 @@ impl TypeChecker {
                         }
                     }
                 }
+                // String.indexOf has one required needle and an optional byte
+                // offset. Other String_* builtins retain their existing rules.
+                if name == "String_indexOf" {
+                    if !(2..=3).contains(&args.len()) {
+                        self.errors.push(Error::new(span,
+                            "String.indexOf expects a needle and an optional integer byte offset".to_string()));
+                    }
+                    for (index, arg) in args.iter().enumerate() {
+                        let actual = self.infer_type(arg);
+                        let valid = if index < 2 {
+                            actual == ValueType::String
+                        } else {
+                            actual.is_integer()
+                        };
+                        if !valid {
+                            self.errors.push(TypeError::TypeMismatch {
+                                expected: if index < 2 { "String" } else { "integer byte offset" }.to_string(),
+                                found: actual.display(),
+                                span: arg.span,
+                            }.to_error());
+                        }
+                    }
+                    return ValueType::Int;
+                }
                 // Skip arg-count check for variadic builtins and all native runtime functions
                 let is_variadic = matches!(name.as_str(), "print" | "println" | "open")
                     || name.starts_with("http") || name.starts_with("Http")
@@ -4191,7 +4219,7 @@ impl TypeChecker {
                     || name.starts_with("random") || name.starts_with("process")
                     || name.starts_with("dir") || name.starts_with("file")
                     || name.starts_with("Pool_") || name.starts_with("Heap_")
-                    || name.starts_with("String_")
+                    || (name.starts_with("String_") && name != "String_chars")
                     || matches!(name.as_str(),
                         "now" | "sleep" | "fromCharCode" | "charCodeAt"
                         | "sha256Hash" | "md5Hash" | "sha1Hash" | "wsAcceptKey" | "hmacSha256Hash"
@@ -6337,8 +6365,34 @@ fn f(foo: Foo) { let y = foo.x }
     }
 
     #[test]
+    fn test_string_indexof_optional_byte_offset() {
+        ok(r#"fn f(s: String, offset: Int32) { let a: Int64 = s.indexOf("x")
+let b: Int64 = s.indexOf("x", offset) }"#);
+        for call in ["s.indexOf()", r#"s.indexOf("x", 0, 1)"#] {
+            err_contains(&format!("fn f(s: String) {{ {call} }}"), "optional integer byte offset");
+        }
+        err_contains("fn f(s: String) { s.indexOf(1) }", "expected String");
+        for offset in ["1.5", "true", r#""0""#] {
+            err_contains(&format!(r#"fn f(s: String) {{ s.indexOf("x", {offset}) }}"#), "integer byte offset");
+        }
+    }
+
+    #[test]
     fn test_string_method_charat_ok() {
         ok(r#"fn f(s: String) { let c = s.charAt(0) }"#);
+        ok(r#"fn f(s: String) { let cs: List<String> = s.chars()
+for c in cs { let n = c.len() } }"#);
+    }
+
+    #[test]
+    fn test_string_chars_signature() {
+        ok("fn f(s: String) { let cs: List<String> = String_chars(s) }");
+        ok("fn f(s: String) { let cs: List<String> = String::chars(s) }");
+        err_contains("fn f(s: String) { s.chars(42) }", "argument");
+        err_contains("fn f() { String_chars() }", "argument");
+        err_contains("fn f() { String_chars(42) }", "String");
+        err_contains("fn f() { String::chars() }", "argument");
+        err_contains("fn f() { String::chars(42) }", "String");
     }
 
     #[test]

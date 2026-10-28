@@ -2,6 +2,12 @@ module tinox.core.fs
 
 namespace tinox.core.fs
 {
+    extern fn fsMetadataChecked(path: String, listing: Int64) -> List<String>
+    extern fn fsRenameChecked(from: String, to: String) -> String
+    extern fn fsRemoveDirectoryChecked(path: String, recursive: Int64) -> String
+    extern fn fsRealPathChecked(path: String) -> List<String>
+    extern fn fsHomeDirectoryChecked() -> List<String>
+
     class Fs
     {
         fn readFile(path: String) -> String
@@ -66,7 +72,87 @@ namespace tinox.core.fs
 
         fn deleteDirectory(path: String) -> Nothing
         {
-            dirDelete(path)
+            const err: String = fsRemoveDirectoryChecked(path, 0)
+            if (err != "") { throw err }
+        }
+        // Metadata describes the entry itself, never the target of a symlink.
+        // Only ENOENT/ENOTDIR are absence; all other failures throw.
+        fn stat(path: String) -> FileInfo?
+        {
+            const data: List<String> = fsMetadataChecked(path, 0)
+            if (data[0] != "") { throw data[0] }
+            if (data.len() == 1) { return null }
+            return Fs::decodeInfo(data, 1)
+        }
+
+        fn decodeInfo(data: List<String>, offset: Int64) -> FileInfo
+        {
+            return FileInfo { name: data[offset], kind: data[offset + 1],
+                size: data[offset + 2].toInt(), modifiedNanoseconds: data[offset + 3].toInt(),
+                permissions: data[offset + 4].toInt() }
+        }
+
+        fn isDirectory(path: String) -> Bool
+        {
+            const info: FileInfo? = Fs::stat(path)
+            if (info == null) { return false }
+            return (info as FileInfo).kind == "directory"
+        }
+
+        fn isFile(path: String) -> Bool
+        {
+            const info: FileInfo? = Fs::stat(path)
+            if (info == null) { return false }
+            return (info as FileInfo).kind == "file"
+        }
+
+        fn isSymlink(path: String) -> Bool
+        {
+            const info: FileInfo? = Fs::stat(path)
+            if (info == null) { return false }
+            return (info as FileInfo).kind == "symlink"
+        }
+
+        // One native batch; filesystem order, excluding dot and dot-dot.
+        fn listEntries(path: String) -> List<FileInfo>
+        {
+            const data: List<String> = fsMetadataChecked(path, 1)
+            if (data[0] != "") { throw data[0] }
+            var entries: List<FileInfo> = []
+            var i: Int64 = 1
+            while (i < data.len())
+            {
+                entries.push(Fs::decodeInfo(data, i))
+                i = i + 5
+            }
+            return entries
+        }
+
+        fn rename(from: String, to: String) -> Nothing
+        {
+            const err: String = fsRenameChecked(from, to)
+            if (err != "") { throw err }
+        }
+
+        // Removes a directory tree or a symlink itself, never its target.
+        fn deleteDirectoryRecursive(path: String) -> Nothing
+        {
+            const err: String = fsRemoveDirectoryChecked(path, 1)
+            if (err != "") { throw err }
+        }
+
+        fn realPath(path: String) -> String
+        {
+            const result: List<String> = fsRealPathChecked(path)
+            if (result[0] != "") { throw result[0] }
+            return result[1]
+        }
+
+        fn homeDirectory() -> String
+        {
+            const result: List<String> = fsHomeDirectoryChecked()
+            if (result[0] != "") { throw result[0] }
+            return result[1]
         }
     }
 }

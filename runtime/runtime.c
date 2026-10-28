@@ -697,6 +697,14 @@ int64_t tinox_string_index_of(const char* haystack, const char* needle) {
     return pos ? (int64_t)(pos - haystack) : -1;
 }
 
+// Offsets and results use bytes, consistently with String.len().
+int64_t tinox_string_index_of_from(const char* haystack, const char* needle, int64_t from) {
+    if (from < 0) from = 0;
+    if ((uint64_t)from > strlen(haystack)) return -1;
+    const char* pos = strstr(haystack + from, needle);
+    return pos ? (int64_t)(pos - haystack) : -1;
+}
+
 int64_t tinox_string_last_index_of(const char* haystack, const char* needle) {
     size_t hlen = strlen(haystack);
     size_t nlen = strlen(needle);
@@ -2585,6 +2593,65 @@ static int tinox_utf8_valid(const unsigned char* s) {
         s += n;
     }
     return 1;
+}
+
+// Decode one Unicode scalar value without reading beyond the remaining bytes.
+// Reject overlong encodings, surrogate code points and values above U+10FFFF.
+static size_t tinox_utf8_scalar_width(const unsigned char* s, size_t remaining) {
+    unsigned char first = s[0];
+    size_t width;
+    if (first < 0x80) return 1;
+    if (first >= 0xC2 && first <= 0xDF) width = 2;
+    else if (first >= 0xE0 && first <= 0xEF) width = 3;
+    else if (first >= 0xF0 && first <= 0xF4) width = 4;
+    else return 0;
+    if (remaining < width) return 0;
+    for (size_t i = 1; i < width; i++) {
+        if ((s[i] & 0xC0) != 0x80) return 0;
+    }
+    if ((first == 0xE0 && s[1] < 0xA0) ||
+        (first == 0xED && s[1] >= 0xA0) ||
+        (first == 0xF0 && s[1] < 0x90) ||
+        (first == 0xF4 && s[1] >= 0x90)) return 0;
+    return width;
+}
+
+// Additive Unicode API: existing indexing/length/iteration remain byte based.
+int64_t* tinox_string_chars(const char* s) {
+    if (!s) {
+        fprintf(stderr, "runtime error: String.chars requires a non-null string\n");
+        exit(1);
+    }
+    size_t length = strlen(s), count = 0;
+    for (size_t offset = 0; offset < length;) {
+        size_t width = tinox_utf8_scalar_width((const unsigned char*)s + offset, length - offset);
+        if (!width) {
+            fprintf(stderr, "runtime error: String.chars invalid UTF-8 at byte %zu\n", offset);
+            exit(1);
+        }
+        offset += width;
+        count++;
+    }
+    if (count > INT64_MAX || count > SIZE_MAX / sizeof(int64_t)) {
+        fprintf(stderr, "runtime error: String.chars result is too large\n");
+        exit(1);
+    }
+    int64_t* result = tinox_array_new((int64_t)count, 0);
+    int64_t* data = ((TinoxArray*)result)->data;
+    size_t offset = 0;
+    for (size_t i = 0; i < count; i++) {
+        size_t width = tinox_utf8_scalar_width((const unsigned char*)s + offset, length - offset);
+        char* scalar = (char*)malloc(width + 1);
+        if (!scalar) {
+            fprintf(stderr, "runtime error: String.chars allocation failed\n");
+            exit(1);
+        }
+        memcpy(scalar, s + offset, width);
+        scalar[width] = '\0';
+        data[i] = (int64_t)(uintptr_t)scalar;
+        offset += width;
+    }
+    return result;
 }
 
 char* tinox_string_substring(const char* s, int64_t from, int64_t to) {
@@ -5114,6 +5181,184 @@ void dirDelete(const char* path) {
     rmdir(path);
 }
 
+// Checked filesystem metadata and mutation ABI. Arrays begin with an error
+// string (empty on success); all following strings are owned GC snapshots.
+#include <pwd.h>
+
+static const char* tinox_fs_kind(mode_t mode) {
+    return S_ISREG(mode) ? "file" : S_ISDIR(mode) ? "directory" :
+           S_ISLNK(mode) ? "symlink" : "other";
+}
+
+static int tinox_fs_metadata_push(int64_t* out, const char* name, const struct stat* st) {
+    __int128 ns = (__int128)st->st_mtim.tv_sec * 1000000000 + st->st_mtim.tv_nsec;
+    if (ns < INT64_MIN || ns > INT64_MAX || st->st_size < 0) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    char size[32], modified[32], permissions[32];
+    snprintf(size, sizeof(size), "%lld", (long long)st->st_size);
+    snprintf(modified, sizeof(modified), "%lld", (long long)ns);
+    snprintf(permissions, sizeof(permissions), "%u", (unsigned)(st->st_mode & 07777));
+    tinox_array_push(out, (int64_t)GC_strdup(name));
+    tinox_array_push(out, (int64_t)GC_strdup(tinox_fs_kind(st->st_mode)));
+    tinox_array_push(out, (int64_t)GC_strdup(size));
+    tinox_array_push(out, (int64_t)GC_strdup(modified));
+    tinox_array_push(out, (int64_t)GC_strdup(permissions));
+    return 0;
+}
+
+int64_t* fsMetadataChecked(const char* path, int64_t listing) {
+    int64_t* out = tinox_array_new(0, 32);
+    tinox_array_push(out, (int64_t)"");
+    struct stat st;
+    if (!listing) {
+        // A trailing slash must not turn a final symlink into a followed
+        // directory: this API always describes the named entry itself.
+        char* entry_path = GC_strdup(path);
+        size_t len = strlen(entry_path);
+        while (len > 1 && entry_path[len - 1] == '/') entry_path[--len] = '\0';
+        if (lstat(entry_path, &st) != 0) {
+            if (errno == ENOENT || errno == ENOTDIR) return out;
+            goto failure;
+        }
+        if (tinox_fs_metadata_push(out, path, &st) != 0) goto failure;
+        return out;
+    }
+    DIR* dir = opendir(path);
+    if (!dir) goto failure;
+    for (;;) {
+        errno = 0;
+        struct dirent* entry = readdir(dir);
+        if (!entry) {
+            int saved = errno;
+            if (closedir(dir) != 0 && !saved) saved = errno;
+            if (saved) { errno = saved; goto failure; }
+            return out;
+        }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        if (fstatat(dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
+            tinox_fs_metadata_push(out, entry->d_name, &st) != 0) {
+            int saved = errno;
+            closedir(dir);
+            errno = saved;
+            goto failure;
+        }
+    }
+failure:;
+    char* error = tinox_fs_err("cannot read metadata", path);
+    // Discard partial listings: callers must never mistake partial success
+    // for a complete directory snapshot.
+    out = tinox_array_new(0, 1);
+    tinox_array_push(out, (int64_t)error);
+    return out;
+}
+
+char* fsRenameChecked(const char* from, const char* to) {
+    if (rename(from, to) == 0) return (char*)"";
+    if (errno == EXDEV) return (char*)"cannot rename: EXDEV (cross-device rename is not atomic)";
+    return tinox_fs_err("cannot rename", from);
+}
+
+// Open each parent component without following a symlink. Destructive walks
+// are anchored to these descriptors, even if a concurrent actor renames paths.
+static int tinox_fs_parent(const char* path, char** name) {
+    char* copy = GC_strdup(path);
+    size_t len = strlen(copy);
+    while (len > 1 && copy[len - 1] == '/') copy[--len] = '\0';
+    char* last = strrchr(copy, '/');
+    *name = last ? last + 1 : copy;
+    if (!**name || !strcmp(*name, ".") || !strcmp(*name, "..")) { errno = EINVAL; return -1; }
+    int fd = open(copy[0] == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    if (!last) return fd;
+    *last = '\0';
+    char* save = NULL;
+    for (char* part = strtok_r(copy, "/", &save); part; part = strtok_r(NULL, "/", &save)) {
+        int next = openat(fd, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int saved = errno;
+        close(fd);
+        if (next < 0) { errno = saved; return -1; }
+        fd = next;
+    }
+    return fd;
+}
+
+static int tinox_fs_remove_at(int parent, const char* name) {
+    struct stat before, opened, current;
+    if (fstatat(parent, name, &before, AT_SYMLINK_NOFOLLOW) != 0) return -1;
+    if (!S_ISDIR(before.st_mode)) return unlinkat(parent, name, 0);
+    int fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return -1;
+    if (fstat(fd, &opened) != 0 || before.st_dev != opened.st_dev || before.st_ino != opened.st_ino) {
+        close(fd); errno = ESTALE; return -1;
+    }
+    DIR* dir = fdopendir(fd);
+    if (!dir) { int saved = errno; close(fd); errno = saved; return -1; }
+    int result = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent* entry = readdir(dir);
+        if (!entry) { if (errno) result = -1; break; }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        if (tinox_fs_remove_at(fd, entry->d_name) != 0) { result = -1; break; }
+    }
+    int saved = errno;
+    closedir(dir);
+    if (result) { errno = saved; return -1; }
+    if (fstatat(parent, name, &current, AT_SYMLINK_NOFOLLOW) != 0) return -1;
+    if (current.st_dev != opened.st_dev || current.st_ino != opened.st_ino) { errno = ESTALE; return -1; }
+    return unlinkat(parent, name, AT_REMOVEDIR);
+}
+
+char* fsRemoveDirectoryChecked(const char* path, int64_t recursive) {
+    char* name;
+    int parent = tinox_fs_parent(path, &name);
+    if (parent < 0) return tinox_fs_err("cannot remove directory", path);
+    struct stat st;
+    int result;
+    if (recursive && (fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) != 0)) result = -1;
+    else if (recursive && !S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) { errno = ENOTDIR; result = -1; }
+    else result = recursive ? tinox_fs_remove_at(parent, name) : unlinkat(parent, name, AT_REMOVEDIR);
+    int saved = errno;
+    close(parent);
+    if (result == 0) return (char*)"";
+    errno = saved;
+    return tinox_fs_err("cannot remove directory", path);
+}
+
+static int64_t* tinox_fs_string_result(char* value, const char* operation, const char* path) {
+    int64_t* out = tinox_array_new(0, 2);
+    tinox_array_push(out, (int64_t)(value ? "" : tinox_fs_err(operation, path)));
+    if (value) tinox_array_push(out, (int64_t)GC_strdup(value));
+    return out;
+}
+
+int64_t* fsRealPathChecked(const char* path) {
+    char* resolved = realpath(path, NULL);
+    int64_t* out = tinox_fs_string_result(resolved, "cannot resolve real path", path);
+    (free)(resolved);
+    return out;
+}
+
+int64_t* fsHomeDirectoryChecked(void) {
+    const char* home = getenv("HOME");
+    if (home && home[0]) return tinox_fs_string_result((char*)home, "cannot find home directory", "HOME");
+    size_t size = 1024;
+    struct passwd record, *result = NULL;
+    for (;;) {
+        char* buffer = malloc(size);
+        if (!buffer) { errno = ENOMEM; return tinox_fs_string_result(NULL, "cannot find home directory", "passwd"); }
+        int error = getpwuid_r(getuid(), &record, buffer, size, &result);
+        if (error == ERANGE && size < 1048576) { free(buffer); size *= 2; continue; }
+        errno = error ? error : ENOENT;
+        int64_t* out = tinox_fs_string_result(!error && result && result->pw_dir[0] ? result->pw_dir : NULL,
+                                            "cannot find home directory", "passwd");
+        free(buffer);
+        return out;
+    }
+}
+
 // ---- Crypto/hashing builtins (MD5, SHA-256, HMAC-SHA256) ----
 // Self-contained (no OpenSSL dependency, matches this file's existing
 // "no external libs unless opted in via tinox.toml" convention).
@@ -5750,7 +5995,8 @@ char* tinoxBytesToString(int64_t* bytes) {
 // tinox.core.regex dialect: POSIX extended regular expressions plus the Perl
 // style classes \d \D \s \S \w \W (translated below; \b \B come from glibc).
 // Backreferences, lookaround and lazy quantifiers are not supported.
-static char* tinox_regex_translate(const char* pattern) {
+static char* tinox_regex_translate(const char* pattern, char** error) {
+    *error = NULL;
     size_t n = strlen(pattern);
     char* out = (char*)GC_malloc(n * 12 + 1);
     size_t o = 0;
@@ -5767,8 +6013,10 @@ static char* tinox_regex_translate(const char* pattern) {
                 continue;
             }
             if (c == '\\' && i + 1 < n && strchr("DSW", pattern[i + 1])) {
-                fprintf(stderr, "runtime error: invalid regular expression \"%s\": \\%c inside [...] is not supported\n", pattern, pattern[i + 1]);
-                exit(1);
+                size_t size = strlen(pattern) + 100;
+                *error = GC_malloc(size);
+                snprintf(*error, size, "invalid regular expression \"%s\": \\%c inside [...] is not supported", pattern, pattern[i + 1]);
+                return NULL;
             }
             if (c == '[' && i + 1 < n && pattern[i + 1] == ':') {
                 // copy a [:class:] whole
@@ -5824,7 +6072,12 @@ static char* tinox_regex_translate(const char* pattern) {
 // Compiles `pattern` (see dialect above). An invalid pattern is a hard error:
 // it used to be indistinguishable from "no match" (issue #468).
 static void tinox_regcomp(regex_t* re, const char* pattern, int cflags) {
-    char* translated = tinox_regex_translate(pattern);
+    char* error;
+    char* translated = tinox_regex_translate(pattern, &error);
+    if (error) {
+        fprintf(stderr, "runtime error: %s\n", error);
+        exit(1);
+    }
     int rc = regcomp(re, translated, cflags);
     if (rc != 0) {
         char msg[200];
@@ -5834,25 +6087,63 @@ static void tinox_regcomp(regex_t* re, const char* pattern, int cflags) {
     }
 }
 
-int64_t regexIsMatch(int64_t pattern_i64, int64_t subject_i64) {
+// Validation shares the execution dialect and flags. Public Regex methods turn
+// this diagnostic into a Tinox exception; legacy raw builtins still fail hard.
+char* tinoxRegexPatternError(const char* pattern, int64_t icase) {
+    regex_t re;
+    char* error;
+    char* translated = tinox_regex_translate(pattern, &error);
+    if (error) return error;
+    int rc = regcomp(&re, translated, REG_EXTENDED | (icase ? REG_ICASE : 0));
+    if (rc == 0) {
+        regfree(&re);
+        return GC_strdup("");
+    }
+    size_t len = regerror(rc, &re, NULL, 0);
+    char* detail = GC_malloc(len);
+    regerror(rc, &re, detail, len);
+    size_t size = strlen(pattern) + len + 48;
+    error = GC_malloc(size);
+    snprintf(error, size, "invalid regular expression \"%s\": %s", pattern, detail);
+    return error;
+}
+
+// REG_NOMATCH is an ordinary outcome; engine/resource failures are not.
+static int tinox_regexec(regex_t* re, const char* subject, size_t count,
+                         regmatch_t* matches, int flags) {
+    int rc = regexec(re, subject, count, matches, flags);
+    if (rc != 0 && rc != REG_NOMATCH) {
+        char detail[200];
+        regerror(rc, re, detail, sizeof detail);
+        fprintf(stderr, "runtime error: regular expression execution failed: %s\n", detail);
+        exit(1);
+    }
+    return rc;
+}
+
+static int64_t regexIsMatch_options(int64_t pattern_i64, int64_t subject_i64, int64_t icase) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     regex_t re;
-    tinox_regcomp(&re, pattern, REG_EXTENDED);
-    int r = regexec(&re, subject, 0, NULL, 0);
+    tinox_regcomp(&re, pattern, REG_EXTENDED | (icase ? REG_ICASE : 0));
+    int r = tinox_regexec(&re, subject, 0, NULL, 0);
     regfree(&re);
     return (r == 0) ? 1 : 0;
 }
 
-int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
+int64_t regexIsMatch(int64_t pattern_i64, int64_t subject_i64) {
+    return regexIsMatch_options(pattern_i64, subject_i64, 0);
+}
+
+static int64_t regexFindAll_options(int64_t pattern_i64, int64_t subject_i64, int64_t icase) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     int64_t* nh = tinox_array_new(0, 8);
     regex_t re;
-    tinox_regcomp(&re, pattern, REG_EXTENDED);
+    tinox_regcomp(&re, pattern, REG_EXTENDED | (icase ? REG_ICASE : 0));
     const char* s = subject;
     regmatch_t m;
-    while (*s && regexec(&re, s, 1, &m, 0) == 0) {
+    while (*s && tinox_regexec(&re, s, 1, &m, 0) == 0) {
         int mlen = m.rm_eo - m.rm_so;
         char* match_str = (char*)GC_malloc(mlen + 1);
         memcpy(match_str, s + m.rm_so, mlen);
@@ -5865,6 +6156,10 @@ int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
     return (int64_t)nh;
 }
 
+int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
+    return regexFindAll_options(pattern_i64, subject_i64, 0);
+}
+
 int64_t regexReplace(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
@@ -5873,7 +6168,7 @@ int64_t regexReplace(int64_t pattern_i64, int64_t subject_i64, int64_t replaceme
     regex_t re;
     tinox_regcomp(&re, pattern, REG_EXTENDED);
     regmatch_t m;
-    if (regexec(&re, subject, 1, &m, 0) != 0) { regfree(&re); return subject_i64; }
+    if (tinox_regexec(&re, subject, 1, &m, 0) != 0) { regfree(&re); return subject_i64; }
     size_t pre = m.rm_so, rep_len = strlen(replacement), suf = strlen(subject) - m.rm_eo;
     char* result = (char*)GC_malloc(pre + rep_len + suf + 1);
     memcpy(result, subject, pre);
@@ -5888,14 +6183,14 @@ int64_t regexSplit(int64_t pattern_i64, int64_t subject_i64) {
     return regexFindAll(pattern_i64, subject_i64); // simplified
 }
 
-// First match, or "" if none / bad pattern.
-int64_t regexFindFirst(int64_t pattern_i64, int64_t subject_i64) {
+// First match, or "" if none; invalid patterns fail visibly.
+static int64_t regexFindFirst_options(int64_t pattern_i64, int64_t subject_i64, int64_t icase) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     regex_t re;
-    tinox_regcomp(&re, pattern, REG_EXTENDED);
+    tinox_regcomp(&re, pattern, REG_EXTENDED | (icase ? REG_ICASE : 0));
     regmatch_t m;
-    if (regexec(&re, subject, 1, &m, 0) != 0) {
+    if (tinox_regexec(&re, subject, 1, &m, 0) != 0) {
         regfree(&re);
         return (int64_t)GC_strdup("");
     }
@@ -5907,14 +6202,18 @@ int64_t regexFindFirst(int64_t pattern_i64, int64_t subject_i64) {
     return (int64_t)match_str;
 }
 
+int64_t regexFindFirst(int64_t pattern_i64, int64_t subject_i64) {
+    return regexFindFirst_options(pattern_i64, subject_i64, 0);
+}
+
 // Replace every non-overlapping match of `pattern` in `subject` with
 // `replacement` (literal, no backreferences — same as regexReplace).
-int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64) {
+static int64_t regexReplaceAll_options(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64, int64_t icase) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     const char* replacement = (const char*)replacement_i64;
     regex_t re;
-    tinox_regcomp(&re, pattern, REG_EXTENDED);
+    tinox_regcomp(&re, pattern, REG_EXTENDED | (icase ? REG_ICASE : 0));
 
     size_t rep_len = strlen(replacement);
     size_t cap = strlen(subject) + rep_len + 16;
@@ -5922,7 +6221,7 @@ int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replac
     size_t out = 0;
     const char* s = subject;
     regmatch_t m;
-    while (*s && regexec(&re, s, 1, &m, 0) == 0) {
+    while (*s && tinox_regexec(&re, s, 1, &m, 0) == 0) {
         size_t pre = (size_t)m.rm_so;
         size_t needed = out + pre + rep_len + 1;
         if (needed > cap) {
@@ -5966,9 +6265,31 @@ int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replac
     return (int64_t)result;
 }
 
+int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64) {
+    return regexReplaceAll_options(pattern_i64, subject_i64, replacement_i64, 0);
+}
+
+// Option-aware ABI for the guarded public Regex facade. Validation deliberately
+// happens in Tinox before these calls so normal exception unwinding applies.
+int64_t tinoxRegexIsMatch(const char* pattern, const char* subject, int64_t icase) {
+    return regexIsMatch_options((int64_t)pattern, (int64_t)subject, icase);
+}
+int64_t* tinoxRegexFindAll(const char* pattern, const char* subject, int64_t icase) {
+    return (int64_t*)regexFindAll_options((int64_t)pattern, (int64_t)subject, icase);
+}
+char* tinoxRegexFindFirst(const char* pattern, const char* subject, int64_t icase) {
+    return (char*)regexFindFirst_options((int64_t)pattern, (int64_t)subject, icase);
+}
+char* tinoxRegexReplaceAll(const char* pattern, const char* subject, const char* replacement, int64_t icase) {
+    return (char*)regexReplaceAll_options((int64_t)pattern, (int64_t)subject, (int64_t)replacement, icase);
+}
+int64_t* tinoxRegexSplit(const char* pattern, const char* subject, int64_t icase) {
+    return (int64_t*)regexFindAll_options((int64_t)pattern, (int64_t)subject, icase);
+}
+
 // First match at/after byte offset. Returns Tinox i64-array
 // [match_start, match_end, g1_start, g1_end, ...] (byte offsets into subject,
-// -1/-1 for unmatched groups). Empty array = no match or bad pattern.
+// -1/-1 for unmatched groups). Empty array = no match or invalid offset.
 int64_t* regexMatchGroups(const char* pattern, const char* subject, int64_t offset, int64_t icase) {
     int64_t* empty = tinox_array_new(0, 0);
 
@@ -5982,7 +6303,7 @@ int64_t* regexMatchGroups(const char* pattern, const char* subject, int64_t offs
     size_t ngroups = re.re_nsub + 1;
     regmatch_t* m = (regmatch_t*)GC_malloc(sizeof(regmatch_t) * ngroups);
     int eflags = (offset > 0) ? REG_NOTBOL : 0;
-    if (regexec(&re, subject + offset, ngroups, m, eflags) != 0) {
+    if (tinox_regexec(&re, subject + offset, ngroups, m, eflags) != 0) {
         regfree(&re);
         return empty;
     }

@@ -1,0 +1,16 @@
+module tinox.core.fs
+namespace tinox.core.fs
+{
+    /** Owned metadata snapshot. Permissions are POSIX mode bits (07777).
+     * modifiedNanoseconds is signed Unix time; unrepresentable times throw.
+     * name is the supplied path for stat, or the basename for listEntries.
+     */
+    class FileInfo
+    {
+        name: String
+        kind: String
+        size: Int64
+        modifiedNanoseconds: Int64
+        permissions: Int64
+    }
+}

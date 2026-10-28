@@ -49,9 +49,10 @@ Source paths are relative to `crates/` unless marked otherwise.
 | `Option.unwrap`, `Result.unwrap` | Throw a String on None/Err | Deliberate precondition / exception conversion; unchanged |
 | `Stack.pop/peek` (`tinox-core/.../collections`) | Throw `"Stack is empty"` | Existing throwing precondition; optional variants are future work |
 | `Env::getVar`, `envGet` (`runtime/runtime.c`) | `""` for unset and present-empty variables | Absence; future optional API must inspect environment presence directly |
-| `Regex::findFirst`, `regexFindFirst` (`runtime/runtime.c`) | `""` for invalid pattern, no match, or an empty match | Mix of invalid input and absence; future API needs failure plus optional match |
+| `Regex::findFirst`, `regexFindFirst` (`runtime/runtime.c`) | Public `Regex::findFirst` throws for invalid syntax; raw `regexFindFirst` aborts. Both return `""` for no match or an empty match. | Invalid input is visible; distinguishing absence from an empty match remains future work. See [Regex contracts](regex.md). |
 | `Fs::readFile`, `fileReadAllText` (`runtime/runtime.c`) | Open failure returns `""`; reads can return partial text without reporting read/close errors | Expected operational failure; requires a new runtime operation carrying error detail |
 | `Fs::writeFile`, `fileWriteAllText` | Open/write/close errors are discarded | Expected operational failure; requires a new checked runtime operation |
+| `Fs::stat/isFile/isDirectory/isSymlink/listEntries/rename/deleteDirectory/deleteDirectoryRecursive/realPath/homeDirectory` | Checked additive filesystem APIs; stat returns nullable absence only for ENOENT/ENOTDIR, other failures throw; mutations and enumeration expose errors | Explicit #508 nullable contract; see [filesystem contracts](filesystem.md). Existing empty-only deleteDirectory now throws on failure |
 | `Fs::appendFile/copyFile/moveFile` | Compose unchecked reads/writes; move then deletes source | Operational failure and cleanup; do not build Result wrappers on these methods |
 | `File::exists`, `fileExists` | Uses `fopen`; false can mean missing or inaccessible | Existing predicate cannot diagnose an I/O failure |
 | `Socket` (`tinox-core/.../socket`) | Raw descriptors, `-1`, Bool, or String results | Expected network failure; migrate only with captured OS detail and documented close ownership |
