@@ -3204,7 +3204,7 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
             tinox_typecheck::annotations::DiScope::HttpRequest => tinox_codegen::DiScope::HttpRequest,
         },
         inject_fields: c.inject_fields.iter().map(|f| tinox_codegen::DiInjectField {
-            field_name: f.field_name.clone(), field_type: f.field_type.clone(),
+            field_name: f.field_name.clone(), field_type: f.field_type.clone(), provider_class: f.provider_class.clone(), qualifier: f.qualifier.clone(),
         }).collect(),
     }).collect();
     let config_fields = ann.config_fields.iter().map(|f| tinox_codegen::ConfigFieldInfo {
@@ -4760,6 +4760,14 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         }
         failure
     };
+    for endpoint in &ann_result.ws_endpoints {
+        if ann_result.di_components.iter().any(|component|
+            component.class_name == endpoint.class_name
+                && matches!(component.scope, tinox_typecheck::annotations::DiScope::HttpRequest)) {
+            return Err(annotation_error(&[endpoint.class_name.as_str()],
+                "@WebsocketEndpoint cannot use @HttpRequestScoped: a WebSocket connection outlives an HTTP request; use @ApplicationComponent or an unscoped endpoint".into()));
+        }
+    }
     let mut all_classes = Vec::new();
     classes(&ast.decls, &[], &mut all_classes);
     let main_class = all_classes.iter().find_map(|decl| match &decl.node {
@@ -4811,7 +4819,7 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         state[index] = 1;
         stack.push(component.class_name.clone());
         for field in &component.inject_fields {
-            let target = components.iter().position(|candidate| candidate.class_name == field.field_type)
+            let target = components.iter().position(|candidate| candidate.class_name == field.provider_class)
                 .ok_or_else(|| (component.class_name.clone(), format!(
                     "@Inject field '{}.{}' targets '{}', which has no component scope annotation",
                     component.class_name, field.field_name, field.field_type)))?;
@@ -4917,7 +4925,8 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         }
         let mut collisions: Vec<(i64, Vec<(&str, &str)>)> = by_port
             .into_iter()
-            .filter(|(_, owners)| owners.len() > 1)
+            // Port zero asks the OS for a separate ephemeral listener per bind.
+            .filter(|(port, owners)| *port != 0 && owners.len() > 1)
             .collect();
         // HashMap iteration order is unspecified; sort so the same program
         // always fails with the same message.
@@ -5113,7 +5122,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             },
             inject_fields: c.inject_fields.iter().map(|f| tinox_codegen::DiInjectField {
                 field_name: f.field_name.clone(),
-                field_type: f.field_type.clone(),
+                field_type: f.field_type.clone(), provider_class: f.provider_class.clone(), qualifier: f.qualifier.clone(),
             }).collect(),
         })
         .collect();
@@ -6024,6 +6033,22 @@ mod docker_tests {
 #[cfg(test)]
 mod structured_annotation_tests {
     use super::*;
+
+    #[test]
+    fn websocket_rejects_http_request_scope() {
+        let source = parse_frontend("@HttpRequestScoped @WebsocketEndpoint(\"/one\", 0) class Endpoint {}", None).unwrap();
+        let annotations = tinox_typecheck::annotations::process_annotations(&source);
+        let failure = validate_program_annotations(&source, &annotations, "/tmp/Main.tnx").unwrap_err();
+        assert!(failure.0[0].message.contains("cannot use @HttpRequestScoped"));
+    }
+
+    #[test]
+    fn independent_ephemeral_listeners_do_not_collide() {
+        let mut source = parse_frontend("@WebsocketEndpoint(\"/one\", 0) class First {}", None).unwrap();
+        source.decls.extend(parse_frontend("@WebsocketEndpoint(\"/two\", 0) class Second {}", None).unwrap().decls);
+        let annotations = tinox_typecheck::annotations::process_annotations(&source);
+        validate_program_annotations(&source, &annotations, "/tmp/Main.tnx").unwrap();
+    }
 
     #[test]
     fn port_collisions_retain_both_source_declarations() {

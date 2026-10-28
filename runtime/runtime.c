@@ -1211,6 +1211,43 @@ static void telemetry_event(const char* event) {
     puts(telemetryLogJson(stamp, "INFO", "tinox", event));
 }
 
+// Request providers belong to exactly one synchronous annotated REST dispatch.
+// The cache is a GC-managed graph rooted explicitly for each participating
+// thread; clearing the root releases ownership, not native resource handles.
+typedef struct TinoxRequestEntry {
+    int64_t key;
+    int64_t* instance;
+    struct TinoxRequestEntry* next;
+} TinoxRequestEntry;
+static __thread TinoxRequestEntry* request_instances;
+static __thread int request_active;
+static void request_scope_fail(const char* message) {
+    fprintf(stderr, "Request scope error: %s\n", message);
+    exit(1);
+}
+void tinox_request_begin(void) {
+    if (request_active) request_scope_fail("nested request dispatch is unsupported");
+    tinox_gc_register_thread_roots();
+    request_instances = NULL;
+    request_active = 1;
+}
+void tinox_request_end(void) {
+    request_instances = NULL;
+    request_active = 0;
+}
+int64_t* tinox_request_get(int64_t key) {
+    if (!request_active) request_scope_fail("provider used outside annotated REST dispatch");
+    for (TinoxRequestEntry* e = request_instances; e; e = e->next)
+        if (e->key == key) return e->instance;
+    return NULL;
+}
+void tinox_request_put(int64_t key, int64_t* instance) {
+    if (!request_active) request_scope_fail("provider used outside annotated REST dispatch");
+    TinoxRequestEntry* e = GC_malloc(sizeof(*e));
+    e->key = key; e->instance = instance; e->next = request_instances;
+    request_instances = e;
+}
+
 // ---- Async runtime ----
 
 // Structured tasks (#301). Handles are monotonically allocated IDs, never
@@ -1852,6 +1889,8 @@ static void* tinox_spawn_trampoline(void* raw) {
     return ret;
 }
 static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
+    if (request_active && request_instances)
+        request_scope_fail("spawn cannot escape an active request provider graph; copy immutable data before scheduling outside the request");
     task_ensure_scope();
     TinoxTaskScope* owner = task_frame_scope;
     TinoxTask* task = calloc(1, sizeof(*task));
@@ -3136,6 +3175,10 @@ void tinoxFileCloseBytes(int64_t handle) {
 // Identity of the pointer is the guard: a stale/unrelated String never matches.
 static __thread const char* g_req_body_ptr = NULL;
 static __thread int64_t     g_req_body_len = 0;
+// Exact byte length of the latest byte-to-String/HTTP3 body adapter. This
+// does not extend Bytes.fromRequestBody's plain-TCP identity contract.
+static __thread const char* g_json_body_ptr = NULL;
+static __thread size_t g_json_body_len = 0;
 static __thread const char* g_resp_bytes_ptr = NULL;
 static __thread int64_t     g_resp_bytes_len = 0;
 
@@ -5985,6 +6028,7 @@ char* tinoxBytesToString(int64_t* bytes) {
     char* buf = (char*)GC_malloc((size_t)n + 1);
     for (int64_t i = 0; i < n; i++) buf[i] = (char)(a->data[i] & 0xff);
     buf[n] = '\0';
+    g_json_body_ptr=buf; g_json_body_len=(size_t)n;
     return buf;
 }
 
@@ -8423,7 +8467,11 @@ void* http3RequestHeaders(int64_t requestId) {
 
 char* http3RequestBody(int64_t requestId) {
     Http3ReqSlot* slot = (Http3ReqSlot*)(intptr_t)requestId;
-    return slot->body ? strdup(slot->body) : strdup("");
+    char *body=malloc(slot->bodyLen+1);
+    if (slot->bodyLen) memcpy(body,slot->body,slot->bodyLen);
+    body[slot->bodyLen]=0;
+    g_json_body_ptr=body;g_json_body_len=slot->bodyLen;
+    return body;
 }
 
 int64_t http3RequestWasEarlyData(int64_t requestId) {
@@ -9972,6 +10020,207 @@ int64_t* jsonGetField(int64_t* obj, const char* key) {
     return (int64_t*)(uintptr_t)vptr;
 }
 
+// Request DTO validation (issue #523).
+int64_t jsonGetIntField(int64_t*, const char*);
+double jsonGetFloatField(int64_t*, const char*);
+int jsonGetBoolField(int64_t*, const char*);
+char* jsonGetStringField(int64_t*, const char*);
+/* Strict, bounded request-only JSON parsing. The general Json API retains its
+ * compatibility behavior. A parsed tree is bound only after schema validation. */
+typedef struct { const char *p; const char *error; size_t nodes; } RequestJson;
+static TinoxJsonValue *request_value(RequestJson *r, int depth);
+static int request_hex(RequestJson *r) {
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        unsigned char c = (unsigned char)*r->p;
+        int x = c >= '0' && c <= '9' ? c-'0' : c >= 'a' && c <= 'f' ? c-'a'+10 : c >= 'A' && c <= 'F' ? c-'A'+10 : -1;
+        if (x < 0) { r->error = "malformed"; return -1; }
+        r->p++; n = n*16+x;
+    }
+    return n;
+}
+static char *request_string(RequestJson *r) {
+    r->p++;
+    const char *string_end=r->p;
+    while (*string_end && *string_end != '"') { if (*string_end == '\\' && string_end[1]) string_end++; string_end++; }
+    char *out = malloc((size_t)(string_end-r->p)+1); size_t n = 0;
+    while (*r->p && *r->p != '"') {
+        unsigned char c = (unsigned char)*r->p++;
+        if (c < 32) { r->error = "malformed"; break; }
+        if (c == '\\') {
+            if (!*r->p) { r->error="malformed"; break; }
+            c = (unsigned char)*r->p++;
+            if (c == 'u') {
+                int cp = request_hex(r);
+                if (cp >= 0xd800 && cp <= 0xdbff) {
+                    if (strncmp(r->p,"\\u",2)) { r->error="malformed"; break; }
+                    r->p += 2; int low = request_hex(r);
+                    if (low < 0xdc00 || low > 0xdfff) { r->error="malformed"; break; }
+                    cp=0x10000+((cp-0xd800)<<10)+(low-0xdc00);
+                } else if (cp >= 0xdc00 && cp <= 0xdfff) { r->error="malformed"; break; }
+                /* Tinox strings are NUL terminated: reject embedded NUL. */
+                if (cp <= 0 || r->error) { r->error="malformed"; break; }
+                if (cp < 0x80) out[n++]=(char)cp;
+                else if (cp < 0x800) { out[n++]=(char)(0xc0|(cp>>6)); out[n++]=(char)(0x80|(cp&63)); }
+                else if (cp < 0x10000) { out[n++]=(char)(0xe0|(cp>>12)); out[n++]=(char)(0x80|((cp>>6)&63)); out[n++]=(char)(0x80|(cp&63)); }
+                else { out[n++]=(char)(0xf0|(cp>>18)); out[n++]=(char)(0x80|((cp>>12)&63)); out[n++]=(char)(0x80|((cp>>6)&63)); out[n++]=(char)(0x80|(cp&63)); }
+                continue;
+            }
+            const char *esc = "\"\\/bfnrt", *decoded = "\"\\/\b\f\n\r\t";
+            const char *found = c ? strchr(esc,c) : NULL;
+            if (!found) { r->error="malformed"; break; }
+            out[n++]=decoded[found-esc];
+        } else if (c >= 0x80) {
+            r->p--; size_t w=tinox_utf8_scalar_width((const unsigned char*)r->p,(size_t)(string_end-r->p));
+            if (!w) { r->error="malformed"; break; }
+            memcpy(out+n,r->p,w); n+=w; r->p+=w;
+        } else out[n++]=(char)c;
+    }
+    if (*r->p != '"') r->error="malformed"; else r->p++;
+    out[n]=0; return out;
+}
+static TinoxJsonValue *request_value(RequestJson *r, int depth) {
+    if (r->error) return NULL;
+    if (depth > 32) { r->error="depth"; return NULL; }
+    if (++r->nodes > 100000) { r->error="size"; return NULL; }
+    r->p=json_skip_ws(r->p);
+    TinoxJsonValue *v;
+    if (*r->p == '"') { v=json_alloc(JSON_STRING); v->str_val=request_string(r); return v; }
+    if (*r->p == '{') {
+        r->p++; v=json_alloc(JSON_OBJECT); v->obj_val=tinox_map_create(); r->p=json_skip_ws(r->p);
+        if (*r->p == '}') { r->p++; return v; }
+        while (!r->error) {
+            if (*r->p != '"') break;
+            char *key=request_string(r); r->p=json_skip_ws(r->p);
+            if (*r->p != ':') break;
+            r->p++;
+            TinoxJsonValue *item=request_value(r,depth+1);
+            if (r->error) return v;
+            if (tinox_map_get(v->obj_val,key)) { r->error="duplicate"; return v; }
+            tinox_map_set(v->obj_val,key,(int64_t)(intptr_t)item);
+            r->p=json_skip_ws(r->p);
+            if (*r->p == '}') { r->p++; return v; }
+            if (*r->p != ',') break;
+            r->p++; r->p=json_skip_ws(r->p);
+        }
+        r->error="malformed"; return v;
+    }
+    if (*r->p == '[') {
+        r->p++; v=json_alloc(JSON_ARRAY); size_t n=0,cap=8;
+        int64_t *storage=malloc((cap+1)*sizeof(int64_t)); r->p=json_skip_ws(r->p);
+        if (*r->p != ']') while (!r->error) {
+            TinoxJsonValue *item=request_value(r,depth+1); if (r->error) break;
+            if (n == cap) { cap*=2; storage=realloc(storage,(cap+1)*sizeof(int64_t)); }
+            storage[1+n++]=(int64_t)(intptr_t)item; r->p=json_skip_ws(r->p);
+            if (*r->p == ']') break;
+            if (*r->p != ',') { r->error="malformed"; break; }
+            r->p++;
+        }
+        storage[0]=(int64_t)n; v->arr_val=storage+1;
+        if (*r->p == ']') r->p++; else if (!r->error) r->error="malformed";
+        return v;
+    }
+    for (int i=0;i<3;i++) {
+        const char *word=i==0?"null":i==1?"true":"false";
+        if (!strncmp(r->p,word,strlen(word))) { r->p+=strlen(word); v=json_alloc(i==0?JSON_NULL:JSON_BOOL); v->bool_val=i==1; return v; }
+    }
+    const char *start=r->p;
+    if (*r->p == '-') r->p++;
+    if (*r->p == '0') r->p++;
+    else if (*r->p >= '1' && *r->p <= '9') { while (*r->p >= '0' && *r->p <= '9') r->p++; }
+    else { r->error="malformed"; return NULL; }
+    int floating=0;
+    if (*r->p == '.') { floating=1; r->p++; if (*r->p < '0' || *r->p > '9') { r->error="malformed"; return NULL; } while (*r->p >= '0' && *r->p <= '9') r->p++; }
+    if (*r->p == 'e' || *r->p == 'E') { floating=1; r->p++; if (*r->p == '+' || *r->p == '-') r->p++; if (*r->p < '0' || *r->p > '9') { r->error="malformed"; return NULL; } while (*r->p >= '0' && *r->p <= '9') r->p++; }
+    errno=0; char *end;
+    if (floating) { v=json_alloc(JSON_FLOAT); v->float_val=strtod(start,&end); if (errno || !isfinite(v->float_val)) r->error="number"; }
+    else { v=json_alloc(JSON_INT); v->int_val=strtoll(start,&end,10); if (errno) r->error="number"; }
+    if (end != r->p) r->error="malformed";
+    return v;
+}
+static char *request_error(const char *path,const char *code) {
+    char *encoded=tinox_json_encode_string(path);
+    size_t n=strlen(encoded)+strlen(code)+100; char *out=malloc(n);
+    snprintf(out,n,"{\"error\":\"validation_failed\",\"details\":[{\"path\":%s,\"code\":\"%s\"}]}",encoded,code);
+    return out;
+}
+static int request_key_compare(const void *a,const void *b) { return strcmp(*(const char* const*)a,*(const char* const*)b); }
+static char *request_validate(TinoxJsonValue *value,TinoxJsonValue *schema,TinoxJsonValue *defs,const char *path,int depth) {
+    if (depth > 32) return request_error(path,"depth");
+    if (!value || value->type == JSON_NULL) {
+        if (jsonGetBoolField((int64_t*)schema,"required")) return request_error(path,value?"non_null":"required");
+        return NULL;
+    }
+    const char *cls=jsonGetStringField((int64_t*)schema,"class");
+    if (cls && *cls) {
+        if (value->type != JSON_OBJECT) return request_error(path,"type");
+        TinoxJsonValue *fs=(TinoxJsonValue*)jsonGetField((int64_t*)defs,cls);
+        if (!fs) return request_error(path,"unsupported");
+        for (int64_t i=0;i<jsonArrayLen((int64_t*)fs);i++) {
+            int64_t *f=jsonArrayGet((int64_t*)fs,i); const char *name=jsonGetStringField(f,"name");
+            size_t n=strlen(path)+strlen(name)+2; char *next=malloc(n); snprintf(next,n,"%s.%s",path,name);
+            char *error=request_validate((TinoxJsonValue*)jsonGetField((int64_t*)value,name),(TinoxJsonValue*)jsonGetField(f,"schema"),defs,next,depth+1);
+            if (error) return error;
+        }
+        return NULL;
+    }
+    const char *type=jsonGetStringField((int64_t*)schema,"type");
+    if (!strcmp(type,"unsupported")) return request_error(path,"unsupported");
+    int valid=!strcmp(type,"string")?value->type==JSON_STRING:!strcmp(type,"boolean")?value->type==JSON_BOOL:!strcmp(type,"integer")?value->type==JSON_INT:!strcmp(type,"number")?(value->type==JSON_INT||value->type==JSON_FLOAT):!strcmp(type,"array")?value->type==JSON_ARRAY:!strcmp(type,"object")?value->type==JSON_OBJECT:0;
+    if (!valid) return request_error(path,"type");
+    if (value->type==JSON_OBJECT) {
+        TinoxMap *map=(TinoxMap*)value->obj_val; char **keys=malloc((map->len+1)*sizeof(char*));size_t count=0;
+        for(size_t i=0;i<map->cap;i++) if(map->entries[i].key && map->entries[i].key != (char*)1) keys[count++]=map->entries[i].key;
+        qsort(keys,count,sizeof(char*),request_key_compare);
+        for(size_t i=0;i<count;i++) {
+            char *encoded=tinox_json_encode_string(keys[i]);size_t n=strlen(path)+strlen(encoded)+3;char *next=malloc(n);snprintf(next,n,"%s[%s]",path,encoded);
+            char *error=request_validate((TinoxJsonValue*)jsonGetField((int64_t*)value,keys[i]),(TinoxJsonValue*)jsonGetField((int64_t*)schema,"values"),defs,next,depth+1);if(error)return error;
+        }
+    }
+    if (value->type == JSON_STRING || value->type == JSON_ARRAY) {
+        size_t length=0;
+        if (value->type==JSON_ARRAY) length=(size_t)jsonArrayLen((int64_t*)value);
+        else { size_t n=strlen(value->str_val); for(size_t i=0;i<n;) { size_t w=tinox_utf8_scalar_width((unsigned char*)value->str_val+i,n-i); if(!w)return request_error(path,"malformed"); length++; i+=w; } }
+        if (jsonGetField((int64_t*)schema,"minLength") && ((double)length<jsonGetFloatField((int64_t*)schema,"minLength") || (double)length>jsonGetFloatField((int64_t*)schema,"maxLength"))) return request_error(path,"length");
+        if (value->type==JSON_ARRAY) for(int64_t i=0;i<(int64_t)length;i++) {
+            size_t n=strlen(path)+32; char *next=malloc(n); snprintf(next,n,"%s[%lld]",path,(long long)i);
+            char *error=request_validate((TinoxJsonValue*)jsonArrayGet((int64_t*)value,i),(TinoxJsonValue*)jsonGetField((int64_t*)schema,"items"),defs,next,depth+1); if(error)return error;
+        }
+    }
+    if (value->type==JSON_INT) {
+        int bits=(int)jsonGetIntField((int64_t*)schema,"bits");
+        int unsign=jsonGetBoolField((int64_t*)schema,"unsigned");
+        if ((unsign && value->int_val < 0) || (bits > 0 && bits < 64 && (unsign ? (uint64_t)value->int_val > ((UINT64_C(1)<<bits)-1) : (value->int_val < -(INT64_C(1)<<(bits-1)) || value->int_val > ((INT64_C(1)<<(bits-1))-1))))) return request_error(path,"range");
+    }
+    if (value->type==JSON_INT || value->type==JSON_FLOAT) {
+        long double number=value->type==JSON_INT?(long double)value->int_val:(long double)value->float_val;
+        TinoxJsonValue *min=(TinoxJsonValue*)jsonGetField((int64_t*)schema,"minimum"), *max=(TinoxJsonValue*)jsonGetField((int64_t*)schema,"maximum");
+        if (min && max) {
+            long double lo=min->type==JSON_INT?(long double)min->int_val:(long double)min->float_val;
+            long double hi=max->type==JSON_INT?(long double)max->int_val:(long double)max->float_val;
+            if (number<lo || number>hi) return request_error(path,"range");
+        }
+    }
+    return NULL;
+}
+char *tinox_request_validate(const char *body,const char *definitions,const char *class_name,int64_t **parsed) {
+    /* A request validator has explicit CPU/allocation bounds independent of
+     * any transport's own configurable body limit. */
+    size_t exact_length=body==g_req_body_ptr?(size_t)g_req_body_len:body==g_json_body_ptr?g_json_body_len:body?strnlen(body,1048577):0;
+    if (exact_length>1048576) return request_error("$","size");
+    if (body && memchr(body,0,exact_length)) return request_error("$","malformed");
+    RequestJson r={body?body:"",NULL,0}; TinoxJsonValue *value=request_value(&r,0);
+    if (!r.error && *json_skip_ws(r.p)) r.error="malformed";
+    if (r.error) return request_error("$",r.error);
+    TinoxJsonValue schema={.type=JSON_OBJECT}; schema.obj_val=tinox_map_create();
+    TinoxJsonValue *cls=json_alloc(JSON_STRING); cls->str_val=(char*)class_name; tinox_map_set(schema.obj_val,"class",(int64_t)(intptr_t)cls);
+    TinoxJsonValue *req=json_alloc(JSON_BOOL);req->bool_val=1;tinox_map_set(schema.obj_val,"required",(int64_t)(intptr_t)req);
+    char *error=request_validate(value,&schema,(TinoxJsonValue*)jsonParse(definitions),"$",0);
+    if (!error) *parsed=(int64_t*)value;
+    return error;
+}
+
+
 int64_t* jsonIntArrayFromJson(int64_t* json_array) {
     TinoxJsonValue* v = (TinoxJsonValue*)json_array;
     if (!v) return tinox_array_new(0, 0);
@@ -10225,8 +10474,9 @@ void jsonBuilderAddRaw(char* handle, const char* key, const char* rawJson) {
 // "nothing to show" -- see emit_devui_component_state_handlers,
 // codegen.rs). `instantiated` is always 0 for HttpRequest-scoped
 // components: they have no persistent singleton to check (emit_di_code's
-// _di_create() allocates a fresh instance per call, never caches one), so
-// the compiler-generated caller passes a constant 0 (and a NULL state)
+// _di_create() caches only inside the active request context, never in a
+// process-wide instance global), so the compiler-generated caller passes
+// a constant 0 (and a NULL state)
 // for those rather than loading a global that was never emitted for them.
 // N is always small (the program's own @ApplicationComponent count) and
 // this is a dev-only introspection endpoint, not a hot path, so the
@@ -12106,9 +12356,11 @@ extern __thread int64_t __tinox_err;
     X(g_response) \
     X(g_request) \
     X(g_ctx) \
+    X(g_json_body_ptr) \
     X(g_req_headers_map) \
     X(g_resp_headers_map) \
     X(g_path_params_map) \
+    X(request_instances) \
     X(task_scope) \
     X(task_frame_scope) \
     X(current_task) \

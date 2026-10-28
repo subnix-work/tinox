@@ -101,18 +101,79 @@ fn class_properties(class: &Class, classes: &BTreeMap<String, &Class>, seen: &mu
     properties
 }
 
+fn request_type_schema(ty: &Type) -> Value {
+    if tinox_typecheck::dto_validation::type_schema(ty)["type"]=="unsupported" {
+        return map(&[("not",map(&[])),("x-tinox-binding-supported",Value::Bool(false))]);
+    }
+    match ty {
+        Type::Named(name) => map(&[("$ref",text(&format!("#/components/schemas/tinox.request.{name}")))]),
+        Type::Generic {name,args} if (name == "List" || name == "Array") && args.len()==1 => map(&[("type",text("array")),("items",request_type_schema(&args[0]))]),
+        Type::Array(inner) => map(&[("type",text("array")),("items",request_type_schema(inner))]),
+        Type::Map(key,value) if matches!(key.as_ref(),Type::String)=>map(&[("type",text("object")),("additionalProperties",request_type_schema(value))]),
+        Type::Nullable(inner)|Type::Ref(inner)|Type::Mutable(inner)=>request_type_schema(inner),
+        _ => {
+            let mut result=schema(ty);
+            let numeric=tinox_typecheck::dto_validation::type_schema(ty);
+            if let Value::Mapping(ref mut mapping)=result {
+                for key in ["minimum","maximum"] { if let Some(v)=numeric.get(key) { mapping.insert(text(key),serde_yaml::to_value(v).unwrap()); } }
+            }
+            result
+        },
+    }
+}
+fn request_class_schema(name: &str, classes: &BTreeMap<String,Class>) -> Value {
+    use tinox_typecheck::dto_validation::{fields,required,field_schema};
+    let mut properties=vec![]; let mut required_fields=vec![];
+    for f in fields(name,classes) {
+        if f.name == "log" { continue; }
+        let mut field=request_type_schema(&f.field_type);
+        if let Value::Mapping(ref mut mapping)=field {
+            let metadata=field_schema(f);
+            for key in ["minimum","maximum","minLength","maxLength"] {
+                if let Some(v)=metadata.get(key) {
+                    let key=match (key,matches!(f.field_type,Type::String)) {("minLength",false)=>"minItems",("maxLength",false)=>"maxItems",_=>key};
+                    mapping.insert(text(key),serde_yaml::to_value(v).unwrap());
+                }
+            }
+        }
+        if required(f) { required_fields.push(text(&f.name)); }
+        else { field=map(&[("anyOf",Value::Sequence(vec![field,map(&[("type",text("null"))])]))]); }
+        properties.push((f.name.clone(),field));
+    }
+    map(&[("type",text("object")),("properties",object(properties)),("required",Value::Sequence(required_fields)),("x-tinox-max-depth",Value::Number(32.into()))])
+}
+
 /// This describes permitted response alternatives, rather than inferring
 /// control flow from constructor calls. Dynamic errors use OpenAPI ranges.
 pub fn generate(decls: &[Decl], annotations: &AnnotationProcessingResult) -> Result<String, String> {
     let mut classes = BTreeMap::new();
     collect_classes(decls, &mut classes);
-    let schemas = object(classes.values()
+    let mut schemas = object(classes.values()
         .filter(|c| c.type_params.is_empty() && c.annotations.iter().any(|a| a.name == "JsonSerializable"))
         .map(|c| {
             let properties = class_properties(c, &classes, &mut Vec::new());
             let required = Value::Sequence(properties.keys().map(|k| text(k)).collect());
             (c.name.clone(), map(&[("type", text("object")), ("properties", object(properties)), ("required", required)]))
         }));
+    let owned_classes: BTreeMap<String,Class> = classes.iter().map(|(n,c)|(n.clone(),(*c).clone())).collect();
+    let mut request_classes=std::collections::BTreeSet::new();
+    let mut pending:Vec<String>=annotations.route_entries.iter().flat_map(|r|r.params.iter()).filter(|p|p.kind==RouteParamKind::PostParam).filter_map(|p|if let Type::Named(n)=&p.ty{Some(n.clone())}else{None}).collect();
+    while let Some(name)=pending.pop() {
+        if !request_classes.insert(name.clone()){continue;}
+        for f in tinox_typecheck::dto_validation::fields(&name,&owned_classes) {
+            match &f.field_type {
+                Type::Named(n)=>pending.push(n.clone()),
+                Type::Generic{name,args}if(name=="List"||name=="Array")&&args.len()==1=>if let Type::Named(n)=&args[0]{pending.push(n.clone());},
+                Type::Array(inner)=>if let Type::Named(n)=inner.as_ref(){pending.push(n.clone());},
+                _=>{},
+            }
+        }
+    }
+    if let Value::Mapping(ref mut mapping)=schemas {
+        for c in classes.values().filter(|c| request_classes.contains(&c.name)) {
+            mapping.insert(text(&format!("tinox.request.{}",c.name)),request_class_schema(&c.name,&owned_classes));
+        }
+    }
     let mut paths: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     for route in &annotations.route_entries {
         let typed_body = response_body_type(&route.return_type);
@@ -153,6 +214,11 @@ pub fn generate(decls: &[Decl], annotations: &AnnotationProcessingResult) -> Res
             responses.insert("401".to_string(), response("Authentication rejected before the handler", None));
             responses.insert("403".to_string(), response("Authorization rejected before the handler", None));
         }
+        if route.params.iter().any(|p| p.kind == RouteParamKind::PostParam) {
+            let detail=map(&[("type",text("object")),("properties",map(&[("path",schema(&Type::String)),("code",schema(&Type::String))])),("required",Value::Sequence(vec![text("path"),text("code")]))]);
+            let validation=map(&[("type",text("object")),("properties",map(&[("error",schema(&Type::String)),("details",map(&[("type",text("array")),("items",detail)]))])),("required",Value::Sequence(vec![text("error"),text("details")]))]);
+            responses.insert("400".into(),response("Request DTO validation failed before handler execution",Some(validation)));
+        }
         let mut operation = vec![
             ("operationId".to_string(), text(&format!("{}_{}", route.class_name, route.method_name))),
             ("parameters".to_string(), Value::Sequence(parameters)),
@@ -165,7 +231,7 @@ pub fn generate(decls: &[Decl], annotations: &AnnotationProcessingResult) -> Res
         if let Some(param) = route.params.iter().find(|p| p.kind == RouteParamKind::PostParam) {
             operation.push(("requestBody".to_string(), map(&[
                 ("required", Value::Bool(true)),
-                ("content", object([(route.consumes.clone().unwrap_or_else(|| "application/json".to_string()), map(&[("schema", schema(&param.ty))]))])),
+                ("content", object([(route.consumes.clone().unwrap_or_else(|| "application/json".to_string()), map(&[("schema", request_type_schema(&param.ty))]))])),
             ])));
         }
         let path = route.path.split('/').map(|segment| segment.strip_prefix(':')
@@ -187,6 +253,25 @@ pub fn generate(decls: &[Decl], annotations: &AnnotationProcessingResult) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_schema_names_do_not_replace_real_response_types() {
+        let source=r#"
+@annotation class JsonSerializable {}
+@JsonSerializable class Input { @Length(1,3) var name: String }
+@JsonSerializable class InputRequest { var response: Int64 }
+@JsonSerializable class Unused { var untouched: InputRequest }
+class Ctrl { @POST @Path("/input") fn create(@PostParam input: Input) -> InputRequest {} }
+"#;
+        let ast=tinox_parser::Parser::new(tinox_lexer::Lexer::new(source).tokenize().unwrap()).parse().unwrap();
+        let annotations=tinox_typecheck::annotations::process_annotations(&ast);
+        let result:Value=serde_yaml::from_str(&generate(&ast.decls,&annotations).unwrap()).unwrap();
+        let schemas=&result["components"]["schemas"];
+        assert_eq!(schemas["InputRequest"]["properties"]["response"]["type"].as_str(),Some("integer"));
+        assert_eq!(schemas["tinox.request.Input"]["properties"]["name"]["minLength"].as_u64(),Some(1));
+        assert!(schemas["tinox.request.Unused"].is_null());
+        assert_eq!(result["paths"]["/input"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"].as_str(),Some("#/components/schemas/tinox.request.Input"));
+    }
 
     #[test]
     fn schemas_and_alternatives_follow_route_metadata() {

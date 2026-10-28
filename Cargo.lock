@@ -1410,6 +1410,7 @@ name = "tinox-typecheck"
 version = "2.8.0"
 dependencies = [
  "serde",
+ "serde_json",
  "tinox-common",
  "tinox-lexer",
  "tinox-parser",

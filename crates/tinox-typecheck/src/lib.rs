@@ -1,3 +1,4 @@
+pub mod dto_validation;
 pub mod semantic;
 pub mod cache;
 
@@ -457,6 +458,8 @@ pub struct TypeChecker {
     interface_extends: HashMap<String, (Vec<String>, tinox_common::Span)>, // interface_name -> (parent_names, span)
     interface_implementations: HashMap<String, Vec<String>>, // class_name -> [interface_names]
     class_parents: HashMap<String, String>, // child_class_name -> parent_class_name
+    injected_fields: HashSet<String>,
+    request_scoped_classes: HashSet<String>,
     current_class: Option<String>, // class currently being type-checked
     method_visibility: HashMap<String, Visibility>, // ClassName_methodName -> visibility
     field_visibility: HashMap<String, Visibility>,  // ClassName.fieldName -> visibility
@@ -1378,6 +1381,8 @@ impl TypeChecker {
             interface_extends: HashMap::new(),
             interface_implementations: HashMap::new(),
             class_parents: HashMap::new(),
+            injected_fields: HashSet::new(),
+            request_scoped_classes: HashSet::new(),
             current_class: None,
             method_visibility: HashMap::new(),
             field_visibility: HashMap::new(),
@@ -2341,6 +2346,14 @@ impl TypeChecker {
                 }
 
                 self.known_class_names.insert(name.clone());
+                for field in &c.fields {
+                    if field.annotations.iter().any(|a| a.name == "Inject") {
+                        self.injected_fields.insert(format!("{name}.{}", field.name));
+                    }
+                }
+                if c.annotations.iter().any(|a| a.name == "HttpRequestScoped") {
+                    self.request_scoped_classes.insert(name.clone());
+                }
                 if c.annotations.iter().any(|a| matches!(a.name.as_str(), "Entity" | "Table")) {
                     self.entity_class_names.insert(name.clone());
                 }
@@ -2386,6 +2399,24 @@ impl TypeChecker {
         // Annotation validation pass
         let ann_errors = annotations::validate_annotations(source, &self.prelude_decls);
         self.errors.extend(ann_errors);
+    }
+
+    fn check_injected_assignment(&mut self, target: &Expr) {
+        if let ExprKind::FieldAccess { obj, field } = &target.node {
+            if let ValueType::Named(owner, _) = self.infer_type(obj) {
+                let mut declaring = Some(owner.clone());
+                let mut seen = HashSet::new();
+                while let Some(class) = declaring {
+                    if !seen.insert(class.clone()) { break; }
+                    if self.injected_fields.contains(&format!("{class}.{field}")) {
+                        self.errors.push(Error::new(target.span,
+                            format!("@Inject field '{owner}.{field}' is provider-owned and cannot be reassigned; mutate the service through its methods instead")));
+                        break;
+                    }
+                    declaring = self.class_parents.get(&class).cloned();
+                }
+            }
+        }
     }
 
     /// `extern fn` signatures cross the C ABI (issue #486): reject types with
@@ -2693,6 +2724,7 @@ impl TypeChecker {
                 false
             }
             StmtKind::Assignment { target, value } => {
+                self.check_injected_assignment(target);
                 let target_ty = self.infer_type(target);
                 let value_ty = self.infer_argument(value, &target_ty);
                 if !self.types_compatible(&target_ty, &value_ty) {
@@ -3678,6 +3710,7 @@ impl TypeChecker {
                 ValueType::Any
             }
             ExprKind::Assign { target, value } => {
+                self.check_injected_assignment(target);
                 let target_ty = self.infer_type(target);
                 let found = self.infer_argument(value, &target_ty);
                 if !self.types_compatible(&target_ty, &found) {
@@ -3690,6 +3723,7 @@ impl TypeChecker {
                 target,
                 value,
             } => {
+                self.check_injected_assignment(target);
                 let target_ty = self.infer_type(target);
                 let value_ty = self.infer_type(value);
                 if matches!(op, tinox_parser::CompoundOp::Add) {
@@ -3727,6 +3761,9 @@ impl TypeChecker {
                 ValueType::Callable { params: params.iter().map(|p| Self::type_to_value(&p.param_type)).collect(), ret: Box::new(ret) }
             }
             ExprKind::Spawn(inner) => {
+                if self.current_class.as_ref().is_some_and(|c| self.request_scoped_classes.contains(c)) {
+                    self.errors.push(Error::new(expr.span, "spawn is not allowed in @HttpRequestScoped classes: request-owned objects cannot escape into tasks; schedule copied data outside the request provider graph"));
+                }
                 ValueType::Task(Box::new(self.infer_type(inner)))
             }
             ExprKind::Await(inner) => {
@@ -5200,6 +5237,15 @@ mod tests {
             msg,
             bag.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn injected_fields_are_provider_owned_even_through_aliases() {
+        let prefix = "interface Store {} @HttpRequestScoped class Request implements Store {} @ApplicationComponent @Provider(\"safe\") class Safe implements Store {} @ApplicationComponent class Owner { @Inject @Qualifier(\"safe\") var store: Store }";
+        for body in ["owner.store = request", "const alias = owner\nalias.store = request", "const value = (owner.store += request)"] {
+            err_contains(&format!("{prefix} fn replace(owner: Owner, request: Request) -> Nothing {{ {body} }}"), "provider-owned and cannot be reassigned");
+        }
+        ok(&format!("{prefix} fn read(owner: Owner) -> Store {{ return owner.store }}"));
     }
 
     #[test]

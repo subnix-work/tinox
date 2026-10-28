@@ -1,0 +1,8 @@
+// expect: 1
+// expect: 2
+// expect: 101
+// expect: main
+import App
+@Service(2000, 1000)
+class Main { fnc main() -> Int32 { println("main")
+return 0 } }

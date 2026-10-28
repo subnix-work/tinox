@@ -3375,6 +3375,15 @@ impl Parser {
     fn parse_annotation_arg(&mut self) -> Result<AnnotationArg, Error> {
         let token = self.peek();
         match &token.kind {
+            TokenKind::Minus => {
+                let span=token.span;
+                self.bump();
+                match self.parse_annotation_arg()? {
+                    AnnotationArg::Literal(Literal::Integer(n)) => n.checked_neg().map(|n|AnnotationArg::Literal(Literal::Integer(n))).ok_or_else(||Error::new(span,"negative annotation integer overflows Int64")),
+                    AnnotationArg::Literal(Literal::Float(n)) => Ok(AnnotationArg::Literal(Literal::Float(-n))),
+                    _ => Err(Error::new(span,"minus in annotation argument must precede a numeric literal")),
+                }
+            }
             TokenKind::Integer(n) => {
                 let val = *n;
                 self.bump();

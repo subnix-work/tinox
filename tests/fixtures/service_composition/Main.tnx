@@ -1,0 +1,11 @@
+import Api
+import Endpoint
+@Service(5000, 3000)
+class Main {
+ fnc main() -> Int32 {
+  while (serviceBoundPort(0) < 0 || serviceBoundPort(1) < 0) { sleep(1) }
+  println("ports:" + serviceBoundPort(0).toString() + ":" + serviceBoundPort(1).toString())
+  serviceAwaitShutdown()
+  return 0
+ }
+}

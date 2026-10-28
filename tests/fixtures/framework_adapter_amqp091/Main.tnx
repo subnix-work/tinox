@@ -1,0 +1,11 @@
+import AmqpConnection091
+import AmqpChannel091
+import AmqpMessage091
+import ConnectConsumer
+import OpenConsumer
+import QosConsumer
+import ConsumeConsumer
+class Main {
+    fnc main() -> Int32 { println(" main ")
+return 0 }
+}

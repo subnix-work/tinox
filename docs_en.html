@@ -1488,11 +1488,16 @@ class Api {
         <tr><td><code>@Masked</code></td><td>Field</td><td>Partially masked in logs</td></tr>
         <tr><td><code>@DoNotSerialize</code></td><td>Field</td><td>Exclude field from JSON</td></tr>
         <tr><td><code>@Log</code></td><td>Class</td><td>Automatically inject log field</td></tr>
-        <tr><td><code>@Inject</code></td><td>Field</td><td>Dependency injection field</td></tr>
+        <tr><td><code>@Inject</code></td><td>Field</td><td>Provider-owned injection field; source reassignment is rejected</td></tr>
+        <tr><td><code>@Provider("name")</code></td><td>Class</td><td>Names a concrete DI provider with an explicit scope</td></tr>
+        <tr><td><code>@Qualifier("name")</code></td><td>Field</td><td>Selects an <code>@Inject</code> field's provider at compile time</td></tr>
+        <tr><td><code>@Required</code> / <code>@Optional</code></td><td>Field</td><td>Presence/null contract for JSON request DTOs</td></tr>
+        <tr><td><code>@Length(min, max)</code></td><td>Field</td><td>Inclusive Unicode-codepoint or list-element count bounds</td></tr>
+        <tr><td><code>@Range(min, max)</code></td><td>Field</td><td>Inclusive numeric request-DTO bounds; <code>@NotNull</code> remains a database annotation</td></tr>
         <tr><td><code>@Config("key")</code></td><td>Field</td><td>Value from application.properties</td></tr>
         <tr><td><code>@Synchronized</code></td><td>Class/method</td><td>Recursive class monitor for singleton instance methods</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Class</td><td>Singleton scope for DI</td></tr>
-        <tr><td><code>@HttpRequestScoped</code></td><td>Class</td><td>New object per HTTP request</td></tr>
+        <tr><td><code>@HttpRequestScoped</code></td><td>Class</td><td>One instance per concrete provider and synchronous REST request context</td></tr>
         <tr><td><code>@Test("desc")</code></td><td>Method</td><td>Unit test (tinox test)</td></tr>
         <tr><td><code>@inline</code></td><td>Function / Method</td><td>Forced LLVM inlining</td></tr>
         <tr><td><code>@deprecated("msg")</code></td><td>All</td><td>Deprecation warning</td></tr>
@@ -1511,6 +1516,7 @@ class Api {
         <tr><td><code>@Route("/path/:param")</code></td><td>Method</td><td>Tinox-UI: registers a <code>fn() -&gt; Component</code> method inside a <code>@TinoxUIApp</code> class as that path's builder (Vaadin-style route dispatch). Requires a <code>var currentRoute: String</code> field; matched <code>:name</code> path segments are auto-assigned into a same-named field on the class, if one exists</td></tr>
       </tbody>
     </table>
+    <p>Current contracts: <a href="docs/compiler-explain.md">DI providers and request contexts</a>, <a href="docs/request-validation.md">recursive request validation and HTTP-400 details</a>.</p>
   </section>
 
   <!-- ══════════════════════════════════════ -->

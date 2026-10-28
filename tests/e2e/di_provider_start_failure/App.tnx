@@ -1,0 +1,6 @@
+import Store
+import Broken
+@Startup class App {
+    @Inject @Qualifier("broken") var store: Store
+    @OnStart fn start() -> Nothing { println("owner must not start") }
+}
