@@ -95,7 +95,7 @@ impl CodeGen {
         });
     }
     pub(super) fn service_enabled(&self) -> bool {
-        self.service_options.is_some() && self.test_entry.is_none()
+        self.service_options.is_some() && self.test_entries.is_empty()
     }
     pub fn lifecycle_plan(&self) -> LifecyclePlan {
         LifecyclePlan {

@@ -2,6 +2,7 @@ module tinox.core.cron
 
 namespace tinox.core.cron
 {
+    /** Validated by Cron::parse, or at evaluation when constructed directly. */
     class CronExpr
     {
         minute: String

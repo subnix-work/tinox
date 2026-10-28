@@ -559,8 +559,8 @@ pub struct CodeGen {
     migration_payload: Option<String>,
     /// Whether a [metrics] endpoint is enabled (path to expose on)
     metrics_path: Option<String>,
-    /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
-    test_entry: Option<(String, String)>,
+    /// Selected (class, method) pairs dispatched by a test index in a shared executable.
+    test_entries: Vec<(String, String)>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
     /// Names of `__tinox_run_<kind>()` functions emitted by the REST/HTTP3/
@@ -742,7 +742,7 @@ impl CodeGen {
             db_pool_size: 5,
             migration_payload: None,
             metrics_path: None,
-            test_entry: None,
+            test_entries: Vec::new(),
             has_main: false,
             background_tasks: Vec::new(),
             bootstrap_emitted: false,
@@ -890,10 +890,11 @@ impl CodeGen {
         writeln!(&mut self.ir, "call void @tinox_histogram_record(i8* {}, i64 {})", name_ptr, dur_reg).unwrap();
     }
 
-    /// Configure a single test to run: generates `tinox_main` that calls
-    /// `ClassName_methodName()` and exits 0 (pass) or 1 (fail via panic).
-    pub fn set_test_entry(&mut self, class_name: String, method_name: String) {
-        self.test_entry = Some((class_name, method_name));
+    /// Generate one test executable for these methods. The runner selects an index
+    /// with the private argv pair `--tinox-test-index N` and starts a fresh process
+    /// for every method. Test programs inspecting argv can see this selector.
+    pub fn set_test_entries(&mut self, entries: Vec<(String, String)>) {
+        self.test_entries = entries;
     }
 
     /// Provide interface metadata from the type checker.
@@ -2580,7 +2581,7 @@ impl CodeGen {
         self.emit_json_serialize_code();
         self.emit_json_deserialize_code();
 
-        // Emit test-runner main if set_test_entry() was called
+        // Emit test-runner main if set_test_entries() was called
         self.emit_test_code();
 
         // Emit SQL-constant functions and row-mapping helpers for @Entity classes
@@ -5392,14 +5393,14 @@ tr_done_{idx}:"#).unwrap();
         // HTTP server, blocks forever waiting for its listener thread to
         // join) and the actual @Test method is never even called. No
         // error, no wrong-answer test failure either -- the process just
-        // hangs, which is arguably worse. `test_entry.is_some()` means
+        // hangs, which is arguably worse. `!test_entries.is_empty()` means
         // `emit_test_code` is going to define `@tinox_main` itself
         // (guarded on `!has_main`, so it MUST see this function skip);
         // background_tasks/route_entries etc. still get populated and
         // their functions still get emitted as harmless unused IR -- only
         // this bootstrap step (deciding what `@tinox_main` becomes) needs
         // to defer to the test runner.
-        if self.test_entry.is_some() {
+        if !self.test_entries.is_empty() {
             return;
         }
         if self.has_main {
@@ -8189,34 +8190,44 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir).unwrap();
     }
 
-    /// Emit `tinox_main` for a single test method: allocate object, call method,
-    /// exit 0 on true/non-zero return, 1 on false/0.
+    /// Dispatch one selected test per process, sharing compilation across the file.
     fn emit_test_code(&mut self) {
-        let (class, method) = match self.test_entry.clone() {
-            Some(e) if !self.has_main => e,
-            _ => return,
-        };
-
-        let layout = self.struct_layouts.get(&class).cloned().unwrap_or_default();
-        let n_fields = layout.len();
-        let byte_size = (n_fields * 8).max(8);
-
+        if self.test_entries.is_empty() || self.has_main {
+            return;
+        }
+        let selector = self.make_string_const("--tinox-test-index");
         let mut b = String::new();
         writeln!(&mut b, "define i64 @tinox_main() {{").unwrap();
-        writeln!(&mut b, "  %raw = call i8* @tinox_alloc(i64 {byte_size})").unwrap();
-        writeln!(&mut b, "  %obj = bitcast i8* %raw to i64*").unwrap();
-        for fi in 0..n_fields {
-            writeln!(&mut b, "  %zi{fi} = getelementptr i64, i64* %obj, i64 {fi}").unwrap();
-            writeln!(&mut b, "  store i64 0, i64* %zi{fi}").unwrap();
+        writeln!(&mut b, "  %index_slot = alloca i64").unwrap();
+        writeln!(&mut b, "  %argument = call i8* @tinox_cli_get_string(i8* {selector}, i8* null)").unwrap();
+        writeln!(&mut b, "  %parsed = call i32 @tinox_parse_int_checked(i8* %argument, i64* %index_slot)").unwrap();
+        writeln!(&mut b, "  %valid = icmp ne i32 %parsed, 0").unwrap();
+        writeln!(&mut b, "  br i1 %valid, label %dispatch, label %invalid").unwrap();
+        writeln!(&mut b, "dispatch:").unwrap();
+        writeln!(&mut b, "  %index = load i64, i64* %index_slot").unwrap();
+        writeln!(&mut b, "  switch i64 %index, label %invalid [").unwrap();
+        for index in 0..self.test_entries.len() {
+            writeln!(&mut b, "    i64 {index}, label %test{index}").unwrap();
         }
-        // @Test methods return Bool (i1) — calling them as i64 reads garbage
-        // in the upper bits and turned failing tests into passes.
-        writeln!(&mut b, "  %result = call i1 @{class}_{method}(i64* %obj)").unwrap();
-        writeln!(&mut b, "  %code = select i1 %result, i64 0, i64 1").unwrap();
-        writeln!(&mut b, "  ret i64 %code").unwrap();
-        writeln!(&mut b, "}}").unwrap();
-        writeln!(&mut b).unwrap();
-
+        writeln!(&mut b, "  ]").unwrap();
+        writeln!(&mut b, "invalid:").unwrap();
+        writeln!(&mut b, "  ret i64 2").unwrap();
+        for (index, (class, method)) in self.test_entries.iter().enumerate() {
+            let n_fields = self.struct_layouts.get(class).map_or(0, Vec::len);
+            let byte_size = (n_fields * 8).max(8);
+            writeln!(&mut b, "test{index}:").unwrap();
+            writeln!(&mut b, "  %raw{index} = call i8* @tinox_alloc(i64 {byte_size})").unwrap();
+            writeln!(&mut b, "  %obj{index} = bitcast i8* %raw{index} to i64*").unwrap();
+            for fi in 0..n_fields {
+                writeln!(&mut b, "  %zi{index}_{fi} = getelementptr i64, i64* %obj{index}, i64 {fi}").unwrap();
+                writeln!(&mut b, "  store i64 0, i64* %zi{index}_{fi}").unwrap();
+            }
+            // @Test returns Bool (i1); widening its call ABI would read garbage.
+            writeln!(&mut b, "  %result{index} = call i1 @{class}_{method}(i64* %obj{index})").unwrap();
+            writeln!(&mut b, "  %code{index} = select i1 %result{index}, i64 0, i64 1").unwrap();
+            writeln!(&mut b, "  ret i64 %code{index}").unwrap();
+        }
+        writeln!(&mut b, "}}\n").unwrap();
         self.lambda_ir.push_str(&b);
         self.has_main = true;
     }
@@ -9250,6 +9261,13 @@ tr_done_{idx}:"#).unwrap();
                 let update_bb = self.new_bb("forupdate");
                 let end_bb = self.new_bb("forend");
 
+                let old_break = ctx.break_target.take();
+                let old_continue = ctx.continue_target.take();
+                ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
+                ctx.continue_target = Some(update_bb.clone());
+                ctx.loop_finally_depth.insert(update_bb.clone(), ctx.finally_targets.len());
+
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
 
@@ -9281,6 +9299,9 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
 
                 writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+
+                ctx.break_target = old_break;
+                ctx.continue_target = old_continue;
             }
             StmtKind::Break => {
                 if let Some(ref break_bb) = ctx.break_target.clone() {
@@ -9424,14 +9445,15 @@ tr_done_{idx}:"#).unwrap();
 
                 let cond_bb = self.new_bb("for_cond");
                 let body_bb = self.new_bb("for_body");
+                let advance_bb = self.new_bb("for_advance");
                 let end_bb = self.new_bb("for_end");
 
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
                 ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
-                ctx.continue_target = Some(cond_bb.clone());
-                ctx.loop_finally_depth.insert(cond_bb.clone(), ctx.finally_targets.len());
+                ctx.continue_target = Some(advance_bb.clone());
+                ctx.loop_finally_depth.insert(advance_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
@@ -9480,7 +9502,9 @@ tr_done_{idx}:"#).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* %{}", ext, var_slot).unwrap();
                 }
                 self.gen_stmt_body(body, ctx)?;
+                writeln!(&mut self.ir, "br label %{}", advance_bb).unwrap();
 
+                writeln!(&mut self.ir, "{}:", advance_bb).unwrap();
                 let next_idx = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* %{}", next_idx, idx_slot).unwrap();
                 let inc = self.temp();
@@ -13348,14 +13372,15 @@ tr_done_{idx}:"#).unwrap();
 
                 let cond_bb = self.new_bb("for_cond");
                 let body_bb = self.new_bb("for_body");
+                let advance_bb = self.new_bb("for_advance");
                 let end_bb = self.new_bb("for_end");
 
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
                 ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
-                ctx.continue_target = Some(cond_bb.clone());
-                ctx.loop_finally_depth.insert(cond_bb.clone(), ctx.finally_targets.len());
+                ctx.continue_target = Some(advance_bb.clone());
+                ctx.loop_finally_depth.insert(advance_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
@@ -13373,7 +13398,9 @@ tr_done_{idx}:"#).unwrap();
 
                 writeln!(&mut self.ir, "{}:", body_bb).unwrap();
                 self.gen_expr(body, ctx)?;
+                writeln!(&mut self.ir, "br label %{}", advance_bb).unwrap();
 
+                writeln!(&mut self.ir, "{}:", advance_bb).unwrap();
                 let loaded_inc = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* %{}", loaded_inc, var).unwrap();
                 let next_val = self.temp();

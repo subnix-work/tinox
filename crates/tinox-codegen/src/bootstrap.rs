@@ -261,7 +261,7 @@ impl CodeGen {
     /// Public facts only. The model never serializes arbitrary annotation
     /// arguments, DB URLs, passwords, usernames or resolved configuration data.
     pub fn bootstrap_plan(&self) -> BootstrapPlan {
-        let mode = if self.test_entry.is_some() {
+        let mode = if !self.test_entries.is_empty() {
             "test"
         } else if self.bootstrap_emitted {
             "bootstrap"
@@ -545,6 +545,32 @@ mod tests {
         assert_eq!(plan.initializers[0].components, ["Service"]);
         assert_eq!(plan.background_tasks[1].callbacks, ["message"]);
     }
+    #[test]
+    fn test_dispatch_does_not_run_imported_main_or_background_routes() {
+        let source = "class Main { fnc main() -> Int32 { return 42 } } class Api { fn hello() -> String { return \"hello\" } } class Suite { fn first() -> Bool { return true } fn second() -> Bool { return false } }";
+        let tokens = tinox_lexer::Lexer::new(source).tokenize().unwrap();
+        let ast = Parser::new(tokens).parse().unwrap();
+        let mut codegen = CodeGen::new();
+        codegen.set_annotation_info(AnnotationInfo {
+            routes: vec![RouteEntry {
+                http_method: "GET".into(), path: "/hello".into(),
+                class_name: "Api".into(), method_name: "hello".into(),
+                status_code: None, produces: None, consumes: None, auth_type: None,
+                oidc_roles: vec![], is_static: false, params: vec![], return_type: Type::String,
+            }],
+            ..Default::default()
+        });
+        codegen.set_test_entries(vec![("Suite".into(), "first".into()), ("Suite".into(), "second".into())]);
+        codegen.gen(&ast).unwrap();
+        assert_eq!(codegen.bootstrap_plan().mode, "test");
+        let ir = codegen.into_ir();
+        let main = ir.split("define i64 @tinox_main()").nth(1).unwrap().split("\n}").next().unwrap();
+        assert!(main.contains("@Suite_first"));
+        assert!(main.contains("@Suite_second"));
+        assert!(!main.contains("@Main_main"));
+        assert!(!main.contains("@tinox_task_spawn"));
+    }
+
     #[test]
     fn database_and_startup_share_one_llvm_constructor_table_with_preserved_priorities() {
         let tokens = tinox_lexer::Lexer::new(
