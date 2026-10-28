@@ -1,0 +1,13 @@
+import tinox.core.math
+class Main
+{
+    fnc main() -> Int32
+    {
+        println("pi = " + Math::pi().toString())
+        println("abs(-5) = " + Math::abs(-5).toString())
+        println("max(3, 7) = " + Math::max(3, 7).toString())
+        println("2^10 = " + Math::pow(2, 10).toString())
+        println("5! = " + Math::factorial(5).toString())
+        return 0
+    }
+}

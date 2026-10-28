@@ -1,0 +1,12 @@
+import tinox.core.hash
+class Main
+{
+    fnc main() -> Int32
+    {
+        const h1: Int64 = Hash::hashString("alice@example.com")
+        const h2: Int64 = Hash::hashInt(42)
+        const combined: Int64 = Hash::combine(h1, h2)
+        println("combined hash: " + combined.toString())
+        return 0
+    }
+}

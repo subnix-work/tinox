@@ -1,0 +1,12 @@
+import tinox.core.queue
+class Main
+{
+    fnc main() -> Int32
+    {
+        const buf: CircularBuffer<Int64> = CircularBuffer<Int64>::new(3)
+        CircularBuffer::push(buf, 1)
+        println("empty? " + CircularBuffer::isEmpty(buf).toString())
+        println("popped: " + CircularBuffer::pop(buf).toString())
+        return 0
+    }
+}

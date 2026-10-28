@@ -132,7 +132,9 @@ def page_path(root, group, artifact, version):
 
 def packages(root):
     result = []
-    for manifest in sorted((root / 'crates/tinox-core-ext').glob('*/tinox.toml')):
+    manifests = list((root / 'crates/tinox-core-ext').glob('*/tinox.toml'))
+    manifests.extend((root / 'crates/tinox-core/packages').glob('*/tinox.toml'))
+    for manifest in sorted(manifests):
         data = tomllib.loads(manifest.read_text())
         package = data['package']
         group = package.get('group', 'tinox.core')
@@ -141,6 +143,13 @@ def packages(root):
                            manifest=str(manifest.relative_to(root)),
                            docs=str(page.relative_to(root)), dependencies=data.get('dependencies', [])))
     return result
+
+
+def package_source(root, package):
+    manifest = root / package['manifest']
+    if manifest.parent.parent == root / 'crates/tinox-core/packages':
+        return root / 'crates/tinox-core/tinox/core' / package['name']
+    return manifest.parent / 'tinox/core' / package['name']
 
 
 def check_links(page, text=None):
@@ -235,7 +244,7 @@ def stage_package(root, binary, package):
         check_links(destination)
         return False
     manifest = root / package['manifest']
-    source = manifest.parent / 'tinox/core' / package['name']
+    source = package_source(root, package)
     examples = root / 'docs/tinox-core' / package['name'] / 'examples'
     if not source.is_dir():
         raise ValueError(f'missing package source: {source}')

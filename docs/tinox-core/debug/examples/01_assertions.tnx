@@ -1,0 +1,12 @@
+import tinox.core.debug
+class Main
+{
+    fnc main() -> Int32
+    {
+        const count: Int64 = 3
+        Debug::assert(count > 0, "count must be positive")
+        println("live objects use " + Debug::memoryUsage().toString() + " bytes")
+        Debug::gcCollect()
+        return 0
+    }
+}

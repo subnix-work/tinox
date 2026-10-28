@@ -1,0 +1,15 @@
+import tinox.core.encoding
+class Main
+{
+    fnc main() -> Int32
+    {
+        const comment: String = "<script>alert('hi')</script> & more"
+        const safe: String = Encoding::htmlEncode(comment)
+        println(safe)
+        const restored: String = Encoding::htmlDecode(safe)
+        println(restored)
+        const bytes: List<Int64> = Encoding::toUtf8("hi")
+        println(Encoding::fromUtf8(bytes))
+        return 0
+    }
+}

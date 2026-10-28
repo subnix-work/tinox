@@ -1,0 +1,13 @@
+import tinox.core.option
+class Main
+{
+    fnc main() -> Int32
+    {
+        const found: Option<Int64> = Option<Int64>::some(42)
+        const missing: Option<Int64> = Option<Int64>::none()
+        println("found.isSome() = " + found.isSome().toString())
+        println("found.unwrap() = " + found.unwrap().toString())
+        println("missing.unwrapOr(-1) = " + missing.unwrapOr(-1).toString())
+        return 0
+    }
+}

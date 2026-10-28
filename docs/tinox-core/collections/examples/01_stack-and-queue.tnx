@@ -1,0 +1,22 @@
+import tinox.core.collections
+class Main
+{
+    fnc main() -> Int32
+    {
+        const stack: Stack<Int64> = Stack::new()
+        stack.push(1)
+        stack.push(2)
+        stack.push(3)
+        println("stack pop: " + stack.pop().toString()) // 3 (LIFO)
+
+        const queue: Queue<Int64> = Queue::new()
+        queue.enqueue(1)
+        queue.enqueue(2)
+        queue.enqueue(3)
+        println("queue dequeue: " + queue.dequeue().toString()) // 1 (FIFO)
+
+        const pair: Pair<String, Int64> = Pair::new("age", 30)
+        println(pair.getFirst() + " = " + pair.getSecond().toString())
+        return 0
+    }
+}

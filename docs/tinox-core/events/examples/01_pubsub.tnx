@@ -1,0 +1,18 @@
+import tinox.core.events
+import tinox.core.json
+class Main
+{
+    fnc main() -> Int32
+    {
+        const emitter: EventEmitter = EventEmitter::new()
+        const handler: fnc(JsonValue) -> Nothing = payload => {
+            println("got greeting: " + Json::stringify(payload))
+        }
+        EventEmitter::on(emitter, "greet", handler)
+        const payload: JsonValue = Json::parse("\"hello world\"")
+        EventEmitter::emit(emitter, "greet", payload)
+        println("listeners: " + EventEmitter::listenerCount(emitter, "greet").toString())
+        EventEmitter::removeListener(emitter, "greet", handler)
+        return 0
+    }
+}

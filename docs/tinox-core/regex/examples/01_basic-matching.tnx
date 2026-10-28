@@ -1,0 +1,26 @@
+import tinox.core.regex
+class Main
+{
+    fnc main() -> Int32
+    {
+        const text: String = "order #4711 shipped, order #4899 pending"
+        if (Regex::isMatch("order #[0-9]+", text))
+        {
+            println("found at least one order reference")
+        }
+
+        const first: String = Regex::findFirst("#[0-9]+", text)
+        println("first match: " + first)
+        const all: List<String> = Regex::findAll("#[0-9]+", text)
+        var i: Int64 = 0
+        while i < all.len()
+        {
+            println("match " + i.toString() + ": " + all[i])
+            i = i + 1
+        }
+
+        const redacted: String = Regex::replaceAll("#[0-9]+", text, "#***")
+        println(redacted)
+        return 0
+    }
+}

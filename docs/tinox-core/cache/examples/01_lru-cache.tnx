@@ -1,0 +1,18 @@
+import tinox.core.cache
+import tinox.core.option
+class Main
+{
+    fnc main() -> Int32
+    {
+        const cache: Cache<String, Int64> = Cache::new(2)
+        Cache::set(cache, "a", 1)
+        Cache::set(cache, "b", 2)
+        Cache::set(cache, "c", 3) // evicts "a", the least-recently-used entry
+
+        const found: Option<Int64> = Cache::get(cache, "a")
+        println("has a: " + found.isSome().toString())
+        const value: Option<Int64> = Cache::get(cache, "c")
+        println("c: " + value.unwrap().toString())
+        return 0
+    }
+}

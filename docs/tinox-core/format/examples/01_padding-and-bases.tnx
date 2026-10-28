@@ -1,0 +1,13 @@
+import tinox.core.format
+class Main
+{
+    fnc main() -> Int32
+    {
+        println(Format::padLeft("7", 3, "0"))
+        println(Format::padRight("id", 6, "."))
+        println(Format::intToHex(255))
+        println(Format::intToBinary(10))
+        println(Format::formatInt(42, 5))
+        return 0
+    }
+}

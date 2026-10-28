@@ -1,0 +1,15 @@
+import tinox.core.time
+class Main
+{
+    fnc main() -> Int32
+    {
+        const sw: Stopwatch = Time::newStopwatch()
+        sw.start()
+        Time::sleep(50)
+        sw.stop()
+        println("elapsed: " + sw.elapsed().toString() + "ms")
+        const d: Duration = Time::durationFromMinutes(90)
+        println("90 minutes = " + d.getHours().toString() + "h " + (d.getMinutes() - d.getHours() * 60).toString() + "m")
+        return 0
+    }
+}

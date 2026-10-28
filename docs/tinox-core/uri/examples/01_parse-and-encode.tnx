@@ -1,0 +1,17 @@
+import tinox.core.uri
+class Main
+{
+    fnc main() -> Int32
+    {
+        const parts: UriParts = Uri::parse("https://example.com/search?q=tinox+lang#top")
+        println(parts.scheme)
+        println(parts.host)
+        println(parts.path)
+        println(parts.query)
+        println(parts.fragment)
+        const encoded: String = Uri::encodeComponent("hello world & more")
+        println(encoded)
+        println(Uri::decodeComponent(encoded))
+        return 0
+    }
+}

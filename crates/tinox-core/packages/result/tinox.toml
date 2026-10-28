@@ -1,0 +1,5 @@
+[package]
+compiler = "2.8.0"
+name = "result"
+version = "1.1.0"
+description = "tinox.core.result, bundled with the compiler and also available as a standalone tinox-central package."

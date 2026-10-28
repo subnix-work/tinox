@@ -1,0 +1,18 @@
+import tinox.core.semaphore
+class Main
+{
+    fnc main() -> Int32
+    {
+        const mutex: Mutex = Mutex::new()
+        Mutex::lock(mutex)
+        println("critical section")
+        Mutex::unlock(mutex)
+        if (Mutex::tryLock(mutex))
+        {
+            println("acquired again")
+            Mutex::unlock(mutex)
+        }
+
+        return 0
+    }
+}

@@ -495,7 +495,7 @@ const SMOKES: &[Smoke] = &[
     },
     Smoke {
         key: "tpl",
-        imports: &["tinox.core.tpl", "tinox.core.json"],
+        imports: &["tinox.core.tpl"],
         body: "var m: Map<String, JsonValue> = Map::new()\n    println(Template::render(\"hi\", m))",
         expects: &["hi"],
         contains: &[],

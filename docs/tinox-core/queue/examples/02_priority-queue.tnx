@@ -1,0 +1,11 @@
+import tinox.core.queue
+class Main
+{
+    fnc main() -> Int32
+    {
+        const pq: PriorityQueue<String> = PriorityQueue<String>::new()
+        PriorityQueue::enqueue(pq, "urgent", 1)
+        println("next: " + PriorityQueue::peek(pq))
+        return 0
+    }
+}

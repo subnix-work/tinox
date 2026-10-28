@@ -1,5 +1,7 @@
 module tinox.core.tpl
 
+import tinox.core.json
+
 namespace tinox.core.tpl
 {
     class Template
