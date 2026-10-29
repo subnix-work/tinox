@@ -28,7 +28,7 @@ use tower_lsp::lsp_types::{Location, Position, Range, SymbolInformation, SymbolK
 /// the same name may be used through them too.
 const BUILTIN_MEMBERS: &[&str] = &[
     "len", "push", "pop", "get", "set", "toString", "contains", "substring", "trim", "split", "keys",
-    "values", "size", "insert", "remove", "indexOf", "charAt", "startsWith", "endsWith", "replace",
+    "values", "size", "insert", "remove", "indexOf", "charAt", "chars", "startsWith", "endsWith", "replace",
     "toUpperCase", "toLowerCase", "isEmpty", "join", "map", "filter", "sort", "reverse", "clear", "add",
     "name", "parse", "first", "last", "format", "toInt64", "toFloat64", "clone", "equals", "hashCode",
 ];

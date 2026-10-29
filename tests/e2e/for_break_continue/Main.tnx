@@ -1,0 +1,146 @@
+// Issue #513: continue must advance for loops, and nested loops own their jumps.
+// expect: a
+// expect: c
+// expect: list done
+// expect: 0
+// expect: 2
+// expect: c-style done
+// expect: 2
+// expect: 12
+// expect: 5
+// expect: 4
+// expect: 6
+// expect: 4
+// expect: nested done
+// expect: c body 0
+// expect: c cleanup 0
+// expect: c cleanup 1
+// expect: c cleanup 2
+// expect: outer cleanup
+// expect: list body a
+// expect: inner cleanup a
+// expect: list cleanup a
+// expect: inner cleanup b
+// expect: list cleanup b
+// expect: inner cleanup c
+// expect: list cleanup c
+// expect: finally done
+class Main
+{
+    fnc main() -> Int32
+    {
+        for x in ["a", "b", "c", "d", "e"]
+        {
+            if (x == "b") { continue }
+            if (x == "d") { break }
+            println(x)
+        }
+        println("list done")
+
+        for (var j: Int64 = 0; j < 5; j = j + 1)
+        {
+            if (j == 1) { continue }
+            if (j == 3) { break }
+            println(j)
+        }
+        println("c-style done")
+
+        var map: Map<String, Int64> = Map::new()
+        map["a"] = 1
+        map["b"] = 2
+        map["c"] = 3
+        var count: Int64 = 0
+        for key in map.keys()
+        {
+            if (key == "b") { continue }
+            count = count + 1
+        }
+        println(count)
+        // A separate loop makes break independent of map iteration order.
+        for key in map.keys()
+        {
+            count = count + 10
+            break
+        }
+        println(count)
+
+        var sum: Int64 = 0
+        for n in 0..6
+        {
+            if (n == 1) { continue }
+            if (n == 4) { break }
+            sum = sum + n
+        }
+        println(sum)
+        // The inner C-style loop must not jump to its enclosing for-in loop.
+        sum = 0
+        for outer in [0, 1, 2, 3]
+        {
+            for (var inner: Int64 = 0; inner < 4; inner = inner + 1)
+            {
+                if (inner == 1) { continue }
+                if (inner == 3) { break }
+                sum = sum + 1
+            }
+            if (outer == 0) { continue }
+            if (outer == 1) { break }
+            sum = sum + 100
+        }
+        println(sum)
+        // Reverse nesting also verifies restoration of the C-style targets.
+        for (var outerC: Int64 = 0; outerC < 3; outerC = outerC + 1)
+        {
+            for inner in [0, 1, 2]
+            {
+                if (inner == 0) { continue }
+                sum = sum + 1
+                break
+            }
+            if (outerC == 0) { continue }
+            break
+        }
+        println(sum)
+        var step: Int64 = 0
+        for (; step < 5;)
+        {
+            step = step + 1
+            if (step == 2) { continue }
+            if (step == 4) { break }
+        }
+        println(step)
+        println("nested done")
+
+        // A loop inside an outer try must not run that try's finally on each jump.
+        try
+        {
+            for (var cleanupIndex: Int64 = 0; cleanupIndex < 4; cleanupIndex = cleanupIndex + 1)
+            {
+                try
+                {
+                    if (cleanupIndex == 1) { continue }
+                    if (cleanupIndex == 2) { break }
+                    println("c body " + cleanupIndex.toString())
+                }
+                finally { println("c cleanup " + cleanupIndex.toString()) }
+            }
+        }
+        finally { println("outer cleanup") }
+
+        for x in ["a", "b", "c", "d"]
+        {
+            try
+            {
+                try
+                {
+                    if (x == "b") { continue }
+                    if (x == "c") { break }
+                    println("list body " + x)
+                }
+                finally { println("inner cleanup " + x) }
+            }
+            finally { println("list cleanup " + x) }
+        }
+        println("finally done")
+        return 0
+    }
+}

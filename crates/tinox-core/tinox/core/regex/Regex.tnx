@@ -2,31 +2,95 @@ module tinox.core.regex
 
 namespace tinox.core.regex
 {
+    extern fn tinoxRegexPatternError(pattern: String, icase: Int64) -> String
+    extern fn tinoxRegexIsMatch(pattern: String, text: String, icase: Int64) -> Int64
+    extern fn tinoxRegexFindFirst(pattern: String, text: String, icase: Int64) -> String
+    extern fn tinoxRegexFindAll(pattern: String, text: String, icase: Int64) -> List<String>
+    extern fn tinoxRegexReplaceAll(pattern: String, text: String, replacement: String, icase: Int64) -> String
+    extern fn tinoxRegexSplit(pattern: String, text: String, icase: Int64) -> List<String>
+
+    /**
+     * POSIX extended regular expressions with Tinox's Perl character-class
+     * translation. Invalid patterns throw String errors. WithOptions methods
+     * accept ignoreCase; existing methods remain case-sensitive. Validation
+     * compiles the pattern once before execution compiles it again.
+     */
     class Regex
     {
+        fn isValid(pattern: String) -> Bool
+        {
+            return Regex::isValidWithOptions(pattern, false)
+        }
+
+        fn isValidWithOptions(pattern: String, ignoreCase: Bool) -> Bool
+        {
+            var flags: Int64 = 0
+            if (ignoreCase) { flags = 1 }
+            return tinoxRegexPatternError(pattern, flags) == ""
+        }
+
+        fn checkedFlags(pattern: String, ignoreCase: Bool) -> Int64
+        {
+            var flags: Int64 = 0
+            if (ignoreCase) { flags = 1 }
+            let error = tinoxRegexPatternError(pattern, flags)
+            if (error != "") { throw error }
+            return flags
+        }
+
         fn isMatch(pattern: String, text: String) -> Bool
         {
-            return regexIsMatch(pattern, text)
+            return Regex::isMatchWithOptions(pattern, text, false)
+        }
+
+        fn isMatchWithOptions(pattern: String, text: String, ignoreCase: Bool) -> Bool
+        {
+            let flags = Regex::checkedFlags(pattern, ignoreCase)
+            return tinoxRegexIsMatch(pattern, text, flags) != 0
         }
 
         fn findFirst(pattern: String, text: String) -> String
         {
-            return regexFindFirst(pattern, text)
+            return Regex::findFirstWithOptions(pattern, text, false)
+        }
+
+        fn findFirstWithOptions(pattern: String, text: String, ignoreCase: Bool) -> String
+        {
+            let flags = Regex::checkedFlags(pattern, ignoreCase)
+            return tinoxRegexFindFirst(pattern, text, flags)
         }
 
         fn findAll(pattern: String, text: String) -> List<String>
         {
-            return regexFindAll(pattern, text)
+            return Regex::findAllWithOptions(pattern, text, false)
+        }
+
+        fn findAllWithOptions(pattern: String, text: String, ignoreCase: Bool) -> List<String>
+        {
+            let flags = Regex::checkedFlags(pattern, ignoreCase)
+            return tinoxRegexFindAll(pattern, text, flags)
         }
 
         fn replaceAll(pattern: String, text: String, replacement: String) -> String
         {
-            return regexReplaceAll(pattern, text, replacement)
+            return Regex::replaceAllWithOptions(pattern, text, replacement, false)
+        }
+
+        fn replaceAllWithOptions(pattern: String, text: String, replacement: String, ignoreCase: Bool) -> String
+        {
+            let flags = Regex::checkedFlags(pattern, ignoreCase)
+            return tinoxRegexReplaceAll(pattern, text, replacement, flags)
         }
 
         fn split(pattern: String, text: String) -> List<String>
         {
-            return regexSplit(pattern, text)
+            return Regex::splitWithOptions(pattern, text, false)
+        }
+
+        fn splitWithOptions(pattern: String, text: String, ignoreCase: Bool) -> List<String>
+        {
+            let flags = Regex::checkedFlags(pattern, ignoreCase)
+            return tinoxRegexSplit(pattern, text, flags)
         }
     }
 }

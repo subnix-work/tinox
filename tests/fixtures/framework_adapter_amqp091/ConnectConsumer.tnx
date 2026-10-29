@@ -1,0 +1,6 @@
+import AmqpMessage091
+@Amqp091Consumer("connect-fail", 5672, "/", "user", "pass", "queue")
+class ConnectConsumer {
+    @OnMessage
+    fn receive(message: AmqpMessage091) -> Nothing { println("unexpected handler") }
+}

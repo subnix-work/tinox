@@ -114,6 +114,9 @@ pub enum DiScope {
 pub struct DiInjectField {
     pub field_name: String,
     pub field_type: String,
+    /// Concrete scoped provider selected at compile time.
+    pub provider_class: String,
+    pub qualifier: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -371,6 +374,14 @@ impl AnnotationProcessor {
         let mut registry: HashMap<String, AnnotationInfo> = HashMap::new();
 
         // HTTP method annotations
+        for (name, arity, description) in [
+            ("Required", 0, "Request field must be present and non-null"),
+            ("Optional", 0, "Request field may be absent or null"),
+            ("Length", 2, "Inclusive string code-point or collection length bounds"),
+            ("Range", 2, "Inclusive numeric request field bounds"),
+        ] {
+            registry.insert(name.into(), AnnotationInfo { name: name.into(), valid_targets: vec![AnnotationTarget::Field], min_args: arity, max_args: arity, description: description.into() });
+        }
         registry.insert(
             "GET".to_string(),
             AnnotationInfo {
@@ -747,6 +758,17 @@ impl AnnotationProcessor {
             },
         );
 
+        registry.insert("Provider".into(), AnnotationInfo {
+            name: "Provider".into(), valid_targets: vec![AnnotationTarget::Class],
+            min_args: 1, max_args: 1,
+            description: "Names a scoped concrete provider for explicit qualifier selection".into(),
+        });
+        registry.insert("Qualifier".into(), AnnotationInfo {
+            name: "Qualifier".into(), valid_targets: vec![AnnotationTarget::Field],
+            min_args: 1, max_args: 1,
+            description: "Selects the named provider of an @Inject field".into(),
+        });
+
         // Test framework annotations
         registry.insert(
             "Test".to_string(),
@@ -1102,6 +1124,8 @@ impl AnnotationProcessor {
             }
         }
 
+        resolve_di_providers(source, &mut result);
+
         for component in &result.di_components {
             if !matches!(component.scope, DiScope::Application | DiScope::Startup) { continue; }
             fn request_path(name: &str, components: &[DiComponentInfo], seen: &mut HashSet<String>) -> Option<String> {
@@ -1109,7 +1133,7 @@ impl AnnotationProcessor {
                 let component = components.iter().find(|c| c.class_name == name)?;
                 if component.scope == DiScope::HttpRequest { return Some(name.into()); }
                 for field in &component.inject_fields {
-                    if let Some(path) = request_path(&field.field_type, components, seen) {
+                    if let Some(path) = request_path(&field.provider_class, components, seen) {
                         return Some(format!("{name}.{} -> {path}", field.field_name));
                     }
                 }
@@ -1748,6 +1772,201 @@ fn collect_config_fields(class_name: &str, fields: &[FieldDef]) -> Vec<ConfigFie
         .collect()
 }
 
+/// Resolve the entire static provider graph before backend emission. The result
+/// preserves the declared field type for interface dispatch and exposes the
+/// concrete provider for code generation, scope checks and bootstrap inspection.
+fn resolve_di_providers(source: &tinox_parser::SourceFile, result: &mut AnnotationProcessingResult) -> Vec<Error> {
+    fn classes<'a>(decls: &'a [tinox_parser::Decl], out: &mut std::collections::BTreeMap<String, &'a Class>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Class(class) => { out.entry(class.name.clone()).or_insert(class); }
+                DeclKind::Namespace(ns) => classes(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    fn name(annotations: &[tinox_parser::Annotation], annotation: &str) -> Option<String> {
+        annotations.iter().find(|a| a.name == annotation).and_then(|a| a.args.first())
+            .and_then(|a| if let AnnotationArg::Literal(Literal::String(value)) = a { Some(value.clone()) } else { None })
+    }
+    let mut all = std::collections::BTreeMap::new();
+    classes(&source.decls, &mut all);
+    let mut errors = vec![];
+    let mut named = HashMap::new();
+    for class in all.values() {
+        let providers: Vec<_> = class.annotations.iter().filter(|a| a.name == "Provider").collect();
+        if !providers.is_empty() && !result.di_components.iter().any(|c| c.class_name == class.name) {
+            errors.push(Error::new(class.span, "@Provider requires a component scope annotation"));
+        }
+        if !providers.is_empty() && (!class.type_params.is_empty() || class.extends.is_some()) {
+            errors.push(Error::new(class.span, "@Provider requires a non-generic concrete class without inheritance; implement interfaces directly"));
+        }
+        for ann in providers.iter() {
+            let valid = ann.args.len() == 1 && matches!(&ann.args[0], AnnotationArg::Literal(Literal::String(value)) if !value.trim().is_empty());
+            if !valid { errors.push(Error::new(ann.span, "@Provider requires one non-empty string literal")); }
+        }
+        if providers.len() > 1 { errors.push(Error::new(class.span, "Duplicate @Provider annotation")); }
+        if let Some(value) = name(&class.annotations, "Provider") {
+            if let Some(previous) = named.insert(value.clone(), class.name.clone()) {
+                errors.push(Error::new(class.span, format!("Duplicate provider name '{value}' on '{previous}' and '{}'", class.name)));
+            }
+        }
+        for field in &class.fields {
+            let qualifiers: Vec<_> = field.annotations.iter().filter(|a| a.name == "Qualifier").collect();
+            if !qualifiers.is_empty() && !result.di_components.iter().any(|c| c.class_name == class.name) {
+                errors.push(Error::new(class.span, "@Qualifier requires a component scope annotation on its owning class"));
+            }
+            for ann in qualifiers.iter() {
+                if !field.annotations.iter().any(|a| a.name == "Inject") {
+                    errors.push(Error::new(ann.span, "@Qualifier requires @Inject on the same field"));
+                }
+                if ann.args.len() != 1 || !matches!(&ann.args[0], AnnotationArg::Literal(Literal::String(value)) if !value.trim().is_empty()) {
+                    errors.push(Error::new(ann.span, "@Qualifier requires one non-empty string literal"));
+                }
+            }
+            if qualifiers.len() > 1 { errors.push(Error::new(class.span, "Duplicate @Qualifier annotation")); }
+        }
+    }
+    let provider_names: HashSet<_> = result.di_components.iter().map(|c| c.class_name.clone()).collect();
+    for component in &mut result.di_components {
+        let Some(owner) = all.get(&component.class_name) else { continue };
+        for field in &owner.fields {
+            if field.annotations.iter().any(|a| a.name == "Inject") && !matches!(field.field_type, Type::Named(_)) {
+                errors.push(Error::new(owner.span, "@Inject requires a non-generic named class or interface type"));
+            }
+        }
+        for field in &mut component.inject_fields {
+            let mut candidates: Vec<_> = provider_names.iter().filter(|candidate| {
+                let Some(class) = all.get(candidate.as_str()) else { return false };
+                let compatible = class.name == field.field_type || class.implements.contains(&field.field_type);
+                compatible && field.qualifier.as_ref().is_none_or(|qualifier| name(&class.annotations, "Provider").as_ref() == Some(qualifier))
+            }).cloned().collect();
+            candidates.sort();
+            match candidates.as_slice() {
+                [provider] => field.provider_class = provider.clone(),
+                [] => errors.push(Error::new(owner.span, format!("Missing provider for @Inject '{}.{}': type '{}' qualifier {:?} has no component scope annotation/provider matching the selection", component.class_name, field.field_name, field.field_type, field.qualifier))),
+                _ => errors.push(Error::new(owner.span, format!("Ambiguous providers for @Inject '{}.{}': {}; select @Qualifier(\"name\")", component.class_name, field.field_name, candidates.join(", ")))),
+            }
+        }
+    }
+    fn visit(index: usize, components: &[DiComponentInfo], state: &mut [u8], stack: &mut Vec<String>) -> Option<String> {
+        if state[index] == 2 { return None; }
+        if state[index] == 1 { stack.push(components[index].class_name.clone()); return Some(stack.join(" -> ")); }
+        state[index] = 1;
+        stack.push(components[index].class_name.clone());
+        for field in &components[index].inject_fields {
+            if let Some(target) = components.iter().position(|c| c.class_name == field.provider_class) {
+                if let Some(cycle) = visit(target, components, state, stack) { return Some(cycle); }
+            }
+        }
+        stack.pop(); state[index] = 2; None
+    }
+    let mut state = vec![0; result.di_components.len()];
+    for index in 0..result.di_components.len() {
+        if let Some(cycle) = visit(index, &result.di_components, &mut state, &mut vec![]) {
+            let class = all[&result.di_components[index].class_name];
+            errors.push(Error::new(class.span, format!("Cyclic @Inject dependency: {cycle}")));
+            break;
+        }
+    }
+    // Singleton ownership cannot be repaired by reinjecting a request object
+    // into a process-wide instance: that races across simultaneous requests.
+    fn request_path(name: &str, components: &[DiComponentInfo], seen: &mut HashSet<String>) -> Option<String> {
+        if !seen.insert(name.into()) { return None; }
+        let component = components.iter().find(|c| c.class_name == name)?;
+        if component.scope == DiScope::HttpRequest { return Some(name.into()); }
+        for field in &component.inject_fields {
+            if let Some(path) = request_path(&field.provider_class, components, seen) {
+                return Some(format!("{name}.{} -> {path}", field.field_name));
+            }
+        }
+        None
+    }
+    // Reject declared retaining paths even when fields are assigned manually
+    // rather than injected (nullable/container wrappers do not shorten lifetime).
+    fn retaining_type(ty: &Type, all: &std::collections::BTreeMap<String, &Class>, request: &HashSet<String>, seen: &mut HashSet<String>) -> Option<String> {
+        match ty {
+            Type::Named(name) | Type::Generic { name, .. } => {
+                if request.contains(name) { return Some(name.clone()); }
+                if let Type::Generic { args, .. } = ty {
+                    for arg in args {
+                        if let Some(path) = retaining_type(arg, all, request, seen) { return Some(format!("{name}<{path}>")); }
+                    }
+                }
+                if !seen.insert(name.clone()) { return None; }
+                if let Some(class) = all.get(name) {
+                    for field in &class.fields {
+                        if let Some(path) = retaining_type(&field.field_type, all, request, seen) {
+                            return Some(format!("{name}.{} -> {path}", field.name));
+                        }
+                    }
+                    if let Some(parent) = &class.extends {
+                        return retaining_type(&Type::Named(parent.clone()), all, request, seen)
+                            .map(|path| format!("{name} extends {path}"));
+                    }
+                }
+                None
+            }
+            Type::Array(t) | Type::Nullable(t) | Type::Mutable(t) | Type::Ref(t) => retaining_type(t, all, request, seen),
+            Type::Map(k, v) => retaining_type(k, all, request, seen).or_else(|| retaining_type(v, all, request, seen)),
+            Type::Tuple(items) => items.iter().find_map(|t| retaining_type(t, all, request, seen)),
+            Type::Fn { params, ret } => params.iter().chain(std::iter::once(ret.as_ref())).find_map(|t| retaining_type(t, all, request, seen)),
+            _ => None,
+        }
+    }
+    let mut request: HashSet<_> = result.di_components.iter().filter(|c| c.scope == DiScope::HttpRequest).map(|c| c.class_name.clone()).collect();
+    // An interface capable of holding a request provider is a retaining type too.
+    for component in &result.di_components {
+        if component.scope == DiScope::HttpRequest {
+            request.extend(all[&component.class_name].implements.iter().cloned());
+        }
+    }
+    fn interface_parents(decls: &[tinox_parser::Decl], parents: &mut HashMap<String, Vec<String>>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Interface(interface) => { parents.insert(interface.name.clone(), interface.extends.clone()); }
+                DeclKind::Namespace(ns) => interface_parents(&ns.decls, parents),
+                _ => {}
+            }
+        }
+    }
+    let mut parents = HashMap::new();
+    interface_parents(&source.decls, &mut parents);
+    loop {
+        let before = request.len();
+        for name in request.clone() {
+            if let Some(inherited) = parents.get(&name) { request.extend(inherited.iter().cloned()); }
+        }
+        if before == request.len() { break; }
+    }
+    for component in &result.di_components {
+        if matches!(component.scope, DiScope::Application | DiScope::Startup) {
+            if let Some(parent) = &all[&component.class_name].extends {
+                if let Some(path) = retaining_type(&Type::Named(parent.clone()), &all, &request, &mut HashSet::new()) {
+                    errors.push(Error::new(all[&component.class_name].span,
+                        format!("Singleton '{}' inherits fields retaining request-scoped state: {path}", component.class_name)));
+                }
+            }
+            for field in &all[&component.class_name].fields {
+                // A qualified injection's concrete provider is authoritative;
+                // another request implementation of its interface must not
+                // reject a safe application provider selected by @Qualifier.
+                let selected = component.inject_fields.iter().find(|f| f.field_name == field.name)
+                    .map(|f| Type::Named(f.provider_class.clone()));
+                let retaining = selected.as_ref().unwrap_or(&field.field_type);
+                if let Some(path) = retaining_type(retaining, &all, &request, &mut HashSet::new()) {
+                    errors.push(Error::new(field.span, format!("Singleton field '{}.{}' can retain request-scoped state: {path}", component.class_name, field.name)));
+                }
+            }
+            if let Some(path) = request_path(&component.class_name, &result.di_components, &mut HashSet::new()) {
+                errors.push(Error::new(all[&component.class_name].span,
+                    format!("Singleton cannot capture request-scoped state: {path}; make the request owner @HttpRequestScoped")));
+            }
+        }
+    }
+    errors
+}
+
 fn collect_inject_fields(fields: &[FieldDef]) -> Vec<DiInjectField> {
     fields
         .iter()
@@ -1757,6 +1976,8 @@ fn collect_inject_fields(fields: &[FieldDef]) -> Vec<DiInjectField> {
                 Some(DiInjectField {
                     field_name: f.name.clone(),
                     field_type: type_name.clone(),
+                    provider_class: type_name.clone(),
+                    qualifier: f.annotations.iter().find(|a| a.name == "Qualifier").and_then(|a| a.args.first()).and_then(|a| if let AnnotationArg::Literal(Literal::String(value)) = a { Some(value.clone()) } else { None }),
                 })
             } else {
                 None
@@ -1873,6 +2094,10 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
 
             for field in &c.fields {
                 errors.extend(processor.validate(&field.annotations, AnnotationTarget::Field));
+                errors.extend(crate::dto_validation::validate_field(field));
+                if !c.annotations.iter().any(|a|a.name=="JsonSerializable") && field.annotations.iter().any(|a|matches!(a.name.as_str(),"Required"|"Optional"|"Length"|"Range")) {
+                    errors.push(Error::new(field.span,"request validation annotations require a @JsonSerializable class"));
+                }
             }
             for method in &c.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
@@ -2099,6 +2324,11 @@ pub fn validate_annotations(
     for decl in &source.decls {
         validate_decl(&processor, decl, &json_serializable, &mut errors);
     }
+    let mut merged = source.clone();
+    merged.decls.extend_from_slice(extra_decls);
+    let mut result = process_annotations(&merged);
+    errors.extend(resolve_di_providers(&merged, &mut result));
+    errors.extend(crate::dto_validation::validate_request_graphs(&source.decls,extra_decls));
     for error in &mut errors { error.code = Some("TINOX-ANNOTATION".into()); }
     errors
 }
@@ -2178,6 +2408,52 @@ mod tests {
         assert!(exposed.shared_state_warnings.iter().any(|w| w.contains("bypass method locks")));
         let captive = proc("@HttpRequestScoped class Request {} @ApplicationComponent class Middle { @Inject var request: Request } @Startup class Service { @Inject var middle: Middle }");
         assert!(captive.shared_state_warnings.iter().any(|w| w.contains("Service.middle -> Middle.request -> Request")));
+    }
+
+    #[test]
+    fn request_ownership_rejects_nested_manual_retaining_paths() {
+        for field in ["var state: State?", "var state: List<State>", "var state: Map<String, State>", "var state: Holder"] {
+            let source = format!("@HttpRequestScoped class State {{}} class Holder {{ var value: State? }} @ApplicationComponent class Owner {{ {field} }}");
+            assert!(valid(&source).iter().any(|e| e.message.contains("request-scoped state")), "{source}");
+        }
+        assert!(valid("interface Store {} @HttpRequestScoped class Request implements Store {} @ApplicationComponent @Provider(\"safe\") class Safe implements Store {} @Startup class Owner { @Inject @Qualifier(\"safe\") var store: Store }").is_empty());
+        assert!(valid("interface Store {} @HttpRequestScoped class Request implements Store {} @ApplicationComponent class Owner { var store: Store? }").iter().any(|e| e.message.contains("request-scoped state")));
+        for source in [
+            "@HttpRequestScoped class State {} class Base { var state: State? } class Holder extends Base {} @ApplicationComponent class Owner { var holder: Holder? }",
+            "@HttpRequestScoped class State {} class Base { var state: List<State> } @ApplicationComponent class Owner extends Base {}",
+            "interface Parent {} interface Child extends Parent {} @HttpRequestScoped class State implements Child {} @ApplicationComponent class Owner { var value: Parent? }",
+        ] {
+            assert!(valid(source).iter().any(|e| e.message.contains("request-scoped state")), "{source}");
+        }
+    }
+
+    #[test]
+    fn qualifier_resolution_selects_concrete_provider_and_preserves_interface() {
+        let source = "interface Store {} @ApplicationComponent @Provider(\"fast\") class Fast implements Store {} @ApplicationComponent @Provider(\"safe\") class Safe implements Store {} @Startup class App { @Inject @Qualifier(\"safe\") var store: Store }";
+        assert!(valid(source).is_empty(), "{:?}", valid(source));
+        let result = proc(source);
+        let field = &result.di_components[2].inject_fields[0];
+        assert_eq!(field.field_type, "Store");
+        assert_eq!(field.provider_class, "Safe");
+        assert_eq!(field.qualifier.as_deref(), Some("safe"));
+    }
+
+    #[test]
+    fn provider_graph_errors_are_frontend_diagnostics() {
+        for (source, expected) in [
+            ("interface Store {} @ApplicationComponent class Fast implements Store {} @ApplicationComponent class Safe implements Store {} @Startup class App { @Inject var store: Store }", "Ambiguous providers"),
+            ("interface Store {} @ApplicationComponent @Provider(\"fast\") class Fast implements Store {} @Startup class App { @Inject @Qualifier(\"absent\") var store: Store }", "Missing provider"),
+            ("@ApplicationComponent @Provider(\"same\") class A {} @Startup @Provider(\"same\") class B {}", "Duplicate provider name"),
+            ("@Provider(\"raw\") class Raw {}", "requires a component scope"),
+            ("@Startup class App { @Qualifier(\"raw\") var value: Int64 }", "requires @Inject"),
+            ("@Startup class App { @Inject @Qualifier(7) var other: App }", "non-empty string literal"),
+            ("@Startup @Provider(\"\") class App {}", "non-empty string literal"),
+            ("@Startup class App { @Inject var value: Array<Int64> }", "non-generic named"),
+            ("interface Store {} @ApplicationComponent @Provider(\"loop\") class Loop implements Store { @Inject var app: App } @Startup class App { @Inject @Qualifier(\"loop\") var store: Store }", "Cyclic @Inject"),
+        ] {
+            let errors = valid(source);
+            assert!(errors.iter().any(|e| e.message.contains(expected)), "expected {expected}: {errors:?}");
+        }
     }
 
     // --- validate: unknown annotation ---

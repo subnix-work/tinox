@@ -1245,6 +1245,15 @@ class Api {
       </tbody>
     </table>
 
+    <p><code>s.chars()</code> returns <code>List&lt;String&gt;</code> containing one
+      Unicode scalar value per element. Use <code>for ch in s.chars()</code> to
+      process complete UTF-8 characters. Combining marks and emoji sequences may
+      span several elements: this does not normalize text or segment graphemes.
+      Empty input yields an empty list; malformed UTF-8 aborts with its byte
+      offset. Length, indexing, <code>charAt</code>, and direct string iteration
+      retain their byte semantics. The operation takes O(bytes) time and allocates
+      a list plus one short string per scalar value.</p>
+
     <h3>Composite Types</h3>
     <pre><code><span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]                 <span class="cmt">// Array</span>
 <span class="kw">const</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>}  <span class="cmt">// Map/Dictionary</span>
@@ -1479,11 +1488,16 @@ class Api {
         <tr><td><code>@Masked</code></td><td>Field</td><td>Partially masked in logs</td></tr>
         <tr><td><code>@DoNotSerialize</code></td><td>Field</td><td>Exclude field from JSON</td></tr>
         <tr><td><code>@Log</code></td><td>Class</td><td>Automatically inject log field</td></tr>
-        <tr><td><code>@Inject</code></td><td>Field</td><td>Dependency injection field</td></tr>
+        <tr><td><code>@Inject</code></td><td>Field</td><td>Provider-owned injection field; source reassignment is rejected</td></tr>
+        <tr><td><code>@Provider("name")</code></td><td>Class</td><td>Names a concrete DI provider with an explicit scope</td></tr>
+        <tr><td><code>@Qualifier("name")</code></td><td>Field</td><td>Selects an <code>@Inject</code> field's provider at compile time</td></tr>
+        <tr><td><code>@Required</code> / <code>@Optional</code></td><td>Field</td><td>Presence/null contract for JSON request DTOs</td></tr>
+        <tr><td><code>@Length(min, max)</code></td><td>Field</td><td>Inclusive Unicode-codepoint or list-element count bounds</td></tr>
+        <tr><td><code>@Range(min, max)</code></td><td>Field</td><td>Inclusive numeric request-DTO bounds; <code>@NotNull</code> remains a database annotation</td></tr>
         <tr><td><code>@Config("key")</code></td><td>Field</td><td>Value from application.properties</td></tr>
         <tr><td><code>@Synchronized</code></td><td>Class/method</td><td>Recursive class monitor for singleton instance methods</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Class</td><td>Singleton scope for DI</td></tr>
-        <tr><td><code>@HttpRequestScoped</code></td><td>Class</td><td>New object per HTTP request</td></tr>
+        <tr><td><code>@HttpRequestScoped</code></td><td>Class</td><td>One instance per concrete provider and synchronous REST request context</td></tr>
         <tr><td><code>@Test("desc")</code></td><td>Method</td><td>Unit test (tinox test)</td></tr>
         <tr><td><code>@inline</code></td><td>Function / Method</td><td>Forced LLVM inlining</td></tr>
         <tr><td><code>@deprecated("msg")</code></td><td>All</td><td>Deprecation warning</td></tr>
@@ -1502,6 +1516,7 @@ class Api {
         <tr><td><code>@Route("/path/:param")</code></td><td>Method</td><td>Tinox-UI: registers a <code>fn() -&gt; Component</code> method inside a <code>@TinoxUIApp</code> class as that path's builder (Vaadin-style route dispatch). Requires a <code>var currentRoute: String</code> field; matched <code>:name</code> path segments are auto-assigned into a same-named field on the class, if one exists</td></tr>
       </tbody>
     </table>
+    <p>Current contracts: <a href="docs/compiler-explain.md">DI providers and request contexts</a>, <a href="docs/request-validation.md">recursive request validation and HTTP-400 details</a>.</p>
   </section>
 
   <!-- ══════════════════════════════════════ -->
@@ -2446,6 +2461,7 @@ epoll_fd = epoll_create1(0)
     <div class="mod-section" id="mod-regex">
 
   <h2>regex</h2>
+  <p>Current workspace: <code>Regex</code> methods throw catchable errors for invalid patterns; <code>isValid</code> and <code>WithOptions</code> variants are available. <a href="docs/regex.md">Current Regex contract</a>. The embedded page describes the published package version.</p>
   <p class="mod-ref-note">Full reference (description, dependencies, examples, classes &amp; methods) is loaded directly from the published tinox-central package documentation, so it does not have to be maintained in two places: <a href="docs/tinox-core/regex/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/regex/1-0-0/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/regex/1-0-0/docs.html" loading="lazy" title="tinox.core:regex documentation"></iframe>
   </div>
@@ -2458,6 +2474,7 @@ epoll_fd = epoll_create1(0)
   </div>
 
     <div class="mod-section" id="mod-fs">
+  <p><a href="docs/filesystem.md">Current workspace additions: metadata, atomic rename, and safe directory operations.</a></p>
 
   <h2>fs</h2>
   <p class="mod-ref-note">Full reference (description, dependencies, examples, classes &amp; methods) is loaded directly from the published tinox-central package documentation, so it does not have to be maintained in two places: <a href="docs/tinox-core/fs/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/fs/1-0-0/docs.html</a></p>

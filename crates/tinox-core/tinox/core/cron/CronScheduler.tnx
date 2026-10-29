@@ -1,4 +1,5 @@
 module tinox.core.cron
+import tinox.core.time
 
 namespace tinox.core.cron
 {
@@ -15,7 +16,7 @@ namespace tinox.core.cron
         fn addJob(scheduler: CronScheduler, expr: String, callback: fnc() -> Nothing) -> Nothing
         {
             const cronExpr: CronExpr = Cron::parse(expr)
-            scheduler.jobs.push(CronJob { expr: cronExpr, callback: callback, lastRun: 0 })
+            scheduler.jobs.push(CronJob { expr: cronExpr, callback: callback, lastRun: -1 })
         }
 
         fn start(scheduler: CronScheduler) -> Nothing
@@ -30,19 +31,28 @@ namespace tinox.core.cron
 
         fn tick(scheduler: CronScheduler) -> Nothing
         {
+            CronScheduler::tickAt(scheduler, Time::now())
+        }
+
+        /** Caller-driven, single-threaded tick; missed minutes are not replayed.
+         * Repeated or backward ticks never re-run an already executed minute. */
+        fn tickAt(scheduler: CronScheduler, now: Int64) -> Nothing
+        {
+            Cron::validateTimestamp(now)
             if (scheduler.running == false)
             {
                 return
             }
-            const now: Int64 = Time::now()
+            const scheduledMinute: Int64 = (now / 60000) * 60000
             var i: Int64 = 0
             while i < scheduler.jobs.len()
             {
                 const job: CronJob = scheduler.jobs[i]
-                if (Cron::matches(job.expr, now))
+                if (scheduledMinute > job.lastRun && Cron::matches(job.expr, now))
                 {
+                    // Claim before invoking: callbacks may throw or re-enter tick.
+                    job.lastRun = scheduledMinute
                     job.callback()
-                    job.lastRun = now
                 }
                 i = i + 1
             }

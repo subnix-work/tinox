@@ -1,0 +1,15 @@
+import AmqpConnection091
+import AmqpMessage091
+class AmqpChannel091 {
+    var conn: Int64
+    var chanId: Int64
+    fn open(connection: AmqpConnection091) -> AmqpChannel091 {
+        var id = 1
+        if (connection.conn == 1) { id = 0 }
+        return AmqpChannel091 { conn: connection.conn, chanId: id }
+    }
+    fn qos(prefetchCount: Int64) -> Bool { return this.conn != 2 }
+    fn consume(queue: String) -> String { return "" }
+    fn nextMessage() -> AmqpMessage091 { return AmqpMessage091 { deliveryTag: 0, exchange: "", routingKey: "", contentType: "", body: [], ok: false } }
+    fn ack(deliveryTag: Int64) -> Nothing {}
+}

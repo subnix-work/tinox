@@ -1,0 +1,6 @@
+class Cell<T> {
+    var value: T
+    fn map<U>(transform: fnc(T) -> U) -> Cell<U> {
+        return Cell { value: transform(this.value) }
+    }
+}

@@ -1,0 +1,35 @@
+import tinox.core.http_server
+import tinox.core.http
+import State
+import tinox.core.env
+@ApplicationComponent
+class Api {
+ @Inject var state: State
+ @GET @Path("/add") fn add() -> Int64 { return this.state.add() }
+ @GET @Path("/count") fn count() -> Int64 { return this.state.read() }
+ @GET @Path("/commit") fn commit() -> Int64 { return this.state.change(false) }
+ @GET @Path("/rollback") fn rollback() -> String {
+  try { this.state.change(true) } catch (e: String) { return e }
+  return "error was swallowed"
+ }
+ fnc cancelWork(state: State, ready: Int64) -> Nothing { state.cancelled(ready) }
+ @GET @Path("/cancel") fn cancel() -> String {
+  const ready = channel
+  scope {
+   const task = spawn Api::cancelWork(this.state, ready)
+   recv ready
+   taskCancel(task)
+   try { await task } catch (e: String) { return e }
+  }
+  return "cancellation was swallowed"
+ }
+ @GET @Path("/refused") fn refused() -> String {
+  const result = httpGet(Env::getVar("COMPOSITION_REFUSED"))
+  if (httpStatusCode(result) == 0) { return "dependency unavailable" }
+  return "unexpected dependency response"
+ }
+ @GET @Path("/outbound") fn outbound() -> String {
+  try { this.state.dependentChange() } catch (e: String) { return e }
+  return "outbound failure was swallowed"
+ }
+}

@@ -2301,14 +2301,17 @@ fn run_tests_once(args: &[String]) -> bool {
                 source_path);
         }
 
-        for t in &test_entries {
+        // Compile once per source file, then execute each method in a fresh
+        // process so mutable statics, native globals and startup state stay isolated.
+        let exe = format!(".tinox_test_{}_{}", std::process::id(), total + 1);
+        let mut compilation = None;
+        for (index, t) in test_entries.iter().enumerate() {
             total += 1;
             if json {
                 diagnostics::emit("test-started", describe(t));
             }
             let started = std::time::Instant::now();
-            let exe = format!(".tinox_test_{}_{}", std::process::id(), total);
-            let result = compile_test_exe(source_path, &t.class_name, &t.method_name, &exe);
+            let result = compilation.get_or_insert_with(|| compile_test_exe(source_path, &test_entries, &exe));
             if let Err(e) = result {
                 if json {
                     let mut ev = describe(t);
@@ -2324,12 +2327,10 @@ fn run_tests_once(args: &[String]) -> bool {
             }
             // JSON mode captures the program's output so stdout stays a pure event stream.
             let outcome = if json {
-                Command::new(format!("./{exe}")).stdin(std::process::Stdio::null()).output().map(|o| (o.status, tail_output(&[o.stdout, o.stderr].concat(), 65536)))
+                Command::new(format!("./{exe}")).args(["--tinox-test-index", &index.to_string()]).stdin(std::process::Stdio::null()).output().map(|o| (o.status, tail_output(&[o.stdout, o.stderr].concat(), 65536)))
             } else {
-                Command::new(format!("./{exe}")).status().map(|s| (s, String::new()))
+                Command::new(format!("./{exe}")).args(["--tinox-test-index", &index.to_string()]).status().map(|s| (s, String::new()))
             };
-            let _ = fs::remove_file(&exe);
-            let _ = fs::remove_file(format!("{exe}.ll"));
             let ms = started.elapsed().as_millis() as u64;
             match outcome {
                 Ok((s, output)) if s.code() == Some(0) => {
@@ -2371,6 +2372,8 @@ fn run_tests_once(args: &[String]) -> bool {
                 }
             }
         }
+        let _ = fs::remove_file(&exe);
+        let _ = fs::remove_file(format!("{exe}.ll"));
     }
 
     if json {
@@ -3155,9 +3158,8 @@ fn collect_tests(path: &str) -> Result<Vec<tinox_typecheck::annotations::TestInf
     Ok(result.test_entries)
 }
 
-/// Compile `source` with a synthetic main that runs one test method and exits 0/1.
-/// Compile a test-mode executable: the test method returns Bool; main exits 0 on true.
-fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str) -> Result<(), String> {
+/// Compile one executable for a file, selecting its Bool-returning test at runtime.
+fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInfo], exe: &str) -> Result<(), String> {
     let src = build_cache::read_to_string(source)
         .map_err(|e| format!("cannot read: {e}"))?;
 
@@ -3202,7 +3204,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
             tinox_typecheck::annotations::DiScope::HttpRequest => tinox_codegen::DiScope::HttpRequest,
         },
         inject_fields: c.inject_fields.iter().map(|f| tinox_codegen::DiInjectField {
-            field_name: f.field_name.clone(), field_type: f.field_type.clone(),
+            field_name: f.field_name.clone(), field_type: f.field_type.clone(), provider_class: f.provider_class.clone(), qualifier: f.qualifier.clone(),
         }).collect(),
     }).collect();
     let config_fields = ann.config_fields.iter().map(|f| tinox_codegen::ConfigFieldInfo {
@@ -3278,7 +3280,7 @@ fn compile_test_exe(source: &str, class_name: &str, method_name: &str, exe: &str
     cg.set_db_url(db_cfg_test.as_ref().map(|c| c.url.clone()));
     cg.set_db_pool_size(db_cfg_test.as_ref().map(|c| c.pool as i64).unwrap_or(5));
     cg.set_migration_payload(test_migration_payload(db_cfg_test.as_ref()).map_err(|e| format!("changelog: {e}"))?);
-    cg.set_test_entry(class_name.to_string(), method_name.to_string());
+    cg.set_test_entries(tests.iter().map(|t| (t.class_name.clone(), t.method_name.clone())).collect());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
     cg.check_undefined_callees()
         .map_err(|e| format!("codegen: {}", e.errors.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")))?;
@@ -4758,6 +4760,14 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         }
         failure
     };
+    for endpoint in &ann_result.ws_endpoints {
+        if ann_result.di_components.iter().any(|component|
+            component.class_name == endpoint.class_name
+                && matches!(component.scope, tinox_typecheck::annotations::DiScope::HttpRequest)) {
+            return Err(annotation_error(&[endpoint.class_name.as_str()],
+                "@WebsocketEndpoint cannot use @HttpRequestScoped: a WebSocket connection outlives an HTTP request; use @ApplicationComponent or an unscoped endpoint".into()));
+        }
+    }
     let mut all_classes = Vec::new();
     classes(&ast.decls, &[], &mut all_classes);
     let main_class = all_classes.iter().find_map(|decl| match &decl.node {
@@ -4809,7 +4819,7 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         state[index] = 1;
         stack.push(component.class_name.clone());
         for field in &component.inject_fields {
-            let target = components.iter().position(|candidate| candidate.class_name == field.field_type)
+            let target = components.iter().position(|candidate| candidate.class_name == field.provider_class)
                 .ok_or_else(|| (component.class_name.clone(), format!(
                     "@Inject field '{}.{}' targets '{}', which has no component scope annotation",
                     component.class_name, field.field_name, field.field_type)))?;
@@ -4915,7 +4925,8 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         }
         let mut collisions: Vec<(i64, Vec<(&str, &str)>)> = by_port
             .into_iter()
-            .filter(|(_, owners)| owners.len() > 1)
+            // Port zero asks the OS for a separate ephemeral listener per bind.
+            .filter(|(port, owners)| *port != 0 && owners.len() > 1)
             .collect();
         // HashMap iteration order is unspecified; sort so the same program
         // always fails with the same message.
@@ -5111,7 +5122,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             },
             inject_fields: c.inject_fields.iter().map(|f| tinox_codegen::DiInjectField {
                 field_name: f.field_name.clone(),
-                field_type: f.field_type.clone(),
+                field_type: f.field_type.clone(), provider_class: f.provider_class.clone(), qualifier: f.qualifier.clone(),
             }).collect(),
         })
         .collect();
@@ -6022,6 +6033,22 @@ mod docker_tests {
 #[cfg(test)]
 mod structured_annotation_tests {
     use super::*;
+
+    #[test]
+    fn websocket_rejects_http_request_scope() {
+        let source = parse_frontend("@HttpRequestScoped @WebsocketEndpoint(\"/one\", 0) class Endpoint {}", None).unwrap();
+        let annotations = tinox_typecheck::annotations::process_annotations(&source);
+        let failure = validate_program_annotations(&source, &annotations, "/tmp/Main.tnx").unwrap_err();
+        assert!(failure.0[0].message.contains("cannot use @HttpRequestScoped"));
+    }
+
+    #[test]
+    fn independent_ephemeral_listeners_do_not_collide() {
+        let mut source = parse_frontend("@WebsocketEndpoint(\"/one\", 0) class First {}", None).unwrap();
+        source.decls.extend(parse_frontend("@WebsocketEndpoint(\"/two\", 0) class Second {}", None).unwrap().decls);
+        let annotations = tinox_typecheck::annotations::process_annotations(&source);
+        validate_program_annotations(&source, &annotations, "/tmp/Main.tnx").unwrap();
+    }
 
     #[test]
     fn port_collisions_retain_both_source_declarations() {

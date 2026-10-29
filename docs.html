@@ -1255,6 +1255,16 @@ class Api {
       </tbody>
     </table>
 
+    <p><code>s.chars()</code> liefert <code>List&lt;String&gt;</code> mit einem
+      Unicode-Skalarwert pro Element. Mit <code>for ch in s.chars()</code> lassen
+      sich vollständige UTF-8-Zeichen verarbeiten. Kombinierende Zeichen und
+      Emoji-Sequenzen können mehrere Elemente umfassen; Normalisierung und
+      Graphemsegmentierung finden nicht statt. Leere Eingabe liefert eine leere
+      Liste; ungültiges UTF-8 bricht mit dem Byte-Offset ab. Länge, Indizierung,
+      <code>charAt</code> und direkte String-Iteration behalten ihre Byte-Semantik.
+      Der Aufruf benötigt O(Bytes) Zeit und reserviert eine Liste sowie einen
+      kurzen String pro Skalarwert.</p>
+
     <h3>Zusammengesetzte Typen</h3>
     <pre><code><span class="kw">const</span> numbers: <span class="type">List</span>&lt;<span class="type">Int64</span>&gt; = [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]                 <span class="cmt">// Array</span>
 <span class="kw">const</span> ages: <span class="type">Map</span>&lt;<span class="type">String</span>, <span class="type">Int32</span>&gt; = @{<span class="str">"Alice"</span> => <span class="num">30</span>}  <span class="cmt">// Map/Dictionary</span>
@@ -1491,11 +1501,16 @@ class Api {
         <tr><td><code>@Masked</code></td><td>Feld</td><td>Teilweise maskiert in Logs</td></tr>
         <tr><td><code>@DoNotSerialize</code></td><td>Feld</td><td>Feld von JSON ausschließen</td></tr>
         <tr><td><code>@Log</code></td><td>Klasse</td><td>Automatisches log-Feld injizieren</td></tr>
-        <tr><td><code>@Inject</code></td><td>Feld</td><td>Dependency-Injection-Feld</td></tr>
+        <tr><td><code>@Inject</code></td><td>Feld</td><td>Provider-eigenes Injection-Feld; im Quellcode nicht neu zuweisbar</td></tr>
+        <tr><td><code>@Provider("name")</code></td><td>Klasse</td><td>Benennt einen konkreten DI-Provider mit explizitem Scope</td></tr>
+        <tr><td><code>@Qualifier("name")</code></td><td>Feld</td><td>Wählt den Provider eines <code>@Inject</code>-Felds zur Compile-Zeit</td></tr>
+        <tr><td><code>@Required</code> / <code>@Optional</code></td><td>Feld</td><td>Präsenz-/Null-Vertrag für JSON-Request-DTOs</td></tr>
+        <tr><td><code>@Length(min, max)</code></td><td>Feld</td><td>Inklusive Grenzen für Unicode-Codepoints oder Listenelemente</td></tr>
+        <tr><td><code>@Range(min, max)</code></td><td>Feld</td><td>Inklusive numerische Grenzen für Request-DTOs; <code>@NotNull</code> bleibt eine Datenbankannotation</td></tr>
         <tr><td><code>@Config("key")</code></td><td>Feld</td><td>Wert aus application.properties</td></tr>
         <tr><td><code>@Synchronized</code></td><td>Klasse/Methode</td><td>Rekursiver Klassenmonitor für Singleton-Instanzmethoden</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Klasse</td><td>Singleton-Scope für DI</td></tr>
-        <tr><td><code>@HttpRequestScoped</code></td><td>Klasse</td><td>Neues Objekt pro HTTP-Request</td></tr>
+        <tr><td><code>@HttpRequestScoped</code></td><td>Klasse</td><td>Eine Instanz pro konkretem Provider und synchronem REST-Request-Kontext</td></tr>
         <tr><td><code>@Test("desc")</code></td><td>Methode</td><td>Unit-Test (tinox test)</td></tr>
         <tr><td><code>@inline</code></td><td>Funktion / Methode</td><td>Erzwungenes LLVM-Inlining</td></tr>
         <tr><td><code>@deprecated("msg")</code></td><td>Alle</td><td>Deprecation-Warnung</td></tr>
@@ -1514,6 +1529,7 @@ class Api {
         <tr><td><code>@Route("/path/:param")</code></td><td>Methode</td><td>Tinox-UI: registriert eine <code>fn() -&gt; Component</code>-Methode innerhalb einer <code>@TinoxUIApp</code>-Klasse als Builder für diesen Pfad (Vaadin-artiges Routing). Erfordert ein Feld <code>var currentRoute: String</code>; gematchte <code>:name</code>-Pfadsegmente werden automatisch in ein gleichnamiges Feld der Klasse geschrieben, falls vorhanden</td></tr>
       </tbody>
     </table>
+    <p>Aktuelle Verträge: <a href="docs/compiler-explain.md">DI-Provider und Request-Kontext</a>, <a href="docs/request-validation.md">rekursive Request-Validierung und HTTP-400-Details</a>.</p>
   </section>
 
   <!-- ══════════════════════════════════════ -->
@@ -2460,6 +2476,7 @@ epoll_fd = epoll_create1(0)
     <div class="mod-section" id="mod-regex">
 
   <h2>regex</h2>
+  <p>Aktueller Workspace: <code>Regex</code>-Methoden werfen bei ungültigen Mustern catchbare Fehler; <code>isValid</code> und <code>WithOptions</code>-Varianten sind verfügbar. <a href="docs/regex.md">Aktueller Regex-Vertrag</a>. Die eingebettete Seite beschreibt die veröffentlichte Paketversion.</p>
   <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/regex/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/regex/1-0-0/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/regex/1-0-0/docs.html" loading="lazy" title="tinox.core:regex Dokumentation"></iframe>
   </div>
@@ -2472,6 +2489,7 @@ epoll_fd = epoll_create1(0)
   </div>
 
     <div class="mod-section" id="mod-fs">
+  <p><a href="docs/filesystem.md">Aktuelle Workspace-Ergänzungen: Metadaten, atomisches Umbenennen und sichere Verzeichnisoperationen.</a></p>
 
   <h2>fs</h2>
   <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/fs/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/fs/1-0-0/docs.html</a></p>

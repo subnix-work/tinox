@@ -1,3 +1,4 @@
+pub mod dto_validation;
 pub mod semantic;
 pub mod cache;
 
@@ -457,6 +458,8 @@ pub struct TypeChecker {
     interface_extends: HashMap<String, (Vec<String>, tinox_common::Span)>, // interface_name -> (parent_names, span)
     interface_implementations: HashMap<String, Vec<String>>, // class_name -> [interface_names]
     class_parents: HashMap<String, String>, // child_class_name -> parent_class_name
+    injected_fields: HashSet<String>,
+    request_scoped_classes: HashSet<String>,
     current_class: Option<String>, // class currently being type-checked
     method_visibility: HashMap<String, Visibility>, // ClassName_methodName -> visibility
     field_visibility: HashMap<String, Visibility>,  // ClassName.fieldName -> visibility
@@ -783,6 +786,10 @@ impl TypeChecker {
         }
         symbols.functions.insert("split".to_string(), FunctionSignature {
             params: vec![("s".to_string(), ValueType::String), ("delim".to_string(), ValueType::String)],
+            return_type: ValueType::Array(Box::new(ValueType::String)),
+        });
+        symbols.functions.insert("String_chars".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String)],
             return_type: ValueType::Array(Box::new(ValueType::String)),
         });
         symbols.functions.insert("String_split".to_string(), FunctionSignature {
@@ -1374,6 +1381,8 @@ impl TypeChecker {
             interface_extends: HashMap::new(),
             interface_implementations: HashMap::new(),
             class_parents: HashMap::new(),
+            injected_fields: HashSet::new(),
+            request_scoped_classes: HashSet::new(),
             current_class: None,
             method_visibility: HashMap::new(),
             field_visibility: HashMap::new(),
@@ -2337,6 +2346,14 @@ impl TypeChecker {
                 }
 
                 self.known_class_names.insert(name.clone());
+                for field in &c.fields {
+                    if field.annotations.iter().any(|a| a.name == "Inject") {
+                        self.injected_fields.insert(format!("{name}.{}", field.name));
+                    }
+                }
+                if c.annotations.iter().any(|a| a.name == "HttpRequestScoped") {
+                    self.request_scoped_classes.insert(name.clone());
+                }
                 if c.annotations.iter().any(|a| matches!(a.name.as_str(), "Entity" | "Table")) {
                     self.entity_class_names.insert(name.clone());
                 }
@@ -2382,6 +2399,24 @@ impl TypeChecker {
         // Annotation validation pass
         let ann_errors = annotations::validate_annotations(source, &self.prelude_decls);
         self.errors.extend(ann_errors);
+    }
+
+    fn check_injected_assignment(&mut self, target: &Expr) {
+        if let ExprKind::FieldAccess { obj, field } = &target.node {
+            if let ValueType::Named(owner, _) = self.infer_type(obj) {
+                let mut declaring = Some(owner.clone());
+                let mut seen = HashSet::new();
+                while let Some(class) = declaring {
+                    if !seen.insert(class.clone()) { break; }
+                    if self.injected_fields.contains(&format!("{class}.{field}")) {
+                        self.errors.push(Error::new(target.span,
+                            format!("@Inject field '{owner}.{field}' is provider-owned and cannot be reassigned; mutate the service through its methods instead")));
+                        break;
+                    }
+                    declaring = self.class_parents.get(&class).cloned();
+                }
+            }
+        }
     }
 
     /// `extern fn` signatures cross the C ABI (issue #486): reject types with
@@ -2689,6 +2724,7 @@ impl TypeChecker {
                 false
             }
             StmtKind::Assignment { target, value } => {
+                self.check_injected_assignment(target);
                 let target_ty = self.infer_type(target);
                 let value_ty = self.infer_argument(value, &target_ty);
                 if !self.types_compatible(&target_ty, &value_ty) {
@@ -2762,7 +2798,8 @@ impl TypeChecker {
                 let elem_ty = match iter_ty {
                     ValueType::Range => ValueType::Int,
                     ValueType::Array(e) => *e,
-                    ValueType::String => ValueType::String,
+                    // Match s[i]: strings iterate unsigned byte values, not strings.
+                    ValueType::String => ValueType::Int,
                     other => other,
                 };
                 let was_in_loop = self.symbols.in_loop;
@@ -3673,6 +3710,7 @@ impl TypeChecker {
                 ValueType::Any
             }
             ExprKind::Assign { target, value } => {
+                self.check_injected_assignment(target);
                 let target_ty = self.infer_type(target);
                 let found = self.infer_argument(value, &target_ty);
                 if !self.types_compatible(&target_ty, &found) {
@@ -3685,6 +3723,7 @@ impl TypeChecker {
                 target,
                 value,
             } => {
+                self.check_injected_assignment(target);
                 let target_ty = self.infer_type(target);
                 let value_ty = self.infer_type(value);
                 if matches!(op, tinox_parser::CompoundOp::Add) {
@@ -3722,6 +3761,9 @@ impl TypeChecker {
                 ValueType::Callable { params: params.iter().map(|p| Self::type_to_value(&p.param_type)).collect(), ret: Box::new(ret) }
             }
             ExprKind::Spawn(inner) => {
+                if self.current_class.as_ref().is_some_and(|c| self.request_scoped_classes.contains(c)) {
+                    self.errors.push(Error::new(expr.span, "spawn is not allowed in @HttpRequestScoped classes: request-owned objects cannot escape into tasks; schedule copied data outside the request provider graph"));
+                }
                 ValueType::Task(Box::new(self.infer_type(inner)))
             }
             ExprKind::Await(inner) => {
@@ -4179,6 +4221,30 @@ impl TypeChecker {
                         }
                     }
                 }
+                // String.indexOf has one required needle and an optional byte
+                // offset. Other String_* builtins retain their existing rules.
+                if name == "String_indexOf" {
+                    if !(2..=3).contains(&args.len()) {
+                        self.errors.push(Error::new(span,
+                            "String.indexOf expects a needle and an optional integer byte offset".to_string()));
+                    }
+                    for (index, arg) in args.iter().enumerate() {
+                        let actual = self.infer_type(arg);
+                        let valid = if index < 2 {
+                            actual == ValueType::String
+                        } else {
+                            actual.is_integer()
+                        };
+                        if !valid {
+                            self.errors.push(TypeError::TypeMismatch {
+                                expected: if index < 2 { "String" } else { "integer byte offset" }.to_string(),
+                                found: actual.display(),
+                                span: arg.span,
+                            }.to_error());
+                        }
+                    }
+                    return ValueType::Int;
+                }
                 // Skip arg-count check for variadic builtins and all native runtime functions
                 let is_variadic = matches!(name.as_str(), "print" | "println" | "open")
                     || name.starts_with("http") || name.starts_with("Http")
@@ -4190,7 +4256,7 @@ impl TypeChecker {
                     || name.starts_with("random") || name.starts_with("process")
                     || name.starts_with("dir") || name.starts_with("file")
                     || name.starts_with("Pool_") || name.starts_with("Heap_")
-                    || name.starts_with("String_")
+                    || (name.starts_with("String_") && name != "String_chars")
                     || matches!(name.as_str(),
                         "now" | "sleep" | "fromCharCode" | "charCodeAt"
                         | "sha256Hash" | "md5Hash" | "sha1Hash" | "wsAcceptKey" | "hmacSha256Hash"
@@ -5174,6 +5240,15 @@ mod tests {
     }
 
     #[test]
+    fn injected_fields_are_provider_owned_even_through_aliases() {
+        let prefix = "interface Store {} @HttpRequestScoped class Request implements Store {} @ApplicationComponent @Provider(\"safe\") class Safe implements Store {} @ApplicationComponent class Owner { @Inject @Qualifier(\"safe\") var store: Store }";
+        for body in ["owner.store = request", "const alias = owner\nalias.store = request", "const value = (owner.store += request)"] {
+            err_contains(&format!("{prefix} fn replace(owner: Owner, request: Request) -> Nothing {{ {body} }}"), "provider-owned and cannot be reassigned");
+        }
+        ok(&format!("{prefix} fn read(owner: Owner) -> Store {{ return owner.store }}"));
+    }
+
+    #[test]
     fn log_masked_tostring_has_a_checked_instance_signature() {
         for annotation in ["Sensitive", "Masked"] {
             let class = format!("class User {{ @{annotation} var secret: String }}");
@@ -5668,6 +5743,21 @@ interface IDrawable extends IDoesNotExist {
     #[test]
     fn test_while_bool_cond_ok() {
         ok("fn f() { while true { } }");
+    }
+
+    #[test]
+    fn test_string_iteration_elements_are_int64_bytes() {
+        ok(r#"fn f() { for byte in "é" { const value: Int64 = byte
+            println(byte == 195)
+            println(byte.toString())
+            println(byte.toFloat()) } }"#);
+    }
+
+    #[test]
+    fn test_string_iteration_rejects_string_operations() {
+        err_contains(r#"fn f() { for byte in "ab" { println(byte.len()) } }"#, "len");
+        err_contains(r#"fn f() { for byte in "ab" { const text: String = byte } }"#, "expected String");
+        err_contains(r#"fn f() { for byte in "ab" { println(byte == "a") } }"#, "cannot be applied");
     }
 
     #[test]
@@ -6321,8 +6411,34 @@ fn f(foo: Foo) { let y = foo.x }
     }
 
     #[test]
+    fn test_string_indexof_optional_byte_offset() {
+        ok(r#"fn f(s: String, offset: Int32) { let a: Int64 = s.indexOf("x")
+let b: Int64 = s.indexOf("x", offset) }"#);
+        for call in ["s.indexOf()", r#"s.indexOf("x", 0, 1)"#] {
+            err_contains(&format!("fn f(s: String) {{ {call} }}"), "optional integer byte offset");
+        }
+        err_contains("fn f(s: String) { s.indexOf(1) }", "expected String");
+        for offset in ["1.5", "true", r#""0""#] {
+            err_contains(&format!(r#"fn f(s: String) {{ s.indexOf("x", {offset}) }}"#), "integer byte offset");
+        }
+    }
+
+    #[test]
     fn test_string_method_charat_ok() {
         ok(r#"fn f(s: String) { let c = s.charAt(0) }"#);
+        ok(r#"fn f(s: String) { let cs: List<String> = s.chars()
+for c in cs { let n = c.len() } }"#);
+    }
+
+    #[test]
+    fn test_string_chars_signature() {
+        ok("fn f(s: String) { let cs: List<String> = String_chars(s) }");
+        ok("fn f(s: String) { let cs: List<String> = String::chars(s) }");
+        err_contains("fn f(s: String) { s.chars(42) }", "argument");
+        err_contains("fn f() { String_chars() }", "argument");
+        err_contains("fn f() { String_chars(42) }", "String");
+        err_contains("fn f() { String::chars() }", "argument");
+        err_contains("fn f() { String::chars(42) }", "String");
     }
 
     #[test]

@@ -1,0 +1,53 @@
+// Regression for #565: String iteration agrees with byte indexing's Int64 type.
+// expect: 97
+// expect: true
+// expect: 98
+// expect: true
+// expect: 195
+// expect: 169
+// expect: 195
+// expect: 191
+// expect: true
+// expect: true
+// expect: 2
+// expect: 196
+// expect: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        const ascii = "ab"
+        var index: Int64 = 0
+        for byte in ascii {
+            const value: Int64 = byte
+            println(value)
+            println(byte == ascii[index])
+            index = index + 1
+        }
+        for byte in "é" { println(byte.toString()) }
+        // U+00FF is encoded as two unsigned bytes, rather than one scalar.
+        for byte in "ÿ" { println(byte) }
+        for byte in "ab" { println(byte.toFloat() >= 97.0) }
+        var visited: Int64 = 0
+        var kept: Int64 = 0
+        for byte in "abcd" {
+            if (byte == 98) { continue }
+            if (byte == 100) { break }
+            visited = visited + 1
+            kept = kept + byte
+        }
+        println(visited)
+        println(kept)
+        var nested: Int64 = 0
+        for byte in "ab" {
+            for inner in "xy" {
+                if (inner == 120) { continue }
+                if (byte == 98) { break }
+                nested = nested + 1
+            }
+        }
+        println(nested)
+        for byte in "" { println(byte) }
+        return 0
+    }
+}

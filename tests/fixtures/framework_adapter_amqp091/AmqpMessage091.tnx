@@ -1,0 +1,8 @@
+class AmqpMessage091 {
+    var deliveryTag: Int64
+    var exchange: String
+    var routingKey: String
+    var contentType: String
+    var body: List<Int64>
+    var ok: Bool
+}

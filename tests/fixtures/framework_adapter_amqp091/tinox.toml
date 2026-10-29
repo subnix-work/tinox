@@ -1,0 +1,7 @@
+[package]
+name = "framework-adapter-amqp091"
+version = "0.0.0"
+compiler = "2.8.0"
+
+[startup]
+banner = false

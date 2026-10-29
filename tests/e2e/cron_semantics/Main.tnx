@@ -1,0 +1,156 @@
+// Issue #515. Calendar fixtures independently calculated with Python datetime (UTC).
+// expect: calendar ok
+// expect: validation ok
+// expect: scheduler ok
+import tinox.core.cron
+class Main
+{
+    fnc check(ok: Bool) -> Nothing
+    {
+        if (ok == false) { throw "Cron regression" }
+    }
+    fnc reject(text: String) -> Nothing
+    {
+        var rejected: Bool = false
+        try { Cron::parse(text) }
+        catch e: String { rejected = true }
+        Main::check(rejected)
+    }
+    fnc main() -> Int32
+    {
+        Main::check(Cron::matches(Cron::parse("0 0 * * *"), 60000) == false)
+        Main::check(Cron::matches(Cron::parse("0 12 * * *"), 60000) == false)
+        Main::check(Cron::matches(Cron::parse("0 0 * * 4"), 59999))
+        Main::check(Cron::matches(Cron::parse("0 0 * * 0"), 259200000))
+        Main::check(Cron::matches(Cron::parse("0 0 * * 7"), 259200000))
+        Main::check(Cron::matches(Cron::parse("  0\t0  * * *  "), 0))
+        // 1970-01-01T00:00:00 -> 1970-01-01T00:01:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("* * * * *"), 0) == 60000)
+        Main::check(Cron::matches(Cron::parse("* * * * *"), 119999))
+        // 1970-01-01T00:01:00 -> 1970-01-02T00:00:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("0 0 * * *"), 60000) == 86400000)
+        Main::check(Cron::matches(Cron::parse("0 0 * * *"), 86459999))
+        // 1970-01-01T00:01:00 -> 1970-01-01T12:00:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("0 12 * * *"), 60000) == 43200000)
+        Main::check(Cron::matches(Cron::parse("0 12 * * *"), 43259999))
+        // 2026-10-30T17:45:00 -> 2026-11-02T09:00:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("*/15 9-17/2 * * 1-5"), 1793382300000) == 1793610000000)
+        Main::check(Cron::matches(Cron::parse("*/15 9-17/2 * * 1-5"), 1793610059999))
+        // 2096-02-29T00:00:00 -> 2104-02-29T00:00:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("0 0 29 2 *"), 3981312000000) == 4233686400000)
+        Main::check(Cron::matches(Cron::parse("0 0 29 2 *"), 4233686459999))
+        // 2396-02-29T00:00:00 -> 2400-02-29T00:00:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("0 0 29 2 *"), 13448332800000) == 13574563200000)
+        Main::check(Cron::matches(Cron::parse("0 0 29 2 *"), 13574563259999))
+        // 2026-12-31T23:59:59.999 -> 2027-01-01T00:00:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("0 0 1 1 *"), 1798761599999) == 1798761600000)
+        Main::check(Cron::matches(Cron::parse("0 0 1 1 *"), 1798761659999))
+        // 2026-10-31T23:59:59.999 -> 2026-11-01T00:00:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("0 0 * * 7"), 1793491199999) == 1793491200000)
+        Main::check(Cron::matches(Cron::parse("0 0 * * 7"), 1793491259999))
+        // 2026-10-09T00:00:00 -> 2026-10-13T00:00:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("0 0 13 * 5"), 1791504000000) == 1791849600000)
+        Main::check(Cron::matches(Cron::parse("0 0 13 * 5"), 1791849659999))
+        // 2026-10-13T00:00:00 -> 2026-10-16T00:00:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("0 0 13 * 5"), 1791849600000) == 1792108800000)
+        Main::check(Cron::matches(Cron::parse("0 0 13 * 5"), 1792108859999))
+        // 1970-01-01T00:01:00.001 -> 1970-01-01T00:05:00 UTC
+        Main::check(Cron::nextRunAfter(Cron::parse("1,5,59 0 * * *"), 60001) == 300000)
+        Main::check(Cron::matches(Cron::parse("1,5,59 0 * * *"), 359999))
+        var impossible: Bool = false
+        try { Cron::nextRunAfter(Cron::parse("0 0 31 4 *"), 1767225600000) }
+        catch e: String { impossible = true }
+        Main::check(impossible)
+        println("calendar ok")
+        Main::reject("")
+        Main::reject("* * * *")
+        Main::reject("* * * * * *")
+        Main::reject("60 * * * *")
+        Main::reject("* 24 * * *")
+        Main::reject("* * 0 * *")
+        Main::reject("* * * 13 *")
+        Main::reject("* * * * 8")
+        Main::reject("*/0 * * * *")
+        Main::reject("1/2 * * * *")
+        Main::reject("1-0 * * * *")
+        Main::reject("1,,2 * * * *")
+        Main::reject("1, * * * *")
+        Main::reject("1- * * * *")
+        Main::reject("*/ * * * *")
+        Main::reject("@daily")
+        Main::reject("0 0 L * *")
+        Main::reject("0 0 * JAN MON")
+        Main::reject("-1 * * * *")
+        Main::reject("999999999999999999999 * * * *")
+        var badTime: Bool = false
+        try { Cron::matches(Cron::parse("* * * * *"), -1) }
+        catch e: String { badTime = true }
+        Main::check(badTime)
+        var exhausted: Bool = false
+        try { Cron::nextRunAfter(Cron::parse("* * * * *"), 253402300799999) }
+        catch e: String { exhausted = true }
+        Main::check(exhausted)
+        Main::check(Cron::matches(Cron::parse("59 23 31 12 *"), 253402300799999))
+        var invalidDirect: Bool = false
+        try {
+            Cron::matches(CronExpr { minute: "", hour: "*", dayOfMonth: "*", month: "*", dayOfWeek: "*" }, 0)
+        }
+        catch e: String { invalidDirect = true }
+        Main::check(invalidDirect)
+        Main::check(Cron::nextMinute(5, "5") == 65)
+        Main::check(Cron::nextMinute(5, "*") == 5)
+        println("validation ok")
+        const scheduler: CronScheduler = CronScheduler::new()
+        const calls: List<Int64> = [0]
+        CronScheduler::addJob(scheduler, "* * * * *", fn() { calls[0] = calls[0] + 1 })
+        CronScheduler::tickAt(scheduler, 0)
+        Main::check(calls[0] == 0)
+        CronScheduler::start(scheduler)
+        CronScheduler::tickAt(scheduler, 0)
+        CronScheduler::tickAt(scheduler, 59999)
+        Main::check(calls[0] == 1)
+        CronScheduler::tickAt(scheduler, 180000)
+        Main::check(calls[0] == 2)
+        CronScheduler::tickAt(scheduler, 60000)
+        CronScheduler::tickAt(scheduler, 180001)
+        Main::check(calls[0] == 2)
+        CronScheduler::stop(scheduler)
+        CronScheduler::tickAt(scheduler, 240000)
+        CronScheduler::start(scheduler)
+        CronScheduler::tickAt(scheduler, 180002)
+        CronScheduler::tickAt(scheduler, 300000)
+        Main::check(calls[0] == 3)
+        const sparse: CronScheduler = CronScheduler::new()
+        CronScheduler::addJob(sparse, "0 12 * * *", fn() { calls[0] = calls[0] + 1 })
+        CronScheduler::start(sparse)
+        CronScheduler::tickAt(sparse, 60000)
+        Main::check(calls[0] == 3)
+        CronScheduler::tickAt(sparse, 43200001)
+        CronScheduler::tickAt(sparse, 43259999)
+        Main::check(calls[0] == 4)
+        // Claim before the callback: a reentrant tick must not recurse forever.
+        const reentrant: CronScheduler = CronScheduler::new()
+        CronScheduler::addJob(reentrant, "* * * * *", fn() {
+            calls[0] = calls[0] + 1
+            CronScheduler::tickAt(reentrant, 0)
+        })
+        CronScheduler::start(reentrant)
+        CronScheduler::tickAt(reentrant, 0)
+        Main::check(calls[0] == 5)
+        // A failed callback is still attempted only once in its minute.
+        const failing: CronScheduler = CronScheduler::new()
+        CronScheduler::addJob(failing, "* * * * *", fn() {
+            calls[0] = calls[0] + 1
+            throw "callback failed"
+        })
+        CronScheduler::start(failing)
+        var callbackFailed: Bool = false
+        try { CronScheduler::tickAt(failing, 0) }
+        catch e: String { callbackFailed = true }
+        Main::check(callbackFailed)
+        CronScheduler::tickAt(failing, 1)
+        Main::check(calls[0] == 6)
+        println("scheduler ok")
+        return 0
+    }
+}

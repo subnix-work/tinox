@@ -92,9 +92,10 @@ fn parse(output: &Output) -> Value {
 #[test]
 fn main_scopes_injections_config_and_database_are_explained_without_backend_or_execution() {
     let project = Project::new();
-    project.write("src/Main.tnx", "import Service\nclass Main { fnc main() -> Int32 { println(\"MAIN_MUST_NOT_RUN\")\nreturn 0 } }");
-    project.write("src/Service.tnx", "import Request\n@Startup class Service { @Inject var request: Request\n@Config(\"APP_PASSWORD\") var password: String = \"FIELD_SECRET\" }");
-    project.write("src/Request.tnx", "@HttpRequestScoped class Request {}");
+    project.write("src/Main.tnx", "import Service\nimport Request\nclass Main { fnc main() -> Int32 { println(\"MAIN_MUST_NOT_RUN\")\nreturn 0 } }");
+    project.write("src/Dependency.tnx", "@ApplicationComponent class Dependency {}");
+    project.write("src/Service.tnx", "import Dependency\n@Startup class Service { @Inject var dependency: Dependency\n@Config(\"APP_PASSWORD\") var password: String = \"FIELD_SECRET\" }");
+    project.write("src/Request.tnx", "import Dependency\n@HttpRequestScoped class Request { @Inject var dependency: Dependency }");
     let manifest = fs::read_to_string(project.0.join("tinox.toml")).unwrap();
     project.write("tinox.toml", &format!("{manifest}\n[database]\ndriver=\"postgres\"\nurl=\"postgres://USER_SECRET:DB_SECRET@127.0.0.1:1/db\"\n"));
     let result = project.query();
@@ -109,7 +110,13 @@ fn main_scopes_injections_config_and_database_are_explained_without_backend_or_e
         .find(|c| c["class"] == "Service")
         .unwrap();
     assert_eq!(service["scope"], "startup_singleton");
-    assert_eq!(service["injections"][0]["provider"], "Request_di_create");
+    assert_eq!(service["injections"][0]["provider"], "Dependency_di_get");
+    let request = plan["components"].as_array().unwrap().iter()
+        .find(|c| c["class"] == "Request").unwrap();
+    assert_eq!(request["scope"], "request_context");
+    assert_eq!(request["provider"], "Request_di_create");
+    assert_eq!(request["injections"][0]["provider"], "Dependency_di_get");
+    assert_eq!(request["injections"][0]["target_scope"], "application_singleton");
     assert_eq!(plan["configuration"][0]["value"], Value::Null);
     assert_eq!(plan["configuration"][0]["key"], "APP_PASSWORD");
     let encoded = result.to_string();
@@ -131,7 +138,7 @@ fn main_scopes_injections_config_and_database_are_explained_without_backend_or_e
         .unwrap();
     assert!(text.status.success(), "{text:?}");
     let text = String::from_utf8_lossy(&text.stdout);
-    assert!(text.contains("Inject: request -> Request"));
+    assert!(text.contains("Inject: dependency -> Dependency via Dependency_di_get"));
     for secret in ["FIELD_SECRET", "DB_SECRET", "USER_SECRET", "ENV_SECRET"] {
         assert!(!text.contains(secret));
     }
@@ -297,4 +304,51 @@ fn managed_lifecycle_plan_exposes_order_and_budgets_without_running_hooks() {
     assert!(lifecycle["hooks"].as_array().unwrap().iter().any(|hook| hook["kind"] == "OnStart" && hook["class"] == "State"));
     assert_eq!(lifecycle["health_paths"], json!(["/health/live", "/health/ready"]));
     assert_eq!(explanation["plan"]["steps"][0]["action"], "managed_initializer");
+}
+
+#[test]
+fn qualified_provider_inspection_agrees_with_declared_interface_and_scope() {
+    let project = Project::new();
+    project.write("src/Main.tnx", "import App\nclass Main { fnc main() -> Int32 { return 0 } }");
+    project.write("src/Store.tnx", "interface Store { fn value() -> Int64 }");
+    project.write("src/Fast.tnx", "import Store\n@ApplicationComponent @Provider(\"fast\") class Fast implements Store { fn value() -> Int64 { return 1 } }");
+    project.write("src/Safe.tnx", "import Store\n@HttpRequestScoped @Provider(\"safe\") class Safe implements Store { fn value() -> Int64 { return 2 } }");
+    project.write("src/App.tnx", "import Fast\nimport Safe\nimport Store\n@Startup class App { @Inject @Qualifier(\"fast\") var store: Store }");
+    let result = project.query();
+    let app = result["plan"]["components"].as_array().unwrap().iter().find(|c| c["class"] == "App").unwrap();
+    let selected = &app["injections"][0];
+    assert_eq!(selected["target"], "Store");
+    assert_eq!(selected["provider_class"], "Fast");
+    assert_eq!(selected["qualifier"], "fast");
+    assert_eq!(selected["provider"], "Fast_di_get");
+    assert_eq!(selected["target_scope"], "application_singleton");
+    let text = project.command("explain").arg("--bootstrap").output().unwrap();
+    assert!(text.status.success(), "{text:?}");
+    assert!(String::from_utf8_lossy(&text.stdout).contains("Inject: store -> Store via Fast_di_get"));
+}
+
+#[test]
+fn qualified_graph_failures_never_require_a_backend() {
+    for (fast, safe, injection, expected) in [
+        ("@ApplicationComponent @Provider(\"fast\")", "@ApplicationComponent @Provider(\"safe\")", "@Inject var store: Store", "Ambiguous providers"),
+        ("@ApplicationComponent @Provider(\"fast\")", "@ApplicationComponent @Provider(\"safe\")", "@Inject @Qualifier(\"missing\") var store: Store", "Missing provider"),
+        ("@ApplicationComponent @Provider(\"same\")", "@ApplicationComponent @Provider(\"same\")", "@Inject @Qualifier(\"same\") var store: Store", "Duplicate provider name"),
+    ] {
+        let project = Project::new();
+        project.write("src/Main.tnx", "import Service\nclass Main { fnc main() -> Int32 { return 0 } }");
+        project.write("src/Store.tnx", "interface Store { fn value() -> Int64 }");
+        project.write("src/Fast.tnx", &format!("import Store\n{fast} class Fast implements Store {{ fn value() -> Int64 {{ return 1 }} }}"));
+        project.write("src/Safe.tnx", &format!("import Store\n{safe} class Safe implements Store {{ fn value() -> Int64 {{ return 2 }} }}"));
+        project.write("src/Service.tnx", &format!("import Store\nimport Fast\nimport Safe\n@Startup class Service {{ {injection} }}"));
+        for action in ["check", "build", "explain"] {
+            let mut command = project.command(action);
+            command.arg("--json").env("PATH", "");
+            if action == "explain" { command.arg("--bootstrap"); }
+            let output = command.output().unwrap();
+            assert!(!output.status.success(), "{output:?}");
+            let result = parse(&output);
+            assert!(result["diagnostics"].as_array().unwrap().iter().any(|diagnostic|
+                diagnostic["message"].as_str().unwrap().contains(expected)), "{result}");
+        }
+    }
 }

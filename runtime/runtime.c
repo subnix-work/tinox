@@ -697,6 +697,14 @@ int64_t tinox_string_index_of(const char* haystack, const char* needle) {
     return pos ? (int64_t)(pos - haystack) : -1;
 }
 
+// Offsets and results use bytes, consistently with String.len().
+int64_t tinox_string_index_of_from(const char* haystack, const char* needle, int64_t from) {
+    if (from < 0) from = 0;
+    if ((uint64_t)from > strlen(haystack)) return -1;
+    const char* pos = strstr(haystack + from, needle);
+    return pos ? (int64_t)(pos - haystack) : -1;
+}
+
 int64_t tinox_string_last_index_of(const char* haystack, const char* needle) {
     size_t hlen = strlen(haystack);
     size_t nlen = strlen(needle);
@@ -1201,6 +1209,43 @@ void telemetryWriteLogJson(const char* timestamp, const char* level, const char*
 static void telemetry_event(const char* event) {
     char stamp[32]; snprintf(stamp, sizeof(stamp), "%lld", (long long)telemetry_clock(CLOCK_REALTIME));
     puts(telemetryLogJson(stamp, "INFO", "tinox", event));
+}
+
+// Request providers belong to exactly one synchronous annotated REST dispatch.
+// The cache is a GC-managed graph rooted explicitly for each participating
+// thread; clearing the root releases ownership, not native resource handles.
+typedef struct TinoxRequestEntry {
+    int64_t key;
+    int64_t* instance;
+    struct TinoxRequestEntry* next;
+} TinoxRequestEntry;
+static __thread TinoxRequestEntry* request_instances;
+static __thread int request_active;
+static void request_scope_fail(const char* message) {
+    fprintf(stderr, "Request scope error: %s\n", message);
+    exit(1);
+}
+void tinox_request_begin(void) {
+    if (request_active) request_scope_fail("nested request dispatch is unsupported");
+    tinox_gc_register_thread_roots();
+    request_instances = NULL;
+    request_active = 1;
+}
+void tinox_request_end(void) {
+    request_instances = NULL;
+    request_active = 0;
+}
+int64_t* tinox_request_get(int64_t key) {
+    if (!request_active) request_scope_fail("provider used outside annotated REST dispatch");
+    for (TinoxRequestEntry* e = request_instances; e; e = e->next)
+        if (e->key == key) return e->instance;
+    return NULL;
+}
+void tinox_request_put(int64_t key, int64_t* instance) {
+    if (!request_active) request_scope_fail("provider used outside annotated REST dispatch");
+    TinoxRequestEntry* e = GC_malloc(sizeof(*e));
+    e->key = key; e->instance = instance; e->next = request_instances;
+    request_instances = e;
 }
 
 // ---- Async runtime ----
@@ -1844,6 +1889,8 @@ static void* tinox_spawn_trampoline(void* raw) {
     return ret;
 }
 static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
+    if (request_active && request_instances)
+        request_scope_fail("spawn cannot escape an active request provider graph; copy immutable data before scheduling outside the request");
     task_ensure_scope();
     TinoxTaskScope* owner = task_frame_scope;
     TinoxTask* task = calloc(1, sizeof(*task));
@@ -2587,6 +2634,65 @@ static int tinox_utf8_valid(const unsigned char* s) {
     return 1;
 }
 
+// Decode one Unicode scalar value without reading beyond the remaining bytes.
+// Reject overlong encodings, surrogate code points and values above U+10FFFF.
+static size_t tinox_utf8_scalar_width(const unsigned char* s, size_t remaining) {
+    unsigned char first = s[0];
+    size_t width;
+    if (first < 0x80) return 1;
+    if (first >= 0xC2 && first <= 0xDF) width = 2;
+    else if (first >= 0xE0 && first <= 0xEF) width = 3;
+    else if (first >= 0xF0 && first <= 0xF4) width = 4;
+    else return 0;
+    if (remaining < width) return 0;
+    for (size_t i = 1; i < width; i++) {
+        if ((s[i] & 0xC0) != 0x80) return 0;
+    }
+    if ((first == 0xE0 && s[1] < 0xA0) ||
+        (first == 0xED && s[1] >= 0xA0) ||
+        (first == 0xF0 && s[1] < 0x90) ||
+        (first == 0xF4 && s[1] >= 0x90)) return 0;
+    return width;
+}
+
+// Additive Unicode API: existing indexing/length/iteration remain byte based.
+int64_t* tinox_string_chars(const char* s) {
+    if (!s) {
+        fprintf(stderr, "runtime error: String.chars requires a non-null string\n");
+        exit(1);
+    }
+    size_t length = strlen(s), count = 0;
+    for (size_t offset = 0; offset < length;) {
+        size_t width = tinox_utf8_scalar_width((const unsigned char*)s + offset, length - offset);
+        if (!width) {
+            fprintf(stderr, "runtime error: String.chars invalid UTF-8 at byte %zu\n", offset);
+            exit(1);
+        }
+        offset += width;
+        count++;
+    }
+    if (count > INT64_MAX || count > SIZE_MAX / sizeof(int64_t)) {
+        fprintf(stderr, "runtime error: String.chars result is too large\n");
+        exit(1);
+    }
+    int64_t* result = tinox_array_new((int64_t)count, 0);
+    int64_t* data = ((TinoxArray*)result)->data;
+    size_t offset = 0;
+    for (size_t i = 0; i < count; i++) {
+        size_t width = tinox_utf8_scalar_width((const unsigned char*)s + offset, length - offset);
+        char* scalar = (char*)malloc(width + 1);
+        if (!scalar) {
+            fprintf(stderr, "runtime error: String.chars allocation failed\n");
+            exit(1);
+        }
+        memcpy(scalar, s + offset, width);
+        scalar[width] = '\0';
+        data[i] = (int64_t)(uintptr_t)scalar;
+        offset += width;
+    }
+    return result;
+}
+
 char* tinox_string_substring(const char* s, int64_t from, int64_t to) {
     int64_t len = (int64_t)strlen(s);
     if (from < 0 || to > len || from > to) {
@@ -3069,6 +3175,10 @@ void tinoxFileCloseBytes(int64_t handle) {
 // Identity of the pointer is the guard: a stale/unrelated String never matches.
 static __thread const char* g_req_body_ptr = NULL;
 static __thread int64_t     g_req_body_len = 0;
+// Exact byte length of the latest byte-to-String/HTTP3 body adapter. This
+// does not extend Bytes.fromRequestBody's plain-TCP identity contract.
+static __thread const char* g_json_body_ptr = NULL;
+static __thread size_t g_json_body_len = 0;
 static __thread const char* g_resp_bytes_ptr = NULL;
 static __thread int64_t     g_resp_bytes_len = 0;
 
@@ -5114,6 +5224,184 @@ void dirDelete(const char* path) {
     rmdir(path);
 }
 
+// Checked filesystem metadata and mutation ABI. Arrays begin with an error
+// string (empty on success); all following strings are owned GC snapshots.
+#include <pwd.h>
+
+static const char* tinox_fs_kind(mode_t mode) {
+    return S_ISREG(mode) ? "file" : S_ISDIR(mode) ? "directory" :
+           S_ISLNK(mode) ? "symlink" : "other";
+}
+
+static int tinox_fs_metadata_push(int64_t* out, const char* name, const struct stat* st) {
+    __int128 ns = (__int128)st->st_mtim.tv_sec * 1000000000 + st->st_mtim.tv_nsec;
+    if (ns < INT64_MIN || ns > INT64_MAX || st->st_size < 0) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    char size[32], modified[32], permissions[32];
+    snprintf(size, sizeof(size), "%lld", (long long)st->st_size);
+    snprintf(modified, sizeof(modified), "%lld", (long long)ns);
+    snprintf(permissions, sizeof(permissions), "%u", (unsigned)(st->st_mode & 07777));
+    tinox_array_push(out, (int64_t)GC_strdup(name));
+    tinox_array_push(out, (int64_t)GC_strdup(tinox_fs_kind(st->st_mode)));
+    tinox_array_push(out, (int64_t)GC_strdup(size));
+    tinox_array_push(out, (int64_t)GC_strdup(modified));
+    tinox_array_push(out, (int64_t)GC_strdup(permissions));
+    return 0;
+}
+
+int64_t* fsMetadataChecked(const char* path, int64_t listing) {
+    int64_t* out = tinox_array_new(0, 32);
+    tinox_array_push(out, (int64_t)"");
+    struct stat st;
+    if (!listing) {
+        // A trailing slash must not turn a final symlink into a followed
+        // directory: this API always describes the named entry itself.
+        char* entry_path = GC_strdup(path);
+        size_t len = strlen(entry_path);
+        while (len > 1 && entry_path[len - 1] == '/') entry_path[--len] = '\0';
+        if (lstat(entry_path, &st) != 0) {
+            if (errno == ENOENT || errno == ENOTDIR) return out;
+            goto failure;
+        }
+        if (tinox_fs_metadata_push(out, path, &st) != 0) goto failure;
+        return out;
+    }
+    DIR* dir = opendir(path);
+    if (!dir) goto failure;
+    for (;;) {
+        errno = 0;
+        struct dirent* entry = readdir(dir);
+        if (!entry) {
+            int saved = errno;
+            if (closedir(dir) != 0 && !saved) saved = errno;
+            if (saved) { errno = saved; goto failure; }
+            return out;
+        }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        if (fstatat(dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
+            tinox_fs_metadata_push(out, entry->d_name, &st) != 0) {
+            int saved = errno;
+            closedir(dir);
+            errno = saved;
+            goto failure;
+        }
+    }
+failure:;
+    char* error = tinox_fs_err("cannot read metadata", path);
+    // Discard partial listings: callers must never mistake partial success
+    // for a complete directory snapshot.
+    out = tinox_array_new(0, 1);
+    tinox_array_push(out, (int64_t)error);
+    return out;
+}
+
+char* fsRenameChecked(const char* from, const char* to) {
+    if (rename(from, to) == 0) return (char*)"";
+    if (errno == EXDEV) return (char*)"cannot rename: EXDEV (cross-device rename is not atomic)";
+    return tinox_fs_err("cannot rename", from);
+}
+
+// Open each parent component without following a symlink. Destructive walks
+// are anchored to these descriptors, even if a concurrent actor renames paths.
+static int tinox_fs_parent(const char* path, char** name) {
+    char* copy = GC_strdup(path);
+    size_t len = strlen(copy);
+    while (len > 1 && copy[len - 1] == '/') copy[--len] = '\0';
+    char* last = strrchr(copy, '/');
+    *name = last ? last + 1 : copy;
+    if (!**name || !strcmp(*name, ".") || !strcmp(*name, "..")) { errno = EINVAL; return -1; }
+    int fd = open(copy[0] == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    if (!last) return fd;
+    *last = '\0';
+    char* save = NULL;
+    for (char* part = strtok_r(copy, "/", &save); part; part = strtok_r(NULL, "/", &save)) {
+        int next = openat(fd, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int saved = errno;
+        close(fd);
+        if (next < 0) { errno = saved; return -1; }
+        fd = next;
+    }
+    return fd;
+}
+
+static int tinox_fs_remove_at(int parent, const char* name) {
+    struct stat before, opened, current;
+    if (fstatat(parent, name, &before, AT_SYMLINK_NOFOLLOW) != 0) return -1;
+    if (!S_ISDIR(before.st_mode)) return unlinkat(parent, name, 0);
+    int fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return -1;
+    if (fstat(fd, &opened) != 0 || before.st_dev != opened.st_dev || before.st_ino != opened.st_ino) {
+        close(fd); errno = ESTALE; return -1;
+    }
+    DIR* dir = fdopendir(fd);
+    if (!dir) { int saved = errno; close(fd); errno = saved; return -1; }
+    int result = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent* entry = readdir(dir);
+        if (!entry) { if (errno) result = -1; break; }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        if (tinox_fs_remove_at(fd, entry->d_name) != 0) { result = -1; break; }
+    }
+    int saved = errno;
+    closedir(dir);
+    if (result) { errno = saved; return -1; }
+    if (fstatat(parent, name, &current, AT_SYMLINK_NOFOLLOW) != 0) return -1;
+    if (current.st_dev != opened.st_dev || current.st_ino != opened.st_ino) { errno = ESTALE; return -1; }
+    return unlinkat(parent, name, AT_REMOVEDIR);
+}
+
+char* fsRemoveDirectoryChecked(const char* path, int64_t recursive) {
+    char* name;
+    int parent = tinox_fs_parent(path, &name);
+    if (parent < 0) return tinox_fs_err("cannot remove directory", path);
+    struct stat st;
+    int result;
+    if (recursive && (fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) != 0)) result = -1;
+    else if (recursive && !S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) { errno = ENOTDIR; result = -1; }
+    else result = recursive ? tinox_fs_remove_at(parent, name) : unlinkat(parent, name, AT_REMOVEDIR);
+    int saved = errno;
+    close(parent);
+    if (result == 0) return (char*)"";
+    errno = saved;
+    return tinox_fs_err("cannot remove directory", path);
+}
+
+static int64_t* tinox_fs_string_result(char* value, const char* operation, const char* path) {
+    int64_t* out = tinox_array_new(0, 2);
+    tinox_array_push(out, (int64_t)(value ? "" : tinox_fs_err(operation, path)));
+    if (value) tinox_array_push(out, (int64_t)GC_strdup(value));
+    return out;
+}
+
+int64_t* fsRealPathChecked(const char* path) {
+    char* resolved = realpath(path, NULL);
+    int64_t* out = tinox_fs_string_result(resolved, "cannot resolve real path", path);
+    (free)(resolved);
+    return out;
+}
+
+int64_t* fsHomeDirectoryChecked(void) {
+    const char* home = getenv("HOME");
+    if (home && home[0]) return tinox_fs_string_result((char*)home, "cannot find home directory", "HOME");
+    size_t size = 1024;
+    struct passwd record, *result = NULL;
+    for (;;) {
+        char* buffer = malloc(size);
+        if (!buffer) { errno = ENOMEM; return tinox_fs_string_result(NULL, "cannot find home directory", "passwd"); }
+        int error = getpwuid_r(getuid(), &record, buffer, size, &result);
+        if (error == ERANGE && size < 1048576) { free(buffer); size *= 2; continue; }
+        errno = error ? error : ENOENT;
+        int64_t* out = tinox_fs_string_result(!error && result && result->pw_dir[0] ? result->pw_dir : NULL,
+                                            "cannot find home directory", "passwd");
+        free(buffer);
+        return out;
+    }
+}
+
 // ---- Crypto/hashing builtins (MD5, SHA-256, HMAC-SHA256) ----
 // Self-contained (no OpenSSL dependency, matches this file's existing
 // "no external libs unless opted in via tinox.toml" convention).
@@ -5740,6 +6028,7 @@ char* tinoxBytesToString(int64_t* bytes) {
     char* buf = (char*)GC_malloc((size_t)n + 1);
     for (int64_t i = 0; i < n; i++) buf[i] = (char)(a->data[i] & 0xff);
     buf[n] = '\0';
+    g_json_body_ptr=buf; g_json_body_len=(size_t)n;
     return buf;
 }
 
@@ -5750,7 +6039,8 @@ char* tinoxBytesToString(int64_t* bytes) {
 // tinox.core.regex dialect: POSIX extended regular expressions plus the Perl
 // style classes \d \D \s \S \w \W (translated below; \b \B come from glibc).
 // Backreferences, lookaround and lazy quantifiers are not supported.
-static char* tinox_regex_translate(const char* pattern) {
+static char* tinox_regex_translate(const char* pattern, char** error) {
+    *error = NULL;
     size_t n = strlen(pattern);
     char* out = (char*)GC_malloc(n * 12 + 1);
     size_t o = 0;
@@ -5767,8 +6057,10 @@ static char* tinox_regex_translate(const char* pattern) {
                 continue;
             }
             if (c == '\\' && i + 1 < n && strchr("DSW", pattern[i + 1])) {
-                fprintf(stderr, "runtime error: invalid regular expression \"%s\": \\%c inside [...] is not supported\n", pattern, pattern[i + 1]);
-                exit(1);
+                size_t size = strlen(pattern) + 100;
+                *error = GC_malloc(size);
+                snprintf(*error, size, "invalid regular expression \"%s\": \\%c inside [...] is not supported", pattern, pattern[i + 1]);
+                return NULL;
             }
             if (c == '[' && i + 1 < n && pattern[i + 1] == ':') {
                 // copy a [:class:] whole
@@ -5824,7 +6116,12 @@ static char* tinox_regex_translate(const char* pattern) {
 // Compiles `pattern` (see dialect above). An invalid pattern is a hard error:
 // it used to be indistinguishable from "no match" (issue #468).
 static void tinox_regcomp(regex_t* re, const char* pattern, int cflags) {
-    char* translated = tinox_regex_translate(pattern);
+    char* error;
+    char* translated = tinox_regex_translate(pattern, &error);
+    if (error) {
+        fprintf(stderr, "runtime error: %s\n", error);
+        exit(1);
+    }
     int rc = regcomp(re, translated, cflags);
     if (rc != 0) {
         char msg[200];
@@ -5834,25 +6131,63 @@ static void tinox_regcomp(regex_t* re, const char* pattern, int cflags) {
     }
 }
 
-int64_t regexIsMatch(int64_t pattern_i64, int64_t subject_i64) {
+// Validation shares the execution dialect and flags. Public Regex methods turn
+// this diagnostic into a Tinox exception; legacy raw builtins still fail hard.
+char* tinoxRegexPatternError(const char* pattern, int64_t icase) {
+    regex_t re;
+    char* error;
+    char* translated = tinox_regex_translate(pattern, &error);
+    if (error) return error;
+    int rc = regcomp(&re, translated, REG_EXTENDED | (icase ? REG_ICASE : 0));
+    if (rc == 0) {
+        regfree(&re);
+        return GC_strdup("");
+    }
+    size_t len = regerror(rc, &re, NULL, 0);
+    char* detail = GC_malloc(len);
+    regerror(rc, &re, detail, len);
+    size_t size = strlen(pattern) + len + 48;
+    error = GC_malloc(size);
+    snprintf(error, size, "invalid regular expression \"%s\": %s", pattern, detail);
+    return error;
+}
+
+// REG_NOMATCH is an ordinary outcome; engine/resource failures are not.
+static int tinox_regexec(regex_t* re, const char* subject, size_t count,
+                         regmatch_t* matches, int flags) {
+    int rc = regexec(re, subject, count, matches, flags);
+    if (rc != 0 && rc != REG_NOMATCH) {
+        char detail[200];
+        regerror(rc, re, detail, sizeof detail);
+        fprintf(stderr, "runtime error: regular expression execution failed: %s\n", detail);
+        exit(1);
+    }
+    return rc;
+}
+
+static int64_t regexIsMatch_options(int64_t pattern_i64, int64_t subject_i64, int64_t icase) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     regex_t re;
-    tinox_regcomp(&re, pattern, REG_EXTENDED);
-    int r = regexec(&re, subject, 0, NULL, 0);
+    tinox_regcomp(&re, pattern, REG_EXTENDED | (icase ? REG_ICASE : 0));
+    int r = tinox_regexec(&re, subject, 0, NULL, 0);
     regfree(&re);
     return (r == 0) ? 1 : 0;
 }
 
-int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
+int64_t regexIsMatch(int64_t pattern_i64, int64_t subject_i64) {
+    return regexIsMatch_options(pattern_i64, subject_i64, 0);
+}
+
+static int64_t regexFindAll_options(int64_t pattern_i64, int64_t subject_i64, int64_t icase) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     int64_t* nh = tinox_array_new(0, 8);
     regex_t re;
-    tinox_regcomp(&re, pattern, REG_EXTENDED);
+    tinox_regcomp(&re, pattern, REG_EXTENDED | (icase ? REG_ICASE : 0));
     const char* s = subject;
     regmatch_t m;
-    while (*s && regexec(&re, s, 1, &m, 0) == 0) {
+    while (*s && tinox_regexec(&re, s, 1, &m, 0) == 0) {
         int mlen = m.rm_eo - m.rm_so;
         char* match_str = (char*)GC_malloc(mlen + 1);
         memcpy(match_str, s + m.rm_so, mlen);
@@ -5865,6 +6200,10 @@ int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
     return (int64_t)nh;
 }
 
+int64_t regexFindAll(int64_t pattern_i64, int64_t subject_i64) {
+    return regexFindAll_options(pattern_i64, subject_i64, 0);
+}
+
 int64_t regexReplace(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
@@ -5873,7 +6212,7 @@ int64_t regexReplace(int64_t pattern_i64, int64_t subject_i64, int64_t replaceme
     regex_t re;
     tinox_regcomp(&re, pattern, REG_EXTENDED);
     regmatch_t m;
-    if (regexec(&re, subject, 1, &m, 0) != 0) { regfree(&re); return subject_i64; }
+    if (tinox_regexec(&re, subject, 1, &m, 0) != 0) { regfree(&re); return subject_i64; }
     size_t pre = m.rm_so, rep_len = strlen(replacement), suf = strlen(subject) - m.rm_eo;
     char* result = (char*)GC_malloc(pre + rep_len + suf + 1);
     memcpy(result, subject, pre);
@@ -5888,14 +6227,14 @@ int64_t regexSplit(int64_t pattern_i64, int64_t subject_i64) {
     return regexFindAll(pattern_i64, subject_i64); // simplified
 }
 
-// First match, or "" if none / bad pattern.
-int64_t regexFindFirst(int64_t pattern_i64, int64_t subject_i64) {
+// First match, or "" if none; invalid patterns fail visibly.
+static int64_t regexFindFirst_options(int64_t pattern_i64, int64_t subject_i64, int64_t icase) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     regex_t re;
-    tinox_regcomp(&re, pattern, REG_EXTENDED);
+    tinox_regcomp(&re, pattern, REG_EXTENDED | (icase ? REG_ICASE : 0));
     regmatch_t m;
-    if (regexec(&re, subject, 1, &m, 0) != 0) {
+    if (tinox_regexec(&re, subject, 1, &m, 0) != 0) {
         regfree(&re);
         return (int64_t)GC_strdup("");
     }
@@ -5907,14 +6246,18 @@ int64_t regexFindFirst(int64_t pattern_i64, int64_t subject_i64) {
     return (int64_t)match_str;
 }
 
+int64_t regexFindFirst(int64_t pattern_i64, int64_t subject_i64) {
+    return regexFindFirst_options(pattern_i64, subject_i64, 0);
+}
+
 // Replace every non-overlapping match of `pattern` in `subject` with
 // `replacement` (literal, no backreferences — same as regexReplace).
-int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64) {
+static int64_t regexReplaceAll_options(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64, int64_t icase) {
     const char* pattern = (const char*)pattern_i64;
     const char* subject = (const char*)subject_i64;
     const char* replacement = (const char*)replacement_i64;
     regex_t re;
-    tinox_regcomp(&re, pattern, REG_EXTENDED);
+    tinox_regcomp(&re, pattern, REG_EXTENDED | (icase ? REG_ICASE : 0));
 
     size_t rep_len = strlen(replacement);
     size_t cap = strlen(subject) + rep_len + 16;
@@ -5922,7 +6265,7 @@ int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replac
     size_t out = 0;
     const char* s = subject;
     regmatch_t m;
-    while (*s && regexec(&re, s, 1, &m, 0) == 0) {
+    while (*s && tinox_regexec(&re, s, 1, &m, 0) == 0) {
         size_t pre = (size_t)m.rm_so;
         size_t needed = out + pre + rep_len + 1;
         if (needed > cap) {
@@ -5966,9 +6309,31 @@ int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replac
     return (int64_t)result;
 }
 
+int64_t regexReplaceAll(int64_t pattern_i64, int64_t subject_i64, int64_t replacement_i64) {
+    return regexReplaceAll_options(pattern_i64, subject_i64, replacement_i64, 0);
+}
+
+// Option-aware ABI for the guarded public Regex facade. Validation deliberately
+// happens in Tinox before these calls so normal exception unwinding applies.
+int64_t tinoxRegexIsMatch(const char* pattern, const char* subject, int64_t icase) {
+    return regexIsMatch_options((int64_t)pattern, (int64_t)subject, icase);
+}
+int64_t* tinoxRegexFindAll(const char* pattern, const char* subject, int64_t icase) {
+    return (int64_t*)regexFindAll_options((int64_t)pattern, (int64_t)subject, icase);
+}
+char* tinoxRegexFindFirst(const char* pattern, const char* subject, int64_t icase) {
+    return (char*)regexFindFirst_options((int64_t)pattern, (int64_t)subject, icase);
+}
+char* tinoxRegexReplaceAll(const char* pattern, const char* subject, const char* replacement, int64_t icase) {
+    return (char*)regexReplaceAll_options((int64_t)pattern, (int64_t)subject, (int64_t)replacement, icase);
+}
+int64_t* tinoxRegexSplit(const char* pattern, const char* subject, int64_t icase) {
+    return (int64_t*)regexFindAll_options((int64_t)pattern, (int64_t)subject, icase);
+}
+
 // First match at/after byte offset. Returns Tinox i64-array
 // [match_start, match_end, g1_start, g1_end, ...] (byte offsets into subject,
-// -1/-1 for unmatched groups). Empty array = no match or bad pattern.
+// -1/-1 for unmatched groups). Empty array = no match or invalid offset.
 int64_t* regexMatchGroups(const char* pattern, const char* subject, int64_t offset, int64_t icase) {
     int64_t* empty = tinox_array_new(0, 0);
 
@@ -5982,7 +6347,7 @@ int64_t* regexMatchGroups(const char* pattern, const char* subject, int64_t offs
     size_t ngroups = re.re_nsub + 1;
     regmatch_t* m = (regmatch_t*)GC_malloc(sizeof(regmatch_t) * ngroups);
     int eflags = (offset > 0) ? REG_NOTBOL : 0;
-    if (regexec(&re, subject + offset, ngroups, m, eflags) != 0) {
+    if (tinox_regexec(&re, subject + offset, ngroups, m, eflags) != 0) {
         regfree(&re);
         return empty;
     }
@@ -8102,7 +8467,11 @@ void* http3RequestHeaders(int64_t requestId) {
 
 char* http3RequestBody(int64_t requestId) {
     Http3ReqSlot* slot = (Http3ReqSlot*)(intptr_t)requestId;
-    return slot->body ? strdup(slot->body) : strdup("");
+    char *body=malloc(slot->bodyLen+1);
+    if (slot->bodyLen) memcpy(body,slot->body,slot->bodyLen);
+    body[slot->bodyLen]=0;
+    g_json_body_ptr=body;g_json_body_len=slot->bodyLen;
+    return body;
 }
 
 int64_t http3RequestWasEarlyData(int64_t requestId) {
@@ -9651,6 +10020,207 @@ int64_t* jsonGetField(int64_t* obj, const char* key) {
     return (int64_t*)(uintptr_t)vptr;
 }
 
+// Request DTO validation (issue #523).
+int64_t jsonGetIntField(int64_t*, const char*);
+double jsonGetFloatField(int64_t*, const char*);
+int jsonGetBoolField(int64_t*, const char*);
+char* jsonGetStringField(int64_t*, const char*);
+/* Strict, bounded request-only JSON parsing. The general Json API retains its
+ * compatibility behavior. A parsed tree is bound only after schema validation. */
+typedef struct { const char *p; const char *error; size_t nodes; } RequestJson;
+static TinoxJsonValue *request_value(RequestJson *r, int depth);
+static int request_hex(RequestJson *r) {
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        unsigned char c = (unsigned char)*r->p;
+        int x = c >= '0' && c <= '9' ? c-'0' : c >= 'a' && c <= 'f' ? c-'a'+10 : c >= 'A' && c <= 'F' ? c-'A'+10 : -1;
+        if (x < 0) { r->error = "malformed"; return -1; }
+        r->p++; n = n*16+x;
+    }
+    return n;
+}
+static char *request_string(RequestJson *r) {
+    r->p++;
+    const char *string_end=r->p;
+    while (*string_end && *string_end != '"') { if (*string_end == '\\' && string_end[1]) string_end++; string_end++; }
+    char *out = malloc((size_t)(string_end-r->p)+1); size_t n = 0;
+    while (*r->p && *r->p != '"') {
+        unsigned char c = (unsigned char)*r->p++;
+        if (c < 32) { r->error = "malformed"; break; }
+        if (c == '\\') {
+            if (!*r->p) { r->error="malformed"; break; }
+            c = (unsigned char)*r->p++;
+            if (c == 'u') {
+                int cp = request_hex(r);
+                if (cp >= 0xd800 && cp <= 0xdbff) {
+                    if (strncmp(r->p,"\\u",2)) { r->error="malformed"; break; }
+                    r->p += 2; int low = request_hex(r);
+                    if (low < 0xdc00 || low > 0xdfff) { r->error="malformed"; break; }
+                    cp=0x10000+((cp-0xd800)<<10)+(low-0xdc00);
+                } else if (cp >= 0xdc00 && cp <= 0xdfff) { r->error="malformed"; break; }
+                /* Tinox strings are NUL terminated: reject embedded NUL. */
+                if (cp <= 0 || r->error) { r->error="malformed"; break; }
+                if (cp < 0x80) out[n++]=(char)cp;
+                else if (cp < 0x800) { out[n++]=(char)(0xc0|(cp>>6)); out[n++]=(char)(0x80|(cp&63)); }
+                else if (cp < 0x10000) { out[n++]=(char)(0xe0|(cp>>12)); out[n++]=(char)(0x80|((cp>>6)&63)); out[n++]=(char)(0x80|(cp&63)); }
+                else { out[n++]=(char)(0xf0|(cp>>18)); out[n++]=(char)(0x80|((cp>>12)&63)); out[n++]=(char)(0x80|((cp>>6)&63)); out[n++]=(char)(0x80|(cp&63)); }
+                continue;
+            }
+            const char *esc = "\"\\/bfnrt", *decoded = "\"\\/\b\f\n\r\t";
+            const char *found = c ? strchr(esc,c) : NULL;
+            if (!found) { r->error="malformed"; break; }
+            out[n++]=decoded[found-esc];
+        } else if (c >= 0x80) {
+            r->p--; size_t w=tinox_utf8_scalar_width((const unsigned char*)r->p,(size_t)(string_end-r->p));
+            if (!w) { r->error="malformed"; break; }
+            memcpy(out+n,r->p,w); n+=w; r->p+=w;
+        } else out[n++]=(char)c;
+    }
+    if (*r->p != '"') r->error="malformed"; else r->p++;
+    out[n]=0; return out;
+}
+static TinoxJsonValue *request_value(RequestJson *r, int depth) {
+    if (r->error) return NULL;
+    if (depth > 32) { r->error="depth"; return NULL; }
+    if (++r->nodes > 100000) { r->error="size"; return NULL; }
+    r->p=json_skip_ws(r->p);
+    TinoxJsonValue *v;
+    if (*r->p == '"') { v=json_alloc(JSON_STRING); v->str_val=request_string(r); return v; }
+    if (*r->p == '{') {
+        r->p++; v=json_alloc(JSON_OBJECT); v->obj_val=tinox_map_create(); r->p=json_skip_ws(r->p);
+        if (*r->p == '}') { r->p++; return v; }
+        while (!r->error) {
+            if (*r->p != '"') break;
+            char *key=request_string(r); r->p=json_skip_ws(r->p);
+            if (*r->p != ':') break;
+            r->p++;
+            TinoxJsonValue *item=request_value(r,depth+1);
+            if (r->error) return v;
+            if (tinox_map_get(v->obj_val,key)) { r->error="duplicate"; return v; }
+            tinox_map_set(v->obj_val,key,(int64_t)(intptr_t)item);
+            r->p=json_skip_ws(r->p);
+            if (*r->p == '}') { r->p++; return v; }
+            if (*r->p != ',') break;
+            r->p++; r->p=json_skip_ws(r->p);
+        }
+        r->error="malformed"; return v;
+    }
+    if (*r->p == '[') {
+        r->p++; v=json_alloc(JSON_ARRAY); size_t n=0,cap=8;
+        int64_t *storage=malloc((cap+1)*sizeof(int64_t)); r->p=json_skip_ws(r->p);
+        if (*r->p != ']') while (!r->error) {
+            TinoxJsonValue *item=request_value(r,depth+1); if (r->error) break;
+            if (n == cap) { cap*=2; storage=realloc(storage,(cap+1)*sizeof(int64_t)); }
+            storage[1+n++]=(int64_t)(intptr_t)item; r->p=json_skip_ws(r->p);
+            if (*r->p == ']') break;
+            if (*r->p != ',') { r->error="malformed"; break; }
+            r->p++;
+        }
+        storage[0]=(int64_t)n; v->arr_val=storage+1;
+        if (*r->p == ']') r->p++; else if (!r->error) r->error="malformed";
+        return v;
+    }
+    for (int i=0;i<3;i++) {
+        const char *word=i==0?"null":i==1?"true":"false";
+        if (!strncmp(r->p,word,strlen(word))) { r->p+=strlen(word); v=json_alloc(i==0?JSON_NULL:JSON_BOOL); v->bool_val=i==1; return v; }
+    }
+    const char *start=r->p;
+    if (*r->p == '-') r->p++;
+    if (*r->p == '0') r->p++;
+    else if (*r->p >= '1' && *r->p <= '9') { while (*r->p >= '0' && *r->p <= '9') r->p++; }
+    else { r->error="malformed"; return NULL; }
+    int floating=0;
+    if (*r->p == '.') { floating=1; r->p++; if (*r->p < '0' || *r->p > '9') { r->error="malformed"; return NULL; } while (*r->p >= '0' && *r->p <= '9') r->p++; }
+    if (*r->p == 'e' || *r->p == 'E') { floating=1; r->p++; if (*r->p == '+' || *r->p == '-') r->p++; if (*r->p < '0' || *r->p > '9') { r->error="malformed"; return NULL; } while (*r->p >= '0' && *r->p <= '9') r->p++; }
+    errno=0; char *end;
+    if (floating) { v=json_alloc(JSON_FLOAT); v->float_val=strtod(start,&end); if (errno || !isfinite(v->float_val)) r->error="number"; }
+    else { v=json_alloc(JSON_INT); v->int_val=strtoll(start,&end,10); if (errno) r->error="number"; }
+    if (end != r->p) r->error="malformed";
+    return v;
+}
+static char *request_error(const char *path,const char *code) {
+    char *encoded=tinox_json_encode_string(path);
+    size_t n=strlen(encoded)+strlen(code)+100; char *out=malloc(n);
+    snprintf(out,n,"{\"error\":\"validation_failed\",\"details\":[{\"path\":%s,\"code\":\"%s\"}]}",encoded,code);
+    return out;
+}
+static int request_key_compare(const void *a,const void *b) { return strcmp(*(const char* const*)a,*(const char* const*)b); }
+static char *request_validate(TinoxJsonValue *value,TinoxJsonValue *schema,TinoxJsonValue *defs,const char *path,int depth) {
+    if (depth > 32) return request_error(path,"depth");
+    if (!value || value->type == JSON_NULL) {
+        if (jsonGetBoolField((int64_t*)schema,"required")) return request_error(path,value?"non_null":"required");
+        return NULL;
+    }
+    const char *cls=jsonGetStringField((int64_t*)schema,"class");
+    if (cls && *cls) {
+        if (value->type != JSON_OBJECT) return request_error(path,"type");
+        TinoxJsonValue *fs=(TinoxJsonValue*)jsonGetField((int64_t*)defs,cls);
+        if (!fs) return request_error(path,"unsupported");
+        for (int64_t i=0;i<jsonArrayLen((int64_t*)fs);i++) {
+            int64_t *f=jsonArrayGet((int64_t*)fs,i); const char *name=jsonGetStringField(f,"name");
+            size_t n=strlen(path)+strlen(name)+2; char *next=malloc(n); snprintf(next,n,"%s.%s",path,name);
+            char *error=request_validate((TinoxJsonValue*)jsonGetField((int64_t*)value,name),(TinoxJsonValue*)jsonGetField(f,"schema"),defs,next,depth+1);
+            if (error) return error;
+        }
+        return NULL;
+    }
+    const char *type=jsonGetStringField((int64_t*)schema,"type");
+    if (!strcmp(type,"unsupported")) return request_error(path,"unsupported");
+    int valid=!strcmp(type,"string")?value->type==JSON_STRING:!strcmp(type,"boolean")?value->type==JSON_BOOL:!strcmp(type,"integer")?value->type==JSON_INT:!strcmp(type,"number")?(value->type==JSON_INT||value->type==JSON_FLOAT):!strcmp(type,"array")?value->type==JSON_ARRAY:!strcmp(type,"object")?value->type==JSON_OBJECT:0;
+    if (!valid) return request_error(path,"type");
+    if (value->type==JSON_OBJECT) {
+        TinoxMap *map=(TinoxMap*)value->obj_val; char **keys=malloc((map->len+1)*sizeof(char*));size_t count=0;
+        for(size_t i=0;i<map->cap;i++) if(map->entries[i].key && map->entries[i].key != (char*)1) keys[count++]=map->entries[i].key;
+        qsort(keys,count,sizeof(char*),request_key_compare);
+        for(size_t i=0;i<count;i++) {
+            char *encoded=tinox_json_encode_string(keys[i]);size_t n=strlen(path)+strlen(encoded)+3;char *next=malloc(n);snprintf(next,n,"%s[%s]",path,encoded);
+            char *error=request_validate((TinoxJsonValue*)jsonGetField((int64_t*)value,keys[i]),(TinoxJsonValue*)jsonGetField((int64_t*)schema,"values"),defs,next,depth+1);if(error)return error;
+        }
+    }
+    if (value->type == JSON_STRING || value->type == JSON_ARRAY) {
+        size_t length=0;
+        if (value->type==JSON_ARRAY) length=(size_t)jsonArrayLen((int64_t*)value);
+        else { size_t n=strlen(value->str_val); for(size_t i=0;i<n;) { size_t w=tinox_utf8_scalar_width((unsigned char*)value->str_val+i,n-i); if(!w)return request_error(path,"malformed"); length++; i+=w; } }
+        if (jsonGetField((int64_t*)schema,"minLength") && ((double)length<jsonGetFloatField((int64_t*)schema,"minLength") || (double)length>jsonGetFloatField((int64_t*)schema,"maxLength"))) return request_error(path,"length");
+        if (value->type==JSON_ARRAY) for(int64_t i=0;i<(int64_t)length;i++) {
+            size_t n=strlen(path)+32; char *next=malloc(n); snprintf(next,n,"%s[%lld]",path,(long long)i);
+            char *error=request_validate((TinoxJsonValue*)jsonArrayGet((int64_t*)value,i),(TinoxJsonValue*)jsonGetField((int64_t*)schema,"items"),defs,next,depth+1); if(error)return error;
+        }
+    }
+    if (value->type==JSON_INT) {
+        int bits=(int)jsonGetIntField((int64_t*)schema,"bits");
+        int unsign=jsonGetBoolField((int64_t*)schema,"unsigned");
+        if ((unsign && value->int_val < 0) || (bits > 0 && bits < 64 && (unsign ? (uint64_t)value->int_val > ((UINT64_C(1)<<bits)-1) : (value->int_val < -(INT64_C(1)<<(bits-1)) || value->int_val > ((INT64_C(1)<<(bits-1))-1))))) return request_error(path,"range");
+    }
+    if (value->type==JSON_INT || value->type==JSON_FLOAT) {
+        long double number=value->type==JSON_INT?(long double)value->int_val:(long double)value->float_val;
+        TinoxJsonValue *min=(TinoxJsonValue*)jsonGetField((int64_t*)schema,"minimum"), *max=(TinoxJsonValue*)jsonGetField((int64_t*)schema,"maximum");
+        if (min && max) {
+            long double lo=min->type==JSON_INT?(long double)min->int_val:(long double)min->float_val;
+            long double hi=max->type==JSON_INT?(long double)max->int_val:(long double)max->float_val;
+            if (number<lo || number>hi) return request_error(path,"range");
+        }
+    }
+    return NULL;
+}
+char *tinox_request_validate(const char *body,const char *definitions,const char *class_name,int64_t **parsed) {
+    /* A request validator has explicit CPU/allocation bounds independent of
+     * any transport's own configurable body limit. */
+    size_t exact_length=body==g_req_body_ptr?(size_t)g_req_body_len:body==g_json_body_ptr?g_json_body_len:body?strnlen(body,1048577):0;
+    if (exact_length>1048576) return request_error("$","size");
+    if (body && memchr(body,0,exact_length)) return request_error("$","malformed");
+    RequestJson r={body?body:"",NULL,0}; TinoxJsonValue *value=request_value(&r,0);
+    if (!r.error && *json_skip_ws(r.p)) r.error="malformed";
+    if (r.error) return request_error("$",r.error);
+    TinoxJsonValue schema={.type=JSON_OBJECT}; schema.obj_val=tinox_map_create();
+    TinoxJsonValue *cls=json_alloc(JSON_STRING); cls->str_val=(char*)class_name; tinox_map_set(schema.obj_val,"class",(int64_t)(intptr_t)cls);
+    TinoxJsonValue *req=json_alloc(JSON_BOOL);req->bool_val=1;tinox_map_set(schema.obj_val,"required",(int64_t)(intptr_t)req);
+    char *error=request_validate(value,&schema,(TinoxJsonValue*)jsonParse(definitions),"$",0);
+    if (!error) *parsed=(int64_t*)value;
+    return error;
+}
+
+
 int64_t* jsonIntArrayFromJson(int64_t* json_array) {
     TinoxJsonValue* v = (TinoxJsonValue*)json_array;
     if (!v) return tinox_array_new(0, 0);
@@ -9904,8 +10474,9 @@ void jsonBuilderAddRaw(char* handle, const char* key, const char* rawJson) {
 // "nothing to show" -- see emit_devui_component_state_handlers,
 // codegen.rs). `instantiated` is always 0 for HttpRequest-scoped
 // components: they have no persistent singleton to check (emit_di_code's
-// _di_create() allocates a fresh instance per call, never caches one), so
-// the compiler-generated caller passes a constant 0 (and a NULL state)
+// _di_create() caches only inside the active request context, never in a
+// process-wide instance global), so the compiler-generated caller passes
+// a constant 0 (and a NULL state)
 // for those rather than loading a global that was never emitted for them.
 // N is always small (the program's own @ApplicationComponent count) and
 // this is a dev-only introspection endpoint, not a hot path, so the
@@ -11785,9 +12356,11 @@ extern __thread int64_t __tinox_err;
     X(g_response) \
     X(g_request) \
     X(g_ctx) \
+    X(g_json_body_ptr) \
     X(g_req_headers_map) \
     X(g_resp_headers_map) \
     X(g_path_params_map) \
+    X(request_instances) \
     X(task_scope) \
     X(task_frame_scope) \
     X(current_task) \

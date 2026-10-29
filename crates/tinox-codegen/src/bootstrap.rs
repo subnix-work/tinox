@@ -103,6 +103,8 @@ impl BackgroundTask {
 pub struct Injection {
     pub field: String,
     pub target: String,
+    pub provider_class: String,
+    pub qualifier: Option<String>,
     pub provider: String,
     pub target_scope: String,
     pub resolution: String,
@@ -172,7 +174,7 @@ fn scope(scope: &DiScope) -> &'static str {
     match scope {
         DiScope::Application => "application_singleton",
         DiScope::Startup => "startup_singleton",
-        DiScope::HttpRequest => "request_factory",
+        DiScope::HttpRequest => "request_context",
     }
 }
 impl CodeGen {
@@ -261,7 +263,7 @@ impl CodeGen {
     /// Public facts only. The model never serializes arbitrary annotation
     /// arguments, DB URLs, passwords, usernames or resolved configuration data.
     pub fn bootstrap_plan(&self) -> BootstrapPlan {
-        let mode = if self.test_entry.is_some() {
+        let mode = if !self.test_entries.is_empty() {
             "test"
         } else if self.bootstrap_emitted {
             "bootstrap"
@@ -290,14 +292,14 @@ impl CodeGen {
         };
         let components = self.di_components.iter().map(|component| Component {
             class: component.class_name.clone(), scope: scope(&component.scope).into(),
-            initialization: match component.scope { DiScope::Startup if self.service_enabled() => "eager managed initialization before hooks and listeners", DiScope::Startup => "eager global constructor before main", DiScope::Application => "lazy on first provider call", DiScope::HttpRequest => "fresh instance per factory call" }.into(),
+            initialization: match component.scope { DiScope::Startup if self.service_enabled() => "eager managed initialization before hooks and listeners", DiScope::Startup => "eager global constructor before main", DiScope::Application => "lazy on first provider call", DiScope::HttpRequest => "one instance per annotated REST request context" }.into(),
             provider: format!("{}_di_{}", component.class_name, if component.scope == DiScope::HttpRequest { "create" } else { "get" }),
             injections: component.inject_fields.iter().map(|field| {
-                let target = self.di_components.iter().find(|c| c.class_name == field.field_type);
+                let target = self.di_components.iter().find(|c| c.class_name == field.provider_class);
                 let singleton = target.is_some_and(|c| c.scope != DiScope::HttpRequest);
-                Injection { field: field.field_name.clone(), target: field.field_type.clone(), provider: format!("{}_di_{}", field.field_type, if singleton { "get" } else { "create" }),
+                Injection { field: field.field_name.clone(), target: field.field_type.clone(), provider_class: field.provider_class.clone(), qualifier: field.qualifier.clone(), provider: format!("{}_di_{}", field.provider_class, if singleton { "get" } else { "create" }),
                     target_scope: target.map(|c| scope(&c.scope)).unwrap_or("unregistered").into(),
-                    resolution: if target.is_some_and(|c| c.scope == DiScope::HttpRequest) && component.scope != DiScope::HttpRequest { "created during owner construction; per-request refresh applies only when the owner is a dispatched REST controller" } else { "resolved recursively during owner construction" }.into() }
+                    resolution: if target.is_some_and(|c| c.scope == DiScope::HttpRequest) { "resolved through the active request context; captive singleton lifetimes are rejected" } else { "resolved recursively during owner construction" }.into() }
             }).collect(),
         }).collect();
         let routes = self
@@ -314,9 +316,9 @@ impl CodeGen {
                         .map(|c| &c.scope)
                     {
                         Some(DiScope::Application | DiScope::Startup) => {
-                            "singleton provider; request-scoped fields refreshed at dispatch"
+                            "singleton provider; captive request state is rejected"
                         }
-                        Some(DiScope::HttpRequest) => "request component factory",
+                        Some(DiScope::HttpRequest) => "request-context provider; identity shared across injection graph",
                         None => "fresh controller per request",
                     }
                 };
@@ -408,8 +410,8 @@ impl CodeGen {
         let mut notes = vec![
             "Listener binding, network connection success and readiness are runtime-dependent; inspection starts nothing.".into(),
             "Spawn order does not establish execution order between threads or readiness before Main.".into(),
-            "Application and startup singleton getters serialize initialization/publication; shared mutable state needs @Synchronized or explicit coordination. Request-scoped dependencies captured by singletons are shared and unsafe for per-request state.".into(),
-            "WebSocket/UI instances are allocated per connection and AMQP instances per consumer connection; those paths do not use DI providers.".into(),
+            "Application and startup singleton getters serialize initialization/publication; shared mutable state needs @Synchronized or explicit coordination. Captive request-scoped dependencies in singletons are rejected before backend emission.".into(),
+            "Application/startup-scoped WebSocket endpoints use their DI provider; unscoped WebSocket/UI instances are allocated per connection and AMQP instances per consumer connection. HTTP request scope is not supported for WebSocket endpoints.".into(),
             if self.service_enabled() {
             "Managed lifecycle: signal coordinator, admission control, joined workers, reverse OnStop hooks and database disposal share one shutdown deadline." } else { "Coordinated lifecycle is opt-in: annotate class Main with @Service." }.into(),
         ];
@@ -458,7 +460,7 @@ mod tests {
                     scope: DiScope::Startup,
                     inject_fields: vec![DiInjectField {
                         field_name: "request".into(),
-                        field_type: "Request".into(),
+                        field_type: "Request".into(), provider_class: "Request".into(), qualifier: None,
                     }],
                 },
                 DiComponentInfo {
@@ -545,6 +547,32 @@ mod tests {
         assert_eq!(plan.initializers[0].components, ["Service"]);
         assert_eq!(plan.background_tasks[1].callbacks, ["message"]);
     }
+    #[test]
+    fn test_dispatch_does_not_run_imported_main_or_background_routes() {
+        let source = "class Main { fnc main() -> Int32 { return 42 } } class Api { fn hello() -> String { return \"hello\" } } class Suite { fn first() -> Bool { return true } fn second() -> Bool { return false } }";
+        let tokens = tinox_lexer::Lexer::new(source).tokenize().unwrap();
+        let ast = Parser::new(tokens).parse().unwrap();
+        let mut codegen = CodeGen::new();
+        codegen.set_annotation_info(AnnotationInfo {
+            routes: vec![RouteEntry {
+                http_method: "GET".into(), path: "/hello".into(),
+                class_name: "Api".into(), method_name: "hello".into(),
+                status_code: None, produces: None, consumes: None, auth_type: None,
+                oidc_roles: vec![], is_static: false, params: vec![], return_type: Type::String,
+            }],
+            ..Default::default()
+        });
+        codegen.set_test_entries(vec![("Suite".into(), "first".into()), ("Suite".into(), "second".into())]);
+        codegen.gen(&ast).unwrap();
+        assert_eq!(codegen.bootstrap_plan().mode, "test");
+        let ir = codegen.into_ir();
+        let main = ir.split("define i64 @tinox_main()").nth(1).unwrap().split("\n}").next().unwrap();
+        assert!(main.contains("@Suite_first"));
+        assert!(main.contains("@Suite_second"));
+        assert!(!main.contains("@Main_main"));
+        assert!(!main.contains("@tinox_task_spawn"));
+    }
+
     #[test]
     fn database_and_startup_share_one_llvm_constructor_table_with_preserved_priorities() {
         let tokens = tinox_lexer::Lexer::new(

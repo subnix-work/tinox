@@ -1,0 +1,9 @@
+import Store
+@ApplicationComponent
+@Provider("safe")
+@Synchronized
+class Safe implements Store {
+    private var value: Int64 = 100
+    fn next() -> Int64 { this.value = this.value + 1
+    return this.value }
+}

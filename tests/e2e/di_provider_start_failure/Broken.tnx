@@ -1,0 +1,7 @@
+import Store
+@ApplicationComponent @Provider("broken")
+class Broken implements Store {
+    fn value() -> Int64 { return 0 }
+    @OnStart fn start() -> Nothing { throw "provider initialization failed" }
+    @OnStop fn stop() -> Nothing { println("cleanup") }
+}

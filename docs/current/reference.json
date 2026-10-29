@@ -203,6 +203,15 @@
       ]
     },
     {
+      "description": "Inclusive string code-point or collection length bounds",
+      "max_args": 2,
+      "min_args": 2,
+      "name": "Length",
+      "targets": [
+        "Field"
+      ]
+    },
+    {
       "description": "Contribute a synchronous Bool to liveness",
       "max_args": 0,
       "min_args": 0,
@@ -302,6 +311,15 @@
       ]
     },
     {
+      "description": "Request field may be absent or null",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "Optional",
+      "targets": [
+        "Field"
+      ]
+    },
+    {
       "description": "Marks a method as a PATCH endpoint. Optional path arg, or use @Path.",
       "max_args": 1,
       "min_args": 0,
@@ -366,6 +384,24 @@
       ]
     },
     {
+      "description": "Names a scoped concrete provider for explicit qualifier selection",
+      "max_args": 1,
+      "min_args": 1,
+      "name": "Provider",
+      "targets": [
+        "Class"
+      ]
+    },
+    {
+      "description": "Selects the named provider of an @Inject field",
+      "max_args": 1,
+      "min_args": 1,
+      "name": "Qualifier",
+      "targets": [
+        "Field"
+      ]
+    },
+    {
       "description": "Binds a query string key (same name as the parameter) to this parameter — String/Int64/Int32/Bool/Float64/Float32",
       "max_args": 0,
       "min_args": 0,
@@ -375,12 +411,30 @@
       ]
     },
     {
+      "description": "Inclusive numeric request field bounds",
+      "max_args": 2,
+      "min_args": 2,
+      "name": "Range",
+      "targets": [
+        "Field"
+      ]
+    },
+    {
       "description": "Contribute a synchronous Bool to readiness after required listeners/consumers are usable",
       "max_args": 0,
       "min_args": 0,
       "name": "Readiness",
       "targets": [
         "Method"
+      ]
+    },
+    {
+      "description": "Request field must be present and non-null",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "Required",
+      "targets": [
+        "Field"
       ]
     },
     {
@@ -626,6 +680,7 @@
     "Pool_factory": "(p: Any) -> Any",
     "String_charAt": "(s: String, i: Int64) -> String",
     "String_charCodeAt": "(s: String, i: Int64) -> Int64",
+    "String_chars": "(s: String) -> List<String>",
     "String_contains": "(s: String, p: String) -> Bool",
     "String_endsWith": "(s: String, p: String) -> Bool",
     "String_indexOf": "(s: String, p: String) -> Int64",
