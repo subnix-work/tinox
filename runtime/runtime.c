@@ -2420,6 +2420,7 @@ typedef struct TinoxMap {
     size_t cap;
     size_t len;
     int borrowed_keys; // 1 = keys/entries are arena-owned, don't free
+    unsigned int tombs; // tombstone slots (lives in the padding after borrowed_keys)
 } TinoxMap;
 
 static size_t map_hash(const char* key, size_t cap) {
@@ -2435,29 +2436,47 @@ static void map_rehash(TinoxMap* m); // forward declaration
 static void tinox_map_reset(TinoxMap* m) {
     TINOX_CK_REG(m, TINOX_KIND_MAP);
     m->len = 0;
+    m->tombs = 0;
     memset(m->entries, 0, m->cap * sizeof(TinoxMapEntry));
 }
 
 // Store key without strdup — caller guarantees key lifetime exceeds map use
-static void tinox_map_set_borrow(void* map, const char* key, int64_t value) {
-    TinoxMap* m = (TinoxMap*)map;
-    if (m->len * TINOX_MAP_LOAD_DEN >= m->cap * TINOX_MAP_LOAD_NUM) map_rehash(m);
+// Insert-or-update by bounded probe. Probing never relies on finding a NULL
+// slot (tombstones can fill the table); a key is only inserted after the whole
+// chain proved it absent, reusing the first tombstone seen on the way.
+static void map_store(TinoxMap* m, const char* key, int64_t value, int copy_key) {
+    if ((size_t)(m->len + m->tombs + 1) * TINOX_MAP_LOAD_DEN > m->cap * TINOX_MAP_LOAD_NUM)
+        map_rehash(m);
     size_t idx = map_hash(key, m->cap);
-    while (1) {
+    size_t tomb = (size_t)-1;
+    for (size_t n = 0; n < m->cap; n++) {
         char* k = m->entries[idx].key;
-        if (!k || k == (char*)1) {
-            m->entries[idx].key   = (char*)key; // no strdup
+        if (!k) break;
+        if (k == (char*)1) {
+            if (tomb == (size_t)-1) tomb = idx;
+        } else if (strcmp(k, key) == 0) {
             m->entries[idx].value = value;
-            m->len++;
             return;
         }
-        if (strcmp(k, key) == 0) { m->entries[idx].value = value; return; }
         idx = (idx + 1) & (m->cap - 1);
     }
+    if (tomb != (size_t)-1) { idx = tomb; m->tombs--; }
+    m->entries[idx].key   = copy_key ? strdup(key) : (char*)key;
+    m->entries[idx].value = value;
+    m->len++;
+}
+
+// Store key without strdup — caller guarantees key lifetime exceeds map use
+static void tinox_map_set_borrow(void* map, const char* key, int64_t value) {
+    map_store((TinoxMap*)map, key, value, 0);
 }
 
 static void map_rehash(TinoxMap* m) {
-    size_t new_cap = m->cap * 2;
+    // Grow only when live entries need it; otherwise rebuild at the same size
+    // to drop the tombstones.
+    size_t new_cap = m->cap;
+    if ((size_t)(m->len + 1) * TINOX_MAP_LOAD_DEN * 2 > m->cap * TINOX_MAP_LOAD_NUM)
+        new_cap = m->cap * 2;
     TinoxMapEntry* new_entries = calloc(new_cap, sizeof(TinoxMapEntry));
     for (size_t i = 0; i < m->cap; i++) {
         char* k = m->entries[i].key;
@@ -2470,6 +2489,7 @@ static void map_rehash(TinoxMap* m) {
     if (!m->borrowed_keys) free(m->entries);
     m->entries = new_entries;
     m->cap     = new_cap;
+    m->tombs   = 0;
     m->borrowed_keys = 0; // entries now heap-allocated
 }
 
@@ -2477,6 +2497,7 @@ void* tinox_map_create(void) {
     TinoxMap* m = malloc(sizeof(TinoxMap));
     m->cap          = TINOX_MAP_INIT_CAP;
     m->len          = 0;
+    m->tombs        = 0;
     m->entries      = calloc(m->cap, sizeof(TinoxMapEntry));
     m->borrowed_keys = 0;
     TINOX_CK_REG(m, TINOX_KIND_MAP);
@@ -2486,64 +2507,42 @@ void* tinox_map_create(void) {
 void tinox_map_set(void* map, const char* key, int64_t value) {
     TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_set");
     TinoxMap* m = (TinoxMap*)map;
-    if (m->len * TINOX_MAP_LOAD_DEN >= m->cap * TINOX_MAP_LOAD_NUM)
-        map_rehash(m);
+    map_store(m, key, value, !m->borrowed_keys);
+}
+
+// Bounded probe: index of the live slot holding key, or (size_t)-1.
+static size_t map_find(TinoxMap* m, const char* key) {
     size_t idx = map_hash(key, m->cap);
-    while (1) {
+    for (size_t n = 0; n < m->cap; n++) {
         char* k = m->entries[idx].key;
-        if (!k || k == (char*)1) {
-            m->entries[idx].key   = m->borrowed_keys ? (char*)key : strdup(key);
-            m->entries[idx].value = value;
-            m->len++;
-            return;
-        }
-        if (strcmp(k, key) == 0) {
-            m->entries[idx].value = value;
-            return;
-        }
+        if (!k) return (size_t)-1;
+        if (k != (char*)1 && strcmp(k, key) == 0) return idx;
         idx = (idx + 1) & (m->cap - 1);
     }
+    return (size_t)-1;
 }
 
 int64_t tinox_map_get(void* map, const char* key) {
     TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_get");
     TinoxMap* m = (TinoxMap*)map;
-    size_t idx = map_hash(key, m->cap);
-    while (1) {
-        char* k = m->entries[idx].key;
-        if (!k) return 0;
-        if (k != (char*)1 && strcmp(k, key) == 0) return m->entries[idx].value;
-        idx = (idx + 1) & (m->cap - 1);
-    }
+    size_t i = map_find(m, key);
+    return i == (size_t)-1 ? 0 : m->entries[i].value;
 }
 
 int64_t tinox_map_contains(void* map, const char* key) {
     TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_contains");
-    TinoxMap* m = (TinoxMap*)map;
-    size_t idx = map_hash(key, m->cap);
-    while (1) {
-        char* k = m->entries[idx].key;
-        if (!k) return 0;
-        if (k != (char*)1 && strcmp(k, key) == 0) return 1;
-        idx = (idx + 1) & (m->cap - 1);
-    }
+    return map_find((TinoxMap*)map, key) != (size_t)-1;
 }
 
 void tinox_map_remove(void* map, const char* key) {
     TINOX_CK_EXPECT(map, TINOX_KIND_MAP, "map_remove");
     TinoxMap* m = (TinoxMap*)map;
-    size_t idx = map_hash(key, m->cap);
-    while (1) {
-        char* k = m->entries[idx].key;
-        if (!k) return;
-        if (k != (char*)1 && strcmp(k, key) == 0) {
-            if (!m->borrowed_keys) free(m->entries[idx].key);
-            m->entries[idx].key = (char*)1; // tombstone
-            m->len--;
-            return;
-        }
-        idx = (idx + 1) & (m->cap - 1);
-    }
+    size_t i = map_find(m, key);
+    if (i == (size_t)-1) return;
+    if (!m->borrowed_keys) free(m->entries[i].key);
+    m->entries[i].key = (char*)1; // tombstone
+    m->len--;
+    m->tombs++;
 }
 
 int64_t tinox_map_len(void* map) {
@@ -8959,6 +8958,7 @@ static TinoxMap* make_static_map(TinoxMap* m, size_t cap) {
     m->entries      = (TinoxMapEntry*)calloc(cap, sizeof(TinoxMapEntry));
     m->cap          = cap;
     m->len          = 0;
+    m->tombs        = 0;
     m->borrowed_keys = 1;
     TINOX_CK_REG(m, TINOX_KIND_MAP);
     return m;
@@ -9588,6 +9588,7 @@ static void* json_obj_map_create(void) {
     TinoxMap* m = (TinoxMap*)json_arena_alloc(sizeof(TinoxMap));
     m->cap = 4;
     m->len = 0;
+    m->tombs = 0;
     m->entries = (TinoxMapEntry*)json_arena_alloc(4 * sizeof(TinoxMapEntry));
     memset(m->entries, 0, 4 * sizeof(TinoxMapEntry));
     m->borrowed_keys = 1;
