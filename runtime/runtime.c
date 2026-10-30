@@ -3311,6 +3311,161 @@ int64_t tinox_message_handler_failed(const char* handler, int64_t err) {
     return 1;
 }
 
+// ---- LoadingCache (issue #543): bounded, TTL, thread-safe, single-flight ----
+// Entries live in GC memory (values are GC strings). Every operation holds the cache mutex; a miss
+// marks the key "loading" and concurrent identical lookups wait for that one loader (bounded by
+// TINOX_LC_WAIT_MS) instead of loading again. evictAll bumps a generation so a load that raced with
+// the eviction is returned to its caller but not stored -- a stale value never outlives an eviction.
+typedef struct { char* key; char* value; int64_t expires; int64_t used; int state; } TinoxLcEntry; // 0 free, 1 ready, 2 loading
+typedef struct {
+    pthread_mutex_t mu; pthread_cond_t cv;
+    int64_t cap, ttl_ms, tick, gen, hits, misses, loads, evictions, failures, waited_out;
+    TinoxLcEntry* e;
+} TinoxLc;
+static __thread char* g_lc_value = NULL;
+
+int64_t tinoxLcNew(int64_t cap, int64_t ttl_ms) {
+    if (cap < 1 || cap > 100000 || ttl_ms < 1) {
+        fprintf(stderr, "runtime error: LoadingCache needs 1 <= capacity <= 100000 and ttlMs >= 1\n");
+        exit(1);
+    }
+    TinoxLc* c = (TinoxLc*)GC_malloc(sizeof(TinoxLc));
+    pthread_mutex_init(&c->mu, NULL);
+    pthread_cond_init(&c->cv, NULL);
+    c->cap = cap; c->ttl_ms = ttl_ms;
+    c->e = (TinoxLcEntry*)GC_malloc(sizeof(TinoxLcEntry) * (size_t)cap);
+    return (int64_t)(intptr_t)c;
+}
+
+static TinoxLcEntry* tinox_lc_find(TinoxLc* c, const char* key) {
+    for (int64_t i = 0; i < c->cap; i++) if (c->e[i].state != 0 && strcmp(c->e[i].key, key) == 0) return &c->e[i];
+    return NULL;
+}
+
+static int64_t tinox_lc_wait_ms(void) {
+    const char* v = getenv("TINOX_LC_WAIT_MS");
+    long long n = v && *v ? atoll(v) : 0;
+    return n > 0 ? n : 60000;
+}
+
+// 1 = hit (value via tinoxLcValue); otherwise the caller is the loader and must call tinoxLcStore or
+// tinoxLcAbort with the returned token minus 2 as generation.
+int64_t tinoxLcBegin(int64_t h, const char* key) {
+    TinoxLc* c = (TinoxLc*)(intptr_t)h;
+    struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl);
+    int64_t wait = tinox_lc_wait_ms();
+    dl.tv_sec += wait / 1000; dl.tv_nsec += (wait % 1000) * 1000000L;
+    if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; }
+    pthread_mutex_lock(&c->mu);
+    for (;;) {
+        TinoxLcEntry* en = tinox_lc_find(c, key);
+        int64_t now = tinox_now_ms();
+        if (en && en->state == 1 && en->expires > now) {
+            en->used = ++c->tick; c->hits++;
+            g_lc_value = en->value;
+            pthread_mutex_unlock(&c->mu);
+            return 1;
+        }
+        if (en && en->state == 1) { en->state = 0; en->key = NULL; en->value = NULL; en = NULL; c->evictions++; } // expired
+        if (!en) {
+            // become the loader: take a free slot, or evict the least recently used ready entry
+            TinoxLcEntry* slot = NULL;
+            for (int64_t i = 0; i < c->cap; i++) if (c->e[i].state == 0) { slot = &c->e[i]; break; }
+            if (!slot) {
+                for (int64_t i = 0; i < c->cap; i++) if (c->e[i].state == 1 && (!slot || c->e[i].used < slot->used)) slot = &c->e[i];
+                if (slot) c->evictions++;
+            }
+            if (slot) {
+                slot->key = GC_strdup(key); slot->value = NULL; slot->state = 2; slot->used = ++c->tick;
+                c->misses++;
+                int64_t gen = c->gen;
+                pthread_mutex_unlock(&c->mu);
+                return gen + 2;
+            }
+            // every slot is another key's in-flight load: wait for one to finish
+        }
+        if (pthread_cond_timedwait(&c->cv, &c->mu, &dl) != 0) {
+            // The loader did not finish in time: load independently rather than waiting forever.
+            c->waited_out++; c->misses++;
+            int64_t gen = c->gen;
+            pthread_mutex_unlock(&c->mu);
+            return gen + 2;
+        }
+    }
+}
+
+const char* tinoxLcValue(void) { return g_lc_value ? g_lc_value : ""; }
+
+static void tinox_lc_release(TinoxLc* c, const char* key) {
+    TinoxLcEntry* en = tinox_lc_find(c, key);
+    if (en && en->state == 2) { en->state = 0; en->key = NULL; en->value = NULL; }
+}
+
+void tinoxLcStore(int64_t h, const char* key, const char* value, int64_t token) {
+    TinoxLc* c = (TinoxLc*)(intptr_t)h;
+    pthread_mutex_lock(&c->mu);
+    c->loads++;
+    TinoxLcEntry* en = tinox_lc_find(c, key);
+    if (en && en->state == 2 && token - 2 == c->gen) {
+        en->value = GC_strdup(value); en->expires = tinox_now_ms() + c->ttl_ms; en->state = 1; en->used = ++c->tick;
+    } else {
+        tinox_lc_release(c, key);   // evicted while loading: do not store a possibly stale value
+    }
+    pthread_cond_broadcast(&c->cv);
+    pthread_mutex_unlock(&c->mu);
+}
+
+void tinoxLcAbort(int64_t h, const char* key) {
+    TinoxLc* c = (TinoxLc*)(intptr_t)h;
+    pthread_mutex_lock(&c->mu);
+    c->failures++;
+    tinox_lc_release(c, key);
+    pthread_cond_broadcast(&c->cv);
+    pthread_mutex_unlock(&c->mu);
+}
+
+static void tinox_lc_drop_ready(TinoxLc* c, const char* only_key) {
+    for (int64_t i = 0; i < c->cap; i++) {
+        if (c->e[i].state == 1 && (!only_key || strcmp(c->e[i].key, only_key) == 0)) {
+            c->e[i].state = 0; c->e[i].key = NULL; c->e[i].value = NULL; c->evictions++;
+        }
+    }
+}
+
+// Drops every ready entry and invalidates loads in flight (their results are returned, not stored).
+void tinoxLcEvictAll(int64_t h) {
+    TinoxLc* c = (TinoxLc*)(intptr_t)h;
+    pthread_mutex_lock(&c->mu);
+    c->gen++;
+    tinox_lc_drop_ready(c, NULL);
+    pthread_mutex_unlock(&c->mu);
+}
+
+void tinoxLcEvict(int64_t h, const char* key) {
+    TinoxLc* c = (TinoxLc*)(intptr_t)h;
+    pthread_mutex_lock(&c->mu);
+    c->gen++;   // a load of this key in flight must not store its (older) result
+    tinox_lc_drop_ready(c, key);
+    pthread_mutex_unlock(&c->mu);
+}
+
+int64_t tinoxLcStat(int64_t h, int64_t which) {
+    TinoxLc* c = (TinoxLc*)(intptr_t)h;
+    pthread_mutex_lock(&c->mu);
+    int64_t r = 0;
+    switch (which) {
+        case 0: r = c->hits; break;
+        case 1: r = c->misses; break;
+        case 2: r = c->loads; break;
+        case 3: r = c->evictions; break;
+        case 4: r = c->failures; break;
+        case 5: r = c->waited_out; break;
+        case 6: for (int64_t i = 0; i < c->cap; i++) if (c->e[i].state == 1) r++; break;
+    }
+    pthread_mutex_unlock(&c->mu);
+    return r;
+}
+
 // First index >= from where needle occurs in the haystack, or -1. An empty needle is a hard error.
 int64_t tinoxBufFind(int64_t h, int64_t n, int64_t from) {
     TinoxBuf* hay = tinox_buf_of(h, "find");
