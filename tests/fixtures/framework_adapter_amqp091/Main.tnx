@@ -1,6 +1,7 @@
 import AmqpConnection091
 import AmqpChannel091
 import AmqpMessage091
+import MessageFailure091
 import ConnectConsumer
 import OpenConsumer
 import QosConsumer
