@@ -2650,11 +2650,7 @@ impl CodeGen {
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__route_{}_{}", route.class_name, route.method_name);
 
-            let body_shim = if self.service_enabled() || self.has_request_scope() {
-                format!("{shim}__body")
-            } else {
-                shim.clone()
-            };
+            let body_shim = format!("{shim}__body");
             writeln!(&mut self.lambda_ir, "define void @{body_shim}(i64 %ctx_i64) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
@@ -3516,11 +3512,7 @@ tr_done_{idx}:"#).unwrap();
         // ── Per-route shims (closure-callable: trailing i64* %env) ──────────────
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__h3route_{}_{}", route.class_name, route.method_name);
-            let body_shim = if self.service_enabled() || self.has_request_scope() {
-                format!("{shim}__body")
-            } else {
-                shim.clone()
-            };
+            let body_shim = format!("{shim}__body");
             writeln!(&mut self.lambda_ir, "define void @{body_shim}(i64 %ctx_i64, i64* %env) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();

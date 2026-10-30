@@ -9003,6 +9003,17 @@ void tinox_service_unavailable(int64_t context) {
     int64_t* response = (int64_t*)(intptr_t)((int64_t*)(intptr_t)context)[1];
     response[0] = 503; response[2] = (int64_t)(intptr_t)"Service draining";
 }
+// Unmanaged (no @Service) request boundary: an uncaught handler exception is a
+// failed request, never a 200 with a default value, and must not stay pending.
+void tinox_request_failed(int64_t context) {
+    // Cancellation keeps propagating to the owning task instead of becoming a 500.
+    if (__tinox_err && !task_is_cancellation(__tinox_err)) {
+        fprintf(stderr, "tinox: request handler error: %s\n", (char*)(intptr_t)__tinox_err);
+        int64_t* response = (int64_t*)(intptr_t)((int64_t*)(intptr_t)context)[1];
+        response[0] = 500; response[2] = (int64_t)(intptr_t)"Request failed";
+        __tinox_err = 0;
+    }
+}
 void tinox_service_request_done(int64_t context) {
     if (__tinox_err) {
         fprintf(stderr, "tinox: request handler error: %s\n", (char*)(intptr_t)__tinox_err);
@@ -9128,7 +9139,7 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
         req_close = 1;
     } else {
         if (handler) handler((int64_t)g_ctx);
-        if (__tinox_err && service_enabled()) {
+        if (__tinox_err && (service_enabled() || !task_is_cancellation(__tinox_err))) {
             fprintf(stderr, "tinox: request handler error: %s\n", (char*)(intptr_t)__tinox_err);
             g_response[0] = 500; g_response[2] = (int64_t)(intptr_t)"Request failed"; __tinox_err = 0;
         }

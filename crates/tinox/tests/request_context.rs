@@ -231,7 +231,7 @@ int64_t tinox_main(void) {
         __route_Api_identity((int64_t)context);
         if (strcmp((char*)response[2], "3") || check_closed()) return 1;
         __route_Api_failure((int64_t)context);
-        __tinox_err = 0; // status/error conversion is the separate #573 bug.
+        __tinox_err = 0;
         if (check_closed()) return 2;
         __route_Api_bound((int64_t)context);
         if (response[0] != 400 || check_closed()) return 3;

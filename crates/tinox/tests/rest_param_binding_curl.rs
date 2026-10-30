@@ -135,6 +135,40 @@ class Ctrl
         ctx.response.status(404).json("{\"found\":false}")
         return ctx
     }
+
+    // Uncaught exceptions without @Service (#573): every return shape must
+    // become a 500, and the pending error must not leak into later requests.
+    @GET
+    @Path("/boom/int")
+    fn boomInt() -> Int64
+    {
+        throw "request failed"
+        return 0
+    }
+
+    @GET
+    @Path("/boom/string")
+    fn boomString() -> String
+    {
+        throw "request failed"
+        return "x"
+    }
+
+    @GET
+    @Path("/boom/object")
+    fn boomObject() -> Item
+    {
+        throw "request failed"
+        return Item { id: 0, name: "x" }
+    }
+
+    @GET
+    @Path("/boom/manual")
+    fn boomManual(@HttpContext ctx: HttpContext) -> HttpContext
+    {
+        throw "request failed"
+        return ctx
+    }
 }
 "#,
     )
@@ -305,6 +339,14 @@ class Main
     // Non-numeric Int64 @PathParam -> 400, handler never called (would
     // otherwise silently parse as 0 via the old tinox_string_to_int).
     assert_eq!(curl_status(&[&format!("{base}/check/not-a-number")]), "400");
+
+    // Uncaught handler exceptions are failed requests (#573), with later
+    // requests unaffected.
+    for route in ["int", "string", "object", "manual"] {
+        assert_eq!(curl_status(&[&format!("{base}/boom/{route}")]), "500", "/boom/{route}");
+        assert_eq!(curl_body(&format!("{base}/check/42")), r#"{"found":true}"#, "after /boom/{route}");
+        assert_eq!(curl_status(&[&format!("{base}/check/42")]), "200", "after /boom/{route}");
+    }
 
     let _ = std::fs::remove_dir_all(&workdir);
 }
