@@ -3362,22 +3362,39 @@ const CORE_MODULES: &[&str] = &[
     "base64", "hex", "uri", "bytes",
 ];
 
-/// Returns the path to runtime.c: the dev-checkout path relative to this
-/// binary's compiled-in source location (works for `cargo run` during
-/// development), then the fixed system install path used by distro
-/// packages. Unlike `stdlib_dir`, there is no env var override — runtime.c
-/// is an implementation detail, not something a user is expected to point
-/// at directly.
-fn runtime_c_path() -> Option<PathBuf> {
+/// Locates runtime.c. Order: `TINOX_RUNTIME_PATH` (the file, or a directory
+/// containing it; an invalid value is a hard error, never ignored), the
+/// relocatable layout next to the compiler (`<bin>/../share/tinox/runtime.c`),
+/// the dev-checkout path baked in at compile time, then the fixed system path.
+fn runtime_c_path_result() -> Result<PathBuf, String> {
+    if let Some(raw) = std::env::var_os("TINOX_RUNTIME_PATH").filter(|v| !v.is_empty()) {
+        let given = PathBuf::from(&raw);
+        let file = if given.is_dir() { given.join("runtime.c") } else { given.clone() };
+        return if file.is_file() {
+            Ok(file)
+        } else {
+            Err(format!("TINOX_RUNTIME_PATH={} does not point to runtime.c or a directory containing it", given.display()))
+        };
+    }
+    if let Some(prefix) = std::env::current_exe().ok().and_then(|exe| exe.parent().and_then(Path::parent).map(Path::to_path_buf)) {
+        let relocatable = prefix.join("share/tinox/runtime.c");
+        if relocatable.is_file() {
+            return Ok(relocatable);
+        }
+    }
     let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/runtime.c");
     if dev.is_file() {
-        return Some(dev);
+        return Ok(dev);
     }
     let system = PathBuf::from("/usr/share/tinox/runtime.c");
     if system.is_file() {
-        return Some(system);
+        return Ok(system);
     }
-    None
+    Err("Cannot find runtime.c (set TINOX_RUNTIME_PATH, or install it at <prefix>/share/tinox/runtime.c next to the compiler, or /usr/share/tinox/runtime.c)".to_string())
+}
+
+fn runtime_c_path() -> Option<PathBuf> {
+    runtime_c_path_result().ok()
 }
 
 /// Returns installed dependency directories plus any coordinate-resolved
@@ -5385,9 +5402,7 @@ struct RuntimeOptions {
 fn runtime_options() -> Result<RuntimeOptions, String> {
     // Reject unknown/non-native targets before any artifact is produced (#310).
     let target = tinox_codegen::target::Target::resolve()?;
-    let runtime_src = runtime_c_path().ok_or_else(|| {
-        "Cannot find runtime.c (checked the dev checkout path and /usr/share/tinox/runtime.c)".to_string()
-    })?;
+    let runtime_src = runtime_c_path_result()?;
     let runtime_src = runtime_src.to_string_lossy().into_owned();
 
     let db_cfg = read_database_config();
