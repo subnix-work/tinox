@@ -25,9 +25,9 @@
  * out a connection with unread bytes.
  *
  * v1 scope, deliberately not covered (see issue #135):
- *   - Pooling lives in RedisPool (#544); no Sentinel/Cluster.
- *   - No Redis Cluster/Sentinel, no pub/sub (SUBSCRIBE/PUBLISH) --
- *     single-node, request/response commands only.
+ *   - Pooling lives in RedisPool (#544), Pub/Sub in RedisSubscriber
+ *     (#546, its own connection); no Redis Cluster/Sentinel --
+ *     single-node, request/response commands only here.
  *   - No Memcached client in this pass -- different wire protocol, no
  *     shared code with RESP2 beyond the raw socket layer, an explicit
  *     separately-scoped follow-up if needed.

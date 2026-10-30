@@ -1,0 +1,32 @@
+module tinox.core.redis
+
+namespace tinox.core.redis
+{
+    /*
+     * One result of RedisSubscriber.next(). kind:
+     *   0 = timeout (nothing arrived; the subscription is intact)
+     *   1 = message (topic and payload are set)
+     *   2 = closed or failed (the subscriber is no longer usable; see reconnect())
+     */
+    class RedisMessage
+    {
+        var kind: Int64
+        var topic: String
+        var payload: String
+
+        fn isMessage() -> Bool
+        {
+            return this.kind == 1
+        }
+
+        fn isTimeout() -> Bool
+        {
+            return this.kind == 0
+        }
+
+        fn isClosed() -> Bool
+        {
+            return this.kind == 2
+        }
+    }
+}

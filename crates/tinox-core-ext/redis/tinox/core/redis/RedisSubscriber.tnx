@@ -1,0 +1,251 @@
+module tinox.core.redis
+
+import tinox.core.socket
+
+namespace tinox.core.redis
+{
+    extern fn httpConnWaitReadable(conn: Int64, ms: Int64) -> Int64
+
+    /*
+     * Redis Pub/Sub on its OWN connection, separate from RedisClient/RedisPool
+     * (a subscribed RESP2 connection only accepts (UN)SUBSCRIBE-family commands
+     * and receives pushed messages, so it can never be a pooled command
+     * connection).
+     *
+     *   const sub: RedisSubscriber = RedisSubscriber::connect("localhost", 6379)
+     *   sub.subscribe(["news"])
+     *   const msg: RedisMessage = sub.next(1000)
+     *   if msg.isMessage() { println(msg.topic + ": " + msg.payload) }
+     *   sub.close()
+     *
+     * Delivery: at-most-once, in publish order per channel, nothing is stored.
+     * Messages published while the subscriber is disconnected are lost; Pub/Sub
+     * is not durable messaging. Buffering is pull-based and bounded: only one
+     * message (at most maxPayload bytes) is held in this process; a slow
+     * subscriber leaves the rest in the kernel socket buffer, and a server that
+     * enforces client-output-buffer-limit disconnects it (next() then reports
+     * closed). One thread must own next()/subscribe(); close() may be called
+     * from another thread and wakes a blocked next() promptly.
+     */
+    class RedisSubscriber
+    {
+        var host: String
+        var port: Int64
+        var conn: Int64
+        var channels: List<String>
+        var errorMessage: String
+        var maxPayload: Int64
+        var badElement: Bool
+
+        fn connect(host: String, port: Int64) -> RedisSubscriber
+        {
+            var sub: RedisSubscriber = RedisSubscriber { host: host, port: port, conn: -1, channels: [], errorMessage: "", maxPayload: 1048576, badElement: false }
+            sub.dial()
+            return sub
+        }
+
+        fn dial() -> Bool
+        {
+            const fd = socketCreateTcp()
+            if (!socketConnect(fd, this.host, this.port)) {
+                socketClose(fd)
+                this.conn = -1
+                this.errorMessage = "connect failed"
+                return false
+            }
+            this.conn = httpConnFromFd(fd)
+            this.errorMessage = ""
+            return true
+        }
+
+        fn sendCommand(args: List<String>) -> Nothing
+        {
+            var out: String = "*" + args.len().toString() + "\r\n"
+            var i: Int64 = 0
+            while i < args.len() {
+                out = out + "$" + args[i].len().toString() + "\r\n" + args[i] + "\r\n"
+                i = i + 1
+            }
+            httpConnSendRaw(this.conn, out)
+        }
+
+        // One element of a pushed array: bulk string or integer. Sets badElement on failure.
+        fn readElement() -> String
+        {
+            const line = httpConnReadLine(this.conn)
+            if (line.startsWith(":")) {
+                return line.substring(1, line.len())
+            }
+            if (!line.startsWith("$") || line == "$-1") {
+                this.badElement = true
+                return ""
+            }
+            const len = line.substring(1, line.len()).toInt()
+            if (len < 0 || len > this.maxPayload) {
+                this.badElement = true
+                return ""
+            }
+            const bytes = httpConnReadN(this.conn, len + 2)
+            if (bytes.len() < len + 2) {
+                this.badElement = true
+                return ""
+            }
+            var value: List<Int64> = []
+            var i: Int64 = 0
+            while i < len {
+                value.push(bytes[i])
+                i = i + 1
+            }
+            return tinoxBytesToString(value)
+        }
+
+        // Reads one pushed array (kind, topic, third) or marks the subscriber failed.
+        fn readPush() -> List<String>
+        {
+            var parts: List<String> = []
+            const header = httpConnReadLine(this.conn)
+            if (!header.startsWith("*")) {
+                this.fail("connection closed or malformed push")
+                return parts
+            }
+            const n = header.substring(1, header.len()).toInt()
+            var i: Int64 = 0
+            while i < n {
+                this.badElement = false
+                const e = this.readElement()
+                if (this.badElement) {
+                    this.fail("malformed or oversized push element")
+                    return []
+                }
+                parts.push(e)
+                i = i + 1
+            }
+            return parts
+        }
+
+        fn fail(message: String) -> Nothing
+        {
+            this.errorMessage = message
+            httpConnClose(this.conn)
+            this.conn = -1
+        }
+
+        fn isOpen() -> Bool
+        {
+            return this.conn > 0
+        }
+
+        // Subscribes and waits for one confirmation per channel.
+        fn subscribe(names: List<String>) -> Bool
+        {
+            if (this.conn <= 0 || names.len() == 0) {
+                return false
+            }
+            var args: List<String> = ["SUBSCRIBE"]
+            var i: Int64 = 0
+            while i < names.len() {
+                args.push(names[i])
+                i = i + 1
+            }
+            this.sendCommand(args)
+            var confirmed: Int64 = 0
+            while confirmed < names.len() {
+                const push = this.readPush()
+                if (push.len() < 3) {
+                    return false
+                }
+                if (push[0] == "subscribe") {
+                    this.channels.push(push[1])
+                    confirmed = confirmed + 1
+                }
+            }
+            return true
+        }
+
+        fn unsubscribe(names: List<String>) -> Bool
+        {
+            if (this.conn <= 0 || names.len() == 0) {
+                return false
+            }
+            var args: List<String> = ["UNSUBSCRIBE"]
+            var i: Int64 = 0
+            while i < names.len() {
+                args.push(names[i])
+                i = i + 1
+            }
+            this.sendCommand(args)
+            var confirmed: Int64 = 0
+            while confirmed < names.len() {
+                const push = this.readPush()
+                if (push.len() < 3) {
+                    return false
+                }
+                if (push[0] == "unsubscribe") {
+                    var kept: List<String> = []
+                    var k: Int64 = 0
+                    while k < this.channels.len() {
+                        if (this.channels[k] != push[1]) {
+                            kept.push(this.channels[k])
+                        }
+                        k = k + 1
+                    }
+                    this.channels = kept
+                    confirmed = confirmed + 1
+                }
+            }
+            return true
+        }
+
+        // Waits up to timeoutMs for the next message. Nothing is consumed on timeout.
+        fn next(timeoutMs: Int64) -> RedisMessage
+        {
+            if (this.conn <= 0) {
+                return RedisMessage { kind: 2, topic: "", payload: "" }
+            }
+            const ready = httpConnWaitReadable(this.conn, timeoutMs)
+            if (ready == 0) {
+                return RedisMessage { kind: 0, topic: "", payload: "" }
+            }
+            if (ready < 0) {
+                this.fail("connection closed")
+                return RedisMessage { kind: 2, topic: "", payload: "" }
+            }
+            const push = this.readPush()
+            if (push.len() < 3) {
+                return RedisMessage { kind: 2, topic: "", payload: "" }
+            }
+            if (push[0] == "message") {
+                return RedisMessage { kind: 1, topic: push[1], payload: push[2] }
+            }
+            // Other pushes (stray (un)subscribe confirmations) are not messages.
+            return RedisMessage { kind: 0, topic: "", payload: "" }
+        }
+
+        // Re-dials and re-subscribes to the channels this subscriber held.
+        // Messages published in between are lost (at-most-once).
+        fn reconnect() -> Bool
+        {
+            if (this.conn > 0) {
+                httpConnClose(this.conn)
+                this.conn = -1
+            }
+            const wanted = this.channels
+            this.channels = []
+            if (!this.dial()) {
+                this.channels = wanted
+                return false
+            }
+            if (wanted.len() == 0) {
+                return true
+            }
+            return this.subscribe(wanted)
+        }
+
+        fn close() -> Nothing
+        {
+            const c = this.conn
+            this.conn = -1
+            httpConnClose(c)
+        }
+    }
+}
