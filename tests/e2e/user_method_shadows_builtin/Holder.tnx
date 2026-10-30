@@ -1,0 +1,5 @@
+import Span
+class Holder {
+    var span: Span
+    fn get() -> Span { return this.span }
+}

@@ -1,0 +1,3 @@
+class Span {
+    fn contains(position: Point) -> Bool { return position.x >= 0 }
+}

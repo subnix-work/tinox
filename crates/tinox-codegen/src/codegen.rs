@@ -11394,7 +11394,12 @@ tr_done_{idx}:"#).unwrap();
                     "decode","hash","md5","sha256","base64Encode","base64Decode","urlEncode",
                     "urlDecode","isNumeric","isEmpty","isBlank","lines","words","reverse",
                     "truncate","ellipsis","mask","redact","normalize"];
-                let is_str_method = str_methods.contains(&method.as_str());
+                // A method declared by the receiver's own class always wins over a
+                // builtin of the same name (user `contains` on a class, #576).
+                let user_class_method = declared_type.as_deref().is_some_and(|cn| {
+                    self.struct_layouts.contains_key(cn) && self.method_ret_types.contains_key(&format!("{}_{}", cn, method))
+                });
+                let is_str_method = str_methods.contains(&method.as_str()) && !user_class_method;
                 let (obj_ptr, obj_ty) = if obj_ty == "i64" && is_str_method {
                     let s = self.temp();
                     writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", s, obj_ptr).unwrap();
@@ -11402,7 +11407,7 @@ tr_done_{idx}:"#).unwrap();
                 } else {
                     (obj_ptr, obj_ty)
                 };
-                if obj_ty == "i8*" {
+                if obj_ty == "i8*" && !user_class_method {
                     match method.as_str() {
                         "len" => {
                             let result = self.temp();

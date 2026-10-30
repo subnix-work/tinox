@@ -1,0 +1,1 @@
+class Point { var x: Int64 }
