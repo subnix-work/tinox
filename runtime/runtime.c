@@ -34,6 +34,7 @@
 #include <sys/uio.h>
 #include <signal.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <spawn.h>
 #include <time.h>
@@ -1561,7 +1562,10 @@ typedef struct {
 // Detected CPUs = min(sched affinity/cpuset, cgroup CPU quota), so a
 // container started with `--cpus=1.5` or a `taskset` mask no longer sizes
 // its pools by the host's online core count.
-#define TINOX_MAX_CONNECTIONS_CEILING 4096 // EPOLL_MAX_CONNS slot table, see below
+// Upper bound for TINOX_MAX_CONNECTIONS. The per-worker slot table is indexed by fd and grown
+// on demand (see epoll_slot_reserve), so this only caps what a configuration may ask for;
+// the default stays 4096.
+#define TINOX_MAX_CONNECTIONS_CEILING 1000000
 
 typedef struct {
     int64_t cpus;
@@ -1698,6 +1702,22 @@ static void tinox_limits_init_once(void) {
     g_limits.cpu_source = source;
     g_limits.http_workers = tinox_limit_env("TINOX_HTTP_WORKERS", g_limits.cpus, 1, 256);
     g_limits.max_connections = tinox_limit_env("TINOX_MAX_CONNECTIONS", 4096, 1, TINOX_MAX_CONNECTIONS_CEILING);
+    if (g_limits.max_connections > 4096) {
+        // Every connection is one fd (plus listeners/files): make sure the process may open them,
+        // raising the soft limit up to the hard limit, and refuse to start with a budget the
+        // kernel will not honour rather than failing later at accept().
+        struct rlimit rl;
+        rlim_t need = (rlim_t)g_limits.max_connections + 256;
+        if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < need) {
+            rlim_t want = (rl.rlim_max == RLIM_INFINITY || rl.rlim_max >= need) ? need : rl.rlim_max;
+            rl.rlim_cur = want;
+            if (setrlimit(RLIMIT_NOFILE, &rl) != 0 || want < need) {
+                fprintf(stderr, "tinox: TINOX_MAX_CONNECTIONS=%lld needs about %llu file descriptors but RLIMIT_NOFILE allows %llu; raise `ulimit -n` or lower the budget\n",
+                        (long long)g_limits.max_connections, (unsigned long long)need, (unsigned long long)want);
+                exit(1);
+            }
+        }
+    }
     g_limits.max_tasks = tinox_limit_env("TINOX_MAX_TASKS", 4096, 1, 1000000);
     g_limits.max_ws_connections = tinox_limit_env("TINOX_MAX_WS_CONNECTIONS", 1024, 1, 1000000);
     g_limits.queue_wait_ms = tinox_limit_env("TINOX_QUEUE_WAIT_MS", 0, 0, 600000);
@@ -9286,7 +9306,6 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
 }
 
 // Per-connection state for epoll-based multi-connection handler
-#define EPOLL_MAX_CONNS 4096
 #define EPOLL_KEEP_ALIVE_MS 500      // close genuinely idle keep-alive connections after 500ms
 #define EPOLL_FIRST_REQUEST_GRACE_MS 5000 // see `served` below; matches the SO_RCVTIMEO
                                           // "zombie guard" in the accept path, so a
@@ -9301,8 +9320,23 @@ typedef struct {
                            // separately from a genuinely-idle keep-alive connection
 } EpollConnSlot;
 
-static __thread EpollConnSlot g_epoll_slots[EPOLL_MAX_CONNS];
+// Slot table indexed directly by fd (no modulo, so two live fds can never share a slot), grown on
+// demand to the next power of two above the highest fd seen. Memory cost is 24 bytes per slot per
+// worker thread: 1M open fds * 24 B = ~24 MB per worker.
+static __thread EpollConnSlot* g_epoll_slots = NULL;
+static __thread int           g_epoll_cap = 0;
 static __thread int           g_epoll_nconns = 0;  // number of active client connections
+
+static void epoll_slot_reserve(int fd) {
+    if (fd < g_epoll_cap) return;
+    int cap = g_epoll_cap ? g_epoll_cap : 1024;
+    while (cap <= fd) cap *= 2;
+    EpollConnSlot* grown = realloc(g_epoll_slots, (size_t)cap * sizeof(EpollConnSlot));
+    if (!grown) { fprintf(stderr, "tinox: out of memory growing the connection table\n"); exit(1); }
+    for (int i = g_epoll_cap; i < cap; i++) { grown[i].fd = -1; grown[i].last_ms = 0; grown[i].served = 0; }
+    g_epoll_slots = grown;
+    g_epoll_cap = cap;
+}
 
 static uint64_t epoll_now_ms(void) {
     struct timespec ts;
@@ -9328,7 +9362,8 @@ static uint64_t epoll_now_ms(void) {
 // concurrent burst. Passing the loop's own `now_ms` through removes the
 // possibility of two inconsistent clock reads within one iteration entirely.
 static void epoll_slot_add(int fd, uint64_t now_ms) {
-    int idx = fd % EPOLL_MAX_CONNS;
+    epoll_slot_reserve(fd);
+    int idx = fd;
     if (g_epoll_slots[idx].fd < 0) g_epoll_nconns++;
     else atomic_fetch_sub(&g_open_conns, 1); // slot collision: that fd is already counted
     g_epoll_slots[idx].fd = fd;
@@ -9337,7 +9372,8 @@ static void epoll_slot_add(int fd, uint64_t now_ms) {
 }
 
 static void epoll_slot_remove(int fd) {
-    int idx = fd % EPOLL_MAX_CONNS;
+    if (fd < 0 || fd >= g_epoll_cap) return;
+    int idx = fd;
     if (g_epoll_slots[idx].fd >= 0) {
         g_epoll_nconns--;
         atomic_fetch_sub(&g_open_conns, 1);
@@ -9348,8 +9384,7 @@ static void epoll_slot_remove(int fd) {
 static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
     thread_local_init();
 
-    // Initialize slot table
-    for (int i = 0; i < EPOLL_MAX_CONNS; i++) g_epoll_slots[i].fd = -1;
+    epoll_slot_reserve(1023);
 
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd < 0) { perror("epoll_create1"); return; }
@@ -9412,7 +9447,7 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
                 int keep_alive = 0;
                 tinox_handle_one(srv, (int64_t)fd, &keep_alive);
                 if (keep_alive) {
-                    int idx = fd % EPOLL_MAX_CONNS;
+                    int idx = fd;
                     g_epoll_slots[idx].last_ms = now_ms;
                     g_epoll_slots[idx].served = 1;
                 } else {
@@ -9446,7 +9481,7 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
         // not-yet-served case; only a genuinely idle, already-served
         // keep-alive connection uses the tight 500ms.
         if (g_epoll_nconns > 0) {
-            for (int i = 0; i < EPOLL_MAX_CONNS; i++) {
+            for (int i = 0; i < g_epoll_cap; i++) {
                 if (g_epoll_slots[i].fd < 0) continue;
                 uint64_t timeout_ms = g_epoll_slots[i].served
                     ? EPOLL_KEEP_ALIVE_MS
@@ -9460,13 +9495,16 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
             }
         }
     }
-    for (int i = 0; i < EPOLL_MAX_CONNS; i++) {
+    for (int i = 0; i < g_epoll_cap; i++) {
         if (g_epoll_slots[i].fd >= 0) {
             int fd = g_epoll_slots[i].fd;
             epoll_slot_remove(fd);
             close(fd);
         }
     }
+    free(g_epoll_slots);
+    g_epoll_slots = NULL;
+    g_epoll_cap = 0;
     g_epoll_nconns = 0;
     close(epfd);
 }
