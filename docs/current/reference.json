@@ -2,6 +2,15 @@
   "annotation_scope": "Validator targets and argument counts; acceptance alone does not guarantee runtime support. Descriptions may impose additional argument constraints.",
   "annotations": [
     {
+      "description": "@AfterEach — runs after every @Test of its class, even when it fails or throws",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "AfterEach",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "@Amqp091Consumer(host, port, vhost, user, pass, queue) — marks a class as an auto-run AMQP-0-9-1 receiver; the compiler generates a connect/open/qos/consume/nextMessage/ack loop as `main` that calls the class's @OnMessage method for each delivered message. Only valid when the file defines no `main` and has exactly one @Amqp091Consumer class.",
       "max_args": 6,
       "min_args": 6,
@@ -48,6 +57,33 @@
       ]
     },
     {
+      "description": "@BeforeEach — runs before every @Test of its class",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "BeforeEach",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
+      "description": "@Case(literal, ...) — one parameterized run of a @Test method; repeat for more cases",
+      "max_args": 8,
+      "min_args": 1,
+      "name": "Case",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
+      "description": "@CircuitBreaker(failureThreshold, openMs[, [\"ERROR_PREFIX\", ...][, probes]]) -- opens after consecutive eligible failures, half-open probes after openMs; rejected calls throw \"CIRCUIT_OPEN: ...\" (#527)",
+      "max_args": 4,
+      "min_args": 2,
+      "name": "CircuitBreaker",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "@Column[(\"col_name\")] — maps field to DB column",
       "max_args": 1,
       "min_args": 0,
@@ -84,6 +120,15 @@
       ]
     },
     {
+      "description": "@Cors([\"https://app.example\"], credentials, maxAgeSeconds[, [\"Allowed-Header\", ...]]) -- program-wide CORS policy: preflight answers, origin rejection, response headers (#529)",
+      "max_args": 4,
+      "min_args": 3,
+      "name": "Cors",
+      "targets": [
+        "Class"
+      ]
+    },
+    {
       "description": "@Counted[(\"label\")] — increments a Prometheus counter on each call",
       "max_args": 1,
       "min_args": 0,
@@ -91,6 +136,15 @@
       "targets": [
         "Function",
         "Method"
+      ]
+    },
+    {
+      "description": "@Csrf([\"https://extra-trusted.example\"]) -- rejects cookie-carrying unsafe requests (POST/PUT/PATCH/DELETE) whose Origin/Referer is not same-origin or trusted (#529)",
+      "max_args": 1,
+      "min_args": 0,
+      "name": "Csrf",
+      "targets": [
+        "Class"
       ]
     },
     {
@@ -116,6 +170,24 @@
       "max_args": 0,
       "min_args": 0,
       "name": "Entity",
+      "targets": [
+        "Class"
+      ]
+    },
+    {
+      "description": "@Error(\"CODE\"[, status]) — declares a checked error class (must have `var message: String`); with a status it also maps to that HTTP status",
+      "max_args": 2,
+      "min_args": 1,
+      "name": "Error",
+      "targets": [
+        "Class"
+      ]
+    },
+    {
+      "description": "@ErrorMap(\"CODE\", status) — maps handler errors thrown as \"CODE: message\" to an HTTP status and the structured error envelope; repeatable, program-wide",
+      "max_args": 2,
+      "min_args": 2,
+      "name": "ErrorMap",
       "targets": [
         "Class"
       ]
@@ -191,6 +263,15 @@
       "name": "Id",
       "targets": [
         "Field"
+      ]
+    },
+    {
+      "description": "Declares that repeating the method is safe; required for @Retry (#527)",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "Idempotent",
+      "targets": [
+        "Method"
       ]
     },
     {
@@ -438,6 +519,15 @@
       ]
     },
     {
+      "description": "@Retry(maxAttempts, backoffMs, [\"ERROR_PREFIX\", ...][, maxBackoffMs, jitterPercent, budgetMs]) -- bounded retry with exponential backoff for the listed failures; requires @Idempotent (#527)",
+      "max_args": 6,
+      "min_args": 3,
+      "name": "Retry",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "@Route(\"/path/:param\") -- on a `fn() -> Component` method inside a @TinoxUIApp class, registers it as that path's builder (Vaadin-style route dispatch). The class must declare `var currentRoute: String;`: the compiler seeds it from the browser's initial request path at WS connect time, and the app's own navigation (e.g. Component::link's onNavigate handler) is expected to assign it on every subsequent navigation -- the compiler re-dispatches off its current value on every render. Patterns may use `:name` path-parameter segments (RouteMatcher syntax); a matched `:name` is auto-assigned into a same-named String field on the class, if one exists, before the method runs. When the current route matches no @Route pattern, the class's plain @View method renders instead (fallback/404 case) -- @View stays required even when @Route is used. Also registers the HTTP shell at each literal @Route path so a hard reload/deep link doesn't 404.",
       "max_args": 1,
       "min_args": 1,
@@ -516,6 +606,15 @@
       "max_args": 1,
       "min_args": 0,
       "name": "Test",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
+      "description": "@Throws(ErrorClass, ...) — lists the @Error classes this method may throw",
+      "max_args": 16,
+      "min_args": 1,
+      "name": "Throws",
       "targets": [
         "Method"
       ]
@@ -760,6 +859,7 @@
     "fromCharCode": "(n: Any) -> String",
     "fromdateStr": "(s: String) -> Int64",
     "gcCollect": "() -> Nothing",
+    "gcStat": "(kind: Int64) -> Int64",
     "hmacSha256Bytes": "(data: List<Int64>, key: List<Int64>) -> List<Int64>",
     "hmacSha256Hash": "(data: String) -> String",
     "httpBody": "(v: Any) -> String",
@@ -771,6 +871,7 @@
     "httpConnReadN": "(conn: Int64, n: Int64) -> List<Int64>",
     "httpConnReadRequest": "(conn: Int64) -> String",
     "httpConnSendRaw": "(conn: Int64, data: String) -> Nothing",
+    "httpConnWaitReadable": "(conn: Int64, ms: Int64) -> Int64",
     "httpConnWriteBytes": "(conn: Int64, bytes: List<Int64>) -> Int64",
     "httpDelete": "(url: String) -> HttpResponse",
     "httpGet": "(url: String) -> HttpResponse",
@@ -860,6 +961,10 @@
     "regexMatchGroups": "(pattern: String, subject: String, offset: Int64, icase: Int64) -> Array",
     "regexReplaceAll": "(s: String, p: String) -> String",
     "regexSplit": "(s: String, p: String) -> List<String>",
+    "resilienceAllow": "(site: String, threshold: Int64, openMs: Int64, probes: Int64, eligible: String) -> Int64",
+    "resilienceNow": "() -> Int64",
+    "resilienceRecord": "(site: String, ticket: Int64, failed: Int64, err: String, threshold: Int64, eligible: String) -> Nothing",
+    "resilienceRetry": "(site: String, attempt: Int64, err: String, eligible: String, maxAttempts: Int64, backoffMs: Int64, maxBackoffMs: Int64, jitterPct: Int64, budgetMs: Int64, startMs: Int64) -> Int64",
     "reverse": "(arr: Array) -> Array",
     "round": "(x: Any) -> Float64",
     "rwlockNew": "() -> Int64",
