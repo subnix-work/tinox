@@ -244,6 +244,56 @@ namespace tinox.core.redis
             return RedisReply { kind: 3, text: "unsupported or malformed reply" }
         }
 
+        /*
+         * Command whose reply is a flat array of bulk strings / integers
+         * (e.g. SENTINEL get-master-addr-by-name). Returns [] for an empty
+         * or nil array, a Redis error reply (the client stays healthy) or a
+         * failure (the client becomes unhealthy); nested arrays are a
+         * protocol failure because their remainder would stay unread.
+         */
+        fn commandList(args: List<String>) -> List<String>
+        {
+            var out: List<String> = []
+            if (this.conn <= 0 || !this.healthy) {
+                return out
+            }
+            this.sendCommand(args)
+            const header = this.readLine()
+            if (!header.startsWith("*")) {
+                if (header != "" && !header.startsWith("-")) {
+                    this.healthy = false
+                }
+                return out
+            }
+            const n = header.substring(1, header.len()).toInt()
+            var i: Int64 = 0
+            while i < n {
+                const line = this.readLine()
+                if (line.startsWith(":")) {
+                    out.push(line.substring(1, line.len()))
+                } else if (line.startsWith("$") && line != "$-1") {
+                    const len = line.substring(1, line.len()).toInt()
+                    const bytes = httpConnReadN(this.conn, len + 2)
+                    if (len < 0 || bytes.len() < len + 2) {
+                        this.healthy = false
+                        return []
+                    }
+                    var value: List<Int64> = []
+                    var k: Int64 = 0
+                    while k < len {
+                        value.push(bytes[k])
+                        k = k + 1
+                    }
+                    out.push(tinoxBytesToString(value))
+                } else {
+                    this.healthy = false
+                    return []
+                }
+                i = i + 1
+            }
+            return out
+        }
+
         // GET without a shared status flag: nil, empty value, value and error are distinct.
         fn getReply(key: String) -> RedisReply
         {

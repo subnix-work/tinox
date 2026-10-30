@@ -1,0 +1,83 @@
+module tinox.core.redis
+
+namespace tinox.core.redis
+{
+    /*
+     * Sentinel-based master discovery (#545), the one narrow deployment mode
+     * supported besides single-node:
+     *
+     *   const client: RedisClient = RedisSentinel::connectMaster(["10.0.0.5:26379", "10.0.0.6:26379"], "mymaster")
+     *   if client.conn <= 0 { throw client.errorMessage }
+     *
+     * Each sentinel is asked in the given order; the first that names a master
+     * wins. The address is only trusted after the candidate itself reports
+     * `role:master` (INFO replication), so a stale answer pointing at a demoted
+     * node is rejected instead of being written to.
+     *
+     * Failover contract: this library NEVER retries a command. When a master
+     * fails the connection becomes unhealthy (RedisClient.healthy == false) and
+     * the caller decides whether the command may be repeated, then calls
+     * connectMaster again; an acknowledged write is therefore never silently
+     * duplicated, and an unacknowledged one is never silently dropped. The
+     * sentinel list is the caller's fixed, bounded input; nothing is cached.
+     *
+     * Not supported (by design, first mode): Redis Cluster (MOVED/ASK routing),
+     * TLS/AUTH towards sentinels, and replica reads.
+     */
+    class RedisSentinel
+    {
+        var host: String
+        var port: Int64
+
+        fn address(sentinel: String) -> RedisSentinel
+        {
+            const cut = sentinel.lastIndexOf(":")
+            if (cut <= 0 || cut >= sentinel.len() - 1) {
+                return RedisSentinel { host: "", port: -1 }
+            }
+            return RedisSentinel { host: sentinel.substring(0, cut), port: sentinel.substring(cut + 1, sentinel.len()).toInt() }
+        }
+
+        // The master address as "host:port", or "" when no sentinel answered.
+        fn resolveMaster(sentinels: List<String>, masterName: String) -> String
+        {
+            var i: Int64 = 0
+            while i < sentinels.len() {
+                const at: RedisSentinel = RedisSentinel::address(sentinels[i])
+                if (at.port > 0) {
+                    const probe: RedisClient = RedisClient::connect(at.host, at.port)
+                    if (probe.conn > 0) {
+                        const reply: List<String> = probe.commandList(["SENTINEL", "get-master-addr-by-name", masterName])
+                        probe.close()
+                        if (reply.len() == 2) {
+                            return reply[0] + ":" + reply[1]
+                        }
+                    }
+                }
+                i = i + 1
+            }
+            return ""
+        }
+
+        fn connectMaster(sentinels: List<String>, masterName: String) -> RedisClient
+        {
+            const found = RedisSentinel::resolveMaster(sentinels, masterName)
+            if (found == "") {
+                return RedisClient { conn: -1, errorMessage: "no sentinel could name a master", getFound: false, incrOk: false, healthy: false, pooled: false }
+            }
+            const at: RedisSentinel = RedisSentinel::address(found)
+            const client: RedisClient = RedisClient::connect(at.host, at.port)
+            if (client.conn <= 0) {
+                return client
+            }
+            const role: RedisReply = client.command(["INFO", "replication"])
+            if (!role.isValue() || !role.text.contains("role:master")) {
+                client.close()
+                client.conn = -1
+                client.errorMessage = "sentinel-reported master is not a master"
+                return client
+            }
+            return client
+        }
+    }
+}
