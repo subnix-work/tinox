@@ -194,7 +194,8 @@ fn verify(out: &str, server: &Server, label: &str) {
         "{out}"
     );
     let posts = server.reqs().iter().filter(|r| r.starts_with("REQ POST /echo")).count();
-    assert!(posts <= 1, "POST must never be replayed: {:?}", server.reqs());
+    // One POST from the serial block plus at most one from the hang-up case.
+    assert!(posts <= 2, "POST must never be replayed: {:?}", server.reqs());
     assert_eq!(field(out, "load", "ok="), 80, "{out}");
     assert!(field(out, "load", "opened=") <= 3, "pool limit must hold: {out}");
     assert_eq!(field(out, "load", "busy="), 0, "{out}");
