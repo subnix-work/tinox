@@ -63,19 +63,54 @@ namespace tinox.core.redis
          */
         fn connect(host: String, port: Int64) -> RedisClient
         {
+            return RedisClient::open(host, port, false, false)
+        }
+
+        /*
+         * TLS connection (rediss://). `verify` checks the certificate chain AND that it matches
+         * `host` against the system trust store (or the CA set with Http::setTlsCaCertFile);
+         * verify=false is the explicit opt-out for self-signed test certificates. conn is -1 and
+         * errorMessage says "TLS handshake failed" when the handshake or verification fails.
+         */
+        fn connectTls(host: String, port: Int64, verify: Bool) -> RedisClient
+        {
+            return RedisClient::open(host, port, true, verify)
+        }
+
+        fnc open(host: String, port: Int64, tls: Bool, verify: Bool) -> RedisClient
+        {
             const fd = socketCreateTcp()
             if (!socketConnect(fd, host, port)) {
                 socketClose(fd)
                 return RedisClient { conn: -1, errorMessage: "connect failed", getFound: false, incrOk: false, healthy: true, pooled: false }
             }
-            var client: RedisClient = RedisClient { conn: httpConnFromFd(fd), errorMessage: "", getFound: false, incrOk: false, healthy: true, pooled: false }
-            if (!client.ping()) {
+            var handle: Int64 = 0
+            if (tls) {
+                handle = httpConnFromFdTls(fd, host, verify)
+                if (handle <= 0) {
+                    socketClose(fd)
+                    return RedisClient { conn: -1, errorMessage: "TLS handshake failed", getFound: false, incrOk: false, healthy: true, pooled: false }
+                }
+            } else {
+                handle = httpConnFromFd(fd)
+            }
+            var client: RedisClient = RedisClient { conn: handle, errorMessage: "", getFound: false, incrOk: false, healthy: true, pooled: false }
+            // A server that requires AUTH answers PING with "-NOAUTH ..." -- that still proves it
+            // speaks the protocol; the caller authenticates next (auth() / RedisPool.authenticate).
+            const pong = RedisClient::pingReply(client)
+            if (!(pong == "+PONG" || pong.startsWith("-NOAUTH"))) {
                 httpConnClose(client.conn)
                 client.conn = -1
                 client.healthy = false
                 client.errorMessage = "PING failed"
             }
             return client
+        }
+
+        fnc pingReply(client: RedisClient) -> String
+        {
+            client.sendCommand(["PING"])
+            return client.readLine()
         }
 
         fn ping() -> Bool
@@ -251,6 +286,23 @@ namespace tinox.core.redis
          * failure (the client becomes unhealthy); nested arrays are a
          * protocol failure because their remainder would stay unread.
          */
+        // AUTH [username] password (an empty username sends the single-argument form). Returns false
+        // and sets errorMessage when the server rejects it; the connection stays usable.
+        fn auth(username: String, password: String) -> Bool
+        {
+            var args: List<String> = ["AUTH"]
+            if (username != "") {
+                args.push(username)
+            }
+            args.push(password)
+            const r = this.command(args)
+            if (r.isValue()) {
+                return true
+            }
+            this.errorMessage = "AUTH failed: " + r.text
+            return false
+        }
+
         fn commandList(args: List<String>) -> List<String>
         {
             var out: List<String> = []

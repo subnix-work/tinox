@@ -2016,6 +2016,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @httpConnReadN(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpConnWriteBytes(i64, i64*)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnClose(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_config_validate(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @resilienceNow()").unwrap();
         writeln!(&mut self.ir, "declare i64 @resilienceAllow(i8*, i64, i64, i64, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @resilienceRecord(i8*, i64, i64, i8*, i64, i8*)").unwrap();
@@ -5392,6 +5393,17 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.lambda_ir, "define i32 @tinox_main() {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
 
+        // Aggregated @Config check (#308): every required key present and every int/bool value
+        // parseable is verified before anything starts, with ALL problems reported at once.
+        if !self.config_fields.is_empty() {
+            let mut table = String::new();
+            for f in &self.config_fields {
+                let kind = match f.field_llvm_type.as_str() { "i8*" => "s", "i1" => "b", _ => "i" };
+                table.push_str(&format!("{}\t{}\t{}\n", f.config_key, kind, if f.has_default { 0 } else { 1 }));
+            }
+            let table_ptr = self.emit_lambda_string_literal(&table);
+            writeln!(&mut self.lambda_ir, "  call void @tinox_config_validate(i8* {table_ptr})").unwrap();
+        }
         self.emit_service_bootstrap_start(handles.len());
 
         // t0: captured before anything else runs, so the elapsed time

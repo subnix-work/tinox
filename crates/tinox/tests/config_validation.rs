@@ -64,3 +64,32 @@ fn missing_required_and_malformed_values_fail_startup_without_echoing_the_value(
     assert!(err.contains("not a valid boolean"), "{err}");
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn all_problems_are_reported_together_before_anything_runs() {
+    // Main never constructs Settings, yet the bad configuration still stops startup, and every
+    // problem is listed (not just the first).
+    let root = std::env::temp_dir().join(format!("tinox-config-agg-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("tinox.toml"), format!("[package]\nname = \"cfg\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION"))).unwrap();
+    fs::write(
+        root.join("Settings.tnx"),
+        "class Settings {\n    @Config(\"app.port\") var port: Int64\n    @Config(\"app.limit\") var limit: Int64 = 5\n    @Config(\"app.debug\") var debug: Bool = false\n    @Config(\"app.secret\") var secret: String\n}\n",
+    )
+    .unwrap();
+    fs::write(root.join("Main.tnx"), "import Settings\nclass Main {\n    fnc main() -> Int32 {\n        println(\"started\")\n        return 0\n    }\n}\n").unwrap();
+    fs::write(root.join("application.properties"), "app.limit=oops\napp.debug=maybe\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "Main.tnx", "-o", "cfg"]).current_dir(&root).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let (ok, stdout, err) = run(&root, &root.join("cfg"), &[]);
+    assert!(!ok && !stdout.contains("started"), "{stdout} {err}");
+    for needle in ["'app.port' is required", "'app.secret' is required", "'app.limit' is not a valid integer", "'app.debug' is not a valid boolean", "4 configuration problem(s)"] {
+        assert!(err.contains(needle), "missing `{needle}` in:\n{err}");
+    }
+    assert!(!err.contains("oops") && !err.contains("maybe"), "values must not be echoed: {err}");
+    // Fixing the configuration lets it start.
+    let (ok, stdout, err) = run(&root, &root.join("cfg"), &[("APP_PORT", "1"), ("APP_SECRET", "s"), ("APP_LIMIT", "3"), ("APP_DEBUG", "true")]);
+    assert!(ok && stdout == "started", "{stdout} {err}");
+    let _ = fs::remove_dir_all(root);
+}

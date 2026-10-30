@@ -208,3 +208,49 @@ fn headers_stay_with_their_client_and_a_success_is_not_a_failure() {
     assert!(requests[3].contains("payload"), "{requests:?}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+const MAIN_TLS: &str = r#"import tinox.core.http
+
+class Main
+{
+    fnc probe(label: String, client: HttpClient, url: String) -> Nothing {
+        const t0 = now()
+        const r: HttpClientResponse = client.get(url)
+        const ms = now() - t0
+        println(label + " failed=" + r.failed().toString() + " ms=" + ms.toString() + " err=" + r.error())
+    }
+
+    fnc main() -> Int32 {
+        Main::probe("idle", HttpClient::create().timeouts(2000, 300, 0), "https://127.0.0.1:__STALL__/x")
+        Main::probe("total", HttpClient::create().timeouts(2000, 0, 400), "https://127.0.0.1:__STALL__/x")
+        taskSetDeadline(300)
+        Main::probe("task", HttpClient::create().timeouts(0, 0, 0), "https://127.0.0.1:__STALL__/x")
+        return 0
+    }
+}
+"#;
+
+#[test]
+fn a_peer_that_never_answers_the_tls_handshake_is_bounded() {
+    let stall = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = stall.local_addr().unwrap().port();
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let held2 = held.clone();
+    std::thread::spawn(move || {
+        for conn in stall.incoming().flatten() {
+            held2.lock().unwrap().push(conn); // accepts the TCP connection, never answers the ClientHello
+        }
+    });
+    let dir = project("tls-stall", &MAIN_TLS.replace("__STALL__", &port.to_string()));
+    let out = run(&dir);
+    let line = |label: &str| out.lines().find(|l| l.starts_with(&format!("{label} "))).unwrap_or_else(|| panic!("no `{label}` line in:\n{out}")).to_string();
+    let ms = |l: &str| field(l, "ms=").parse::<u64>().unwrap();
+    let idle = line("idle");
+    assert_eq!(field(&idle, "failed="), "true", "{idle}");
+    assert!((250..900).contains(&ms(&idle)) && idle.contains("TLS handshake timed out"), "{idle}");
+    let total = line("total");
+    assert!((350..1000).contains(&ms(&total)) && total.contains("total deadline"), "{total}");
+    let task = line("task");
+    assert!(ms(&task) < 1200 && task.contains("cancelled"), "task deadline must stop a stalled handshake: {task}");
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -7686,9 +7686,34 @@ static int http_conn_open(TinoxHttpConn* c, const char* host, int port, int is_h
         SSL_set1_host(ssl, host); // hostname must match the peer certificate
     }
     SSL_set_fd(ssl, fd);
-    if (SSL_connect(ssl) <= 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) snprintf(clk->error, sizeof(clk->error), "TLS handshake timed out");
-        else if (!clk->error[0]) snprintf(clk->error, sizeof(clk->error), "TLS handshake failed");
+    // Handshake on a non-blocking socket, polled in short slices so the idle deadline, the total
+    // deadline and task cancellation all stop it (a silent peer must not hang a cancelled task).
+    int hs_flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, hs_flags | O_NONBLOCK);
+    int64_t hs_start = http_clock_ms();
+    int hs_ok = 0;
+    for (;;) {
+        int rc = SSL_connect(ssl);
+        if (rc == 1) { hs_ok = 1; break; }
+        int want = SSL_get_error(ssl, rc);
+        if (want != SSL_ERROR_WANT_READ && want != SSL_ERROR_WANT_WRITE) {
+            if (!clk->error[0]) snprintf(clk->error, sizeof(clk->error), "TLS handshake failed");
+            break;
+        }
+        int64_t budget = http_budget_ms(clk, 0);
+        if (budget == 0) break; // total deadline / cancellation (clk->error set)
+        if (clk->read_ms > 0 && http_clock_ms() - hs_start >= clk->read_ms) {
+            snprintf(clk->error, sizeof(clk->error), "TLS handshake timed out after %lld ms", (long long)clk->read_ms);
+            break;
+        }
+        int64_t slice = 50;
+        if (budget > 0 && budget < slice) slice = budget;
+        struct pollfd hp = { .fd = fd, .events = want == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT };
+        int pr = poll(&hp, 1, (int)slice);
+        if (pr < 0 && errno != EINTR) { snprintf(clk->error, sizeof(clk->error), "TLS handshake failed"); break; }
+    }
+    fcntl(fd, F_SETFL, hs_flags);
+    if (!hs_ok) {
         SSL_free(ssl);
         if (use_custom_ctx) SSL_CTX_free(ctx);
         close(fd);
@@ -11836,6 +11861,45 @@ int64_t tinox_config_present(const char* key) {
 
 void tinox_config_missing(const char* key) {
     tinox_config_fail(key, "is required but not set (environment variable or application.properties)");
+}
+
+// Startup check over every @Config key ("key<TAB>kind<TAB>required\n", kind s/i/b): reports all
+// problems together, never echoes values, and exits non-zero before any component starts.
+void tinox_config_validate(const char* table) {
+    int problems = 0;
+    const char* p = table;
+    while (p && *p) {
+        const char* nl = strchr(p, '\n');
+        size_t n = nl ? (size_t)(nl - p) : strlen(p);
+        char line[512];
+        if (n >= sizeof(line)) n = sizeof(line) - 1;
+        memcpy(line, p, n);
+        line[n] = '\0';
+        p = nl ? nl + 1 : p + n;
+        char* t1 = strchr(line, '\t');
+        if (!t1) continue;
+        *t1 = '\0';
+        char kind = t1[1];
+        int required = t1[3] == '1';
+        const char* v = tinox_config_resolve(line);
+        if (!v) {
+            if (required) { fprintf(stderr, "tinox: invalid configuration: key '%s' is required but not set (environment variable or application.properties)\n", line); problems++; }
+            continue;
+        }
+        if (strlen(v) > TINOX_CONFIG_MAX_VALUE) { fprintf(stderr, "tinox: invalid configuration: key '%s' exceeds the 4096-byte value limit\n", line); problems++; continue; }
+        if (kind == 'i') {
+            int64_t out = 0;
+            if (!tinox_parse_int_checked(v, &out)) { fprintf(stderr, "tinox: invalid configuration: key '%s' is not a valid integer (empty, trailing characters or out of range)\n", line); problems++; }
+        } else if (kind == 'b') {
+            if (strcmp(v, "true") && strcmp(v, "1") && strcmp(v, "yes") && strcmp(v, "on") && strcmp(v, "false") && strcmp(v, "0") && strcmp(v, "no") && strcmp(v, "off")) {
+                fprintf(stderr, "tinox: invalid configuration: key '%s' is not a valid boolean (true/false/1/0/yes/no/on/off)\n", line); problems++;
+            }
+        }
+    }
+    if (problems) {
+        fprintf(stderr, "tinox: %d configuration problem(s); refusing to start\n", problems);
+        exit(1);
+    }
 }
 
 char* tinox_config_get(const char* key) {

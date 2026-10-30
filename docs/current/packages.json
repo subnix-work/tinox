@@ -674,11 +674,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/redis/1-2-0/docs.html",
+      "docs": "docs/tinox-core/redis/1-3-0/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/redis/tinox.toml",
       "name": "redis",
-      "version": "1.2.0"
+      "version": "1.3.0"
     },
     {
       "dependencies": [

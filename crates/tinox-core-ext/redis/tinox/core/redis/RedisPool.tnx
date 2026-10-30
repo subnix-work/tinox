@@ -27,13 +27,34 @@ namespace tinox.core.redis
         var lock: Mutex
         var permits: Semaphore
         var closed: Bool
+        var authUser: String
+        var authPassword: String
+        var tls: Bool
+        var tlsVerify: Bool
 
         fn create(host: String, port: Int64, max: Int64) -> RedisPool
         {
             if (max < 1) {
                 throw "RedisPool max must be at least 1"
             }
-            return RedisPool { host: host, port: port, max: max, idle: [], lock: Mutex::new(), permits: Semaphore::new(max), closed: false }
+            return RedisPool { host: host, port: port, max: max, idle: [], lock: Mutex::new(), permits: Semaphore::new(max), closed: false, authUser: "", authPassword: "", tls: false, tlsVerify: true }
+        }
+
+        // Every new connection of this pool authenticates with AUTH [user] password before it is
+        // handed out; a rejected AUTH fails the acquire (the connection is closed, the permit freed).
+        fn authenticate(user: String, password: String) -> RedisPool
+        {
+            this.authUser = user
+            this.authPassword = password
+            return this
+        }
+
+        // Connections use TLS; verify=false only for self-signed test certificates.
+        fn useTls(verify: Bool) -> RedisPool
+        {
+            this.tls = true
+            this.tlsVerify = verify
+            return this
         }
 
         fn failed(message: String) -> RedisClient
@@ -75,10 +96,18 @@ namespace tinox.core.redis
                 reused.pooled = true
                 return reused
             }
-            var fresh: RedisClient = RedisClient::connect(this.host, this.port)
+            var fresh: RedisClient = this.tls ? RedisClient::connectTls(this.host, this.port, this.tlsVerify) : RedisClient::connect(this.host, this.port)
             if (fresh.conn <= 0) {
                 Semaphore::release(this.permits)
                 return fresh
+            }
+            if (this.authPassword != "") {
+                if (!fresh.auth(this.authUser, this.authPassword)) {
+                    const reason = fresh.errorMessage
+                    fresh.close()
+                    Semaphore::release(this.permits)
+                    return RedisPool::failed(reason)
+                }
             }
             fresh.pooled = true
             return fresh
