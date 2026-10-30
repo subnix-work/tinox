@@ -406,9 +406,8 @@ class Book {
   its single `@Id` column, the types must match, and references must not form a cycle (a self-reference
   counts) -- those need a manual changeSet.
 - `tinox db generate` emits `references: authors(id)`; adding, dropping or retargeting a foreign key on an
-  existing column is reported ("add a manual changeSet"), never guessed. Referenced tables are created
-  first only if the generated changeSet orders them so: create parents before children by running
-  `generate` per dependency level, or order the changeSet by hand.
+  existing column is reported ("add a manual changeSet"), never guessed. New tables are generated
+  parents-first (dependency order), so the changeSet also applies on PostgreSQL and MySQL.
 - SQLite connections now run with `PRAGMA foreign_keys = ON`, so the constraint is really enforced
   (orphan inserts and deleting a referenced parent fail; an ORM `save()` that violates it aborts with the
   driver message).

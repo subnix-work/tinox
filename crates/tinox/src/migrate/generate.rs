@@ -266,7 +266,31 @@ pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> 
     }
     let existing = replay(&sets)?;
     let mut changes = Vec::new();
-    for (table, cols) in &model {
+    // Parents before children: a foreign key may only reference a table that already exists
+    // (cycles are rejected by the compiler, so this terminates; alphabetical otherwise).
+    let references_of = |cols: &BTreeMap<String, Value>| -> Vec<String> {
+        cols.values()
+            .filter_map(|c| c["constraints"]["references"].as_str())
+            .filter_map(|r| r.split('(').next().map(|t| t.trim().to_string()))
+            .collect()
+    };
+    let mut ordered: Vec<(&String, &BTreeMap<String, Value>)> = Vec::new();
+    let mut pending: Vec<(&String, &BTreeMap<String, Value>)> = model.iter().collect();
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut rest = Vec::new();
+        for (table, cols) in pending {
+            let ready = references_of(cols).iter().all(|t| {
+                t == table || !model.contains_key(t) || ordered.iter().any(|(done, _)| *done == t)
+            });
+            if ready { ordered.push((table, cols)); } else { rest.push((table, cols)); }
+        }
+        if rest.len() == before {
+            return Err("entity foreign keys form a cycle; break it or write the changeSet by hand".into());
+        }
+        pending = rest;
+    }
+    for (table, cols) in ordered {
         quote_ident(d, table, "entity")?;
         if let Some(old) = existing.get(table) {
             for (name, col) in cols {

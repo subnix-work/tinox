@@ -140,3 +140,23 @@ fn unsupported_mappings_fail_visibly() {
     assert!(!build.status.success());
     assert!(text(&build).contains("form a cycle"), "{}", text(&build));
 }
+
+#[test]
+fn new_tables_are_generated_parents_first() {
+    if !have_sqlite3() {
+        return;
+    }
+    let p = Project::new("order");
+    // "zoo_books" sorts after "authors" alphabetically; make the PARENT sort last instead.
+    for (f, from, to) in [("Author.tnx", "\"authors\"", "\"zauthors\""), ("Book.tnx", "\"authors\"", "\"zauthors\"")] {
+        let path = p.dir.join("src").join(f);
+        let text = std::fs::read_to_string(&path).unwrap().replace(from, to);
+        std::fs::write(path, text).unwrap();
+    }
+    let generate = p.tinox(&["db", "generate"]);
+    assert!(generate.status.success(), "{}", text(&generate));
+    let log = std::fs::read_to_string(p.dir.join("migrations/changelog.yaml")).unwrap();
+    let parent = log.find("tableName: zauthors").expect("parent table");
+    let child = log.find("tableName: books").expect("child table");
+    assert!(parent < child, "parent must be created before the child:\n{log}");
+}
