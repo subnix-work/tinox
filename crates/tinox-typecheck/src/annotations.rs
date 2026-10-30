@@ -242,6 +242,19 @@ pub struct Amqp10ConsumerInfo {
     pub on_message: Option<String>,
 }
 
+/// A class annotated `@OutboxDispatcher(host, port, vhost, user, pass, maxAttempts, backoffMs)` (issue #538).
+#[derive(Debug, Clone)]
+pub struct OutboxDispatcherInfo {
+    pub class_name: String,
+    pub host: String,
+    pub port: i64,
+    pub vhost: String,
+    pub user: String,
+    pub pass: String,
+    pub max_attempts: i64,
+    pub backoff_ms: i64,
+}
+
 /// A method annotated `@Scheduled("<cron>")` (issue #536).
 #[derive(Debug, Clone)]
 pub struct ScheduledJobInfo {
@@ -382,6 +395,7 @@ pub struct AnnotationProcessingResult {
     pub amqp10_consumers: Vec<Amqp10ConsumerInfo>,
     pub amqp091_consumers: Vec<Amqp091ConsumerInfo>,
     pub scheduled_jobs: Vec<ScheduledJobInfo>,
+    pub outbox_dispatchers: Vec<OutboxDispatcherInfo>,
     /// (class, method) -> (ttl seconds, max entries) for @Cacheable methods (issue #543)
     pub cached_methods: HashMap<(String, String), (i64, i64)>,
     /// (class, method) -> cache names ("Class.method") evicted after the method completes normally
@@ -1047,6 +1061,16 @@ impl AnnotationProcessor {
             },
         );
         registry.insert(
+            "OutboxDispatcher".to_string(),
+            AnnotationInfo {
+                name: "OutboxDispatcher".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 7,
+                max_args: 7,
+                description: "@OutboxDispatcher(host, port, vhost, user, pass, maxAttempts, backoffMs) -- runs a transactional-outbox dispatcher (tinox.core.outbox) on its own thread: publishes pending outbox records with publisher confirms, retries with backoff, parks after maxAttempts, reports backlog gauges, and drains/stops with a @Service. At-least-once delivery".to_string(),
+            },
+        );
+        registry.insert(
             "Cacheable".to_string(),
             AnnotationInfo {
                 name: "Cacheable".to_string(),
@@ -1405,6 +1429,21 @@ impl AnnotationProcessor {
                     let queue = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(5) { Some(s.clone()) } else { None };
                     if let (Some(host), Some(port), Some(vhost), Some(user), Some(pass), Some(queue)) = (host, port, vhost, user, pass, queue) {
                         amqp091_consumer_args = Some((host, port, vhost, user, pass, queue));
+                    }
+                }
+                "OutboxDispatcher" => {
+                    let text = |i: usize| match ann.args.get(i) {
+                        Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(v))) => Some(v.clone()),
+                        _ => None,
+                    };
+                    let int = |i: usize| match ann.args.get(i) {
+                        Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(v))) => Some(*v),
+                        _ => None,
+                    };
+                    if let (Some(host), Some(port), Some(vhost), Some(user), Some(pass), Some(max_attempts), Some(backoff_ms)) =
+                        (text(0), int(1), text(2), text(3), text(4), int(5), int(6))
+                    {
+                        result.outbox_dispatchers.push(OutboxDispatcherInfo { class_name: class.name.clone(), host, port, vhost, user, pass, max_attempts, backoff_ms });
                     }
                 }
                 "Http3RestController" => {
@@ -2105,6 +2144,26 @@ fn resolve_di_providers(source: &tinox_parser::SourceFile, result: &mut Annotati
             if !valid { errors.push(Error::new(ann.span, "@Provider requires one non-empty string literal")); }
         }
         if providers.len() > 1 { errors.push(Error::new(class.span, "Duplicate @Provider annotation")); }
+        for ann in class.annotations.iter().filter(|a| a.name == "OutboxDispatcher") {
+            let shape_ok = matches!(ann.args.as_slice(), [
+                AnnotationArg::Literal(Literal::String(_)), AnnotationArg::Literal(Literal::Integer(_)),
+                AnnotationArg::Literal(Literal::String(_)), AnnotationArg::Literal(Literal::String(_)),
+                AnnotationArg::Literal(Literal::String(_)), AnnotationArg::Literal(Literal::Integer(_)),
+                AnnotationArg::Literal(Literal::Integer(_)),
+            ]);
+            if !shape_ok {
+                errors.push(Error::new(ann.span, "@OutboxDispatcher(host: String, port: Int, vhost: String, user: String, pass: String, maxAttempts: Int, backoffMs: Int) takes literals"));
+                continue;
+            }
+            if let (AnnotationArg::Literal(Literal::Integer(max)), AnnotationArg::Literal(Literal::Integer(backoff))) = (&ann.args[5], &ann.args[6]) {
+                if !(1..=100).contains(max) {
+                    errors.push(Error::new(ann.span, format!("@OutboxDispatcher maxAttempts must be 1..=100, found {max}")));
+                }
+                if !(0..=60000).contains(backoff) {
+                    errors.push(Error::new(ann.span, format!("@OutboxDispatcher backoffMs must be 0..=60000, found {backoff}")));
+                }
+            }
+        }
         for method in &class.methods {
             for ann in method.annotations.iter().filter(|a| a.name == "Cacheable") {
                 let int = |i: usize| match ann.args.get(i) {
@@ -4232,6 +4291,18 @@ class Svc {
         let errors = cache_errors(&parse(src).decls);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].1.contains("C.zzz"), "{errors:?}");
+    }
+
+    #[test]
+    fn test_validate_outbox_dispatcher_args() {
+        let ok = valid("@OutboxDispatcher(\"h\", 5672, \"/\", \"u\", \"p\", 3, 100)\nclass R { }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let attempts = valid("@OutboxDispatcher(\"h\", 5672, \"/\", \"u\", \"p\", 0, 100)\nclass R { }");
+        assert!(attempts.iter().any(|e| e.message.contains("maxAttempts")), "{attempts:?}");
+        let backoff = valid("@OutboxDispatcher(\"h\", 5672, \"/\", \"u\", \"p\", 3, 99999)\nclass R { }");
+        assert!(backoff.iter().any(|e| e.message.contains("backoffMs")), "{backoff:?}");
+        let shape = valid("@OutboxDispatcher(\"h\", \"x\", \"/\", \"u\", \"p\", 3, 100)\nclass R { }");
+        assert!(shape.iter().any(|e| e.message.contains("takes literals")), "{shape:?}");
     }
 
     #[test]

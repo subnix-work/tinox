@@ -5373,6 +5373,9 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     codegen.set_ws_endpoints(ws_endpoints);
     codegen.set_amqp10_consumers(amqp10_consumers);
     codegen.set_cache_methods(ann_result.cached_methods.clone(), ann_result.evict_methods.clone());
+    codegen.set_outbox_dispatchers(ann_result.outbox_dispatchers.iter().map(|d| tinox_codegen::OutboxDispatcherEntry {
+        class_name: d.class_name.clone(), host: d.host.clone(), port: d.port, vhost: d.vhost.clone(), user: d.user.clone(), pass: d.pass.clone(), max_attempts: d.max_attempts, backoff_ms: d.backoff_ms,
+    }).collect());
     codegen.set_scheduled_jobs(ann_result.scheduled_jobs.iter().map(|j| tinox_codegen::ScheduledJobEntry {
         class_name: j.class_name.clone(),
         method_name: j.method_name.clone(),

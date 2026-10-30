@@ -210,6 +210,19 @@ pub struct Amqp10ConsumerEntry {
     pub on_message: Option<String>,
 }
 
+/// A class annotated `@OutboxDispatcher(...)` (issue #538).
+#[derive(Debug, Clone)]
+pub struct OutboxDispatcherEntry {
+    pub class_name: String,
+    pub host: String,
+    pub port: i64,
+    pub vhost: String,
+    pub user: String,
+    pub pass: String,
+    pub max_attempts: i64,
+    pub backoff_ms: i64,
+}
+
 /// A `@Scheduled(cron)` method (issue #536).
 #[derive(Debug, Clone)]
 pub struct ScheduledJobEntry {
@@ -570,6 +583,7 @@ pub struct CodeGen {
     /// AMQP-1.0 consumers from @Amqp10Consumer annotation processing (Issue #81)
     amqp10_consumers: Vec<Amqp10ConsumerEntry>,
     scheduled_jobs: Vec<ScheduledJobEntry>,
+    outbox_dispatchers: Vec<OutboxDispatcherEntry>,
     cached_methods: HashMap<(String, String), (i64, i64)>,
     evict_methods: HashMap<(String, String), Vec<String>>,
     /// AMQP-0-9-1 consumers from @Amqp091Consumer annotation processing (Issue #126)
@@ -776,6 +790,7 @@ impl CodeGen {
             tinoxui_apps: Vec::new(),
             amqp10_consumers: Vec::new(),
             scheduled_jobs: Vec::new(),
+            outbox_dispatchers: Vec::new(),
             cached_methods: HashMap::new(),
             evict_methods: HashMap::new(),
             amqp091_consumers: Vec::new(),
@@ -899,6 +914,10 @@ impl CodeGen {
     pub fn set_cache_methods(&mut self, cached: HashMap<(String, String), (i64, i64)>, evict: HashMap<(String, String), Vec<String>>) {
         self.cached_methods = cached;
         self.evict_methods = evict;
+    }
+
+    pub fn set_outbox_dispatchers(&mut self, dispatchers: Vec<OutboxDispatcherEntry>) {
+        self.outbox_dispatchers = dispatchers;
     }
 
     pub fn set_scheduled_jobs(&mut self, jobs: Vec<ScheduledJobEntry>) {
@@ -2660,6 +2679,9 @@ impl CodeGen {
 
         // Emit one runner per @Scheduled method (issue #536)
         self.emit_scheduled_code();
+
+        // Emit one runner per @OutboxDispatcher class (issue #538)
+        self.emit_outbox_dispatcher_code();
 
         // Emit the dev-mode introspection API (no-op unless [dev] enabled)
         self.emit_devui_code(&class_ast_map);
@@ -4586,6 +4608,57 @@ tr_done_{idx}:"#).unwrap();
                 "AMQP 1.0 (consumer)".to_string(),
                 format!("{}:{} ({})", c.host, c.port, c.address),
             ));
+        }
+    }
+
+    /// One `__tinox_run_outbox_<idx>()` per @OutboxDispatcher class (issue #538), spawned on its own thread. The
+    /// loop publishes one batch per pass (a batch is admitted as in-flight service work, so a draining service
+    /// waits for it), reports the backlog gauges, sleeps while idle and, on an error from the batch, reports
+    /// it and backs off instead of dying. With a @Service it ends when the service stops, closing the connection.
+    fn emit_outbox_dispatcher_code(&mut self) {
+        if self.outbox_dispatchers.is_empty() || self.has_main {
+            return;
+        }
+        if !self.class_named_types.contains("OutboxDispatcher") {
+            panic!("@OutboxDispatcher requires `import tinox.core.outbox;` (OutboxDispatcher type not found)");
+        }
+        let dispatchers = self.outbox_dispatchers.clone();
+        for (idx, d) in dispatchers.iter().enumerate() {
+            let run_fn = format!("__tinox_run_outbox_{idx}");
+            writeln!(&mut self.lambda_ir, "define i64 @{run_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            let host = self.emit_lambda_string_literal(&d.host);
+            let vhost = self.emit_lambda_string_literal(&d.vhost);
+            let user = self.emit_lambda_string_literal(&d.user);
+            let pass = self.emit_lambda_string_literal(&d.pass);
+            let label = self.emit_lambda_string_literal(&format!("{} outbox dispatcher", d.class_name));
+            writeln!(&mut self.lambda_ir, "  %d = call i64* @OutboxDispatcher_create(i8* {host}, i64 {}, i8* {vhost}, i8* {user}, i8* {pass}, i64 {}, i64 {})", d.port, d.max_attempts, d.backoff_ms).unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
+            writeln!(&mut self.lambda_ir, "tick:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %stop, label %go\ngo:\n  call void @tinox_service_listener_ready(i64 -1)\n  %admitted = call i64 @tinox_service_work_enter()\n  %admit_ok = icmp ne i64 %admitted, 0\n  br i1 %admit_ok, label %batch, label %stop\nbatch:").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  %n = call i64 @OutboxDispatcher_runOnce(i64* %d)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %err = load i64, i64* @__tinox_err").unwrap();
+            writeln!(&mut self.lambda_ir, "  %failed = call i64 @tinox_message_handler_failed(i8* {label}, i64 %err)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %reported = call i1 @OutboxDispatcher_report(i64* %d)").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  %did_fail = icmp ne i64 %failed, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  %was_idle = icmp eq i64 %n, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  %pause = select i1 %did_fail, i64 1000, i64 250").unwrap();
+            writeln!(&mut self.lambda_ir, "  %sleep_needed = or i1 %did_fail, %was_idle").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %sleep_needed, label %nap, label %tick").unwrap();
+            writeln!(&mut self.lambda_ir, "nap:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @OutboxDispatcher_idle(i64* %d, i64 %pause)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
+            writeln!(&mut self.lambda_ir, "stop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @OutboxDispatcher_close(i64* %d)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+            self.register_background_task(BackgroundTask::new("outbox", Some(&d.class_name), &run_fn, "per_dispatcher", "one thread, sequential batches of confirmed publishes", Endpoint::connect("AMQP 0-9-1 (outbox)", d.port, &d.host, "tinox_outbox")));
         }
     }
 

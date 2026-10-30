@@ -437,6 +437,15 @@
       ]
     },
     {
+      "description": "@OutboxDispatcher(host, port, vhost, user, pass, maxAttempts, backoffMs) -- runs a transactional-outbox dispatcher (tinox.core.outbox) on its own thread: publishes pending outbox records with publisher confirms, retries with backoff, parks after maxAttempts, reports backlog gauges, and drains/stops with a @Service. At-least-once delivery",
+      "max_args": 7,
+      "min_args": 7,
+      "name": "OutboxDispatcher",
+      "targets": [
+        "Class"
+      ]
+    },
+    {
       "description": "Marks a method as a PATCH endpoint. Optional path arg, or use @Path.",
       "max_args": 1,
       "min_args": 0,

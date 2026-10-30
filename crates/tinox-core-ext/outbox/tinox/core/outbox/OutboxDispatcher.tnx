@@ -208,5 +208,32 @@ namespace tinox.core.outbox
         {
             this.stopRequested = true
         }
+
+        /** Sleeps between polls (a cancellation point) */
+        fn idle(ms: Int64) -> Nothing
+        {
+            sleep(ms)
+        }
+
+        /**
+         * Publishes the backlog figures as gauges (tinox_outbox_backlog, _lag_ms, _parked, _confirmed,
+         * _failures) for /metrics. A database error is reported to the caller as false, never thrown.
+         */
+        fn report() -> Bool
+        {
+            try
+            {
+                tinox_gauge_set("tinox_outbox_backlog", Outbox::backlog())
+                tinox_gauge_set("tinox_outbox_lag_ms", Outbox::lagMs())
+                tinox_gauge_set("tinox_outbox_parked", Outbox::parked())
+            }
+            catch (e: String)
+            {
+                return false
+            }
+            tinox_gauge_set("tinox_outbox_confirmed", this.confirmed)
+            tinox_gauge_set("tinox_outbox_failures", this.failures)
+            return true
+        }
     }
 }
