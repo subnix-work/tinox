@@ -32,6 +32,39 @@ namespace tinox.core.debug
             return memoryUsage()
         }
 
+        // Reserved heap bytes (what memoryUsage reports).
+        fn gcHeapBytes() -> Int64
+        {
+            return gcStat(0)
+        }
+
+        // Free bytes in the heap as of the last collection.
+        fn gcFreeBytes() -> Int64
+        {
+            return gcStat(1)
+        }
+
+        // Upper-bound estimate of used heap: heap - free + allocated since the
+        // last collection. Includes garbage not yet collected; not live bytes,
+        // not RSS.
+        fn gcUsedEstimateBytes() -> Int64
+        {
+            return gcStat(5)
+        }
+
+        // Cumulative bytes allocated since process start (allocation rate =
+        // difference between two samples).
+        fn gcAllocatedBytes() -> Int64
+        {
+            return gcStat(3)
+        }
+
+        // Completed collections since process start.
+        fn gcCollections() -> Int64
+        {
+            return gcStat(4)
+        }
+
         fn gcCollect() -> Nothing
         {
             gcCollect()

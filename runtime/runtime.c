@@ -64,6 +64,10 @@
 #define GC_INIT()        ((void)0)
 #define GC_gcollect()      ((void)0)
 #define GC_get_heap_size() ((size_t)0)
+#define GC_get_free_bytes() ((size_t)0)
+#define GC_get_bytes_since_gc() ((size_t)0)
+#define GC_get_total_bytes() ((size_t)0)
+#define GC_get_gc_no() ((size_t)0)
 #else
 // Boehm GC — redirect all heap allocation through the collector
 //
@@ -1798,6 +1802,8 @@ char* tinox_limits_json(void) {
     return buf;
 }
 
+int64_t gcStat(int64_t kind);
+
 // Limits + saturation counters as Prometheus text (appended to /metrics).
 static int tinox_limits_metrics_text(char* buf, size_t cap) {
     const TinoxLimits* l = tinox_limits();
@@ -1820,7 +1826,12 @@ static int tinox_limits_metrics_text(char* buf, size_t cap) {
         "# TYPE tinox_queue_waiting gauge\ntinox_queue_waiting %lld\n"
         "# TYPE tinox_queue_wait_ms_total counter\ntinox_queue_wait_ms_total %lld\n"
         "# TYPE tinox_queue_wait_ms_max gauge\ntinox_queue_wait_ms_max %lld\n"
-        "# TYPE tinox_queue_timeouts_total counter\ntinox_queue_timeouts_total %lld\n",
+        "# TYPE tinox_queue_timeouts_total counter\ntinox_queue_timeouts_total %lld\n"
+        "# TYPE tinox_gc_heap_bytes gauge\ntinox_gc_heap_bytes %lld\n"
+        "# TYPE tinox_gc_free_bytes gauge\ntinox_gc_free_bytes %lld\n"
+        "# TYPE tinox_gc_used_estimate_bytes gauge\ntinox_gc_used_estimate_bytes %lld\n"
+        "# TYPE tinox_gc_allocated_bytes_total counter\ntinox_gc_allocated_bytes_total %lld\n"
+        "# TYPE tinox_gc_collections_total counter\ntinox_gc_collections_total %lld\n",
         (long long)l->cpus, (long long)l->http_workers,
         (long long)l->max_connections, (long long)atomic_load(&g_open_conns),
         (long long)atomic_load(&g_peak_conns), (long long)atomic_load(&g_rejected_conns),
@@ -1830,7 +1841,9 @@ static int tinox_limits_metrics_text(char* buf, size_t cap) {
         (long long)atomic_load(&g_peak_ws), (long long)atomic_load(&g_rejected_ws),
         (long long)l->queue_wait_ms, (long long)atomic_load(&g_waiting),
         (long long)atomic_load(&g_wait_total_ms), (long long)atomic_load(&g_wait_max_ms),
-        (long long)atomic_load(&g_wait_timeouts));
+        (long long)atomic_load(&g_wait_timeouts),
+        (long long)gcStat(0), (long long)gcStat(1), (long long)gcStat(5),
+        (long long)gcStat(3), (long long)gcStat(4));
 }
 
 // WebSocket admission: the accept loop asks before handing a connection to
@@ -4396,6 +4409,30 @@ void gcCollect(void) {
 
 int64_t memoryUsage(void) {
     return (int64_t)GC_get_heap_size();
+}
+
+// Boehm GC counters, read without triggering a collection. Kinds:
+//   0 reserved heap bytes   1 free bytes in the heap (as of the last collection)
+//   2 bytes allocated since the last collection   3 cumulative bytes allocated
+//   4 completed collections   5 used estimate = heap - free + since-last-gc
+// Kind 5 is an upper bound on live data: it still counts garbage not yet
+// collected. It is NOT RSS (the heap excludes stacks, malloc'd runtime state
+// and the C runtime) and not a live-byte measurement.
+int64_t gcStat(int64_t kind) {
+    switch (kind) {
+    case 0: return (int64_t)GC_get_heap_size();
+    case 1: return (int64_t)GC_get_free_bytes();
+    case 2: return (int64_t)GC_get_bytes_since_gc();
+    case 3: return (int64_t)GC_get_total_bytes();
+    case 4: return (int64_t)GC_get_gc_no();
+    case 5: {
+        int64_t used = (int64_t)GC_get_heap_size() - (int64_t)GC_get_free_bytes() + (int64_t)GC_get_bytes_since_gc();
+        return used < 0 ? 0 : used;
+    }
+    default:
+        fprintf(stderr, "gcStat: unknown counter %lld\n", (long long)kind);
+        exit(1);
+    }
 }
 
 void printStackTrace(void) {

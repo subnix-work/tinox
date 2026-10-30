@@ -2085,6 +2085,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @processKillInteractive(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @gcCollect()").unwrap();
         writeln!(&mut self.ir, "declare i64 @memoryUsage()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @gcStat(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @printStackTrace()").unwrap();
         writeln!(&mut self.ir, "declare i64 @now()").unwrap();
         for name in ["taskCancel", "taskDetach", "taskSetDeadline", "taskWaitReadable"] {

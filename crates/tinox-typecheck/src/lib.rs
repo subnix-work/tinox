@@ -874,6 +874,7 @@ impl TypeChecker {
         symbols.functions.insert("__scope_join".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         symbols.functions.insert("__scope_abort".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         symbols.functions.insert("__scope_register".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int), ("task".to_string(), ValueType::Any)], return_type: ValueType::Any });
+        symbols.functions.insert("gcStat".to_string(), FunctionSignature { params: vec![("kind".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerBoundPort".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerAcceptConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerReadRequest".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::String });
@@ -4262,7 +4263,7 @@ impl TypeChecker {
                         | "sha256Hash" | "md5Hash" | "sha1Hash" | "wsAcceptKey" | "hmacSha256Hash"
                         | "aesEncryptRaw" | "aesDecryptRaw"
                         | "base64Encode" | "base64Decode" | "base64EncodeChar"
-                        | "gcCollect" | "memoryUsage" | "printStackTrace" | "processExit"
+                        | "gcCollect" | "gcStat" | "memoryUsage" | "printStackTrace" | "processExit"
                         | "sinf" | "cosf" | "tanf" | "logf" | "log10f" | "sqrtf" | "expf" | "powf"
                         | "fabsf" | "floorf" | "ceilf"
                     );
