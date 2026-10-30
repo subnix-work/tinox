@@ -13592,28 +13592,7 @@ tr_done_{idx}:"#).unwrap();
                 let (val, val_ty) = self.gen_expr(value, ctx)?;
                 let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val, val_ty, &expected, value)? } else { (val, val_ty) };
                 if let ExprKind::FieldAccess { obj, field } = &target.node {
-                    let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
-                    let obj_ptr = if obj_ty == "i64" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", cast, obj_raw).unwrap();
-                        cast
-                    } else {
-                        obj_raw
-                    };
-                    let struct_name = self.infer_struct_type(obj, ctx)
-                        .or_else(|| if matches!(&obj.node, ExprKind::This) { ctx.current_struct.clone() } else { None });
-                    let offset = struct_name.as_deref()
-                        .and_then(|sn| self.struct_layouts.get(sn))
-                        .and_then(|fields| fields.iter().position(|f| f == field.as_str()))
-                        .unwrap_or(0) as i64;
-                    let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val.clone(), val_ty.clone(), &expected, value)? } else { (val.clone(), val_ty.clone()) };
-                    // B1 phase 3: typed field-assignment store for named-type classes.
-                    if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, target.span, &val, &val_ty)? {
-                        let store_val = self.coerce_to_i64(&val, &val_ty);
-                        let field_ptr = self.temp();
-                        writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, obj_ptr, offset).unwrap();
-                        writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
-                    }
+                    self.gen_field_store(target, obj, field, &val, &val_ty, value, ctx)?;
                 } else if let ExprKind::Ident(name) = &target.node {
                     let store_ty = ctx.locals.get(name).map(|(t, _)| t.clone()).unwrap_or_else(|| val_ty.clone());
                     let slot = ctx.local_slots.get(name.as_str()).cloned().unwrap_or_else(|| name.clone());
@@ -13769,6 +13748,52 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
+    /// Store `val` into `obj.field`. Evaluates `obj` itself, so a caller that
+    /// also loads the field (compound assignment) must only use pure receivers.
+    #[allow(clippy::too_many_arguments)]
+    fn gen_field_store(
+        &mut self,
+        target: &Expr,
+        obj: &Expr,
+        field: &str,
+        val: &str,
+        val_ty: &str,
+        value: &Expr,
+        ctx: &mut GenCtx,
+    ) -> Result<(), ErrorBag> {
+        let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
+        let obj_ptr = if obj_ty == "i64" {
+            let cast = self.temp();
+            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", cast, obj_raw).unwrap();
+            cast
+        } else {
+            obj_raw
+        };
+        let struct_name = self.infer_struct_type(obj, ctx)
+            .or_else(|| if matches!(&obj.node, ExprKind::This) { ctx.current_struct.clone() } else { None });
+        let offset = struct_name.as_deref()
+            .and_then(|sn| self.struct_layouts.get(sn))
+            .and_then(|fields| fields.iter().position(|f| f == field))
+            .unwrap_or(0) as i64;
+        let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val.to_string(), val_ty.to_string(), &expected, value)? } else { (val.to_string(), val_ty.to_string()) };
+        // B1 phase 3: typed field-assignment store for named-type classes.
+        if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, target.span, &val, &val_ty)? {
+            let store_val = self.coerce_to_i64(&val, &val_ty);
+            let field_ptr = self.temp();
+            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, obj_ptr, offset).unwrap();
+            writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
+        }
+        Ok(())
+    }
+
+    fn is_pure_receiver(e: &Expr) -> bool {
+        match &e.node {
+            ExprKind::This | ExprKind::Ident(_) => true,
+            ExprKind::FieldAccess { obj, .. } => Self::is_pure_receiver(obj),
+            _ => false,
+        }
+    }
+
     fn gen_compound_assign(
         &mut self,
         op: &tinox_parser::CompoundOp,
@@ -13780,6 +13805,7 @@ tr_done_{idx}:"#).unwrap();
         use tinox_typecheck::ValueType as VT;
         let semantic = self.semantic_type(target.id);
         let mut index_target = None;
+        let mut field_target: Option<&Expr> = None;
         let (loaded, actual, slot) = match &target.node {
             ExprKind::Ident(name) if ctx.locals.contains_key(name) => {
                 let ty = ctx.locals[name].0.clone();
@@ -13801,6 +13827,15 @@ tr_done_{idx}:"#).unwrap();
                 let (loaded, ty) = if let Some(semantic) = &semantic { self.decode_semantic_word(raw, semantic) } else { (raw, "i64".into()) };
                 (loaded, ty, None)
             }
+            // `this.count += 1`, `a.b.c *= 2`: load through the normal field read, store
+            // through the shared field-store path. The receiver is evaluated twice, which
+            // is only unobservable for side-effect-free receivers.
+            ExprKind::FieldAccess { obj, .. } if Self::is_pure_receiver(obj) => {
+                let (loaded, ty) = self.gen_expr(target, ctx)?;
+                field_target = Some(obj.as_ref());
+                (loaded, ty, None)
+            }
+            ExprKind::FieldAccess { .. } => return Err(ErrorBag { errors: vec![Error::new(target.span, "codegen: compound assignment to a field of a computed receiver is not supported; assign through a local variable first")] }),
             _ => return Err(ErrorBag { errors: vec![Error::new(target.span, "codegen: unsupported compound-assignment target")] }),
         };
         let (rhs, rhs_ty) = self.gen_expr(value, ctx)?;
@@ -13830,6 +13865,9 @@ tr_done_{idx}:"#).unwrap();
         }
         let (result, result_ty) = if let Some(expected) = &semantic { self.convert_semantic_value(result, ty, expected, unsigned) } else { (result, actual) };
         if let Some(target) = index_target { self.gen_index_store(&target, &result, &result_ty); }
+        if let (Some(obj), ExprKind::FieldAccess { field, .. }) = (field_target, &target.node) {
+            self.gen_field_store(target, obj, field, &result, &result_ty, value, ctx)?;
+        }
         if let Some((slot, slot_ty)) = slot { writeln!(&mut self.ir, "store {} {}, {}* {}", result_ty, result, slot_ty, slot).unwrap(); }
         Ok((result, result_ty))
     }

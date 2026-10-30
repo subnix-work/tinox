@@ -1,0 +1,19 @@
+// expect: 30
+// expect: 6
+// expect: hi!!
+
+import Counter
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const c: Counter = Counter { value: 0, ratio: 1.5, label: "hi" }
+        c.bump()
+        c.bump()
+        println(c.value)
+        println(c.ratio)
+        println(c.label)
+        return 0
+    }
+}
