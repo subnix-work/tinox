@@ -7,6 +7,19 @@ namespace tinox.core.http
     // HttpResponse class in the compiler's codegen layout table.
     class HttpClientResponse
     {
+        // "" when the request completed (any HTTP status), otherwise why it did not: DNS/connect/TLS
+        // failure, "connect timed out ...", "read timed out", "total deadline ... exceeded" or
+        // "cancelled: ...". An empty body with an empty error is a genuine empty response.
+        fn error() -> String
+        {
+            return httpError(this)
+        }
+
+        fn failed() -> Bool
+        {
+            return httpError(this) != ""
+        }
+
         fn statusCode() -> Int64
         {
             return httpStatusCode(this)

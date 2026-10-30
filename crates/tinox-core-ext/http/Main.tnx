@@ -1,0 +1,16 @@
+import tinox.core.http
+
+class Main
+{
+    fnc probe(label: String, client: HttpClient, url: String) -> Nothing {
+        const t0 = now()
+        const r: HttpClientResponse = client.get(url)
+        println(label + " ms=" + (now() - t0).toString() + " err=" + r.error())
+    }
+    fnc main() -> Int32 {
+        Main::probe("dns", HttpClient::create().timeouts(2000, 2000, 5000), "http://does-not-exist.invalid/x")
+        taskSetDeadline(300)
+        Main::probe("task", HttpClient::create().timeouts(0, 0, 0), "http://127.0.0.1:48123/x")
+        return 0
+    }
+}

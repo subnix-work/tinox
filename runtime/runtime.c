@@ -4038,6 +4038,7 @@ typedef struct {
     int64_t status;
     char*   body;
     char*   headers; // raw header block (without the status line) for httpHeader()
+    char*   error;   // "" on success, otherwise why the request failed (timeout, DNS, connect, TLS, cancelled)
 } TinoxHttpResponse;
 
 static __thread char* _tinox_http_req_headers = NULL; // "Name: Value\r\n" chain
@@ -7189,36 +7190,265 @@ static char* http_dechunk(const char* body) {
     return out;
 }
 
-static TinoxHttpResponse* http_request(const char* method, const char* url, const char* body) {
+// Per-request client options (#525). The legacy thread-local setters fill one of these for
+// httpGet/httpPost/...; HttpClient (tinox.core.http) passes its own, so nothing set for one client
+// can reach another caller that shares the worker thread. A deadline of 0 means "none".
+typedef struct {
+    const char* headers;          // "Name: value\r\n" chain
+    const char* ca_cert_path;
+    const char* client_cert_path;
+    const char* client_key_path;
+    int64_t     insecure_skip_verify;
+    int64_t     connect_ms;       // DNS + TCP connect (+ TLS handshake counts against read/total)
+    int64_t     read_ms;          // max idle time of any single read/write
+    int64_t     total_ms;         // whole request
+} TinoxHttpOpts;
+
+typedef struct {
+    int64_t start_ms;
+    int64_t total_ms;
+    int64_t read_ms;
+    char    error[160];
+} TinoxHttpClock;
+
+static int64_t http_clock_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Milliseconds a blocking step may still take (-1 = unbounded). Sets clk->error and returns 0
+// when the total deadline is gone or the surrounding task was cancelled.
+static int64_t http_budget_ms(TinoxHttpClock* clk, int64_t step_ms) {
+    const char* cancelled = task_cancellation(task_scope);
+    if (cancelled) { snprintf(clk->error, sizeof(clk->error), "cancelled: %s", cancelled); return 0; }
+    int64_t budget = step_ms > 0 ? step_ms : -1;
+    if (clk->total_ms > 0) {
+        int64_t left = clk->total_ms - (http_clock_ms() - clk->start_ms);
+        if (left <= 0) { snprintf(clk->error, sizeof(clk->error), "total deadline of %lld ms exceeded", (long long)clk->total_ms); return 0; }
+        if (budget < 0 || left < budget) budget = left;
+    }
+    return budget < 0 ? -1 : budget;
+}
+
+static void http_set_socket_timeout(int fd, int64_t ms) {
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
+    if (ms > 0) { tv.tv_sec = (time_t)(ms / 1000); tv.tv_usec = (suseconds_t)((ms % 1000) * 1000); }
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_cond_t  cv;
+    int             done;
+    int             abandoned;
+    int             rc;
+    struct addrinfo* res;
+    char            host[256];
+    char            port[16];
+} TinoxDnsJob;
+
+static void* http_dns_thread(void* arg) {
+    TinoxDnsJob* job = (TinoxDnsJob*)arg;
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = NULL;
+    int rc = getaddrinfo(job->host, job->port, &hints, &res);
+    pthread_mutex_lock(&job->mu);
+    job->rc = rc;
+    job->res = res;
+    job->done = 1;
+    int drop = job->abandoned;
+    pthread_cond_broadcast(&job->cv);
+    pthread_mutex_unlock(&job->mu);
+    if (drop) { if (res) freeaddrinfo(res); free(job); }
+    return NULL;
+}
+
+// getaddrinfo cannot be interrupted, so a bounded lookup runs on a helper thread that is simply
+// abandoned (and cleans up after itself) when the deadline passes. IP literals skip it.
+static struct addrinfo* http_resolve(const char* host, const char* port, TinoxHttpClock* clk, int64_t connect_ms) {
+    struct in_addr probe;
+    int literal = inet_pton(AF_INET, host, &probe) == 1;
+    if (literal || (connect_ms <= 0 && clk->total_ms <= 0)) {
+        struct addrinfo hints, *res = NULL;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(host, port, &hints, &res) != 0) { snprintf(clk->error, sizeof(clk->error), "DNS lookup failed for %s", host); return NULL; }
+        return res;
+    }
+    int64_t budget = http_budget_ms(clk, connect_ms);
+    if (budget == 0) return NULL;
+    TinoxDnsJob* job = (TinoxDnsJob*)calloc(1, sizeof(*job));
+    pthread_mutex_init(&job->mu, NULL);
+    pthread_condattr_t ca;
+    pthread_condattr_init(&ca);
+    pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+    pthread_cond_init(&job->cv, &ca);
+    pthread_condattr_destroy(&ca);
+    snprintf(job->host, sizeof(job->host), "%s", host);
+    snprintf(job->port, sizeof(job->port), "%s", port);
+    pthread_t th;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&th, &attr, http_dns_thread, job) != 0) {
+        pthread_attr_destroy(&attr);
+        free(job);
+        snprintf(clk->error, sizeof(clk->error), "cannot start DNS lookup");
+        return NULL;
+    }
+    pthread_attr_destroy(&attr);
+    int64_t deadline = http_clock_ms() + (budget < 0 ? 3600000 : budget);
+    pthread_mutex_lock(&job->mu);
+    while (!job->done) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        int64_t slice = 50;
+        int64_t now = http_clock_ms();
+        if (now >= deadline) break;
+        if (deadline - now < slice) slice = deadline - now;
+        ts.tv_nsec += (slice % 1000) * 1000000L; ts.tv_sec += slice / 1000 + ts.tv_nsec / 1000000000L; ts.tv_nsec %= 1000000000L;
+        pthread_cond_timedwait(&job->cv, &job->mu, &ts);
+        if (task_cancellation(task_scope)) break;
+    }
+    struct addrinfo* out = NULL;
+    if (job->done) {
+        if (job->rc != 0) snprintf(clk->error, sizeof(clk->error), "DNS lookup failed for %s", host);
+        out = job->res;
+        pthread_mutex_unlock(&job->mu);
+        pthread_mutex_destroy(&job->mu);
+        free(job);
+        return out;
+    }
+    const char* cancelled = task_cancellation(task_scope);
+    if (cancelled) snprintf(clk->error, sizeof(clk->error), "cancelled: %s", cancelled);
+    else snprintf(clk->error, sizeof(clk->error), "DNS lookup timed out after %lld ms", (long long)(budget < 0 ? 0 : budget));
+    job->abandoned = 1;
+    pthread_mutex_unlock(&job->mu);
+    return NULL;
+}
+
+// Non-blocking connect polled in short slices so the connect deadline, the total deadline and
+// task cancellation are all honoured.
+static int http_connect_bounded(int fd, const struct sockaddr* addr, socklen_t len, TinoxHttpClock* clk, int64_t connect_ms) {
+    int64_t step_deadline = connect_ms > 0 ? http_clock_ms() + connect_ms : 0;
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int rc = connect(fd, addr, len);
+    if (rc != 0 && errno != EINPROGRESS) { snprintf(clk->error, sizeof(clk->error), "connect failed: %s", strerror(errno)); return 0; }
+    while (rc != 0) {
+        int64_t budget = http_budget_ms(clk, 0);
+        if (budget == 0) return 0;
+        int64_t slice = budget < 0 || budget > 50 ? 50 : budget;
+        if (step_deadline) {
+            int64_t left = step_deadline - http_clock_ms();
+            if (left <= 0) { snprintf(clk->error, sizeof(clk->error), "connect timed out after %lld ms", (long long)connect_ms); return 0; }
+            if (left < slice) slice = left;
+        }
+        struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+        int pr = poll(&pfd, 1, (int)slice);
+        if (pr < 0 && errno == EINTR) continue;
+        if (pr < 0) { snprintf(clk->error, sizeof(clk->error), "connect poll failed"); return 0; }
+        if (pr > 0) {
+            int err = 0;
+            socklen_t el = sizeof(err);
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el);
+            if (err != 0) { snprintf(clk->error, sizeof(clk->error), "connect failed: %s", strerror(err)); return 0; }
+            break;
+        }
+    }
+    fcntl(fd, F_SETFL, flags);
+    return 1;
+}
+
+// Reads until the peer closes, each read bounded by the idle and total deadlines. Returns the
+// bytes read so far; clk->error is set when the loop stopped for any reason but a clean close.
+static char* http_recv_bounded(int fd, void* ssl, TinoxHttpClock* clk) {
+    size_t cap = 8192, len = 0;
+    char* buf = (char*)malloc(cap);
+    int64_t last_progress = http_clock_ms();
+    for (;;) {
+        // Total deadline and task cancellation first (sets clk->error), then the idle-read deadline.
+        int64_t budget = http_budget_ms(clk, 0);
+        if (budget == 0) break;
+        int64_t idle_left = -1;
+        if (clk->read_ms > 0) {
+            idle_left = clk->read_ms - (http_clock_ms() - last_progress);
+            if (idle_left <= 0) { snprintf(clk->error, sizeof(clk->error), "read timed out after %lld ms", (long long)clk->read_ms); break; }
+        }
+        // Block in short slices whenever something could stop us, so cancellation is noticed.
+        int64_t slice = 0;
+        int cancellable = task_scope != NULL;
+        if (budget > 0 || idle_left > 0 || cancellable) {
+            slice = 50;
+            if (budget > 0 && budget < slice) slice = budget;
+            if (idle_left > 0 && idle_left < slice) slice = idle_left;
+        }
+        http_set_socket_timeout(fd, slice);
+        ssize_t n;
+#ifdef TINOX_TLS
+        if (ssl) n = SSL_read((SSL*)ssl, buf + len, (int)(cap - len));
+        else
+#endif
+        n = recv(fd, buf + len, cap - len, 0);
+        if (n > 0) {
+            len += (size_t)n;
+            last_progress = http_clock_ms();
+            if (len == cap) {
+                cap *= 2;
+                char* grown = (char*)malloc(cap);
+                memcpy(grown, buf, len);
+                free(buf);
+                buf = grown;
+            }
+            continue;
+        }
+        if (n == 0) break;
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue; // slice elapsed; limits re-checked above
+        break;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+static TinoxHttpResponse* http_request_opts(const char* method, const char* url, const char* body, const TinoxHttpOpts* opts) {
     TinoxHttpResponse* resp = (TinoxHttpResponse*)malloc(sizeof(TinoxHttpResponse));
     resp->status = 0;
     resp->body = GC_strdup("");
     resp->headers = GC_strdup("");
+    resp->error = GC_strdup("");
+    TinoxHttpClock clk = { .start_ms = http_clock_ms(), .total_ms = opts->total_ms, .read_ms = opts->read_ms };
+    clk.error[0] = '\0';
+#define HTTP_FAIL(msg) do { resp->error = GC_strdup(clk.error[0] ? clk.error : (msg)); return resp; } while (0)
 
     char host[256], path[2048];
     int port;
     int is_https;
-    if (!http_parse_url(url, host, sizeof(host), &port, path, sizeof(path), &is_https)) return resp;
+    if (!http_parse_url(url, host, sizeof(host), &port, path, sizeof(path), &is_https)) HTTP_FAIL("invalid or unsupported URL");
 
 #ifndef TINOX_TLS
-    if (is_https) return resp; // TINOX_TLS=0: https:// not available, same "empty response" contract as any other connect failure
+    if (is_https) HTTP_FAIL("https is not available in this build");
 #endif
-
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return resp;
 
     char port_str[16];
     snprintf(port_str, sizeof(port_str), "%d", port);
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) { close(fd); return resp; }
-    if (connect(fd, res->ai_addr, res->ai_addrlen) != 0) { freeaddrinfo(res); close(fd); return resp; }
+    struct addrinfo* res = http_resolve(host, port_str, &clk, opts->connect_ms);
+    if (!res) HTTP_FAIL("DNS lookup failed");
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { freeaddrinfo(res); HTTP_FAIL("socket() failed"); }
+    int connected = (opts->connect_ms > 0 || opts->total_ms > 0 || task_scope)
+        ? http_connect_bounded(fd, res->ai_addr, res->ai_addrlen, &clk, opts->connect_ms)
+        : (connect(fd, res->ai_addr, res->ai_addrlen) == 0 || (snprintf(clk.error, sizeof(clk.error), "connect failed: %s", strerror(errno)), 0));
     freeaddrinfo(res);
+    if (!connected) { close(fd); HTTP_FAIL("connect failed"); }
 
     size_t body_len = body ? strlen(body) : 0;
-    const char* extra = _tinox_http_req_headers ? _tinox_http_req_headers : "";
+    const char* extra = opts->headers ? opts->headers : "";
     char correlation[256] = "";
     if (telemetry_enabled && telemetry_context.trace[0]) {
         snprintf(correlation, sizeof(correlation), "traceparent: 00-%s-%s-%02x\r\nx-request-id: %s\r\n",
@@ -7236,21 +7466,19 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
     }
 
     char* raw;
+    int64_t io_budget = http_budget_ms(&clk, clk.read_ms);
+    if (io_budget == 0) { close(fd); free(req); HTTP_FAIL("deadline exceeded"); }
+    // Handshake and request write are bounded by the idle/total deadlines (not sliced).
+    http_set_socket_timeout(fd, io_budget < 0 ? 0 : io_budget);
 #ifdef TINOX_TLS
     if (is_https) {
-        // A custom CA/client-cert/insecure-skip-verify config (set via
-        // httpSetTlsCaCertFile/httpSetTlsClientCertFile/
-        // httpSetTlsInsecureSkipVerify -- tinox.core.kubernetes' auth
-        // layer is the first real caller) needs its own SSL_CTX per
-        // request rather than the shared g_tls_client_ctx: that ctx is
-        // lazily built once with the system trust store and no client
-        // identity, and is (deliberately) shared across every plain
-        // https:// caller in the process, so mutating it per-call would
-        // leak one call's cluster CA/client cert into every other
-        // caller's requests on the same thread/process.
-        int use_custom_ctx = (_tinox_tls_ca_cert_path != NULL) ||
-                              (_tinox_tls_client_cert_path != NULL) ||
-                              _tinox_tls_insecure_skip_verify;
+        // A custom CA/client-cert/insecure-skip-verify config needs its own SSL_CTX per request
+        // rather than the shared g_tls_client_ctx (lazily built once with the system trust store
+        // and no client identity, shared by every plain https:// caller in the process) -- mutating
+        // the shared one would leak one caller's CA/identity into every other caller.
+        int use_custom_ctx = (opts->ca_cert_path != NULL) ||
+                              (opts->client_cert_path != NULL) ||
+                              opts->insecure_skip_verify;
         SSL_CTX* ctx = NULL;
         if (use_custom_ctx) {
             SSL_library_init();
@@ -7259,21 +7487,20 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
             ctx = SSL_CTX_new(TLS_client_method());
             if (ctx) {
                 SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-                if (_tinox_tls_ca_cert_path) {
-                    if (SSL_CTX_load_verify_locations(ctx, _tinox_tls_ca_cert_path, NULL) != 1) {
-                        fprintf(stderr, "http_request: failed to load CA cert file %s\n", _tinox_tls_ca_cert_path);
+                if (opts->ca_cert_path) {
+                    if (SSL_CTX_load_verify_locations(ctx, opts->ca_cert_path, NULL) != 1) {
+                        snprintf(clk.error, sizeof(clk.error), "failed to load CA cert file");
                         SSL_CTX_free(ctx);
                         ctx = NULL;
                     }
                 } else {
                     SSL_CTX_set_default_verify_paths(ctx);
                 }
-                if (ctx && _tinox_tls_client_cert_path && _tinox_tls_client_key_path) {
-                    if (SSL_CTX_use_certificate_file(ctx, _tinox_tls_client_cert_path, SSL_FILETYPE_PEM) != 1 ||
-                        SSL_CTX_use_PrivateKey_file(ctx, _tinox_tls_client_key_path, SSL_FILETYPE_PEM) != 1 ||
+                if (ctx && opts->client_cert_path && opts->client_key_path) {
+                    if (SSL_CTX_use_certificate_file(ctx, opts->client_cert_path, SSL_FILETYPE_PEM) != 1 ||
+                        SSL_CTX_use_PrivateKey_file(ctx, opts->client_key_path, SSL_FILETYPE_PEM) != 1 ||
                         SSL_CTX_check_private_key(ctx) != 1) {
-                        fprintf(stderr, "http_request: failed to load client cert/key (%s / %s)\n",
-                                _tinox_tls_client_cert_path, _tinox_tls_client_key_path);
+                        snprintf(clk.error, sizeof(clk.error), "failed to load client cert/key");
                         SSL_CTX_free(ctx);
                         ctx = NULL;
                     }
@@ -7292,11 +7519,11 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
             }
             ctx = g_tls_client_ctx;
         }
-        if (!ctx) { close(fd); free(req); return resp; }
+        if (!ctx) { close(fd); free(req); HTTP_FAIL("TLS context unavailable"); }
         SSL* ssl = SSL_new(ctx);
-        if (!ssl) { if (use_custom_ctx) SSL_CTX_free(ctx); close(fd); free(req); return resp; }
+        if (!ssl) { if (use_custom_ctx) SSL_CTX_free(ctx); close(fd); free(req); HTTP_FAIL("TLS session unavailable"); }
         SSL_set_tlsext_host_name(ssl, host); // SNI
-        if (_tinox_tls_insecure_skip_verify) {
+        if (opts->insecure_skip_verify) {
             SSL_set_verify(ssl, SSL_VERIFY_NONE, NULL);
         } else {
             SSL_set_verify(ssl, SSL_VERIFY_PEER, NULL);
@@ -7304,20 +7531,21 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
         }
         SSL_set_fd(ssl, fd);
         if (SSL_connect(ssl) <= 0) {
-            ERR_print_errors_fp(stderr);
+            if (errno == EAGAIN || errno == EWOULDBLOCK) snprintf(clk.error, sizeof(clk.error), "TLS handshake timed out");
+            else if (!clk.error[0]) snprintf(clk.error, sizeof(clk.error), "TLS handshake failed");
             SSL_free(ssl);
             if (use_custom_ctx) SSL_CTX_free(ctx);
             close(fd);
             free(req);
-            return resp;
+            HTTP_FAIL("TLS handshake failed");
         }
         int wr_total = 0;
         while (wr_total < req_len) {
             int w = SSL_write(ssl, req + wr_total, req_len - wr_total);
-            if (w <= 0) break;
+            if (w <= 0) { if (!clk.error[0]) snprintf(clk.error, sizeof(clk.error), "write failed or timed out"); break; }
             wr_total += w;
         }
-        raw = http_recv_all_tls(ssl);
+        raw = clk.error[0] ? strdup("") : http_recv_bounded(fd, ssl, &clk);
         SSL_shutdown(ssl);
         SSL_free(ssl);
         if (use_custom_ctx) SSL_CTX_free(ctx);
@@ -7327,14 +7555,15 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
     {
         ssize_t sent_total = 0;
         while (sent_total < req_len) {
-            ssize_t s = send(fd, req + sent_total, (size_t)(req_len - sent_total), 0);
-            if (s <= 0) break;
+            ssize_t s = send(fd, req + sent_total, (size_t)(req_len - sent_total), MSG_NOSIGNAL);
+            if (s <= 0) { if (!clk.error[0]) snprintf(clk.error, sizeof(clk.error), "write failed or timed out"); break; }
             sent_total += s;
         }
-        raw = http_recv_all(fd);
+        raw = clk.error[0] ? strdup("") : http_recv_bounded(fd, NULL, &clk);
         close(fd);
     }
     free(req);
+    if (clk.error[0]) resp->error = GC_strdup(clk.error);
 
     // Statuszeile: "HTTP/1.1 200 OK"
     const char* sp = strchr(raw, ' ');
@@ -7359,7 +7588,46 @@ static TinoxHttpResponse* http_request(const char* method, const char* url, cons
     } else {
         resp->body = GC_strdup(raw);
     }
+    free(raw);
+#undef HTTP_FAIL
     return resp;
+}
+
+// Legacy entry: headers and TLS config come from the per-thread setters, no deadlines.
+static TinoxHttpResponse* http_request(const char* method, const char* url, const char* body) {
+    TinoxHttpOpts opts = {
+        .headers = _tinox_http_req_headers,
+        .ca_cert_path = _tinox_tls_ca_cert_path,
+        .client_cert_path = _tinox_tls_client_cert_path,
+        .client_key_path = _tinox_tls_client_key_path,
+        .insecure_skip_verify = _tinox_tls_insecure_skip_verify,
+    };
+    return http_request_opts(method, url, body, &opts);
+}
+
+// Instance-scoped entry (#525): every option is an argument, nothing is read from thread state.
+// Empty strings mean "unset". Deadlines are milliseconds, 0 = none.
+int64_t* httpRequestEx(const char* method, const char* url, const char* body, const char* headers,
+                       const char* ca, const char* cert, const char* key, int64_t insecure,
+                       int64_t connect_ms, int64_t read_ms, int64_t total_ms) {
+    TinoxHttpOpts opts = {
+        .headers = headers && *headers ? headers : NULL,
+        .ca_cert_path = ca && *ca ? ca : NULL,
+        .client_cert_path = cert && *cert ? cert : NULL,
+        .client_key_path = key && *key ? key : NULL,
+        .insecure_skip_verify = insecure,
+        .connect_ms = connect_ms, .read_ms = read_ms, .total_ms = total_ms,
+    };
+    int64_t token = telemetry_enter("http.client", NULL, NULL, 3);
+    TinoxHttpResponse* response = http_request_opts(method, url, body, &opts);
+    telemetry_leave(token);
+    return (int64_t*)response;
+}
+
+char* httpError(int64_t* resp) {
+    if (!resp) return GC_strdup("no response");
+    const char* e = ((TinoxHttpResponse*)resp)->error;
+    return GC_strdup(e ? e : "");
 }
 
 static int64_t* telemetry_http_request(const char* method, const char* url, const char* body) {

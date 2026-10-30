@@ -1,0 +1,115 @@
+module tinox.core.http
+
+namespace tinox.core.http
+{
+    /*
+     * An HTTP client with its own configuration (#525). Unlike the static Http::get/post
+     * helpers, which read headers and TLS settings from per-thread state, everything here
+     * belongs to the instance: two clients (or a client and legacy Http calls) running on the
+     * same worker thread can never see each other's headers or TLS identity.
+     *
+     *   var api: HttpClient = HttpClient::create()
+     *   api.header("Authorization", "Bearer " + token)
+     *   api.timeouts(500, 2000, 5000)          // connect, idle read/write, whole request (ms)
+     *   const r: HttpClientResponse = api.get("http://svc/users")
+     *   if r.failed() { println(r.error()) }
+     *
+     * Deadlines (0 = none): connectMs bounds DNS + TCP connect; readMs bounds each single
+     * read/write (including the TLS handshake); totalMs bounds the whole request and wins over
+     * the other two when shorter. An enclosing task's cancellation or deadline also stops the
+     * request (noticed within ~50 ms). A request that fails or times out returns a response
+     * with failed() == true and a description in error(), distinct from a valid empty reply.
+     *
+     * Threading: configure the client first, then it may be shared; requests only read it.
+     * Each request opens and closes its own connection (no pooling yet, see #526).
+     */
+    class HttpClient
+    {
+        var headerBlock: String
+        var caCert: String
+        var clientCert: String
+        var clientKey: String
+        var insecure: Int64
+        var connectMs: Int64
+        var readMs: Int64
+        var totalMs: Int64
+
+        fn create() -> HttpClient
+        {
+            return HttpClient { headerBlock: "", caCert: "", clientCert: "", clientKey: "", insecure: 0, connectMs: 0, readMs: 0, totalMs: 0 }
+        }
+
+        // Adds a request header (sent in the order added). Throws on CR/LF/NUL or a non-token name.
+        fn header(name: String, value: String) -> HttpClient
+        {
+            if (name.len() == 0 || name.contains(":") || name.contains(" ") || name.contains("\r") || name.contains("\n")
+                || value.contains("\r") || value.contains("\n"))
+            {
+                throw "invalid HTTP header: name/value must not contain CR, LF, ':' or spaces in the name"
+            }
+            this.headerBlock = this.headerBlock + name + ": " + value + "\r\n"
+            return this
+        }
+
+        fn tlsCaCertFile(path: String) -> HttpClient
+        {
+            this.caCert = path
+            return this
+        }
+
+        fn tlsClientCertFile(certPath: String, keyPath: String) -> HttpClient
+        {
+            this.clientCert = certPath
+            this.clientKey = keyPath
+            return this
+        }
+
+        fn tlsInsecureSkipVerify(enabled: Bool) -> HttpClient
+        {
+            this.insecure = enabled ? 1 : 0
+            return this
+        }
+
+        fn timeouts(connectMs: Int64, readMs: Int64, totalMs: Int64) -> HttpClient
+        {
+            if (connectMs < 0 || readMs < 0 || totalMs < 0)
+            {
+                throw "HttpClient timeouts must not be negative"
+            }
+            this.connectMs = connectMs
+            this.readMs = readMs
+            this.totalMs = totalMs
+            return this
+        }
+
+        fn request(method: String, url: String, body: String) -> HttpClientResponse
+        {
+            return httpRequestEx(method, url, body, this.headerBlock, this.caCert, this.clientCert, this.clientKey, this.insecure, this.connectMs, this.readMs, this.totalMs)
+        }
+
+        fn get(url: String) -> HttpClientResponse
+        {
+            return this.request("GET", url, "")
+        }
+
+        fn post(url: String, body: String) -> HttpClientResponse
+        {
+            return this.request("POST", url, body)
+        }
+
+        fn put(url: String, body: String) -> HttpClientResponse
+        {
+            return this.request("PUT", url, body)
+        }
+
+        fn delete(url: String) -> HttpClientResponse
+        {
+            return this.request("DELETE", url, "")
+        }
+
+        fn patch(url: String, body: String) -> HttpClientResponse
+        {
+            return this.request("PATCH", url, body)
+        }
+    }
+}
