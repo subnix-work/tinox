@@ -1,0 +1,72 @@
+module tinox.core.amqp091
+
+namespace tinox.core.amqp091
+{
+    /**
+     * A bounded, in-memory window of recently handled idempotency keys (typically
+     * AmqpMessage091.messageId). It suppresses redeliveries within one process -- not across
+     * restarts or instances; durable de-duplication needs a database unique key. The window keeps
+     * at most `capacity` keys (the oldest are forgotten first), so it cannot grow without bound.
+     *
+     *   if (!this.window.firstSeen(msg.messageId)) { return }    // duplicate: acknowledged, not handled
+     *   ... handle ...
+     *   (on failure the handler throws and the key is forgotten by the caller via forget())
+     */
+    class IdempotencyWindow091
+    {
+        var capacity: Int64
+        var seen: Map<String, Bool>
+        var order: List<String>
+
+        fnc create(capacity: Int64) -> IdempotencyWindow091
+        {
+            if (capacity < 1)
+            {
+                println("runtime error: IdempotencyWindow091 capacity must be at least 1")
+                exit(1)
+            }
+            return IdempotencyWindow091 { capacity: capacity, seen: Map::new(), order: [] }
+        }
+
+        /** True the first time a key is offered (and records it); false for a duplicate. An empty key is never a duplicate. */
+        fn firstSeen(key: String) -> Bool
+        {
+            if (key == "")
+            {
+                return true
+            }
+            if (this.seen.contains(key))
+            {
+                return false
+            }
+            this.seen[key] = true
+            this.order.push(key)
+            if (this.order.len() > this.capacity)
+            {
+                this.forget(this.order[0])
+            }
+            return true
+        }
+
+        /** Removes a key, e.g. after a failed attempt so that the retry is not mistaken for a duplicate */
+        fn forget(key: String) -> Nothing
+        {
+            if (!this.seen.contains(key))
+            {
+                return
+            }
+            this.seen.remove(key)
+            var kept: List<String> = []
+            var i: Int64 = 0
+            while (i < this.order.len())
+            {
+                if (this.order[i] != key)
+                {
+                    kept.push(this.order[i])
+                }
+                i = i + 1
+            }
+            this.order = kept
+        }
+    }
+}

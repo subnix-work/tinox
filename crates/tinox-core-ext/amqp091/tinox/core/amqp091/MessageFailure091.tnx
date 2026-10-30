@@ -1,0 +1,67 @@
+module tinox.core.amqp091
+
+namespace tinox.core.amqp091
+{
+    /**
+     * Failure policy of an @Amqp091Consumer handler, used by the generated receive loop
+     * (@MessageFailure(maxAttempts, backoffMs[, "dead-letter-queue"]) on the @OnMessage method).
+     *
+     * A delivery is acknowledged only when the handler returned normally. After a failure the
+     * handler runs again in the same process, waiting backoffMs * 2^(attempt-1) (capped at 60 s)
+     * in between, until maxAttempts have failed. Then the message is settled, never acknowledged
+     * as if handled:
+     *   - with a dead-letter queue: it is published there (default exchange, routing key = the
+     *     queue name; the body and content type are kept, headers are not) and only then
+     *     acknowledged; if that publish cannot be done the delivery is rejected with requeue, so
+     *     the message stays in the broker instead of being lost;
+     *   - without one: basic.reject(requeue=false) -- the broker discards it or dead-letters it
+     *     through the queue's own x-dead-letter-exchange. Broker semantics are not replaced.
+     * Retries are in-process: a crash or restart leaves the delivery unacknowledged and the broker
+     * redelivers it (redelivered == true) -- at-least-once, never exactly-once. Handlers must be
+     * idempotent; IdempotencyWindow091 helps for the redelivery window.
+     */
+    class MessageFailure091
+    {
+        /**
+         * Called after a failed attempt (1-based). Returns 0 when the handler should run again (the
+         * backoff already elapsed), 1 when the message has been settled.
+         */
+        fnc onFailure(chan: AmqpChannel091, msg: AmqpMessage091, attempt: Int64, maxAttempts: Int64, backoffMs: Int64, deadLetterQueue: String) -> Int64
+        {
+            if (attempt < maxAttempts)
+            {
+                var wait: Int64 = backoffMs
+                var doubling: Int64 = 1
+                while (doubling < attempt && wait < 60000)
+                {
+                    wait = wait * 2
+                    doubling = doubling + 1
+                }
+                if (wait > 60000)
+                {
+                    wait = 60000
+                }
+                sleep(wait)
+                return 0
+            }
+            if (deadLetterQueue != "")
+            {
+                const sent: Int64 = chan.publish("", deadLetterQueue, msg.body, msg.contentType)
+                if (sent >= 0)
+                {
+                    println("amqp: message " + msg.deliveryTag.toString() + " dead-lettered to " + deadLetterQueue + " after " + attempt.toString() + " attempts")
+                    chan.ack(msg.deliveryTag)
+                }
+                else
+                {
+                    println("amqp: dead-letter publish to " + deadLetterQueue + " failed; message " + msg.deliveryTag.toString() + " stays in the broker (requeued)")
+                    chan.reject(msg.deliveryTag, true)
+                }
+                return 1
+            }
+            println("amqp: message " + msg.deliveryTag.toString() + " rejected without requeue after " + attempt.toString() + " attempts")
+            chan.reject(msg.deliveryTag, false)
+            return 1
+        }
+    }
+}

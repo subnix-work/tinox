@@ -260,6 +260,8 @@ pub struct Amqp091ConsumerInfo {
     pub pass: String,
     pub queue: String,
     pub on_message: Option<String>,
+    /// @MessageFailure(maxAttempts, backoffMs[, deadLetterQueue]) on the handler (issue #537)
+    pub failure: Option<(i64, i64, String)>,
 }
 
 /// @Http3RestController(port, certPath, keyPath) on a class -- routes
@@ -1041,6 +1043,16 @@ impl AnnotationProcessor {
             },
         );
         registry.insert(
+            "MessageFailure".to_string(),
+            AnnotationInfo {
+                name: "MessageFailure".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 2,
+                max_args: 3,
+                description: "@MessageFailure(maxAttempts, backoffMs[, \"dead-letter-queue\"]) on an @Amqp091Consumer's @OnMessage method -- a failing handler is retried with exponential backoff up to maxAttempts, then published to the dead-letter queue (or rejected without requeue); the delivery is never acknowledged as handled. At-least-once, never exactly-once".to_string(),
+            },
+        );
+        registry.insert(
             "Scheduled".to_string(),
             AnnotationInfo {
                 name: "Scheduled".to_string(),
@@ -1725,10 +1737,24 @@ impl AnnotationProcessor {
 
         if let Some((host, port, vhost, user, pass, queue)) = amqp091_consumer_args {
             let mut on_message: Option<String> = None;
+            let mut failure: Option<(i64, i64, String)> = None;
             for method in &class.methods {
                 for ann in &method.annotations {
                     if ann.name == "OnMessage" {
                         on_message = Some(method.name.clone());
+                        if let Some(policy) = method.annotations.iter().find(|a| a.name == "MessageFailure") {
+                            let int = |i: usize| match policy.args.get(i) {
+                                Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(n))) => Some(*n),
+                                _ => None,
+                            };
+                            let dlq = match policy.args.get(2) {
+                                Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(q))) => q.clone(),
+                                _ => String::new(),
+                            };
+                            if let (Some(max), Some(backoff)) = (int(0), int(1)) {
+                                failure = Some((max, backoff, dlq));
+                            }
+                        }
                     }
                 }
             }
@@ -1741,6 +1767,7 @@ impl AnnotationProcessor {
                 pass,
                 queue,
                 on_message,
+                failure,
             });
         }
 
@@ -2043,6 +2070,33 @@ fn resolve_di_providers(source: &tinox_parser::SourceFile, result: &mut Annotati
         }
         if providers.len() > 1 { errors.push(Error::new(class.span, "Duplicate @Provider annotation")); }
         for method in &class.methods {
+            for ann in method.annotations.iter().filter(|a| a.name == "MessageFailure") {
+                let has_consumer = class.annotations.iter().any(|a| a.name == "Amqp091Consumer");
+                let is_handler = method.annotations.iter().any(|a| a.name == "OnMessage");
+                if !has_consumer || !is_handler {
+                    errors.push(Error::new(ann.span, "@MessageFailure belongs on the @OnMessage method of an @Amqp091Consumer class"));
+                }
+                let int = |i: usize| match ann.args.get(i) {
+                    Some(AnnotationArg::Literal(Literal::Integer(n))) => Some(*n),
+                    _ => None,
+                };
+                match (int(0), int(1)) {
+                    (Some(max), Some(backoff)) => {
+                        if !(1..=20).contains(&max) {
+                            errors.push(Error::new(ann.span, format!("@MessageFailure maxAttempts must be 1..=20, found {max}")));
+                        }
+                        if !(0..=60000).contains(&backoff) {
+                            errors.push(Error::new(ann.span, format!("@MessageFailure backoffMs must be 0..=60000, found {backoff}")));
+                        }
+                    }
+                    _ => errors.push(Error::new(ann.span, "@MessageFailure needs integer literals maxAttempts and backoffMs")),
+                }
+                if let Some(arg) = ann.args.get(2) {
+                    if !matches!(arg, AnnotationArg::Literal(Literal::String(q)) if !q.trim().is_empty()) {
+                        errors.push(Error::new(ann.span, "@MessageFailure's dead-letter queue must be a non-empty string literal"));
+                    }
+                }
+            }
             for ann in method.annotations.iter().filter(|a| a.name == "Scheduled") {
                 let cron = match ann.args.first() {
                     Some(AnnotationArg::Literal(Literal::String(c))) => c.as_str(),
@@ -4042,6 +4096,18 @@ class Svc {
         assert!(args.iter().any(|e| e.message.contains("no parameters")), "{args:?}");
         let ret = valid("class J { @Scheduled(\"* * * * *\")\nfn run() -> Int64 { return 1 } }");
         assert!(ret.iter().any(|e| e.message.contains("return Nothing")), "{ret:?}");
+    }
+
+    #[test]
+    fn test_validate_message_failure_policy() {
+        let ok = valid("@Amqp091Consumer(\"h\", 5672, \"/\", \"u\", \"p\", \"q\")\nclass C { @OnMessage\n@MessageFailure(3, 100, \"q.dlq\")\nfn m(msg: Any) -> Nothing {} }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let elsewhere = valid("class C { @MessageFailure(3, 100)\nfn m() -> Nothing {} }");
+        assert!(elsewhere.iter().any(|e| e.message.contains("belongs on the @OnMessage")), "{elsewhere:?}");
+        let bounds = valid("@Amqp091Consumer(\"h\", 5672, \"/\", \"u\", \"p\", \"q\")\nclass C { @OnMessage\n@MessageFailure(0, 100)\nfn m(msg: Any) -> Nothing {} }");
+        assert!(bounds.iter().any(|e| e.message.contains("maxAttempts")), "{bounds:?}");
+        let backoff = valid("@Amqp091Consumer(\"h\", 5672, \"/\", \"u\", \"p\", \"q\")\nclass C { @OnMessage\n@MessageFailure(2, 70000)\nfn m(msg: Any) -> Nothing {} }");
+        assert!(backoff.iter().any(|e| e.message.contains("backoffMs")), "{backoff:?}");
     }
 
     #[test]

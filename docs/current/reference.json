@@ -329,6 +329,15 @@
       ]
     },
     {
+      "description": "@MessageFailure(maxAttempts, backoffMs[, \"dead-letter-queue\"]) on an @Amqp091Consumer's @OnMessage method -- a failing handler is retried with exponential backoff up to maxAttempts, then published to the dead-letter queue (or rejected without requeue); the delivery is never acknowledged as handled. At-least-once, never exactly-once",
+      "max_args": 3,
+      "min_args": 2,
+      "name": "MessageFailure",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "Column is NOT NULL",
       "max_args": 0,
       "min_args": 0,

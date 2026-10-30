@@ -497,6 +497,7 @@ mod tests {
             pass: "secret_pass".into(),
             queue: "jobs".into(),
             on_message: None,
+            failure: None,
         }]);
         codegen.gen(&ast).unwrap();
         let plan = codegen.bootstrap_plan();

@@ -257,6 +257,13 @@ impl CodeGen {
             if input.service_enabled {
                 writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %message_next, label %service_close\nmessage_next:").unwrap();
             }
+            // Failure policy (issue #537): the delivery is acknowledged only when the handler
+            // returned normally. A failed attempt is retried with backoff up to maxAttempts, then
+            // dead-lettered or rejected by MessageFailure091.onFailure -- never acknowledged as handled.
+            let (max_attempts, backoff_ms, dead_letter) = c.failure.clone().unwrap_or((1, 0, String::new()));
+            let handler_label = self.emit_lambda_string_literal(&format!("{}.{}", c.class_name, c.on_message.clone().unwrap_or_default()));
+            let dlq_ptr = self.emit_lambda_string_literal(&dead_letter);
+            writeln!(&mut self.lambda_ir, "  %attempt_slot = alloca i64\n  store i64 1, i64* %attempt_slot\n  br label %attempt_loop\nattempt_loop:").unwrap();
             if let Some(ref on_message) = c.on_message {
                 writeln!(
                     &mut self.lambda_ir,
@@ -265,10 +272,25 @@ impl CodeGen {
                 )
                 .unwrap();
             }
+            writeln!(&mut self.lambda_ir, "  %handler_err = load i64, i64* @__tinox_err").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handler_failed = call i64 @tinox_message_handler_failed(i8* {handler_label}, i64 %handler_err)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %did_fail = icmp ne i64 %handler_failed, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %did_fail, label %on_fail, label %ack_message").unwrap();
+            writeln!(&mut self.lambda_ir, "on_fail:").unwrap();
             if input.service_enabled {
-                let label = self.emit_lambda_string_literal("AMQP handler failed");
-                writeln!(&mut self.lambda_ir, "  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %ack_message, label %handler_failed\nhandler_failed:\n  call void @tinox_service_work_exit()\n  br label %service_close\nack_message:").unwrap();
+                // Shutting down: leave the delivery unacknowledged so the broker redelivers it.
+                writeln!(&mut self.lambda_ir, "  %fail_stopping = call i1 @serviceIsStopping()\n  br i1 %fail_stopping, label %fail_abandon, label %fail_settle\nfail_abandon:\n  call void @tinox_service_work_exit()\n  br label %service_close\nfail_settle:").unwrap();
             }
+            writeln!(&mut self.lambda_ir, "  %attempt = load i64, i64* %attempt_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %settled = call i64 @MessageFailure091_onFailure(i64* %chan_obj, i64* %msg_obj, i64 %attempt, i64 {max_attempts}, i64 {backoff_ms}, i8* {dlq_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %retry = icmp eq i64 %settled, 0\n  br i1 %retry, label %retry_attempt, label %settled_done").unwrap();
+            writeln!(&mut self.lambda_ir, "retry_attempt:\n  %next_attempt = add i64 %attempt, 1\n  store i64 %next_attempt, i64* %attempt_slot\n  br label %attempt_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "settled_done:").unwrap();
+            if input.service_enabled {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "ack_message:").unwrap();
             writeln!(
                 &mut self.lambda_ir,
                 "  %tag_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 0"
@@ -332,6 +354,7 @@ mod tests {
             pass: "secret".into(),
             queue: "queue".into(),
             on_message: Some("receive".into()),
+            failure: None,
         }
     }
     fn checked_generator() -> CodeGen {
@@ -414,9 +437,10 @@ class Consumer { var marker: Int64 = 42
                 .count(),
             8
         );
+        // acknowledged / settled / abandoned-on-shutdown paths, per consumer
         assert_eq!(
             ir.matches("call void @tinox_service_work_exit()").count(),
-            4
+            6
         );
         assert_eq!(ir.matches("call void @AmqpConnection091_close").count(), 2);
         assert_eq!(codegen.background_tasks.len(), 2);
@@ -424,6 +448,9 @@ class Consumer { var marker: Int64 = 42
             ir.find("call void @Consumer_receive").unwrap()
                 < ir.find("call void @AmqpChannel091_ack").unwrap()
         );
+        // A failed handler goes through the failure policy and is never acknowledged on that path.
+        assert_eq!(ir.matches("@MessageFailure091_onFailure").count(), 2);
+        assert_eq!(ir.matches("call void @AmqpChannel091_ack").count(), 2);
         assert!(
             ir.contains("i64 42"),
             "consumer field defaults must still be emitted"

@@ -3301,6 +3301,16 @@ int64_t tinox_scheduled_report(const char* job, int64_t err) {
     return 1;
 }
 
+// An AMQP consumer handler returned (issue #537): when it left an error pending, print it with the
+// handler name, clear it so the next attempt/message starts clean, and return 1. The generated loop
+// then applies the failure policy; the delivery is not acknowledged on this path.
+int64_t tinox_message_handler_failed(const char* handler, int64_t err) {
+    if (err == 0) return 0;
+    fprintf(stderr, "message handler %s failed: %s\n", handler, (const char*)(intptr_t)err);
+    __tinox_err = 0;
+    return 1;
+}
+
 // First index >= from where needle occurs in the haystack, or -1. An empty needle is a hard error.
 int64_t tinoxBufFind(int64_t h, int64_t n, int64_t from) {
     TinoxBuf* hay = tinox_buf_of(h, "find");

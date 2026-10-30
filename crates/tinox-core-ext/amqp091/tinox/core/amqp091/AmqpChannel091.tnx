@@ -394,26 +394,26 @@ namespace tinox.core.amqp091
         {
             const f1 = recv this.inbox
             if (f1.frameType != 1) {
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver (frameType=" + f1.frameType.toString() + ")" }
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver (frameType=" + f1.frameType.toString() + ")", redelivered: false, messageId: "" }
             }
             const mf = Amqp091::decodeMethodPayload(f1.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
                 const msg = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: msg }
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: msg, redelivered: false, messageId: "" }
             }
             if (mf.classId != 60 || mf.methodId != 60) {
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString() }
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), redelivered: false, messageId: "" }
             }
             const r = AmqpReader091::new(mf.args)
             r.shortstr() // consumer-tag (unused in v1)
             const deliveryTag = r.longlong()
-            r.octet() // redelivered (its own bit byte)
+            const redelivered: Bool = r.octet() != 0 // its own bit byte
             const exchange = r.shortstr()
             const routingKey = r.shortstr()
 
             const f2 = recv this.inbox
             if (f2.frameType != 2) {
-                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected content-header frame (frameType=" + f2.frameType.toString() + ")" }
+                return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected content-header frame (frameType=" + f2.frameType.toString() + ")", redelivered: false, messageId: "" }
             }
             const hr = AmqpReader091::new(f2.payload)
             hr.short() // class-id (60, not checked)
@@ -421,6 +421,7 @@ namespace tinox.core.amqp091
             const bodySize = hr.longlong()
             const flags = hr.short()
             var contentType: String = ""
+            var messageId: String = ""
             if ((flags & 32768) != 0) {
                 contentType = hr.shortstr()
             }
@@ -431,7 +432,7 @@ namespace tinox.core.amqp091
             if ((flags & 1024) != 0) { hr.shortstr() }      // correlation-id
             if ((flags & 512) != 0) { hr.shortstr() }       // reply-to
             if ((flags & 256) != 0) { hr.shortstr() }       // expiration
-            if ((flags & 128) != 0) { hr.shortstr() }       // message-id
+            if ((flags & 128) != 0) { messageId = hr.shortstr() } // message-id
             if ((flags & 64) != 0) { hr.longlong() }        // timestamp
             if ((flags & 32) != 0) { hr.shortstr() }        // type
             if ((flags & 16) != 0) { hr.shortstr() }        // user-id
@@ -442,14 +443,32 @@ namespace tinox.core.amqp091
             while body.len() < bodySize {
                 const f3 = recv this.inbox
                 if (f3.frameType != 3) {
-                    return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected body frame (frameType=" + f3.frameType.toString() + ")" }
+                    return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected body frame (frameType=" + f3.frameType.toString() + ")", redelivered: false, messageId: "" }
                 }
                 for i in 0..f3.payload.len() {
                     body.push(f3.payload[i])
                 }
             }
 
-            return AmqpMessage091 { deliveryTag: deliveryTag, exchange: exchange, routingKey: routingKey, contentType: contentType, body: body, ok: true, errorMessage: "" }
+            return AmqpMessage091 { deliveryTag: deliveryTag, exchange: exchange, routingKey: routingKey, contentType: contentType, body: body, ok: true, errorMessage: "", redelivered: redelivered, messageId: messageId }
+        }
+
+        /*
+         * `basic.reject`: refuses one delivery. requeue == true puts it back on the queue (the
+         * broker redelivers it, possibly at once); false discards it or, if the queue has a
+         * dead-letter exchange (x-dead-letter-exchange), dead-letters it -- broker semantics.
+         */
+        fn reject(deliveryTag: Int64, requeue: Bool) -> Nothing
+        {
+            const w = AmqpWriter091::new()
+            w.longlong(deliveryTag)
+            if (requeue) {
+                w.octet(1)
+            } else {
+                w.octet(0)
+            }
+            const payload = Amqp091::encodeMethodPayload(60, 90, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
         }
 
         /* `basic.ack` (no `-ok`, asynchronous per spec). */

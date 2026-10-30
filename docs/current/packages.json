@@ -406,11 +406,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/amqp091/1-1-1/docs.html",
+      "docs": "docs/tinox-core/amqp091/1-2-0/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/amqp091/tinox.toml",
       "name": "amqp091",
-      "version": "1.1.1"
+      "version": "1.2.0"
     },
     {
       "dependencies": [],

@@ -229,6 +229,8 @@ pub struct Amqp091ConsumerEntry {
     pub pass: String,
     pub queue: String,
     pub on_message: Option<String>,
+    /// @MessageFailure(maxAttempts, backoffMs[, deadLetterQueue]) on the handler
+    pub failure: Option<(i64, i64, String)>,
 }
 
 /// @Http3RestController(port, certPath, keyPath) entry: routes every
@@ -2045,6 +2047,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_cli_print_option(i8*, i8*)").unwrap();
         // Metrics runtime
         writeln!(&mut self.ir, "declare void @tinox_counter_inc(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_message_handler_failed(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_histogram_record(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_gauge_set(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_clock_nanos()").unwrap();

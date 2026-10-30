@@ -5212,6 +5212,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             pass: e.pass.clone(),
             queue: e.queue.clone(),
             on_message: e.on_message.clone(),
+            failure: e.failure.clone(),
         })
         .collect();
 

@@ -18,5 +18,9 @@ namespace tinox.core.amqp091
         var body: List<Int64>
         var ok: Bool
         var errorMessage: String
+        /** True if the broker marks this delivery as redelivered (an earlier delivery was not acknowledged) */
+        var redelivered: Bool
+        /** The message-id property, "" if the publisher set none; the natural idempotency key */
+        var messageId: String
     }
 }
