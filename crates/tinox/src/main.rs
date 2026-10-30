@@ -2131,7 +2131,7 @@ fn run_tests_watch(args: &[String]) {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc;
 
-    let watch_dir = if let Some(file) = args.first().filter(|a| !a.starts_with('-')) {
+    let watch_dir = if let Some(file) = parse_test_selection(args).ok().flatten() {
         Path::new(file).canonicalize().ok().and_then(|p| p.parent().map(Path::to_path_buf))
     } else {
         find_project_root()
@@ -2199,8 +2199,36 @@ fn collect_test_dir(dir: &Path, files: &mut Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// The single positional test file of `tinox test`, wherever it sits among the
+/// flags. Unknown flags and extra positionals are errors, never a silent
+/// widening of the selected scope (#585).
+fn parse_test_selection(args: &[String]) -> Result<Option<&str>, String> {
+    let mut file: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--list" | "--watch" | "-w" => {}
+            "--format" | "--message-format" => {
+                i += 1;
+                if i >= args.len() { return Err(format!("{a} needs a value")); }
+            }
+            _ if a.starts_with("--format=") || a.starts_with("--message-format=") => {}
+            _ if a.starts_with('-') && a.len() > 1 => return Err(format!("unknown option for `tinox test`: {a}")),
+            _ => {
+                if let Some(prev) = file {
+                    return Err(format!("only one test file may be given, got `{prev}` and `{a}`"));
+                }
+                file = Some(a);
+            }
+        }
+        i += 1;
+    }
+    Ok(file)
+}
+
 fn collect_test_files(args: &[String]) -> Result<Vec<String>, String> {
-    if let Some(f) = args.first().filter(|a| !a.starts_with('-')) {
+    if let Some(f) = parse_test_selection(args)? {
         let path = Path::new(f).canonicalize().map_err(|e| format!("{}: {}", f, e))?;
         return Ok(vec![path.to_string_lossy().into_owned()]);
     }
