@@ -906,6 +906,7 @@ fn convert_route_params(
             tinox_typecheck::annotations::RouteParamKind::PathParam => tinox_codegen::RouteParamKind::PathParam,
             tinox_typecheck::annotations::RouteParamKind::QueryParam => tinox_codegen::RouteParamKind::QueryParam,
             tinox_typecheck::annotations::RouteParamKind::PostParam => tinox_codegen::RouteParamKind::PostParam,
+            tinox_typecheck::annotations::RouteParamKind::MultipartParam => tinox_codegen::RouteParamKind::MultipartParam,
             tinox_typecheck::annotations::RouteParamKind::HttpContext => tinox_codegen::RouteParamKind::HttpContext,
         },
         name: p.name.clone(),

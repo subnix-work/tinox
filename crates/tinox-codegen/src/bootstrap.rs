@@ -344,6 +344,7 @@ impl CodeGen {
                                 super::RouteParamKind::PathParam => "path",
                                 super::RouteParamKind::QueryParam => "query",
                                 super::RouteParamKind::PostParam => "body",
+                                super::RouteParamKind::MultipartParam => "multipart",
                                 super::RouteParamKind::HttpContext => "context",
                             }
                             .into(),

@@ -1,7 +1,12 @@
 module tinox.core.bytes
+import tinox.core.fs
+import tinox.core.uuid
+import tinox.core.time
 
 namespace tinox.core.bytes
 {
+    extern fn tinoxBufWriteFileExclusive(path: String, h: Int64) -> Int64
+
     /** Outcome of Multipart::parse: either parts, or ok == false with a reason */
     class MultipartResult
     {
@@ -22,6 +27,91 @@ namespace tinox.core.bytes
                 i = i + 1
             }
             return false
+        }
+
+        /**
+         * Writes every file part to its own NEW file in `dir` (named tinox-upload-<uuid>.part, mode 0600, never
+         * overwriting or following a symlink) and drops the in-memory copy, so large uploads do not stay in memory
+         * while they are processed. The files are OWNED by this result: call release() when done -- best as
+         * `defer r.release()` right after parse, which also runs on exceptions and cancellation. If a file cannot
+         * be written, everything written so far is removed and the error is thrown.
+         */
+        fn spool(dir: String) -> Nothing
+        {
+            var i: Int64 = 0
+            while (i < this.parts.len())
+            {
+                const part: MultipartPart = this.parts[i]
+                if (part.isFile && part.tempPath == "")
+                {
+                    const path: String = dir + "/tinox-upload-" + Uuid::generate() + ".part"
+                    const err: Int64 = tinoxBufWriteFileExclusive(path, part.data.handle)
+                    if (err != 0)
+                    {
+                        this.release()
+                        throw "Multipart.spool: cannot write " + path + " (errno " + err.toString() + ")"
+                    }
+                    part.tempPath = path
+                    part.data = Bytes::new(0)
+                }
+                i = i + 1
+            }
+        }
+
+        /** Deletes every spooled file of this result; safe to call more than once and after files vanished */
+        fn release() -> Nothing
+        {
+            var i: Int64 = 0
+            while (i < this.parts.len())
+            {
+                const part: MultipartPart = this.parts[i]
+                if (part.tempPath != "")
+                {
+                    try
+                    {
+                        Fs::deleteFile(part.tempPath)
+                    }
+                    catch (e: String)
+                    {
+                    }
+                    part.tempPath = ""
+                }
+                i = i + 1
+            }
+        }
+
+        /**
+         * Removes spool files left behind by a process that died before release() ran: every
+         * tinox-upload-*.part in `dir` not modified for olderThanMs. Returns how many were removed.
+         * Call it at startup with a generous age (hours) on the spool directory.
+         */
+        fnc sweep(dir: String, olderThanMs: Int64) -> Int64
+        {
+            var removed: Int64 = 0
+            const names: List<String> = Fs::listDirectory(dir)
+            const nowNs: Int64 = Time::now() * 1000000
+            var i: Int64 = 0
+            while (i < names.len())
+            {
+                const name: String = names[i]
+                if (name.startsWith("tinox-upload-") && name.endsWith(".part"))
+                {
+                    const found = Fs::stat(dir + "/" + name)
+                    if (found == null)
+                    {
+                        i = i + 1
+                        continue
+                    }
+                    const info: FileInfo = found as FileInfo
+                    if ((nowNs - info.modifiedNanoseconds) / 1000000 >= olderThanMs)
+                    {
+                        Fs::deleteFile(dir + "/" + name)
+                        removed = removed + 1
+                    }
+                }
+                i = i + 1
+            }
+            return removed
         }
 
         fn get(name: String) -> MultipartPart

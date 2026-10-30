@@ -356,6 +356,15 @@
       ]
     },
     {
+      "description": "Binds the multipart/form-data request body, parsed with MultipartLimits::defaults(), to a MultipartResult parameter -- a missing/invalid boundary or an over-budget body is answered with 400 before the handler runs.",
+      "max_args": 0,
+      "min_args": 0,
+      "name": "MultipartParam",
+      "targets": [
+        "Param"
+      ]
+    },
+    {
       "description": "Column is NOT NULL",
       "max_args": 0,
       "min_args": 0,

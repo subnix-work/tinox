@@ -208,7 +208,7 @@ namespace tinox.core.bytes
                 {
                     return Multipart::fail("part '" + name + "' is " + size.toString() + " bytes, limit " + cap.toString())
                 }
-                parts.push(MultipartPart { name: name, filename: filename, isFile: isFile, contentType: partType, data: data })
+                parts.push(MultipartPart { name: name, filename: filename, isFile: isFile, contentType: partType, data: data, size: data.len(), tempPath: "" })
                 pos = dataEnd + 2 + delimiter.len()
             }
             return Multipart::fail("unreachable")

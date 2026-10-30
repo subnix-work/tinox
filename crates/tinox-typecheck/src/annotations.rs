@@ -57,6 +57,8 @@ pub enum RouteParamKind {
     PathParam,
     QueryParam,
     PostParam,
+    /// multipart/form-data body parsed into a `MultipartResult` (issue #542)
+    MultipartParam,
     HttpContext,
 }
 
@@ -585,6 +587,16 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Binds the deserialized JSON request body to this parameter — type must be @JsonSerializable".to_string(),
+            },
+        );
+        registry.insert(
+            "MultipartParam".to_string(),
+            AnnotationInfo {
+                name: "MultipartParam".to_string(),
+                valid_targets: vec![AnnotationTarget::Param],
+                min_args: 0,
+                max_args: 0,
+                description: "Binds the multipart/form-data request body, parsed with MultipartLimits::defaults(), to a MultipartResult parameter -- a missing/invalid boundary or an over-budget body is answered with 400 before the handler runs.".to_string(),
             },
         );
         registry.insert(
@@ -2035,6 +2047,7 @@ impl AnnotationProcessor {
                 "PathParam" => Some(RouteParamKind::PathParam),
                 "QueryParam" => Some(RouteParamKind::QueryParam),
                 "PostParam" => Some(RouteParamKind::PostParam),
+                "MultipartParam" => Some(RouteParamKind::MultipartParam),
                 "HttpContext" => Some(RouteParamKind::HttpContext),
                 _ => None,
             })?;
@@ -2705,12 +2718,12 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
 
     for param in &method.params {
         let bindings: Vec<&Annotation> = param.annotations.iter()
-            .filter(|a| matches!(a.name.as_str(), "PathParam" | "QueryParam" | "PostParam" | "HttpContext"))
+            .filter(|a| matches!(a.name.as_str(), "PathParam" | "QueryParam" | "PostParam" | "MultipartParam" | "HttpContext"))
             .collect();
         match bindings.len() {
             0 => {
                 errors.push(Error::new(param.span, format!(
-                    "REST handler parameter '{}' needs exactly one of @PathParam/@QueryParam/@PostParam/@HttpContext",
+                    "REST handler parameter '{}' needs exactly one of @PathParam/@QueryParam/@PostParam/@MultipartParam/@HttpContext",
                     param.name
                 )));
                 continue;
@@ -2739,6 +2752,14 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
                 if !is_json_serializable_class_type(&param.param_type, json_serializable) {
                     errors.push(Error::new(param.span, format!(
                         "@PostParam on '{}' must be a class marked @JsonSerializable, found {:?}",
+                        param.name, param.param_type
+                    )));
+                }
+            }
+            "MultipartParam" => {
+                if !matches!(&param.param_type, Type::Named(n) if n == "MultipartResult") {
+                    errors.push(Error::new(param.span, format!(
+                        "@MultipartParam on '{}' must be of type MultipartResult (import tinox.core.bytes), found {:?}",
                         param.name, param.param_type
                     )));
                 }
@@ -4320,6 +4341,14 @@ class Svc {
         assert!(backoff.iter().any(|e| e.message.contains("backoffMs")), "{backoff:?}");
         let shape = valid("@OutboxDispatcher(\"h\", \"x\", \"/\", \"u\", \"p\", 3, 100)\nclass R { }");
         assert!(shape.iter().any(|e| e.message.contains("takes literals")), "{shape:?}");
+    }
+
+    #[test]
+    fn test_validate_multipart_param_type() {
+        let ok = valid("class MultipartResult { var ok: Bool }\nclass Ctrl { @POST(\"/u\")\nfn up(@MultipartParam form: MultipartResult) -> String { return \"x\" } }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let bad = valid("class Ctrl { @POST(\"/u\")\nfn up(@MultipartParam form: String) -> String { return \"x\" } }");
+        assert!(bad.iter().any(|e| e.message.contains("must be of type MultipartResult")), "{bad:?}");
     }
 
     #[test]

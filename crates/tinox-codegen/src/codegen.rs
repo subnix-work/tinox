@@ -120,6 +120,7 @@ pub enum RouteParamKind {
     PathParam,
     QueryParam,
     PostParam,
+    MultipartParam,
     HttpContext,
 }
 
@@ -3285,6 +3286,35 @@ impl CodeGen {
                         }
                     }
                 }
+                RouteParamKind::MultipartParam => {
+                    // Parse the body byte-exactly with the default budgets; any failure is a 400 before the handler.
+                    writeln!(&mut self.lambda_ir, "  %req_field_{n} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %req_i64_{n} = load i64, i64* %req_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %req_ptr_{n} = inttoptr i64 %req_i64_{n} to i64*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %body_field_{n} = getelementptr i64, i64* %req_ptr_{n}, i64 2").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %body_i64_{n} = load i64, i64* %body_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %body_ptr_{n} = inttoptr i64 %body_i64_{n} to i8*").unwrap();
+                    let ct_name = self.emit_lambda_string_literal("Content-Type");
+                    writeln!(&mut self.lambda_ir, "  %ct_{n} = call i8* @HttpRequest_getHeader(i64* %req_ptr_{n}, i8* {ct_name})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_bytes_{n} = call i64* @Bytes_fromRequestBody(i64* null, i8* %body_ptr_{n})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_limits_{n} = call i64* @MultipartLimits_defaults()").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_{n} = call i64* @Multipart_parse(i8* %ct_{n}, i64* %mp_bytes_{n}, i64* %mp_limits_{n})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_ok_field_{n} = getelementptr i64, i64* %mp_{n}, i64 0").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_ok_{n} = load i64, i64* %mp_ok_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_good_{n} = icmp ne i64 %mp_ok_{n}, 0").unwrap();
+                    writeln!(&mut self.lambda_ir, "  br i1 %mp_good_{n}, label %mp_pass_{n}, label %mp_fail_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "mp_fail_{n}:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_err_field_{n} = getelementptr i64, i64* %mp_{n}, i64 1").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_err_i64_{n} = load i64, i64* %mp_err_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_err_{n} = inttoptr i64 %mp_err_i64_{n} to i8*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_rf_{n} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_ri_{n} = load i64, i64* %mp_rf_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_rp_{n} = inttoptr i64 %mp_ri_{n} to i64*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_resp_{n} = call i64* @HttpResponse_badRequest(i64* %mp_rp_{n}, i8* %mp_err_{n})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+                    writeln!(&mut self.lambda_ir, "mp_pass_{n}:").unwrap();
+                    call_args.push(format!("i64* %mp_{n}"));
+                }
                 RouteParamKind::PostParam => {
                     writeln!(&mut self.lambda_ir, "  %req_field_{n} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
                     writeln!(&mut self.lambda_ir, "  %req_i64_{n} = load i64, i64* %req_field_{n}").unwrap();
@@ -4935,6 +4965,7 @@ tr_done_{idx}:"#).unwrap();
                 RouteParamKind::PathParam => "PathParam",
                 RouteParamKind::QueryParam => "QueryParam",
                 RouteParamKind::PostParam => "PostParam",
+                RouteParamKind::MultipartParam => "MultipartParam",
                 RouteParamKind::HttpContext => "HttpContext",
             };
             let type_json = match p.kind {
@@ -16142,6 +16173,13 @@ tr_done_{idx}:"#).unwrap();
         if scopes.iter().all(|s| s.is_empty()) {
             return Ok(());
         }
+        // The error that is propagating out of this frame is still pending in @__tinox_err. A deferred
+        // call must not see it: a try/catch inside the deferred function (or its callees) would take it
+        // for its own and swallow it, turning a failed request into a success. Park it, run the defers,
+        // and put it back unless a defer raised a new error of its own (that one then wins, as in Java).
+        let parked = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", parked).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
         ctx.in_defer_exec = true;
         for scope in scopes {
             for stmt in scope.into_iter().rev() {
@@ -16149,6 +16187,13 @@ tr_done_{idx}:"#).unwrap();
             }
         }
         ctx.in_defer_exec = false;
+        let after = self.temp();
+        let clean = self.temp();
+        let restored = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", after).unwrap();
+        writeln!(&mut self.ir, "{} = icmp eq i64 {}, 0", clean, after).unwrap();
+        writeln!(&mut self.ir, "{} = select i1 {}, i64 {}, i64 {}", restored, clean, parked, after).unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* @__tinox_err", restored).unwrap();
         Ok(())
     }
 

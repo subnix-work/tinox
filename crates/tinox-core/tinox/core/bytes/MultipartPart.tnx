@@ -1,4 +1,5 @@
 module tinox.core.bytes
+import tinox.core.fs
 
 namespace tinox.core.bytes
 {
@@ -11,6 +12,10 @@ namespace tinox.core.bytes
         var isFile: Bool
         var contentType: String
         var data: Bytes
+        /** Payload size in bytes (kept after spool() released the in-memory copy) */
+        var size: Int64
+        /** Path of the spooled copy, "" until MultipartResult.spool() wrote it; owned by the MultipartResult */
+        var tempPath: String
 
         /** The file name reduced to its last path segment with control characters and ".." removed; "" if nothing is left */
         fn safeFileName() -> String
@@ -40,6 +45,17 @@ namespace tinox.core.bytes
         fn saveTo(path: String) -> Nothing
         {
             this.data.writeFile(path)
+        }
+
+        /** Streams the spooled file in bounded chunks (memory stays at one chunk); only valid after spool() */
+        fn open() -> ByteReader
+        {
+            if (this.tempPath == "")
+            {
+                println("runtime error: multipart part " + this.name + " was not spooled to a file")
+                exit(1)
+            }
+            return ByteReader::open(this.tempPath)
         }
 
         /** The payload as text; a hard error if it contains NUL, so use data for binary values */
