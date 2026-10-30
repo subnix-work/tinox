@@ -4672,6 +4672,11 @@ int64_t processRunWithOptions(int64_t* argv_handle, int64_t timeout_ms, const ch
     int in_fd = in_pipe[1];
     int out_fd = out_pipe[0];
     int err_fd = err_pipe[0];
+    // Non-blocking: a blocking write of a large input would stall here until the child has
+    // consumed all of it, while the child may itself be blocked writing output nobody reads
+    // (cat on 128 KB deadlocks). Under pipe-memory pressure the kernel shrinks new pipes to one
+    // page, which makes this reproducible. The poll loop below handles EAGAIN.
+    fcntl(in_fd, F_SETFL, fcntl(in_fd, F_GETFL, 0) | O_NONBLOCK);
     size_t stdin_len = strlen(stdin_data);
     size_t stdin_written = 0;
     int in_open = stdin_len > 0;
@@ -12717,6 +12722,8 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
     }
     // Another process holding the write lock is waited for, bounded, instead of failing at once.
     sqlite3_busy_timeout(_tinox_sqlite_db, (int)_tinox_db_lock_timeout_ms());
+    // SQLite ignores REFERENCES unless asked: enforce the declared foreign keys.
+    sqlite3_exec(_tinox_sqlite_db, "PRAGMA foreign_keys = ON", NULL, NULL, NULL);
 }
 
 // Single connection, so a transaction must exclude every other thread's statements until it
