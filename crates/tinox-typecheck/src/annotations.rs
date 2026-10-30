@@ -133,6 +133,8 @@ pub struct ConfigFieldInfo {
     pub config_key: String,
     /// LLVM type of the field: "i8*" for String, "i64" for Int*, "i1" for Bool
     pub field_llvm_type: String,
+    /// The field declares a `= literal` default, so an absent key is not an error.
+    pub has_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1830,6 +1832,7 @@ fn collect_config_fields(class_name: &str, fields: &[FieldDef]) -> Vec<ConfigFie
                 field_name: f.name.clone(),
                 config_key: key,
                 field_llvm_type: field_type_to_llvm(&f.field_type),
+                has_default: f.default.is_some(),
             })
         })
         .collect()

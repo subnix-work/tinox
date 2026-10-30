@@ -10809,6 +10809,7 @@ static void tinox_config_load(void) {
     fclose(f);
 }
 
+// Lookup in the file only (used by limits/telemetry, which read the environment themselves).
 static const char* tinox_config_lookup(const char* key) {
     if (tinox_config_count < 0) tinox_config_load();
     for (int i = 0; i < tinox_config_count; i++) {
@@ -10818,20 +10819,62 @@ static const char* tinox_config_lookup(const char* key) {
     return "";
 }
 
+#define TINOX_CONFIG_MAX_VALUE 4096
+
+// Deterministic precedence for @Config: environment variable (the key upper-cased, every
+// non-alphanumeric character turned into `_`: server.port -> SERVER_PORT) over application.properties.
+// Returns NULL when the key is configured nowhere. An environment variable that is set but empty
+// counts as configured (an explicit empty value), so a deployment can blank a file value.
+static const char* tinox_config_resolve(const char* key) {
+    char env[256];
+    size_t n = 0;
+    for (const char* c = key; *c && n < sizeof(env) - 1; c++)
+        env[n++] = isalnum((unsigned char)*c) ? (char)toupper((unsigned char)*c) : '_';
+    env[n] = '\0';
+    const char* v = getenv(env);
+    if (v) return v;
+    if (tinox_config_count < 0) tinox_config_load();
+    for (int i = 0; i < tinox_config_count; i++)
+        if (strcmp(tinox_config_entries[i].key, key) == 0) return tinox_config_entries[i].value;
+    return NULL;
+}
+
+// Configuration errors never echo the offending value: it may be a secret.
+static void tinox_config_fail(const char* key, const char* reason) {
+    fprintf(stderr, "tinox: invalid configuration: key '%s' %s\n", key, reason);
+    exit(1);
+}
+
+int64_t tinox_config_present(const char* key) {
+    return tinox_config_resolve(key) != NULL;
+}
+
+void tinox_config_missing(const char* key) {
+    tinox_config_fail(key, "is required but not set (environment variable or application.properties)");
+}
+
 char* tinox_config_get(const char* key) {
-    return (char*)tinox_config_lookup(key);
+    const char* v = tinox_config_resolve(key);
+    if (!v) return "";
+    if (strlen(v) > TINOX_CONFIG_MAX_VALUE) tinox_config_fail(key, "exceeds the 4096-byte value limit");
+    return (char*)v;
 }
 
 int64_t tinox_config_get_int(const char* key) {
-    const char* v = tinox_config_lookup(key);
-    if (!v || *v == '\0') return 0;
-    return (int64_t)atoll(v);
+    const char* v = tinox_config_resolve(key);
+    if (!v) return 0;
+    int64_t out = 0;
+    if (!tinox_parse_int_checked(v, &out)) tinox_config_fail(key, "is not a valid integer (empty, trailing characters or out of range)");
+    return out;
 }
 
 int64_t tinox_config_get_bool(const char* key) {
-    const char* v = tinox_config_lookup(key);
-    if (!v || *v == '\0') return 0;
-    return (strcmp(v, "true") == 0 || strcmp(v, "1") == 0 || strcmp(v, "yes") == 0) ? 1 : 0;
+    const char* v = tinox_config_resolve(key);
+    if (!v) return 0;
+    if (!strcmp(v, "true") || !strcmp(v, "1") || !strcmp(v, "yes") || !strcmp(v, "on")) return 1;
+    if (!strcmp(v, "false") || !strcmp(v, "0") || !strcmp(v, "no") || !strcmp(v, "off")) return 0;
+    tinox_config_fail(key, "is not a valid boolean (expected true/false, 1/0, yes/no or on/off)");
+    return 0;
 }
 
 // Dumps every application.properties key/value as a flat JSON object --
@@ -10846,7 +10889,16 @@ char* tinox_config_dump_json(void) {
     if (tinox_config_count < 0) tinox_config_load();
     char* b = jsonBuilderCreate();
     for (int i = 0; i < tinox_config_count; i++) {
-        jsonBuilderAddString(b, tinox_config_entries[i].key, tinox_config_entries[i].value);
+        // Introspection never discloses values of keys that look like credentials.
+        const char* k = tinox_config_entries[i].key;
+        int secret = 0;
+        static const char* const needles[] = {"password", "passwd", "secret", "token", "credential", "apikey", "api_key", "api-key", "private", "key"};
+        for (size_t nn = 0; nn < sizeof(needles) / sizeof(needles[0]) && !secret; nn++) {
+            size_t len = strlen(needles[nn]);
+            for (const char* c = k; *c && !secret; c++)
+                if (strncasecmp(c, needles[nn], len) == 0) secret = 1;
+        }
+        jsonBuilderAddString(b, k, secret ? "***" : tinox_config_entries[i].value);
     }
     return jsonBuilderFinish(b);
 }

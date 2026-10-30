@@ -44,6 +44,7 @@ pub struct ConfigFieldInfo {
     pub config_key: String,
     /// LLVM type: "i8*" for String, "i64" for Int*, "i1" for Bool
     pub field_llvm_type: String,
+    pub has_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1904,6 +1905,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_config_get(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_config_get_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_config_get_bool(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_config_present(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_config_missing(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_equals(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_compare(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_contains(i8*, i8*)").unwrap();
@@ -12423,6 +12426,22 @@ tr_done_{idx}:"#).unwrap();
                         writeln!(&mut self.ir,
                             "{} = getelementptr i64, ptr {}, i64 {}",
                             field_ptr, typed_ptr, field_idx).unwrap();
+                        // Absent key: keep the field's declared default, or fail startup visibly
+                        // when there is none (never a silent 0/""/false).
+                        let present = self.temp();
+                        writeln!(&mut self.ir, "{} = call i64 @tinox_config_present(i8* {})", present, key_ptr).unwrap();
+                        let has = self.temp();
+                        writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", has, present).unwrap();
+                        let set_bb = self.new_bb("cfg_set");
+                        let miss_bb = self.new_bb("cfg_missing");
+                        let done_bb = self.new_bb("cfg_done");
+                        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", has, set_bb, miss_bb).unwrap();
+                        writeln!(&mut self.ir, "{}:", miss_bb).unwrap();
+                        if !cf.has_default {
+                            writeln!(&mut self.ir, "call void @tinox_config_missing(i8* {})", key_ptr).unwrap();
+                        }
+                        writeln!(&mut self.ir, "br label %{}", done_bb).unwrap();
+                        writeln!(&mut self.ir, "{}:", set_bb).unwrap();
                         match cf.field_llvm_type.as_str() {
                             "i8*" => {
                                 let raw = self.temp();
@@ -12448,6 +12467,8 @@ tr_done_{idx}:"#).unwrap();
                                 writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
                             }
                         }
+                        writeln!(&mut self.ir, "br label %{}", done_bb).unwrap();
+                        writeln!(&mut self.ir, "{}:", done_bb).unwrap();
                     }
                 }
 

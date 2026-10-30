@@ -3300,6 +3300,7 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
     let config_fields = ann.config_fields.iter().map(|f| tinox_codegen::ConfigFieldInfo {
         class_name: f.class_name.clone(), field_name: f.field_name.clone(),
         config_key: f.config_key.clone(), field_llvm_type: f.field_llvm_type.clone(),
+        has_default: f.has_default,
     }).collect();
     let cli_commands = ann.cli_commands.iter().map(|c| tinox_codegen::CliCommandInfo {
         class_name: c.class_name.clone(), cmd_name: c.cmd_name.clone(),
@@ -5263,6 +5264,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             field_name: f.field_name.clone(),
             config_key: f.config_key.clone(),
             field_llvm_type: f.field_llvm_type.clone(),
+            has_default: f.has_default,
         })
         .collect();
     let cli_commands: Vec<tinox_codegen::CliCommandInfo> = ann_result.cli_commands
