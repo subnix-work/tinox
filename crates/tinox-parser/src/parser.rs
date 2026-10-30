@@ -3439,7 +3439,8 @@ impl Parser {
                         return Ok(AnnotationArg::EnumValue(type_name, variant));
                     }
                 }
-                Err(Error::new(token.span, "expected TypeName.VariantName for enum annotation argument"))
+                // No `.Variant`: a bare type reference (@Throws(NotFound)).
+                Ok(AnnotationArg::TypeRef(type_name))
             }
             _ => Err(Error::new(token.span, "expected annotation argument (string, int, float, bool, EnumType.Variant, or [...])")),
         }

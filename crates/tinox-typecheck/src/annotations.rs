@@ -702,6 +702,26 @@ impl AnnotationProcessor {
         );
 
         registry.insert(
+            "Error".to_string(),
+            AnnotationInfo {
+                name: "Error".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 1,
+                max_args: 2,
+                description: "@Error(\"CODE\"[, status]) — declares a checked error class (must have `var message: String`); with a status it also maps to that HTTP status".to_string(),
+            },
+        );
+        registry.insert(
+            "Throws".to_string(),
+            AnnotationInfo {
+                name: "Throws".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 16,
+                description: "@Throws(ErrorClass, ...) — lists the @Error classes this method may throw".to_string(),
+            },
+        );
+        registry.insert(
             "ErrorMap".to_string(),
             AnnotationInfo {
                 name: "ErrorMap".to_string(),
@@ -1309,6 +1329,11 @@ impl AnnotationProcessor {
                 "HttpRequestScoped" => di_scope = Some(DiScope::HttpRequest),
                 "Log" => {
                     result.log_classes.insert(class.name.clone());
+                }
+                "Error" => {
+                    if let (Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(status)))) = (ann.args.first(), ann.args.get(1)) {
+                        result.error_maps.push((code.clone(), *status as i64));
+                    }
                 }
                 "ErrorMap" => {
                     if let (Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(status)))) = (ann.args.first(), ann.args.get(1)) {
@@ -2465,7 +2490,77 @@ pub fn validate_annotations(
     let mut result = process_annotations(&merged);
     errors.extend(resolve_di_providers(&merged, &mut result));
     errors.extend(crate::dto_validation::validate_request_graphs(&source.decls,extra_decls));
+    errors.extend(validate_error_declarations(&merged.decls));
     for error in &mut errors { error.code = Some("TINOX-ANNOTATION".into()); }
+    errors
+}
+
+/// `@Error` classes and `@Throws` lists (checked-exception surface, declaration level).
+/// Enforcement of the lists at call sites is a separate, designed-but-not-implemented step
+/// (docs/checked-exceptions.md).
+fn validate_error_declarations(decls: &[tinox_parser::Decl]) -> Vec<Error> {
+    fn classes<'a>(decls: &'a [tinox_parser::Decl], out: &mut Vec<&'a Class>) {
+        for d in decls {
+            match &d.node {
+                DeclKind::Class(c) => out.push(c),
+                DeclKind::Namespace(ns) => classes(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    let mut all = Vec::new();
+    classes(decls, &mut all);
+    let mut errors = Vec::new();
+    let mut error_classes: HashSet<&str> = HashSet::new();
+    let mut codes: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+    for c in &all {
+        let Some(ann) = c.annotations.iter().find(|a| a.name == "Error") else { continue };
+        error_classes.insert(c.name.as_str());
+        let code = match ann.args.first() {
+            Some(AnnotationArg::Literal(Literal::String(code))) => code.clone(),
+            _ => {
+                errors.push(Error::new(ann.span, "@Error expects (\"CODE\"[, status])"));
+                continue;
+            }
+        };
+        let valid = code.chars().next().is_some_and(|ch| ch.is_ascii_uppercase())
+            && code.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_');
+        if !valid {
+            errors.push(Error::new(ann.span, format!("@Error code '{code}' must be UPPER_SNAKE_CASE")));
+        }
+        if let Some(other) = codes.insert(code.clone(), c.name.as_str()) {
+            errors.push(Error::new(ann.span, format!("@Error code '{code}' is already used by class '{other}'")));
+        }
+        if let Some(status) = ann.args.get(1) {
+            if !matches!(status, AnnotationArg::Literal(Literal::Integer(s)) if (400..=599).contains(s)) {
+                errors.push(Error::new(ann.span, "@Error status must be an HTTP error status (400-599)"));
+            }
+        }
+        let has_message = c.fields.iter().any(|f| f.name == "message" && matches!(f.field_type, Type::String));
+        if !has_message {
+            errors.push(Error::new(ann.span, format!("@Error class '{}' must declare `var message: String`", c.name)));
+        }
+    }
+    for c in &all {
+        for m in &c.methods {
+            let Some(throws) = m.annotations.iter().find(|a| a.name == "Throws") else { continue };
+            let mut seen: HashSet<&str> = HashSet::new();
+            for arg in &throws.args {
+                match arg {
+                    AnnotationArg::TypeRef(name) if error_classes.contains(name.as_str()) => {
+                        if !seen.insert(name.as_str()) {
+                            errors.push(Error::new(throws.span, format!("@Throws on '{}.{}' lists '{name}' twice", c.name, m.name)));
+                        }
+                    }
+                    AnnotationArg::TypeRef(name) => errors.push(Error::new(
+                        throws.span,
+                        format!("@Throws on '{}.{}' names '{name}', which is not an @Error class", c.name, m.name),
+                    )),
+                    _ => errors.push(Error::new(throws.span, "@Throws expects error class names, e.g. @Throws(NotFound, Conflict)")),
+                }
+            }
+        }
+    }
     errors
 }
 
@@ -2500,6 +2595,21 @@ mod tests {
 
     fn valid(src: &str) -> Vec<Error> {
         validate_annotations(&parse(src), &[])
+    }
+
+    #[test]
+    fn error_classes_and_throws_lists_are_validated() {
+        let ok = "@Error(\"USER_NOT_FOUND\", 404)\nclass NotFound { var message: String }\nclass Svc { @Throws(NotFound)\nfn find() -> Nothing {} }";
+        assert!(valid(ok).is_empty(), "{:?}", valid(ok).iter().map(|e| &e.message).collect::<Vec<_>>());
+        let messages = |src: &str| valid(src).into_iter().map(|e| e.message).collect::<Vec<_>>().join(" | ");
+        assert!(messages("@Error(\"bad\")\nclass E { var message: String }").contains("UPPER_SNAKE_CASE"));
+        assert!(messages("@Error(\"E_ONE\", 200)\nclass E { var message: String }").contains("400-599"));
+        assert!(messages("@Error(\"E_ONE\")\nclass E { var text: String }").contains("var message: String"));
+        assert!(messages("@Error(\"E_ONE\")\nclass A { var message: String }\n@Error(\"E_ONE\")\nclass B { var message: String }").contains("already used"));
+        assert!(messages("class Plain { var message: String }\nclass S { @Throws(Plain)\nfn f() -> Nothing {} }").contains("not an @Error class"));
+        assert!(messages("@Error(\"E_ONE\")\nclass E { var message: String }\nclass S { @Throws(E, E)\nfn f() -> Nothing {} }").contains("twice"));
+        // A status also feeds the HTTP error table.
+        assert_eq!(proc("@Error(\"E_ONE\", 409)\nclass E { var message: String }").error_maps, vec![("E_ONE".to_string(), 409)]);
     }
 
     #[test]
