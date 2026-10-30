@@ -7554,6 +7554,7 @@ tr_done_{idx}:"#).unwrap();
     fn gen_orm_query(
         &mut self,
         chain: &OrmChain,
+        span: Span,
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
         let entity = self.entity_entries.iter().find(|e| e.class_name == chain.entity_class).cloned();
@@ -7567,33 +7568,65 @@ tr_done_{idx}:"#).unwrap();
         let mut all_params: Vec<String> = Vec::new();
         let fields = entity.fields.clone();
 
+        let orm_error = |message: String| -> ErrorBag {
+            let mut bag = ErrorBag::new();
+            bag.push(Error::new(span, format!("DB::of({}): {message}", entity.class_name)));
+            bag
+        };
+        if let Some(problem) = chain.problems.first() {
+            return Err(orm_error(problem.clone()));
+        }
+        let known_fields = || fields.iter().map(|f| f.field_name.as_str()).collect::<Vec<_>>().join(", ");
+
         for (param_name, body) in &chain.filters {
             let param_name = param_name.clone();
             let body = body.clone();
             let offset = all_params.len();
-            if let Some((sql, params)) = self.lambda_to_sql_and_params(&body, &param_name, &fields, offset, ctx) {
-                where_parts.push(sql);
-                all_params.extend(params);
+            match self.lambda_to_sql_and_params(&body, &param_name, &fields, offset, ctx) {
+                Some((sql, params)) => {
+                    where_parts.push(sql);
+                    all_params.extend(params);
+                }
+                None => {
+                    return Err(orm_error(format!(
+                        "this filter cannot be translated to SQL and would silently match every row. Supported: comparing an entity field with a value (== != < <= > >=, the field is `{param_name}.<field>`; fields: {}), combined with && || !, and startsWith/endsWith/contains on a String field",
+                        known_fields()
+                    )));
+                }
             }
         }
 
-        // Build ORDER BY clause
-        let order_sql = if chain.order_by.is_empty() {
+        // ORDER BY: explicit columns first (validated), then the primary key as a tiebreaker so the
+        // order -- and therefore every page -- is deterministic.
+        let mut order_cols: Vec<String> = Vec::new();
+        for (col, desc) in &chain.order_by {
+            let Some(f) = entity.fields.iter().find(|f| f.field_name == *col) else {
+                return Err(orm_error(format!("orderBy: unknown field '{col}' (fields: {})", known_fields())));
+            };
+            order_cols.push(format!("{} {}", f.column_name, if *desc { "DESC" } else { "ASC" }));
+        }
+        let key_cols: Vec<&EntityFieldEntry> = entity.fields.iter().filter(|f| f.is_id).collect();
+        for k in &key_cols {
+            if !chain.order_by.iter().any(|(c, _)| *c == k.field_name) {
+                order_cols.push(format!("{} ASC", k.column_name));
+            }
+        }
+        if (chain.limit.is_some() || chain.offset_val.is_some()) && order_cols.is_empty() {
+            return Err(orm_error("limit/offset need a deterministic order: add orderBy(...) (this entity has no @Id to order by)".to_string()));
+        }
+        if chain.offset_val.is_some() && chain.limit.is_none() && chain.terminal != "first" {
+            return Err(orm_error("offset(...) needs limit(...): an unbounded page is not allowed".to_string()));
+        }
+        let order_sql = if order_cols.is_empty() || chain.terminal == "count" {
             String::new()
         } else {
-            let parts: Vec<String> = chain.order_by.iter().map(|(col, desc)| {
-                // Look up column name from field name
-                let col_name = entity.fields.iter()
-                    .find(|f| f.field_name == *col || f.column_name == *col)
-                    .map(|f| f.column_name.as_str())
-                    .unwrap_or(col.as_str());
-                if *desc { format!("{} DESC", col_name) } else { format!("{} ASC", col_name) }
-            }).collect();
-            format!(" ORDER BY {}", parts.join(", "))
+            format!(" ORDER BY {}", order_cols.join(", "))
         };
 
         // Build LIMIT / OFFSET
-        let limit_sql = chain.limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default();
+        // first() needs one row only.
+        let limit = chain.limit.or(if chain.terminal == "first" { Some(1) } else { None });
+        let limit_sql = limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default();
         let offset_sql = chain.offset_val.map(|n| format!(" OFFSET {}", n)).unwrap_or_default();
 
         // Build the full SQL string at compile time if possible (no runtime concatenation needed
@@ -11196,7 +11229,7 @@ tr_done_{idx}:"#).unwrap();
                     if let Some(chain) = try_extract_orm_chain(obj, method.as_str()) {
                         if self.entity_entries.iter().any(|e| e.class_name == chain.entity_class) {
                             let chain = chain.clone();
-                            return self.gen_orm_query(&chain, ctx);
+                            return self.gen_orm_query(&chain, expr.span, ctx);
                         }
                     }
                 }
@@ -17582,6 +17615,9 @@ struct FinallyTarget {
 
 // ─── ORM: compile-time lambda→SQL translation ────────────────────────────────
 
+/// Largest page a compile-time `limit(n)` may request.
+const ORM_MAX_PAGE_SIZE: i64 = 10_000;
+
 /// Describes an ORM query chain unwound from `DB.of(T).filter(...).orderBy(...).limit(n).list()`
 #[derive(Debug, Clone)]
 struct OrmChain {
@@ -17594,6 +17630,9 @@ struct OrmChain {
     offset_val: Option<i64>,
     /// terminal operation: "list" | "first" | "count"
     terminal: String,
+    /// Parts of the chain that cannot be lowered to SQL; reported as a compile error instead of
+    /// being dropped (a dropped filter would return rows the caller excluded).
+    problems: Vec<String>,
 }
 
 /// Try to unwind a `DB.of(T).filter(...).orderBy(...).limit(n).list()` chain
@@ -17606,6 +17645,7 @@ fn try_extract_orm_chain(expr: &Expr, terminal: &str) -> Option<OrmChain> {
         limit: None,
         offset_val: None,
         terminal: terminal.to_string(),
+        problems: Vec::new(),
     };
     unwind_orm_chain(expr, &mut chain)?;
     if chain.entity_class.is_empty() { None } else { Some(chain) }
@@ -17619,38 +17659,39 @@ fn unwind_orm_chain(expr: &Expr, chain: &mut OrmChain) -> Option<()> {
                     if let Some(ExprKind::Lambda { params, body, .. }) = args.first().map(|a| &a.node) {
                         let param_name = params.first().map(|p| p.name.clone()).unwrap_or_default();
                         chain.filters.push((param_name, *body.clone()));
+                    } else {
+                        chain.problems.push("filter(...) needs a lambda such as `p => p.name == \"x\"`".to_string());
                     }
                     unwind_orm_chain(obj, chain)
                 }
-                "orderBy" => {
-                    if let Some(lambda) = args.first() {
-                        if let ExprKind::Lambda { body, .. } = &lambda.node {
-                            if let ExprKind::FieldAccess { field, .. } = &body.node {
-                                chain.order_by.push((field.clone(), false));
+                "orderBy" | "orderByDesc" => {
+                    let desc = method == "orderByDesc";
+                    let mut field = None;
+                    if let Some(ExprKind::Lambda { params, body, .. }) = args.first().map(|a| &a.node) {
+                        if let ExprKind::FieldAccess { obj: o, field: f } = &body.node {
+                            if matches!(&o.node, ExprKind::Ident(n) if params.first().is_some_and(|p| p.name == *n)) {
+                                field = Some(f.clone());
                             }
                         }
                     }
-                    unwind_orm_chain(obj, chain)
-                }
-                "orderByDesc" => {
-                    if let Some(lambda) = args.first() {
-                        if let ExprKind::Lambda { body, .. } = &lambda.node {
-                            if let ExprKind::FieldAccess { field, .. } = &body.node {
-                                chain.order_by.push((field.clone(), true));
-                            }
-                        }
+                    match field {
+                        Some(f) => chain.order_by.push((f, desc)),
+                        None => chain.problems.push(format!("{method}(...) needs a lambda that returns one entity field, such as `p => p.name`")),
                     }
                     unwind_orm_chain(obj, chain)
                 }
                 "limit" => {
-                    if let Some(ExprKind::Literal(Literal::Integer(n))) = args.first().map(|a| &a.node) {
-                        chain.limit = Some(*n);
+                    match args.first().map(|a| &a.node) {
+                        Some(ExprKind::Literal(Literal::Integer(n))) if (1..=ORM_MAX_PAGE_SIZE).contains(n) => chain.limit = Some(*n),
+                        Some(ExprKind::Literal(Literal::Integer(n))) => chain.problems.push(format!("limit({n}) is outside the allowed page size 1..={ORM_MAX_PAGE_SIZE}")),
+                        _ => chain.problems.push("limit(...) must be an integer literal (the SQL text is fixed at compile time)".to_string()),
                     }
                     unwind_orm_chain(obj, chain)
                 }
                 "offset" => {
-                    if let Some(ExprKind::Literal(Literal::Integer(n))) = args.first().map(|a| &a.node) {
-                        chain.offset_val = Some(*n);
+                    match args.first().map(|a| &a.node) {
+                        Some(ExprKind::Literal(Literal::Integer(n))) if *n >= 0 => chain.offset_val = Some(*n),
+                        _ => chain.problems.push("offset(...) must be a non-negative integer literal (the SQL text is fixed at compile time)".to_string()),
                     }
                     unwind_orm_chain(obj, chain)
                 }

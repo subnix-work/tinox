@@ -1,0 +1,34 @@
+import tinox.core.db
+import Item
+
+class Main
+{
+    fnc names(rows: List<Item>) -> String
+    {
+        var out = ""
+        for r in rows {
+            out = out + r.name + " "
+        }
+        return out
+    }
+
+    fnc main() -> Int32
+    {
+        // Empty table: absence is explicit through count(), first() yields the default entity.
+        println("empty count: " + DB::of(Item).count().toString())
+        println("empty first: [" + DB::of(Item).first().name + "]")
+        for n in ["a", "b", "c", "d", "e"] {
+            DB::of(Item).save(Item { id: 0, name: n, grp: 1 })
+        }
+        // Equal sort keys: the primary key breaks the tie, so pages never overlap or skip.
+        println("page0: " + Main::names(DB::of(Item).orderBy(i => i.grp).limit(2).list()))
+        println("page1: " + Main::names(DB::of(Item).orderBy(i => i.grp).limit(2).offset(2).list()))
+        println("page2: " + Main::names(DB::of(Item).orderBy(i => i.grp).limit(2).offset(4).list()))
+        println("page3: " + Main::names(DB::of(Item).orderBy(i => i.grp).limit(2).offset(6).list()))
+        println("desc: " + Main::names(DB::of(Item).orderByDesc(i => i.name).limit(2).list()))
+        println("first: " + DB::of(Item).orderByDesc(i => i.name).first().name)
+        println("missing: [" + DB::of(Item).filter(i => i.name == "zzz").first().name + "]")
+        println("none: " + DB::of(Item).filter(i => i.name == "zzz").count().toString())
+        return 0
+    }
+}
