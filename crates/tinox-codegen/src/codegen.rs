@@ -15546,6 +15546,9 @@ tr_done_{idx}:"#).unwrap();
         let token = self.temp();
         writeln!(&mut self.ir, "{} = call i64 @tinox_db_tx_enter(i64 {})", token, mode).unwrap();
         writeln!(&mut self.ir, "store i64 {}, i64* {}", token, token_slot).unwrap();
+        // No connection could be obtained (e.g. SQLite lock timeout): the runtime set the thrown
+        // error and returned -1; propagate it before the body runs.
+        self.emit_post_stmt_throw_check(ctx)?;
 
         let error_var = format!("%__tx_error_{}__", self.temp_count);
         self.temp_count += 1;

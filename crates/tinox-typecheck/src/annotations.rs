@@ -518,7 +518,7 @@ impl AnnotationProcessor {
                 valid_targets: vec![AnnotationTarget::Method, AnnotationTarget::Class],
                 min_args: 0,
                 max_args: 1,
-                description: "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Optional propagation: \"REQUIRED\" (default, joins an open transaction), \"NESTED\" (savepoint inside an open transaction), \"REQUIRES_NEW\" (independent transaction on a second connection). Postgres only (issue #191, #532) -- a hard compile error on any other [database] driver".to_string(),
+                description: "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Optional propagation: \"REQUIRED\" (default, joins an open transaction), \"NESTED\" (savepoint inside an open transaction), \"REQUIRES_NEW\" (independent transaction on a second connection). PostgreSQL, MySQL and SQLite (issues #191, #531, #532; REQUIRES_NEW not on SQLite) -- a hard compile error without one of these [database] drivers".to_string(),
             },
         );
         // REST parameter binding annotations -- exactly one required on

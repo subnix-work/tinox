@@ -103,5 +103,5 @@ fn transactional_without_postgres_driver_is_a_compile_error() {
     assert!(!out.status.success(), "expected build to fail with no [database] configured");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("@Transactional"), "stderr: {stderr}");
-    assert!(stderr.contains("only supported for driver"), "stderr: {stderr}");
+    assert!(stderr.contains("@Transactional supports driver"), "stderr: {stderr}");
 }

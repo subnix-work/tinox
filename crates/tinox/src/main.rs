@@ -4958,25 +4958,27 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
             return Err(annotation_error(&[&class], message));
         }
     }
-    // @Transactional is postgres-only in v1 (issue #191): the connection
-    // pool + BEGIN/COMMIT/ROLLBACK primitives it compiles down to only
-    // exist for that driver (runtime.c's sqlite/mysql tinox_db_tx_* stubs
-    // hard-abort if ever actually called, as a second line of defense, but
-    // that's meant to catch a bug in THIS check, not substitute for it).
-    // A hard compile error here, not a silent no-op or a runtime surprise
-    // the first time a transactional method actually runs. Checked here,
-    // before ann_result.transactional_methods is moved into the
-    // set_annotation_info() call further down.
+    // @Transactional needs a driver with the transaction ABI (postgres, mysql, sqlite; issues
+    // #191, #531). A hard compile error otherwise, not a silent no-op. REQUIRES_NEW needs a
+    // second connection, which SQLite's single serialized connection cannot provide.
     if !ann_result.transactional_methods.is_empty() {
         let driver_cfg = read_database_config();
         let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
-        if driver != "postgres" {
+        if !matches!(driver, "postgres" | "mysql" | "sqlite") {
             let (class_name, method_name) = ann_result.transactional_methods.keys().next().unwrap();
             return Err(annotation_error(&[class_name.as_str()], format!(
                 "'{class_name}.{method_name}' is @Transactional, but [database] driver is {} -- \
-                 @Transactional is only supported for driver = \"postgres\" in this version",
+                 @Transactional supports driver = \"postgres\", \"mysql\" or \"sqlite\"",
                 if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
             )));
+        }
+        if driver == "sqlite" {
+            if let Some(((class_name, method_name), _)) = ann_result.transactional_methods.iter().find(|(_, mode)| **mode == 2) {
+                return Err(annotation_error(&[class_name.as_str()], format!(
+                    "'{class_name}.{method_name}' uses @Transactional(\"REQUIRES_NEW\"), which SQLite cannot provide \
+                     (one serialized connection); use \"REQUIRED\" or \"NESTED\""
+                )));
+            }
         }
     }
     // DB::raw(...) is postgres-only in v1, same reasoning and same check shape

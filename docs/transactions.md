@@ -1,7 +1,7 @@
 # Transactions: `@Transactional` propagation and savepoints
 
-`@Transactional` (class or method level, PostgreSQL only; any other `[database] driver` is a
-compile error) takes an optional propagation mode. A method-level annotation overrides the
+`@Transactional` (class or method level; needs `[database] driver` = `postgres`, `mysql` or `sqlite`, otherwise
+a compile error) takes an optional propagation mode. A method-level annotation overrides the
 class-level one. Without an open transaction every mode simply begins one.
 
 | Mode | Inside an open transaction | Failure inside |
@@ -26,7 +26,27 @@ Rules worth knowing:
 - `REQUIRES_NEW` keeps the outer connection, so it needs `[database] pool >= 2` (checked at runtime,
   hard failure otherwise) and an independent transaction cannot see the outer one's uncommitted rows.
   Nesting depth is limited to 8 `REQUIRES_NEW` levels.
-- SQLite and MySQL are not supported (tracked in #531).
+
+## Drivers
+
+| | PostgreSQL | MySQL | SQLite |
+|---|---|---|---|
+| Connections | pool (`[database] pool`) | pool (`[database] pool`) | one serialized connection |
+| REQUIRED / NESTED | yes | yes (InnoDB) | yes |
+| REQUIRES_NEW | yes (pool >= 2) | yes (pool >= 2) | **compile error** |
+| A transaction blocks others | no (own connection) | no (own connection) | **yes**: every other statement waits for the connection |
+
+SQLite: while a transaction is open on one thread, statements of other threads wait (they never
+run inside it). The wait is bounded by `TINOX_DB_LOCK_TIMEOUT_MS` (default 30000): a plain statement
+that times out aborts the process with a visible message, a transaction that cannot start throws.
+Keep SQLite transactions short. The same value is SQLite's busy timeout for locks held by other
+processes.
+
+MySQL: the ORM emits PostgreSQL-style SQL; the driver translates `$n` placeholders to `?` and
+answers `INSERT ... RETURNING id` with the statement's insert id.
+
+Application transactions (`@Transactional`) are separate from schema changesets
+(`docs/database-changesets.md`), which have their own locking and transactions.
 
 Verified against a real PostgreSQL with an independent `psql` reading the final table:
 `crates/tinox/tests/postgres_propagation.rs`.

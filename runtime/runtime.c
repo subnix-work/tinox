@@ -12357,6 +12357,132 @@ char* tinox_metrics_prometheus(void) {
 // Compiled only when libpq is available (postgres driver).
 // SQLite and MySQL variants follow the same interface.
 
+#if defined(TINOX_DB_POSTGRES) || defined(TINOX_DB_SQLITE) || defined(TINOX_DB_MYSQL)
+// Upper bound for waiting on a database lock held by another transaction (SQLite).
+static int64_t _tinox_db_lock_timeout_ms(void) {
+    const char* v = getenv("TINOX_DB_LOCK_TIMEOUT_MS");
+    if (v && *v) {
+        char* end = NULL;
+        long long n = strtoll(v, &end, 10);
+        if (*end || n <= 0) { fprintf(stderr, "TINOX_DB_LOCK_TIMEOUT_MS must be a positive integer, got '%s'\n", v); exit(1); }
+        return n;
+    }
+    return 30000;
+}
+#endif
+
+#if defined(TINOX_DB_POSTGRES) || defined(TINOX_DB_SQLITE) || defined(TINOX_DB_MYSQL)
+// The connection owned by this thread's active transaction frame (NULL outside one).
+static __thread void* _tinox_db_tx_conn = NULL;
+static void* _tinox_drv_tx_conn_acquire(void);
+static void _tinox_drv_tx_conn_release(void* c);
+static int _tinox_drv_exec_simple(void* c, const char* sql);
+static const char* _tinox_drv_begin_sql(void);
+static const char* _tinox_drv_requires_new_problem(void);
+
+// ---- Transactions: propagation modes and savepoints (issue #532) ----
+// Every @Transactional method brackets its body with tinox_db_tx_enter(mode) /
+// tinox_db_tx_leave(token, ok). The token says what THIS call did, so leave()
+// undoes exactly that:
+//   TX_JOINED (0)  REQUIRED inside an open transaction: nothing to undo; a failure
+//                  only marks the shared transaction rollback-only
+//   TX_OWNER  (1)  began the transaction (and owns its pooled connection)
+//   TX_SAVEPT (2)  NESTED inside an open transaction: a savepoint
+//   TX_NEWTX  (3)  REQUIRES_NEW inside an open transaction: the outer transaction is
+//                  suspended (its frame stays on the stack) and a second connection runs
+//                  an independent transaction
+//   -1             already left (the early-return path leaves before the catch path runs)
+// Modes: 0 REQUIRED, 1 NESTED, 2 REQUIRES_NEW. A joined call that fails marks the frame
+// rollback-only; the owner then refuses to commit (leave() returns 0 and sets the thrown
+// error) instead of silently committing half of a failed unit of work.
+#define TINOX_TX_MAX_DEPTH 8
+typedef struct { void* conn; int sp; int rollback_only; } TinoxTxFrame;
+static __thread TinoxTxFrame _tinox_tx_frames[TINOX_TX_MAX_DEPTH];
+static __thread int _tinox_tx_n = 0;
+
+static void _tinox_tx_exec(void* c, const char* sql, int fatal) {
+    if (!_tinox_drv_exec_simple(c, sql) && fatal) exit(1);
+}
+
+static void _tinox_tx_sync_current(void) {
+    _tinox_db_tx_conn = _tinox_tx_n > 0 ? _tinox_tx_frames[_tinox_tx_n - 1].conn : NULL;
+}
+
+static int64_t _tinox_tx_push(void) {
+    if (_tinox_tx_n >= TINOX_TX_MAX_DEPTH) {
+        fprintf(stderr, "transaction nesting too deep (max %d REQUIRES_NEW levels)\n", TINOX_TX_MAX_DEPTH);
+        exit(1);
+    }
+    void* c = _tinox_drv_tx_conn_acquire();
+    if (!c) return -1;
+    _tinox_tx_exec(c, _tinox_drv_begin_sql(), 0);
+    _tinox_tx_frames[_tinox_tx_n].conn = c;
+    _tinox_tx_frames[_tinox_tx_n].sp = 0;
+    _tinox_tx_frames[_tinox_tx_n].rollback_only = 0;
+    _tinox_tx_n++;
+    _tinox_tx_sync_current();
+    return 0;
+}
+
+int64_t tinox_db_tx_enter(int64_t mode) {
+    if (_tinox_tx_n == 0) return _tinox_tx_push() < 0 ? -1 : 1;
+    TinoxTxFrame* f = &_tinox_tx_frames[_tinox_tx_n - 1];
+    if (mode == 1) {
+        char sql[48];
+        snprintf(sql, sizeof sql, "SAVEPOINT tinox_sp%d", ++f->sp);
+        _tinox_tx_exec(f->conn, sql, 1);
+        return 2;
+    }
+    if (mode == 2) {
+        // The suspended transaction keeps its connection, so a pool of one could never
+        // serve the second one: wait forever. Fail loudly instead.
+        const char* problem = _tinox_drv_requires_new_problem();
+        if (problem) { fprintf(stderr, "%s\n", problem); exit(1); }
+        return _tinox_tx_push() < 0 ? -1 : 3;
+    }
+    return 0;
+}
+
+// enter returns the token (see above), or -1 with the error set when no connection could be
+// obtained (the caller throws before running the body).
+// leave returns 1 on success. Returns 0 (with the error set for the caller to throw) when the
+// transaction had to be rolled back although the body completed normally.
+int64_t tinox_db_tx_leave(int64_t token, bool ok) {
+    if (token < 0 || _tinox_tx_n == 0) return 1;
+    TinoxTxFrame* f = &_tinox_tx_frames[_tinox_tx_n - 1];
+    if (token == 0) {
+        if (!ok) f->rollback_only = 1;
+        return 1;
+    }
+    if (token == 2) {
+        char sql[96];
+        if (!ok) {
+            snprintf(sql, sizeof sql, "ROLLBACK TO SAVEPOINT tinox_sp%d", f->sp);
+            _tinox_tx_exec(f->conn, sql, 1);
+        }
+        snprintf(sql, sizeof sql, "RELEASE SAVEPOINT tinox_sp%d", f->sp);
+        _tinox_tx_exec(f->conn, sql, 1);
+        f->sp--;
+        return 1;
+    }
+    int refused = ok && f->rollback_only;
+    _tinox_tx_exec(f->conn, (ok && !refused) ? "COMMIT" : "ROLLBACK", 0);
+    _tinox_drv_tx_conn_release(f->conn);
+    _tinox_tx_n--;
+    _tinox_tx_sync_current();
+    if (refused) {
+        __tinox_err = (int64_t)(intptr_t)"transaction rolled back: a joined call of the same transaction failed (rollback-only); handle the error or use NESTED/REQUIRES_NEW";
+        return 0;
+    }
+    return 1;
+}
+
+bool tinox_db_tx_active(void) {
+    return _tinox_tx_n > 0;
+}
+
+#endif
+
 #ifdef TINOX_DB_POSTGRES
 #include <libpq-fe.h>
 
@@ -12383,7 +12509,6 @@ static pthread_cond_t  _tinox_pg_pool_cond = PTHREAD_COND_INITIALIZER;
 // GC-root-scanning gap documented near the top of this file only matters
 // for GC-managed pointers reachable ONLY via __thread storage, and a
 // PGconn* is never GC memory.
-static __thread PGconn* _tinox_db_tx_conn = NULL;
 
 void tinox_db_pool_init(const char* url, int64_t pool_size) {
     const char* diff_mode = getenv("TINOX_MIGRATE_MODE");
@@ -12456,110 +12581,19 @@ void tinox_db_release_stmt_conn(void* conn) {
     _tinox_pg_pool_release((PGconn*)conn);
 }
 
-// ---- Transactions: propagation modes and savepoints (issue #532) ----
-// Every @Transactional method brackets its body with tinox_db_tx_enter(mode) /
-// tinox_db_tx_leave(token, ok). The token says what THIS call did, so leave()
-// undoes exactly that:
-//   TX_JOINED (0)  REQUIRED inside an open transaction: nothing to undo; a failure
-//                  only marks the shared transaction rollback-only
-//   TX_OWNER  (1)  began the transaction (and owns its pooled connection)
-//   TX_SAVEPT (2)  NESTED inside an open transaction: a savepoint
-//   TX_NEWTX  (3)  REQUIRES_NEW inside an open transaction: the outer transaction is
-//                  suspended (its frame stays on the stack) and a second connection runs
-//                  an independent transaction
-//   -1             already left (the early-return path leaves before the catch path runs)
-// Modes: 0 REQUIRED, 1 NESTED, 2 REQUIRES_NEW. A joined call that fails marks the frame
-// rollback-only; the owner then refuses to commit (leave() returns 0 and sets the thrown
-// error) instead of silently committing half of a failed unit of work.
-#define TINOX_TX_MAX_DEPTH 8
-typedef struct { PGconn* conn; int sp; int rollback_only; } TinoxTxFrame;
-static __thread TinoxTxFrame _tinox_tx_frames[TINOX_TX_MAX_DEPTH];
-static __thread int _tinox_tx_n = 0;
-
-static void _tinox_tx_exec(PGconn* c, const char* sql, int fatal) {
-    PGresult* res = PQexec(c, sql);
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "%s failed: %s\n", sql, PQerrorMessage(c));
-        if (fatal) { PQclear(res); exit(1); }
-    }
+// Driver hooks for the shared transaction code (see tinox_db_tx_enter above).
+static void* _tinox_drv_tx_conn_acquire(void) { return _tinox_pg_pool_acquire(); }
+static void _tinox_drv_tx_conn_release(void* c) { _tinox_pg_pool_release((PGconn*)c); }
+static int _tinox_drv_exec_simple(void* c, const char* sql) {
+    PGresult* res = PQexec((PGconn*)c, sql);
+    int ok = PQresultStatus(res) == PGRES_COMMAND_OK;
+    if (!ok) fprintf(stderr, "%s failed: %s\n", sql, PQerrorMessage((PGconn*)c));
     PQclear(res);
+    return ok;
 }
-
-static void _tinox_tx_sync_current(void) {
-    _tinox_db_tx_conn = _tinox_tx_n > 0 ? _tinox_tx_frames[_tinox_tx_n - 1].conn : NULL;
-}
-
-static int64_t _tinox_tx_push(void) {
-    if (_tinox_tx_n >= TINOX_TX_MAX_DEPTH) {
-        fprintf(stderr, "transaction nesting too deep (max %d REQUIRES_NEW levels)\n", TINOX_TX_MAX_DEPTH);
-        exit(1);
-    }
-    PGconn* c = _tinox_pg_pool_acquire();
-    _tinox_tx_exec(c, "BEGIN", 0);
-    _tinox_tx_frames[_tinox_tx_n].conn = c;
-    _tinox_tx_frames[_tinox_tx_n].sp = 0;
-    _tinox_tx_frames[_tinox_tx_n].rollback_only = 0;
-    _tinox_tx_n++;
-    _tinox_tx_sync_current();
-    return 0;
-}
-
-int64_t tinox_db_tx_enter(int64_t mode) {
-    if (_tinox_tx_n == 0) { _tinox_tx_push(); return 1; }
-    TinoxTxFrame* f = &_tinox_tx_frames[_tinox_tx_n - 1];
-    if (mode == 1) {
-        char sql[48];
-        snprintf(sql, sizeof sql, "SAVEPOINT tinox_sp%d", ++f->sp);
-        _tinox_tx_exec(f->conn, sql, 1);
-        return 2;
-    }
-    if (mode == 2) {
-        // The suspended transaction keeps its connection, so a pool of one could never
-        // serve the second one: wait forever. Fail loudly instead.
-        if (_tinox_pg_pool_size < 2) {
-            fprintf(stderr, "REQUIRES_NEW needs [database] pool >= 2 (the outer transaction keeps its connection)\n");
-            exit(1);
-        }
-        _tinox_tx_push();
-        return 3;
-    }
-    return 0;
-}
-
-// Returns 1 on success. Returns 0 (with the error set for the caller to throw) when the
-// transaction had to be rolled back although the body completed normally.
-int64_t tinox_db_tx_leave(int64_t token, bool ok) {
-    if (token < 0 || _tinox_tx_n == 0) return 1;
-    TinoxTxFrame* f = &_tinox_tx_frames[_tinox_tx_n - 1];
-    if (token == 0) {
-        if (!ok) f->rollback_only = 1;
-        return 1;
-    }
-    if (token == 2) {
-        char sql[96];
-        if (!ok) {
-            snprintf(sql, sizeof sql, "ROLLBACK TO SAVEPOINT tinox_sp%d", f->sp);
-            _tinox_tx_exec(f->conn, sql, 1);
-        }
-        snprintf(sql, sizeof sql, "RELEASE SAVEPOINT tinox_sp%d", f->sp);
-        _tinox_tx_exec(f->conn, sql, 1);
-        f->sp--;
-        return 1;
-    }
-    int refused = ok && f->rollback_only;
-    _tinox_tx_exec(f->conn, (ok && !refused) ? "COMMIT" : "ROLLBACK", 0);
-    _tinox_pg_pool_release(f->conn);
-    _tinox_tx_n--;
-    _tinox_tx_sync_current();
-    if (refused) {
-        __tinox_err = (int64_t)(intptr_t)"transaction rolled back: a joined call of the same transaction failed (rollback-only); handle the error or use NESTED/REQUIRES_NEW";
-        return 0;
-    }
-    return 1;
-}
-
-bool tinox_db_tx_active(void) {
-    return _tinox_tx_n > 0;
+static const char* _tinox_drv_begin_sql(void) { return "BEGIN"; }
+static const char* _tinox_drv_requires_new_problem(void) {
+    return _tinox_pg_pool_size < 2 ? "REQUIRES_NEW needs [database] pool >= 2 (the outer transaction keeps its connection)" : NULL;
 }
 
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
@@ -12668,10 +12702,8 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
 #endif
     }
 
-    // SQLite keeps its pre-#191 single-connection model -- pool_size is
-    // accepted (uniform driver-layer signature, see the Postgres block
-    // above) but ignored; no pooling/transactions for this driver yet,
-    // see the tinox_db_tx_* stubs below.
+    // One serialized connection: pool_size does not apply. A transaction holds the
+    // connection lock (see _tinox_drv_tx_conn_acquire) for its whole duration.
     (void)pool_size;
     // url may be a path or sqlite:///path
     const char* path = url;
@@ -12683,6 +12715,23 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
         if (service_enabled()) { service_record_error("SQLite initialization failed", 0); return; }
         exit(1);
     }
+    // Another process holding the write lock is waited for, bounded, instead of failing at once.
+    sqlite3_busy_timeout(_tinox_sqlite_db, (int)_tinox_db_lock_timeout_ms());
+}
+
+// Single connection, so a transaction must exclude every other thread's statements until it
+// ends: statements outside the owner take this lock for their duration, the owner holds it from
+// BEGIN to COMMIT/ROLLBACK. Waiting is bounded (TINOX_DB_LOCK_TIMEOUT_MS, default 30000).
+static pthread_mutex_t _tinox_sqlite_tx_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static int _tinox_sqlite_lock(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    int64_t ms = _tinox_db_lock_timeout_ms();
+    ts.tv_sec += ms / 1000;
+    ts.tv_nsec += (ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    return pthread_mutex_timedlock(&_tinox_sqlite_tx_mu, &ts) == 0;
 }
 
 void* tinox_db_acquire_stmt_conn(void) {
@@ -12690,27 +12739,41 @@ void* tinox_db_acquire_stmt_conn(void) {
         fprintf(stderr, "sqlite: database connection was never initialized (no [database] config?)\n");
         exit(1);
     }
+    if (_tinox_db_tx_conn != NULL) return _tinox_db_tx_conn;
+    if (!_tinox_sqlite_lock()) {
+        fprintf(stderr, "sqlite: waited %lld ms for the connection held by a transaction (TINOX_DB_LOCK_TIMEOUT_MS)\n", (long long)_tinox_db_lock_timeout_ms());
+        exit(1);
+    }
     return _tinox_sqlite_db;
 }
-void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
+void tinox_db_release_stmt_conn(void* conn) {
+    if (conn == _tinox_db_tx_conn) return;
+    pthread_mutex_unlock(&_tinox_sqlite_tx_mu);
+}
 
-// @Transactional is a hard compile error for this driver (see the driver
-// check in tinox/src/main.rs) -- these exist only so a fully-linked binary
-// never has an undefined symbol. A real call here would mean that check
-// was bypassed, so fail loudly rather than silently no-op.
-int64_t tinox_db_tx_enter(int64_t mode) {
-    (void)mode;
-    fprintf(stderr, "@Transactional is not supported for the sqlite driver
-");
-    exit(1);
+static void* _tinox_drv_tx_conn_acquire(void) {
+    if (_tinox_sqlite_db == NULL) {
+        fprintf(stderr, "sqlite: database connection was never initialized (no [database] config?)\n");
+        exit(1);
+    }
+    if (!_tinox_sqlite_lock()) {
+        __tinox_err = (int64_t)(intptr_t)"transaction not started: the SQLite connection is held by another transaction (TINOX_DB_LOCK_TIMEOUT_MS)";
+        return NULL;
+    }
+    return _tinox_sqlite_db;
 }
-int64_t tinox_db_tx_leave(int64_t token, bool ok) {
-    (void)token; (void)ok;
-    fprintf(stderr, "@Transactional is not supported for the sqlite driver
-");
-    exit(1);
+static void _tinox_drv_tx_conn_release(void* c) { (void)c; pthread_mutex_unlock(&_tinox_sqlite_tx_mu); }
+static int _tinox_drv_exec_simple(void* c, const char* sql) {
+    char* err = NULL;
+    int ok = sqlite3_exec((sqlite3*)c, sql, NULL, NULL, &err) == SQLITE_OK;
+    if (!ok) { fprintf(stderr, "%s failed: %s\n", sql, err ? err : "?"); }
+    sqlite3_free(err);
+    return ok;
 }
-bool tinox_db_tx_active(void) { return false; }
+static const char* _tinox_drv_begin_sql(void) { return "BEGIN"; }
+static const char* _tinox_drv_requires_new_problem(void) {
+    return "REQUIRES_NEW is not supported for SQLite (one serialized connection)";
+}
 
 // ---- Statement cache (Optimization 1) ----
 #define STMT_CACHE_SIZE 64
@@ -12852,8 +12915,15 @@ char*   tinox_db_error(void* c) { return GC_strdup(sqlite3_errmsg((sqlite3*)c));
 // ---- MySQL driver ----
 #include <mysql/mysql.h>
 
-static MYSQL* _tinox_mysql_conn = NULL;
-static pthread_mutex_t _tinox_mysql_mu = PTHREAD_MUTEX_INITIALIZER;
+// Connection pool, same shape as the PostgreSQL one: fixed size, connected eagerly, each
+// connection used by one thread at a time (a statement, or a whole transaction).
+#define TINOX_DB_POOL_MAX 64
+static MYSQL* _tinox_mysql_pool[TINOX_DB_POOL_MAX];
+static int64_t _tinox_mysql_pool_size = 0;
+static int _tinox_mysql_pool_free[TINOX_DB_POOL_MAX];
+static int _tinox_mysql_pool_free_count = 0;
+static pthread_mutex_t _tinox_mysql_pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t _tinox_mysql_pool_cond = PTHREAD_COND_INITIALIZER;
 
 // URL format: mysql://user:pass@host:port/database
 static void _parse_mysql_url(const char* url,
@@ -12917,26 +12987,32 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
 #endif
     }
 
-    // MySQL keeps its pre-#191 single-connection model -- pool_size is
-    // accepted (uniform driver-layer signature, see the Postgres block
-    // above) but ignored; no pooling/transactions for this driver yet,
-    // see the tinox_db_tx_* stubs below.
-    (void)pool_size;
-    _tinox_mysql_conn = mysql_init(NULL);
-    if (!_tinox_mysql_conn) {
-        fprintf(stderr, "MySQL init failed\n");
-        if (service_enabled()) { service_record_error("MySQL initialization failed", 0); return; }
+    if (pool_size <= 0) pool_size = 1;
+    if (pool_size > TINOX_DB_POOL_MAX) {
+        fprintf(stderr, "DB pool size %lld exceeds maximum of %d\n", (long long)pool_size, TINOX_DB_POOL_MAX);
         exit(1);
     }
     char host[256], user[256], pass[256], db[256];
     unsigned int port;
     _parse_mysql_url(url, host, user, pass, db, &port);
-    if (!mysql_real_connect(_tinox_mysql_conn, host, user, pass, db, port, NULL, 0)) {
-        fprintf(stderr, "MySQL connection failed: %s\n", mysql_error(_tinox_mysql_conn));
-        mysql_close(_tinox_mysql_conn); _tinox_mysql_conn = NULL;
-        if (service_enabled()) { service_record_error("MySQL initialization failed", 0); return; }
-        exit(1);
+    for (int64_t i = 0; i < pool_size; i++) {
+        MYSQL* c = mysql_init(NULL);
+        if (!c) {
+            fprintf(stderr, "MySQL init failed\n");
+            if (service_enabled()) { service_record_error("MySQL initialization failed", 0); return; }
+            exit(1);
+        }
+        if (!mysql_real_connect(c, host, user, pass, db, port, NULL, 0)) {
+            fprintf(stderr, "MySQL connection failed: %s\n", mysql_error(c));
+            mysql_close(c);
+            if (service_enabled()) { service_record_error("MySQL initialization failed", 0); return; }
+            exit(1);
+        }
+        _tinox_mysql_pool[i] = c;
+        _tinox_mysql_pool_free[i] = (int)i;
     }
+    _tinox_mysql_pool_size = pool_size;
+    _tinox_mysql_pool_free_count = (int)pool_size;
 }
 
 typedef struct {
@@ -12945,34 +13021,113 @@ typedef struct {
     char** data;   // row-major: data[row * n_cols + col]
 } TinoxMysqlResult;
 
-void* tinox_db_acquire_stmt_conn(void) {
-    if (_tinox_mysql_conn == NULL) {
+static MYSQL* _tinox_mysql_pool_acquire(void) {
+    if (_tinox_mysql_pool_size == 0) {
         fprintf(stderr, "MySQL: database connection was never initialized (no [database] config?)\n");
         exit(1);
     }
-    return _tinox_mysql_conn;
+    pthread_mutex_lock(&_tinox_mysql_pool_mu);
+    while (_tinox_mysql_pool_free_count == 0) {
+        pthread_cond_wait(&_tinox_mysql_pool_cond, &_tinox_mysql_pool_mu);
+    }
+    MYSQL* c = _tinox_mysql_pool[_tinox_mysql_pool_free[--_tinox_mysql_pool_free_count]];
+    pthread_mutex_unlock(&_tinox_mysql_pool_mu);
+    return c;
 }
-void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
 
-// @Transactional is a hard compile error for this driver (see the driver
-// check in tinox/src/main.rs) -- these exist only so a fully-linked binary
-// never has an undefined symbol. A real call here would mean that check
-// was bypassed, so fail loudly rather than silently no-op.
-int64_t tinox_db_tx_enter(int64_t mode) {
-    (void)mode;
-    fprintf(stderr, "@Transactional is not supported for the mysql driver
-");
-    exit(1);
+static void _tinox_mysql_pool_release(MYSQL* conn) {
+    pthread_mutex_lock(&_tinox_mysql_pool_mu);
+    for (int64_t i = 0; i < _tinox_mysql_pool_size; i++) {
+        if (_tinox_mysql_pool[i] == conn) { _tinox_mysql_pool_free[_tinox_mysql_pool_free_count++] = (int)i; break; }
+    }
+    pthread_mutex_unlock(&_tinox_mysql_pool_mu);
+    pthread_cond_signal(&_tinox_mysql_pool_cond);
 }
-int64_t tinox_db_tx_leave(int64_t token, bool ok) {
-    (void)token; (void)ok;
-    fprintf(stderr, "@Transactional is not supported for the mysql driver
-");
-    exit(1);
+
+void* tinox_db_acquire_stmt_conn(void) {
+    if (_tinox_db_tx_conn != NULL) return _tinox_db_tx_conn;
+    return _tinox_mysql_pool_acquire();
 }
-bool tinox_db_tx_active(void) { return false; }
+void tinox_db_release_stmt_conn(void* conn) {
+    if (conn == _tinox_db_tx_conn) return;
+    _tinox_mysql_pool_release((MYSQL*)conn);
+}
+
+static void* _tinox_drv_tx_conn_acquire(void) { return _tinox_mysql_pool_acquire(); }
+static void _tinox_drv_tx_conn_release(void* c) { _tinox_mysql_pool_release((MYSQL*)c); }
+static int _tinox_drv_exec_simple(void* c, const char* sql) {
+    int ok = mysql_query((MYSQL*)c, sql) == 0;
+    if (!ok) fprintf(stderr, "%s failed: %s\n", sql, mysql_error((MYSQL*)c));
+    return ok;
+}
+static const char* _tinox_drv_begin_sql(void) { return "START TRANSACTION"; }
+static const char* _tinox_drv_requires_new_problem(void) {
+    return _tinox_mysql_pool_size < 2 ? "REQUIRES_NEW needs [database] pool >= 2 (the outer transaction keeps its connection)" : NULL;
+}
+
+// The ORM emits PostgreSQL-style SQL: `$n` placeholders and `INSERT ... RETURNING id`. MySQL has
+// neither, so translate here: placeholders become `?` with the parameters re-ordered by first
+// use (outside string literals), and a trailing ` RETURNING id` is dropped and answered with
+// the statement's insert id instead.
+static char* _tinox_mysql_translate(const char* sql, const char** params, int64_t n_params,
+                                    const char*** out_params, int64_t* out_n, int* wants_insert_id) {
+    size_t len = strlen(sql);
+    static const char tail[] = " RETURNING id";
+    size_t tl = sizeof(tail) - 1;
+    *wants_insert_id = 0;
+    if (len >= tl && strcmp(sql + len - tl, tail) == 0) { len -= tl; *wants_insert_id = 1; }
+    char* out = (char*)malloc(len + 1);
+    const char** ordered = (const char**)calloc((size_t)(n_params > 0 ? n_params : 1), sizeof(char*));
+    int64_t n = 0;
+    size_t o = 0;
+    char quote = 0;
+    for (size_t i = 0; i < len; i++) {
+        char ch = sql[i];
+        if (quote) {
+            out[o++] = ch;
+            if (ch == quote) quote = 0;
+        } else if (ch == '\'' || ch == '"' || ch == '`') {
+            quote = ch;
+            out[o++] = ch;
+        } else if (ch == '$' && i + 1 < len && sql[i + 1] >= '0' && sql[i + 1] <= '9') {
+            size_t j = i + 1;
+            int64_t idx = 0;
+            while (j < len && sql[j] >= '0' && sql[j] <= '9') { idx = idx * 10 + (sql[j] - '0'); j++; }
+            if (idx < 1 || idx > n_params) {
+                fprintf(stderr, "MySQL: placeholder $%lld has no parameter (have %lld)\n", (long long)idx, (long long)n_params);
+                free(out); free(ordered);
+                return NULL;
+            }
+            ordered[n++] = params[idx - 1];
+            out[o++] = '?';
+            i = j - 1;
+        } else {
+            out[o++] = ch;
+        }
+    }
+    out[o] = '\0';
+    // Native `?` SQL (the migration engine's) has no `$n`: keep its parameters as given.
+    if (n == 0 && n_params > 0) { memcpy(ordered, params, sizeof(char*) * (size_t)n_params); n = n_params; }
+    *out_params = ordered;
+    *out_n = n;
+    return out;
+}
+
+static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const char** params, int64_t n_params, int wants_insert_id);
 
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
+    const char** ordered = NULL;
+    int64_t n = 0;
+    int wants_id = 0;
+    char* translated = _tinox_mysql_translate(sql, params, n_params, &ordered, &n, &wants_id);
+    if (!translated) return NULL;
+    void* res = _tinox_mysql_exec_translated(conn, translated, ordered, n, wants_id);
+    free(translated);
+    free(ordered);
+    return res;
+}
+
+static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const char** params, int64_t n_params, int wants_insert_id) {
     MYSQL_STMT* stmt = mysql_stmt_init((MYSQL*)conn);
     if (mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) {
         fprintf(stderr, "MySQL prepare error: %s\n", mysql_stmt_error(stmt));
@@ -13003,6 +13158,19 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
         return NULL;
     }
 
+    if (wants_insert_id) {
+        TinoxMysqlResult* idres = (TinoxMysqlResult*)GC_malloc(sizeof(TinoxMysqlResult));
+        idres->n_cols = 1;
+        idres->n_rows = 1;
+        idres->data = (char**)GC_malloc(sizeof(char*));
+        char buf[32];
+        snprintf(buf, sizeof buf, "%llu", (unsigned long long)mysql_stmt_insert_id(stmt));
+        idres->data[0] = GC_strdup(buf);
+        if (bind)    free(bind);
+        if (lengths) free(lengths);
+        mysql_stmt_close(stmt);
+        return (void*)idres;
+    }
     MYSQL_RES* meta = mysql_stmt_result_metadata(stmt);
     int n_cols = meta ? mysql_num_fields(meta) : 0;
     mysql_stmt_store_result(stmt);
@@ -13732,7 +13900,10 @@ static void service_close_database(void) {
         _tinox_sqlite_db = NULL;
     }
 #elif defined(TINOX_DB_MYSQL)
-    if (_tinox_mysql_conn) { mysql_close(_tinox_mysql_conn); _tinox_mysql_conn = NULL; }
+    for (int i = 0; i < TINOX_DB_POOL_MAX; i++) {
+        if (_tinox_mysql_pool[i]) { mysql_close(_tinox_mysql_pool[i]); _tinox_mysql_pool[i] = NULL; }
+    }
+    _tinox_mysql_pool_size = _tinox_mysql_pool_free_count = 0;
 #endif
 }
 

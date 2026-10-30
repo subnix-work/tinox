@@ -1,0 +1,37 @@
+import tinox.core.db
+import Flows
+
+class Main
+{
+    fnc one(f: Flows, i: Int64) -> Nothing
+    {
+        try {
+            f.required("c-" + i.toString(), i % 2 == 1)
+        } catch (e: String) {
+            println("failed " + i.toString())
+        }
+    }
+
+    fnc main() -> Int32
+    {
+        const f = new Flows()
+        f.outerCatchesNested()
+        try {
+            f.outerCatchesRequired()
+            println("outerCatchesRequired should have thrown")
+        } catch (e: String) {
+            println("refused: " + e)
+        }
+        f.nestedStandalone()
+        // Concurrent transactions share one SQLite connection: they must be serialized, never
+        // interleaved. Odd ones throw and must leave nothing behind.
+        scope {
+            var i = 0
+            while (i < 8) {
+                spawn Main::one(f, i)
+                i = i + 1
+            }
+        }
+        return 0
+    }
+}
