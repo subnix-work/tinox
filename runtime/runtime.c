@@ -8546,6 +8546,8 @@ static int http3_nghttp3_recv_header(nghttp3_conn* h3conn, int64_t stream_id, in
         slot->method = valStr;
     } else if (strcmp(nameStr, ":path") == 0) {
         slot->path = valStr;
+    } else if (strcmp(nameStr, ":authority") == 0) {
+        tinox_map_set(slot->headersMap, "Host", (int64_t)(intptr_t)valStr); // same-origin checks need it
     } else if (nameStr[0] != ':') {
         // HTTP/3 field names are lowercase on the wire; the handlers look headers up in their
         // canonical HTTP/1 spelling ("Content-Type", "Authorization"), so store them that way.
@@ -9913,6 +9915,17 @@ static int sec_header_listed(const char* allowed_csv, const char* name, size_t l
     return 0;
 }
 
+static const char* sec_req_header(void* hdrs, const char* name) {
+    const char* v = (const char*)(uintptr_t)tinox_map_get(hdrs, name);
+    if (v) return v;
+    char lower[64];
+    size_t n = strlen(name);
+    if (n >= sizeof(lower)) return NULL;
+    for (size_t i = 0; i < n; i++) lower[i] = (char)tolower((unsigned char)name[i]);
+    lower[n] = '\0';
+    return (const char*)(uintptr_t)tinox_map_get(hdrs, lower);
+}
+
 static void sec_reject(int64_t context, int status, const char* code, const char* message) {
     tinox_http_error_envelope(context, status, code, message);
 }
@@ -9928,7 +9941,8 @@ static int tinox_security_pre(int64_t context, int route_exists) {
     const char* method = (const char*)(intptr_t)request[0];
     void* hdrs = (void*)(intptr_t)request[3];
     void* rhdrs = (void*)(intptr_t)response[1];
-#define REQ_HDR(name) ((const char*)(uintptr_t)tinox_map_get(hdrs, name))
+// HTTP/1 normalises header names to Title-Case; HTTP/2 and HTTP/3 keep them lowercase.
+#define REQ_HDR(name) sec_req_header(hdrs, name)
     const char* origin = REQ_HDR("Origin");
     const char* host = REQ_HDR("Host");
     int unsafe = strcmp(method, "GET") && strcmp(method, "HEAD") && strcmp(method, "OPTIONS");
@@ -10001,6 +10015,12 @@ static int tinox_security_pre(int64_t context, int route_exists) {
     }
 #undef REQ_HDR
     return 0;
+}
+
+// Entry for transports that do not go through tinox_handle_one (HTTP/2 in Tinox code, HTTP/3 route
+// shims). 1 = the guard already produced the response, the handler must not run.
+int64_t tinoxSecurityGuard(int64_t context, int64_t route_exists) {
+    return tinox_security_pre(context, (int)route_exists);
 }
 
 // Policy summary for introspection (Dev UI /security).

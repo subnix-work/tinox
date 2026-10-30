@@ -188,3 +188,180 @@ class Ctrl
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn curl_h2(port: u16, method: &str, path: &str, headers: &[&str]) -> (String, String) {
+    for attempt in 0..10 {
+        let mut cmd = Command::new("curl");
+        cmd.args(["-s", "-i", "--http2-prior-knowledge", "-X", method, &format!("http://127.0.0.1:{port}{path}")]);
+        for h in headers {
+            cmd.args(["-H", h]);
+        }
+        if method == "POST" {
+            cmd.args(["-d", "x=1"]);
+        }
+        let text = String::from_utf8_lossy(&cmd.output().unwrap().stdout).to_string();
+        if !text.is_empty() || attempt == 9 {
+            let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+            return (head.to_string(), body.to_string());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    unreachable!()
+}
+
+#[test]
+fn the_same_policy_guards_http2_routes() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    let dir = std::env::temp_dir().join(format!("tinox-browser-security-h2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ext = root.join("crates/tinox-core-ext");
+    let version = |m: &str| {
+        std::fs::read_to_string(ext.join(m).join("tinox.toml"))
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
+            .unwrap()
+    };
+    let mut toml = String::from("[package]\ncompiler = \"2.8.0\"\nname = \"sec2\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+    for m in ["http2_server", "hpack", "http_server", "json"] {
+        toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
+    }
+    for m in ["http2_server", "http_server", "hpack"] {
+        toml.push_str(&format!("\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\npath = \"{}\"\n", ext.join(m).display()));
+    }
+    std::fs::write(dir.join("tinox.toml"), toml).unwrap();
+    std::fs::write(
+        dir.join("Policy.tnx"),
+        "@Cors([\"https://app.example.com\"], true, 600)\n@Csrf\nclass Policy {\n}\n",
+    )
+    .unwrap();
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    std::fs::write(
+        dir.join("Main.tnx"),
+        format!(
+            "import Policy\nimport tinox.core.http2_server\n\nclass Main {{\n    fnc main() -> Int32 {{\n        const server: Http2Server = Http2Server::new({port})\n        server.get(\"/api/data\", ctx => {{ ctx.response.text(\"read\") }})\n        server.post(\"/api/data\", ctx => {{ ctx.response.text(\"write\") }})\n        server.listen()\n        return 0\n    }}\n}}\n"
+        ),
+    )
+    .unwrap();
+    let install = Command::new(env!("CARGO_BIN_EXE_tinox")).arg("install").current_dir(&dir).output().unwrap();
+    assert!(install.status.success(), "{}", String::from_utf8_lossy(&install.stderr));
+    let exe = dir.join("sec2");
+    let build = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "Main.tnx", "-o"]).arg(&exe).current_dir(&dir).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let server = Command::new(&exe).current_dir(&dir).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let _guard = Kill(server);
+    std::thread::sleep(Duration::from_millis(600));
+
+    let app = "Origin: https://app.example.com";
+    let (head, _) = curl_h2(port, "OPTIONS", "/api/data", &[app, "Access-Control-Request-Method: POST"]);
+    assert_eq!(status(&head), 204, "{head}");
+    assert_eq!(header(&head, "access-control-allow-origin"), Some("https://app.example.com"), "{head}");
+    let (head, body) = curl_h2(port, "OPTIONS", "/api/data", &["Origin: https://evil.example", "Access-Control-Request-Method: POST"]);
+    assert_eq!(status(&head), 403, "{head}");
+    assert!(body.contains("CORS_ORIGIN_DENIED"), "{body}");
+    let (head, body) = curl_h2(port, "GET", "/api/data", &["Origin: https://evil.example"]);
+    assert_eq!(status(&head), 403, "{head}");
+    assert!(!body.contains("read"), "{body}");
+    let (head, body) = curl_h2(port, "GET", "/api/data", &[app]);
+    assert_eq!(status(&head), 200, "{head}");
+    assert!(body.contains("read") && header(&head, "access-control-allow-credentials") == Some("true"), "{head}{body}");
+    // CSRF: cookie without Origin/Referer is refused, with an allowed Origin it passes, without cookie it passes.
+    let (head, body) = curl_h2(port, "POST", "/api/data", &["Cookie: s=1"]);
+    assert_eq!(status(&head), 403, "{head}");
+    assert!(body.contains("CSRF_REJECTED") && !body.contains("write"), "{body}");
+    let (head, body) = curl_h2(port, "POST", "/api/data", &["Cookie: s=1", app]);
+    assert_eq!(status(&head), 200, "{head}");
+    assert!(body.contains("write"), "{body}");
+    let (head, _) = curl_h2(port, "POST", "/api/data", &[]);
+    assert_eq!(status(&head), 200, "{head}");
+    // Same-origin via :authority.
+    let same = format!("Origin: http://127.0.0.1:{port}");
+    let (head, _) = curl_h2(port, "POST", "/api/data", &["Cookie: s=1", &same]);
+    assert_eq!(status(&head), 200, "{head}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_same_policy_guards_http3_routes() {
+    let have = |args: &[&str]| Command::new("pkg-config").args(args).status().map(|s| s.success()).unwrap_or(false);
+    let curl_h3 = Command::new("curl").arg("-V").output().map(|o| String::from_utf8_lossy(&o.stdout).contains("HTTP3")).unwrap_or(false);
+    if !have(&["--exists", "libngtcp2", "libngtcp2_crypto_ossl", "libnghttp3"]) || !curl_h3 {
+        eprintln!("SKIP the_same_policy_guards_http3_routes (HTTP/3 toolchain or curl support missing)");
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    let dir = std::env::temp_dir().join(format!("tinox-browser-security-h3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ext = root.join("crates/tinox-core-ext");
+    let version = |m: &str| {
+        std::fs::read_to_string(ext.join(m).join("tinox.toml"))
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
+            .unwrap()
+    };
+    let mut toml = String::from("[package]\ncompiler = \"2.8.0\"\nname = \"sec3\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+    for m in ["http3_server", "http_server", "json"] {
+        toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
+    }
+    for m in ["http3_server", "http_server"] {
+        toml.push_str(&format!("\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\npath = \"{}\"\n", ext.join(m).display()));
+    }
+    std::fs::write(dir.join("tinox.toml"), toml).unwrap();
+    std::fs::copy(root.join("tests/fixtures/tls/selfsigned_cert.pem"), dir.join("cert.pem")).unwrap();
+    std::fs::copy(root.join("tests/fixtures/tls/selfsigned_key.pem"), dir.join("key.pem")).unwrap();
+    std::fs::write(dir.join("Policy.tnx"), "@Cors([\"https://app.example.com\"], true, 600)\n@Csrf\nclass Policy {\n}\n").unwrap();
+    // Imperative Http3Server (not the annotated controller) so preflights are covered too.
+    let port = 8869;
+    std::fs::write(
+        dir.join("Main.tnx"),
+        format!(
+            "import Policy\nimport tinox.core.http3_server\n\nclass Main {{\n    fnc main() -> Int32 {{\n        const server: Http3Server = Http3Server::new({port}, \"cert.pem\", \"key.pem\")\n        server.get(\"/api/data\", ctx => {{ ctx.response.text(\"read\") }})\n        server.post(\"/api/data\", ctx => {{ ctx.response.text(\"write\") }})\n        server.listen()\n        return 0\n    }}\n}}\n"
+        ),
+    )
+    .unwrap();
+    let install = Command::new(env!("CARGO_BIN_EXE_tinox")).arg("install").current_dir(&dir).output().unwrap();
+    assert!(install.status.success(), "{}", String::from_utf8_lossy(&install.stderr));
+    let exe = dir.join("sec3");
+    let build = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "Main.tnx", "-o"]).arg(&exe).env("TINOX_HTTP3", "1").current_dir(&dir).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let server = Command::new(&exe).current_dir(&dir).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let _guard = Kill(server);
+    std::thread::sleep(Duration::from_millis(800));
+
+    let h3 = |method: &str, headers: &[&str]| -> (String, String) {
+        for attempt in 0..10 {
+            let mut cmd = Command::new("curl");
+            cmd.args(["--http3-only", "-k", "-s", "-i", "-X", method, &format!("https://127.0.0.1:{port}/api/data")]);
+            for h in headers {
+                cmd.args(["-H", h]);
+            }
+            if method == "POST" {
+                cmd.args(["-d", "x=1"]);
+            }
+            let text = String::from_utf8_lossy(&cmd.output().unwrap().stdout).to_string();
+            if !text.is_empty() || attempt == 9 {
+                let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+                return (head.to_string(), body.to_string());
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        unreachable!()
+    };
+    let app = "Origin: https://app.example.com";
+    let (head, _) = h3("OPTIONS", &[app, "Access-Control-Request-Method: POST"]);
+    assert_eq!(status(&head), 204, "{head}");
+    assert_eq!(header(&head, "access-control-allow-origin"), Some("https://app.example.com"), "{head}");
+    let (head, body) = h3("GET", &["Origin: https://evil.example"]);
+    assert_eq!(status(&head), 403, "{head}");
+    assert!(body.contains("CORS_ORIGIN_DENIED") && !body.contains("read"), "{body}");
+    let (head, body) = h3("POST", &["Cookie: s=1"]);
+    assert_eq!(status(&head), 403, "{head}");
+    assert!(body.contains("CSRF_REJECTED"), "{body}");
+    let (head, body) = h3("POST", &["Cookie: s=1", app]);
+    assert_eq!(status(&head), 200, "{head}");
+    assert!(body.contains("write"), "{body}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

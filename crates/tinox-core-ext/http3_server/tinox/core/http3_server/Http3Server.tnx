@@ -36,6 +36,8 @@ namespace tinox.core.http3_server
     extern fn http3RequestHeaders(requestId: Int64) -> Map<String, String>
     extern fn http3RequestBody(requestId: Int64) -> String
     extern fn http3RequestWasEarlyData(requestId: Int64) -> Bool
+    // @Cors/@Csrf policy (#529): 1 = the guard already filled the response.
+    extern fn tinoxSecurityGuard(ctx: HttpContext, routeExists: Int64) -> Int64
     extern fn http3SubmitResponse(requestId: Int64, statusCode: Int64, headers: Map<String, String>, body: String) -> Nothing
     extern fn http3ReleaseRequest(requestId: Int64) -> Nothing
     extern fn http3ServerClose(serverHandle: Int64) -> Nothing
@@ -187,8 +189,12 @@ namespace tinox.core.http3_server
             const response: HttpResponse = HttpResponse::new()
             const ctx: HttpContext = HttpContext::new(request, response)
 
-            const middlewareContinue: Bool = this.runMiddleware(ctx)
-            if (middlewareContinue == false)
+            const guarded: Int64 = tinoxSecurityGuard(ctx, this.routeExistsFor(ctx))
+            if (guarded != 0)
+            {
+                // answered by the browser-security guard (preflight, rejection)
+            }
+            else if (this.runMiddleware(ctx) == false)
             {
                 ctx.response.statusCode = 403
                 ctx.response.text("Forbidden")
@@ -205,6 +211,27 @@ namespace tinox.core.http3_server
 
             http3SubmitResponse(requestId, ctx.response.statusCode, ctx.response.headers, ctx.response.body)
             http3ReleaseRequest(requestId)
+        }
+
+        // For a CORS preflight: is a route registered for the method it asks about on this path?
+        fn routeExistsFor(ctx: HttpContext) -> Int64
+        {
+            const wanted: String = ctx.request.getHeader("Access-Control-Request-Method")
+            if (wanted == "")
+            {
+                return 1
+            }
+            var i: Int64 = 0
+            while i < this.routes.len()
+            {
+                const route: Route = this.routes[i]
+                if (route.method == wanted && RouteMatcher::matches(route.path, ctx.request.path))
+                {
+                    return 1
+                }
+                i = i + 1
+            }
+            return 0
         }
 
         fn runMiddleware(ctx: HttpContext) -> Bool

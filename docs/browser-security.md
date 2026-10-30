@@ -62,12 +62,15 @@ With `[dev] enabled = true` the Dev UI API serves the active policy at `GET /sec
   requests are out of scope.
 - The scheme of the `Origin` is not compared with the request's (the server cannot see a TLS
   terminator): `http://x` and `https://x` are both "same origin" for host `x`.
-- Not enforced on transports that bypass the runtime HTTP/1 server: `@Http3RestController`
-  (HTTP/3) and `Http2Server` (HTTP/2) do not run these guards. Do not rely on `@Cors`/`@Csrf`
-  for routes served over them.
+- Transports: the guard runs for HTTP/1 (runtime server), HTTP/2 (`Http2Server`, http2_server
+  1.1.3) and HTTP/3 (`Http3Server` incl. `@Http3RestController`, http3_server 1.2.0) through the
+  same runtime function, so the order above and the error envelope are identical. The `Host` the
+  same-origin check compares against comes from `:authority` on HTTP/2 and HTTP/3. Servers you
+  write yourself on the raw `httpConn*`/socket primitives do not get the guard.
 - Only the framework-wide policy exists; there is no per-route override yet. This feature has not
   been independently security-audited.
 
 Verified by `crates/tinox/tests/browser_security_curl.rs` (curl as an independent browser-style
-client: preflight allow/deny for origin, method and header; credentialed requests; opaque
-origin; same-origin; CSRF accept/reject matrix) and annotation unit tests.
+client over HTTP/1, `--http2-prior-knowledge` and `--http3-only`: preflight allow/deny for origin,
+method and header; credentialed requests; opaque origin; same-origin; CSRF accept/reject matrix)
+and annotation unit tests.
