@@ -1,0 +1,116 @@
+module tinox.core.redis
+
+import tinox.core.semaphore
+
+namespace tinox.core.redis
+{
+    /*
+     * Bounded pool of RedisClient connections with exclusive borrowing:
+     * acquire() hands one client to one caller until release(). At most
+     * `max` connections exist at once (borrowed + idle); acquire() waits
+     * up to timeoutMs for a permit and then returns an unusable client
+     * (conn == -1, errorMessage "pool exhausted") instead of blocking
+     * forever. A released client that is not healthy (transport/protocol
+     * failure, closed) is closed and dropped, so unread bytes can never
+     * reach the next borrower. close() shuts the idle connections and
+     * makes later acquire() calls fail; clients still borrowed are closed
+     * when released.
+     *
+     * Failed acquisitions hold no permit and must not be released.
+     */
+    class RedisPool
+    {
+        var host: String
+        var port: Int64
+        var max: Int64
+        var idle: List<RedisClient>
+        var lock: Mutex
+        var permits: Semaphore
+        var closed: Bool
+
+        fn create(host: String, port: Int64, max: Int64) -> RedisPool
+        {
+            if (max < 1) {
+                throw "RedisPool max must be at least 1"
+            }
+            return RedisPool { host: host, port: port, max: max, idle: [], lock: Mutex::new(), permits: Semaphore::new(max), closed: false }
+        }
+
+        fn failed(message: String) -> RedisClient
+        {
+            return RedisClient { conn: -1, errorMessage: message, getFound: false, incrOk: false, healthy: false, pooled: false }
+        }
+
+        fn acquire(timeoutMs: Int64) -> RedisClient
+        {
+            const deadline = now() + timeoutMs
+            while true {
+                if (this.closed) {
+                    return RedisPool::failed("pool closed")
+                }
+                if (Semaphore::tryAcquire(this.permits)) {
+                    break
+                }
+                if (now() >= deadline) {
+                    return RedisPool::failed("pool exhausted")
+                }
+                sleep_ms(1)
+            }
+            Mutex::lock(this.lock)
+            var reused: RedisClient = RedisPool::failed("none")
+            var haveReused: Bool = false
+            while this.idle.len() > 0 && !haveReused {
+                const last = this.idle.len() - 1
+                const candidate = this.idle[last]
+                this.idle.removeAt(last)
+                if (candidate.healthy) {
+                    reused = candidate
+                    haveReused = true
+                } else {
+                    candidate.close()
+                }
+            }
+            Mutex::unlock(this.lock)
+            if (haveReused) {
+                reused.pooled = true
+                return reused
+            }
+            var fresh: RedisClient = RedisClient::connect(this.host, this.port)
+            if (fresh.conn <= 0) {
+                Semaphore::release(this.permits)
+                return fresh
+            }
+            fresh.pooled = true
+            return fresh
+        }
+
+        fn release(client: RedisClient) -> Nothing
+        {
+            if (!client.pooled) {
+                return
+            }
+            client.pooled = false
+            if (client.healthy && !this.closed) {
+                Mutex::lock(this.lock)
+                this.idle.push(client)
+                Mutex::unlock(this.lock)
+            } else {
+                client.close()
+            }
+            Semaphore::release(this.permits)
+        }
+
+        fn close() -> Nothing
+        {
+            this.closed = true
+            Mutex::lock(this.lock)
+            while this.idle.len() > 0 {
+                const last = this.idle.len() - 1
+                const c = this.idle[last]
+                this.idle.removeAt(last)
+                c.close()
+            }
+            Mutex::unlock(this.lock)
+        }
+    }
+}

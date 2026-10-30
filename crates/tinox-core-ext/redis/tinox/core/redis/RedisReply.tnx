@@ -1,0 +1,37 @@
+module tinox.core.redis
+
+namespace tinox.core.redis
+{
+    /*
+     * Result of RedisClient.command(). kind:
+     *   0 = nil (absent key / nil bulk)
+     *   1 = value (text holds it; an empty string is a real value)
+     *   2 = Redis error reply (text holds the message, e.g. "ERR ...")
+     *   3 = transport/protocol failure (text describes it; the client is no longer healthy)
+     */
+    class RedisReply
+    {
+        var kind: Int64
+        var text: String
+
+        fn isNil() -> Bool
+        {
+            return this.kind == 0
+        }
+
+        fn isValue() -> Bool
+        {
+            return this.kind == 1
+        }
+
+        fn isError() -> Bool
+        {
+            return this.kind == 2
+        }
+
+        fn isFailure() -> Bool
+        {
+            return this.kind == 3
+        }
+    }
+}
