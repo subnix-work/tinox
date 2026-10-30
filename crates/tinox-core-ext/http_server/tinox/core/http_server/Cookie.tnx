@@ -1,0 +1,106 @@
+module tinox.core.http_server
+
+namespace tinox.core.http_server
+{
+    /**
+     * A Set-Cookie value with explicit attributes instead of hand-concatenated
+     * strings. toHeaderValue() validates everything that could break header
+     * framing or cookie syntax and throws instead of emitting a bad header:
+     *   - name: an HTTP token; value: no whitespace, control characters,
+     *     double quote, comma, semicolon or backslash (RFC 6265 cookie-octet);
+     *   - Path/Domain: no ';', control characters or whitespace;
+     *   - SameSite is "Strict", "Lax" or "None" (or "" for unset); "None"
+     *     requires Secure.
+     * maxAge < 0 means "no Max-Age"; 0 expires the cookie immediately.
+     */
+    class Cookie
+    {
+        var name: String
+        var value: String
+        var path: String
+        var domain: String
+        var maxAge: Int64
+        var secure: Bool
+        var httpOnly: Bool
+        var sameSite: String
+        var expireNow: Bool
+
+        fn create(name: String, value: String) -> Cookie
+        {
+            return Cookie { name: name, value: value, path: "", domain: "", maxAge: -1, secure: false, httpOnly: false, sameSite: "", expireNow: false }
+        }
+
+        fn forbidden(text: String, bad: String) -> Bool
+        {
+            var i: Int64 = 0
+            while i < text.len()
+            {
+                const ch = text.substring(i, i + 1)
+                if (bad.contains(ch) || text.charCodeAt(i) < 33 || text.charCodeAt(i) == 127)
+                {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+
+        fn toHeaderValue() -> String
+        {
+            if (this.name.len() == 0 || Cookie::forbidden(this.name, "()<>@,;:\\\"/[]?={}"))
+            {
+                throw "invalid cookie name"
+            }
+            if (Cookie::forbidden(this.value, ",;\\\""))
+            {
+                throw "invalid cookie value for " + this.name
+            }
+            if (Cookie::forbidden(this.path, ";"))
+            {
+                throw "invalid cookie Path"
+            }
+            if (Cookie::forbidden(this.domain, ";"))
+            {
+                throw "invalid cookie Domain"
+            }
+            if (this.sameSite != "" && this.sameSite != "Strict" && this.sameSite != "Lax" && this.sameSite != "None")
+            {
+                throw "SameSite must be Strict, Lax or None"
+            }
+            if (this.sameSite == "None" && !this.secure)
+            {
+                throw "SameSite=None requires Secure"
+            }
+            var out: String = this.name + "=" + this.value
+            if (this.path != "")
+            {
+                out = out + "; Path=" + this.path
+            }
+            if (this.domain != "")
+            {
+                out = out + "; Domain=" + this.domain
+            }
+            if (this.maxAge >= 0)
+            {
+                out = out + "; Max-Age=" + this.maxAge.toString()
+            }
+            if (this.expireNow)
+            {
+                out = out + "; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+            }
+            if (this.secure)
+            {
+                out = out + "; Secure"
+            }
+            if (this.httpOnly)
+            {
+                out = out + "; HttpOnly"
+            }
+            if (this.sameSite != "")
+            {
+                out = out + "; SameSite=" + this.sameSite
+            }
+            return out
+        }
+    }
+}

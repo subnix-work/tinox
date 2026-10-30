@@ -44,7 +44,8 @@ namespace tinox.core.http_server
         }
 
         /**
-         * Sets a response header
+         * Sets a response header, REPLACING every earlier value of that name
+         * (including values added with addHeader).
          *
          * @param name the header name
          * @param value the header value
@@ -53,7 +54,92 @@ namespace tinox.core.http_server
         fn header(name: String, value: String) -> HttpResponse
         {
             this.headers[name] = value
+            var n: Int64 = 2
+            while this.headers.contains(name + " " + n.toString())
+            {
+                this.headers.remove(name + " " + n.toString())
+                n = n + 1
+            }
             return this
+        }
+
+        /**
+         * APPENDS a value to a header that may legally repeat (e.g. Set-Cookie).
+         * The first value lives under the plain name, later ones under
+         * "<name> <n>" (a space cannot occur in a header name); every transport
+         * writes them as separate header lines of the same name. Reading
+         * `headers[name]` still yields the first value. Throws on a name that is
+         * not an HTTP token, on CR/LF/NUL in name or value, and after 64 values.
+         *
+         * @param name the header name
+         * @param value the header value
+         * @return this response for chaining
+         */
+        fn addHeader(name: String, value: String) -> HttpResponse
+        {
+            HttpResponse::checkHeader(name, value)
+            if (!this.headers.contains(name))
+            {
+                this.headers[name] = value
+                return this
+            }
+            var n: Int64 = 2
+            while this.headers.contains(name + " " + n.toString())
+            {
+                n = n + 1
+                if (n > 64)
+                {
+                    throw "too many values for header " + name
+                }
+            }
+            this.headers[name + " " + n.toString()] = value
+            return this
+        }
+
+        fn checkHeader(name: String, value: String) -> Nothing
+        {
+            if (name.len() == 0)
+            {
+                throw "empty header name"
+            }
+            const bad = " \t\r\n:()<>@,;\\\"/[]?={}"
+            var i: Int64 = 0
+            while i < name.len()
+            {
+                if (bad.contains(name.substring(i, i + 1)))
+                {
+                    throw "invalid character in header name " + name
+                }
+                i = i + 1
+            }
+            if (value.contains("\r") || value.contains("\n"))
+            {
+                throw "CR/LF in value of header " + name
+            }
+        }
+
+        /**
+         * Appends a Set-Cookie header built from a Cookie (see Cookie.toHeaderValue
+         * for the validation it applies). Several cookies produce several
+         * Set-Cookie lines.
+         */
+        fn setCookie(cookie: Cookie) -> HttpResponse
+        {
+            return this.addHeader("Set-Cookie", cookie.toHeaderValue())
+        }
+
+        /**
+         * Expires a cookie in the client: empty value, Max-Age=0 and a past Expires.
+         * path/domain must match the attributes the cookie was set with.
+         */
+        fn removeCookie(name: String, path: String, domain: String) -> HttpResponse
+        {
+            var c: Cookie = Cookie::create(name, "")
+            c.path = path
+            c.domain = domain
+            c.maxAge = 0
+            c.expireNow = true
+            return this.setCookie(c)
         }
 
         /**

@@ -7509,6 +7509,27 @@ void httpConnClearRecvTimeout(int64_t conn) {
     setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
+// Waits up to `ms` for the conn to become readable (data or EOF) WITHOUT consuming anything, so a
+// caller can bound a wait and still read whole messages afterwards (a recv timeout in the middle
+// of a message would lose the bytes already read). Returns 1 if readable, 0 on timeout, -1 if the
+// conn is closed/invalid or poll fails. A concurrent httpConnClose wakes the wait within ~20 ms.
+int64_t httpConnWaitReadable(int64_t conn, int64_t ms) {
+    if (conn <= 0) return -1;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    if (ms < 0) ms = 0;
+    int64_t waited = 0;
+    for (;;) {
+        if (atomic_load(&c->closing) || c->fd < 0) return -1;
+        struct pollfd pfd = { .fd = c->fd, .events = POLLIN };
+        int slice = (int)(ms - waited < 20 ? ms - waited : 20);
+        int r = poll(&pfd, 1, slice);
+        if (r > 0) return (pfd.revents & (POLLIN | POLLHUP | POLLERR)) ? 1 : -1;
+        if (r < 0 && errno != EINTR) return -1;
+        waited += slice;
+        if (waited >= ms) return 0;
+    }
+}
+
 // Reads a single '\n'-terminated line from a conn (issue #134, SMTP
 // client: RFC 5321 is a line-based, \r\n-terminated command/response
 // protocol -- unlike HTTP's blank-line-terminated request blocks
@@ -8556,6 +8577,7 @@ void http3SubmitResponse(int64_t requestId, int64_t statusCode, void* headersMap
         const char* keyStr = (const char*)(intptr_t)keys->data[i];
         char* lowerKey = strdup(keyStr);
         for (char* p = lowerKey; *p; p++) *p = (char)tolower((unsigned char)*p);
+        { char* sp = strchr(lowerKey, ' '); if (sp) *sp = '\0'; } // repeated field "<Name> <n>" (#528)
         const char* valStr = (const char*)(intptr_t)tinox_map_get(headersMap, keyStr);
         nva[i + 1].name = (const uint8_t*)lowerKey;
         nva[i + 1].namelen = strlen(lowerKey);
@@ -9213,6 +9235,7 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     void* resp_hdr_map = (void*)g_response[1];
     char hdr_buf[4096];
     size_t hdr_off = 0;
+    int bad_header = 0;
     TinoxMap* rhm = (TinoxMap*)resp_hdr_map;
     if (rhm && rhm->len > 0) {
         int64_t* hkeys_h = tinox_map_keys(resp_hdr_map);
@@ -9222,7 +9245,16 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
             const char* hk = (const char*)(uintptr_t)hkeys[hi];
             const char* hv = (const char*)(uintptr_t)tinox_map_get(resp_hdr_map, hk);
             if (hk && hv) {
-                size_t kl = strlen(hk), vl = strlen(hv);
+                // Repeated fields (#528): HttpResponse.addHeader stores the 2nd..nth value under
+                // "<Name> <n>"; a space cannot occur in a real header name, so the wire name is the
+                // part before the first space.
+                const char* sp = strchr(hk, ' ');
+                size_t kl = sp ? (size_t)(sp - hk) : strlen(hk), vl = strlen(hv);
+                // Framing safety: CR, LF or NUL in a name/value would inject headers or split the response.
+                if (memchr(hk, '\r', kl) || memchr(hk, '\n', kl) || strpbrk(hv, "\r\n")) {
+                    bad_header = 1;
+                    continue;
+                }
                 if (hdr_off + kl + vl + 4 < sizeof(hdr_buf)) {
                     memcpy(hdr_buf + hdr_off, hk, kl); hdr_off += kl;
                     hdr_buf[hdr_off++] = ':'; hdr_buf[hdr_off++] = ' ';
@@ -9232,7 +9264,14 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
             }
         }
     }
-    if (status != 204 && tinox_map_contains(resp_hdr_map, "Content-Type") == 0) {
+    if (bad_header) {
+        // Refuse to emit a response with an invalid header instead of sending a corrupted one.
+        fprintf(stderr, "tinox: response header contains CR/LF; replying 500\n");
+        status = 500;
+        body = "Invalid response header";
+        hdr_off = 0;
+    }
+    if (status != 204 && (tinox_map_contains(resp_hdr_map, "Content-Type") == 0 || bad_header)) {
         static const char ct[] = "Content-Type: application/json\r\n";
         // Bug 95: this fallback copy was unconditional, unlike every other
         // write into hdr_buf above (each bounds-checked against

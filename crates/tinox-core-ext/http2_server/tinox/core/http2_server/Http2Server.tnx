@@ -533,7 +533,14 @@ namespace tinox.core.http2_server
             var i: Int64 = 0
             while i < headerKeys.len()
             {
-                responseHeaders.push(HpackHeader::new(headerKeys[i].toLowerCase(), response.headers[headerKeys[i]]))
+                // Repeated fields are stored as "<Name> <n>" (HttpResponse.addHeader, #528);
+                // the wire name is the part before the first space.
+                var wireName: String = headerKeys[i]
+                const space = wireName.indexOf(" ")
+                if (space > 0) {
+                    wireName = wireName.substring(0, space)
+                }
+                responseHeaders.push(HpackHeader::new(wireName.toLowerCase(), response.headers[headerKeys[i]]))
                 i = i + 1
             }
             if (response.body.len() > 0)
