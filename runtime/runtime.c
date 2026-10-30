@@ -10919,13 +10919,33 @@ typedef struct {
     int64_t value;
 } TinoxCounter;
 
+// Fixed, mergeable latency buckets (upper bounds in nanoseconds), Prometheus `le` style. The
+// resolution is the bucket width: a quantile derived with histogram_quantile() is only known to
+// lie inside its bucket (e.g. a p99 between 100 ms and 250 ms is reported by interpolation).
+#define TINOX_HIST_BUCKETS 14
+static const int64_t TINOX_HIST_BOUNDS_NS[TINOX_HIST_BUCKETS] = {
+    500000LL, 1000000LL, 2500000LL, 5000000LL, 10000000LL, 25000000LL, 50000000LL,
+    100000000LL, 250000000LL, 500000000LL, 1000000000LL, 2500000000LL, 5000000000LL, 10000000000LL,
+};
+static const char* const TINOX_HIST_LE[TINOX_HIST_BUCKETS] = {
+    "0.0005", "0.001", "0.0025", "0.005", "0.01", "0.025", "0.05",
+    "0.1", "0.25", "0.5", "1", "2.5", "5", "10",
+};
+
 typedef struct {
     char    name[256];
     int64_t count;
     int64_t sum_ns;
     int64_t min_ns;
     int64_t max_ns;
+    int64_t buckets[TINOX_HIST_BUCKETS]; // non-cumulative; values above the last bound only in count
 } TinoxHistogram;
+
+static void tinox_hist_observe_bucket(TinoxHistogram* h, int64_t duration_ns) {
+    for (int b = 0; b < TINOX_HIST_BUCKETS; b++) {
+        if (duration_ns <= TINOX_HIST_BOUNDS_NS[b]) { h->buckets[b]++; return; }
+    }
+}
 
 typedef struct {
     char    name[256];
@@ -10969,6 +10989,7 @@ void tinox_histogram_record(const char* name, int64_t duration_ns) {
     for (int i = 0; i < _tinox_histogram_n; i++) {
         if (strcmp(_tinox_histograms[i].name, name) == 0) {
             _tinox_histograms[i].count++;
+            tinox_hist_observe_bucket(&_tinox_histograms[i], duration_ns);
             _tinox_histograms[i].sum_ns += duration_ns;
             if (duration_ns < _tinox_histograms[i].min_ns) _tinox_histograms[i].min_ns = duration_ns;
             if (duration_ns > _tinox_histograms[i].max_ns) _tinox_histograms[i].max_ns = duration_ns;
@@ -10983,6 +11004,8 @@ void tinox_histogram_record(const char* name, int64_t duration_ns) {
         _tinox_histograms[_tinox_histogram_n].sum_ns  = duration_ns;
         _tinox_histograms[_tinox_histogram_n].min_ns  = duration_ns;
         _tinox_histograms[_tinox_histogram_n].max_ns  = duration_ns;
+        memset(_tinox_histograms[_tinox_histogram_n].buckets, 0, sizeof(_tinox_histograms[_tinox_histogram_n].buckets));
+        tinox_hist_observe_bucket(&_tinox_histograms[_tinox_histogram_n], duration_ns);
         _tinox_histogram_n++;
     }
     pthread_mutex_unlock(&_tinox_metrics_mu);
@@ -11030,7 +11053,7 @@ char* tinox_metrics_prometheus(void) {
     pthread_mutex_lock(&_tinox_metrics_mu);
     // Upper bound per entry: histogram lines repeat a (up to 255-byte)
     // name 5 times plus ~200 bytes of fixed text -- comfortably under 2048.
-    size_t cap = (size_t)(_tinox_counter_n + _tinox_histogram_n + _tinox_gauge_n + 1) * 2048 + 4096 + 64;
+    size_t cap = (size_t)(_tinox_counter_n + _tinox_gauge_n + 1) * 2048 + (size_t)_tinox_histogram_n * 8192 + 4096 + 64;
     char* buf = (char*)GC_malloc(cap);
     size_t pos = 0;
 
@@ -11047,13 +11070,24 @@ char* tinox_metrics_prometheus(void) {
         double max_s   = (double)_tinox_histograms[i].max_ns / 1e9;
         int64_t count  = _tinox_histograms[i].count;
         const char* n  = _tinox_histograms[i].name;
-        int written = snprintf(buf + pos, cap - pos,
-            "# TYPE %s_duration_seconds summary\n"
+        // A real Prometheus histogram. `_count`/`_sum` keep the names they had as a summary, so
+        // existing rate()/average queries are unaffected; `_min`/`_max` stay as gauges.
+        int written = snprintf(buf + pos, cap - pos, "# TYPE %s_duration_seconds histogram\n", n);
+        tinox_metrics_append(&pos, cap, written);
+        int64_t cumulative = 0;
+        for (int b = 0; b < TINOX_HIST_BUCKETS; b++) {
+            cumulative += _tinox_histograms[i].buckets[b];
+            written = snprintf(buf + pos, cap - pos, "%s_duration_seconds_bucket{le=\"%s\"} %lld\n",
+                n, TINOX_HIST_LE[b], (long long)cumulative);
+            tinox_metrics_append(&pos, cap, written);
+        }
+        written = snprintf(buf + pos, cap - pos,
+            "%s_duration_seconds_bucket{le=\"+Inf\"} %lld\n"
             "%s_duration_seconds_count %lld\n"
             "%s_duration_seconds_sum %.9f\n"
-            "%s_duration_seconds_min %.9f\n"
-            "%s_duration_seconds_max %.9f\n",
-            n, n, (long long)count, n, sum_s, n, min_s, n, max_s);
+            "# TYPE %s_duration_seconds_min gauge\n%s_duration_seconds_min %.9f\n"
+            "# TYPE %s_duration_seconds_max gauge\n%s_duration_seconds_max %.9f\n",
+            n, (long long)count, n, (long long)count, n, sum_s, n, n, min_s, n, n, max_s);
         tinox_metrics_append(&pos, cap, written);
     }
     for (int i = 0; i < _tinox_gauge_n; i++) {
