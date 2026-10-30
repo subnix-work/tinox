@@ -149,6 +149,18 @@ pub struct TestInfo {
     /// One-based source position of the test method.
     pub line: u32,
     pub column: u32,
+    /// Zero-based index of the `@Case` this entry runs, `None` for a plain @Test.
+    pub case_index: Option<usize>,
+    /// Literal arguments of that `@Case`, passed to the test method's parameters.
+    pub case_args: Vec<Literal>,
+}
+
+/// `@BeforeEach` / `@AfterEach` method of a test class (#547).
+#[derive(Debug, Clone)]
+pub struct TestHookInfo {
+    pub class_name: String,
+    pub method_name: String,
+    pub after: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -349,6 +361,7 @@ pub struct AnnotationProcessingResult {
     pub json_serializable_classes: Vec<String>,
     pub cli_commands: Vec<CliCommandInfo>,
     pub test_entries: Vec<TestInfo>,
+    pub test_hooks: Vec<TestHookInfo>,
     pub metric_entries: Vec<MetricInfo>,
     pub entity_entries: Vec<EntityInfo>,
     pub ws_endpoints: Vec<WsEndpointInfo>,
@@ -780,6 +793,29 @@ impl AnnotationProcessor {
                 description: "@Test[(\"description\")] — marks a method as a test case".to_string(),
             },
         );
+
+        registry.insert(
+            "Case".to_string(),
+            AnnotationInfo {
+                name: "Case".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 8,
+                description: "@Case(literal, ...) — one parameterized run of a @Test method; repeat for more cases".to_string(),
+            },
+        );
+        for (name, text) in [("BeforeEach", "runs before every @Test of its class"), ("AfterEach", "runs after every @Test of its class, even when it fails or throws")] {
+            registry.insert(
+                name.to_string(),
+                AnnotationInfo {
+                    name: name.to_string(),
+                    valid_targets: vec![AnnotationTarget::Method],
+                    min_args: 0,
+                    max_args: 0,
+                    description: format!("@{name} — {text}"),
+                },
+            );
+        }
 
         // CLI framework annotations (@Command / @Option / @Argument)
         registry.insert(
@@ -1416,12 +1452,39 @@ impl AnnotationProcessor {
                         } else {
                             method.name.clone()
                         };
-                        result.test_entries.push(TestInfo {
+                        let cases: Vec<&tinox_parser::Annotation> = method.annotations.iter().filter(|a| a.name == "Case").collect();
+                        let mut push = |case_index: Option<usize>, case_args: Vec<Literal>| {
+                            let description = match case_index {
+                                Some(i) => format!("{description} [case {i}]"),
+                                None => description.clone(),
+                            };
+                            result.test_entries.push(TestInfo {
+                                class_name: class.name.clone(),
+                                method_name: method.name.clone(),
+                                description,
+                                line: method.span.start.line,
+                                column: method.span.start.column,
+                                case_index,
+                                case_args,
+                            });
+                        };
+                        if cases.is_empty() {
+                            push(None, Vec::new());
+                        } else {
+                            for (i, case) in cases.iter().enumerate() {
+                                let literals = case.args.iter().filter_map(|a| match a {
+                                    tinox_parser::AnnotationArg::Literal(l) => Some(l.clone()),
+                                    _ => None,
+                                }).collect();
+                                push(Some(i), literals);
+                            }
+                        }
+                    }
+                    "BeforeEach" | "AfterEach" => {
+                        result.test_hooks.push(TestHookInfo {
                             class_name: class.name.clone(),
                             method_name: method.name.clone(),
-                            description,
-                            line: method.span.start.line,
-                            column: method.span.start.column,
+                            after: ann.name == "AfterEach",
                         });
                     }
                     "Timed" | "Counted" => {
@@ -2049,6 +2112,44 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
                             test.span,
                             format!("@Test method '{}' must return Bool (true = pass), but returns a different type", method.name),
                         ));
+                    }
+                }
+                // #547: fixtures and parameterized cases.
+                for hook in method.annotations.iter().filter(|a| matches!(a.name.as_str(), "BeforeEach" | "AfterEach")) {
+                    if method.static_ || !method.params.is_empty() || !matches!(method.ret_type, Type::Nothing) {
+                        errors.push(Error::new(
+                            hook.span,
+                            format!("@{} method '{}' must be an instance method (`fn`) without parameters returning Nothing", hook.name, method.name),
+                        ));
+                    }
+                    if method.annotations.iter().any(|a| a.name == "Test") {
+                        errors.push(Error::new(hook.span, format!("method '{}' cannot be both @Test and @{}", method.name, hook.name)));
+                    }
+                }
+                let cases: Vec<&tinox_parser::Annotation> = method.annotations.iter().filter(|a| a.name == "Case").collect();
+                let is_test = method.annotations.iter().any(|a| a.name == "Test");
+                if !cases.is_empty() && !is_test {
+                    errors.push(Error::new(cases[0].span, format!("@Case on '{}' requires @Test", method.name)));
+                }
+                if is_test && cases.is_empty() && !method.params.is_empty() {
+                    errors.push(Error::new(method.span, format!("@Test method '{}' has parameters; supply them with @Case(...)", method.name)));
+                }
+                for case in &cases {
+                    if case.args.len() != method.params.len() {
+                        errors.push(Error::new(case.span, format!("@Case has {} argument(s) but '{}' takes {} parameter(s)", case.args.len(), method.name, method.params.len())));
+                        continue;
+                    }
+                    for (arg, param) in case.args.iter().zip(&method.params) {
+                        let ok = match (arg, &param.param_type) {
+                            (AnnotationArg::Literal(Literal::Integer(_)), Type::Int64) => true,
+                            (AnnotationArg::Literal(Literal::Float(_)), Type::Float64) => true,
+                            (AnnotationArg::Literal(Literal::String(_)), Type::String) => true,
+                            (AnnotationArg::Literal(Literal::Bool(_)), Type::Bool) => true,
+                            _ => false,
+                        };
+                        if !ok {
+                            errors.push(Error::new(case.span, format!("@Case argument for parameter '{}' must be a literal matching its type (Int64, Float64, String or Bool)", param.name)));
+                        }
                     }
                 }
                 for hook in method.annotations.iter().filter(|a| {

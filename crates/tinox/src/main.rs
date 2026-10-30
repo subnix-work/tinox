@@ -2338,6 +2338,7 @@ fn run_tests_once(args: &[String]) -> bool {
         let describe = |t: &tinox_typecheck::annotations::TestInfo| serde_json::json!({
             "file": source_path, "class": t.class_name, "method": t.method_name,
             "description": t.description, "line": t.line, "column": t.column,
+            "case": t.case_index,
         });
 
         // Discovery mode: report what exists without compiling or running anything.
@@ -2450,7 +2451,7 @@ fn run_tests_once(args: &[String]) -> bool {
             "total": total, "passed": passed, "failed": failed, "collection_errors": collection_errors,
             "listed_only": list_only,
             // Lets an IDE refuse a selected run on an older compiler instead of running the whole file.
-            "capabilities": ["filter"],
+            "capabilities": ["filter", "fixtures", "cases"],
             "success": collection_errors == 0 && failed == 0 && (list_only || total > 0),
         }));
     } else if list_only {
@@ -3369,7 +3370,20 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
     cg.set_db_url(db_cfg_test.as_ref().map(|c| c.url.clone()));
     cg.set_db_pool_size(db_cfg_test.as_ref().map(|c| c.pool as i64).unwrap_or(5));
     cg.set_migration_payload(test_migration_payload(db_cfg_test.as_ref()).map_err(|e| format!("changelog: {e}"))?);
-    cg.set_test_entries(tests.iter().map(|t| (t.class_name.clone(), t.method_name.clone())).collect());
+    let hooks = tinox_typecheck::annotations::process_annotations(&ast).test_hooks;
+    cg.set_test_entries(tests.iter().map(|t| tinox_codegen::TestEntry {
+        class: t.class_name.clone(),
+        method: t.method_name.clone(),
+        args: t.case_args.iter().map(|l| match l {
+            tinox_parser::Literal::Integer(v) => tinox_codegen::TestArg::Int(*v as i64),
+            tinox_parser::Literal::Float(v) => tinox_codegen::TestArg::Float(*v),
+            tinox_parser::Literal::Bool(v) => tinox_codegen::TestArg::Bool(*v),
+            tinox_parser::Literal::String(v) => tinox_codegen::TestArg::Str(v.clone()),
+            other => unreachable!("@Case literal {other:?} rejected by annotation validation"),
+        }).collect(),
+        before: hooks.iter().filter(|h| h.class_name == t.class_name && !h.after).map(|h| h.method_name.clone()).collect(),
+        after: hooks.iter().filter(|h| h.class_name == t.class_name && h.after).map(|h| h.method_name.clone()).collect(),
+    }).collect());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
     cg.check_undefined_callees()
         .map_err(|e| format!("codegen: {}", e.errors.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")))?;

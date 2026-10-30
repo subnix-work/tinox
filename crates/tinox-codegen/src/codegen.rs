@@ -298,6 +298,26 @@ struct DbgScope {
     line: u32,
 }
 
+/// Literal argument of a parameterized `@Case` (#547).
+#[derive(Debug, Clone)]
+pub enum TestArg {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+}
+
+/// One executable test: the method, its `@Case` arguments and the class's
+/// `@BeforeEach` / `@AfterEach` methods, in declaration order.
+#[derive(Debug, Clone)]
+pub struct TestEntry {
+    pub class: String,
+    pub method: String,
+    pub args: Vec<TestArg>,
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+}
+
 pub struct CodeGen {
     request_validation_schema: String,
     ir: String,
@@ -565,7 +585,7 @@ pub struct CodeGen {
     /// Whether a [metrics] endpoint is enabled (path to expose on)
     metrics_path: Option<String>,
     /// Selected (class, method) pairs dispatched by a test index in a shared executable.
-    test_entries: Vec<(String, String)>,
+    test_entries: Vec<TestEntry>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
     /// Names of `__tinox_run_<kind>()` functions emitted by the REST/HTTP3/
@@ -899,7 +919,7 @@ impl CodeGen {
     /// Generate one test executable for these methods. The runner selects an index
     /// with the private argv pair `--tinox-test-index N` and starts a fresh process
     /// for every method. Test programs inspecting argv can see this selector.
-    pub fn set_test_entries(&mut self, entries: Vec<(String, String)>) {
+    pub fn set_test_entries(&mut self, entries: Vec<TestEntry>) {
         self.test_entries = entries;
     }
 
@@ -8107,7 +8127,9 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut b, "  ]").unwrap();
         writeln!(&mut b, "invalid:").unwrap();
         writeln!(&mut b, "  ret i64 2").unwrap();
-        for (index, (class, method)) in self.test_entries.iter().enumerate() {
+        let entries = self.test_entries.clone();
+        for (index, entry) in entries.iter().enumerate() {
+            let (class, method) = (&entry.class, &entry.method);
             let n_fields = self.struct_layouts.get(class).map_or(0, Vec::len);
             let byte_size = (n_fields * 8).max(8);
             writeln!(&mut b, "test{index}:").unwrap();
@@ -8117,10 +8139,59 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut b, "  %zi{index}_{fi} = getelementptr i64, i64* %obj{index}, i64 {fi}").unwrap();
                 writeln!(&mut b, "  store i64 0, i64* %zi{index}_{fi}").unwrap();
             }
+            writeln!(&mut b, "  %code{index} = alloca i64").unwrap();
+            writeln!(&mut b, "  store i64 1, i64* %code{index}").unwrap();
+            // Setup: a throwing @BeforeEach skips the test body but not teardown.
+            for (h, hook) in entry.before.iter().enumerate() {
+                writeln!(&mut b, "  call void @{class}_{hook}(i64* %obj{index})").unwrap();
+                writeln!(&mut b, "  %be{index}_{h} = load i64, i64* @__tinox_err").unwrap();
+                writeln!(&mut b, "  %bad{index}_{h} = icmp ne i64 %be{index}_{h}, 0").unwrap();
+                writeln!(&mut b, "  br i1 %bad{index}_{h}, label %after{index}, label %next{index}_{h}").unwrap();
+                writeln!(&mut b, "next{index}_{h}:").unwrap();
+            }
+            let mut call_args = format!("i64* %obj{index}");
+            for arg in &entry.args {
+                match arg {
+                    TestArg::Int(v) => call_args.push_str(&format!(", i64 {v}")),
+                    TestArg::Float(v) => call_args.push_str(&format!(", double {:e}", v)),
+                    TestArg::Bool(v) => call_args.push_str(&format!(", i1 {}", if *v { 1 } else { 0 })),
+                    TestArg::Str(v) => {
+                        let c = self.make_string_const(v);
+                        call_args.push_str(&format!(", i8* {c}"));
+                    }
+                }
+            }
             // @Test returns Bool (i1); widening its call ABI would read garbage.
-            writeln!(&mut b, "  %result{index} = call i1 @{class}_{method}(i64* %obj{index})").unwrap();
-            writeln!(&mut b, "  %code{index} = select i1 %result{index}, i64 0, i64 1").unwrap();
-            writeln!(&mut b, "  ret i64 %code{index}").unwrap();
+            writeln!(&mut b, "  %result{index} = call i1 @{class}_{method}({call_args})").unwrap();
+            writeln!(&mut b, "  %rcode{index} = select i1 %result{index}, i64 0, i64 1").unwrap();
+            writeln!(&mut b, "  store i64 %rcode{index}, i64* %code{index}").unwrap();
+            writeln!(&mut b, "  br label %after{index}").unwrap();
+            // Teardown always runs; the test's pending error is parked so the hook's own
+            // post-call error checks do not return early, then restored.
+            writeln!(&mut b, "after{index}:").unwrap();
+            writeln!(&mut b, "  %saved{index} = load i64, i64* @__tinox_err").unwrap();
+            writeln!(&mut b, "  store i64 0, i64* @__tinox_err").unwrap();
+            writeln!(&mut b, "  %hookfail{index} = alloca i64").unwrap();
+            writeln!(&mut b, "  store i64 0, i64* %hookfail{index}").unwrap();
+            for (h, hook) in entry.after.iter().enumerate() {
+                writeln!(&mut b, "  call void @{class}_{hook}(i64* %obj{index})").unwrap();
+                writeln!(&mut b, "  %ae{index}_{h} = load i64, i64* @__tinox_err").unwrap();
+                writeln!(&mut b, "  %af{index}_{h} = icmp ne i64 %ae{index}_{h}, 0").unwrap();
+                writeln!(&mut b, "  %av{index}_{h} = zext i1 %af{index}_{h} to i64").unwrap();
+                writeln!(&mut b, "  %ao{index}_{h} = load i64, i64* %hookfail{index}").unwrap();
+                writeln!(&mut b, "  %an{index}_{h} = or i64 %ao{index}_{h}, %av{index}_{h}").unwrap();
+                writeln!(&mut b, "  store i64 %an{index}_{h}, i64* %hookfail{index}").unwrap();
+                writeln!(&mut b, "  store i64 0, i64* @__tinox_err").unwrap();
+            }
+            writeln!(&mut b, "  %sf{index} = icmp ne i64 %saved{index}, 0").unwrap();
+            writeln!(&mut b, "  %sv{index} = zext i1 %sf{index} to i64").unwrap();
+            writeln!(&mut b, "  %hf{index} = load i64, i64* %hookfail{index}").unwrap();
+            writeln!(&mut b, "  %cd{index} = load i64, i64* %code{index}").unwrap();
+            writeln!(&mut b, "  %m1{index} = or i64 %sv{index}, %hf{index}").unwrap();
+            writeln!(&mut b, "  %m2{index} = or i64 %m1{index}, %cd{index}").unwrap();
+            writeln!(&mut b, "  %fail{index} = icmp ne i64 %m2{index}, 0").unwrap();
+            writeln!(&mut b, "  %final{index} = select i1 %fail{index}, i64 1, i64 0").unwrap();
+            writeln!(&mut b, "  ret i64 %final{index}").unwrap();
         }
         writeln!(&mut b, "}}\n").unwrap();
         self.lambda_ir.push_str(&b);
