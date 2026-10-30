@@ -2131,7 +2131,7 @@ fn run_tests_watch(args: &[String]) {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc;
 
-    let watch_dir = if let Some(file) = parse_test_selection(args).ok().flatten() {
+    let watch_dir = if let Some(file) = parse_test_args(args).ok().and_then(|a| a.file) {
         Path::new(file).canonicalize().ok().and_then(|p| p.parent().map(Path::to_path_buf))
     } else {
         find_project_root()
@@ -2199,11 +2199,17 @@ fn collect_test_dir(dir: &Path, files: &mut Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// The single positional test file of `tinox test`, wherever it sits among the
-/// flags. Unknown flags and extra positionals are errors, never a silent
-/// widening of the selected scope (#585).
-fn parse_test_selection(args: &[String]) -> Result<Option<&str>, String> {
-    let mut file: Option<&str> = None;
+/// Parsed `tinox test` arguments: the single positional test file wherever it
+/// sits among the flags, plus exact `--filter Class::method` selectors. Unknown
+/// flags and extra positionals are errors, never a silent widening of the
+/// selected scope (#585, #582).
+struct TestArgs<'a> {
+    file: Option<&'a str>,
+    filters: Vec<&'a str>,
+}
+
+fn parse_test_args(args: &[String]) -> Result<TestArgs<'_>, String> {
+    let mut parsed = TestArgs { file: None, filters: Vec::new() };
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -2213,22 +2219,34 @@ fn parse_test_selection(args: &[String]) -> Result<Option<&str>, String> {
                 i += 1;
                 if i >= args.len() { return Err(format!("{a} needs a value")); }
             }
+            "--filter" => {
+                i += 1;
+                let value = args.get(i).ok_or("--filter needs a Class::method value")?;
+                parsed.filters.push(value);
+            }
             _ if a.starts_with("--format=") || a.starts_with("--message-format=") => {}
+            _ if a.starts_with("--filter=") => parsed.filters.push(&a["--filter=".len()..]),
             _ if a.starts_with('-') && a.len() > 1 => return Err(format!("unknown option for `tinox test`: {a}")),
             _ => {
-                if let Some(prev) = file {
+                if let Some(prev) = parsed.file {
                     return Err(format!("only one test file may be given, got `{prev}` and `{a}`"));
                 }
-                file = Some(a);
+                parsed.file = Some(a);
             }
         }
         i += 1;
     }
-    Ok(file)
+    for f in &parsed.filters {
+        match f.split_once("::") {
+            Some((class, method)) if !class.is_empty() && !method.is_empty() && !method.contains("::") => {}
+            _ => return Err(format!("--filter expects an exact Class::method selector, got `{f}`")),
+        }
+    }
+    Ok(parsed)
 }
 
 fn collect_test_files(args: &[String]) -> Result<Vec<String>, String> {
-    if let Some(f) = parse_test_selection(args)? {
+    if let Some(f) = parse_test_args(args)?.file {
         let path = Path::new(f).canonicalize().map_err(|e| format!("{}: {}", f, e))?;
         return Ok(vec![path.to_string_lossy().into_owned()]);
     }
@@ -2288,6 +2306,8 @@ fn run_tests_once(args: &[String]) -> bool {
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut collection_errors = 0usize;
+    let filters: Vec<String> = parse_test_args(args).map(|a| a.filters.iter().map(|f| f.to_string()).collect()).unwrap_or_default();
+    let mut matched_filters: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for source_path in &source_files {
         let test_entries = match collect_tests(source_path) {
@@ -2301,6 +2321,17 @@ fn run_tests_once(args: &[String]) -> bool {
                 collection_errors += 1;
                 continue;
             }
+        };
+        // Exact selectors drop everything else before anything is compiled or run.
+        let test_entries: Vec<_> = if filters.is_empty() {
+            test_entries
+        } else {
+            test_entries.into_iter().filter(|t| {
+                let id = format!("{}::{}", t.class_name, t.method_name);
+                let hit = filters.contains(&id);
+                if hit { matched_filters.insert(id); }
+                hit
+            }).collect()
         };
         if test_entries.is_empty() { continue; }
 
@@ -2404,10 +2435,22 @@ fn run_tests_once(args: &[String]) -> bool {
         let _ = fs::remove_file(format!("{exe}.ll"));
     }
 
+    for unmatched in filters.iter().filter(|f| !matched_filters.contains(*f)) {
+        let message = format!("--filter `{unmatched}` matched no @Test method (expected Class::method)");
+        if json {
+            diagnostics::emit("test-collection-error", serde_json::json!({ "file": null, "message": message }));
+        } else {
+            eprintln!("error: {message}");
+        }
+        collection_errors += 1;
+    }
+
     if json {
         diagnostics::emit("test-run-finished", serde_json::json!({
             "total": total, "passed": passed, "failed": failed, "collection_errors": collection_errors,
             "listed_only": list_only,
+            // Lets an IDE refuse a selected run on an older compiler instead of running the whole file.
+            "capabilities": ["filter"],
             "success": collection_errors == 0 && failed == 0 && (list_only || total > 0),
         }));
     } else if list_only {
