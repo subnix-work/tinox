@@ -149,6 +149,101 @@ namespace tinox.core.oidc
         }
 
         /*
+         * Like install(), but the session is a managed one (SessionManager, #530): absolute and
+         * idle expiry, sliding renewal, rotation, revocation and key rotation. The pending-login
+         * cookie is cleared right after /callback consumed it (two Set-Cookie headers in one
+         * response, via the cookie API), and the session id is new on every login. Gate routes
+         * with requireSession(), log out with logoutSession().
+         */
+        fn installWithSessions(server: HttpServer, sessions: SessionManager) -> Nothing
+        {
+            const client: OidcClient = this.client
+            const cookieSecret: String = this.cookieSecret
+            const pendingCookieName: String = this.pendingCookieName
+            const secure: Bool = sessions.cookieSecure
+            const cookiePath: String = sessions.cookiePath
+
+            server.get(this.loginPath, ctx => {
+                const authReq: OAuth2AuthorizeRequest = client.buildAuthorizeUrl("openid email")
+                const now: Int64 = Time::now() / 1000
+                const pendingJson: String = "{\"state\":\"" + authReq.state + "\",\"codeVerifier\":\"" + authReq.codeVerifier + "\",\"exp\":" + (now + 300).toString() + "}"
+                var pending: Cookie = Cookie::create(pendingCookieName, Crypto::aesEncrypt(pendingJson, cookieSecret))
+                pending.path = cookiePath
+                pending.httpOnly = true
+                pending.secure = secure
+                pending.sameSite = "Lax"
+                pending.maxAge = 300
+                ctx.response.setCookie(pending)
+                ctx.response.redirect(authReq.url)
+            })
+
+            server.get(this.callbackPath, ctx => {
+                const code: String = QueryString::get(ctx.request.queryString, "code")
+                const stateParam: String = QueryString::get(ctx.request.queryString, "state")
+                const pendingSealed: String = OidcWebApp::readCookie(ctx, pendingCookieName)
+                if (pendingSealed == "")
+                {
+                    ctx.response.status(400).text("no pending login (missing or expired state cookie)")
+                    return
+                }
+                var pending: Map<String, JsonValue> = Map::new()
+                var unsealError: String = ""
+                try
+                {
+                    pending = OidcWebApp::unsealJson(pendingSealed, cookieSecret)
+                }
+                catch e: String
+                {
+                    unsealError = e
+                }
+                if (unsealError != "")
+                {
+                    ctx.response.status(400).text("invalid login attempt: " + unsealError)
+                    return
+                }
+                const now: Int64 = Time::now() / 1000
+                if (!pending.contains("exp") || now > pending["exp"].asInt())
+                {
+                    ctx.response.status(400).text("login attempt expired, please try again")
+                    return
+                }
+                if (!pending.contains("state") || pending["state"].getString() != stateParam)
+                {
+                    ctx.response.status(400).text("state mismatch (possible CSRF)")
+                    return
+                }
+                const tokens: OidcTokenResponse = client.exchangeCode(code, pending["codeVerifier"].getString())
+                if (!tokens.ok)
+                {
+                    ctx.response.status(401).text("login failed: " + tokens.errorMessage)
+                    return
+                }
+                ctx.response.removeCookie(pendingCookieName, cookiePath, "")
+                sessions.start(ctx, tokens.claims)
+                ctx.response.redirect("/")
+            })
+        }
+
+        // Managed-session counterpart of requireLogin(): validates (and slides) the session; on
+        // failure redirects to loginPath and returns false -- callers must return immediately.
+        fn requireSession(ctx: HttpContext, sessions: SessionManager) -> Bool
+        {
+            const s: Session = sessions.touch(ctx)
+            if (!s.valid)
+            {
+                ctx.response.redirect(this.loginPath)
+                return false
+            }
+            return true
+        }
+
+        fn logoutSession(ctx: HttpContext, sessions: SessionManager) -> Nothing
+        {
+            sessions.end(ctx)
+            ctx.response.redirect(this.loginPath)
+        }
+
+        /*
          * Gate a route on a valid session. On success returns true and
          * leaves ctx.response untouched. On failure (no session cookie,
          * tampered/wrong-secret cookie, or an expired session -- reusing

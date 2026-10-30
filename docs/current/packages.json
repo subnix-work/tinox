@@ -525,11 +525,11 @@
           "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/http_server/1-2-0/docs.html",
+      "docs": "docs/tinox-core/http_server/1-2-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/http_server/tinox.toml",
       "name": "http_server",
-      "version": "1.2.0"
+      "version": "1.2.1"
     },
     {
       "dependencies": [],
@@ -640,7 +640,7 @@
         {
           "artifactId": "http_server",
           "group": "tinox.core",
-          "version": "1.2.0"
+          "version": "1.2.1"
         },
         {
           "artifactId": "json",
@@ -658,11 +658,11 @@
           "version": "1.1.1"
         }
       ],
-      "docs": "docs/tinox-core/oidc/1-2-0/docs.html",
+      "docs": "docs/tinox-core/oidc/1-2-1/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/oidc/tinox.toml",
       "name": "oidc",
-      "version": "1.2.0"
+      "version": "1.2.1"
     },
     {
       "dependencies": [],

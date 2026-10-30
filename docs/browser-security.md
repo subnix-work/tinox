@@ -62,7 +62,7 @@ With `[dev] enabled = true` the Dev UI API serves the active policy at `GET /sec
   requests are out of scope.
 - The scheme of the `Origin` is not compared with the request's (the server cannot see a TLS
   terminator): `http://x` and `https://x` are both "same origin" for host `x`.
-- Transports: the guard runs for HTTP/1 (runtime server), HTTP/2 (`Http2Server`, http2_server
+- Transports: the guard runs for HTTP/1 (runtime server and the Tinox-level `HttpServer`, http_server 1.2.1), HTTP/2 (`Http2Server`, http2_server
   1.1.3) and HTTP/3 (`Http3Server` incl. `@Http3RestController`, http3_server 1.2.0) through the
   same runtime function, so the order above and the error envelope are identical. The `Host` the
   same-origin check compares against comes from `:authority` on HTTP/2 and HTTP/3. Servers you

@@ -22,6 +22,9 @@ namespace tinox.core.oidc
      *   sessions.rotate(ctx)                                // after privilege change: new id
      *   sessions.end(ctx)                                   // logout: clears the cookie, revokes the id
      *
+     * Browser login with an OpenID provider: OidcWebApp.installWithSessions(server, sessions) wires
+     * /login and /callback to this manager; gate routes with OidcWebApp.requireSession(ctx, sessions).
+     *
      * Lifetimes (seconds): `lifetime` is an absolute cap since login (never extended by renewal
      * or rotation); `idle` expires a session not seen for that long; `renewAfter` re-issues the
      * cookie (fresh `seen`) when the stored one is older than that, so an active user stays logged
