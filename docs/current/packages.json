@@ -406,11 +406,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/amqp091/1-2-0/docs.html",
+      "docs": "docs/tinox-core/amqp091/1-3-0/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/amqp091/tinox.toml",
       "name": "amqp091",
-      "version": "1.2.0"
+      "version": "1.3.0"
     },
     {
       "dependencies": [],
@@ -663,6 +663,25 @@
       "manifest": "crates/tinox-core-ext/oidc/tinox.toml",
       "name": "oidc",
       "version": "1.2.1"
+    },
+    {
+      "dependencies": [
+        {
+          "artifactId": "db",
+          "group": "tinox.core",
+          "version": "1.2.2"
+        },
+        {
+          "artifactId": "amqp091",
+          "group": "tinox.core",
+          "version": "1.3.0"
+        }
+      ],
+      "docs": "docs/tinox-core/outbox/1-0-0/docs.html",
+      "group": "tinox.core",
+      "manifest": "crates/tinox-core-ext/outbox/tinox.toml",
+      "name": "outbox",
+      "version": "1.0.0"
     },
     {
       "dependencies": [],

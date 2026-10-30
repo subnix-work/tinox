@@ -1,0 +1,212 @@
+module tinox.core.outbox
+import tinox.core.db
+import tinox.core.time
+import tinox.core.bytes
+import tinox.core.amqp091
+
+namespace tinox.core.outbox
+{
+    /**
+     * Publishing side of the outbox: reads pending records (oldest first, 50 per batch), publishes each to
+     * its queue with the record's messageId as AMQP message-id using publisher confirms, and marks it sent
+     * only after the broker confirmed it.
+     *
+     * Delivery is AT-LEAST-ONCE. If the process dies after the broker confirmed but before the record is
+     * marked sent (or the confirm is lost), the record is published again after a restart, with the same
+     * messageId: consumers must deduplicate on it (IdempotencyWindow091 or a unique key in their database).
+     * No committed record is lost: a record stays pending until a confirm was seen. Failures are retried with
+     * exponential backoff (backoffMs * 2^attempts, capped at 60 s) and parked after maxAttempts, so nothing
+     * retries forever. Order is by id, but a record in backoff is overtaken by later ones.
+     */
+    class OutboxDispatcher
+    {
+        var host: String
+        var port: Int64
+        var vhost: String
+        var user: String
+        var pass: String
+        var maxAttempts: Int64
+        var backoffMs: Int64
+        var confirmTimeoutMs: Int64
+        // empty while disconnected, exactly one element while connected
+        var conns: List<AmqpConnection091>
+        var chans: List<AmqpChannel091>
+        var connected: Bool
+        var stopRequested: Bool
+        var confirmed: Int64
+        var failures: Int64
+
+        fnc create(host: String, port: Int64, vhost: String, user: String, pass: String, maxAttempts: Int64, backoffMs: Int64) -> OutboxDispatcher
+        {
+            if (maxAttempts < 1 || maxAttempts > 100 || backoffMs < 0)
+            {
+                throw "OutboxDispatcher: maxAttempts must be 1..100 and backoffMs >= 0"
+            }
+            return OutboxDispatcher { host: host, port: port, vhost: vhost, user: user, pass: pass, maxAttempts: maxAttempts, backoffMs: backoffMs, confirmTimeoutMs: 10000, conns: [], chans: [], connected: false, stopRequested: false, confirmed: 0, failures: 0 }
+        }
+
+        /** Opens the connection and enables publisher confirms; false (and nothing open) on failure */
+        fn connect() -> Bool
+        {
+            const c = AmqpConnection091::connect(this.host, this.port, this.vhost, this.user, this.pass)
+            if (c.conn <= 0)
+            {
+                return false
+            }
+            const ch = AmqpChannel091::open(c)
+            if (ch.chanId <= 0 || !ch.confirmSelect())
+            {
+                c.close()
+                return false
+            }
+            this.conns = [c]
+            this.chans = [ch]
+            this.connected = true
+            return true
+        }
+
+        fn close() -> Nothing
+        {
+            if (this.connected)
+            {
+                this.conns[0].close()
+                this.conns = []
+                this.chans = []
+                this.connected = false
+            }
+        }
+
+        /** Publishes one batch; returns how many records the broker confirmed */
+        fn runOnce() -> Int64
+        {
+            if (!this.connected && !this.connect())
+            {
+                return 0
+            }
+            const now: Int64 = Time::now()
+            const batch: List<OutboxRecord> = DB::of(OutboxRecord).filter(r => r.status == 0 && r.nextAttemptAt <= now).orderBy(r => r.id).limit(50).list()
+            var sent: Int64 = 0
+            var i: Int64 = 0
+            while (i < batch.len() && !this.stopRequested)
+            {
+                const rec: OutboxRecord = batch[i]
+                if (this.publishOne(rec))
+                {
+                    sent = sent + 1
+                }
+                i = i + 1
+                if (!this.connected)
+                {
+                    return sent
+                }
+            }
+            return sent
+        }
+
+        /** Publish + wait for the confirm of one record; settles the record either way */
+        fn publishOne(rec: OutboxRecord) -> Bool
+        {
+            var reason: String = ""
+            var ok: Bool = false
+            const body: List<Int64> = Bytes::fromText(rec.payload).toList()
+            const tag: Int64 = this.chans[0].publishMessage("", rec.destination, body, "text/plain", rec.messageId)
+            if (tag <= 0)
+            {
+                reason = "publish failed: " + this.chans[0].errorMessage
+            }
+            else
+            {
+                try
+                {
+                    scope
+                    {
+                        taskSetDeadline(this.confirmTimeoutMs)
+                        const res = this.chans[0].waitForConfirm()
+                        if (!res.ok)
+                        {
+                            reason = "confirm failed: " + res.errorMessage
+                        }
+                        else if (!res.ack)
+                        {
+                            reason = "broker nacked the message"
+                        }
+                        else
+                        {
+                            ok = true
+                        }
+                    }
+                }
+                catch (e: String)
+                {
+                    reason = "no confirm: " + e
+                }
+            }
+            const now: Int64 = Time::now()
+            if (ok)
+            {
+                rec.status = 1
+                rec.sentAt = now
+                rec.lastError = ""
+                DB::of(OutboxRecord).save(rec)
+                this.confirmed = this.confirmed + 1
+                return true
+            }
+            // The channel state after a lost/failed confirm is unknown: drop the connection, reconnect next round.
+            this.failures = this.failures + 1
+            this.close()
+            rec.attempts = rec.attempts + 1
+            rec.lastError = reason
+            if (rec.attempts >= this.maxAttempts)
+            {
+                rec.status = 2
+            }
+            else
+            {
+                var wait: Int64 = this.backoffMs
+                var n: Int64 = 1
+                while (n < rec.attempts && wait < 60000)
+                {
+                    wait = wait * 2
+                    n = n + 1
+                }
+                if (wait > 60000)
+                {
+                    wait = 60000
+                }
+                rec.nextAttemptAt = now + wait
+            }
+            DB::of(OutboxRecord).save(rec)
+            return false
+        }
+
+        /**
+         * Runs until stop() (or until the owning task scope is cancelled), draining the current batch
+         * before it returns; sleeps pollMs between empty rounds. Always closes the connection.
+         */
+        fn run(pollMs: Int64) -> Nothing
+        {
+            try
+            {
+                while (!this.stopRequested)
+                {
+                    const n: Int64 = this.runOnce()
+                    if (n == 0)
+                    {
+                        sleep(pollMs)
+                    }
+                }
+            }
+            catch (e: String)
+            {
+                this.close()
+                throw e
+            }
+            this.close()
+        }
+
+        fn stop() -> Nothing
+        {
+            this.stopRequested = true
+        }
+    }
+}

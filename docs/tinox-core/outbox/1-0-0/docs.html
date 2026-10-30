@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>outbox — Tinox Docs</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --bg:        #070b14;
+  --bg2:       rgba(17, 25, 43, 0.6);
+  --bg3:       rgba(34, 211, 238, 0.07);
+  --sidebar:   rgba(7, 11, 20, 0.72);
+  --border:    rgba(103, 232, 249, 0.16);
+  --accent:    #22d3ee;
+  --accent2:   #a78bfa;
+  --link:      #67e8f9;
+  --green:     #34d399;
+  --text:      #e2e8f0;
+  --text2:     #93a4bd;
+  --text3:     #64748b;
+  --code-bg:   rgba(5, 7, 13, 0.65);
+  --tag-bg:    rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+  background-attachment: fixed;
+  color: var(--text);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, black, transparent 75%);
+}
+nav { position: sticky; top: 0; z-index: 1; width: 270px; min-width: 270px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--border); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 32px 0; overflow-y: auto; flex-shrink: 0; }
+nav h1 { padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-family: 'Space Grotesk', 'JetBrains Mono', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+nav ul { list-style: none; }
+nav li.nav-section { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }
+nav li a { display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }
+nav li a:hover { color: var(--text); background: var(--bg3); border-left-color: var(--accent); }
+main { position: relative; z-index: 1; flex: 1; min-width: 0; padding: 56px clamp(2rem, 4vw, 4rem); }
+main h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }
+main > p.generated-by { color: var(--text3); margin-bottom: 28px; font-size: 0.78rem; }
+.tool-tag { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text3); }
+.item { border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.item-name { font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.kw { color: #c792ea; }
+.doc { color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }
+h3 { font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }
+table.members { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.members tr { border-bottom: 1px solid var(--border); }
+table.members td { padding: 8px 10px; vertical-align: top; }
+.member-name { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); width: 35%; }
+.member-type { color: #ffcb6b; width: 20%; }
+.method-sig { background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }
+.method-doc { color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }
+.ann { color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }
+code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--link); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>📦 outbox</h1>
+  <ul><li class="nav-section">Overview</li><li><a href="#overview">Description</a></li><li class="nav-section">Dependencies</li><li><a href="#dependencies">Dependencies</a></li><li class="nav-section">Classes</li><li><a href="#class-Outbox">Outbox</a></li><li><a href="#class-OutboxDispatcher">OutboxDispatcher</a></li><li><a href="#class-OutboxRecord">OutboxRecord</a></li></ul>
+</nav>
+<main>
+  <h1>outbox</h1>
+  <p class="generated-by">Generated by <span class="tool-tag">tinox doc</span></p>
+  <section id="overview" class="item"><p class="doc" style="margin-bottom:0">tinox.core.outbox: transactional outbox over tinox.core.db and AMQP 0-9-1 publisher confirms.</p></section><section id="dependencies" class="item"><table class="members"><tr><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Module</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Version</th><th style="text-align:left;color:var(--text3);font-size:0.75rem;text-transform:uppercase;padding-bottom:6px">Group</th></tr><tr><td class="member-name"><a href="../../db/1-2-2/docs.html"><code>db</code></a></td><td class="member-type"><code>1.2.2</code></td><td>tinox.core</td></tr><tr><td class="member-name"><a href="../../amqp091/1-3-0/docs.html"><code>amqp091</code></a></td><td class="member-type"><code>1.3.0</code></td><td>tinox.core</td></tr></table></section><section id="class-Outbox" class="item"><h2 class="item-name"><span class="kw">class</span> Outbox</h2><p class="doc">
+     * Writing side of the transactional outbox. add() stores the message in table `tinox_outbox` with
+     * the ORM, i.e. on the connection of the caller's @Transactional method: the message is committed
+     * or rolled back together with the business data, never separately. Nothing is sent here.
+     </p><h3>Methods</h3><div class="method-sig"><span class="kw">fnc</span> add(destination: <span style="color:#ffcb6b">String</span>, messageId: <span style="color:#ffcb6b">String</span>, payload: <span style="color:#ffcb6b">String</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * @param destination queue name (routing key on the default exchange)
+         * @param messageId   stable key of this logical message (the consumer deduplicates on it); must be
+         *                    non-empty and at most 255 bytes
+         * @param payload     the message body as text (encode structured data yourself, e.g. JSON)
+         </div><div class="method-sig"><span class="kw">fnc</span> backlog() → <span style="color:#ffcb6b">Int64</span></div><div class="method-doc"> Records not yet confirmed by the broker and not parked </div><div class="method-sig"><span class="kw">fnc</span> parked() → <span style="color:#ffcb6b">Int64</span></div><div class="method-doc"> Records parked after maxAttempts failures: they need an operator (fix the cause, set status back to 0) </div><div class="method-sig"><span class="kw">fnc</span> lagMs() → <span style="color:#ffcb6b">Int64</span></div><div class="method-doc"> Age in ms of the oldest pending record, 0 if there is none (how far the dispatcher lags behind) </div></section><section id="class-OutboxDispatcher" class="item"><h2 class="item-name"><span class="kw">class</span> OutboxDispatcher</h2><p class="doc">
+     * Publishing side of the outbox: reads pending records (oldest first, 50 per batch), publishes each to
+     * its queue with the record's messageId as AMQP message-id using publisher confirms, and marks it sent
+     * only after the broker confirmed it.
+     *
+     * Delivery is AT-LEAST-ONCE. If the process dies after the broker confirmed but before the record is
+     * marked sent (or the confirm is lost), the record is published again after a restart, with the same
+     * messageId: consumers must deduplicate on it (IdempotencyWindow091 or a unique key in their database).
+     * No committed record is lost: a record stays pending until a confirm was seen. Failures are retried with
+     * exponential backoff (backoffMs * 2^attempts, capped at 60 s) and parked after maxAttempts, so nothing
+     * retries forever. Order is by id, but a record in backoff is overtaken by later ones.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>host</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>port</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>vhost</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>user</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>pass</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><code>maxAttempts</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>backoffMs</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>confirmTimeoutMs</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>conns</code></td><td class="member-type"><code>List&lt;AmqpConnection091&gt;</code></td><td></td></tr><tr><td class="member-name"><code>chans</code></td><td class="member-type"><code>List&lt;AmqpChannel091&gt;</code></td><td></td></tr><tr><td class="member-name"><code>connected</code></td><td class="member-type"><code>Bool</code></td><td></td></tr><tr><td class="member-name"><code>stopRequested</code></td><td class="member-type"><code>Bool</code></td><td></td></tr><tr><td class="member-name"><code>confirmed</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><code>failures</code></td><td class="member-type"><code>Int64</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fnc</span> create(host: <span style="color:#ffcb6b">String</span>, port: <span style="color:#ffcb6b">Int64</span>, vhost: <span style="color:#ffcb6b">String</span>, user: <span style="color:#ffcb6b">String</span>, pass: <span style="color:#ffcb6b">String</span>, maxAttempts: <span style="color:#ffcb6b">Int64</span>, backoffMs: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">OutboxDispatcher</span></div><div class="method-sig"><span class="kw">fn</span> connect() → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc"> Opens the connection and enables publisher confirms; false (and nothing open) on failure </div><div class="method-sig"><span class="kw">fn</span> close() → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> runOnce() → <span style="color:#ffcb6b">Int64</span></div><div class="method-doc"> Publishes one batch; returns how many records the broker confirmed </div><div class="method-sig"><span class="kw">fn</span> publishOne(rec: <span style="color:#ffcb6b">OutboxRecord</span>) → <span style="color:#ffcb6b">Bool</span></div><div class="method-doc"> Publish + wait for the confirm of one record; settles the record either way </div><div class="method-sig"><span class="kw">fn</span> run(pollMs: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-doc">
+         * Runs until stop() (or until the owning task scope is cancelled), draining the current batch
+         * before it returns; sleeps pollMs between empty rounds. Always closes the connection.
+         </div><div class="method-sig"><span class="kw">fn</span> stop() → <span style="color:#ffcb6b">Nothing</span></div></section><section id="class-OutboxRecord" class="item"><h2 class="item-name"><span class="ann">@Entity</span><span class="ann">@Table</span><span class="kw">class</span> OutboxRecord</h2><p class="doc">
+     * One message waiting to be published. Written by Outbox::add inside the application's own
+     * transaction, published (and marked sent) later by the OutboxDispatcher.
+     *
+     * Table `tinox_outbox`; create it in your changelog, see docs/outbox.md.
+     * status: 0 pending, 1 sent (broker confirmed), 2 parked (maxAttempts failed -- needs an operator).
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><span class="ann">@Id</span><span class="ann">@GeneratedValue</span><code>id</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@Column</span><code>destination</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@Column</span><code>messageId</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@Column</span><code>payload</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@Column</span><code>status</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@Column</span><code>attempts</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@Column</span><code>lastError</code></td><td class="member-type"><code>String</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@Column</span><code>createdAt</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@Column</span><code>nextAttemptAt</code></td><td class="member-type"><code>Int64</code></td><td></td></tr><tr><td class="member-name"><span class="ann">@Column</span><code>sentAt</code></td><td class="member-type"><code>Int64</code></td><td></td></tr></table></section>
+</main>
+</body>
+</html>

@@ -1,0 +1,52 @@
+module tinox.core.outbox
+import tinox.core.db
+import tinox.core.time
+
+namespace tinox.core.outbox
+{
+    /**
+     * Writing side of the transactional outbox. add() stores the message in table `tinox_outbox` with
+     * the ORM, i.e. on the connection of the caller's @Transactional method: the message is committed
+     * or rolled back together with the business data, never separately. Nothing is sent here.
+     */
+    class Outbox
+    {
+        /**
+         * @param destination queue name (routing key on the default exchange)
+         * @param messageId   stable key of this logical message (the consumer deduplicates on it); must be
+         *                    non-empty and at most 255 bytes
+         * @param payload     the message body as text (encode structured data yourself, e.g. JSON)
+         */
+        fnc add(destination: String, messageId: String, payload: String) -> Nothing
+        {
+            if (destination == "" || messageId == "" || messageId.len() > 255)
+            {
+                throw "Outbox.add: destination and messageId are required (messageId at most 255 bytes)"
+            }
+            DB::of(OutboxRecord).save(OutboxRecord { id: 0, destination: destination, messageId: messageId, payload: payload, status: 0, attempts: 0, lastError: "", createdAt: Time::now(), nextAttemptAt: 0, sentAt: 0 })
+        }
+
+        /** Records not yet confirmed by the broker and not parked */
+        fnc backlog() -> Int64
+        {
+            return DB::of(OutboxRecord).filter(r => r.status == 0).count()
+        }
+
+        /** Records parked after maxAttempts failures: they need an operator (fix the cause, set status back to 0) */
+        fnc parked() -> Int64
+        {
+            return DB::of(OutboxRecord).filter(r => r.status == 2).count()
+        }
+
+        /** Age in ms of the oldest pending record, 0 if there is none (how far the dispatcher lags behind) */
+        fnc lagMs() -> Int64
+        {
+            const oldest: OutboxRecord = DB::of(OutboxRecord).filter(r => r.status == 0).orderBy(r => r.id).first()
+            if (oldest.id == 0)
+            {
+                return 0
+            }
+            return Time::now() - oldest.createdAt
+        }
+    }
+}

@@ -32,6 +32,7 @@ const KNOWN_BROKEN: &[&str] = &[];
 /// Modules without a smoke case, with a justification.
 const EXCLUDED: &[(&str, &str)] = &[
     ("db", "needs [database] config\ncovered by the orm_sqlite_* e2e cases"),
+    ("outbox", "needs a database and a broker\ncovered by crates/tinox/tests/outbox_delivery.rs (real PostgreSQL + RabbitMQ, crash scenarios)"),
     (
         "http3_server",
         "needs TINOX_HTTP3=1 (opt-in, default OFF -- unlike OpenSSL, ngtcp2/nghttp3 aren't universally installed); a smoke case without this flag would fail at link time. Covered by crates/tinox/tests/http3_server_curl.rs (its own process, real curl --http3-only, skips cleanly instead of failing when ngtcp2/nghttp3/HTTP3-curl are missing on the build machine).",

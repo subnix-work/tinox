@@ -275,6 +275,15 @@ namespace tinox.core.amqp091
          */
         fn publish(exchange: String, routingKey: String, body: List<Int64>, contentType: String) -> Int64
         {
+            return this.publishMessage(exchange, routingKey, body, contentType, "")
+        }
+
+        /*
+         * Like publish(), additionally setting the message-id property (at most 255 bytes) -- the
+         * stable key consumers use to detect duplicates of an at-least-once delivery.
+         */
+        fn publishMessage(exchange: String, routingKey: String, body: List<Int64>, contentType: String, messageId: String) -> Int64
+        {
             const w = AmqpWriter091::new()
             w.short(0) // reserved-1
             w.shortstr(exchange)
@@ -293,8 +302,12 @@ namespace tinox.core.amqp091
             }
             flags = flags | 4096 // bit 12: delivery-mode
             pw.octet(2) // persistent
+            if (messageId.len() > 0) {
+                flags = flags | 128 // bit 7: message-id (after delivery-mode in property order)
+                pw.shortstr(messageId)
+            }
             if (pw.hasError()) {
-                this.errorMessage = "content-type too long (max 255 bytes, shortstr) -- basic.publish NOT sent"
+                this.errorMessage = "content-type or message-id too long (max 255 bytes, shortstr) -- basic.publish NOT sent"
                 return 0
             }
 
