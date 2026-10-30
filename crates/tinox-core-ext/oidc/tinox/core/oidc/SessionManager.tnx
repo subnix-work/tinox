@@ -1,0 +1,375 @@
+module tinox.core.oidc
+
+import tinox.core.http_server
+import tinox.core.json
+import tinox.core.crypto
+import tinox.core.time
+import tinox.core.semaphore
+
+namespace tinox.core.oidc
+{
+    /*
+     * Session lifecycle for browser logins (#530). Sessions are STATELESS by default: the whole
+     * session (id, timestamps, claims) is one AES-256-GCM sealed httpOnly cookie, so there is no
+     * server-side store, sessions survive restarts and work across processes, and concurrent
+     * requests cannot corrupt each other (every request reads its own cookie; renewal re-issues
+     * an equivalent cookie).
+     *
+     *   var sessions: SessionManager = SessionManager::create(["current-secret", "previous-secret"])
+     *   sessions.lifetime(8 * 3600).idle(1800).renewAfter(300).secure(true)
+     *   const s: Session = sessions.start(ctx, claims)      // login: new id + Set-Cookie
+     *   const s2: Session = sessions.touch(ctx)             // per request: validate + sliding renewal
+     *   sessions.rotate(ctx)                                // after privilege change: new id
+     *   sessions.end(ctx)                                   // logout: clears the cookie, revokes the id
+     *
+     * Lifetimes (seconds): `lifetime` is an absolute cap since login (never extended by renewal
+     * or rotation); `idle` expires a session not seen for that long; `renewAfter` re-issues the
+     * cookie (fresh `seen`) when the stored one is older than that, so an active user stays logged
+     * in without a Set-Cookie on every request.
+     *
+     * Key rotation: the FIRST secret seals, ALL secrets open. Put the new secret first and keep
+     * the old one until `lifetime` has passed; a cookie opened with an older key is re-sealed with
+     * the first key on the next touch(). A cookie no key opens is "invalid".
+     *
+     * Revocation (the explicit trade-off of stateless sessions): end() and rotate() add the old
+     * session id to a bounded in-memory deny list (kept until that session would have expired),
+     * endAll() invalidates every session issued before now. The deny list lives in THIS process:
+     * another instance, or this one after a restart, still accepts a revoked-but-unexpired cookie.
+     * When logout must be effective everywhere, keep `lifetime` short, rotate the secrets, or put
+     * the deny list in a shared store (not provided). If the deny list is full the OLDEST entries
+     * are dropped and the number of dropped entries is reported by revocationsDropped().
+     */
+    class SessionManager
+    {
+        var secrets: List<String>
+        var cookieName: String
+        var cookiePath: String
+        var cookieDomain: String
+        var cookieSecure: Bool
+        var cookieSameSite: String
+        var lifetimeSec: Int64
+        var idleSec: Int64
+        var renewAfterSec: Int64
+        var maxRevoked: Int64
+        var epochMs: Int64
+        var revoked: Map<String, Int64>
+        var dropped: Int64
+        var lock: Mutex
+
+        fn create(secrets: List<String>) -> SessionManager
+        {
+            if (secrets.len() == 0)
+            {
+                throw "SessionManager needs at least one secret"
+            }
+            var i: Int64 = 0
+            while (i < secrets.len())
+            {
+                if (secrets[i].len() < 16)
+                {
+                    throw "SessionManager secrets must be at least 16 characters (an empty or short secret is a guessable key)"
+                }
+                i = i + 1
+            }
+            return SessionManager { secrets: secrets, cookieName: "tinox_session", cookiePath: "/", cookieDomain: "", cookieSecure: true, cookieSameSite: "Lax", lifetimeSec: 28800, idleSec: 1800, renewAfterSec: 300, maxRevoked: 10000, epochMs: 0, revoked: Map::new(), dropped: 0, lock: Mutex::new() }
+        }
+
+        fn name(cookieName: String) -> SessionManager
+        {
+            this.cookieName = cookieName
+            return this
+        }
+
+        fn path(path: String) -> SessionManager
+        {
+            this.cookiePath = path
+            return this
+        }
+
+        fn domain(domain: String) -> SessionManager
+        {
+            this.cookieDomain = domain
+            return this
+        }
+
+        // Defaults to true: pass false only for plain-HTTP development.
+        fn secure(enabled: Bool) -> SessionManager
+        {
+            this.cookieSecure = enabled
+            return this
+        }
+
+        fn sameSite(value: String) -> SessionManager
+        {
+            this.cookieSameSite = value
+            return this
+        }
+
+        fn lifetime(seconds: Int64) -> SessionManager
+        {
+            if (seconds < 1)
+            {
+                throw "SessionManager.lifetime must be positive"
+            }
+            this.lifetimeSec = seconds
+            return this
+        }
+
+        fn idle(seconds: Int64) -> SessionManager
+        {
+            if (seconds < 1)
+            {
+                throw "SessionManager.idle must be positive"
+            }
+            this.idleSec = seconds
+            return this
+        }
+
+        fn renewAfter(seconds: Int64) -> SessionManager
+        {
+            if (seconds < 0)
+            {
+                throw "SessionManager.renewAfter must not be negative"
+            }
+            this.renewAfterSec = seconds
+            return this
+        }
+
+        fn maxRevocations(count: Int64) -> SessionManager
+        {
+            if (count < 1)
+            {
+                throw "SessionManager.maxRevocations must be positive"
+            }
+            this.maxRevoked = count
+            return this
+        }
+
+        // Starts a new session (new random id) and sets the cookie on ctx.response.
+        fn start(ctx: HttpContext, claims: Map<String, JsonValue>) -> Session
+        {
+            const now: Int64 = Time::now()
+            const s: Session = Session { valid: true, reason: "", id: SessionManager::newId(), claims: claims, issuedAt: now, expiresAt: now + this.lifetimeSec * 1000, seenAt: now, renewed: true }
+            this.issue(ctx, s)
+            return s
+        }
+
+        // Reads and validates the request's session without touching the response.
+        fn load(ctx: HttpContext) -> Session
+        {
+            return this.inspect(ctx, false)
+        }
+
+        // Validates the session and re-issues the cookie when it is due for sliding renewal or was
+        // sealed with an older key. An invalid session is returned as such (nothing is set).
+        fn touch(ctx: HttpContext) -> Session
+        {
+            return this.inspect(ctx, true)
+        }
+
+        // New session id, same claims, same absolute expiry; the old id is revoked. Call after a
+        // privilege change (login, role change) to defeat session fixation.
+        fn rotate(ctx: HttpContext) -> Session
+        {
+            const old: Session = this.inspect(ctx, false)
+            if (!old.valid)
+            {
+                return old
+            }
+            const now: Int64 = Time::now()
+            const s: Session = Session { valid: true, reason: "", id: SessionManager::newId(), claims: old.claims, issuedAt: old.issuedAt, expiresAt: old.expiresAt, seenAt: now, renewed: true }
+            this.revoke(old.id, old.expiresAt)
+            this.issue(ctx, s)
+            return s
+        }
+
+        // Logout: clears the cookie and revokes the session id (see the class comment for the limits).
+        fn end(ctx: HttpContext) -> Nothing
+        {
+            const s: Session = this.inspect(ctx, false)
+            if (s.valid)
+            {
+                this.revoke(s.id, s.expiresAt)
+            }
+            ctx.response.removeCookie(this.cookieName, this.cookiePath, this.cookieDomain)
+        }
+
+        // Invalidates every session issued before this call (in this process).
+        fn endAll() -> Nothing
+        {
+            Mutex::lock(this.lock)
+            this.epochMs = Time::now()
+            this.revoked = Map::new()
+            Mutex::unlock(this.lock)
+        }
+
+        fn revocationsDropped() -> Int64
+        {
+            return this.dropped
+        }
+
+        fn inspect(ctx: HttpContext, renew: Bool) -> Session
+        {
+            const sealed: String = SessionManager::readCookie(ctx, this.cookieName)
+            if (sealed == "")
+            {
+                return Session::invalid("missing")
+            }
+            var table: Map<String, JsonValue> = Map::new()
+            var keyIndex: Int64 = -1
+            var i: Int64 = 0
+            while (i < this.secrets.len() && keyIndex < 0)
+            {
+                var attempt: String = ""
+                try
+                {
+                    attempt = Crypto::aesDecrypt(sealed, this.secrets[i])
+                }
+                catch (e: String)
+                {
+                    attempt = ""
+                }
+                if (attempt != "")
+                {
+                    var parsed: Bool = false
+                    try
+                    {
+                        table = Json::parse(attempt).asTable()
+                        parsed = true
+                    }
+                    catch (e: String)
+                    {
+                        parsed = false
+                    }
+                    if (parsed)
+                    {
+                        keyIndex = i
+                    }
+                }
+                i = i + 1
+            }
+            if (keyIndex < 0 || !table.contains("sid") || !table.contains("iat") || !table.contains("exp") || !table.contains("seen") || !table.contains("claims"))
+            {
+                return Session::invalid("invalid")
+            }
+            const now: Int64 = Time::now()
+            const s: Session = Session { valid: true, reason: "", id: table["sid"].getString(), claims: table["claims"].asTable(), issuedAt: table["iat"].asInt(), expiresAt: table["exp"].asInt(), seenAt: table["seen"].asInt(), renewed: false }
+            if (now >= s.expiresAt)
+            {
+                return Session::invalid("expired")
+            }
+            if (now - s.seenAt > this.idleSec * 1000)
+            {
+                return Session::invalid("idle")
+            }
+            if (this.isRevoked(s.id, s.issuedAt))
+            {
+                return Session::invalid("revoked")
+            }
+            if (renew && (keyIndex > 0 || now - s.seenAt >= this.renewAfterSec * 1000))
+            {
+                s.seenAt = now
+                s.renewed = true
+                this.issue(ctx, s)
+            }
+            return s
+        }
+
+        fn isRevoked(id: String, issuedAt: Int64) -> Bool
+        {
+            Mutex::lock(this.lock)
+            const gone: Bool = issuedAt < this.epochMs || this.revoked.contains(id)
+            Mutex::unlock(this.lock)
+            return gone
+        }
+
+        fn revoke(id: String, expiresAt: Int64) -> Nothing
+        {
+            Mutex::lock(this.lock)
+            const now: Int64 = Time::now()
+            // Entries whose session has expired anyway are useless; drop them first, then the oldest if still full.
+            if (this.revoked.len() >= this.maxRevoked)
+            {
+                const keys: List<String> = this.revoked.keys()
+                var fresh: Map<String, Int64> = Map::new()
+                var oldestKey: String = ""
+                var oldestExp: Int64 = 0
+                var j: Int64 = 0
+                while (j < keys.len())
+                {
+                    const exp: Int64 = this.revoked[keys[j]]
+                    if (exp > now)
+                    {
+                        fresh[keys[j]] = exp
+                        if (oldestKey == "" || exp < oldestExp)
+                        {
+                            oldestKey = keys[j]
+                            oldestExp = exp
+                        }
+                    }
+                    j = j + 1
+                }
+                if (fresh.len() >= this.maxRevoked && oldestKey != "")
+                {
+                    fresh.remove(oldestKey)
+                    this.dropped = this.dropped + 1
+                }
+                this.revoked = fresh
+            }
+            this.revoked[id] = expiresAt
+            Mutex::unlock(this.lock)
+        }
+
+        // Seals the session with the FIRST secret and sets the cookie (Max-Age = remaining lifetime).
+        fn issue(ctx: HttpContext, s: Session) -> Nothing
+        {
+            const json: String = "{\"sid\":\"" + s.id + "\",\"iat\":" + s.issuedAt.toString() + ",\"exp\":" + s.expiresAt.toString() + ",\"seen\":" + s.seenAt.toString() + ",\"claims\":" + Json::stringify(Json::fromMap(s.claims)) + "}"
+            const sealed: String = Crypto::aesEncrypt(json, this.secrets[0])
+            var cookie: Cookie = Cookie::create(this.cookieName, sealed)
+            cookie.path = this.cookiePath
+            cookie.domain = this.cookieDomain
+            cookie.httpOnly = true
+            cookie.secure = this.cookieSecure
+            cookie.sameSite = this.cookieSameSite
+            cookie.maxAge = (s.expiresAt - Time::now()) / 1000
+            ctx.response.setCookie(cookie)
+        }
+
+        fnc newId() -> String
+        {
+            const bytes: List<Int64> = Crypto::secureRandomBytes(16)
+            const digits: String = "0123456789abcdef"
+            var out: String = ""
+            var i: Int64 = 0
+            while (i < bytes.len())
+            {
+                const b: Int64 = bytes[i]
+                out = out + digits.substring((b / 16) % 16, (b / 16) % 16 + 1) + digits.substring(b % 16, b % 16 + 1)
+                i = i + 1
+            }
+            return out
+        }
+
+        fnc readCookie(ctx: HttpContext, name: String) -> String
+        {
+            const header: String = ctx.request.getHeader("Cookie")
+            if (header == "")
+            {
+                return ""
+            }
+            const parts: List<String> = header.split(";")
+            var i: Int64 = 0
+            while (i < parts.len())
+            {
+                const part: String = parts[i].trim()
+                const eq: Int64 = part.indexOf("=")
+                if (eq > 0 && part.substring(0, eq) == name)
+                {
+                    return part.substring(eq + 1, part.len())
+                }
+                i = i + 1
+            }
+            return ""
+        }
+    }
+}
