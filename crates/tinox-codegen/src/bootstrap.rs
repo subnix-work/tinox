@@ -562,7 +562,11 @@ mod tests {
             }],
             ..Default::default()
         });
-        codegen.set_test_entries(vec![("Suite".into(), "first".into()), ("Suite".into(), "second".into())]);
+        codegen.set_test_entries(
+            ["first", "second"]
+                .map(|m| crate::codegen::TestEntry { class: "Suite".into(), method: m.into(), args: vec![], before: vec![], after: vec![] })
+                .to_vec(),
+        );
         codegen.gen(&ast).unwrap();
         assert_eq!(codegen.bootstrap_plan().mode, "test");
         let ir = codegen.into_ir();

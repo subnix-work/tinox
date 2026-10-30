@@ -100,6 +100,17 @@ class Main
         ),
     )
     .expect("write tinox.toml");
+    // The in-tree module may be ahead of the published package (version bump without a
+    // publish yet), so consume it from source instead of installing it from the registry.
+    std::fs::write(
+        workdir.join("tinox.overrides.yaml"),
+        format!(
+            "overrides:\n  \"tinox.core:http_server:{}\": \"{}\"\n",
+            extended_module_version("http_server"),
+            repo_root().join("crates/tinox-core-ext/http_server").display()
+        ),
+    )
+    .expect("write overrides");
     let install = Command::new(tinox)
         .arg("install")
         .current_dir(&workdir)

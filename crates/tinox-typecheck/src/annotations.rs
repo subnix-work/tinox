@@ -364,6 +364,8 @@ pub struct AnnotationProcessingResult {
     pub cli_commands: Vec<CliCommandInfo>,
     pub test_entries: Vec<TestInfo>,
     pub test_hooks: Vec<TestHookInfo>,
+    /// `@ErrorMap("CODE", status)` entries from every class (#524).
+    pub error_maps: Vec<(String, i64)>,
     pub metric_entries: Vec<MetricInfo>,
     pub entity_entries: Vec<EntityInfo>,
     pub ws_endpoints: Vec<WsEndpointInfo>,
@@ -696,6 +698,17 @@ impl AnnotationProcessor {
                 min_args: 1,
                 max_args: 1,
                 description: "Injects a value from application.properties into the field".to_string(),
+            },
+        );
+
+        registry.insert(
+            "ErrorMap".to_string(),
+            AnnotationInfo {
+                name: "ErrorMap".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 2,
+                max_args: 2,
+                description: "@ErrorMap(\"CODE\", status) — maps handler errors thrown as \"CODE: message\" to an HTTP status and the structured error envelope; repeatable, program-wide".to_string(),
             },
         );
 
@@ -1296,6 +1309,11 @@ impl AnnotationProcessor {
                 "HttpRequestScoped" => di_scope = Some(DiScope::HttpRequest),
                 "Log" => {
                     result.log_classes.insert(class.name.clone());
+                }
+                "ErrorMap" => {
+                    if let (Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(status)))) = (ann.args.first(), ann.args.get(1)) {
+                        result.error_maps.push((code.clone(), *status as i64));
+                    }
                 }
                 "Command" => {
                     let cmd_name = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
@@ -2105,6 +2123,20 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
                             "@Service deadlines must be integer milliseconds in 1..=3600000",
                         ));
                     }
+                }
+            }
+            for map in c.annotations.iter().filter(|a| a.name == "ErrorMap") {
+                if let (Some(AnnotationArg::Literal(Literal::String(code))), Some(AnnotationArg::Literal(Literal::Integer(status)))) = (map.args.first(), map.args.get(1)) {
+                    let valid_code = code.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                        && code.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+                    if !valid_code {
+                        errors.push(Error::new(map.span, format!("@ErrorMap code '{code}' must be UPPER_SNAKE_CASE")));
+                    }
+                    if !(400..=599).contains(status) {
+                        errors.push(Error::new(map.span, "@ErrorMap status must be an HTTP error status (400-599)"));
+                    }
+                } else {
+                    errors.push(Error::new(map.span, "@ErrorMap expects (\"CODE\", status)"));
                 }
             }
             for method in &c.methods {

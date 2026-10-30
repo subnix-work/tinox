@@ -9082,22 +9082,90 @@ void tinox_service_unavailable(int64_t context) {
     int64_t* response = (int64_t*)(intptr_t)((int64_t*)(intptr_t)context)[1];
     response[0] = 503; response[2] = (int64_t)(intptr_t)"Service draining";
 }
+// ---- Structured HTTP error mapping (#524) ----
+// `@ErrorMap("CODE", status)` entries arrive as the compiler-emitted table "CODE=404;OTHER=409"
+// (strong definition of this weak symbol; absent when the program declares none). A handler that
+// throws "CODE: message" with a registered CODE becomes `status` + the envelope
+//   {"error":{"code":"CODE","message":"message","correlationId":"..."}}
+// Anything else (plain strings, unregistered codes) is a 500 INTERNAL with a fixed message:
+// internal exception text never reaches the client, it goes to stderr with the correlation id.
+extern const char tinox_error_table_data[] __attribute__((weak));
+
+static int tinox_error_status_for(const char* code, size_t code_len) {
+    if (!tinox_error_table_data) return 0;
+    const char* p = tinox_error_table_data;
+    while (*p) {
+        const char* eq = strchr(p, '=');
+        if (!eq) break;
+        const char* end = strchr(eq, ';');
+        size_t name_len = (size_t)(eq - p);
+        if (name_len == code_len && strncmp(p, code, code_len) == 0) return atoi(eq + 1);
+        if (!end) break;
+        p = end + 1;
+    }
+    return 0;
+}
+
+static int tinox_error_code_len(const char* text) {
+    if (!text || !(text[0] >= 'A' && text[0] <= 'Z')) return 0;
+    size_t n = 0;
+    while ((text[n] >= 'A' && text[n] <= 'Z') || (text[n] >= '0' && text[n] <= '9') || text[n] == '_') n++;
+    return (text[n] == ':' && n > 0) ? (int)n : 0;
+}
+
+static void tinox_http_error_response(int64_t context, const char* err) {
+    int64_t* ctx = (int64_t*)(intptr_t)context;
+    int64_t* response = (int64_t*)(intptr_t)ctx[1];
+    int64_t* request = (int64_t*)(intptr_t)ctx[0];
+    char correlation[64];
+    const char* incoming = request && request[3] ? (const char*)(uintptr_t)tinox_map_get((void*)(intptr_t)request[3], "X-Request-Id") : NULL;
+    if (incoming && *incoming && strlen(incoming) <= 64 && !strpbrk(incoming, "\r\n\"\\")) {
+        snprintf(correlation, sizeof(correlation), "%s", incoming);
+    } else {
+        snprintf(correlation, sizeof(correlation), "req-%08x%08x", (unsigned)random(), (unsigned)random());
+    }
+    const char* code = "INTERNAL";
+    const char* message = "Internal error";
+    int status = 500;
+    char code_buf[64];
+    int clen = tinox_error_code_len(err);
+    if (clen > 0 && clen < (int)sizeof(code_buf)) {
+        int mapped = tinox_error_status_for(err, (size_t)clen);
+        if (mapped >= 400 && mapped <= 599) {
+            memcpy(code_buf, err, (size_t)clen);
+            code_buf[clen] = '\0';
+            code = code_buf;
+            status = mapped;
+            message = err + clen + 1;
+            while (*message == ' ') message++;
+        }
+    }
+    if (status == 500) fprintf(stderr, "tinox: request handler error [%s]: %s\n", correlation, err ? err : "");
+    char* encoded = tinox_json_encode_string(message); // includes the surrounding quotes
+    size_t cap = strlen(encoded) + strlen(code) + strlen(correlation) + 96;
+    char* body = (char*)GC_malloc(cap);
+    snprintf(body, cap, "{\"error\":{\"code\":\"%s\",\"message\":%s,\"correlationId\":\"%s\"}}", code, encoded, correlation);
+    response[0] = status;
+    response[2] = (int64_t)(intptr_t)body;
+    void* headers = (void*)(intptr_t)response[1];
+    if (headers) {
+        tinox_map_set(headers, "Content-Type", (int64_t)(intptr_t)"application/json; charset=utf-8");
+        tinox_map_set(headers, "X-Request-Id", (int64_t)(intptr_t)GC_strdup(correlation));
+    }
+}
+
 // Unmanaged (no @Service) request boundary: an uncaught handler exception is a
 // failed request, never a 200 with a default value, and must not stay pending.
 void tinox_request_failed(int64_t context) {
     // Cancellation keeps propagating to the owning task instead of becoming a 500.
     if (__tinox_err && !task_is_cancellation(__tinox_err)) {
-        fprintf(stderr, "tinox: request handler error: %s\n", (char*)(intptr_t)__tinox_err);
-        int64_t* response = (int64_t*)(intptr_t)((int64_t*)(intptr_t)context)[1];
-        response[0] = 500; response[2] = (int64_t)(intptr_t)"Request failed";
+        tinox_http_error_response(context, (const char*)(intptr_t)__tinox_err);
         __tinox_err = 0;
     }
 }
 void tinox_service_request_done(int64_t context) {
     if (__tinox_err) {
-        fprintf(stderr, "tinox: request handler error: %s\n", (char*)(intptr_t)__tinox_err);
-        int64_t* response = (int64_t*)(intptr_t)((int64_t*)(intptr_t)context)[1];
-        response[0] = 500; response[2] = (int64_t)(intptr_t)"Request failed";
+        tinox_http_error_response(context, (const char*)(intptr_t)__tinox_err);
         __tinox_err = 0;
     }
     tinox_service_work_exit();
@@ -9219,8 +9287,8 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
     } else {
         if (handler) handler((int64_t)g_ctx);
         if (__tinox_err && (service_enabled() || !task_is_cancellation(__tinox_err))) {
-            fprintf(stderr, "tinox: request handler error: %s\n", (char*)(intptr_t)__tinox_err);
-            g_response[0] = 500; g_response[2] = (int64_t)(intptr_t)"Request failed"; __tinox_err = 0;
+            tinox_http_error_response((int64_t)g_ctx, (const char*)(intptr_t)__tinox_err);
+            __tinox_err = 0;
         }
     }
     if (span_token) {
@@ -12572,6 +12640,7 @@ extern __thread int64_t __tinox_err;
     X(g_req_headers_map) \
     X(g_resp_headers_map) \
     X(g_path_params_map) \
+    X(g_epoll_slots) \
     X(request_instances) \
     X(task_scope) \
     X(task_frame_scope) \
