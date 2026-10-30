@@ -21,7 +21,8 @@ namespace tinox.core.http
      * with failed() == true and a description in error(), distinct from a valid empty reply.
      *
      * Threading: configure the client first, then it may be shared; requests only read it.
-     * Each request opens and closes its own connection (no pooling yet, see #526).
+     * By default each request opens and closes its own connection. keepAlive() turns on a
+     * bounded pool owned by this client (see below); close() ends it.
      */
     class HttpClient
     {
@@ -33,10 +34,11 @@ namespace tinox.core.http
         var connectMs: Int64
         var readMs: Int64
         var totalMs: Int64
+        var pool: Int64
 
         fn create() -> HttpClient
         {
-            return HttpClient { headerBlock: "", caCert: "", clientCert: "", clientKey: "", insecure: 0, connectMs: 0, readMs: 0, totalMs: 0 }
+            return HttpClient { headerBlock: "", caCert: "", clientCert: "", clientKey: "", insecure: 0, connectMs: 0, readMs: 0, totalMs: 0, pool: 0 }
         }
 
         // Adds a request header (sent in the order added). Throws on CR/LF/NUL or a non-token name.
@@ -82,9 +84,72 @@ namespace tinox.core.http
             return this
         }
 
+        /*
+         * Reuses connections (HTTP/1.1 keep-alive, plain and TLS). At most maxPerOrigin
+         * connections (idle + in use) exist per scheme/host/port; further requests wait for a
+         * free one, and that wait counts against the total deadline. An idle connection is
+         * dropped after idleMs, any connection lifetimeMs after it was opened (0 = no limit).
+         * Only connections whose response was fully framed (Content-Length or chunked) and
+         * that neither side asked to close go back to the pool; a failed, timed-out or
+         * cancelled request always discards its connection. If a pooled connection turns out
+         * to be closed by the peer, idempotent methods (GET/HEAD/PUT/DELETE/OPTIONS) are
+         * replayed once on a fresh connection; POST/PATCH fail visibly instead.
+         * Call before sharing the client.
+         */
+        fn keepAlive(maxPerOrigin: Int64, idleMs: Int64, lifetimeMs: Int64) -> HttpClient
+        {
+            if (maxPerOrigin < 1 || idleMs < 0 || lifetimeMs < 0)
+            {
+                throw "HttpClient.keepAlive: maxPerOrigin must be >= 1 and times must not be negative"
+            }
+            if (this.pool != 0)
+            {
+                httpPoolClose(this.pool)
+            }
+            this.pool = httpPoolCreate(maxPerOrigin, idleMs, lifetimeMs)
+            if (this.pool == 0)
+            {
+                throw "HttpClient.keepAlive: too many connection pools"
+            }
+            return this
+        }
+
+        // Closes this client's idle connections; later requests fail ("HTTP client is closed").
+        fn close() -> Nothing
+        {
+            if (this.pool != 0)
+            {
+                httpPoolClose(this.pool)
+            }
+        }
+
+        // Connections currently idle in the pool (0 without keepAlive).
+        fn idleConnections() -> Int64
+        {
+            return this.pool == 0 ? 0 : httpPoolStat(this.pool, 0)
+        }
+
+        // Connections currently checked out by requests.
+        fn busyConnections() -> Int64
+        {
+            return this.pool == 0 ? 0 : httpPoolStat(this.pool, 1)
+        }
+
+        // Connections opened so far.
+        fn connectionsOpened() -> Int64
+        {
+            return this.pool == 0 ? 0 : httpPoolStat(this.pool, 2)
+        }
+
+        // Requests served on an already open connection.
+        fn connectionsReused() -> Int64
+        {
+            return this.pool == 0 ? 0 : httpPoolStat(this.pool, 3)
+        }
+
         fn request(method: String, url: String, body: String) -> HttpClientResponse
         {
-            return httpRequestEx(method, url, body, this.headerBlock, this.caCert, this.clientCert, this.clientKey, this.insecure, this.connectMs, this.readMs, this.totalMs)
+            return httpRequestEx(method, url, body, this.headerBlock, this.caCert, this.clientCert, this.clientKey, this.insecure, this.connectMs, this.readMs, this.totalMs, this.pool)
         }
 
         fn get(url: String) -> HttpClientResponse

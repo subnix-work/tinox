@@ -36,8 +36,11 @@ namespace tinox.core.http
     extern fn httpClearTlsConfig() -> Nothing
     // Instance-scoped request (HttpClient): every option is an argument, nothing is read from the
     // thread-local state above. "" = unset; deadlines are milliseconds, 0 = none.
-    extern fn httpRequestEx(method: String, url: String, body: String, headers: String, ca: String, cert: String, key: String, insecure: Int64, connectMs: Int64, readMs: Int64, totalMs: Int64) -> HttpClientResponse
+    extern fn httpRequestEx(method: String, url: String, body: String, headers: String, ca: String, cert: String, key: String, insecure: Int64, connectMs: Int64, readMs: Int64, totalMs: Int64, pool: Int64) -> HttpClientResponse
     extern fn httpError(resp: HttpClientResponse) -> String
+    extern fn httpPoolCreate(maxPerOrigin: Int64, idleMs: Int64, lifetimeMs: Int64) -> Int64
+    extern fn httpPoolClose(pool: Int64) -> Int64
+    extern fn httpPoolStat(pool: Int64, what: Int64) -> Int64
     extern fn httpStatusCode(resp: HttpClientResponse) -> Int64
     extern fn httpBody(resp: HttpClientResponse) -> String
     extern fn httpHeader(resp: HttpClientResponse, name: String) -> String
