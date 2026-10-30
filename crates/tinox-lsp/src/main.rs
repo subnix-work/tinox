@@ -227,11 +227,21 @@ impl Inner {
 
     /// Standard-library classes plus the project's own, and the project's
     /// top-level functions (name, signature, doc).
-    fn project_signatures(&self, uri: &Url) -> (TypeRegistry, Vec<(String, String, Option<String>)>) {
+    ///
+    /// `cursor` is the edit position in `uri`: when that buffer does not parse (an
+    /// unfinished call), its declarations are recovered by blanking the cursor
+    /// line, exactly as completion does, instead of dropping the whole file.
+    fn project_signatures(&self, uri: &Url, cursor: Option<usize>) -> (TypeRegistry, Vec<(String, String, Option<String>)>) {
         let mut registry = self.stdlib_registry.clone();
         let mut functions = Vec::new();
-        for (_, text) in self.project_files(uri) {
-            let Ok(ast) = tinox_parser::parse_source_cached(&text) else { continue };
+        for (file_uri, text) in self.project_files(uri) {
+            let ast = match tinox_parser::parse_source_cached(&text) {
+                Ok(ast) => ast,
+                Err(_) => match cursor.filter(|_| &file_uri == uri).and_then(|c| parse_for_completion(&text, c as u32)) {
+                    Some(ast) => ast,
+                    None => continue,
+                },
+            };
             registry.extend(build_registry_from_source(&ast));
             fn top_level(decls: &[tinox_parser::ast::Decl], out: &mut Vec<(String, String, Option<String>)>) {
                 for d in decls {
@@ -1093,7 +1103,7 @@ impl LanguageServer for Backend {
         let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
         let offset = lsp_pos_to_offset(&text, p.text_document_position_params.position) as usize;
         let Some(ctx) = signature::call_context(&text, offset) else { return Ok(None) };
-        let (registry, functions) = self.project_signatures(uri);
+        let (registry, functions) = self.project_signatures(uri, Some(offset));
         Ok(signature::build(&ctx, signature::candidates(&ctx.callee, &registry, &functions)))
     }
 
@@ -1195,6 +1205,16 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unfinished_call_keeps_same_file_methods_for_signature_help() {
+        let text = "class Main\n{\n    fn acceptBox(first: Int64, second: String) -> Nothing {}\n    fn run() -> Nothing\n    {\n        this.acceptBox(1, \n    }\n}\n";
+        assert!(tinox_parser::parse_source_cached(text).is_err());
+        let cursor = text.find("this.acceptBox(1, ").unwrap() + "this.acceptBox(1, ".len();
+        let ast = parse_for_completion(text, cursor as u32).expect("recoverable");
+        let registry = build_registry_from_source(&ast);
+        assert!(registry["Main"].methods.iter().any(|m| m.name == "acceptBox"));
+    }
 
     #[test]
     fn test_embedded_stdlib_has_http_context() {
