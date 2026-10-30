@@ -145,7 +145,7 @@ fn session_lifecycle_is_enforced_for_an_independent_client() {
     // A tampered cookie is rejected.
     let mut tampered = c1.clone().into_bytes();
     let mid = tampered.len() / 2;
-    tampered[mid] = if tampered[mid] == b'A' { b'B' } else { b'A' };
+    tampered[mid] = if tampered[mid] == b'0' { b'1' } else { b'0' }; // the cookie is hex: pick a digit that really differs
     let r = call(port, "GET", "/me", Some(&String::from_utf8(tampered).unwrap()));
     assert_eq!((r.status, r.body.as_str()), (401, "no:invalid"));
 
