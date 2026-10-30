@@ -487,6 +487,7 @@ mod tests {
             pass: "secret_pass".into(),
             address: "/jobs".into(),
             on_message: None,
+            failure: None,
         }]);
         codegen.set_amqp091_consumers(vec![Amqp091ConsumerEntry {
             class_name: "Legacy".into(),

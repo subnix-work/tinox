@@ -208,6 +208,8 @@ pub struct Amqp10ConsumerEntry {
     pub pass: String,
     pub address: String,
     pub on_message: Option<String>,
+    /// @MessageFailure(maxAttempts, backoffMs) on the handler
+    pub failure: Option<(i64, i64)>,
 }
 
 /// A class annotated `@OutboxDispatcher(...)` (issue #538).
@@ -4577,22 +4579,38 @@ tr_done_{idx}:"#).unwrap();
             if self.service_enabled() {
                 writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %message_next, label %service_close\nmessage_next:").unwrap();
             }
+            // Failure policy (issue #537), same contract as the 0-9-1 consumer: settle as accepted only when the
+            // handler returned normally; otherwise retry with backoff up to maxAttempts, then reject
+            // (MessageFailure10.onFailure) so the queue's own dead-letter exchange decides.
+            let (max_attempts, backoff_ms) = c.failure.unwrap_or((1, 0));
+            let handler_label = self.emit_lambda_string_literal(&format!("{}.{}", c.class_name, c.on_message.clone().unwrap_or_default()));
+            writeln!(&mut self.lambda_ir, "  %attempt_slot = alloca i64\n  store i64 1, i64* %attempt_slot\n  br label %attempt_loop\nattempt_loop:").unwrap();
             if let Some(ref on_message) = c.on_message {
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
             }
+            writeln!(&mut self.lambda_ir, "  %handler_err = load i64, i64* @__tinox_err").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handler_failed = call i64 @tinox_message_handler_failed(i8* {handler_label}, i64 %handler_err)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %did_fail = icmp ne i64 %handler_failed, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %did_fail, label %on_fail, label %ack_message").unwrap();
+            writeln!(&mut self.lambda_ir, "on_fail:").unwrap();
             if self.service_enabled() {
-                let label = self.emit_lambda_string_literal("AMQP handler failed");
-                writeln!(&mut self.lambda_ir, "  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %ack_message, label %handler_failed\nhandler_failed:\n  call void @tinox_service_work_exit()\n  br label %service_close\nack_message:").unwrap();
+                writeln!(&mut self.lambda_ir, "  %fail_stopping = call i1 @serviceIsStopping()\n  br i1 %fail_stopping, label %fail_abandon, label %fail_settle\nfail_abandon:\n  call void @tinox_service_work_exit()\n  br label %service_close\nfail_settle:").unwrap();
             }
+            writeln!(&mut self.lambda_ir, "  %attempt = load i64, i64* %attempt_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %settled = call i64 @MessageFailure10_onFailure(i64* %link_obj, i64* %msg_obj, i64 %attempt, i64 {max_attempts}, i64 {backoff_ms})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %retry = icmp eq i64 %settled, 0\n  br i1 %retry, label %retry_attempt, label %settled_done").unwrap();
+            writeln!(&mut self.lambda_ir, "retry_attempt:\n  %next_attempt = add i64 %attempt, 1\n  store i64 %next_attempt, i64* %attempt_slot\n  br label %attempt_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "settled_done:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "ack_message:").unwrap();
             writeln!(&mut self.lambda_ir, "  %delivery_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 2").unwrap();
             writeln!(&mut self.lambda_ir, "  %delivery_val = load i64, i64* %delivery_field").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_ack(i64* %link_obj, i64 %delivery_val)").unwrap();
             if self.service_enabled() {
-                writeln!(
-                    &mut self.lambda_ir,
-                    "  call void @tinox_service_work_exit()"
-                )
-                .unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 

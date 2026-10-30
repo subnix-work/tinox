@@ -11,7 +11,7 @@ namespace tinox.core.amqp091
      * in between, until maxAttempts have failed. Then the message is settled, never acknowledged
      * as if handled:
      *   - with a dead-letter queue: it is published there (default exchange, routing key = the
-     *     queue name; the body and content type are kept, headers are not) and only then
+     *     queue name; body, content type and message-id are kept, headers are not) and only then
      *     acknowledged; if that publish cannot be done the delivery is rejected with requeue, so
      *     the message stays in the broker instead of being lost;
      *   - without one: basic.reject(requeue=false) -- the broker discards it or dead-letters it
@@ -46,7 +46,7 @@ namespace tinox.core.amqp091
             }
             if (deadLetterQueue != "")
             {
-                const sent: Int64 = chan.publish("", deadLetterQueue, msg.body, msg.contentType)
+                const sent: Int64 = chan.publishMessage("", deadLetterQueue, msg.body, msg.contentType, msg.messageId)
                 if (sent >= 0)
                 {
                     println("amqp: message " + msg.deliveryTag.toString() + " dead-lettered to " + deadLetterQueue + " after " + attempt.toString() + " attempts")

@@ -1,0 +1,43 @@
+module tinox.core.amqp10
+
+namespace tinox.core.amqp10
+{
+    /**
+     * Failure policy of an @Amqp10Consumer handler, used by the generated receive loop
+     * (@MessageFailure(maxAttempts, backoffMs) on the @OnMessage method). Same contract as the 0-9-1
+     * consumer: a delivery is settled as accepted only when the handler returned normally. After a
+     * failure the handler runs again in the same process after backoffMs * 2^(attempt-1) (capped at
+     * 60 s), until maxAttempts attempts failed; then the message is REJECTED (a terminal outcome the
+     * broker must not redeliver), so the queue's own dead-letter exchange decides what happens to it.
+     * A consumer without @MessageFailure behaves like @MessageFailure(1, 0). Delivery is at-least-once:
+     * a crash or a closed connection leaves the delivery unsettled and the broker redelivers it.
+     * Naming a dead-letter queue is not offered for AMQP 1.0 (a second link's publish is fire-and-forget
+     * here, so a lost copy could not be noticed); configure x-dead-letter-exchange on the queue.
+     */
+    class MessageFailure10
+    {
+        /** 0 = run the handler again (the backoff already elapsed), 1 = the message was settled (rejected) */
+        fnc onFailure(link: Amqp10Link, msg: Amqp10Message, attempt: Int64, maxAttempts: Int64, backoffMs: Int64) -> Int64
+        {
+            if (attempt < maxAttempts)
+            {
+                var wait: Int64 = backoffMs
+                var doubling: Int64 = 1
+                while (doubling < attempt && wait < 60000)
+                {
+                    wait = wait * 2
+                    doubling = doubling + 1
+                }
+                if (wait > 60000)
+                {
+                    wait = 60000
+                }
+                sleep(wait)
+                return 0
+            }
+            println("amqp: delivery " + msg.deliveryId.toString() + " rejected after " + attempt.toString() + " attempts")
+            link.reject(msg.deliveryId, "tinox:handler-failed", "handler failed after " + attempt.toString() + " attempts")
+            return 1
+        }
+    }
+}

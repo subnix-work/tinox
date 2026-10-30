@@ -1,4 +1,4 @@
-# AMQP 0-9-1 consumer failure policy (`@MessageFailure`)
+# AMQP consumer failure policy (`@MessageFailure`)
 
 ```tinox
 @Amqp091Consumer("broker", 5672, "/", "user", "pass", "orders")
@@ -32,10 +32,29 @@ Other situations:
   it suppresses duplicates within one process only. Durable de-duplication needs a database unique key.
 - Prefetch stays 1, so messages of one queue are handled one at a time.
 
-Not covered: AMQP 1.0 consumers (`@Amqp10Consumer` is unchanged), a handler timeout, publishing headers on the
-dead-letter copy, and `@Transactional`/tracing integration beyond what the handler itself does.
+### Timeouts, transactions, cancellation
 
-Verified against a real RabbitMQ with independent observers (`rabbitmqctl` queue depths, the management API for
+- **Handler timeout:** a handler that must not run longer says so itself: `scope { taskSetDeadline(200); ... }` throws when
+  the deadline passes, which is an ordinary failure (retry, then dead-letter/reject). Tested: a handler sleeping past its
+  deadline is attempted 3 times and dead-lettered.
+- **Transactions:** a `@Transactional` method called by the handler rolls back on every failed attempt; the retry starts a
+  new transaction. Tested with a real database: two rolled-back attempts leave no row, the third commits exactly one.
+- **Cancellation / shutdown:** see above (left unacknowledged for redelivery). A cancelled handler is not retried.
+- **Dead-letter copy:** body, content type and message-id are kept (so a consumer of the dead-letter queue can correlate it);
+  headers are not copied. Attempt counts are in the log line, not in the message.
+
+### AMQP 1.0 (`@Amqp10Consumer`)
+
+Same annotation with two arguments: `@MessageFailure(maxAttempts, backoffMs)` on the `@OnMessage` method. The delivery is
+accepted only after a normal return; after `maxAttempts` failures it is **rejected** (a terminal outcome the broker must
+not redeliver), so the queue's own `x-dead-letter-exchange` decides. A third argument (a dead-letter queue name) is a
+compile error for 1.0: a second link's publish is fire-and-forget in this client, so a lost copy could not be noticed.
+Without the annotation: one attempt, then reject. A killed consumer leaves the delivery unsettled and the broker
+redelivers it (1.0 has no `redelivered` flag on the message in this client).
+
+Not covered: tracing integration (there is no tracing API to join), headers on the dead-letter copy.
+
+Verified against a real RabbitMQ with independent observers (AMQP 0-9-1 in `amqp091_failure_policy.rs`, AMQP 1.0 in `amqp10_failure_policy.rs`) (`rabbitmqctl` queue depths, the management API for
 publishing and reading the dead-letter queue): `crates/tinox/tests/amqp091_failure_policy.rs` covers transient failure
 (3 attempts, one success), permanent failure (3 attempts, dead-lettered, original payload), a plain queue with its own
 DLX, a consumer killed mid-handler (redelivered), and duplicate suppression.
