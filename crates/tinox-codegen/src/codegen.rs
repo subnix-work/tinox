@@ -7715,6 +7715,8 @@ tr_done_{idx}:"#).unwrap();
             None => return Ok(("0".to_string(), "i64".to_string())),
         };
         let id_slot = entity.fields.iter().position(|f| f.is_id).unwrap_or(0);
+        let n_keys = entity.fields.iter().filter(|f| f.is_id).count() as i64;
+        let composite = n_keys > 1;
 
         let (arg_val, arg_ty) = self.gen_expr(arg, ctx)?;
         let entity_ptr = if arg_ty == "i64" {
@@ -7727,6 +7729,22 @@ tr_done_{idx}:"#).unwrap();
 
         let conn_reg = self.temp();
         writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
+
+        if op == "delete" && composite {
+            // Every key component is part of the WHERE clause: unrelated rows are never touched.
+            let key_params = self.temp();
+            writeln!(&mut self.ir, "  {key_params} = call i8** @{entity_class}_toKeyParams(i64* {entity_ptr})").unwrap();
+            let sql_ptr = self.temp();
+            writeln!(&mut self.ir, "  {sql_ptr} = call i8* @{entity_class}_deleteSql()").unwrap();
+            let result_reg = self.temp();
+            writeln!(&mut self.ir, "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {key_params}, i64 {n_keys})").unwrap();
+            self.emit_orm_save_check(&result_reg, &entity.table_name);
+            writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
+            let as_i64 = self.temp();
+            writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
+            return Ok((as_i64, "i64".to_string()));
+        }
 
         if op == "delete" {
             let id_ptr = self.temp();
@@ -7747,6 +7765,59 @@ tr_done_{idx}:"#).unwrap();
             )
             .unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
+            let as_i64 = self.temp();
+            writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
+            return Ok((as_i64, "i64".to_string()));
+        }
+
+        if composite {
+            // save with a composite key: the caller supplies the key, so the row's existence
+            // decides between UPDATE and INSERT. Wrap concurrent writers in @Transactional.
+            let key_params = self.temp();
+            writeln!(&mut self.ir, "  {key_params} = call i8** @{entity_class}_toKeyParams(i64* {entity_ptr})").unwrap();
+            let exists_sql = self.temp();
+            writeln!(&mut self.ir, "  {exists_sql} = call i8* @{entity_class}_existsSql()").unwrap();
+            let exists_res = self.temp();
+            writeln!(&mut self.ir, "  {exists_res} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {exists_sql}, i8** {key_params}, i64 {n_keys})").unwrap();
+            self.emit_orm_save_check(&exists_res, &entity.table_name);
+            let nrows = self.temp();
+            writeln!(&mut self.ir, "  {nrows} = call i64 @tinox_db_nrows(i8* {exists_res})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {exists_res})").unwrap();
+            let present = self.temp();
+            writeln!(&mut self.ir, "  {present} = icmp sgt i64 {nrows}, 0").unwrap();
+            let insert_bb = self.new_bb("orm_save_insert");
+            let update_bb = self.new_bb("orm_save_update");
+            let done_bb = self.new_bb("orm_save_done");
+            writeln!(&mut self.ir, "  br i1 {present}, label %{update_bb}, label %{insert_bb}").unwrap();
+
+            writeln!(&mut self.ir, "{insert_bb}:").unwrap();
+            let n_ins = entity.fields.iter().filter(|f| !f.is_generated).count() as i64;
+            let out_n = self.temp();
+            writeln!(&mut self.ir, "  {out_n} = alloca i64").unwrap();
+            let ins_params = self.temp();
+            writeln!(&mut self.ir, "  {ins_params} = call i8** @{entity_class}_toParams(i64* {entity_ptr}, i64* {out_n})").unwrap();
+            let ins_sql = self.temp();
+            writeln!(&mut self.ir, "  {ins_sql} = call i8* @{entity_class}_insertSql()").unwrap();
+            let ins_result = self.temp();
+            writeln!(&mut self.ir, "  {ins_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {ins_sql}, i8** {ins_params}, i64 {n_ins})").unwrap();
+            self.emit_orm_save_check(&ins_result, &entity.table_name);
+            writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {ins_result})").unwrap();
+            writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
+
+            writeln!(&mut self.ir, "{update_bb}:").unwrap();
+            let n_upd = entity.fields.len() as i64;
+            let upd_params = self.temp();
+            writeln!(&mut self.ir, "  {upd_params} = call i8** @{entity_class}_toUpdateParams(i64* {entity_ptr})").unwrap();
+            let upd_sql = self.temp();
+            writeln!(&mut self.ir, "  {upd_sql} = call i8* @{entity_class}_updateSql()").unwrap();
+            let upd_result = self.temp();
+            writeln!(&mut self.ir, "  {upd_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {upd_sql}, i8** {upd_params}, i64 {n_upd})").unwrap();
+            self.emit_orm_save_check(&upd_result, &entity.table_name);
+            writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {upd_result})").unwrap();
+            writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
+
+            writeln!(&mut self.ir, "{done_bb}:").unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
             let as_i64 = self.temp();
             writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
@@ -7952,27 +8023,45 @@ tr_done_{idx}:"#).unwrap();
             let ins_fields: Vec<&EntityFieldEntry> = fields.iter().filter(|f| !f.is_generated).collect();
             let ins_cols: Vec<&str> = ins_fields.iter().map(|f| f.column_name.as_str()).collect();
             let ins_phs: Vec<String> = (1..=ins_fields.len()).map(|i| format!("${i}")).collect();
+            let id_fields: Vec<&EntityFieldEntry> = fields.iter().filter(|f| f.is_id).collect();
+            // A composite key is supplied by the caller, so there is no generated id to read back.
+            let composite = id_fields.len() > 1;
             let insert_sql = format!(
-                "INSERT INTO {table} ({}) VALUES ({}) RETURNING id",
+                "INSERT INTO {table} ({}) VALUES ({}){}",
                 ins_cols.join(", "),
-                ins_phs.join(", ")
+                ins_phs.join(", "),
+                if composite { "" } else { " RETURNING id" }
             );
             self.emit_sql_const_fn(&format!("{cn}_insertSql"), &insert_sql);
 
-            // UPDATE sql (non-id fields in SET, id field in WHERE)
-            let id_col = fields.iter().find(|f| f.is_id).map(|f| f.column_name.clone()).unwrap_or_else(|| "id".to_string());
+            // UPDATE sql (non-id fields in SET, every id field in WHERE)
             let non_id: Vec<&EntityFieldEntry> = fields.iter().filter(|f| !f.is_id).collect();
             let set_clauses: Vec<String> = non_id.iter().enumerate().map(|(i, f)| format!("{} = ${}", f.column_name, i + 1)).collect();
+            let key_where = |first: usize| -> String {
+                if id_fields.is_empty() {
+                    return format!("id = ${first}");
+                }
+                id_fields.iter().enumerate()
+                    .map(|(i, f)| format!("{} = ${}", f.column_name, first + i))
+                    .collect::<Vec<_>>()
+                    .join(" AND ")
+            };
             let update_sql = format!(
-                "UPDATE {table} SET {} WHERE {id_col} = ${}",
+                "UPDATE {table} SET {} WHERE {}",
                 set_clauses.join(", "),
-                non_id.len() + 1
+                key_where(non_id.len() + 1)
             );
             self.emit_sql_const_fn(&format!("{cn}_updateSql"), &update_sql);
 
             // DELETE sql
-            let delete_sql = format!("DELETE FROM {table} WHERE {id_col} = $1");
+            let delete_sql = format!("DELETE FROM {table} WHERE {}", key_where(1));
             self.emit_sql_const_fn(&format!("{cn}_deleteSql"), &delete_sql);
+
+            if composite {
+                let exists_sql = format!("SELECT 1 FROM {table} WHERE {}", key_where(1));
+                self.emit_sql_const_fn(&format!("{cn}_existsSql"), &exists_sql);
+                self.emit_entity_to_key_params(&cn, &fields);
+            }
 
             // fromRow and toParams
             self.emit_entity_from_row(&cn, &fields);
@@ -8101,6 +8190,39 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir).unwrap();
     }
 
+    /// The `i8*` bind-parameter string for one entity field value (enum name, string, or int).
+    fn entity_param_string(&mut self, field: &EntityFieldEntry, fval: &str) -> String {
+        let s = self.temp();
+        if let Some(enum_name) = field.enum_name.as_deref() {
+            writeln!(&mut self.ir, "  {s} = call i8* @{}{enum_name}_name(i64 {fval})", tinox_parser::ENUM_HELPER_PREFIX).unwrap();
+        } else if field.field_llvm_type == "i8*" {
+            writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
+        } else {
+            writeln!(&mut self.ir, "  {s} = call i8* @tinox_int_to_param(i64 {fval})").unwrap();
+        }
+        s
+    }
+
+    /// Composite keys: the bind parameters of every @Id field, in declaration order.
+    fn emit_entity_to_key_params(&mut self, class_name: &str, fields: &[EntityFieldEntry]) {
+        let id_fields: Vec<(usize, &EntityFieldEntry)> = fields.iter().enumerate().filter(|(_, f)| f.is_id).collect();
+        writeln!(&mut self.ir, "define i8** @{class_name}_toKeyParams(i64* %entity) {{").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
+        let arr = self.temp();
+        writeln!(&mut self.ir, "  {arr} = call i8** @tinox_params_alloc(i64 {})", id_fields.len()).unwrap();
+        for (key_idx, (slot_idx, field)) in id_fields.iter().enumerate() {
+            let fptr = self.temp();
+            let fval = self.temp();
+            writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
+            writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
+            let pstr = self.entity_param_string(field, &fval);
+            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {key_idx}, i8* {pstr})").unwrap();
+        }
+        writeln!(&mut self.ir, "  ret i8** {arr}").unwrap();
+        writeln!(&mut self.ir, "}}").unwrap();
+        writeln!(&mut self.ir).unwrap();
+    }
+
     /// UPDATE variant of `emit_entity_to_params`: non-id fields (in field order,
     /// matching `SET col = $1, ...`), then the @Id field's current value last
     /// (matching the `WHERE id = $N` placeholder in `{class}_updateSql`).
@@ -8109,8 +8231,8 @@ tr_done_{idx}:"#).unwrap();
             .enumerate()
             .filter(|(_, f)| !f.is_id)
             .collect();
-        let id_field = fields.iter().enumerate().find(|(_, f)| f.is_id);
-        let n = non_id.len() + if id_field.is_some() { 1 } else { 0 };
+        let id_fields: Vec<(usize, &EntityFieldEntry)> = fields.iter().enumerate().filter(|(_, f)| f.is_id).collect();
+        let n = non_id.len() + id_fields.len();
         writeln!(&mut self.ir, "define i8** @{class_name}_toUpdateParams(i64* %entity) {{").unwrap();
         writeln!(&mut self.ir, "entry.tnx:").unwrap();
         let arr = self.temp();
@@ -8135,25 +8257,13 @@ tr_done_{idx}:"#).unwrap();
             };
             writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {param_idx}, i8* {pstr})").unwrap();
         }
-        if let Some((slot_idx, field)) = id_field {
+        for (key_idx, (slot_idx, field)) in id_fields.iter().enumerate() {
             let fptr = self.temp();
             let fval = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
             writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
-            let pstr = if let Some(enum_name) = field.enum_name.as_deref() {
-                let s = self.temp();
-                writeln!(&mut self.ir, "  {s} = call i8* @{}{enum_name}_name(i64 {fval})", tinox_parser::ENUM_HELPER_PREFIX).unwrap();
-                s
-            } else if field.field_llvm_type == "i8*" {
-                let s = self.temp();
-                writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
-                s
-            } else {
-                let s = self.temp();
-                writeln!(&mut self.ir, "  {s} = call i8* @tinox_int_to_param(i64 {fval})").unwrap();
-                s
-            };
-            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {non_id_len}, i8* {pstr})", non_id_len = non_id.len()).unwrap();
+            let pstr = self.entity_param_string(field, &fval);
+            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {}, i8* {pstr})", non_id.len() + key_idx).unwrap();
         }
         writeln!(&mut self.ir, "  ret i8** {arr}").unwrap();
         writeln!(&mut self.ir, "}}").unwrap();

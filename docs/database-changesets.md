@@ -359,3 +359,32 @@ removed columns require a manual changeSet. Extra tables may coexist with entiti
 unique constraints, indexes and foreign keys remain manually maintained. Raw `sql` changes prevent automatic
 comparison because their schema effects cannot be inferred reliably. Driver restrictions still apply, such as
 SQLite refusing a new `NOT NULL` column without a database default. All validation completes before writing.
+
+## Composite primary keys (entities)
+
+Several `@Id` fields form one ordered key (declaration order = index order). The caller supplies every
+component, so `@GeneratedValue` cannot be combined with it; inherited and generic entities are not
+supported (both are compile errors).
+
+```tinox
+@Entity
+@Table("memberships")
+class Membership {
+    @Id @Column("org")    var org: String
+    @Id @Column("member") var member: Int64
+    @Column("role")       var role: String
+}
+```
+
+- `tinox db generate` emits `createTable` with an ordered `primaryKey: [org, member]` list; a hand-written
+  `createTable` with several `primaryKey: true` columns must carry the same list (same columns, once each,
+  no `autoIncrement`).
+- `save()` looks the row up by all key components and updates it, otherwise inserts it (two statements:
+  wrap concurrent writers in `@Transactional`; a lost race fails visibly on the key constraint).
+  `delete()` matches every component.
+- Changing which columns form the key, or removing/renaming a key column, is never guessed: `generate`
+  stops with "add a manual changeSet". Reordering the key columns of an existing table is not detected.
+- Verified on SQLite with an independent `sqlite3` reading the constraint and the rows
+  (`crates/tinox/tests/orm_composite_keys.rs`). The PostgreSQL/MySQL DDL comes from the same code path but is
+  not covered by a server test; on MySQL a `String` key column maps to `text`, which MySQL cannot index
+  without a length, so use a bounded type there.

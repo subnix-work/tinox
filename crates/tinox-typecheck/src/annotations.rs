@@ -2004,6 +2004,18 @@ fn resolve_di_providers(source: &tinox_parser::SourceFile, result: &mut Annotati
             if !valid { errors.push(Error::new(ann.span, "@Provider requires one non-empty string literal")); }
         }
         if providers.len() > 1 { errors.push(Error::new(class.span, "Duplicate @Provider annotation")); }
+        if class.annotations.iter().any(|a| a.name == "Entity" || a.name == "Table") {
+            let ids = class.fields.iter().filter(|f| f.annotations.iter().any(|a| a.name == "Id")).count();
+            let generated = class.fields.iter().any(|f| f.annotations.iter().any(|a| a.name == "GeneratedValue"));
+            if ids > 1 && generated {
+                errors.push(Error::new(class.span, format!(
+                    "entity '{}': @GeneratedValue cannot be combined with a composite @Id (the caller supplies every key component)", class.name)));
+            }
+            if ids > 1 && (class.extends.is_some() || !class.type_params.is_empty()) {
+                errors.push(Error::new(class.span, format!(
+                    "entity '{}': composite @Id is not supported on inherited or generic entities", class.name)));
+            }
+        }
         if let Some(value) = name(&class.annotations, "Provider") {
             if let Some(previous) = named.insert(value.clone(), class.name.clone()) {
                 errors.push(Error::new(class.span, format!("Duplicate provider name '{value}' on '{previous}' and '{}'", class.name)));
@@ -3870,6 +3882,14 @@ class Svc {
         assert!(errors.iter().any(|e| e.message.contains("propagation")), "{errors:?}");
         let errors = valid("class Svc { @Transactional(\"NESTED\")\n fn a() -> Nothing {} }");
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_validate_composite_id_rejects_generated_value() {
+        let ok = valid("@Entity\n@Table(\"m\")\nclass M { @Id\nvar a: Int64\n@Id\nvar b: Int64 }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let bad = valid("@Entity\n@Table(\"m\")\nclass M { @Id\n@GeneratedValue\nvar a: Int64\n@Id\nvar b: Int64 }");
+        assert!(bad.iter().any(|e| e.message.contains("composite @Id")), "{bad:?}");
     }
 
     #[test]

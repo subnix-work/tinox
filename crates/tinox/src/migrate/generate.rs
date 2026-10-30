@@ -54,7 +54,8 @@ fn flatten<'a>(decls: &'a [Decl], out: &mut Vec<&'a Decl>) {
     }
 }
 
-fn entity_schema(root: &Path) -> Result<Schema, String> {
+/// Entity columns per table, plus the declared order of each table's @Id fields.
+fn entity_schema(root: &Path) -> Result<(Schema, BTreeMap<String, Vec<String>>), String> {
     let mut files = Vec::new();
     collect_files(&root.join("src"), &mut files)?;
     files.sort();
@@ -84,6 +85,7 @@ fn entity_schema(root: &Path) -> Result<Schema, String> {
         })
         .collect();
     let mut schema = Schema::new();
+    let mut key_order: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for decl in &decls {
         let DeclKind::Class(class) = &decl.node else {
             continue;
@@ -144,15 +146,21 @@ fn entity_schema(root: &Path) -> Result<Schema, String> {
                 return Err(format!("duplicate entity column {table}.{name}"));
             }
         }
-        if columns
-            .values()
-            .filter(|c| get_bool(&c["constraints"], "primaryKey", "entity").unwrap_or(false))
-            .count()
-            > 1
-        {
-            return Err(format!(
-                "entity {table}: composite primary keys are unsupported"
-            ));
+        let mut order = Vec::new();
+        for field in &class.fields {
+            if field.annotations.iter().any(|a| a.name == "Id") {
+                order.push(annotation_name(&field.annotations, "Column", &field.name)?);
+            }
+        }
+        if order.len() > 1 {
+            for field in &class.fields {
+                if field.annotations.iter().any(|a| a.name == "GeneratedValue") {
+                    return Err(format!(
+                        "entity {table}: @GeneratedValue cannot be combined with a composite @Id"
+                    ));
+                }
+            }
+            key_order.insert(table.clone(), order);
         }
         if schema.insert(table.clone(), columns).is_some() {
             return Err(format!("duplicate entity table {table}"));
@@ -161,7 +169,7 @@ fn entity_schema(root: &Path) -> Result<Schema, String> {
     if schema.is_empty() {
         return Err("no @Entity/@Table classes found under src/".into());
     }
-    Ok(schema)
+    Ok((schema, key_order))
 }
 
 fn columns(spec: &Value) -> impl Iterator<Item = &Value> {
@@ -230,7 +238,7 @@ fn equivalent(d: Dialect, table: &str, old: &Value, new: &Value) -> Result<bool,
 }
 
 pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> {
-    let model = entity_schema(root)?;
+    let (model, key_order) = entity_schema(root)?;
     ENUMS.with(|e| *e.borrow_mut() = crate::project_enums(root));
     let original = match fs::read_to_string(path) {
         Ok(text) => Some(text),
@@ -286,20 +294,21 @@ pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> 
                 }
             }
         } else {
-            changes.push(object(&[(
-                "createTable",
-                object(&[
-                    ("tableName", string(table)),
-                    (
-                        "columns",
-                        Value::Sequence(
-                            cols.values()
-                                .map(|c| object(&[("column", c.clone())]))
-                                .collect(),
-                        ),
+            let mut spec = vec![
+                ("tableName", string(table)),
+                (
+                    "columns",
+                    Value::Sequence(
+                        cols.values()
+                            .map(|c| object(&[("column", c.clone())]))
+                            .collect(),
                     ),
-                ]),
-            )]));
+                ),
+            ];
+            if let Some(order) = key_order.get(table) {
+                spec.push(("primaryKey", Value::Sequence(order.iter().map(|n| string(n)).collect())));
+            }
+            changes.push(object(&[("createTable", object(&spec))]));
         }
     }
     // Tables unrelated to entities may coexist in the changelog.

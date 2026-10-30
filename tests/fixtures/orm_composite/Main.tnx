@@ -1,0 +1,21 @@
+import tinox.core.db
+import Membership
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        DB::of(Membership).save(Membership { org: "acme", member: 1, role: "owner" })
+        DB::of(Membership).save(Membership { org: "acme", member: 2, role: "dev" })
+        DB::of(Membership).save(Membership { org: "globex", member: 1, role: "dev" })
+        // Same key again: updates the row instead of inserting a duplicate.
+        DB::of(Membership).save(Membership { org: "acme", member: 2, role: "lead" })
+        println("count: " + DB::of(Membership).count().toString())
+        const one: Membership = DB::of(Membership).filter(m => m.org == "acme" && m.member == 2).first()
+        println("acme/2: " + one.role)
+        // Deleting uses every key component: acme/1 and globex/1 must survive.
+        DB::of(Membership).delete(Membership { org: "acme", member: 2, role: "" })
+        println("after delete: " + DB::of(Membership).count().toString())
+        return 0
+    }
+}
