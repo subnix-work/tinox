@@ -589,6 +589,7 @@ pub struct CodeGen {
     test_entries: Vec<TestEntry>,
     /// `@ErrorMap` (code, status) pairs, emitted as the runtime's error table (#524).
     error_map: Vec<(String, i64)>,
+    security_policy: Vec<String>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
     /// Names of `__tinox_run_<kind>()` functions emitted by the REST/HTTP3/
@@ -773,6 +774,7 @@ impl CodeGen {
             metrics_path: None,
             test_entries: Vec::new(),
             error_map: Vec::new(),
+            security_policy: Vec::new(),
             has_main: false,
             background_tasks: Vec::new(),
             bootstrap_emitted: false,
@@ -923,6 +925,10 @@ impl CodeGen {
     /// Generate one test executable for these methods. The runner selects an index
     /// with the private argv pair `--tinox-test-index N` and starts a fresh process
     /// for every method. Test programs inspecting argv can see this selector.
+    pub fn set_security_policy(&mut self, lines: Vec<String>) {
+        self.security_policy = lines;
+    }
+
     pub fn set_error_map(&mut self, map: Vec<(String, i64)>) {
         self.error_map = map;
     }
@@ -2125,6 +2131,11 @@ impl CodeGen {
             // Strong definition of the runtime's weak `tinox_error_table_data`: "CODE=status;..."
             let table = self.error_map.iter().map(|(c, s)| format!("{c}={s}")).collect::<Vec<_>>().join(";");
             writeln!(&mut self.ir, "@tinox_error_table_data = constant [{} x i8] c\"{}\\00\"", table.len() + 1, Self::escape_llvm_string(&table)).unwrap();
+        }
+        if !self.security_policy.is_empty() {
+            // Strong definition of the runtime's weak `tinox_security_policy_data` (@Cors/@Csrf, #529).
+            let text = self.security_policy.join("\n");
+            writeln!(&mut self.ir, "@tinox_security_policy_data = constant [{} x i8] c\"{}\\00\"", text.len() + 1, Self::escape_llvm_string(&text)).unwrap();
         }
         writeln!(&mut self.ir, "declare void @printStackTrace()").unwrap();
         writeln!(&mut self.ir, "declare i64 @now()").unwrap();
@@ -4605,6 +4616,7 @@ tr_done_{idx}:"#).unwrap();
         self.emit_devui_config_handler();
         self.emit_devui_components_handler();
         self.emit_devui_limits_handler();
+        self.emit_devui_security_handler();
         self.emit_devui_tests_run_handler();
 
         writeln!(&mut self.lambda_ir, "define i64 @__tinox_run_devui() {{").unwrap();
@@ -4619,6 +4631,7 @@ tr_done_{idx}:"#).unwrap();
             ("/info", "__devui_info"),
             ("/config", "__devui_config"),
             ("/limits", "__devui_limits"),
+            ("/security", "__devui_security"),
             ("/components", "__devui_components"),
             ("/tests/run", "__devui_tests_run"),
         ] {
@@ -4954,6 +4967,17 @@ tr_done_{idx}:"#).unwrap();
         let suffix_ptr = self.emit_lambda_string_literal("}");
         writeln!(&mut self.lambda_ir,
             "  %json = call i8* @tinox_string_concat(i8* %s3, i8* {suffix_ptr})").unwrap();
+        self.emit_devui_finish_response("%json");
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+    }
+
+    /// `/security`: the active @Cors/@Csrf policy (`tinox_security_json`, runtime.c; issue #529).
+    fn emit_devui_security_handler(&mut self) {
+        writeln!(&mut self.lambda_ir, "declare i8* @tinox_security_json()").unwrap();
+        writeln!(&mut self.lambda_ir, "define void @__devui_security(i64 %ctx_i64) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %json = call i8* @tinox_security_json()").unwrap();
         self.emit_devui_finish_response("%json");
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();

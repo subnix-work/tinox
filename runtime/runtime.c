@@ -9764,7 +9764,9 @@ static int tinox_error_code_len(const char* text) {
     return (text[n] == ':' && n > 0) ? (int)n : 0;
 }
 
-static void tinox_http_error_response(int64_t context, const char* err) {
+// Writes the standard error envelope with an explicit status (shared by handler errors and the
+// browser-security guards).
+static void tinox_http_error_envelope(int64_t context, int status, const char* code, const char* message) {
     int64_t* ctx = (int64_t*)(intptr_t)context;
     int64_t* response = (int64_t*)(intptr_t)ctx[1];
     int64_t* request = (int64_t*)(intptr_t)ctx[0];
@@ -9775,8 +9777,24 @@ static void tinox_http_error_response(int64_t context, const char* err) {
     } else {
         snprintf(correlation, sizeof(correlation), "req-%08x%08x", (unsigned)random(), (unsigned)random());
     }
+    if (status == 500) fprintf(stderr, "tinox: request handler error [%s]: %s\n", correlation, message ? message : "");
+    if (status == 500) message = "Internal error";
+    char* encoded = tinox_json_encode_string(message); // includes the surrounding quotes
+    size_t cap = strlen(encoded) + strlen(code) + strlen(correlation) + 96;
+    char* body = (char*)GC_malloc(cap);
+    snprintf(body, cap, "{\"error\":{\"code\":\"%s\",\"message\":%s,\"correlationId\":\"%s\"}}", code, encoded, correlation);
+    response[0] = status;
+    response[2] = (int64_t)(intptr_t)body;
+    void* headers = (void*)(intptr_t)response[1];
+    if (headers) {
+        tinox_map_set(headers, "Content-Type", (int64_t)(intptr_t)"application/json; charset=utf-8");
+        tinox_map_set(headers, "X-Request-Id", (int64_t)(intptr_t)GC_strdup(correlation));
+    }
+}
+
+static void tinox_http_error_response(int64_t context, const char* err) {
     const char* code = "INTERNAL";
-    const char* message = "Internal error";
+    const char* message = err ? err : "";
     int status = 500;
     char code_buf[64];
     int clen = tinox_error_code_len(err);
@@ -9791,18 +9809,7 @@ static void tinox_http_error_response(int64_t context, const char* err) {
             while (*message == ' ') message++;
         }
     }
-    if (status == 500) fprintf(stderr, "tinox: request handler error [%s]: %s\n", correlation, err ? err : "");
-    char* encoded = tinox_json_encode_string(message); // includes the surrounding quotes
-    size_t cap = strlen(encoded) + strlen(code) + strlen(correlation) + 96;
-    char* body = (char*)GC_malloc(cap);
-    snprintf(body, cap, "{\"error\":{\"code\":\"%s\",\"message\":%s,\"correlationId\":\"%s\"}}", code, encoded, correlation);
-    response[0] = status;
-    response[2] = (int64_t)(intptr_t)body;
-    void* headers = (void*)(intptr_t)response[1];
-    if (headers) {
-        tinox_map_set(headers, "Content-Type", (int64_t)(intptr_t)"application/json; charset=utf-8");
-        tinox_map_set(headers, "X-Request-Id", (int64_t)(intptr_t)GC_strdup(correlation));
-    }
+    tinox_http_error_envelope(context, status, code, message);
 }
 
 // Unmanaged (no @Service) request boundary: an uncaught handler exception is a
@@ -9820,6 +9827,193 @@ void tinox_service_request_done(int64_t context) {
         __tinox_err = 0;
     }
     tinox_service_work_exit();
+}
+
+// ---- Browser security: @Cors / @Csrf (#529) ------------------------------------------------------
+// Program-wide policy compiled into `tinox_security_policy_data` (lines "key<TAB>value"). Enforced
+// at the HTTP/1 request boundary before routing, so a preflight (which has no route) and every
+// guarded request follow the same order: origin check -> CORS headers -> CSRF check -> handler.
+// Other transports (HTTP/2 in Tinox code, HTTP/3) call tinox_security_pre from their route shims
+// where available; see docs/browser-security.md for what each transport covers.
+extern const char tinox_security_policy_data[] __attribute__((weak));
+
+typedef struct {
+    int      loaded, cors, csrf, credentials;
+    int64_t  max_age;
+    int      n_origins, n_trusted;
+    char*    origins[32];
+    char*    trusted[32];
+    char*    headers;   // comma separated allow-list
+} TinoxSecurityPolicy;
+static TinoxSecurityPolicy g_sec;
+static pthread_mutex_t g_sec_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static const TinoxSecurityPolicy* tinox_security_policy(void) {
+    if (g_sec.loaded) return &g_sec;
+    pthread_mutex_lock(&g_sec_mu);
+    if (!g_sec.loaded) {
+        if (tinox_security_policy_data) {
+            char* text = strdup(tinox_security_policy_data);
+            char* save = NULL;
+            for (char* line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+                char* tab = strchr(line, '\t');
+                if (!tab) continue;
+                *tab = '\0';
+                const char* v = tab + 1;
+                if (!strcmp(line, "cors-origin") && g_sec.n_origins < 32) { g_sec.cors = 1; g_sec.origins[g_sec.n_origins++] = strdup(v); }
+                else if (!strcmp(line, "cors-credentials")) { g_sec.cors = 1; g_sec.credentials = atoi(v); }
+                else if (!strcmp(line, "cors-maxage")) g_sec.max_age = atoll(v);
+                else if (!strcmp(line, "cors-headers")) g_sec.headers = strdup(v);
+                else if (!strcmp(line, "csrf")) g_sec.csrf = 1;
+                else if (!strcmp(line, "csrf-origin") && g_sec.n_trusted < 32) g_sec.trusted[g_sec.n_trusted++] = strdup(v);
+            }
+            free(text);
+        }
+        __sync_synchronize();
+        g_sec.loaded = 1;
+    }
+    pthread_mutex_unlock(&g_sec_mu);
+    return &g_sec;
+}
+
+static int sec_origin_in(char* const* list, int n, const char* origin) {
+    for (int i = 0; i < n; i++) if (!strcmp(list[i], "*") || !strcmp(list[i], origin)) return 1;
+    return 0;
+}
+
+// Same-origin = the Origin's authority equals the Host header (scheme is not visible here).
+static int sec_same_origin(const char* origin, const char* host) {
+    if (!host || !*host) return 0;
+    const char* auth = strstr(origin, "://");
+    return auth && !strcmp(auth + 3, host);
+}
+
+// Origin of a Referer URL ("scheme://authority") into out; 0 when unparsable.
+static int sec_referer_origin(const char* referer, char* out, size_t cap) {
+    const char* auth = strstr(referer, "://");
+    if (!auth) return 0;
+    const char* end = auth + 3;
+    while (*end && *end != '/' && *end != '?' && *end != '#') end++;
+    size_t n = (size_t)(end - referer);
+    if (n == 0 || n >= cap) return 0;
+    memcpy(out, referer, n);
+    out[n] = '\0';
+    return 1;
+}
+
+static int sec_header_listed(const char* allowed_csv, const char* name, size_t len) {
+    const char* p = allowed_csv;
+    while (p && *p) {
+        const char* e = strchr(p, ',');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        if (n == len && strncasecmp(p, name, len) == 0) return 1;
+        if (!e) break;
+        p = e + 1;
+    }
+    return 0;
+}
+
+static void sec_reject(int64_t context, int status, const char* code, const char* message) {
+    tinox_http_error_envelope(context, status, code, message);
+}
+
+// Returns 1 when the guard already produced the response (rejection or preflight answer).
+// route_exists: 1 if a route is registered for the method a preflight asks about.
+static int tinox_security_pre(int64_t context, int route_exists) {
+    const TinoxSecurityPolicy* pol = tinox_security_policy();
+    if (!pol->cors && !pol->csrf) return 0;
+    int64_t* ctx = (int64_t*)(intptr_t)context;
+    int64_t* request = (int64_t*)(intptr_t)ctx[0];
+    int64_t* response = (int64_t*)(intptr_t)ctx[1];
+    const char* method = (const char*)(intptr_t)request[0];
+    void* hdrs = (void*)(intptr_t)request[3];
+    void* rhdrs = (void*)(intptr_t)response[1];
+#define REQ_HDR(name) ((const char*)(uintptr_t)tinox_map_get(hdrs, name))
+    const char* origin = REQ_HDR("Origin");
+    const char* host = REQ_HDR("Host");
+    int unsafe = strcmp(method, "GET") && strcmp(method, "HEAD") && strcmp(method, "OPTIONS");
+    int same_origin = origin && sec_same_origin(origin, host);
+
+    if (origin && !same_origin) {
+        int allowed = pol->cors && strcmp(origin, "null") != 0 && sec_origin_in(pol->origins, pol->n_origins, origin);
+        // Origins trusted only for CSRF (form posts from a sibling site) get no CORS headers but are not refused.
+        if (pol->cors && !allowed && !(pol->csrf && sec_origin_in(pol->trusted, pol->n_trusted, origin))) {
+            sec_reject(context, 403, "CORS_ORIGIN_DENIED", "Origin is not allowed");
+            return 1;
+        }
+        if (allowed) {
+            const char* want_method = REQ_HDR("Access-Control-Request-Method");
+            int preflight = !strcmp(method, "OPTIONS") && want_method;
+            const char* want_headers = preflight ? REQ_HDR("Access-Control-Request-Headers") : NULL;
+            // Refusals first: a rejected preflight must not carry any allow-* header.
+            if (preflight) {
+                if (!route_exists) { sec_reject(context, 403, "CORS_METHOD_DENIED", "No route accepts the requested method"); return 1; }
+                const char* p = want_headers ? want_headers : "";
+                while (*p) {
+                    while (*p == ' ' || *p == ',') p++;
+                    const char* e = p;
+                    while (*e && *e != ',' && *e != ' ') e++;
+                    if (e > p && !sec_header_listed(pol->headers, p, (size_t)(e - p))) {
+                        sec_reject(context, 403, "CORS_HEADER_DENIED", "A requested header is not allowed");
+                        return 1;
+                    }
+                    p = e;
+                }
+            }
+            int wildcard = sec_origin_in(pol->origins, pol->n_origins, "*") && !sec_origin_in(pol->origins, pol->n_origins, origin);
+            tinox_map_set(rhdrs, "Access-Control-Allow-Origin", (int64_t)(uintptr_t)(wildcard ? "*" : GC_strdup(origin)));
+            tinox_map_set(rhdrs, "Vary", (int64_t)(uintptr_t)"Origin");
+            if (pol->credentials) tinox_map_set(rhdrs, "Access-Control-Allow-Credentials", (int64_t)(uintptr_t)"true");
+            if (preflight) {
+                if (want_headers && *want_headers) tinox_map_set(rhdrs, "Access-Control-Allow-Headers", (int64_t)(uintptr_t)GC_strdup(want_headers));
+                tinox_map_set(rhdrs, "Access-Control-Allow-Methods", (int64_t)(uintptr_t)GC_strdup(want_method));
+                char age[24];
+                snprintf(age, sizeof(age), "%lld", (long long)pol->max_age);
+                tinox_map_set(rhdrs, "Access-Control-Max-Age", (int64_t)(uintptr_t)GC_strdup(age));
+                response[0] = 204;
+                return 1;
+            }
+        }
+    }
+
+    if (pol->csrf && unsafe) {
+        const char* cookie = REQ_HDR("Cookie");
+        if (cookie && *cookie) {
+            const char* fetch_site = REQ_HDR("Sec-Fetch-Site");
+            char ref_origin[256];
+            const char* effective = origin;
+            if (!effective) {
+                const char* ref = REQ_HDR("Referer");
+                if (ref && sec_referer_origin(ref, ref_origin, sizeof(ref_origin))) effective = ref_origin;
+            }
+            if (!effective) {
+                sec_reject(context, 403, "CSRF_REJECTED", "A request with cookies needs an Origin or Referer header");
+                return 1;
+            }
+            int trusted = sec_same_origin(effective, host) || sec_origin_in(pol->trusted, pol->n_trusted, effective) ||
+                          (pol->cors && sec_origin_in(pol->origins, pol->n_origins, effective) && strcmp(effective, "null") != 0);
+            if (!trusted || (fetch_site && !strcmp(fetch_site, "cross-site") && !sec_origin_in(pol->trusted, pol->n_trusted, effective) &&
+                             !(pol->cors && sec_origin_in(pol->origins, pol->n_origins, effective)))) {
+                sec_reject(context, 403, "CSRF_REJECTED", "Cross-site request rejected");
+                return 1;
+            }
+        }
+    }
+#undef REQ_HDR
+    return 0;
+}
+
+// Policy summary for introspection (Dev UI /security).
+char* tinox_security_json(void) {
+    const TinoxSecurityPolicy* pol = tinox_security_policy();
+    char buf[8192];
+    int n = snprintf(buf, sizeof(buf), "{\"cors\":%s,\"csrf\":%s,\"credentials\":%s,\"maxAge\":%lld,\"origins\":[",
+        pol->cors ? "true" : "false", pol->csrf ? "true" : "false", pol->credentials ? "true" : "false", (long long)pol->max_age);
+    for (int i = 0; i < pol->n_origins && n < 6000; i++) n += snprintf(buf + n, sizeof(buf) - (size_t)n, "%s\"%s\"", i ? "," : "", pol->origins[i]);
+    n += snprintf(buf + n, sizeof(buf) - (size_t)n, "],\"trustedOrigins\":[");
+    for (int i = 0; i < pol->n_trusted && n < 7000; i++) n += snprintf(buf + n, sizeof(buf) - (size_t)n, "%s\"%s\"", i ? "," : "", pol->trusted[i]);
+    snprintf(buf + n, sizeof(buf) - (size_t)n, "],\"allowedHeaders\":\"%s\"}", pol->headers ? pol->headers : "");
+    return GC_strdup(buf);
 }
 
 static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_alive_out) {
@@ -9936,7 +10130,20 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
         tinox_service_unavailable((int64_t)g_ctx);
         req_close = 1;
     } else {
-        if (handler) handler((int64_t)g_ctx);
+        int route_exists = 0;
+        {
+            const char* want = (const char*)(uintptr_t)tinox_map_get(&g_req_headers_map, "Access-Control-Request-Method");
+            if (want && !strcmp(method, "OPTIONS")) {
+                for (int i = 0; i < srv->route_count; i++) {
+                    if (strcmp(srv->routes[i].method, want) != 0) continue;
+                    if (route_matches(srv->routes[i].path, path, &g_path_params_map)) { route_exists = 1; break; }
+                    tinox_map_reset(&g_path_params_map);
+                }
+            }
+        }
+        if (tinox_security_pre((int64_t)g_ctx, route_exists)) {
+            // answered by the browser-security guard
+        } else if (handler) handler((int64_t)g_ctx);
         if (__tinox_err && (service_enabled() || !task_is_cancellation(__tinox_err))) {
             tinox_http_error_response((int64_t)g_ctx, (const char*)(intptr_t)__tinox_err);
             __tinox_err = 0;

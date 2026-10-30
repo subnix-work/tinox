@@ -366,6 +366,8 @@ pub struct AnnotationProcessingResult {
     pub test_hooks: Vec<TestHookInfo>,
     /// `@ErrorMap("CODE", status)` entries from every class (#524).
     pub error_maps: Vec<(String, i64)>,
+    /// Browser-security policy lines from `@Cors` / `@Csrf` (#529), emitted as the runtime's policy table.
+    pub security_policy: Vec<String>,
     pub metric_entries: Vec<MetricInfo>,
     pub entity_entries: Vec<EntityInfo>,
     pub ws_endpoints: Vec<WsEndpointInfo>,
@@ -729,6 +731,26 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Declares that repeating the method is safe; required for @Retry (#527)".to_string(),
+            },
+        );
+        registry.insert(
+            "Cors".to_string(),
+            AnnotationInfo {
+                name: "Cors".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 3,
+                max_args: 4,
+                description: "@Cors([\"https://app.example\"], credentials, maxAgeSeconds[, [\"Allowed-Header\", ...]]) -- program-wide CORS policy: preflight answers, origin rejection, response headers (#529)".to_string(),
+            },
+        );
+        registry.insert(
+            "Csrf".to_string(),
+            AnnotationInfo {
+                name: "Csrf".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 0,
+                max_args: 1,
+                description: "@Csrf([\"https://extra-trusted.example\"]) -- rejects cookie-carrying unsafe requests (POST/PUT/PATCH/DELETE) whose Origin/Referer is not same-origin or trusted (#529)".to_string(),
             },
         );
         registry.insert(
@@ -1368,6 +1390,32 @@ impl AnnotationProcessor {
                 "ErrorMap" => {
                     if let (Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(status)))) = (ann.args.first(), ann.args.get(1)) {
                         result.error_maps.push((code.clone(), *status as i64));
+                    }
+                }
+                "Cors" => {
+                    if let (Some(tinox_parser::AnnotationArg::Array(origins)), Some(tinox_parser::AnnotationArg::Literal(Literal::Bool(credentials))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(max_age)))) = (ann.args.first(), ann.args.get(1), ann.args.get(2)) {
+                        for o in origins {
+                            if let tinox_parser::AnnotationArg::Literal(Literal::String(o)) = o {
+                                result.security_policy.push(format!("cors-origin\t{o}"));
+                            }
+                        }
+                        result.security_policy.push(format!("cors-credentials\t{}", if *credentials { 1 } else { 0 }));
+                        result.security_policy.push(format!("cors-maxage\t{max_age}"));
+                        let headers = match ann.args.get(3) {
+                            Some(tinox_parser::AnnotationArg::Array(h)) => h.iter().filter_map(|a| if let tinox_parser::AnnotationArg::Literal(Literal::String(s)) = a { Some(s.clone()) } else { None }).collect::<Vec<_>>(),
+                            _ => vec!["Content-Type".to_string(), "Authorization".to_string(), "X-Request-Id".to_string()],
+                        };
+                        result.security_policy.push(format!("cors-headers\t{}", headers.join(",")));
+                    }
+                }
+                "Csrf" => {
+                    result.security_policy.push("csrf\t1".to_string());
+                    if let Some(tinox_parser::AnnotationArg::Array(origins)) = ann.args.first() {
+                        for o in origins {
+                            if let tinox_parser::AnnotationArg::Literal(Literal::String(o)) = o {
+                                result.security_policy.push(format!("csrf-origin\t{o}"));
+                            }
+                        }
                     }
                 }
                 "Command" => {
@@ -2515,14 +2563,105 @@ pub fn validate_annotations(
     for decl in &source.decls {
         validate_decl(&processor, decl, &json_serializable, &mut errors);
     }
+    // The compiler's single merged call passes the very same declarations as `extra_decls`
+    // again (prelude_decls accumulates them); counting a class twice would trip every
+    // "at most one"/"unique" check below, so skip extras the source already declares.
+    fn decl_key(d: &tinox_parser::Decl) -> Option<String> {
+        match &d.node {
+            DeclKind::Class(c) => Some(format!("class {}", c.name)),
+            DeclKind::Namespace(ns) => Some(format!("namespace {}", ns.name.join("."))),
+            _ => None,
+        }
+    }
+    let known: HashSet<String> = source.decls.iter().filter_map(decl_key).collect();
     let mut merged = source.clone();
-    merged.decls.extend_from_slice(extra_decls);
+    merged.decls.extend(extra_decls.iter().filter(|d| decl_key(d).is_none_or(|k| !known.contains(&k))).cloned());
     let mut result = process_annotations(&merged);
     errors.extend(resolve_di_providers(&merged, &mut result));
     errors.extend(crate::dto_validation::validate_request_graphs(&source.decls,extra_decls));
     errors.extend(validate_error_declarations(&merged.decls));
     errors.extend(validate_resilience_declarations(&merged.decls));
+    errors.extend(validate_security_declarations(&merged.decls));
     for error in &mut errors { error.code = Some("TINOX-ANNOTATION".into()); }
+    errors
+}
+
+/// `@Cors` / `@Csrf` (#529): one policy per program, well-formed origins, no wildcard with credentials.
+fn validate_security_declarations(decls: &[tinox_parser::Decl]) -> Vec<Error> {
+    fn origin_ok(o: &str) -> bool {
+        let rest = o.strip_prefix("https://").or_else(|| o.strip_prefix("http://"));
+        match rest {
+            Some(host) => !host.is_empty() && !host.contains('/') && !host.contains('*') && !host.contains(char::is_whitespace),
+            None => false,
+        }
+    }
+    fn strings(arg: &AnnotationArg) -> Option<Vec<&str>> {
+        match arg {
+            AnnotationArg::Array(items) => items
+                .iter()
+                .map(|i| if let AnnotationArg::Literal(Literal::String(s)) = i { Some(s.as_str()) } else { None })
+                .collect(),
+            _ => None,
+        }
+    }
+    fn walk<'a>(decls: &'a [tinox_parser::Decl], cors: &mut Vec<&'a Annotation>, csrf: &mut Vec<&'a Annotation>) {
+        for d in decls {
+            match &d.node {
+                DeclKind::Class(c) => {
+                    cors.extend(c.annotations.iter().filter(|a| a.name == "Cors"));
+                    csrf.extend(c.annotations.iter().filter(|a| a.name == "Csrf"));
+                }
+                DeclKind::Namespace(ns) => walk(&ns.decls, cors, csrf),
+                _ => {}
+            }
+        }
+    }
+    let (mut cors, mut csrf) = (Vec::new(), Vec::new());
+    walk(decls, &mut cors, &mut csrf);
+    let mut errors = Vec::new();
+    if cors.len() > 1 {
+        errors.push(Error::new(cors[1].span, "only one @Cors policy is allowed per program"));
+    }
+    if csrf.len() > 1 {
+        errors.push(Error::new(csrf[1].span, "only one @Csrf policy is allowed per program"));
+    }
+    for a in &cors {
+        let credentials = matches!(a.args.get(1), Some(AnnotationArg::Literal(Literal::Bool(true))));
+        match a.args.first().and_then(strings) {
+            Some(origins) if !origins.is_empty() => {
+                for o in origins {
+                    if o == "*" {
+                        if credentials {
+                            errors.push(Error::new(a.span, "@Cors: the wildcard origin \"*\" cannot be combined with credentials=true"));
+                        }
+                    } else if !origin_ok(o) {
+                        errors.push(Error::new(a.span, format!("@Cors origin '{o}' must be an exact http(s)://host[:port] origin without path or wildcard")));
+                    }
+                }
+            }
+            _ => errors.push(Error::new(a.span, "@Cors expects a non-empty list of origin strings first")),
+        }
+        if !matches!(a.args.get(1), Some(AnnotationArg::Literal(Literal::Bool(_)))) {
+            errors.push(Error::new(a.span, "@Cors: second argument (credentials) must be true or false"));
+        }
+        if !matches!(a.args.get(2), Some(AnnotationArg::Literal(Literal::Integer(n))) if (0..=86400).contains(n)) {
+            errors.push(Error::new(a.span, "@Cors: third argument (maxAgeSeconds) must be an integer in 0..=86400"));
+        }
+        if let Some(h) = a.args.get(3) {
+            match strings(h) {
+                Some(names) if names.iter().all(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) => {}
+                _ => errors.push(Error::new(a.span, "@Cors: allowed headers must be a list of header-name strings")),
+            }
+        }
+    }
+    for a in &csrf {
+        if let Some(arg) = a.args.first() {
+            match strings(arg) {
+                Some(origins) if origins.iter().all(|o| origin_ok(o)) => {}
+                _ => errors.push(Error::new(a.span, "@Csrf: trusted origins must be exact http(s)://host[:port] strings")),
+            }
+        }
+    }
     errors
 }
 
@@ -2653,6 +2792,21 @@ mod tests {
 
     fn valid(src: &str) -> Vec<Error> {
         validate_annotations(&parse(src), &[])
+    }
+
+    #[test]
+    fn cors_and_csrf_policies_are_validated() {
+        let messages = |src: &str| valid(src).into_iter().map(|e| e.message).collect::<Vec<_>>().join(" | ");
+        assert!(messages("@Cors([\"https://a.example\"], true, 60)\n@Csrf([\"http://localhost:3000\"])\nclass P {}").is_empty());
+        assert!(messages("@Cors([\"*\"], true, 60)\nclass P {}").contains("wildcard"));
+        assert!(messages("@Cors([\"*\"], false, 60)\nclass P {}").is_empty());
+        assert!(messages("@Cors([\"https://a.example/path\"], false, 60)\nclass P {}").contains("exact"));
+        assert!(messages("@Cors([\"a.example\"], false, 60)\nclass P {}").contains("exact"));
+        assert!(messages("@Cors([], false, 60)\nclass P {}").contains("non-empty"));
+        assert!(messages("@Cors([\"https://a.example\"], false, 999999)\nclass P {}").contains("maxAgeSeconds"));
+        assert!(messages("@Cors([\"https://a.example\"], false, 60)\nclass P {}\n@Cors([\"https://b.example\"], false, 60)\nclass Q {}").contains("only one"));
+        assert!(messages("@Csrf([\"nonsense\"])\nclass P {}").contains("trusted origins"));
+        assert_eq!(proc("@Cors([\"https://a.example\"], true, 60)\nclass P {}").security_policy[0], "cors-origin\thttps://a.example");
     }
 
     #[test]

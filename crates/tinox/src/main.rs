@@ -3336,6 +3336,7 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
         })
         .collect();
     cg.set_error_map(ann.error_maps.clone());
+    cg.set_security_policy(ann.security_policy.clone());
     cg.set_annotation_info(tinox_codegen::AnnotationInfo {
         inline_fns: ann.inline_functions,
         inline_meths: ann.inline_methods,
@@ -5326,6 +5327,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
         })
         .collect();
     codegen.set_error_map(ann_result.error_maps.clone());
+    codegen.set_security_policy(ann_result.security_policy.clone());
     codegen.set_annotation_info(tinox_codegen::AnnotationInfo {
         inline_fns: ann_result.inline_functions,
         inline_meths: ann_result.inline_methods,
