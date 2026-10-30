@@ -193,6 +193,15 @@
       ]
     },
     {
+      "description": "@ForeignKey(\"table\", \"column\") -- the field references the primary key of another entity's table; checked at compile time, emitted as a REFERENCES constraint by `tinox db generate`, enforced by the database. No implicit loading",
+      "max_args": 2,
+      "min_args": 2,
+      "name": "ForeignKey",
+      "targets": [
+        "Field"
+      ]
+    },
+    {
       "description": "Marks a method as a GET endpoint. Optional path arg, or use @Path.",
       "max_args": 1,
       "min_args": 0,

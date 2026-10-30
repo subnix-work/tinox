@@ -1032,6 +1032,16 @@ impl AnnotationProcessor {
             },
         );
         registry.insert(
+            "ForeignKey".to_string(),
+            AnnotationInfo {
+                name: "ForeignKey".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 2,
+                max_args: 2,
+                description: "@ForeignKey(\"table\", \"column\") -- the field references the primary key of another entity's table; checked at compile time, emitted as a REFERENCES constraint by `tinox db generate`, enforced by the database. No implicit loading".to_string(),
+            },
+        );
+        registry.insert(
             "Column".to_string(),
             AnnotationInfo {
                 name: "Column".to_string(),
@@ -2796,6 +2806,91 @@ fn collect_json_serializable_classes(decls: &[tinox_parser::Decl], out: &mut Has
             _ => {}
         }
     }
+}
+
+/// @ForeignKey(table, column): the target must be an entity table whose single @Id column is `column`
+/// and has the same type as the field; foreign keys between entities must not form a cycle (including a
+/// table referencing itself) so creation order and loading stay finite and explicit.
+///
+/// Needs the whole program (every entity), so the compiler calls it on the merged declarations; a
+/// per-file check could not tell "missing" from "declared in another file". Returns (class, message).
+pub fn foreign_key_errors(decls: &[tinox_parser::Decl]) -> Vec<(String, String)> {
+    fn collect<'a>(decls: &'a [tinox_parser::Decl], out: &mut std::collections::BTreeMap<String, &'a Class>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Class(class) => { out.entry(class.name.clone()).or_insert(class); }
+                DeclKind::Namespace(ns) => collect(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    let mut all = std::collections::BTreeMap::new();
+    collect(decls, &mut all);
+    let mut errors: Vec<(String, String)> = Vec::new();
+    let is_entity = |c: &Class| c.annotations.iter().any(|a| a.name == "Entity" || a.name == "Table");
+    let string_arg = |a: &Annotation, i: usize| match a.args.get(i) {
+        Some(AnnotationArg::Literal(Literal::String(v))) => Some(v.clone()),
+        _ => None,
+    };
+    let table_of = |c: &Class| {
+        c.annotations.iter().find(|a| a.name == "Table").and_then(|a| string_arg(a, 0)).unwrap_or_else(|| c.name.to_lowercase())
+    };
+    let column_of = |f: &FieldDef| {
+        f.annotations.iter().find(|a| a.name == "Column").and_then(|a| string_arg(a, 0)).unwrap_or_else(|| f.name.clone())
+    };
+    let tables: HashMap<String, &Class> = all.values().filter(|c| is_entity(c)).map(|c| (table_of(c), *c)).collect();
+    let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+    for class in all.values().filter(|c| is_entity(c)) {
+        for field in &class.fields {
+            for ann in field.annotations.iter().filter(|a| a.name == "ForeignKey") {
+                let at = format!("{}.{}", class.name, field.name);
+                let (Some(table), Some(column)) = (string_arg(ann, 0), string_arg(ann, 1)) else {
+                    errors.push((class.name.clone(), format!("{at}: @ForeignKey requires two string literals: table and column")));
+                    continue;
+                };
+                let Some(target) = tables.get(&table) else {
+                    errors.push((class.name.clone(), format!("{at}: @ForeignKey references table '{table}', which is not an @Entity table of this program")));
+                    continue;
+                };
+                let ids: Vec<&FieldDef> = target.fields.iter().filter(|f| f.annotations.iter().any(|a| a.name == "Id")).collect();
+                let target_key = match ids.as_slice() {
+                    [one] if column_of(one) == column => *one,
+                    [_] => {
+                        errors.push((class.name.clone(), format!("{at}: @ForeignKey must reference the primary key column of '{table}'")));
+                        continue;
+                    }
+                    _ => {
+                        errors.push((class.name.clone(), format!("{at}: @ForeignKey needs a target with exactly one @Id; '{table}' has {} (composite keys are not referenceable yet)", ids.len())));
+                        continue;
+                    }
+                };
+                if format!("{:?}", target_key.field_type) != format!("{:?}", field.field_type) {
+                    errors.push((class.name.clone(), format!("{at}: @ForeignKey type {:?} does not match {}.{} ({:?})", field.field_type, target.name, target_key.name, target_key.field_type)));
+                }
+                edges.entry(table_of(class)).or_default().push(table);
+            }
+        }
+    }
+    // A cycle (also a self reference) is rejected: report each table that can reach itself once.
+    let mut reported = HashSet::new();
+    for start in edges.keys() {
+        let mut stack: Vec<&String> = edges[start].iter().collect();
+        let mut seen = HashSet::new();
+        while let Some(t) = stack.pop() {
+            if t == start {
+                if reported.insert(start.clone()) {
+                    let class = tables[start];
+                    errors.push((class.name.clone(), format!("entity '{}': @ForeignKey references form a cycle through table '{start}'; break it (a self-referencing or mutually dependent schema needs a manual changeSet)", class.name)));
+                }
+                break;
+            }
+            if seen.insert(t) {
+                if let Some(next) = edges.get(t) { stack.extend(next.iter()); }
+            }
+        }
+    }
+    errors.sort();
+    errors
 }
 
 /// Propagation mode of a validated @Transactional annotation (0 REQUIRED, 1 NESTED,

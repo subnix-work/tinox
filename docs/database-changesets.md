@@ -388,3 +388,31 @@ class Membership {
   (`crates/tinox/tests/orm_composite_keys.rs`). The PostgreSQL/MySQL DDL comes from the same code path but is
   not covered by a server test; on MySQL a `String` key column maps to `text`, which MySQL cannot index
   without a length, so use a bounded type there.
+
+## Foreign keys (entities)
+
+`@ForeignKey("table", "column")` on an entity field declares that it references another entity's
+primary key. It is the first, deliberately small relationship slice: **explicit keys, no implicit loading**.
+
+```tinox
+@Entity @Table("books")
+class Book {
+    @Id @GeneratedValue var id: Int64
+    @Column("author_id") @ForeignKey("authors", "id") var authorId: Int64
+}
+```
+
+- Checked at compile time against the whole program: the table must be an `@Entity` table, `column` must be
+  its single `@Id` column, the types must match, and references must not form a cycle (a self-reference
+  counts) -- those need a manual changeSet.
+- `tinox db generate` emits `references: authors(id)`; adding, dropping or retargeting a foreign key on an
+  existing column is reported ("add a manual changeSet"), never guessed. Referenced tables are created
+  first only if the generated changeSet orders them so: create parents before children by running
+  `generate` per dependency level, or order the changeSet by hand.
+- SQLite connections now run with `PRAGMA foreign_keys = ON`, so the constraint is really enforced
+  (orphan inserts and deleting a referenced parent fail; an ORM `save()` that violates it aborts with the
+  driver message).
+- Loading is explicit and bounded: a list/detail view is two queries (`first()` for the parent,
+  `filter(b => b.authorId == parent.id).orderBy(...).limit(n).list()` for the children). There are no
+  lazy or eager relationship fields and no joins yet.
+- Verified with an independent `sqlite3` (`crates/tinox/tests/orm_foreign_keys.rs`).

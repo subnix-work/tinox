@@ -1,0 +1,23 @@
+import tinox.core.db
+import Author
+import Book
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const ada: Author = DB::of(Author).save(Author { id: 0, name: "Ada" })
+        const bob: Author = DB::of(Author).save(Author { id: 0, name: "Bob" })
+        DB::of(Book).save(Book { id: 0, title: "Notes", authorId: ada.id })
+        DB::of(Book).save(Book { id: 0, title: "Engine", authorId: ada.id })
+        DB::of(Book).save(Book { id: 0, title: "Other", authorId: bob.id })
+        // List/detail with an explicit, bounded number of queries: one for the author, one for the books.
+        const author: Author = DB::of(Author).filter(a => a.name == "Ada").first()
+        const books: List<Book> = DB::of(Book).filter(b => b.authorId == author.id).orderBy(b => b.title).limit(100).list()
+        println(author.name + " has " + books.len().toString() + " books")
+        for b in books {
+            println(" - " + b.title)
+        }
+        return 0
+    }
+}

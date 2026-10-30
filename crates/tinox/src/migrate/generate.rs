@@ -130,17 +130,20 @@ fn entity_schema(root: &Path) -> Result<(Schema, BTreeMap<String, Vec<String>>),
                     class.name, field.name
                 ));
             }
+            let mut constraints = vec![
+                ("primaryKey", Value::Bool(has("Id"))),
+                ("nullable", Value::Bool(!has("NotNull"))),
+            ];
+            if let Some(fk) = field.annotations.iter().find(|a| a.name == "ForeignKey") {
+                if let [AnnotationArg::Literal(Literal::String(t)), AnnotationArg::Literal(Literal::String(c))] = fk.args.as_slice() {
+                    constraints.push(("references", string(&format!("{t}({c})"))));
+                }
+            }
             let col = object(&[
                 ("name", string(&name)),
                 ("type", string(ty)),
                 ("autoIncrement", Value::Bool(has("GeneratedValue"))),
-                (
-                    "constraints",
-                    object(&[
-                        ("primaryKey", Value::Bool(has("Id"))),
-                        ("nullable", Value::Bool(!has("NotNull"))),
-                    ]),
-                ),
+                ("constraints", object(&constraints)),
             ]);
             if columns.insert(name.clone(), col).is_some() {
                 return Err(format!("duplicate entity column {table}.{name}"));
@@ -271,6 +274,14 @@ pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> 
                     if !equivalent(d, table, previous, col)? {
                         return Err(format!(
                             "{table}.{name}: type or constraint changed; add a manual changeSet"
+                        ));
+                    }
+                    // Adding, dropping or retargeting a foreign key on an existing column is never guessed.
+                    let refs = |c: &Value| c["constraints"]["references"].as_str().map(|r| r.replace(' ', ""));
+                    if refs(previous) != refs(col) {
+                        return Err(format!(
+                            "{table}.{name}: foreign key changed ({:?} -> {:?}); add a manual changeSet",
+                            refs(previous), refs(col)
                         ));
                     }
                 } else {
