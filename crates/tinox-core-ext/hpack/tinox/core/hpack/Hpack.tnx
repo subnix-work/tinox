@@ -195,7 +195,7 @@ namespace tinox.core.hpack
                 bytes.push(data[pos + i])
                 i = i + 1
             }
-            if ((data[offset] & 128) != 0)
+            if (offset >= 0 && offset < data.len() && (data[offset] & 128) != 0)
             {
                 bytes = Hpack::huffmanDecode(bytes)
             }
