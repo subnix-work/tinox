@@ -1,0 +1,129 @@
+import tinox.core.db
+import Note
+
+class Flows
+{
+    fn add(tag: String) -> Nothing
+    {
+        DB::of(Note).save(Note { id: 0, tag: tag })
+    }
+
+    @Transactional
+    fn required(tag: String, fail: Bool) -> Nothing
+    {
+        this.add(tag)
+        if (fail) {
+            throw "required failed"
+        }
+    }
+
+    @Transactional("NESTED")
+    fn nested(tag: String, fail: Bool) -> Nothing
+    {
+        this.add(tag)
+        if (fail) {
+            throw "nested failed"
+        }
+    }
+
+    // Ends in an explicit return: the savepoint must be released there too.
+    @Transactional("NESTED")
+    fn nestedReturning(tag: String) -> Int64
+    {
+        this.add(tag)
+        return 7
+    }
+
+    @Transactional("REQUIRES_NEW")
+    fn independent(tag: String, fail: Bool) -> Nothing
+    {
+        this.add(tag)
+        if (fail) {
+            throw "independent failed"
+        }
+    }
+
+    // NESTED failure is rolled back to its savepoint; the outer transaction goes on and commits.
+    @Transactional
+    fn outerCatchesNested() -> Nothing
+    {
+        this.add("n-outer-1")
+        try {
+            this.nested("n-inner-failed", true)
+        } catch (e: String) {
+            println("caught: " + e)
+        }
+        this.nested("n-inner-ok", false)
+        const r: Int64 = this.nestedReturning("n-inner-returned")
+        println("returned: " + r.toString())
+        this.add("n-outer-2")
+    }
+
+    // A joined (REQUIRED) failure poisons the shared transaction: catching it does not help,
+    // the owner must refuse to commit instead of silently committing half the work.
+    @Transactional
+    fn outerCatchesRequired() -> Nothing
+    {
+        this.add("r-outer")
+        try {
+            this.required("r-inner", true)
+        } catch (e: String) {
+            println("caught: " + e)
+        }
+    }
+
+    // The independent transaction commits even though the outer one rolls back afterwards.
+    @Transactional
+    fn outerFailsAfterIndependent() -> Nothing
+    {
+        this.add("i-outer-lost")
+        this.independent("i-inner-kept", false)
+        throw "outer failed"
+    }
+
+    // The independent transaction fails alone; the outer one is unaffected.
+    @Transactional
+    fn independentFailsOuterContinues() -> Nothing
+    {
+        this.add("j-outer-1")
+        try {
+            this.independent("j-inner-failed", true)
+        } catch (e: String) {
+            println("caught: " + e)
+        }
+        this.add("j-outer-2")
+    }
+
+    // The outer transaction's rows are invisible to the independent one until it commits.
+    @Transactional
+    fn independentCannotSeeOuter() -> Int64
+    {
+        this.add("k-outer")
+        return this.countTag("k-outer")
+    }
+
+    fn countTag(tag: String) -> Int64
+    {
+        return DB::of(Note).filter(n => n.tag == tag).count()
+    }
+
+    @Transactional("REQUIRES_NEW")
+    fn independentCount(tag: String) -> Int64
+    {
+        return DB::of(Note).filter(n => n.tag == tag).count()
+    }
+
+    @Transactional
+    fn outerThenIndependentCount() -> Int64
+    {
+        this.add("m-outer")
+        return this.independentCount("m-outer")
+    }
+
+    // Without an open transaction every mode simply begins one.
+    @Transactional("NESTED")
+    fn nestedStandalone() -> Nothing
+    {
+        this.add("s-nested-standalone")
+    }
+}

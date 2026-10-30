@@ -4971,7 +4971,7 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         let driver_cfg = read_database_config();
         let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
         if driver != "postgres" {
-            let (class_name, method_name) = ann_result.transactional_methods.iter().next().unwrap();
+            let (class_name, method_name) = ann_result.transactional_methods.keys().next().unwrap();
             return Err(annotation_error(&[class_name.as_str()], format!(
                 "'{class_name}.{method_name}' is @Transactional, but [database] driver is {} -- \
                  @Transactional is only supported for driver = \"postgres\" in this version",

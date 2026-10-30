@@ -12456,41 +12456,110 @@ void tinox_db_release_stmt_conn(void* conn) {
     _tinox_pg_pool_release((PGconn*)conn);
 }
 
-void* tinox_db_tx_begin(void) {
+// ---- Transactions: propagation modes and savepoints (issue #532) ----
+// Every @Transactional method brackets its body with tinox_db_tx_enter(mode) /
+// tinox_db_tx_leave(token, ok). The token says what THIS call did, so leave()
+// undoes exactly that:
+//   TX_JOINED (0)  REQUIRED inside an open transaction: nothing to undo; a failure
+//                  only marks the shared transaction rollback-only
+//   TX_OWNER  (1)  began the transaction (and owns its pooled connection)
+//   TX_SAVEPT (2)  NESTED inside an open transaction: a savepoint
+//   TX_NEWTX  (3)  REQUIRES_NEW inside an open transaction: the outer transaction is
+//                  suspended (its frame stays on the stack) and a second connection runs
+//                  an independent transaction
+//   -1             already left (the early-return path leaves before the catch path runs)
+// Modes: 0 REQUIRED, 1 NESTED, 2 REQUIRES_NEW. A joined call that fails marks the frame
+// rollback-only; the owner then refuses to commit (leave() returns 0 and sets the thrown
+// error) instead of silently committing half of a failed unit of work.
+#define TINOX_TX_MAX_DEPTH 8
+typedef struct { PGconn* conn; int sp; int rollback_only; } TinoxTxFrame;
+static __thread TinoxTxFrame _tinox_tx_frames[TINOX_TX_MAX_DEPTH];
+static __thread int _tinox_tx_n = 0;
+
+static void _tinox_tx_exec(PGconn* c, const char* sql, int fatal) {
+    PGresult* res = PQexec(c, sql);
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "%s failed: %s\n", sql, PQerrorMessage(c));
+        if (fatal) { PQclear(res); exit(1); }
+    }
+    PQclear(res);
+}
+
+static void _tinox_tx_sync_current(void) {
+    _tinox_db_tx_conn = _tinox_tx_n > 0 ? _tinox_tx_frames[_tinox_tx_n - 1].conn : NULL;
+}
+
+static int64_t _tinox_tx_push(void) {
+    if (_tinox_tx_n >= TINOX_TX_MAX_DEPTH) {
+        fprintf(stderr, "transaction nesting too deep (max %d REQUIRES_NEW levels)\n", TINOX_TX_MAX_DEPTH);
+        exit(1);
+    }
     PGconn* c = _tinox_pg_pool_acquire();
-    PGresult* res = PQexec(c, "BEGIN");
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "BEGIN failed: %s\n", PQerrorMessage(c));
-    }
-    PQclear(res);
-    _tinox_db_tx_conn = c;
-    return c;
+    _tinox_tx_exec(c, "BEGIN", 0);
+    _tinox_tx_frames[_tinox_tx_n].conn = c;
+    _tinox_tx_frames[_tinox_tx_n].sp = 0;
+    _tinox_tx_frames[_tinox_tx_n].rollback_only = 0;
+    _tinox_tx_n++;
+    _tinox_tx_sync_current();
+    return 0;
 }
 
-void tinox_db_tx_commit(void) {
-    if (_tinox_db_tx_conn == NULL) return;
-    PGresult* res = PQexec(_tinox_db_tx_conn, "COMMIT");
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "COMMIT failed: %s\n", PQerrorMessage(_tinox_db_tx_conn));
+int64_t tinox_db_tx_enter(int64_t mode) {
+    if (_tinox_tx_n == 0) { _tinox_tx_push(); return 1; }
+    TinoxTxFrame* f = &_tinox_tx_frames[_tinox_tx_n - 1];
+    if (mode == 1) {
+        char sql[48];
+        snprintf(sql, sizeof sql, "SAVEPOINT tinox_sp%d", ++f->sp);
+        _tinox_tx_exec(f->conn, sql, 1);
+        return 2;
     }
-    PQclear(res);
-    _tinox_pg_pool_release(_tinox_db_tx_conn);
-    _tinox_db_tx_conn = NULL;
+    if (mode == 2) {
+        // The suspended transaction keeps its connection, so a pool of one could never
+        // serve the second one: wait forever. Fail loudly instead.
+        if (_tinox_pg_pool_size < 2) {
+            fprintf(stderr, "REQUIRES_NEW needs [database] pool >= 2 (the outer transaction keeps its connection)\n");
+            exit(1);
+        }
+        _tinox_tx_push();
+        return 3;
+    }
+    return 0;
 }
 
-void tinox_db_tx_rollback(void) {
-    if (_tinox_db_tx_conn == NULL) return;
-    PGresult* res = PQexec(_tinox_db_tx_conn, "ROLLBACK");
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "ROLLBACK failed: %s\n", PQerrorMessage(_tinox_db_tx_conn));
+// Returns 1 on success. Returns 0 (with the error set for the caller to throw) when the
+// transaction had to be rolled back although the body completed normally.
+int64_t tinox_db_tx_leave(int64_t token, bool ok) {
+    if (token < 0 || _tinox_tx_n == 0) return 1;
+    TinoxTxFrame* f = &_tinox_tx_frames[_tinox_tx_n - 1];
+    if (token == 0) {
+        if (!ok) f->rollback_only = 1;
+        return 1;
     }
-    PQclear(res);
-    _tinox_pg_pool_release(_tinox_db_tx_conn);
-    _tinox_db_tx_conn = NULL;
+    if (token == 2) {
+        char sql[96];
+        if (!ok) {
+            snprintf(sql, sizeof sql, "ROLLBACK TO SAVEPOINT tinox_sp%d", f->sp);
+            _tinox_tx_exec(f->conn, sql, 1);
+        }
+        snprintf(sql, sizeof sql, "RELEASE SAVEPOINT tinox_sp%d", f->sp);
+        _tinox_tx_exec(f->conn, sql, 1);
+        f->sp--;
+        return 1;
+    }
+    int refused = ok && f->rollback_only;
+    _tinox_tx_exec(f->conn, (ok && !refused) ? "COMMIT" : "ROLLBACK", 0);
+    _tinox_pg_pool_release(f->conn);
+    _tinox_tx_n--;
+    _tinox_tx_sync_current();
+    if (refused) {
+        __tinox_err = (int64_t)(intptr_t)"transaction rolled back: a joined call of the same transaction failed (rollback-only); handle the error or use NESTED/REQUIRES_NEW";
+        return 0;
+    }
+    return 1;
 }
 
 bool tinox_db_tx_active(void) {
-    return _tinox_db_tx_conn != NULL;
+    return _tinox_tx_n > 0;
 }
 
 void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
@@ -12629,16 +12698,16 @@ void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
 // check in tinox/src/main.rs) -- these exist only so a fully-linked binary
 // never has an undefined symbol. A real call here would mean that check
 // was bypassed, so fail loudly rather than silently no-op.
-void* tinox_db_tx_begin(void) {
-    fprintf(stderr, "@Transactional is not supported for the sqlite driver\n");
+int64_t tinox_db_tx_enter(int64_t mode) {
+    (void)mode;
+    fprintf(stderr, "@Transactional is not supported for the sqlite driver
+");
     exit(1);
 }
-void tinox_db_tx_commit(void) {
-    fprintf(stderr, "@Transactional is not supported for the sqlite driver\n");
-    exit(1);
-}
-void tinox_db_tx_rollback(void) {
-    fprintf(stderr, "@Transactional is not supported for the sqlite driver\n");
+int64_t tinox_db_tx_leave(int64_t token, bool ok) {
+    (void)token; (void)ok;
+    fprintf(stderr, "@Transactional is not supported for the sqlite driver
+");
     exit(1);
 }
 bool tinox_db_tx_active(void) { return false; }
@@ -12889,16 +12958,16 @@ void  tinox_db_release_stmt_conn(void* conn) { (void)conn; }
 // check in tinox/src/main.rs) -- these exist only so a fully-linked binary
 // never has an undefined symbol. A real call here would mean that check
 // was bypassed, so fail loudly rather than silently no-op.
-void* tinox_db_tx_begin(void) {
-    fprintf(stderr, "@Transactional is not supported for the mysql driver\n");
+int64_t tinox_db_tx_enter(int64_t mode) {
+    (void)mode;
+    fprintf(stderr, "@Transactional is not supported for the mysql driver
+");
     exit(1);
 }
-void tinox_db_tx_commit(void) {
-    fprintf(stderr, "@Transactional is not supported for the mysql driver\n");
-    exit(1);
-}
-void tinox_db_tx_rollback(void) {
-    fprintf(stderr, "@Transactional is not supported for the mysql driver\n");
+int64_t tinox_db_tx_leave(int64_t token, bool ok) {
+    (void)token; (void)ok;
+    fprintf(stderr, "@Transactional is not supported for the mysql driver
+");
     exit(1);
 }
 bool tinox_db_tx_active(void) { return false; }
@@ -13005,9 +13074,8 @@ char*   tinox_db_error(void* c) { return GC_strdup(mysql_error((MYSQL*)c)); }
 void  tinox_db_pool_init(const char* url, int64_t pool_size)                  { (void)url;(void)pool_size; }
 void* tinox_db_acquire_stmt_conn(void)                                        { return NULL; }
 void  tinox_db_release_stmt_conn(void* conn)                                  { (void)conn; }
-void* tinox_db_tx_begin(void)                                                 { return NULL; }
-void  tinox_db_tx_commit(void)                                                { }
-void  tinox_db_tx_rollback(void)                                              { }
+int64_t tinox_db_tx_enter(int64_t mode)                                       { (void)mode; return 0; }
+int64_t tinox_db_tx_leave(int64_t token, bool ok)                             { (void)token;(void)ok; return 1; }
 bool  tinox_db_tx_active(void)                                                { return false; }
 void* tinox_db_exec(void* c, const char* s, const char** p, int64_t n)        { (void)c;(void)s;(void)p;(void)n; return NULL; }
 int64_t tinox_db_nrows(void* r)                                                { (void)r; return 0; }

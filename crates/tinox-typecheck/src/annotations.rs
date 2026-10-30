@@ -344,13 +344,11 @@ pub struct AnnotationProcessingResult {
     pub route_entries: Vec<RouteInfo>,
     pub inline_functions: HashSet<String>,
     pub inline_methods: HashSet<(String, String)>,
-    /// (class, method) pairs that should run inside a DB transaction --
-    /// either the method itself carries @Transactional, or its class does
-    /// (class-level applies to every method, same precedence pattern as
-    /// @Auth; a method-level annotation on top of a class-level one is
-    /// simply redundant, not an override, since there's no argument to
-    /// override — unlike @Auth's "bearer"/"basic" choice).
-    pub transactional_methods: HashSet<(String, String)>,
+    /// (class, method) -> propagation mode (0 REQUIRED, 1 NESTED, 2 REQUIRES_NEW)
+    /// for methods that run inside a DB transaction -- either the method itself
+    /// carries @Transactional, or its class does (class-level applies to every
+    /// method; a method-level annotation overrides the class-level mode).
+    pub transactional_methods: HashMap<(String, String), i64>,
     pub deprecated_warnings: Vec<String>,
     pub shared_state_warnings: Vec<String>,
     pub custom_annotation_names: Vec<String>,
@@ -519,8 +517,8 @@ impl AnnotationProcessor {
                 name: "Transactional".to_string(),
                 valid_targets: vec![AnnotationTarget::Method, AnnotationTarget::Class],
                 min_args: 0,
-                max_args: 0,
-                description: "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Postgres only in v1 (issue #191) -- a hard compile error on any other [database] driver".to_string(),
+                max_args: 1,
+                description: "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Optional propagation: \"REQUIRED\" (default, joins an open transaction), \"NESTED\" (savepoint inside an open transaction), \"REQUIRES_NEW\" (independent transaction on a second connection). Postgres only (issue #191, #532) -- a hard compile error on any other [database] driver".to_string(),
             },
         );
         // REST parameter binding annotations -- exactly one required on
@@ -1200,6 +1198,16 @@ impl AnnotationProcessor {
                     // silently falling back to the default port would be
                     // exactly the "mostly works somehow" behaviour this
                     // project refuses. Both positions are ports.
+                    if ann.name == "Transactional" {
+                        if let Some(arg) = ann.args.first() {
+                            if !matches!(arg, tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(m)) if transactional_mode_value(m).is_some()) {
+                                errors.push(Error::new(
+                                    ann.span,
+                                    "@Transactional's propagation must be the string literal \"REQUIRED\", \"NESTED\" or \"REQUIRES_NEW\"",
+                                ));
+                            }
+                        }
+                    }
                     if ann.name == "TinoxUIApp" {
                         for (idx, arg) in ann.args.iter().enumerate() {
                             if tinoxui_port_arg(Some(arg)).is_none() {
@@ -1277,7 +1285,7 @@ impl AnnotationProcessor {
     ) {
         let mut class_base_path: Option<String> = None;
         let mut class_auth: Option<String> = None;
-        let mut class_transactional = false;
+        let mut class_transactional: Option<i64> = None;
         let mut di_scope: Option<DiScope> = None;
         let singleton = class.annotations.iter().any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"));
         let synchronized = class.annotations.iter().any(|a| a.name == "Synchronized");
@@ -1363,7 +1371,7 @@ impl AnnotationProcessor {
                     }
                 }
                 "Transactional" => {
-                    class_transactional = true;
+                    class_transactional = Some(transactional_mode(ann));
                 }
                 "deprecated" => {
                     let msg = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
@@ -1550,8 +1558,11 @@ impl AnnotationProcessor {
                 result.route_entries.push(route);
             }
 
-            if class_transactional || method.annotations.iter().any(|a| a.name == "Transactional") {
-                result.transactional_methods.insert((class.name.clone(), method.name.clone()));
+            let tx_mode = method.annotations.iter().find(|a| a.name == "Transactional")
+                .map(transactional_mode)
+                .or(class_transactional);
+            if let Some(mode) = tx_mode {
+                result.transactional_methods.insert((class.name.clone(), method.name.clone()), mode);
             }
 
             for ann in &method.annotations {
@@ -2775,6 +2786,25 @@ fn collect_json_serializable_classes(decls: &[tinox_parser::Decl], out: &mut Has
     }
 }
 
+/// Propagation mode of a validated @Transactional annotation (0 REQUIRED, 1 NESTED,
+/// 2 REQUIRES_NEW); an unvalidated argument falls back to REQUIRED only because
+/// validate_annotations already rejected it.
+fn transactional_mode_value(name: &str) -> Option<i64> {
+    match name {
+        "REQUIRED" => Some(0),
+        "NESTED" => Some(1),
+        "REQUIRES_NEW" => Some(2),
+        _ => None,
+    }
+}
+
+fn transactional_mode(ann: &tinox_parser::Annotation) -> i64 {
+    match ann.args.first() {
+        Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(m))) => transactional_mode_value(m).unwrap_or(0),
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3799,8 +3829,8 @@ class Svc {
     fn readOnly() -> Nothing {}
 }
 "#);
-        assert!(result.transactional_methods.contains(&("Svc".to_string(), "transfer".to_string())));
-        assert!(!result.transactional_methods.contains(&("Svc".to_string(), "readOnly".to_string())));
+        assert!(result.transactional_methods.contains_key(&("Svc".to_string(), "transfer".to_string())));
+        assert!(!result.transactional_methods.contains_key(&("Svc".to_string(), "readOnly".to_string())));
     }
 
     #[test]
@@ -3812,8 +3842,34 @@ class Svc {
     fn b() -> Nothing {}
 }
 "#);
-        assert!(result.transactional_methods.contains(&("Svc".to_string(), "a".to_string())));
-        assert!(result.transactional_methods.contains(&("Svc".to_string(), "b".to_string())));
+        assert!(result.transactional_methods.contains_key(&("Svc".to_string(), "a".to_string())));
+        assert!(result.transactional_methods.contains_key(&("Svc".to_string(), "b".to_string())));
+    }
+
+    #[test]
+    fn test_process_transactional_propagation_modes_and_method_override() {
+        let result = proc(r#"
+@Transactional("NESTED")
+class Svc {
+    fn a() -> Nothing {}
+    @Transactional("REQUIRES_NEW")
+    fn b() -> Nothing {}
+    @Transactional
+    fn c() -> Nothing {}
+}
+"#);
+        let mode = |m: &str| result.transactional_methods[&("Svc".to_string(), m.to_string())];
+        assert_eq!(mode("a"), 1);
+        assert_eq!(mode("b"), 2);
+        assert_eq!(mode("c"), 0);
+    }
+
+    #[test]
+    fn test_validate_transactional_rejects_unknown_propagation() {
+        let errors = valid("class Svc { @Transactional(\"SOMETIMES\")\n fn a() -> Nothing {} }");
+        assert!(errors.iter().any(|e| e.message.contains("propagation")), "{errors:?}");
+        let errors = valid("class Svc { @Transactional(\"NESTED\")\n fn a() -> Nothing {} }");
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]

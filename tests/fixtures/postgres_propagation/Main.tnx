@@ -1,0 +1,26 @@
+import tinox.core.db
+import Flows
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const f = new Flows()
+        f.outerCatchesNested()
+        try {
+            f.outerCatchesRequired()
+            println("outerCatchesRequired should have thrown")
+        } catch (e: String) {
+            println("refused: " + e)
+        }
+        try {
+            f.outerFailsAfterIndependent()
+        } catch (e: String) {
+            println("outer: " + e)
+        }
+        f.independentFailsOuterContinues()
+        println("independent sees outer: " + f.outerThenIndependentCount().toString())
+        f.nestedStandalone()
+        return 0
+    }
+}

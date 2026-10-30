@@ -174,7 +174,7 @@ pub struct AnnotationInfo {
     pub inline_meths: HashSet<(String, String)>,
     /// (class, method) pairs wrapped in a DB transaction (issue #191) --
     /// see gen_transactional_wrapper.
-    pub transactional_methods: HashSet<(String, String)>,
+    pub transactional_methods: HashMap<(String, String), i64>,
     pub routes: Vec<RouteEntry>,
     pub di_components: Vec<DiComponentInfo>,
     pub log_classes: HashSet<String>,
@@ -530,7 +530,7 @@ pub struct CodeGen {
     /// Annotation processing: (class_name, method_name) pairs wrapped in a
     /// DB transaction, either directly @Transactional or via a class-level
     /// @Transactional (issue #191). See gen_transactional_wrapper.
-    transactional_methods: HashSet<(String, String)>,
+    transactional_methods: HashMap<(String, String), i64>,
     /// REST route entries collected from annotation processing
     route_entries: Vec<RouteEntry>,
     /// DI component info from annotation processing
@@ -747,7 +747,7 @@ impl CodeGen {
             variant_owner: HashMap::new(),
             inline_functions: HashSet::new(),
             inline_methods: HashSet::new(),
-            transactional_methods: HashSet::new(),
+            transactional_methods: HashMap::new(),
             route_entries: Vec::new(),
             di_components: Vec::new(),
             log_classes: HashSet::new(),
@@ -2040,9 +2040,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_migrate_run(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_acquire_stmt_conn()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_db_release_stmt_conn(i8*)").unwrap();
-        writeln!(&mut self.ir, "declare i8* @tinox_db_tx_begin()").unwrap();
-        writeln!(&mut self.ir, "declare void @tinox_db_tx_commit()").unwrap();
-        writeln!(&mut self.ir, "declare void @tinox_db_tx_rollback()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_db_tx_enter(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_db_tx_leave(i64, i1)").unwrap();
         writeln!(&mut self.ir, "declare i1 @tinox_db_tx_active()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_exec(i8*, i8*, i8**, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_db_nrows(i8*)").unwrap();
@@ -6412,8 +6411,8 @@ tr_done_{idx}:"#).unwrap();
             ctx.timed_metric = Some((label.clone(), start_reg));
         }
 
-        if self.transactional_methods.contains(&(class_name.to_string(), method.name.clone())) {
-            self.gen_transactional_wrapper(method, &mut ctx)?;
+        if let Some(mode) = self.transactional_methods.get(&(class_name.to_string(), method.name.clone())).copied() {
+            self.gen_transactional_wrapper(method, mode, &mut ctx)?;
         } else {
             self.gen_stmt_body(&method.body, &mut ctx)?;
         }
@@ -15493,17 +15492,28 @@ tr_done_{idx}:"#).unwrap();
     /// method's body, where ctx.transactional_commit is None. See the
     /// field's own doc comment on GenCtx for why this is needed at all.
     fn emit_transactional_commit_before_return(&mut self, ctx: &GenCtx) {
-        let Some(owned_slot) = ctx.transactional_commit.clone() else {
+        let Some((token_slot, catch_bb, error_var)) = ctx.transactional_commit.clone() else {
             return;
         };
-        let owned = self.temp();
-        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned, owned_slot).unwrap();
-        let commit_bb = self.new_bb("tx_early_commit");
+        let token = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", token, token_slot).unwrap();
+        let ok = self.temp();
+        writeln!(&mut self.ir, "{} = call i64 @tinox_db_tx_leave(i64 {}, i1 true)", ok, token).unwrap();
+        // Left: the catch path must not leave a second time.
+        writeln!(&mut self.ir, "store i64 -1, i64* {}", token_slot).unwrap();
+        let failed = self.temp();
+        writeln!(&mut self.ir, "{} = icmp eq i64 {}, 0", failed, ok).unwrap();
+        let fail_bb = self.new_bb("tx_early_refused");
         let cont_bb = self.new_bb("tx_early_commit_cont");
-        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned, commit_bb, cont_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", commit_bb).unwrap();
-        writeln!(&mut self.ir, "call void @tinox_db_tx_commit()").unwrap();
-        writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", failed, fail_bb, cont_bb).unwrap();
+        // The transaction was rolled back although the body returned normally (rollback-only):
+        // surface the error instead of returning a value whose writes are gone.
+        writeln!(&mut self.ir, "{}:", fail_bb).unwrap();
+        let e = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", e).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* {}", e, error_var).unwrap();
+        writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
         writeln!(&mut self.ir, "{}:", cont_bb).unwrap();
     }
 
@@ -15528,22 +15538,14 @@ tr_done_{idx}:"#).unwrap();
     /// tinox_db_tx_commit/_rollback (which also releases the pooled
     /// connection) is gated on ownership, since only the outermost owner
     /// may safely do that.
-    fn gen_transactional_wrapper(&mut self, method: &Method, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
-        let already_active = self.temp();
-        writeln!(&mut self.ir, "{} = call i1 @tinox_db_tx_active()", already_active).unwrap();
-        let owned_slot = self.temp();
-        writeln!(&mut self.ir, "{} = alloca i1", owned_slot).unwrap();
-        let owned_val = self.temp();
-        writeln!(&mut self.ir, "{} = xor i1 {}, true", owned_val, already_active).unwrap();
-        writeln!(&mut self.ir, "store i1 {}, i1* {}", owned_val, owned_slot).unwrap();
-
-        let begin_bb = self.new_bb("tx_begin");
-        let body_bb = self.new_bb("tx_body");
-        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_val, begin_bb, body_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", begin_bb).unwrap();
-        writeln!(&mut self.ir, "call i8* @tinox_db_tx_begin()").unwrap();
-        writeln!(&mut self.ir, "br label %{}", body_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+    fn gen_transactional_wrapper(&mut self, method: &Method, mode: i64, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
+        // The token says what this call did (joined / began / savepoint / independent
+        // transaction); tinox_db_tx_leave undoes exactly that (issue #532).
+        let token_slot = self.temp();
+        writeln!(&mut self.ir, "{} = alloca i64", token_slot).unwrap();
+        let token = self.temp();
+        writeln!(&mut self.ir, "{} = call i64 @tinox_db_tx_enter(i64 {})", token, mode).unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* {}", token, token_slot).unwrap();
 
         let error_var = format!("%__tx_error_{}__", self.temp_count);
         self.temp_count += 1;
@@ -15556,7 +15558,7 @@ tr_done_{idx}:"#).unwrap();
         let old_error_catch = ctx.error_catch.take();
         let try_defer_depth = ctx.defer_stack.len();
         ctx.error_catch = Some((catch_bb.clone(), error_var.clone(), try_defer_depth));
-        let old_transactional_commit = ctx.transactional_commit.replace(owned_slot.clone());
+        let old_transactional_commit = ctx.transactional_commit.replace((token_slot.clone(), catch_bb.clone(), error_var.clone()));
 
         self.gen_stmt_body(&method.body, ctx)?;
         if !self.last_is_terminator() {
@@ -15565,34 +15567,31 @@ tr_done_{idx}:"#).unwrap();
         ctx.error_catch = old_error_catch;
         ctx.transactional_commit = old_transactional_commit;
 
-        // Normal completion: commit (and release the pooled connection) if
-        // this call owns the transaction, then fall through to gen_class_method's
-        // own implicit-return handling.
-        let commit_bb = self.new_bb("tx_commit");
-        writeln!(&mut self.ir, "br label %{}", commit_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", commit_bb).unwrap();
-        let owned_at_commit = self.temp();
-        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned_at_commit, owned_slot).unwrap();
-        let do_commit_bb = self.new_bb("tx_do_commit");
-        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_at_commit, do_commit_bb, end_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", do_commit_bb).unwrap();
-        writeln!(&mut self.ir, "call void @tinox_db_tx_commit()").unwrap();
-        writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
+        // Normal completion: leave successfully. A refused commit (rollback-only) throws.
+        let t_ok = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", t_ok, token_slot).unwrap();
+        let ok = self.temp();
+        writeln!(&mut self.ir, "{} = call i64 @tinox_db_tx_leave(i64 {}, i1 true)", ok, t_ok).unwrap();
+        writeln!(&mut self.ir, "store i64 -1, i64* {}", token_slot).unwrap();
+        let refused = self.temp();
+        writeln!(&mut self.ir, "{} = icmp eq i64 {}, 0", refused, ok).unwrap();
+        let refused_bb = self.new_bb("tx_refused");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", refused, refused_bb, end_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", refused_bb).unwrap();
+        let refused_err = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", refused_err).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* {}", refused_err, error_var).unwrap();
+        writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
 
-        // Error path: rollback (and release) if we own the transaction, then
-        // ALWAYS re-throw -- @Transactional never swallows an error, it only
-        // reacts to one, exactly like gen_try_stmt's catches.is_empty() path.
+        // Error path: leave with failure (rollback / rollback to savepoint / mark the shared
+        // transaction rollback-only), then ALWAYS re-throw -- @Transactional never swallows an
+        // error. A token already left (-1) makes the call a no-op.
         writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
-        let owned_at_catch = self.temp();
-        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned_at_catch, owned_slot).unwrap();
-        let do_rollback_bb = self.new_bb("tx_do_rollback");
-        let after_rollback_bb = self.new_bb("tx_after_rollback");
-        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_at_catch, do_rollback_bb, after_rollback_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", do_rollback_bb).unwrap();
-        writeln!(&mut self.ir, "call void @tinox_db_tx_rollback()").unwrap();
-        writeln!(&mut self.ir, "br label %{}", after_rollback_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", after_rollback_bb).unwrap();
-
+        let t_err = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", t_err, token_slot).unwrap();
+        writeln!(&mut self.ir, "call i64 @tinox_db_tx_leave(i64 {}, i1 false)", t_err).unwrap();
+        writeln!(&mut self.ir, "store i64 -1, i64* {}", token_slot).unwrap();
         let ev = self.temp();
         writeln!(&mut self.ir, "{} = load i64, i64* {}", ev, error_var).unwrap();
         if let Some((outer_catch, outer_error_var, outer_depth)) = ctx.error_catch.clone() {
@@ -17425,7 +17424,8 @@ pub struct GenCtx {
     /// commit-if-owned branch gen_transactional_wrapper's own fall-through
     /// path emits, right before every `ret` it produces, regardless of
     /// nesting depth inside the method body.
-    transactional_commit: Option<String>,
+    /// (token slot, catch label, error slot) of the enclosing @Transactional wrapper.
+    transactional_commit: Option<(String, String, String)>,
     /// Stack of enclosing `try { ... } finally { ... }` blocks a `return`
     /// statement (StmtKind::Return) must route through before actually
     /// returning (issue #193) — innermost last, mirroring `error_catch`'s

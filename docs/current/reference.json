@@ -639,8 +639,8 @@
       ]
     },
     {
-      "description": "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Postgres only in v1 (issue #191) -- a hard compile error on any other [database] driver",
-      "max_args": 0,
+      "description": "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Optional propagation: \"REQUIRED\" (default, joins an open transaction), \"NESTED\" (savepoint inside an open transaction), \"REQUIRES_NEW\" (independent transaction on a second connection). Postgres only (issue #191, #532) -- a hard compile error on any other [database] driver",
+      "max_args": 1,
       "min_args": 0,
       "name": "Transactional",
       "targets": [
