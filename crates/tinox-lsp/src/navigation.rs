@@ -1106,3 +1106,104 @@ mod tests {
         assert_eq!(ret.range.start.character, 19);
     }
 }
+
+/// Replace the AST's zero-width symbol ranges with real extents (#577): `range`
+/// covers the declaration from its keyword through the closing brace (or the
+/// end of its line when it has no body), `selectionRange` the identifier.
+/// Symbols the token scan cannot match keep their original ranges.
+pub fn refine_document_symbols(syms: &mut [tower_lsp::lsp_types::DocumentSymbol], uri: &Url, text: &str) {
+    let Some(idx) = FileIndex::build(uri.clone(), text.to_string()) else { return };
+    let mut used = HashSet::new();
+    refine_level(syms, None, &idx, &mut used);
+}
+
+fn kind_of_symbol(kind: SymbolKind) -> Option<DeclType> {
+    if kind == SymbolKind::CLASS || kind == SymbolKind::ENUM || kind == SymbolKind::INTERFACE || kind == SymbolKind::STRUCT {
+        Some(DeclType::Type)
+    } else if kind == SymbolKind::FUNCTION {
+        Some(DeclType::Function)
+    } else if kind == SymbolKind::METHOD {
+        Some(DeclType::Method)
+    } else if kind == SymbolKind::FIELD {
+        Some(DeclType::Field)
+    } else {
+        None
+    }
+}
+
+fn refine_level(
+    syms: &mut [tower_lsp::lsp_types::DocumentSymbol],
+    parent: Option<&str>,
+    idx: &FileIndex,
+    used: &mut HashSet<usize>,
+) {
+    for sym in syms.iter_mut() {
+        let owner = parent.map(String::from);
+        if let Some(kind) = kind_of_symbol(sym.kind) {
+            let found = idx.decls.iter().enumerate().find(|(i, d)| {
+                !used.contains(i) && d.name == sym.name && d.kind == kind && d.container == owner
+            });
+            if let Some((i, d)) = found {
+                used.insert(i);
+                let name_tok = d.tok;
+                let first = name_tok.saturating_sub(1);
+                let last = match kind {
+                    DeclType::Type => idx
+                        .class_ranges
+                        .iter()
+                        .find(|(n, o, _)| *n == sym.name && *o > name_tok)
+                        .map(|(_, _, c)| *c)
+                        .unwrap_or(name_tok),
+                    DeclType::Function | DeclType::Method => idx
+                        .fns
+                        .iter()
+                        .find(|f| f.name_tok == name_tok)
+                        .map(|f| f.end)
+                        .unwrap_or(name_tok),
+                    DeclType::Field => {
+                        let mut e = name_tok;
+                        while e + 1 < idx.toks.len() && !idx.toks[e + 1].nl_before && !idx.toks[e + 1].is(&TokenKind::RBrace) {
+                            e += 1;
+                        }
+                        e
+                    }
+                };
+                sym.selection_range = idx.range(&idx.toks[name_tok]);
+                sym.range = Range { start: idx.position(idx.toks[first].start), end: idx.position(idx.toks[last].end) };
+            }
+        } else if sym.kind == SymbolKind::ENUM_MEMBER {
+            if let Some(tok) = parent.and_then(|p| {
+                let (_, o, c) = idx.class_ranges.iter().find(|(n, _, _)| n == p)?;
+                (*o + 1..*c).find(|&t| idx.toks[t].ident() == Some(sym.name.as_str()))
+            }) {
+                sym.selection_range = idx.range(&idx.toks[tok]);
+                sym.range = sym.selection_range;
+            }
+        }
+        let name = sym.name.clone();
+        if let Some(children) = sym.children.as_mut() {
+            refine_level(children, Some(&name), idx, used);
+        }
+    }
+}
+
+#[cfg(test)]
+mod symbol_range_tests {
+    use super::*;
+
+    #[test]
+    fn symbols_get_full_extents_and_identifier_selections() {
+        let text = "class Caller\n{\n    fnc run() -> Int64\n    {\n        return 1\n    }\n}\n";
+        let tokens = tinox_lexer::Lexer::new(text).tokenize().unwrap();
+        let ast = tinox_parser::Parser::new(tokens).parse().unwrap();
+        let mut syms = crate::analysis::document_symbols(&ast);
+        let uri = Url::parse("file:///tmp/Caller.tnx").unwrap();
+        refine_document_symbols(&mut syms, &uri, text);
+        let class = &syms[0];
+        assert_eq!((class.range.start.line, class.range.end.line, class.range.end.character), (0, 6, 1));
+        assert_eq!((class.selection_range.start.character, class.selection_range.end.character), (6, 12));
+        let run = &class.children.as_ref().unwrap()[0];
+        assert_eq!((run.range.start.line, run.range.end.line), (2, 5));
+        assert_eq!((run.selection_range.start.line, run.selection_range.start.character, run.selection_range.end.character), (2, 8, 11));
+    }
+}

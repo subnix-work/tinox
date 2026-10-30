@@ -1147,7 +1147,11 @@ impl LanguageServer for Backend {
         let Some(ast) = self.asts.get(uri) else {
             return Ok(None);
         };
-        Ok(Some(DocumentSymbolResponse::Nested(document_symbols(&ast))))
+        let mut symbols = document_symbols(&ast);
+        if let Some(text) = self.docs.get(uri) {
+            navigation::refine_document_symbols(&mut symbols, uri, &text);
+        }
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 }
 
