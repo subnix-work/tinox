@@ -2455,6 +2455,11 @@ fn gen_docs(args: &[String]) {
     let out_override: Option<&String> = args.iter()
         .position(|a| a == "--out")
         .and_then(|i| args.get(i + 1));
+    // `--deps-base <dir-or-url>`: where dependency documentation lives, as
+    // `<base>/<artifactId>/<version-with-dashes>/docs.html` (#586).
+    let deps_base: Option<&String> = args.iter()
+        .position(|a| a == "--deps-base")
+        .and_then(|i| args.get(i + 1));
 
     // Collect source files from project or explicit arg, and remember the
     // project root along the way — description/dependencies/examples below
@@ -2534,12 +2539,23 @@ fn gen_docs(args: &[String]) {
         })
         .unwrap_or_default();
 
-    let html = render_docs_html(&project_name, description.as_deref(), &dependencies, &examples, &doc_items);
-
     let out_path = match out_override {
         Some(p) => PathBuf::from(p),
         None => PathBuf::from("docs").join("index.html"),
     };
+    // A dependency link is only emitted when it resolves: either the user named
+    // the documentation base explicitly, or the published-site layout
+    // (`../../<artifact>/<version>/docs.html`) really exists next to the output.
+    let out_dir = out_path.parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let dep_link = |d: &pm::Dependency| -> Option<String> {
+        let tail = format!("{}/{}/docs.html", d.artifact_id, version_path_slug(&d.version));
+        match deps_base {
+            Some(base) => Some(format!("{}/{}", base.trim_end_matches('/'), tail)),
+            None => out_dir.join("../..").join(&tail).is_file().then(|| format!("../../{tail}")),
+        }
+    };
+    let html = render_docs_html(&project_name, description.as_deref(), &dependencies, &examples, &doc_items, &dep_link);
+
     if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         if let Err(e) = fs::create_dir_all(parent) {
             eprintln!("error: cannot create {}: {}", parent.display(), e);
@@ -2820,6 +2836,7 @@ fn render_docs_html(
     dependencies: &[pm::Dependency],
     examples: &[(String, String)],
     items: &[DocItem],
+    dep_link: &dyn Fn(&pm::Dependency) -> Option<String>,
 ) -> String {
     let mut nav = String::new();
     let mut body = String::new();
@@ -2838,13 +2855,14 @@ fn render_docs_html(
     if !dependencies.is_empty() {
         nav.push_str("<li class=\"nav-section\">Dependencies</li><li><a href=\"#dependencies\">Dependencies</a></li>");
         let rows: String = dependencies.iter().map(|d| {
-            // Sibling docs.html, one directory per artifactId THEN version
-            // — matches how these pages are actually laid out
-            // (docs/tinox-core/<mod>/<version-with-dashes>/docs.html).
-            let version_slug = version_path_slug(&d.version);
+            // Unavailable documentation is labelled, not linked to a path that does not exist.
+            let name = match dep_link(d) {
+                Some(href) => format!("<a href=\"{}\"><code>{}</code></a>", html_escape(&href), html_escape(&d.artifact_id)),
+                None => format!("<code>{}</code> <span title=\"documentation not available locally; pass --deps-base to link it\">(no local docs)</span>", html_escape(&d.artifact_id)),
+            };
             format!(
-                "<tr><td class=\"member-name\"><a href=\"../../{}/{}/docs.html\"><code>{}</code></a></td><td class=\"member-type\"><code>{}</code></td><td>{}</td></tr>",
-                html_escape(&d.artifact_id), version_slug, html_escape(&d.artifact_id), html_escape(&d.version), html_escape(&d.group)
+                "<tr><td class=\"member-name\">{}</td><td class=\"member-type\"><code>{}</code></td><td>{}</td></tr>",
+                name, html_escape(&d.version), html_escape(&d.group)
             )
         }).collect();
         body.push_str(&format!(
