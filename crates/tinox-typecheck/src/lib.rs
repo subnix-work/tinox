@@ -3143,7 +3143,7 @@ impl TypeChecker {
                 if obj_ty == ValueType::Any {
                     // ORM `filter(x => ...)`: type the lambda param as the
                     // entity so field comparisons (e.g. enum vs String) are checked.
-                    let orm_entity = if method == "filter" {
+                    let orm_entity = if matches!(method.as_str(), "filter" | "orderBy" | "orderByDesc") {
                         self.orm_query_entity(obj).map(|e| e.to_string())
                     } else {
                         None
@@ -3156,10 +3156,40 @@ impl TypeChecker {
                             );
                         }
                     }
-                    for arg in args { self.infer_type(arg); }
-                    if method == "first" && args.is_empty() {
-                        if let Some(entity) = self.orm_query_entity(obj) {
-                            return ValueType::Named(entity.to_string(), vec![]);
+                    let arg_types: Vec<ValueType> = args.iter().map(|arg| self.infer_type(arg)).collect();
+                    // Typed contract of `DB::of(Entity)` chains (the stub class only knows `Any`; the
+                    // codegen interceptor lowers them by shape, so these types are checks and tooling data).
+                    if let Some(entity) = self.orm_query_entity(obj).map(|e| e.to_string()) {
+                        let entity_ty = ValueType::Named(entity.clone(), vec![]);
+                        let mismatch = |found: &ValueType, expected: &ValueType| {
+                            *found != ValueType::Any && found != expected
+                        };
+                        match (method.as_str(), arg_types.first()) {
+                            ("first", None) => return entity_ty,
+                            ("list", None) => return ValueType::Array(Box::new(entity_ty)),
+                            ("save", Some(found)) => {
+                                if mismatch(found, &entity_ty) {
+                                    self.errors.push(Error::new(expr.span, format!(
+                                        "DB::of({entity}).save expects {entity}, found {found}")));
+                                }
+                                return entity_ty;
+                            }
+                            ("delete", Some(found)) if mismatch(found, &entity_ty) => {
+                                self.errors.push(Error::new(expr.span, format!(
+                                    "DB::of({entity}).delete expects {entity}, found {found}")));
+                            }
+                            ("saveAll", Some(found)) => {
+                                let expected = ValueType::Array(Box::new(entity_ty));
+                                if mismatch(found, &expected) {
+                                    self.errors.push(Error::new(expr.span, format!(
+                                        "DB::of({entity}).saveAll expects List<{entity}>, found {found}")));
+                                }
+                            }
+                            ("limit" | "offset", Some(found)) if !found.is_integer() && *found != ValueType::Any => {
+                                self.errors.push(Error::new(expr.span, format!(
+                                    "DB::of({entity}).{method} expects an Int, found {found}")));
+                            }
+                            _ => {}
                         }
                     }
                     return ValueType::Any;
@@ -5205,6 +5235,32 @@ mod tests {
     fn ok(code: &str) {
         let result = typecheck_code(code);
         assert!(result.is_ok(), "expected ok but got errors: {:?}", result.unwrap_err().errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn orm_chain_terminals_have_a_typed_contract() {
+        let base = r#"
+            class DB { fnc of(cls: Any) -> Any { return 0 } }
+            @Entity class Account { var id: Int64
+            var name: String
+            var balance: Int64 }
+            class Other { var id: Int64 }
+            fn run(other: Other, list: List<Account>) -> Nothing {
+                BODY
+            }
+        "#;
+        let with = |body: &str| base.replace("BODY", body);
+        // elements of list() are Accounts: fields are checked, assignment to List<Account> is fine
+        ok(&with("const rows: List<Account> = DB::of(Account).orderBy(a => a.name).limit(5).list()\n for r in rows { println(r.balance) }"));
+        err_contains(&with("for r in DB::of(Account).list() { println(r.missing) }"), "missing");
+        err_contains(&with("const rows: List<String> = DB::of(Account).list()"), "List<Account>");
+        // save/delete/saveAll take the entity, limit/offset take integers, orderBy sees the entity's fields
+        ok(&with("DB::of(Account).save(DB::of(Account).first())\n DB::of(Account).saveAll(list)"));
+        err_contains(&with("DB::of(Account).save(other)"), "save expects Account");
+        err_contains(&with("DB::of(Account).delete(other)"), "delete expects Account");
+        err_contains(&with("DB::of(Account).saveAll(other)"), "saveAll expects List<Account>");
+        err_contains(&with("DB::of(Account).orderBy(a => a.nope).list()"), "nope");
+        err_contains(&with("DB::of(Account).limit(\"3\").list()"), "expects an Int");
     }
 
     #[test]

@@ -104,8 +104,34 @@ fn unsupported_queries_fail_at_compile_time() {
     }
     broken("unknown-field", "println(DB::of(Item).filter(i => i.nope == 1).count().toString())", "has no field 'nope'");
     broken("unsupported-expr", "println(DB::of(Item).filter(i => i.name.len() > 2).count().toString())", "cannot be translated to SQL");
-    broken("order-unknown", "println(DB::of(Item).orderBy(i => i.nope).count().toString())", "unknown field 'nope'");
+    broken("order-unknown", "println(DB::of(Item).orderBy(i => i.nope).count().toString())", "has no field 'nope'");
+    // The typed contract of a chain: wrong entity, wrong list type, non-integer limit.
+    broken("save-wrong-type", "println(DB::of(Item).save(\"nope\").id.toString())", "DB::of(Item).save expects Item, found String");
+    broken("list-typed", "const names: List<String> = DB::of(Item).list()", "found List<Item>");
+    broken("limit-type", "println(DB::of(Item).orderBy(i => i.name).limit(\"3\").list().len().toString())", "expects an Int");
     broken("limit-var", "const n = 3\n        println(DB::of(Item).orderBy(i => i.name).limit(n).list().len().toString())", "limit(...) must be an integer literal");
     broken("limit-big", "println(DB::of(Item).orderBy(i => i.name).limit(100000).list().len().toString())", "page size");
     broken("offset-alone", "println(DB::of(Item).orderBy(i => i.name).offset(2).list().len().toString())", "needs limit");
+}
+
+#[test]
+fn describe_lists_the_typed_query_contract_of_an_entity() {
+    if !have_sqlite3() {
+        return;
+    }
+    let p = Project::new("describe");
+    let out = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["describe", "Item", "--file", "src/Main.tnx", "--json"]).current_dir(&p.dir).output().unwrap();
+    let json = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "{json}{}", String::from_utf8_lossy(&out.stderr));
+    for expected in [
+        "DB::of(Item).list() -> List<Item>",
+        "DB::of(Item).first() -> Item",
+        "DB::of(Item).count() -> Int64",
+        "DB::of(Item).save(entity: Item) -> Item",
+        "DB::of(Item).saveAll(entities: List<Item>) -> Nothing",
+        "DB::of(Item).filter(predicate: fnc(Item) -> Bool) -> query",
+        "\"kind\":\"orm-query\"",
+    ] {
+        assert!(json.contains(expected), "missing {expected:?} in\n{json}");
+    }
 }

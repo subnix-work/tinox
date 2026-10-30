@@ -17,3 +17,24 @@
   empty result: it aborts with the driver's message.
 
 Verified with an independent `sqlite3` in `crates/tinox/tests/orm_query_contract.rs`.
+
+## Typed contract (type checker, `tinox describe`, editors)
+
+The stub class `EntityQuery` can only say `Any`, because the compiler lowers `DB::of(Entity)` chains by shape. The type
+checker therefore enforces the real signatures for an `@Entity` class `T`:
+
+| Call | Type / check |
+|---|---|
+| `filter(x => ...)`, `orderBy(x => ...)`, `orderByDesc(x => ...)` | the lambda parameter is a `T`: fields and their types are checked, completion works |
+| `limit(n)`, `offset(n)` | `n` must be an integer (and a literal, see above) |
+| `list()` | `List<T>` -- assigning it to `List<Other>` is a compile error; loop variables are typed `T` |
+| `first()` | `T` |
+| `count()` | `Int64` |
+| `save(e)` | `e` must be a `T` (`save expects T, found X`), returns `T` |
+| `delete(e)` | `e` must be a `T` |
+| `saveAll(es)` | `es` must be a `List<T>` |
+
+`tinox describe <Entity>` (text or `--json`) lists these as generated `orm-query` members with their documentation
+(`DB::of(Item).list() -> List<Item>`, ...), so tooling and AI clients get the accurate contract instead of `Any`.
+Chain intermediates (the value between `filter(...)` and `list()`) are still `Any` internally; the contract above applies at
+the terminals.

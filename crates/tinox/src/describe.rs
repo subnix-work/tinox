@@ -256,6 +256,47 @@ fn lookup<'a>(graph: &'a Graph, query: &str) -> Vec<&'a Symbol> {
         .collect()
 }
 
+/// For an `@Entity` class, lists the typed query contract of `DB::of(Entity)` as generated members. The stub
+/// class `EntityQuery` can only say `Any`; the compiler lowers these chains by shape and the type checker
+/// enforces the signatures below (issue #533), so this is what tooling and AI clients should be told.
+fn add_entity_query_contract(symbol: &mut Symbol) {
+    if symbol.kind != "class" || !symbol.annotations.iter().any(|a| a == "@Entity" || a == "@Table") {
+        return;
+    }
+    let t = symbol.name.clone();
+    let param = |name: &str, ty: String| api::Parameter { name: name.into(), type_name: ty, annotations: vec![] };
+    let mut add = |name: &str, params: Vec<api::Parameter>, ret: &str, note: &str| {
+        let list = params.iter().map(|p| format!("{}: {}", p.name, p.type_name)).collect::<Vec<_>>().join(", ");
+        symbol.members.push(api::Member {
+            name: format!("DB::of({t}).{name}"),
+            kind: "orm-query".into(),
+            signature: format!("DB::of({t}).{name}({list}) -> {ret}"),
+            visibility: "public".into(),
+            is_static: false,
+            type_parameters: vec![],
+            parameters: params,
+            return_type: Some(ret.into()),
+            type_name: None,
+            documentation: Some(note.into()),
+            documentation_truncated: false,
+            annotations: vec![],
+            range: None,
+            generated: true,
+        });
+    };
+    add("filter", vec![param("predicate", format!("fnc({t}) -> Bool"))], "query", "== != < <= > >= on entity fields, && || !, startsWith/endsWith/contains on String fields; anything else is a compile error");
+    add("orderBy", vec![param("field", format!("fnc({t}) -> field"))], "query", "ascending; the primary key is always appended as tiebreaker so pages are deterministic");
+    add("orderByDesc", vec![param("field", format!("fnc({t}) -> field"))], "query", "descending, same tiebreaker rule");
+    add("limit", vec![param("n", "Int literal 1..=10000".into())], "query", "required with offset; the SQL text is fixed at compile time");
+    add("offset", vec![param("n", "Int literal >= 0".into())], "query", "needs limit");
+    add("list", vec![], &format!("List<{t}>"), "all matching rows in the deterministic order; an empty result is an empty list");
+    add("first", vec![], &t, "the first row; on no row the default entity (check count() when absence matters)");
+    add("count", vec![], "Int64", "number of matching rows; the explicit absence check");
+    add("save", vec![param("entity", t.clone())], &t, "INSERT when the generated id is 0 (or, with a composite key, the row does not exist), otherwise UPDATE");
+    add("delete", vec![param("entity", t.clone())], "Nothing", "matches every key component");
+    add("saveAll", vec![param("entities", format!("List<{t}>"))], "Nothing", "save for each element");
+}
+
 fn describe(options: &Options) -> Result<Description, DescribeError> {
     let annotation_name = options.query.strip_prefix('@');
     let query = annotation_name.unwrap_or(&options.query);
@@ -361,6 +402,7 @@ fn describe(options: &Options) -> Result<Description, DescribeError> {
         return Err(failure);
     }
     let mut symbol = candidates[0].clone();
+    add_entity_query_contract(&mut symbol);
     let mut annotation: Option<AnnotationDescription> = if annotation_name.is_some() {
         Some(
             resolved
