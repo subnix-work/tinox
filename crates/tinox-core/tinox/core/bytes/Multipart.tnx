@@ -1,0 +1,217 @@
+module tinox.core.bytes
+
+namespace tinox.core.bytes
+{
+    extern fn tinoxBufFind(h: Int64, needle: Int64, from: Int64) -> Int64
+
+    /**
+     * multipart/form-data parsing (RFC 7578) over a byte-exact body, e.g.
+     *
+     *   const r = Multipart::parse(ctx.request.getHeader("Content-Type"),
+     *                              Bytes::fromRequestBody(ctx.request.body),
+     *                              MultipartLimits::defaults())
+     *   if (!r.ok) { ctx.response.status = 400; ...r.error... }
+     *
+     * Binary values (NUL included) survive. A malformed, truncated or over-budget body
+     * returns ok == false with a reason; it never returns partial parts. The parser
+     * works in memory on the already bounded request body and creates no temporary
+     * files, so there is nothing to clean up on rejection, exception or cancellation.
+     */
+    class Multipart
+    {
+        fnc fail(message: String) -> MultipartResult
+        {
+            return MultipartResult { ok: false, error: message, parts: [] }
+        }
+
+        /** The boundary parameter of a Content-Type header, "" if absent or invalid */
+        fnc boundaryOf(contentType: String) -> String
+        {
+            if (!contentType.toLowerCase().startsWith("multipart/form-data"))
+            {
+                return ""
+            }
+            const params: List<String> = contentType.split(";")
+            var i: Int64 = 1
+            while (i < params.len())
+            {
+                const p: String = params[i].trim()
+                if (p.toLowerCase().startsWith("boundary="))
+                {
+                    var b: String = p.substring(9, p.len())
+                    if (b.len() >= 2 && b.startsWith("\"") && b.endsWith("\""))
+                    {
+                        b = b.substring(1, b.len() - 1)
+                    }
+                    if (b.len() == 0 || b.len() > 70)
+                    {
+                        return ""
+                    }
+                    return b
+                }
+                i = i + 1
+            }
+            return ""
+        }
+
+        /** Value of name="..." inside a Content-Disposition header, "" if absent; \" escapes are honoured */
+        fnc paramOf(header: String, key: String) -> String
+        {
+            const marker: String = key + "=\""
+            var start: Int64 = -1
+            var i: Int64 = 0
+            while (i + marker.len() <= header.len())
+            {
+                if (header.substring(i, i + marker.len()).toLowerCase() == marker && (i == 0 || header.substring(i - 1, i) == " " || header.substring(i - 1, i) == ";"))
+                {
+                    start = i + marker.len()
+                    i = header.len()
+                }
+                i = i + 1
+            }
+            if (start < 0)
+            {
+                return ""
+            }
+            var out: String = ""
+            var j: Int64 = start
+            while (j < header.len())
+            {
+                const c: String = header.substring(j, j + 1)
+                if (c == "\\" && j + 1 < header.len())
+                {
+                    out = out + header.substring(j + 1, j + 2)
+                    j = j + 2
+                }
+                else if (c == "\"")
+                {
+                    return out
+                }
+                else
+                {
+                    out = out + c
+                    j = j + 1
+                }
+            }
+            return ""
+        }
+
+        fnc parse(contentType: String, body: Bytes, limits: MultipartLimits) -> MultipartResult
+        {
+            const boundary: String = Multipart::boundaryOf(contentType)
+            if (boundary == "")
+            {
+                return Multipart::fail("not multipart/form-data or missing/invalid boundary")
+            }
+            const delimiter: Bytes = Bytes::fromText("--" + boundary)
+            const crlfDelimiter: Bytes = Bytes::fromText("\r\n--" + boundary)
+            const crlf2: Bytes = Bytes::fromText("\r\n\r\n")
+            const total: Int64 = body.len()
+            var parts: List<MultipartPart> = []
+            // The first delimiter may follow a preamble; everything before it is ignored.
+            var pos: Int64 = tinoxBufFind(body.handle, delimiter.handle, 0)
+            if (pos < 0)
+            {
+                return Multipart::fail("no opening boundary")
+            }
+            pos = pos + delimiter.len()
+            while (true)
+            {
+                if (pos + 2 > total)
+                {
+                    return Multipart::fail("truncated body: no closing boundary")
+                }
+                const a: Int64 = body.get(pos)
+                const b: Int64 = body.get(pos + 1)
+                if (a == 45 && b == 45)
+                {
+                    return MultipartResult { ok: true, error: "", parts: parts }
+                }
+                if (a != 13 || b != 10)
+                {
+                    return Multipart::fail("malformed boundary line")
+                }
+                pos = pos + 2
+                if (parts.len() >= limits.maxParts)
+                {
+                    return Multipart::fail("too many parts (limit " + limits.maxParts.toString() + ")")
+                }
+                const headerEnd: Int64 = tinoxBufFind(body.handle, crlf2.handle, pos - 2)
+                if (headerEnd < 0)
+                {
+                    return Multipart::fail("truncated body: part headers never end")
+                }
+                // The header block may be empty (CRLF CRLF straight after the boundary line).
+                const headerLen: Int64 = headerEnd + 2 - pos
+                if (headerLen > limits.maxHeaderBytes)
+                {
+                    return Multipart::fail("part headers exceed " + limits.maxHeaderBytes.toString() + " bytes")
+                }
+                var headerBytes: Bytes = Bytes::new(0)
+                if (headerLen > 0)
+                {
+                    headerBytes = body.slice(pos, pos + headerLen)
+                }
+                var h: Int64 = 0
+                while (h < headerBytes.len())
+                {
+                    if (headerBytes.get(h) == 0)
+                    {
+                        return Multipart::fail("NUL byte in part headers")
+                    }
+                    h = h + 1
+                }
+                const dataStart: Int64 = headerEnd + 4
+                const dataEnd: Int64 = tinoxBufFind(body.handle, crlfDelimiter.handle, dataStart - 2)
+                if (dataEnd < 0 || dataEnd + 2 < dataStart)
+                {
+                    return Multipart::fail("truncated body: part never ends")
+                }
+                // An empty value: the CRLF before the next delimiter is the one closing the headers.
+                var data: Bytes = Bytes::new(0)
+                if (dataEnd > dataStart)
+                {
+                    data = body.slice(dataStart, dataEnd)
+                }
+                var disposition: String = ""
+                var partType: String = "text/plain"
+                const lines: List<String> = headerBytes.toText().split("\r\n")
+                var li: Int64 = 0
+                while (li < lines.len())
+                {
+                    const line: String = lines[li]
+                    const lower: String = line.toLowerCase()
+                    if (lower.startsWith("content-disposition:"))
+                    {
+                        disposition = line.substring(20, line.len()).trim()
+                    }
+                    else if (lower.startsWith("content-type:"))
+                    {
+                        partType = line.substring(13, line.len()).trim()
+                    }
+                    li = li + 1
+                }
+                const name: String = Multipart::paramOf(disposition, "name")
+                if (!disposition.toLowerCase().startsWith("form-data") || name == "")
+                {
+                    return Multipart::fail("part without a form-data name")
+                }
+                const filename: String = Multipart::paramOf(disposition, "filename")
+                const isFile: Bool = disposition.toLowerCase().contains("filename=")
+                const size: Int64 = data.len()
+                var cap: Int64 = limits.maxFieldBytes
+                if (isFile)
+                {
+                    cap = limits.maxFileBytes
+                }
+                if (size > cap)
+                {
+                    return Multipart::fail("part '" + name + "' is " + size.toString() + " bytes, limit " + cap.toString())
+                }
+                parts.push(MultipartPart { name: name, filename: filename, isFile: isFile, contentType: partType, data: data })
+                pos = dataEnd + 2 + delimiter.len()
+            }
+            return Multipart::fail("unreachable")
+        }
+    }
+}

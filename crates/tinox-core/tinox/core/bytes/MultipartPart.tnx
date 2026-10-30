@@ -1,0 +1,51 @@
+module tinox.core.bytes
+
+namespace tinox.core.bytes
+{
+    /** One part of a multipart/form-data body; data is byte-exact (NUL included). */
+    class MultipartPart
+    {
+        var name: String
+        /** Client-supplied file name, "" for a plain field. Never trust it as a path: see safeFileName() */
+        var filename: String
+        var isFile: Bool
+        var contentType: String
+        var data: Bytes
+
+        /** The file name reduced to its last path segment with control characters and ".." removed; "" if nothing is left */
+        fn safeFileName() -> String
+        {
+            var name: String = this.filename.replace("\\", "/")
+            const parts: List<String> = name.split("/")
+            name = parts[parts.len() - 1]
+            var out: String = ""
+            var i: Int64 = 0
+            while (i < name.len())
+            {
+                const c: Int64 = name.charCodeAt(i)
+                if (c >= 32 && c != 127)
+                {
+                    out = out + name.substring(i, i + 1)
+                }
+                i = i + 1
+            }
+            if (out == ".." || out == ".")
+            {
+                return ""
+            }
+            return out
+        }
+
+        /** Writes the payload to path (explicit; the parser itself never touches the file system) */
+        fn saveTo(path: String) -> Nothing
+        {
+            this.data.writeFile(path)
+        }
+
+        /** The payload as text; a hard error if it contains NUL, so use data for binary values */
+        fn text() -> String
+        {
+            return this.data.toText()
+        }
+    }
+}

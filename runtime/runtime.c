@@ -3291,6 +3291,19 @@ int64_t tinoxBufSlice(int64_t h, int64_t start, int64_t end) {
     return (int64_t)(intptr_t)r;
 }
 
+// First index >= from where needle occurs in the haystack, or -1. An empty needle is a hard error.
+int64_t tinoxBufFind(int64_t h, int64_t n, int64_t from) {
+    TinoxBuf* hay = tinox_buf_of(h, "find");
+    TinoxBuf* needle = tinox_buf_of(n, "find");
+    if (needle->len == 0 || from < 0) {
+        fprintf(stderr, "runtime error: byte buffer find needs a non-empty needle and a non-negative start\n");
+        exit(1);
+    }
+    if (from > hay->len || needle->len > hay->len - from) return -1;
+    const unsigned char* at = memmem(hay->data + from, (size_t)(hay->len - from), needle->data, (size_t)needle->len);
+    return at ? (int64_t)(at - hay->data) : -1;
+}
+
 int64_t tinoxBufConcat(int64_t a, int64_t c) {
     TinoxBuf* x = tinox_buf_of(a, "concat");
     TinoxBuf* y = tinox_buf_of(c, "concat");

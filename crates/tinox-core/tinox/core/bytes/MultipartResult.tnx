@@ -1,0 +1,43 @@
+module tinox.core.bytes
+
+namespace tinox.core.bytes
+{
+    /** Outcome of Multipart::parse: either parts, or ok == false with a reason */
+    class MultipartResult
+    {
+        var ok: Bool
+        var error: String
+        var parts: List<MultipartPart>
+
+        /** First part with this form name, or none (isFile false, empty data) -- check has() first */
+        fn has(name: String) -> Bool
+        {
+            var i: Int64 = 0
+            while (i < this.parts.len())
+            {
+                if (this.parts[i].name == name)
+                {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+
+        fn get(name: String) -> MultipartPart
+        {
+            var i: Int64 = 0
+            while (i < this.parts.len())
+            {
+                if (this.parts[i].name == name)
+                {
+                    return this.parts[i]
+                }
+                i = i + 1
+            }
+            println("runtime error: multipart has no part named " + name + " (check has() first)")
+            exit(1)
+            return this.parts[0]
+        }
+    }
+}
