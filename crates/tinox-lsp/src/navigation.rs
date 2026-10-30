@@ -747,6 +747,46 @@ pub fn references(files: &[(Url, String)], at: &Url, offset: usize, include_decl
         .collect())
 }
 
+/// Declarations the identifier at `offset` may refer to, across the whole
+/// project (#578). A member reached through `Type::name` / `Type.name` /
+/// `this.name` is narrowed to that type when it declares the member; otherwise
+/// every candidate is returned so the client can offer a chooser instead of
+/// the server guessing.
+pub fn definitions(files: &[(Url, String)], at: &Url, offset: usize, ctx: &Ctx) -> Vec<Location> {
+    let idx = build_all(files);
+    let Ok(target) = resolve(&idx, at, offset) else { return Vec::new() };
+    let (occ, _) = collect(&target, ctx);
+    let mut decls: Vec<&Occurrence> = occ.iter().filter(|o| o.is_decl).collect();
+    if matches!(target.sym, Sym::Member(_)) {
+        let f = &idx[target.file];
+        let qualifier = f.prev(target.tok).filter(|p| p.is(&TokenKind::Dot) || p.is(&TokenKind::ColonColon)).and_then(|_| {
+            let q = f.toks.get(target.tok.checked_sub(2)?)?;
+            if q.kind == TokenKind::Keyword(Keyword::This) {
+                f.innermost_class(target.tok)
+            } else {
+                q.ident().map(String::from)
+            }
+        });
+        if let Some(owner) = qualifier {
+            let narrowed: Vec<&Occurrence> = decls
+                .iter()
+                .copied()
+                .filter(|o| idx[o.file].decls.iter().any(|d| d.tok == o.tok && d.container.as_deref() == Some(owner.as_str())))
+                .collect();
+            if !narrowed.is_empty() {
+                decls = narrowed;
+            }
+        }
+    }
+    decls
+        .into_iter()
+        .map(|o| {
+            let f = &idx[o.file];
+            Location { uri: f.uri.clone(), range: f.range(&f.toks[o.tok]) }
+        })
+        .collect()
+}
+
 pub struct PreparedRename {
     pub range: Range,
     pub placeholder: String,
@@ -958,6 +998,18 @@ mod tests {
 
     fn offset_of(text: &str, needle: &str, nth: usize) -> usize {
         text.match_indices(needle).nth(nth).unwrap().0 + 1
+    }
+
+    #[test]
+    fn definition_crosses_files_and_narrows_by_qualifier() {
+        let widget = "class Widget { fnc readNumber() -> Int64 { return 42 } }\n".to_string();
+        let other = "class Other { fnc readNumber() -> Int64 { return 1 } }\n".to_string();
+        let caller = "class Caller { fnc run() -> Int64 { return Widget::readNumber() } }\n".to_string();
+        let files = vec![(url("Widget.tnx"), widget), (url("Other.tnx"), other), (url("Caller.tnx"), caller.clone())];
+        let found = definitions(&files, &url("Caller.tnx"), offset_of(&caller, "readNumber", 0), &ctx());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].uri, url("Widget.tnx"));
+        assert_eq!(found[0].range.start.character, 19);
     }
 
     fn apply(files: &[(Url, String)], res: &RenameResult) -> HashMap<Url, String> {

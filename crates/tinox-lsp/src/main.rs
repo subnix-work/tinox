@@ -980,8 +980,18 @@ impl LanguageServer for Backend {
         };
 
         let offset = lsp_pos_to_offset(&text, pos);
-        let loc = definition_at(&ast, uri, offset);
-        Ok(loc.map(GotoDefinitionResponse::Scalar))
+        // The checked AST answers locals and same-file declarations precisely;
+        // anything it cannot place is resolved across the project's files.
+        if let Some(loc) = definition_at(&ast, uri, offset) {
+            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+        }
+        let files = self.project_files(uri);
+        let mut found = navigation::definitions(&files, uri, offset as usize, &self.nav_ctx());
+        Ok(match found.len() {
+            0 => None,
+            1 => Some(GotoDefinitionResponse::Scalar(found.remove(0))),
+            _ => Some(GotoDefinitionResponse::Array(found)),
+        })
     }
 
     async fn references(&self, p: ReferenceParams) -> Result<Option<Vec<Location>>> {
