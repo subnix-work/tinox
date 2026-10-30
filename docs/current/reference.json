@@ -546,6 +546,15 @@
       ]
     },
     {
+      "description": "@Scheduled(\"m h dom mon dow\") -- runs the zero-argument instance method on a background thread whenever the five-field cron expression matches (UTC, minute resolution). One run at a time per job, missed minutes are skipped, a failing run is logged and counted without stopping the job, runs stop with the service. In memory only: no persistence across restarts",
+      "max_args": 1,
+      "min_args": 1,
+      "name": "Scheduled",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "Marks a field as fully sensitive — logged as '***'",
       "max_args": 0,
       "min_args": 0,

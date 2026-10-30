@@ -210,6 +210,14 @@ pub struct Amqp10ConsumerEntry {
     pub on_message: Option<String>,
 }
 
+/// A `@Scheduled(cron)` method (issue #536).
+#[derive(Debug, Clone)]
+pub struct ScheduledJobEntry {
+    pub class_name: String,
+    pub method_name: String,
+    pub cron: String,
+}
+
 /// AMQP-0-9-1 consumer entry produced by @Amqp091Consumer annotation processing (Issue #126).
 #[derive(Debug, Clone)]
 pub struct Amqp091ConsumerEntry {
@@ -559,6 +567,7 @@ pub struct CodeGen {
     tinoxui_apps: Vec<TinoxUIAppEntry>,
     /// AMQP-1.0 consumers from @Amqp10Consumer annotation processing (Issue #81)
     amqp10_consumers: Vec<Amqp10ConsumerEntry>,
+    scheduled_jobs: Vec<ScheduledJobEntry>,
     /// AMQP-0-9-1 consumers from @Amqp091Consumer annotation processing (Issue #126)
     amqp091_consumers: Vec<Amqp091ConsumerEntry>,
     /// @Http3RestController: routes route_entries through Http3Server
@@ -762,6 +771,7 @@ impl CodeGen {
             ws_endpoints: Vec::new(),
             tinoxui_apps: Vec::new(),
             amqp10_consumers: Vec::new(),
+            scheduled_jobs: Vec::new(),
             amqp091_consumers: Vec::new(),
             http3_rest_controller: None,
             expr_value_types: HashMap::new(),
@@ -878,6 +888,10 @@ impl CodeGen {
 
     pub fn set_tinoxui_apps(&mut self, apps: Vec<TinoxUIAppEntry>) {
         self.tinoxui_apps = apps;
+    }
+
+    pub fn set_scheduled_jobs(&mut self, jobs: Vec<ScheduledJobEntry>) {
+        self.scheduled_jobs = jobs;
     }
 
     pub fn set_amqp10_consumers(&mut self, consumers: Vec<Amqp10ConsumerEntry>) {
@@ -2625,6 +2639,9 @@ impl CodeGen {
 
         // Emit the auto-run connect/receive loop for an @Amqp091Consumer class
         self.emit_amqp091_consumer_code();
+
+        // Emit one runner per @Scheduled method (issue #536)
+        self.emit_scheduled_code();
 
         // Emit the dev-mode introspection API (no-op unless [dev] enabled)
         self.emit_devui_code(&class_ast_map);
@@ -4551,6 +4568,80 @@ tr_done_{idx}:"#).unwrap();
                 "AMQP 1.0 (consumer)".to_string(),
                 format!("{}:{} ({})", c.host, c.port, c.address),
             ));
+        }
+    }
+
+    /// One `__tinox_run_scheduled_<idx>()` per @Scheduled method (issue #536), spawned on its own
+    /// thread by the bootstrap. The loop checks the job every 250 ms: the UTC schedule is
+    /// evaluated by `ScheduledJob.due` (claims a minute once), the method runs on this thread only
+    /// (no overlap with itself; minutes passed meanwhile are skipped), a failing run is logged and
+    /// counted but never stops the job, and with a @Service the loop ends when the service stops.
+    /// Metrics per job: runs_total, failures_total, lag_ms (start delay after the scheduled minute).
+    fn emit_scheduled_code(&mut self) {
+        if self.scheduled_jobs.is_empty() || self.has_main {
+            return;
+        }
+        if !self.class_named_types.contains("ScheduledJob") {
+            panic!("@Scheduled requires `import tinox.core.cron;` (ScheduledJob type not found)");
+        }
+        writeln!(&mut self.lambda_ir, "declare i64 @tinox_scheduled_report(i8*, i64)").unwrap();
+        let jobs = self.scheduled_jobs.clone();
+        for (idx, job) in jobs.iter().enumerate() {
+            let inst_size = self.struct_layouts.get(job.class_name.as_str())
+                .map(|f| (f.len().max(1) * 8) as i64)
+                .unwrap_or(8);
+            let run_fn = format!("__tinox_run_scheduled_{idx}");
+            let label = format!("{}.{}", job.class_name, job.method_name);
+            let metric = format!("tinox_scheduled_{}_{}", job.class_name, job.method_name).to_lowercase();
+            writeln!(&mut self.lambda_ir, "define i64 @{run_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            let cron_ptr = self.emit_lambda_string_literal(&job.cron);
+            let label_ptr = self.emit_lambda_string_literal(&label);
+            let runs_ptr = self.emit_lambda_string_literal(&format!("{metric}_runs_total"));
+            let fails_ptr = self.emit_lambda_string_literal(&format!("{metric}_failures_total"));
+            let lag_ptr = self.emit_lambda_string_literal(&format!("{metric}_lag_ms"));
+            writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_field_defaults(&job.class_name, "%inst");
+            writeln!(&mut self.lambda_ir, "  %job = call i64* @ScheduledJob_create(i8* {cron_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
+            writeln!(&mut self.lambda_ir, "tick:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %stop, label %check\ncheck:").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  %now = call i64 @ScheduledJob_nowMs(i64* %job)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %due = call i64 @ScheduledJob_due(i64* %job, i64 %now)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_due = icmp sge i64 %due, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_due, label %run, label %wait").unwrap();
+            writeln!(&mut self.lambda_ir, "run:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %lag = sub i64 %now, %due").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_gauge_set(i8* {lag_ptr}, i64 %lag)").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %admitted = call i64 @tinox_service_work_enter()\n  %admit_ok = icmp ne i64 %admitted, 0\n  br i1 %admit_ok, label %invoke, label %stop\ninvoke:").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst)", job.class_name, job.method_name).unwrap();
+            writeln!(&mut self.lambda_ir, "  %err = load i64, i64* @__tinox_err").unwrap();
+            writeln!(&mut self.lambda_ir, "  %failed = call i64 @tinox_scheduled_report(i8* {label_ptr}, i64 %err)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_counter_inc(i8* {runs_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %did_fail = icmp ne i64 %failed, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %did_fail, label %count_fail, label %after_run").unwrap();
+            writeln!(&mut self.lambda_ir, "count_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_counter_inc(i8* {fails_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %after_run").unwrap();
+            writeln!(&mut self.lambda_ir, "after_run:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  br label %wait").unwrap();
+            writeln!(&mut self.lambda_ir, "wait:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @ScheduledJob_pause(i64* %job, i64 250)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "stop:\n  ret i64 0").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+            self.register_background_task(BackgroundTask::new("scheduled", Some(&job.class_name), &run_fn, "per_job_instance", "one thread per job, sequential runs, no overlap", Endpoint::listen("Schedule", 0, "annotation", Some(&format!("{label} [{}]", job.cron)))));
         }
     }
 

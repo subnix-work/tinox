@@ -1,0 +1,64 @@
+// ScheduledJob.due() against counts computed independently with Python's datetime (UTC):
+// office hours over one week, the leap-day schedule across leap / non-leap years, the traditional
+// day-of-month OR day-of-week rule, and idempotence (repeated and backward calls never re-fire a minute).
+// expect: office 180 1709542800000 1709919900000
+// expect: leap2024 1 1709173800000
+// expect: leap2023 0
+// expect: leap2100 0
+// expect: or 16
+// expect: repeat 0 backward 0
+// expect: startup 0 next 1
+import tinox.core.cron
+
+class Main
+{
+    fnc count(expr: String, startMs: Int64, minutes: Int64, label: String) -> Int64
+    {
+        const job = ScheduledJob::createAt(expr, startMs - 60000)
+        var n: Int64 = 0
+        var first: Int64 = -1
+        var last: Int64 = -1
+        var i: Int64 = 0
+        while (i < minutes) {
+            const at: Int64 = startMs + i * 60000
+            const due: Int64 = job.due(at)
+            if (due >= 0) {
+                n = n + 1
+                if (first < 0) {
+                    first = due
+                }
+                last = due
+            }
+            i = i + 1
+        }
+        if (label == "office") {
+            println("office " + n.toString() + " " + first.toString() + " " + last.toString())
+        } else if (label == "leap2024") {
+            println("leap2024 " + n.toString() + " " + first.toString())
+        } else {
+            println(label + " " + n.toString())
+        }
+        return n
+    }
+
+    fnc main() -> Int32
+    {
+        Main::count("*/15 9-17 * * 1-5", 1709510400000, 7 * 24 * 60, "office")
+        Main::count("30 2 29 2 *", 1708992000000, 4 * 24 * 60, "leap2024")
+        Main::count("30 2 29 2 *", 1677456000000, 4 * 24 * 60, "leap2023")
+        Main::count("30 2 29 2 *", 4107369600000, 4 * 24 * 60, "leap2100")
+        Main::count("0 0 13 * 5", 1704067200000, 91 * 24 * 60, "or")
+        // Same minute twice, and a backward step: nothing more fires after the first claim.
+        const job = ScheduledJob::createAt("* * * * *", 1699999900000)
+        job.due(1700000000000)
+        const again: Int64 = job.due(1700000030000)
+        const back: Int64 = job.due(1699999900000)
+        println("repeat " + (again + 1).toString() + " backward " + (back + 1).toString())
+        // The minute in progress at creation never runs late; the next boundary does.
+        const fresh = ScheduledJob::createAt("* * * * *", 1700000050000)
+        const late: Int64 = fresh.due(1700000055000)
+        const next: Int64 = fresh.due(1700000100000)
+        println("startup " + (late + 1).toString() + " next " + (next / 1700000100000).toString())
+        return 0
+    }
+}

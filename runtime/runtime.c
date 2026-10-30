@@ -3291,6 +3291,16 @@ int64_t tinoxBufSlice(int64_t h, int64_t start, int64_t end) {
     return (int64_t)(intptr_t)r;
 }
 
+// A @Scheduled run finished (issue #536): when the method left an error pending, print it with the
+// job name, clear it so the next run starts clean, and return 1. A failing job never stops the
+// process; the generated runner counts failures in a metric.
+int64_t tinox_scheduled_report(const char* job, int64_t err) {
+    if (err == 0) return 0;
+    fprintf(stderr, "scheduled job %s failed: %s\n", job, (const char*)(intptr_t)err);
+    __tinox_err = 0;
+    return 1;
+}
+
 // First index >= from where needle occurs in the haystack, or -1. An empty needle is a hard error.
 int64_t tinoxBufFind(int64_t h, int64_t n, int64_t from) {
     TinoxBuf* hay = tinox_buf_of(h, "find");

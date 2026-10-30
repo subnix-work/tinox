@@ -22,6 +22,7 @@ pub use codegen::EntityEntry;
 pub use codegen::EntityFieldEntry;
 pub use codegen::WsEndpointEntry;
 pub use codegen::Amqp10ConsumerEntry;
+pub use codegen::ScheduledJobEntry;
 pub use codegen::Amqp091ConsumerEntry;
 pub use codegen::Http3RestControllerEntry;
 pub use codegen::TinoxUIAppEntry;

@@ -242,6 +242,14 @@ pub struct Amqp10ConsumerInfo {
     pub on_message: Option<String>,
 }
 
+/// A method annotated `@Scheduled("<cron>")` (issue #536).
+#[derive(Debug, Clone)]
+pub struct ScheduledJobInfo {
+    pub class_name: String,
+    pub method_name: String,
+    pub cron: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Amqp091ConsumerInfo {
     pub class_name: String,
@@ -371,6 +379,7 @@ pub struct AnnotationProcessingResult {
     pub ws_endpoints: Vec<WsEndpointInfo>,
     pub amqp10_consumers: Vec<Amqp10ConsumerInfo>,
     pub amqp091_consumers: Vec<Amqp091ConsumerInfo>,
+    pub scheduled_jobs: Vec<ScheduledJobInfo>,
     pub http3_rest_controllers: Vec<Http3RestControllerInfo>,
     pub tinoxui_apps: Vec<TinoxUIAppInfo>,
 }
@@ -1032,6 +1041,16 @@ impl AnnotationProcessor {
             },
         );
         registry.insert(
+            "Scheduled".to_string(),
+            AnnotationInfo {
+                name: "Scheduled".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 1,
+                description: "@Scheduled(\"m h dom mon dow\") -- runs the zero-argument instance method on a background thread whenever the five-field cron expression matches (UTC, minute resolution). One run at a time per job, missed minutes are skipped, a failing run is logged and counted without stopping the job, runs stop with the service. In memory only: no persistence across restarts".to_string(),
+            },
+        );
+        registry.insert(
             "ForeignKey".to_string(),
             AnnotationInfo {
                 name: "ForeignKey".to_string(),
@@ -1568,6 +1587,15 @@ impl AnnotationProcessor {
                 result.route_entries.push(route);
             }
 
+            for ann in method.annotations.iter().filter(|a| a.name == "Scheduled") {
+                if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(cron))) = ann.args.first() {
+                    result.scheduled_jobs.push(ScheduledJobInfo {
+                        class_name: class.name.clone(),
+                        method_name: method.name.clone(),
+                        cron: cron.clone(),
+                    });
+                }
+            }
             let tx_mode = method.annotations.iter().find(|a| a.name == "Transactional")
                 .map(transactional_mode)
                 .or(class_transactional);
@@ -2014,6 +2042,23 @@ fn resolve_di_providers(source: &tinox_parser::SourceFile, result: &mut Annotati
             if !valid { errors.push(Error::new(ann.span, "@Provider requires one non-empty string literal")); }
         }
         if providers.len() > 1 { errors.push(Error::new(class.span, "Duplicate @Provider annotation")); }
+        for method in &class.methods {
+            for ann in method.annotations.iter().filter(|a| a.name == "Scheduled") {
+                let cron = match ann.args.first() {
+                    Some(AnnotationArg::Literal(Literal::String(c))) => c.as_str(),
+                    _ => { errors.push(Error::new(ann.span, "@Scheduled requires a cron string literal such as \"*/5 * * * *\"")); continue; }
+                };
+                if cron.split_whitespace().count() != 5 {
+                    errors.push(Error::new(ann.span, format!("@Scheduled(\"{cron}\") needs five fields: minute hour day-of-month month day-of-week")));
+                }
+                if method.static_ || !method.params.is_empty() || !matches!(method.ret_type, Type::Nothing) {
+                    errors.push(Error::new(method.span, format!("@Scheduled method '{}.{}' must be an instance method with no parameters and return Nothing", class.name, method.name)));
+                }
+                if method.annotations.iter().filter(|a| a.name == "Scheduled").count() > 1 {
+                    errors.push(Error::new(ann.span, "@Scheduled may appear once per method"));
+                }
+            }
+        }
         if class.annotations.iter().any(|a| a.name == "Entity" || a.name == "Table") {
             let ids = class.fields.iter().filter(|f| f.annotations.iter().any(|a| a.name == "Id")).count();
             let generated = class.fields.iter().any(|f| f.annotations.iter().any(|a| a.name == "GeneratedValue"));
@@ -3985,6 +4030,18 @@ class Svc {
         assert!(ok.is_empty(), "{ok:?}");
         let bad = valid("@Entity\n@Table(\"m\")\nclass M { @Id\n@GeneratedValue\nvar a: Int64\n@Id\nvar b: Int64 }");
         assert!(bad.iter().any(|e| e.message.contains("composite @Id")), "{bad:?}");
+    }
+
+    #[test]
+    fn test_validate_scheduled_requires_cron_and_plain_method() {
+        let ok = valid("class J { @Scheduled(\"*/5 * * * *\")\nfn run() -> Nothing {} }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let fields = valid("class J { @Scheduled(\"* * * *\")\nfn run() -> Nothing {} }");
+        assert!(fields.iter().any(|e| e.message.contains("five fields")), "{fields:?}");
+        let args = valid("class J { @Scheduled(\"* * * * *\")\nfn run(x: Int64) -> Nothing {} }");
+        assert!(args.iter().any(|e| e.message.contains("no parameters")), "{args:?}");
+        let ret = valid("class J { @Scheduled(\"* * * * *\")\nfn run() -> Int64 { return 1 } }");
+        assert!(ret.iter().any(|e| e.message.contains("return Nothing")), "{ret:?}");
     }
 
     #[test]

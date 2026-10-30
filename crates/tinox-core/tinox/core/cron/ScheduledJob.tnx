@@ -1,0 +1,62 @@
+module tinox.core.cron
+import tinox.core.time
+
+namespace tinox.core.cron
+{
+    /**
+     * State of one @Scheduled job (used by the generated runner; usable directly).
+     * Times are Unix milliseconds in UTC -- the schedule is always evaluated in UTC, so there
+     * are no daylight-saving gaps or repeats. A job runs on one thread: an occurrence never
+     * overlaps itself, and minutes that pass while a run is still executing are skipped, not
+     * replayed (misfire policy "skip"). The state is in memory only; a restart forgets
+     * `lastMinute`; the first run after a restart is the next matching minute boundary, so a restart inside
+     * a matching minute skips it and one right before a boundary may repeat nothing.
+     */
+    class ScheduledJob
+    {
+        var expr: CronExpr
+        /** Last claimed UTC minute boundary (ms) */
+        var lastMinute: Int64
+
+        /**
+         * Parses the expression; an invalid one is a hard error at startup. The minute in progress
+         * is already claimed, so the first run is the next minute boundary (no late run at startup).
+         */
+        fnc create(cron: String) -> ScheduledJob
+        {
+            return ScheduledJob::createAt(cron, Time::now())
+        }
+
+        /** Like create, with an explicit "now" (tests): minutes up to and including nowMs's are not run */
+        fnc createAt(cron: String, nowMs: Int64) -> ScheduledJob
+        {
+            return ScheduledJob { expr: Cron::parse(cron), lastMinute: (nowMs / 60000) * 60000 }
+        }
+
+        /**
+         * The minute boundary to run if the job is due at nowMs, otherwise -1. Claims the minute, so
+         * repeated calls within it (and backward clock steps) never return it twice.
+         */
+        fn due(nowMs: Int64) -> Int64
+        {
+            const minute: Int64 = (nowMs / 60000) * 60000
+            if (minute > this.lastMinute && Cron::matches(this.expr, nowMs))
+            {
+                this.lastMinute = minute
+                return minute
+            }
+            return -1
+        }
+
+        fn nowMs() -> Int64
+        {
+            return Time::now()
+        }
+
+        /** Pause between checks (cancellation point) */
+        fn pause(ms: Int64) -> Nothing
+        {
+            sleep(ms)
+        }
+    }
+}

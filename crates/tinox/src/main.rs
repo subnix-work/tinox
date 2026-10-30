@@ -5368,6 +5368,11 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     codegen.set_entity_entries(entity_entries);
     codegen.set_ws_endpoints(ws_endpoints);
     codegen.set_amqp10_consumers(amqp10_consumers);
+    codegen.set_scheduled_jobs(ann_result.scheduled_jobs.iter().map(|j| tinox_codegen::ScheduledJobEntry {
+        class_name: j.class_name.clone(),
+        method_name: j.method_name.clone(),
+        cron: j.cron.clone(),
+    }).collect());
     codegen.set_amqp091_consumers(amqp091_consumers);
     codegen.set_http3_rest_controller(http3_rest_controller);
     codegen.set_tinoxui_apps(tinoxui_app.into_iter().collect());
