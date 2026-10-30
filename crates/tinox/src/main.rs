@@ -3378,7 +3378,7 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
         class: t.class_name.clone(),
         method: t.method_name.clone(),
         args: t.case_args.iter().map(|l| match l {
-            tinox_parser::Literal::Integer(v) => tinox_codegen::TestArg::Int(*v as i64),
+            tinox_parser::Literal::Integer(v) => tinox_codegen::TestArg::Int(*v),
             tinox_parser::Literal::Float(v) => tinox_codegen::TestArg::Float(*v),
             tinox_parser::Literal::Bool(v) => tinox_codegen::TestArg::Bool(*v),
             tinox_parser::Literal::String(v) => tinox_codegen::TestArg::Str(v.clone()),

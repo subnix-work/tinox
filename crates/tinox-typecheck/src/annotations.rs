@@ -1384,12 +1384,12 @@ impl AnnotationProcessor {
                 }
                 "Error" => {
                     if let (Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(status)))) = (ann.args.first(), ann.args.get(1)) {
-                        result.error_maps.push((code.clone(), *status as i64));
+                        result.error_maps.push((code.clone(), *status));
                     }
                 }
                 "ErrorMap" => {
                     if let (Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(status)))) = (ann.args.first(), ann.args.get(1)) {
-                        result.error_maps.push((code.clone(), *status as i64));
+                        result.error_maps.push((code.clone(), *status));
                     }
                 }
                 "Cors" => {
@@ -2278,13 +2278,13 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
                         continue;
                     }
                     for (arg, param) in case.args.iter().zip(&method.params) {
-                        let ok = match (arg, &param.param_type) {
-                            (AnnotationArg::Literal(Literal::Integer(_)), Type::Int64) => true,
-                            (AnnotationArg::Literal(Literal::Float(_)), Type::Float64) => true,
-                            (AnnotationArg::Literal(Literal::String(_)), Type::String) => true,
-                            (AnnotationArg::Literal(Literal::Bool(_)), Type::Bool) => true,
-                            _ => false,
-                        };
+                        let ok = matches!(
+                            (arg, &param.param_type),
+                            (AnnotationArg::Literal(Literal::Integer(_)), Type::Int64)
+                                | (AnnotationArg::Literal(Literal::Float(_)), Type::Float64)
+                                | (AnnotationArg::Literal(Literal::String(_)), Type::String)
+                                | (AnnotationArg::Literal(Literal::Bool(_)), Type::Bool)
+                        );
                         if !ok {
                             errors.push(Error::new(case.span, format!("@Case argument for parameter '{}' must be a literal matching its type (Int64, Float64, String or Bool)", param.name)));
                         }
