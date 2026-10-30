@@ -570,6 +570,8 @@ pub struct CodeGen {
     /// AMQP-1.0 consumers from @Amqp10Consumer annotation processing (Issue #81)
     amqp10_consumers: Vec<Amqp10ConsumerEntry>,
     scheduled_jobs: Vec<ScheduledJobEntry>,
+    cached_methods: HashMap<(String, String), (i64, i64)>,
+    evict_methods: HashMap<(String, String), Vec<String>>,
     /// AMQP-0-9-1 consumers from @Amqp091Consumer annotation processing (Issue #126)
     amqp091_consumers: Vec<Amqp091ConsumerEntry>,
     /// @Http3RestController: routes route_entries through Http3Server
@@ -774,6 +776,8 @@ impl CodeGen {
             tinoxui_apps: Vec::new(),
             amqp10_consumers: Vec::new(),
             scheduled_jobs: Vec::new(),
+            cached_methods: HashMap::new(),
+            evict_methods: HashMap::new(),
             amqp091_consumers: Vec::new(),
             http3_rest_controller: None,
             expr_value_types: HashMap::new(),
@@ -890,6 +894,11 @@ impl CodeGen {
 
     pub fn set_tinoxui_apps(&mut self, apps: Vec<TinoxUIAppEntry>) {
         self.tinoxui_apps = apps;
+    }
+
+    pub fn set_cache_methods(&mut self, cached: HashMap<(String, String), (i64, i64)>, evict: HashMap<(String, String), Vec<String>>) {
+        self.cached_methods = cached;
+        self.evict_methods = evict;
     }
 
     pub fn set_scheduled_jobs(&mut self, jobs: Vec<ScheduledJobEntry>) {
@@ -2048,6 +2057,12 @@ impl CodeGen {
         // Metrics runtime
         writeln!(&mut self.ir, "declare void @tinox_counter_inc(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_message_handler_failed(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_cache_named(i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_cache_begin(i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_cache_value()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_cache_store(i64, i8*, i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_cache_abort(i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_cache_evict_named(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_histogram_record(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_gauge_set(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_clock_nanos()").unwrap();
@@ -6398,7 +6413,13 @@ tr_done_{idx}:"#).unwrap();
         let public_name = format!("{}_{}", class_name, method.name);
         let synchronized = !method.static_ && (self.synchronized_classes.contains(class_name)
             || method.annotations.iter().any(|a| a.name == "Synchronized"));
-        let fn_name = if synchronized { format!("__tinox_sync_body_{public_name}") } else { public_name.clone() };
+        let cache_cfg = self.cached_methods.get(&(class_name.to_string(), method.name.clone())).copied();
+        let evict_cfg = self.evict_methods.get(&(class_name.to_string(), method.name.clone())).cloned();
+        let wrapped = cache_cfg.is_some() || evict_cfg.is_some();
+        // The name the body (or the @Synchronized wrapper around it) is defined under; the cache
+        // wrapper, when present, takes over the public name.
+        let inner_public = if wrapped { format!("__tinox_cache_body_{public_name}") } else { public_name.clone() };
+        let fn_name = if synchronized { format!("__tinox_sync_body_{public_name}") } else { inner_public.clone() };
         self.method_ret_types.insert(public_name.clone(), ret_type.clone());
 
         let mut ctx = GenCtx {
@@ -6534,7 +6555,7 @@ tr_done_{idx}:"#).unwrap();
         self.attach_dbg(body_start, dbg_scope, &dbg_params);
         self.dbg_vars = outer_vars;
         if synchronized {
-            writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
+            writeln!(&mut self.ir, "define {ret_type} @{inner_public}({params_str}) {{").unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
             writeln!(&mut self.ir, "  %locked = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
             writeln!(&mut self.ir, "  %acquired = icmp ne i64 %locked, 0").unwrap();
@@ -6553,8 +6574,164 @@ tr_done_{idx}:"#).unwrap();
             }
             writeln!(&mut self.ir, "}}\n").unwrap();
         }
+        if let Some((ttl_s, cap)) = cache_cfg {
+            self.emit_cache_wrapper(class_name, method, &ret_type, &params_str, &inner_public, ttl_s, cap);
+        } else if let Some(names) = evict_cfg {
+            self.emit_evict_wrapper(&public_name, &ret_type, &params_str, &inner_public, &names);
+        }
 
         Ok(())
+    }
+
+    /// `@Cacheable(ttlSeconds, maxEntries)` (issue #543): the public symbol becomes a wrapper around the
+    /// real body (`__tinox_cache_body_*`). It builds a collision-free key from the argument values
+    /// (length-prefixed strings, tagged numbers), asks the method's LoadingCache (single-flight: concurrent
+    /// identical misses run the body once) and stores the result unless the body failed. A thrown error
+    /// is passed on untouched and caches nothing. The cache belongs to the method, not to an instance.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_cache_wrapper(&mut self, class_name: &str, method: &Method, ret_type: &str, params_str: &str, inner: &str, ttl_s: i64, cap: i64) {
+        let public_name = format!("{}_{}", class_name, method.name);
+        let name_lit = self.make_string_const(&format!("{}.{}", class_name, method.name));
+        let empty = self.make_string_const("");
+        let colon = self.make_string_const(":");
+        let semi = self.make_string_const(";");
+        let tag_i = self.make_string_const("i");
+        let tag_b = self.make_string_const("b");
+        writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
+        let handle = self.temp();
+        writeln!(&mut self.ir, "  {handle} = call i64 @tinox_cache_named(i8* {name_lit}, i64 {cap}, i64 {ttl_s})").unwrap();
+        let mut key = empty;
+        for p in &method.params {
+            let ty = self.type_to_llvm_inst(&p.param_type);
+            let piece = match ty.as_str() {
+                "i8*" => {
+                    let len = self.temp();
+                    let len_s = self.temp();
+                    let a = self.temp();
+                    let b = self.temp();
+                    let c = self.temp();
+                    writeln!(&mut self.ir, "  {len} = call i64 @tinox_string_length(i8* %{})", p.name).unwrap();
+                    writeln!(&mut self.ir, "  {len_s} = call i8* @tinox_int_to_param(i64 {len})").unwrap();
+                    writeln!(&mut self.ir, "  {a} = call i8* @tinox_string_concat(i8* {len_s}, i8* {colon})").unwrap();
+                    writeln!(&mut self.ir, "  {b} = call i8* @tinox_string_concat(i8* {a}, i8* %{})", p.name).unwrap();
+                    writeln!(&mut self.ir, "  {c} = call i8* @tinox_string_concat(i8* {b}, i8* {semi})").unwrap();
+                    c
+                }
+                other => {
+                    let wide = self.temp();
+                    let tag = if other == "i1" { &tag_b } else { &tag_i };
+                    match other {
+                        "i1" => writeln!(&mut self.ir, "  {wide} = zext i1 %{} to i64", p.name).unwrap(),
+                        "i64" => writeln!(&mut self.ir, "  {wide} = add i64 %{}, 0", p.name).unwrap(),
+                        _ => writeln!(&mut self.ir, "  {wide} = sext {other} %{} to i64", p.name).unwrap(),
+                    }
+                    let num = self.temp();
+                    let a = self.temp();
+                    let b = self.temp();
+                    writeln!(&mut self.ir, "  {num} = call i8* @tinox_int_to_param(i64 {wide})").unwrap();
+                    writeln!(&mut self.ir, "  {a} = call i8* @tinox_string_concat(i8* {tag}, i8* {num})").unwrap();
+                    writeln!(&mut self.ir, "  {b} = call i8* @tinox_string_concat(i8* {a}, i8* {semi})").unwrap();
+                    b
+                }
+            };
+            let next = self.temp();
+            writeln!(&mut self.ir, "  {next} = call i8* @tinox_string_concat(i8* {key}, i8* {piece})").unwrap();
+            key = next;
+        }
+        let token = self.temp();
+        writeln!(&mut self.ir, "  {token} = call i64 @tinox_cache_begin(i64 {handle}, i8* {key})").unwrap();
+        let hit = self.temp();
+        writeln!(&mut self.ir, "  {hit} = icmp eq i64 {token}, 1").unwrap();
+        writeln!(&mut self.ir, "  br i1 {hit}, label %cache_hit, label %cache_miss").unwrap();
+        writeln!(&mut self.ir, "cache_hit:").unwrap();
+        let cached = self.temp();
+        writeln!(&mut self.ir, "  {cached} = call i8* @tinox_cache_value()").unwrap();
+        if ret_type == "i8*" {
+            writeln!(&mut self.ir, "  ret i8* {cached}").unwrap();
+        } else {
+            let parsed = self.temp();
+            writeln!(&mut self.ir, "  {parsed} = call i64 @tinox_string_to_int(i8* {cached})").unwrap();
+            match ret_type {
+                "i64" => writeln!(&mut self.ir, "  ret i64 {parsed}").unwrap(),
+                "i1" => {
+                    let b = self.temp();
+                    writeln!(&mut self.ir, "  {b} = icmp ne i64 {parsed}, 0").unwrap();
+                    writeln!(&mut self.ir, "  ret i1 {b}").unwrap();
+                }
+                other => {
+                    let t = self.temp();
+                    writeln!(&mut self.ir, "  {t} = trunc i64 {parsed} to {other}").unwrap();
+                    writeln!(&mut self.ir, "  ret {other} {t}").unwrap();
+                }
+            }
+        }
+        writeln!(&mut self.ir, "cache_miss:").unwrap();
+        let result = self.temp();
+        writeln!(&mut self.ir, "  {result} = call {ret_type} @{inner}({params_str})").unwrap();
+        let err = self.temp();
+        let failed = self.temp();
+        writeln!(&mut self.ir, "  {err} = load i64, i64* @__tinox_err").unwrap();
+        writeln!(&mut self.ir, "  {failed} = icmp ne i64 {err}, 0").unwrap();
+        writeln!(&mut self.ir, "  br i1 {failed}, label %cache_fail, label %cache_store").unwrap();
+        writeln!(&mut self.ir, "cache_fail:").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_cache_abort(i64 {handle}, i8* {key})").unwrap();
+        writeln!(&mut self.ir, "  ret {ret_type} {result}").unwrap();
+        writeln!(&mut self.ir, "cache_store:").unwrap();
+        if ret_type == "i8*" {
+            let is_null = self.temp();
+            writeln!(&mut self.ir, "  {is_null} = icmp eq i8* {result}, null").unwrap();
+            writeln!(&mut self.ir, "  br i1 {is_null}, label %cache_null, label %cache_put").unwrap();
+            writeln!(&mut self.ir, "cache_null:").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_cache_abort(i64 {handle}, i8* {key})").unwrap();
+            writeln!(&mut self.ir, "  ret i8* null").unwrap();
+            writeln!(&mut self.ir, "cache_put:").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_cache_store(i64 {handle}, i8* {key}, i8* {result}, i64 {token})").unwrap();
+        } else {
+            let wide = self.temp();
+            match ret_type {
+                "i1" => writeln!(&mut self.ir, "  {wide} = zext i1 {result} to i64").unwrap(),
+                "i64" => writeln!(&mut self.ir, "  {wide} = add i64 {result}, 0").unwrap(),
+                other => writeln!(&mut self.ir, "  {wide} = sext {other} {result} to i64").unwrap(),
+            }
+            let text = self.temp();
+            writeln!(&mut self.ir, "  {text} = call i8* @tinox_int_to_param(i64 {wide})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_cache_store(i64 {handle}, i8* {key}, i8* {text}, i64 {token})").unwrap();
+        }
+        writeln!(&mut self.ir, "  ret {ret_type} {result}").unwrap();
+        writeln!(&mut self.ir, "}}\n").unwrap();
+    }
+
+    /// `@CacheEvict("Class.method", ...)`: runs the real body, and only if it completed without a pending
+    /// error empties the named caches -- after the body's own `@Transactional` commit, so a reader that
+    /// reloads right after the eviction sees committed data. Loads in flight are invalidated by the eviction.
+    fn emit_evict_wrapper(&mut self, public_name: &str, ret_type: &str, params_str: &str, inner: &str, names: &[String]) {
+        writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
+        let result = self.temp();
+        if ret_type == "void" {
+            writeln!(&mut self.ir, "  call void @{inner}({params_str})").unwrap();
+        } else {
+            writeln!(&mut self.ir, "  {result} = call {ret_type} @{inner}({params_str})").unwrap();
+        }
+        let err = self.temp();
+        let failed = self.temp();
+        writeln!(&mut self.ir, "  {err} = load i64, i64* @__tinox_err").unwrap();
+        writeln!(&mut self.ir, "  {failed} = icmp ne i64 {err}, 0").unwrap();
+        writeln!(&mut self.ir, "  br i1 {failed}, label %evict_skip, label %evict_run").unwrap();
+        writeln!(&mut self.ir, "evict_run:").unwrap();
+        for name in names {
+            let lit = self.make_string_const(name);
+            writeln!(&mut self.ir, "  call void @tinox_cache_evict_named(i8* {lit})").unwrap();
+        }
+        writeln!(&mut self.ir, "  br label %evict_skip").unwrap();
+        writeln!(&mut self.ir, "evict_skip:").unwrap();
+        if ret_type == "void" {
+            writeln!(&mut self.ir, "  ret void").unwrap();
+        } else {
+            writeln!(&mut self.ir, "  ret {ret_type} {result}").unwrap();
+        }
+        writeln!(&mut self.ir, "}}\n").unwrap();
     }
 
     /// Emit the auto-generated `ClassName_new(field1, field2, ...) -> i64*` function

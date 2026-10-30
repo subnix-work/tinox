@@ -382,6 +382,10 @@ pub struct AnnotationProcessingResult {
     pub amqp10_consumers: Vec<Amqp10ConsumerInfo>,
     pub amqp091_consumers: Vec<Amqp091ConsumerInfo>,
     pub scheduled_jobs: Vec<ScheduledJobInfo>,
+    /// (class, method) -> (ttl seconds, max entries) for @Cacheable methods (issue #543)
+    pub cached_methods: HashMap<(String, String), (i64, i64)>,
+    /// (class, method) -> cache names ("Class.method") evicted after the method completes normally
+    pub evict_methods: HashMap<(String, String), Vec<String>>,
     pub http3_rest_controllers: Vec<Http3RestControllerInfo>,
     pub tinoxui_apps: Vec<TinoxUIAppInfo>,
 }
@@ -1043,6 +1047,26 @@ impl AnnotationProcessor {
             },
         );
         registry.insert(
+            "Cacheable".to_string(),
+            AnnotationInfo {
+                name: "Cacheable".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 2,
+                max_args: 2,
+                description: "@Cacheable(ttlSeconds, maxEntries) -- caches the result per argument values in a bounded in-process cache (LRU, TTL, single-flight: concurrent identical misses run the method once). Parameters and result must be String/Int64/Int32/Bool; a method that throws caches nothing. The cache is shared by all instances of the class".to_string(),
+            },
+        );
+        registry.insert(
+            "CacheEvict".to_string(),
+            AnnotationInfo {
+                name: "CacheEvict".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 8,
+                description: "@CacheEvict(\"Class.method\", ...) -- empties the named @Cacheable caches after the method completed normally (after its own @Transactional commit) and invalidates loads in flight".to_string(),
+            },
+        );
+        registry.insert(
             "MessageFailure".to_string(),
             AnnotationInfo {
                 name: "MessageFailure".to_string(),
@@ -1599,6 +1623,18 @@ impl AnnotationProcessor {
                 result.route_entries.push(route);
             }
 
+            if let Some(ann) = method.annotations.iter().find(|a| a.name == "Cacheable") {
+                if let (Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(ttl))), Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(cap)))) = (ann.args.first(), ann.args.get(1)) {
+                    result.cached_methods.insert((class.name.clone(), method.name.clone()), (*ttl, *cap));
+                }
+            }
+            let evicts: Vec<String> = method.annotations.iter().filter(|a| a.name == "CacheEvict")
+                .flat_map(|a| a.args.iter())
+                .filter_map(|a| if let tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(n)) = a { Some(n.clone()) } else { None })
+                .collect();
+            if !evicts.is_empty() {
+                result.evict_methods.insert((class.name.clone(), method.name.clone()), evicts);
+            }
             for ann in method.annotations.iter().filter(|a| a.name == "Scheduled") {
                 if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(cron))) = ann.args.first() {
                     result.scheduled_jobs.push(ScheduledJobInfo {
@@ -2070,6 +2106,35 @@ fn resolve_di_providers(source: &tinox_parser::SourceFile, result: &mut Annotati
         }
         if providers.len() > 1 { errors.push(Error::new(class.span, "Duplicate @Provider annotation")); }
         for method in &class.methods {
+            for ann in method.annotations.iter().filter(|a| a.name == "Cacheable") {
+                let int = |i: usize| match ann.args.get(i) {
+                    Some(AnnotationArg::Literal(Literal::Integer(n))) => Some(*n),
+                    _ => None,
+                };
+                match (int(0), int(1)) {
+                    (Some(ttl), Some(cap)) => {
+                        if !(1..=2_592_000).contains(&ttl) {
+                            errors.push(Error::new(ann.span, format!("@Cacheable ttlSeconds must be 1..=2592000, found {ttl}")));
+                        }
+                        if !(1..=100_000).contains(&cap) {
+                            errors.push(Error::new(ann.span, format!("@Cacheable maxEntries must be 1..=100000, found {cap}")));
+                        }
+                    }
+                    _ => errors.push(Error::new(ann.span, "@Cacheable needs integer literals ttlSeconds and maxEntries")),
+                }
+                let simple = |t: &Type| matches!(t, Type::String | Type::Int64 | Type::Int32 | Type::Bool);
+                if method.annotations.iter().any(|a| a.name == "CacheEvict") {
+                    errors.push(Error::new(ann.span, "a method cannot be both @Cacheable and @CacheEvict"));
+                }
+                if !simple(&method.ret_type) || method.params.iter().any(|p| !simple(&p.param_type)) {
+                    errors.push(Error::new(method.span, format!("@Cacheable method '{}.{}': parameters and result must be String, Int64, Int32 or Bool (the cache key and value are text; other types are not converted implicitly)", class.name, method.name)));
+                }
+            }
+            for ann in method.annotations.iter().filter(|a| a.name == "CacheEvict") {
+                if ann.args.iter().any(|a| !matches!(a, AnnotationArg::Literal(Literal::String(n)) if n.contains('.'))) {
+                    errors.push(Error::new(ann.span, "@CacheEvict takes string literals naming @Cacheable methods as \"Class.method\""));
+                }
+            }
             for ann in method.annotations.iter().filter(|a| a.name == "MessageFailure") {
                 let has_consumer = class.annotations.iter().any(|a| a.name == "Amqp091Consumer");
                 let is_handler = method.annotations.iter().any(|a| a.name == "OnMessage");
@@ -2985,6 +3050,41 @@ pub fn foreign_key_errors(decls: &[tinox_parser::Decl]) -> Vec<(String, String)>
             }
             if seen.insert(t) {
                 if let Some(next) = edges.get(t) { stack.extend(next.iter()); }
+            }
+        }
+    }
+    errors.sort();
+    errors
+}
+
+/// @CacheEvict targets must name an existing @Cacheable method; needs the whole program (like
+/// foreign_key_errors). Returns (class, message).
+pub fn cache_errors(decls: &[tinox_parser::Decl]) -> Vec<(String, String)> {
+    fn collect<'a>(decls: &'a [tinox_parser::Decl], out: &mut Vec<&'a Class>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Class(class) => out.push(class),
+                DeclKind::Namespace(ns) => collect(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    let mut classes = Vec::new();
+    collect(decls, &mut classes);
+    let cacheable: HashSet<String> = classes.iter()
+        .flat_map(|c| c.methods.iter().filter(|m| m.annotations.iter().any(|a| a.name == "Cacheable")).map(move |m| format!("{}.{}", c.name, m.name)))
+        .collect();
+    let mut errors = Vec::new();
+    for class in &classes {
+        for method in &class.methods {
+            for ann in method.annotations.iter().filter(|a| a.name == "CacheEvict") {
+                for arg in &ann.args {
+                    if let AnnotationArg::Literal(Literal::String(name)) = arg {
+                        if !cacheable.contains(name) {
+                            errors.push((class.name.clone(), format!("{}.{}: @CacheEvict(\"{name}\") names no @Cacheable method of this program", class.name, method.name)));
+                        }
+                    }
+                }
             }
         }
     }
@@ -4108,6 +4208,30 @@ class Svc {
         assert!(bounds.iter().any(|e| e.message.contains("maxAttempts")), "{bounds:?}");
         let backoff = valid("@Amqp091Consumer(\"h\", 5672, \"/\", \"u\", \"p\", \"q\")\nclass C { @OnMessage\n@MessageFailure(2, 70000)\nfn m(msg: Any) -> Nothing {} }");
         assert!(backoff.iter().any(|e| e.message.contains("backoffMs")), "{backoff:?}");
+    }
+
+    #[test]
+    fn test_validate_cacheable_and_evict() {
+        let ok = valid("class C { @Cacheable(60, 10)\nfn a(x: String, n: Int64) -> Bool { return true } }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let ttl = valid("class C { @Cacheable(0, 10)\nfn a() -> Int64 { return 1 } }");
+        assert!(ttl.iter().any(|e| e.message.contains("ttlSeconds")), "{ttl:?}");
+        let cap = valid("class C { @Cacheable(5, 0)\nfn a() -> Int64 { return 1 } }");
+        assert!(cap.iter().any(|e| e.message.contains("maxEntries")), "{cap:?}");
+        let ty = valid("class C { @Cacheable(5, 5)\nfn a(x: List<Int64>) -> Int64 { return 1 } }");
+        assert!(ty.iter().any(|e| e.message.contains("String, Int64, Int32 or Bool")), "{ty:?}");
+        let both = valid("class C { @Cacheable(5, 5)\n@CacheEvict(\"C.a\")\nfn a() -> Int64 { return 1 } }");
+        assert!(both.iter().any(|e| e.message.contains("both @Cacheable and @CacheEvict")), "{both:?}");
+        let name = valid("class C { @CacheEvict(\"nodot\")\nfn a() -> Nothing {} }");
+        assert!(name.iter().any(|e| e.message.contains("Class.method")), "{name:?}");
+    }
+
+    #[test]
+    fn test_cache_errors_names_must_exist() {
+        let src = "class C { @Cacheable(5, 5)\nfn a() -> Int64 { return 1 }\n@CacheEvict(\"C.a\", \"C.zzz\")\nfn b() -> Nothing {} }";
+        let errors = cache_errors(&parse(src).decls);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].1.contains("C.zzz"), "{errors:?}");
     }
 
     #[test]

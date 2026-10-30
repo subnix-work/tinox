@@ -1,0 +1,66 @@
+// @Cacheable / @CacheEvict: results per argument values, single-flight, failures not cached, key
+// collisions impossible, eviction after a completed update only.
+// expect: repeat: 20 calls=1
+// expect: other args: 30 calls=2
+// expect: concurrent: 40 calls=1
+// expect: keys: a+bc a|bc ab+c calls=2
+// expect: bool: true false calls=2 cached=true
+// expect: boom twice: boom boom calls=2
+// expect: after reprice: 20 calls=1
+// expect: failed update keeps cache: 20 calls=0
+import Prices
+
+class Main
+{
+    fnc worker(p: Prices) -> Int64
+    {
+        return p.price("w", 4)
+    }
+
+    fnc main() -> Int32
+    {
+        const p = new Prices()
+        const first = p.price("a", 2)
+        const again = p.price("a", 2)
+        println("repeat: " + again.toString() + " calls=" + p.calls.toString())
+        println("other args: " + p.price("a", 3).toString() + " calls=" + p.calls.toString())
+
+        p.calls = 0
+        scope {
+            var i = 0
+            while (i < 16) {
+                spawn Main::worker(p)
+                i = i + 1
+            }
+        }
+        println("concurrent: " + p.price("w", 4).toString() + " calls=" + p.calls.toString())
+
+        p.calls = 0
+        const x = p.join("a", "bc")
+        const y = p.join("ab", "c")
+        const x2 = p.join("a", "bc")
+        println("keys: " + x2 + " a|bc " + y + " calls=" + p.calls.toString())
+
+        p.calls = 0
+        const t = p.big(9)
+        const f = p.big(1)
+        const t2 = p.big(9)
+        println("bool: " + t.toString() + " " + f.toString() + " calls=" + p.calls.toString() + " cached=" + t2.toString())
+
+        p.calls = 0
+        var m1 = ""
+        var m2 = ""
+        try { p.boom(1) } catch (e: String) { m1 = e }
+        try { p.boom(1) } catch (e: String) { m2 = e }
+        println("boom twice: " + m1 + " " + m2 + " calls=" + p.calls.toString())
+
+        p.calls = 0
+        p.reprice()
+        println("after reprice: " + p.price("a", 2).toString() + " calls=" + p.calls.toString())
+
+        p.calls = 0
+        try { p.failingEvict() } catch (e: String) { m1 = e }
+        println("failed update keeps cache: " + p.price("a", 2).toString() + " calls=" + p.calls.toString())
+        return 0
+    }
+}

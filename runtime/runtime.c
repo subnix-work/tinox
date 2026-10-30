@@ -3466,6 +3466,47 @@ int64_t tinoxLcStat(int64_t h, int64_t which) {
     return r;
 }
 
+// Registry behind @Cacheable / @CacheEvict (issue #543): one LoadingCache per annotated method, found by
+// its "Class.method" name. Creation is serialized; the handle of a name never changes.
+#define TINOX_CACHE_REGISTRY_MAX 256
+static struct { char* name; int64_t handle; } g_cache_registry[TINOX_CACHE_REGISTRY_MAX];
+static int g_cache_registry_n = 0;
+static pthread_mutex_t g_cache_registry_mu = PTHREAD_MUTEX_INITIALIZER;
+
+int64_t tinox_cache_named(const char* name, int64_t capacity, int64_t ttl_seconds) {
+    pthread_mutex_lock(&g_cache_registry_mu);
+    for (int i = 0; i < g_cache_registry_n; i++) {
+        if (strcmp(g_cache_registry[i].name, name) == 0) {
+            int64_t h = g_cache_registry[i].handle;
+            pthread_mutex_unlock(&g_cache_registry_mu);
+            return h;
+        }
+    }
+    if (g_cache_registry_n == TINOX_CACHE_REGISTRY_MAX) {
+        pthread_mutex_unlock(&g_cache_registry_mu);
+        fprintf(stderr, "runtime error: more than %d @Cacheable methods\n", TINOX_CACHE_REGISTRY_MAX);
+        exit(1);
+    }
+    int64_t h = tinoxLcNew(capacity, ttl_seconds * 1000);
+    g_cache_registry[g_cache_registry_n].name = strdup(name);
+    g_cache_registry[g_cache_registry_n].handle = h;
+    g_cache_registry_n++;
+    pthread_mutex_unlock(&g_cache_registry_mu);
+    return h;
+}
+int64_t tinox_cache_begin(int64_t h, const char* key) { return tinoxLcBegin(h, key); }
+const char* tinox_cache_value(void) { return tinoxLcValue(); }
+void tinox_cache_store(int64_t h, const char* key, const char* value, int64_t token) { tinoxLcStore(h, key, value, token); }
+void tinox_cache_abort(int64_t h, const char* key) { tinoxLcAbort(h, key); }
+// @CacheEvict: a cache that was never used holds nothing, so an unknown name is not an error.
+void tinox_cache_evict_named(const char* name) {
+    int64_t h = 0;
+    pthread_mutex_lock(&g_cache_registry_mu);
+    for (int i = 0; i < g_cache_registry_n; i++) if (strcmp(g_cache_registry[i].name, name) == 0) h = g_cache_registry[i].handle;
+    pthread_mutex_unlock(&g_cache_registry_mu);
+    if (h) tinoxLcEvictAll(h);
+}
+
 // First index >= from where needle occurs in the haystack, or -1. An empty needle is a hard error.
 int64_t tinoxBufFind(int64_t h, int64_t n, int64_t from) {
     TinoxBuf* hay = tinox_buf_of(h, "find");

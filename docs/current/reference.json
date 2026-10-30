@@ -66,6 +66,24 @@
       ]
     },
     {
+      "description": "@CacheEvict(\"Class.method\", ...) -- empties the named @Cacheable caches after the method completed normally (after its own @Transactional commit) and invalidates loads in flight",
+      "max_args": 8,
+      "min_args": 1,
+      "name": "CacheEvict",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
+      "description": "@Cacheable(ttlSeconds, maxEntries) -- caches the result per argument values in a bounded in-process cache (LRU, TTL, single-flight: concurrent identical misses run the method once). Parameters and result must be String/Int64/Int32/Bool; a method that throws caches nothing. The cache is shared by all instances of the class",
+      "max_args": 2,
+      "min_args": 2,
+      "name": "Cacheable",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "@Case(literal, ...) — one parameterized run of a @Test method; repeat for more cases",
       "max_args": 8,
       "min_args": 1,

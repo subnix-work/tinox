@@ -1,0 +1,9 @@
+@Entity
+@Table("items")
+class Item
+{
+    @Id @GeneratedValue
+    var id: Int64
+    @Column("price")
+    var price: Int64
+}

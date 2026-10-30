@@ -25,7 +25,30 @@ prices.evict("sku-7")        // after updating that row; prices.evictAll() for e
 - **Scope:** in-process only. Each instance of a program has its own cache; use short TTLs for data that other writers
   change. A shared backend is the Redis client (`tinox.core.redis`), not hidden behind this class.
 
-Not covered (yet): `@Cacheable` / `@CacheEvict` annotations, a Redis-backed variant, per-key TTLs.
+## Annotations: `@Cacheable` / `@CacheEvict`
 
-Verified in `tests/e2e/loading_cache` (sixteen concurrent callers cause one load -- repeated 20x with identical output --,
+```tinox
+class Catalog {
+    @Cacheable(60, 1000)                       // ttlSeconds, maxEntries
+    fn price(id: Int64) -> Int64 { ... }
+
+    @Transactional
+    @CacheEvict("Catalog.price")               // "Class.method" of a @Cacheable method; several allowed
+    fn setPrice(id: Int64, price: Int64) -> Nothing { ... }
+}
+```
+
+- The cache key is built from the argument values (strings length-prefixed, numbers tagged), so `("a","bc")` and
+  `("ab","c")` never collide. Parameters and the result must be `String`, `Int64`, `Int32` or `Bool` (a compile error
+  otherwise: nothing is serialized implicitly). A `String` result of `null` is not cached.
+- Backend: **in-process only**, one `LoadingCache` per annotated method, shared by all instances of the class -- so the
+  method must not depend on instance state. There is no hidden Redis backend: when several instances must share cached
+  data use `tinox.core.redis` explicitly (or accept TTL-bounded divergence between instances).
+- A method that throws caches nothing; the error reaches the caller untouched.
+- `@CacheEvict` empties the named caches only after the method **completed normally** -- after its own `@Transactional`
+  commit, because the evict wrapper sits outside the transaction wrapper. A rolled-back update leaves cache and data alone.
+  Loads that started before the eviction cannot store their (possibly stale) value afterwards.
+- A `@CacheEvict` naming a method that is not `@Cacheable` is a compile error; a method cannot be both.
+
+Verified in `tests/e2e/loading_cache` and `tests/e2e/cacheable_annotation` (annotation: repeat/argument keys/16 concurrent callers = 1 call/failure not cached/eviction), and `crates/tinox/tests/cache_transactions.rs` (SQLite: eviction after commit, rollback keeps the cache, six hammering readers never keep the old value, 10 rounds); `LoadingCache` (sixteen concurrent callers cause one load -- repeated 20x with identical output --,
 TTL expiry, LRU bound, failing loader, eviction racing a load).

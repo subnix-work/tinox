@@ -1,0 +1,40 @@
+import tinox.core.db
+import Catalog
+import Item
+
+class Main
+{
+    fnc reader(c: Catalog) -> Int64
+    {
+        var last: Int64 = 0
+        var i = 0
+        while (i < 40) {
+            last = c.price(1)
+            sleep(2)
+            i = i + 1
+        }
+        return last
+    }
+
+    fnc main() -> Int32
+    {
+        DB::of(Item).save(Item { id: 0, price: 1 })
+        const c = new Catalog()
+        println("initial " + c.price(1).toString())
+        // A failed update neither changes the row nor evicts the cache.
+        try { c.setPriceAndFail(1, 99) } catch (e: String) { println("failed update: " + e) }
+        println("after failed update " + c.price(1).toString())
+        // Readers hammer the cache while the price changes; afterwards nobody may see the old value.
+        scope {
+            var i = 0
+            while (i < 6) {
+                spawn Main::reader(c)
+                i = i + 1
+            }
+            sleep(40)
+            c.setPrice(1, 2)
+        }
+        println("after update " + c.price(1).toString())
+        return 0
+    }
+}

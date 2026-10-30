@@ -4883,6 +4883,9 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         }
         failure
     };
+    if let Some((class_name, message)) = tinox_typecheck::annotations::cache_errors(&ast.decls).into_iter().next() {
+        return Err(annotation_error(&[class_name.as_str()], message));
+    }
     if let Some((class_name, message)) = tinox_typecheck::annotations::foreign_key_errors(&ast.decls).into_iter().next() {
         return Err(annotation_error(&[class_name.as_str()], message));
     }
@@ -5369,6 +5372,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     codegen.set_entity_entries(entity_entries);
     codegen.set_ws_endpoints(ws_endpoints);
     codegen.set_amqp10_consumers(amqp10_consumers);
+    codegen.set_cache_methods(ann_result.cached_methods.clone(), ann_result.evict_methods.clone());
     codegen.set_scheduled_jobs(ann_result.scheduled_jobs.iter().map(|j| tinox_codegen::ScheduledJobEntry {
         class_name: j.class_name.clone(),
         method_name: j.method_name.clone(),
