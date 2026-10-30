@@ -11853,6 +11853,155 @@ void tinox_gauge_set(const char* name, int64_t value) {
 // every subsequent `cap - pos` well-defined (falls back to a safe,
 // no-op-but-correct snprintf(..., 0, ...) once full) at the cost of
 // silently truncating the output if the buffer genuinely runs out.
+// ---- Resilience: @Retry / @CircuitBreaker support (#527) ------------------------------------------
+// The compiler wraps annotated methods in a loop that calls these. State is per call site
+// ("Class.method", a compile-time constant), so metrics labels are bounded by the program text.
+#define TINOX_RES_SITES 256
+typedef struct {
+    int     used;
+    char    site[96];
+    int     state;            // 0 closed, 1 open, 2 half-open
+    int64_t failures;         // consecutive eligible failures while closed
+    int64_t opened_at_ms;
+    int64_t inflight_probes;
+    int64_t retries, rejections, opened_total, calls_failed, calls_ok;
+} TinoxResSite;
+static TinoxResSite g_res[TINOX_RES_SITES];
+static pthread_mutex_t g_res_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static TinoxResSite* res_site(const char* name) {
+    TinoxResSite* free_slot = NULL;
+    for (int i = 0; i < TINOX_RES_SITES; i++) {
+        if (g_res[i].used) { if (strcmp(g_res[i].site, name) == 0) return &g_res[i]; }
+        else if (!free_slot) free_slot = &g_res[i];
+    }
+    if (!free_slot) { fprintf(stderr, "tinox: too many @Retry/@CircuitBreaker sites (max %d)\n", TINOX_RES_SITES); exit(1); }
+    memset(free_slot, 0, sizeof(*free_slot));
+    free_slot->used = 1;
+    snprintf(free_slot->site, sizeof(free_slot->site), "%s", name);
+    return free_slot;
+}
+
+static int res_is_control(const char* err) {
+    return err && (strncmp(err, "Task cancelled", 14) == 0 || strncmp(err, "Task deadline exceeded", 22) == 0 ||
+                   strncmp(err, "Task service shutdown", 21) == 0);
+}
+
+// `eligible` = "A|B|C" error prefixes, empty = every failure.
+static int res_eligible(const char* err, const char* eligible) {
+    if (!eligible || !*eligible) return 1;
+    if (!err) return 0;
+    const char* p = eligible;
+    while (*p) {
+        const char* e = strchr(p, '|');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        if (n > 0 && strncmp(err, p, n) == 0) return 1;
+        if (!e) break;
+        p = e + 1;
+    }
+    return 0;
+}
+
+int64_t resilienceNow(void) { return http_clock_ms(); }
+
+// Breaker admission. 0 = rejected (circuit open), 1 = normal call, 2 = half-open probe.
+int64_t resilienceAllow(const char* site, int64_t threshold, int64_t open_ms, int64_t probes, const char* eligible) {
+    (void)threshold; (void)eligible;
+    pthread_mutex_lock(&g_res_mu);
+    TinoxResSite* s = res_site(site);
+    int64_t verdict = 1;
+    int64_t now = http_clock_ms();
+    if (s->state == 1 && now - s->opened_at_ms >= open_ms) { s->state = 2; s->inflight_probes = 0; }
+    if (s->state == 1) { s->rejections++; verdict = 0; }
+    else if (s->state == 2) {
+        if (s->inflight_probes < probes) { s->inflight_probes++; verdict = 2; }
+        else { s->rejections++; verdict = 0; }
+    }
+    pthread_mutex_unlock(&g_res_mu);
+    return verdict;
+}
+
+void resilienceRecord(const char* site, int64_t ticket, int64_t failed, const char* err, int64_t threshold, const char* eligible) {
+    pthread_mutex_lock(&g_res_mu);
+    TinoxResSite* s = res_site(site);
+    if (ticket == 2 && s->inflight_probes > 0) s->inflight_probes--;
+    if (failed && res_is_control(err)) { pthread_mutex_unlock(&g_res_mu); return; } // cancellation says nothing about the service
+    int bad = failed && res_eligible(err, eligible);
+    if (bad) s->calls_failed++; else s->calls_ok++;
+    if (ticket == 2) {
+        if (bad) { s->state = 1; s->opened_at_ms = http_clock_ms(); s->opened_total++; s->failures = 0; }
+        else if (s->state == 2) { s->state = 0; s->failures = 0; s->inflight_probes = 0; }
+    } else if (s->state == 0) {
+        if (!bad) s->failures = 0;
+        else if (++s->failures >= threshold) { s->state = 1; s->opened_at_ms = http_clock_ms(); s->opened_total++; s->failures = 0; }
+    }
+    pthread_mutex_unlock(&g_res_mu);
+}
+
+static uint64_t res_rand(void) {
+    static __thread uint64_t x = 0;
+    if (!x) x = (uint64_t)http_clock_ms() * 0x9E3779B97F4A7C15ULL ^ (uint64_t)(uintptr_t)&x;
+    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+    return x;
+}
+
+// Decides whether to run another attempt and, if so, waits out the backoff (cancellable).
+// `attempt` = attempts made so far. 1 = retry now, 0 = give up (caller rethrows the error).
+int64_t resilienceRetry(const char* site, int64_t attempt, const char* err, const char* eligible,
+                        int64_t max_attempts, int64_t backoff_ms, int64_t max_backoff_ms,
+                        int64_t jitter_pct, int64_t budget_ms, int64_t start_ms) {
+    if (res_is_control(err) || (err && strncmp(err, "CIRCUIT_OPEN", 12) == 0)) return 0;
+    if (!res_eligible(err, eligible)) return 0;
+    if (attempt >= max_attempts) return 0;
+    int64_t wait = backoff_ms;
+    for (int64_t i = 1; i < attempt && wait < max_backoff_ms; i++) wait *= 2;
+    if (max_backoff_ms > 0 && wait > max_backoff_ms) wait = max_backoff_ms;
+    if (jitter_pct > 0 && wait > 0) {
+        int64_t span = wait * jitter_pct / 100;
+        if (span > 0) wait += (int64_t)(res_rand() % (uint64_t)(2 * span + 1)) - span;
+        if (wait < 0) wait = 0;
+    }
+    int64_t now = http_clock_ms();
+    if (budget_ms > 0 && now - start_ms + wait >= budget_ms) return 0;
+    int64_t until = now + wait;
+    while (http_clock_ms() < until) {
+        if (task_cancellation(task_scope)) return 0;
+        int64_t left = until - http_clock_ms();
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = (left > 20 ? 20 : left) * 1000000L };
+        nanosleep(&ts, NULL);
+    }
+    if (task_cancellation(task_scope)) return 0;
+    pthread_mutex_lock(&g_res_mu);
+    res_site(site)->retries++;
+    pthread_mutex_unlock(&g_res_mu);
+    return 1;
+}
+
+static int tinox_resilience_metrics_text(char* buf, size_t cap) {
+    size_t pos = 0;
+    int any = 0;
+    pthread_mutex_lock(&g_res_mu);
+    for (int i = 0; i < TINOX_RES_SITES && pos + 1024 < cap; i++) {
+        TinoxResSite* s = &g_res[i];
+        if (!s->used) continue;
+        if (!any) {
+            pos += (size_t)snprintf(buf + pos, cap - pos,
+                "# TYPE tinox_resilience_retries_total counter\n# TYPE tinox_resilience_rejections_total counter\n"
+                "# TYPE tinox_resilience_breaker_opened_total counter\n# TYPE tinox_resilience_breaker_state gauge\n"
+                "# TYPE tinox_resilience_calls_failed_total counter\n# TYPE tinox_resilience_calls_ok_total counter\n");
+            any = 1;
+        }
+        pos += (size_t)snprintf(buf + pos, cap - pos,
+            "tinox_resilience_retries_total{site=\"%s\"} %lld\ntinox_resilience_rejections_total{site=\"%s\"} %lld\n"
+            "tinox_resilience_breaker_opened_total{site=\"%s\"} %lld\ntinox_resilience_breaker_state{site=\"%s\"} %d\n"
+            "tinox_resilience_calls_failed_total{site=\"%s\"} %lld\ntinox_resilience_calls_ok_total{site=\"%s\"} %lld\n",
+            s->site, (long long)s->retries, s->site, (long long)s->rejections, s->site, (long long)s->opened_total,
+            s->site, s->state, s->site, (long long)s->calls_failed, s->site, (long long)s->calls_ok);
+    }
+    pthread_mutex_unlock(&g_res_mu);
+    return (int)pos;
+}
+
 static void tinox_metrics_append(size_t* pos, size_t cap, int n) {
     if (n < 0) return;
     *pos += (size_t)n;
@@ -11863,7 +12012,7 @@ char* tinox_metrics_prometheus(void) {
     pthread_mutex_lock(&_tinox_metrics_mu);
     // Upper bound per entry: histogram lines repeat a (up to 255-byte)
     // name 5 times plus ~200 bytes of fixed text -- comfortably under 2048.
-    size_t cap = (size_t)(_tinox_counter_n + _tinox_gauge_n + 1) * 2048 + (size_t)_tinox_histogram_n * 8192 + 4096 + 64;
+    size_t cap = (size_t)(_tinox_counter_n + _tinox_gauge_n + 1) * 2048 + (size_t)_tinox_histogram_n * 8192 + 4096 + 64 + (size_t)TINOX_RES_SITES * 1024;
     char* buf = (char*)GC_malloc(cap);
     size_t pos = 0;
 
@@ -11908,6 +12057,7 @@ char* tinox_metrics_prometheus(void) {
         tinox_metrics_append(&pos, cap, n);
     }
     tinox_metrics_append(&pos, cap, tinox_limits_metrics_text(buf + pos, cap - pos));
+    tinox_metrics_append(&pos, cap, tinox_resilience_metrics_text(buf + pos, cap - pos));
     pthread_mutex_unlock(&_tinox_metrics_mu);
     return buf;
 }

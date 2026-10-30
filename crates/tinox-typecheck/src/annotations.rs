@@ -702,6 +702,36 @@ impl AnnotationProcessor {
         );
 
         registry.insert(
+            "Retry".to_string(),
+            AnnotationInfo {
+                name: "Retry".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 3,
+                max_args: 6,
+                description: "@Retry(maxAttempts, backoffMs, [\"ERROR_PREFIX\", ...][, maxBackoffMs, jitterPercent, budgetMs]) -- bounded retry with exponential backoff for the listed failures; requires @Idempotent (#527)".to_string(),
+            },
+        );
+        registry.insert(
+            "CircuitBreaker".to_string(),
+            AnnotationInfo {
+                name: "CircuitBreaker".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 2,
+                max_args: 4,
+                description: "@CircuitBreaker(failureThreshold, openMs[, [\"ERROR_PREFIX\", ...][, probes]]) -- opens after consecutive eligible failures, half-open probes after openMs; rejected calls throw \"CIRCUIT_OPEN: ...\" (#527)".to_string(),
+            },
+        );
+        registry.insert(
+            "Idempotent".to_string(),
+            AnnotationInfo {
+                name: "Idempotent".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 0,
+                description: "Declares that repeating the method is safe; required for @Retry (#527)".to_string(),
+            },
+        );
+        registry.insert(
             "Error".to_string(),
             AnnotationInfo {
                 name: "Error".to_string(),
@@ -2491,7 +2521,35 @@ pub fn validate_annotations(
     errors.extend(resolve_di_providers(&merged, &mut result));
     errors.extend(crate::dto_validation::validate_request_graphs(&source.decls,extra_decls));
     errors.extend(validate_error_declarations(&merged.decls));
+    errors.extend(validate_resilience_declarations(&merged.decls));
     for error in &mut errors { error.code = Some("TINOX-ANNOTATION".into()); }
+    errors
+}
+
+/// `@Retry` replays the method, so it must be declared `@Idempotent` explicitly (#527).
+fn validate_resilience_declarations(decls: &[tinox_parser::Decl]) -> Vec<Error> {
+    fn walk(decls: &[tinox_parser::Decl], errors: &mut Vec<Error>) {
+        for d in decls {
+            match &d.node {
+                DeclKind::Class(c) => {
+                    for m in &c.methods {
+                        if let Some(r) = m.annotations.iter().find(|a| a.name == "Retry") {
+                            if !m.annotations.iter().any(|a| a.name == "Idempotent") {
+                                errors.push(Error::new(
+                                    r.span,
+                                    format!("@Retry on '{}.{}' requires @Idempotent: replaying a method is never implicit", c.name, m.name),
+                                ));
+                            }
+                        }
+                    }
+                }
+                DeclKind::Namespace(ns) => walk(&ns.decls, errors),
+                _ => {}
+            }
+        }
+    }
+    let mut errors = Vec::new();
+    walk(decls, &mut errors);
     errors
 }
 
@@ -2595,6 +2653,23 @@ mod tests {
 
     fn valid(src: &str) -> Vec<Error> {
         validate_annotations(&parse(src), &[])
+    }
+
+    #[test]
+    fn retry_requires_idempotent_and_valid_arguments() {
+        let messages = |src: &str| valid(src).into_iter().map(|e| e.message).collect::<Vec<_>>().join(" | ");
+        let ok = "class S { @Retry(3, 10, [\"UNAVAILABLE\"])\n@Idempotent\nfn f() -> Int64 { return 1 } }";
+        assert!(messages(ok).is_empty(), "{}", messages(ok));
+        assert!(messages("class S { @Retry(3, 10, [\"UNAVAILABLE\"])\nfn f() -> Int64 { return 1 } }").contains("requires @Idempotent"));
+        // arguments are checked while parsing
+        let bad = |src: &str| {
+            let tokens = Lexer::new(src).tokenize().unwrap();
+            Parser::new(tokens).parse().err().map(|e| format!("{e:?}")).unwrap_or_default()
+        };
+        assert!(bad("class S { @Retry(1, 10, [\"X\"])\n@Idempotent\nfn f() -> Int64 { return 1 } }").contains("maxAttempts"));
+        assert!(bad("class S { @Retry(3, 10, [])\n@Idempotent\nfn f() -> Int64 { return 1 } }").contains("must not be empty"));
+        assert!(bad("class S { @CircuitBreaker(0, 10)\nfn f() -> Int64 { return 1 } }").contains("failureThreshold"));
+        assert!(bad("class S<T> { @CircuitBreaker(2, 10)\nfn f() -> Int64 { return 1 } }").contains("generic"));
     }
 
     #[test]

@@ -1,0 +1,48 @@
+class Flaky
+{
+    var calls: Int64
+    var failUntil: Int64
+
+    @Retry(4, 10, ["UNAVAILABLE"], 100, 0, 5000)
+    @Idempotent
+    fn fetch(x: Int64) -> Int64
+    {
+        this.calls = this.calls + 1
+        if (this.calls <= this.failUntil)
+        {
+            throw "UNAVAILABLE: try later"
+        }
+        return x * 2
+    }
+
+    @Retry(3, 5, ["UNAVAILABLE"], 50, 0, 5000)
+    @Idempotent
+    fn touch() -> Nothing
+    {
+        this.calls = this.calls + 1
+        throw "UNAVAILABLE: still down"
+    }
+
+    @Retry(3, 5, ["UNAVAILABLE", "TIMEOUT"], 50, 0, 5000)
+    @Idempotent
+    fn missing() -> Int64
+    {
+        this.calls = this.calls + 1
+        throw "NOT_FOUND: no such thing"
+    }
+
+    @Retry(10, 500, ["UNAVAILABLE"], 500, 0, 60000)
+    @Idempotent
+    fn slow() -> Int64
+    {
+        this.calls = this.calls + 1
+        throw "UNAVAILABLE: down"
+    }
+
+    @Retry(2, 1, ["X"])
+    @Idempotent
+    fnc plain(v: Int64) -> Int64
+    {
+        return v + 1
+    }
+}

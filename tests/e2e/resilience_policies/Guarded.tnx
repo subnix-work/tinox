@@ -1,0 +1,19 @@
+class Guarded
+{
+    var calls: Int64
+
+    @CircuitBreaker(3, 300, ["UNAVAILABLE"])
+    fn call(fail: Bool, domain: Bool) -> Int64
+    {
+        this.calls = this.calls + 1
+        if (fail)
+        {
+            throw "UNAVAILABLE: backend down"
+        }
+        if (domain)
+        {
+            throw "NOT_FOUND: no row"
+        }
+        return 7
+    }
+}
