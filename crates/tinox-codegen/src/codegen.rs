@@ -9817,6 +9817,28 @@ tr_done_{idx}:"#).unwrap();
                     let (r, rt) = self.convert_semantic_argument(r, rt, &expected, rhs)?;
                     (l, lt, r, rt)
                 } else { (l, lt, r, rt) };
+                // Differently sized integer scalars (a Bool `i1` against an
+                // `i64` list element, #580) are widened to the larger type
+                // so the instruction below sees one operand type.
+                let int_bits = |t: &str| -> Option<u32> {
+                    t.strip_prefix('i').filter(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())).and_then(|rest| rest.parse().ok())
+                };
+                let (l, lt, r, rt) = match (int_bits(&lt), int_bits(&rt)) {
+                    (Some(lb), Some(rb)) if lb != rb => {
+                        let wide = if lb > rb { lt.clone() } else { rt.clone() };
+                        let widen = |this: &mut Self, v: String, t: String, bits: u32| -> String {
+                            if t == wide { return v; }
+                            let c = this.temp();
+                            let op = if bits == 1 { "zext" } else { "sext" };
+                            writeln!(&mut this.ir, "{} = {} {} {} to {}", c, op, t, v, wide).unwrap();
+                            c
+                        };
+                        let l2 = widen(self, l, lt, lb);
+                        let r2 = widen(self, r, rt, rb);
+                        (l2, wide.clone(), r2, wide)
+                    }
+                    _ => (l, lt, r, rt),
+                };
                 match op {
                     tinox_parser::BinaryOp::Add => {
                         if lt == "i8*" || rt == "i8*" || lt == "i64*" || rt == "i64*" {
