@@ -31,10 +31,21 @@ namespace tinox.core.amqp10
         var flowCredit: Int64
         // index in the router's link table (-1 for session/connection inboxes)
         var slot: Int64
+        // Issue #540 (flow accounting). All of these are single words written by exactly one task, so
+        // a reader never sees a torn pair:
+        //  - link inbox: flowCredit holds the sender-side credit EDGE (delivery-count + link-credit of
+        //    the latest flow, mod 2^32); `taken` counts transfers the consumer took (consumer-written)
+        //  - session inbox: windowEdge is the peer's incoming-window EDGE (next-incoming-id +
+        //    incoming-window, mod 2^32; -1 = not announced), windowSeq changes with it, `received`
+        //    counts transfer frames the dispatcher routed to this session
+        var windowEdge: Int64
+        var windowSeq: Int64
+        var received: Int64
+        var taken: Int64
 
         fn create(capacity: Int64) -> Amqp10Inbox
         {
-            return Amqp10Inbox { frames: channel, permits: Semaphore::new(capacity), capacity: capacity, failure: "", failureSeen: false, flowSeq: 0, flowCredit: 0, slot: -1 }
+            return Amqp10Inbox { frames: channel, permits: Semaphore::new(capacity), capacity: capacity, failure: "", failureSeen: false, flowSeq: 0, flowCredit: 0, slot: -1, windowEdge: -1, windowSeq: 0, received: 0, taken: 0 }
         }
 
         // Called by the dispatcher only. Returns false when the inbox overflowed (and is now failed).

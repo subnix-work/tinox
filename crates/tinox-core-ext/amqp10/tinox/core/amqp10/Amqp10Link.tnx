@@ -42,6 +42,10 @@ namespace tinox.core.amqp10
         var sessionInbox: Amqp10Inbox
         var router: Amqp10Router
         var flowSeen: Int64
+        // Issue #540: the owning session (window accounting) and the receiver credit window that
+        // nextMessage() keeps topped up (0 = manual grantCredit() only)
+        var creditWindow: Int64
+        var session: Amqp10Session
 
         /*
          * role: false = sender (target carries the destination address,
@@ -140,11 +144,11 @@ namespace tinox.core.amqp10
 
             const f = inbox.take()
             if (f.frameType != 0) {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + inbox.why(f), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + inbox.why(f), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0, creditWindow: 0, session: session }
             }
             const p = Amqp10::decodePerformative(f.body)
             if (p.descriptor != 0x12) {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0, creditWindow: 0, session: session }
             }
             // Evaluate the broker's own unsettled field (position 7) —
             // only the tags themselves (not their state details, see the
@@ -166,7 +170,7 @@ namespace tinox.core.amqp10
                     _ => {}
                 }
             }
-            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: recoveredTags, inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
+            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: recoveredTags, inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0, creditWindow: 0, session: session }
         }
 
         /*
@@ -204,7 +208,29 @@ namespace tinox.core.amqp10
                 sleep_ms(1)
             }
             this.flowSeen = this.inbox.flowSeq
-            this.linkCredit = this.inbox.flowCredit
+            this.linkCredit = this.sendCredit()
+        }
+
+        // Sender credit now: the peer's credit edge (delivery-count + link-credit of its latest flow)
+        // minus what this link has already sent, modulo 2^32 (issue #540).
+        fn sendCredit() -> Int64
+        {
+            return Amqp10Session::serialDiff(this.inbox.flowCredit, this.deliveryCount)
+        }
+
+        /*
+         * Waits (cancellable, fails visibly when the connection dies) until the broker has granted at
+         * least one more credit than this link has used. errorMessage is set on failure.
+         */
+        fn awaitSendCredit() -> Nothing
+        {
+            while this.sendCredit() <= 0 {
+                this.awaitFlow()
+                if (this.errorMessage.len() > 0) {
+                    return
+                }
+            }
+            this.linkCredit = this.sendCredit()
         }
 
         /*
@@ -212,22 +238,30 @@ namespace tinox.core.amqp10
          * (receiver role — the broker may then send us up to `amount`
          * `transfer`s). No equivalent in 0-9-1, where `basic.consume`
          * immediately delivers without bound; here it's mandatory,
-         * otherwise the broker sends nothing at all.
+         * otherwise the broker sends nothing at all. The flow also carries the
+         * session's current window state (issue #540).
          */
         fn grantCredit(amount: Int64) -> Nothing
         {
-            var flowFields: List<Amqp10Value> = [
-                Amqp10Value::NullVal,               // next-incoming-id (not tracked in v1)
-                Amqp10Value::UIntVal(2147483647),   // incoming-window
-                Amqp10Value::UIntVal(0),            // next-outgoing-id
-                Amqp10Value::UIntVal(2147483647),   // outgoing-window
-                Amqp10Value::UIntVal(this.handle),
-                Amqp10Value::UIntVal(this.deliveryCount),
-                Amqp10Value::UIntVal(amount)
-            ]
+            var flowFields: List<Amqp10Value> = this.session.flowPrefix()
+            flowFields.push(Amqp10Value::UIntVal(this.handle))
+            flowFields.push(Amqp10Value::UIntVal(this.deliveryCount))
+            flowFields.push(Amqp10Value::UIntVal(amount))
             const flowBody = Amqp10::encodePerformative(0x13, flowFields)
             Amqp10::writeFrame(this.conn, 0, this.chanId, flowBody)
             this.linkCredit = amount
+        }
+
+        /*
+         * Like grantCredit(window), but nextMessage() keeps the credit topped up to `window`
+         * automatically (whenever half of it has been used), so a long-running consumer needs no
+         * manual replenishing and the broker can never have more than `window` unread transfers
+         * outstanding on this link. Keep `window` below the inbox bound (4096).
+         */
+        fn consumeWithWindow(window: Int64) -> Nothing
+        {
+            this.creditWindow = window
+            this.grantCredit(window)
         }
 
         /*
@@ -270,13 +304,9 @@ namespace tinox.core.amqp10
 
         fn publishCore(body: List<Int64>, contentType: String, txnState: Amqp10Value) -> Nothing
         {
-            if (this.linkCredit <= 0) {
-                this.awaitFlow()
+            if (this.sendCredit() <= 0) {
+                this.awaitSendCredit()
                 if (this.errorMessage.len() > 0) {
-                    return
-                }
-                if (this.linkCredit <= 0) {
-                    this.errorMessage = "no link credit received despite a flow frame"
                     return
                 }
             }
@@ -332,6 +362,14 @@ namespace tinox.core.amqp10
                 for i in 0..chunk.len() {
                     fullFrame.push(chunk[i])
                 }
+                // one slot of the peer's incoming window per transfer frame (issue #540)
+                while !this.session.tryReserveFrame() {
+                    if (this.session.inbox.failure != "") {
+                        this.errorMessage = "waiting for session window failed: " + this.session.inbox.failure
+                        return
+                    }
+                    sleep_ms(1)
+                }
                 Amqp10::writeFrame(this.conn, 0, this.chanId, fullFrame)
 
                 offset = offset + chunkSize
@@ -373,6 +411,9 @@ namespace tinox.core.amqp10
             if (descriptor != 0x14) {
                 return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "expected transfer (0x14), got descriptor=" + descriptor.toString() }
             }
+            // the transfer frame is out of the inbox: it no longer occupies our incoming window
+            this.inbox.taken = this.inbox.taken + 1
+            this.session.reopenWindow()
             var deliveryId: Int64 = -1
             if (fields.len() > 1) {
                 match fields[1] { UIntVal(n) => { deliveryId = n } _ => {} }
@@ -450,6 +491,9 @@ namespace tinox.core.amqp10
 
             this.deliveryCount = this.deliveryCount + 1
             this.linkCredit = this.linkCredit - 1
+            if (this.creditWindow > 0 && this.linkCredit <= this.creditWindow / 2) {
+                this.grantCredit(this.creditWindow)
+            }
             return Amqp10Message { body: body, contentType: contentType, deliveryId: deliveryId, ok: true, errorMessage: "" }
         }
 
@@ -601,18 +645,18 @@ namespace tinox.core.amqp10
 
             const f = inbox.take()
             if (f.frameType != 0) {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + inbox.why(f), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + inbox.why(f), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0, creditWindow: 0, session: session }
             }
             const p = Amqp10::decodePerformative(f.body)
             if (p.descriptor != 0x12) {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0, creditWindow: 0, session: session }
             }
             // Coordinator links never receive flow -- the broker accepts
             // declare/discharge transfers unconditionally regardless of
             // link credit (a control channel, not a message flow). v1
             // therefore generously grants itself credit instead of
             // waiting for a flow that never comes.
-            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 2147483647, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
+            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 2147483647, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0, creditWindow: 0, session: session }
         }
 
         /*

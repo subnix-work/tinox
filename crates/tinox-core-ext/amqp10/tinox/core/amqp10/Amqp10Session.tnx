@@ -2,6 +2,7 @@ module tinox.core.amqp10
 
 import tinox.core.socket
 import tinox.core.base64
+import tinox.core.semaphore
 
 namespace tinox.core.amqp10
 {
@@ -12,6 +13,16 @@ namespace tinox.core.amqp10
      * fixed (no real window tracking in v1 — a later `flow` addition
      * would add that for the actual message flow, `begin` itself only
      * needs plausible starting values).
+     *
+     * Issue #540 replaces the "generously fixed" windows with real accounting:
+     *   - sending: every transfer frame consumes one slot of the peer's incoming window (edge
+     *     = next-incoming-id + incoming-window, kept current by the dispatcher from begin and every
+     *     flow); with the window exhausted the sender waits (cancellable) for a flow that reopens it
+     *   - receiving: we advertise a bounded incoming window (INCOMING_WINDOW transfers); it is
+     *     reopened with a session flow whenever half of it has been consumed by the application
+     *     (counted per link in Amqp10Inbox.taken), so a conforming broker can never send more
+     *     unread transfers than the window, independent of the inbox bound
+     * All serial numbers wrap modulo 2^32 (RFC 1982 style, see serialDiff).
      *
      * Issue 76 gave every session its own channel; since issue #539 a
      * single connection-level dispatcher reads the socket and routes
@@ -32,6 +43,77 @@ namespace tinox.core.amqp10
         // register themselves there before they attach).
         var inbox: Amqp10Inbox
         var router: Amqp10Router
+        // Issue #540: next-outgoing-id (transfer frames reserved so far), the lock guarding it, and
+        // the incoming-window edge (consumed + window) we have advertised last
+        var nextOutgoing: Int64
+        var lock: Semaphore
+        var advertisedEdge: Int64
+
+        // Transfers the peer may send us before the application has consumed any (issue #540).
+        fnc incomingWindow() -> Int64
+        {
+            return 2048
+        }
+
+        // (edge - base) mod 2^32 as "how many may still be used"; a result in the upper half of the
+        // serial space means the base is already past the edge, i.e. nothing is available.
+        fnc serialDiff(edge: Int64, base: Int64) -> Int64
+        {
+            const d = (edge - base) & 4294967295
+            if (d > 2147483647) {
+                return 0
+            }
+            return d
+        }
+
+        /*
+         * Reserves one transfer frame in the peer's incoming window. Returns false when the window is
+         * exhausted (the caller waits and retries); true also while the peer has not announced a window.
+         */
+        fn tryReserveFrame() -> Bool
+        {
+            Semaphore::acquire(this.lock)
+            var ok: Bool = true
+            if (this.inbox.windowEdge >= 0) {
+                ok = Amqp10Session::serialDiff(this.inbox.windowEdge, this.nextOutgoing) > 0
+            }
+            if (ok) {
+                this.nextOutgoing = (this.nextOutgoing + 1) & 4294967295
+            }
+            Semaphore::release(this.lock)
+            return ok
+        }
+
+        // The four session fields of a flow frame: next-incoming-id, incoming-window, next-outgoing-id,
+        // outgoing-window, from the current state.
+        fn flowPrefix() -> List<Amqp10Value>
+        {
+            const rcvd = this.inbox.received & 4294967295
+            return [
+                Amqp10Value::UIntVal(rcvd),
+                Amqp10Value::UIntVal(Amqp10Session::serialDiff(this.advertisedEdge, rcvd)),
+                Amqp10Value::UIntVal(this.nextOutgoing),
+                Amqp10Value::UIntVal(2147483647)
+            ]
+        }
+
+        /*
+         * Called after the application consumed a transfer: once at least half of the window has been
+         * consumed since the last advertisement, tells the peer with a session-level flow.
+         */
+        fn reopenWindow() -> Nothing
+        {
+            Semaphore::acquire(this.lock)
+            const edge = (this.router.takenOn(this.chanId) + Amqp10Session::incomingWindow()) & 4294967295
+            if (Amqp10Session::serialDiff(edge, this.advertisedEdge) < Amqp10Session::incomingWindow() / 2) {
+                Semaphore::release(this.lock)
+                return
+            }
+            this.advertisedEdge = edge
+            var fields: List<Amqp10Value> = this.flowPrefix()
+            Semaphore::release(this.lock)
+            Amqp10::writeFrame(this.conn, 0, this.chanId, Amqp10::encodePerformative(0x13, fields))
+        }
 
         fn begin(connection: Amqp10Connection) -> Amqp10Session
         {
@@ -44,7 +126,7 @@ namespace tinox.core.amqp10
             var beginFields: List<Amqp10Value> = [
                 Amqp10Value::NullVal,             // remote-channel (only set in responses)
                 Amqp10Value::UIntVal(0),           // next-outgoing-id
-                Amqp10Value::UIntVal(2147483647),  // incoming-window
+                Amqp10Value::UIntVal(Amqp10Session::incomingWindow()),  // incoming-window (bounded, #540)
                 Amqp10Value::UIntVal(2147483647)   // outgoing-window
             ]
             const beginBody = Amqp10::encodePerformative(0x11, beginFields)
@@ -52,13 +134,13 @@ namespace tinox.core.amqp10
 
             const f = inbox.take()
             if (f.frameType != 0) {
-                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + inbox.why(f), nextLinkHandle: 0, inbox: inbox, router: connection.router }
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + inbox.why(f), nextLinkHandle: 0, inbox: inbox, router: connection.router, nextOutgoing: 0, lock: Semaphore::new(1), advertisedEdge: Amqp10Session::incomingWindow() }
             }
             const p = Amqp10::decodePerformative(f.body)
             if (p.descriptor != 0x11) {
-                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected begin (0x11), got descriptor=" + p.descriptor.toString(), nextLinkHandle: 0, inbox: inbox, router: connection.router }
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected begin (0x11), got descriptor=" + p.descriptor.toString(), nextLinkHandle: 0, inbox: inbox, router: connection.router, nextOutgoing: 0, lock: Semaphore::new(1), advertisedEdge: Amqp10Session::incomingWindow() }
             }
-            return Amqp10Session { conn: connection.conn, chanId: chanId, maxFrameSize: connection.maxFrameSize, errorMessage: "", nextLinkHandle: 0, inbox: inbox, router: connection.router }
+            return Amqp10Session { conn: connection.conn, chanId: chanId, maxFrameSize: connection.maxFrameSize, errorMessage: "", nextLinkHandle: 0, inbox: inbox, router: connection.router, nextOutgoing: 0, lock: Semaphore::new(1), advertisedEdge: Amqp10Session::incomingWindow() }
         }
 
         /*

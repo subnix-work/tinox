@@ -72,6 +72,18 @@ namespace tinox.core.amqp10
             }
         }
 
+        // Transfers the application has consumed from all links of the session (issue #540).
+        fn takenOn(sessionChan: Int64) -> Int64
+        {
+            var total: Int64 = 0
+            for i in 0..this.linkInboxes.len() {
+                if (this.linkSessions[i] == sessionChan) {
+                    total = total + this.linkInboxes[i].taken
+                }
+            }
+            return total
+        }
+
         fn failAll(reason: String) -> Nothing
         {
             this.connectionInbox.fail(reason)
@@ -146,6 +158,26 @@ namespace tinox.core.amqp10
                 this.unroutable = this.unroutable + 1
                 return true
             }
+            if (p.descriptor == 0x11 && p.fields.len() > 2) {
+                // the peer's initial incoming-window; our next-outgoing-id was 0 when we sent begin
+                const w = Amqp10Router::uint(p.fields[2])
+                if (w >= 0) {
+                    this.sessionInboxes[s].windowEdge = w
+                    this.sessionInboxes[s].windowSeq = this.sessionInboxes[s].windowSeq + 1
+                }
+            }
+            if (p.descriptor == 0x14) {
+                this.sessionInboxes[s].received = this.sessionInboxes[s].received + 1
+            }
+            if (p.descriptor == 0x13 && p.fields.len() > 1) {
+                // every flow carries the peer's session state (§2.7.4)
+                const nextIn = Amqp10Router::uint(p.fields[0])
+                const win = Amqp10Router::uint(p.fields[1])
+                if (nextIn >= 0 && win >= 0) {
+                    this.sessionInboxes[s].windowEdge = (nextIn + win) & 4294967295
+                    this.sessionInboxes[s].windowSeq = this.sessionInboxes[s].windowSeq + 1
+                }
+            }
             if (p.descriptor == 0x12 && p.fields.len() > 1) {
                 const name = this.nameOf(p.fields[0])
                 for i in 0..this.linkNames.len() {
@@ -175,9 +207,15 @@ namespace tinox.core.amqp10
                             if (p.descriptor == 0x13) {
                                 const inbox = this.linkInboxes[i]
                                 if (p.fields.len() > 6) {
-                                    inbox.flowCredit = Amqp10Router::uint(p.fields[6])
+                                    // credit edge = delivery-count + link-credit (mod 2^32); a flow
+                                    // lacking either carries no usable credit information
+                                    const dc = Amqp10Router::uint(p.fields[5])
+                                    const lc = Amqp10Router::uint(p.fields[6])
+                                    if (dc >= 0 && lc >= 0) {
+                                        inbox.flowCredit = (dc + lc) & 4294967295
+                                        inbox.flowSeq = inbox.flowSeq + 1
+                                    }
                                 }
-                                inbox.flowSeq = inbox.flowSeq + 1
                             } else {
                                 this.linkInboxes[i].post(f)
                             }
