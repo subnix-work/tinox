@@ -3027,9 +3027,35 @@ fn validate_error_declarations(decls: &[tinox_parser::Decl]) -> Vec<Error> {
                 errors.push(Error::new(ann.span, "@Error status must be an HTTP error status (400-599)"));
             }
         }
-        let has_message = c.fields.iter().any(|f| f.name == "message" && matches!(f.field_type, Type::String));
+        // `message` may be inherited from an @Error parent class.
+        let mut has_message = false;
+        let mut cur = Some(*c);
+        let mut hops = 0;
+        while let Some(k) = cur {
+            has_message |= k.fields.iter().any(|f| f.name == "message" && matches!(f.field_type, Type::String));
+            hops += 1;
+            cur = if hops > 64 { None } else { k.extends.as_deref().and_then(|p| all.iter().find(|x| x.name == p).copied()) };
+        }
         if !has_message {
             errors.push(Error::new(ann.span, format!("@Error class '{}' must declare `var message: String`", c.name)));
+        }
+        // A caught error is rebuilt from "CODE: message" alone, so extra fields would silently be lost.
+        if let Some(extra) = c.fields.iter().find(|f| f.name != "message") {
+            errors.push(Error::new(
+                ann.span,
+                format!("@Error class '{}' declares field '{}': error classes carry only `message` (it is all that travels with a thrown error)", c.name, extra.name),
+            ));
+        }
+    }
+    // A subclass of an error class is an error class too and needs its own code.
+    for c in &all {
+        if let Some(parent) = c.extends.as_deref() {
+            if error_classes.contains(parent) && !error_classes.contains(c.name.as_str()) {
+                errors.push(Error::new(
+                    c.span,
+                    format!("class '{}' extends the @Error class '{}' and must itself be annotated @Error(\"CODE\"[, status])", c.name, parent),
+                ));
+            }
         }
     }
     for c in &all {
@@ -3225,6 +3251,15 @@ mod tests {
 
     fn valid(src: &str) -> Vec<Error> {
         validate_annotations(&parse(src), &[])
+    }
+
+    #[test]
+    fn error_class_inheritance_rules() {
+        let messages = |src: &str| valid(src).into_iter().map(|e| e.message).collect::<Vec<_>>().join(" | ");
+        let base = "@Error(\"BASE\")\nclass Base { var message: String }\n";
+        assert_eq!(messages(&format!("{base}@Error(\"SUB\")\nclass Sub extends Base {{ }}")), "");
+        assert!(messages(&format!("{base}class Sub extends Base {{ }}")).contains("must itself be annotated @Error"));
+        assert!(messages("@Error(\"X\")\nclass X { var message: String\nvar extra: Int64 }").contains("carry only `message`"));
     }
 
     #[test]

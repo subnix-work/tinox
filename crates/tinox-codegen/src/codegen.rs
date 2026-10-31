@@ -546,6 +546,10 @@ pub struct CodeGen {
     enum_variant_payloads: HashMap<String, Vec<String>>,
     /// Set of enum type names (for type_to_llvm: enums are i64, not i64*)
     known_enum_types: HashSet<String>,
+    /// `@Error` class -> its program-unique code (#524).
+    error_class_codes: HashMap<String, String>,
+    /// `@Error` class -> ';'-joined codes of itself and every subclass (what `catch (e: Class)` matches).
+    error_catch_sets: HashMap<String, String>,
     /// variant name → owning enum name, but only while the name is UNIQUE across
     /// all enums seen so far; a second differently-owned sighting flips the entry
     /// to `None` (ambiguous). Lets `variant_discriminator_key` scope the
@@ -784,6 +788,8 @@ impl CodeGen {
             known_enum_variants: HashSet::new(),
             enum_variant_payloads: HashMap::new(),
             known_enum_types: HashSet::new(),
+            error_class_codes: HashMap::new(),
+            error_catch_sets: HashMap::new(),
             variant_owner: HashMap::new(),
             inline_functions: HashSet::new(),
             inline_methods: HashSet::new(),
@@ -2197,6 +2203,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @processKillInteractive(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @gcCollect()").unwrap();
         writeln!(&mut self.ir, "declare i64 @memoryUsage()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_error_matches(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_error_message(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @gcStat(i64)").unwrap();
         if !self.error_map.is_empty() {
             // Strong definition of the runtime's weak `tinox_error_table_data`: "CODE=status;..."
@@ -2252,6 +2260,34 @@ impl CodeGen {
             .map(|c| (c.name.clone(), c))
             .collect();
 
+        // Typed errors (#524): code per @Error class and, per class, the codes it catches (itself + subclasses).
+        for c in class_ast_map.values() {
+            if let Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))) =
+                c.annotations.iter().find(|a| a.name == "Error").and_then(|a| a.args.first())
+            {
+                self.error_class_codes.insert(c.name.clone(), code.clone());
+            }
+        }
+        for name in self.error_class_codes.keys().cloned().collect::<Vec<_>>() {
+            let mut codes: Vec<String> = Vec::new();
+            for (sub, code) in &self.error_class_codes {
+                let mut cur = Some(sub.as_str());
+                let mut hops = 0;
+                while let Some(n) = cur {
+                    if n == name {
+                        codes.push(code.clone());
+                        break;
+                    }
+                    hops += 1;
+                    if hops > 64 {
+                        break;
+                    }
+                    cur = class_ast_map.get(n).and_then(|c| c.extends.as_deref());
+                }
+            }
+            codes.sort();
+            self.error_catch_sets.insert(name, codes.join(";"));
+        }
         self.request_validation_schema = tinox_typecheck::dto_validation::document(&class_ast_map.iter().map(|(k,v)| (k.clone(),v.clone())).collect());
 
         // Pre-pass: register all enum type names so that method return type resolution
@@ -10065,6 +10101,20 @@ tr_done_{idx}:"#).unwrap();
                 }
             }
             StmtKind::Throw(expr) => {
+                // Typed error (#524): throw the stage-1 text "CODE: message".
+                let typed = self
+                    .infer_struct_type(expr, ctx)
+                    .and_then(|c| self.error_class_codes.get(&c).cloned())
+                    .map(|code| {
+                        let synth = |node: ExprKind| tinox_parser::Expr { node, span: expr.span, id: 0, file: expr.file.clone() };
+                        let msg = synth(ExprKind::FieldAccess { obj: Box::new(expr.clone()), field: "message".to_string() });
+                        synth(ExprKind::Binary {
+                            op: BinaryOp::Add,
+                            lhs: Box::new(synth(ExprKind::Literal(Literal::String(format!("{code}: "))))),
+                            rhs: Box::new(msg),
+                        })
+                    });
+                let expr = typed.as_ref().unwrap_or(expr);
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
                 let store_val = if val_ty == "double" || val_ty == "float" {
                     let cast = self.temp();
@@ -15886,7 +15936,12 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
         writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
         let mut catch_rethrow: Option<(String, String)> = None;
-        let rethrow_var = if finally.is_some() && !catches.is_empty() {
+        // Typed `catch (e: SomeError)` clauses may not match: the error then has to
+        // propagate (after `finally`), so those tries need the rethrow slot too (#524).
+        let typed_catch = |c: &CatchClause| matches!(&c.ty, Type::Named(n) if self.error_class_codes.contains_key(n));
+        let any_typed = catches.iter().any(|c| typed_catch(c));
+        let last_typed = catches.last().is_some_and(|c| typed_catch(c));
+        let rethrow_var = if (finally.is_some() || any_typed) && !catches.is_empty() {
             let v = format!("%__rethrow_{}__", self.temp_count);
             self.temp_count += 1;
             writeln!(&mut self.ir, "{} = alloca i64", v).unwrap();
@@ -15968,6 +16023,7 @@ tr_done_{idx}:"#).unwrap();
                 .map(|i| self.new_bb(&format!("catch_{}", i)))
                 .collect();
 
+            let unmatched_bb = self.new_bb("catch_unmatched");
             // Dispatch: jump to first clause.
             writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
             writeln!(&mut self.ir, "br label %{}", clause_bbs[0]).unwrap();
@@ -15990,6 +16046,34 @@ tr_done_{idx}:"#).unwrap();
                     .insert(catch.param.clone(), (llvm_ty.clone(), param_slot));
 
                 writeln!(&mut self.ir, "{}:", clause_bbs[i]).unwrap();
+                let typed_class = match &catch.ty {
+                    Type::Named(n) if self.error_class_codes.contains_key(n) => Some(n.clone()),
+                    _ => None,
+                };
+                if let Some(class) = &typed_class {
+                    // Only the first matching clause runs: test the thrown code against
+                    // the class and its subclasses, else try the next clause (#524).
+                    let raw = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, error_var).unwrap();
+                    let raw_p = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", raw_p, raw).unwrap();
+                    let set = self.error_catch_sets.get(class).cloned().unwrap_or_default();
+                    let lit = tinox_parser::Expr {
+                        node: ExprKind::Literal(Literal::String(set)),
+                        span: catch.span,
+                        id: 0,
+                        file: None,
+                    };
+                    let (codes, _) = self.gen_expr(&lit, ctx)?;
+                    let m = self.temp();
+                    writeln!(&mut self.ir, "{} = call i64 @tinox_error_matches(i8* {}, i8* {})", m, raw_p, codes).unwrap();
+                    let hit = self.temp();
+                    writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", hit, m).unwrap();
+                    let body_bb = self.new_bb(&format!("catch_{}_body", i));
+                    let miss = if i + 1 < clause_bbs.len() { clause_bbs[i + 1].clone() } else { unmatched_bb.clone() };
+                    writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", hit, body_bb, miss).unwrap();
+                    writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+                }
                 // Unique slot name — the same catch-param name in a later
                 // try/catch of this function must not redefine %<param>.
                 let param_slot_name = format!("{}_{}", catch.param, self.temp_count);
@@ -16004,7 +16088,33 @@ tr_done_{idx}:"#).unwrap();
                 )
                 .unwrap();
                 // Cast the stored i64 back to the catch param's type
-                let store_val = if llvm_ty != "i64" {
+                let store_val = if let Some(class) = &typed_class {
+                    // Rebuild the error object from the thrown "CODE: message" text.
+                    let raw_p = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", raw_p, err_val).unwrap();
+                    let msg = self.temp();
+                    writeln!(&mut self.ir, "{} = call i8* @tinox_error_message(i8* {})", msg, raw_p).unwrap();
+                    let hidden = format!("__errmsg_{}", self.temp_count);
+                    self.temp_count += 1;
+                    writeln!(&mut self.ir, "%{} = alloca i8*", hidden).unwrap();
+                    writeln!(&mut self.ir, "store i8* {}, i8** %{}", msg, hidden).unwrap();
+                    let hidden_slot = ctx.locals.len();
+                    ctx.locals.insert(hidden.clone(), ("i8*".to_string(), hidden_slot));
+                    ctx.local_slots.insert(hidden.clone(), hidden.clone());
+                    let mk = |node: ExprKind| tinox_parser::Expr { node, span: catch.span, id: 0, file: None };
+                    let obj = mk(ExprKind::StructLiteral {
+                        name: class.clone(),
+                        fields: vec![("message".to_string(), mk(ExprKind::Ident(hidden)))],
+                    });
+                    let (v, vt) = self.gen_expr(&obj, ctx)?;
+                    if vt != llvm_ty {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast {} {} to {}", c, vt, v, llvm_ty).unwrap();
+                        c
+                    } else {
+                        v
+                    }
+                } else if llvm_ty != "i64" {
                     let cast_val = self.temp();
                     if Self::is_float(&llvm_ty) {
                         writeln!(&mut self.ir, "{} = bitcast i64 {} to {}", cast_val, err_val, llvm_ty).unwrap();
@@ -16025,17 +16135,23 @@ tr_done_{idx}:"#).unwrap();
                 .unwrap();
                 self.gen_stmt_body(&catch.body, ctx)?;
 
-                let next = if i + 1 < clause_bbs.len() {
-                    clause_bbs[i + 1].clone()
-                } else {
-                    merge_target.clone()
-                };
+                // Only the first matching clause runs (#524): a handled error goes straight on.
+                let next = merge_target.clone();
                 let guard_bb = self.new_bb(&format!("catch_{}_ok", i));
                 writeln!(&mut self.ir, "br label %{}", guard_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", guard_bb).unwrap();
                 writeln!(&mut self.ir, "br label %{}", next).unwrap();
             }
             ctx.error_catch = saved_error_catch;
+            if last_typed {
+                // No clause matched: keep the error pending, run `finally`, then rethrow.
+                writeln!(&mut self.ir, "{}:", unmatched_bb).unwrap();
+                let pending = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", pending, error_var).unwrap();
+                let slot = rethrow_var.as_ref().expect("typed catch has a rethrow slot");
+                writeln!(&mut self.ir, "store i64 {}, i64* {}", pending, slot).unwrap();
+                writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
+            }
             if let Some((_, bb)) = &catch_rethrow {
                 writeln!(&mut self.ir, "{}:", bb).unwrap();
                 writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();

@@ -10975,6 +10975,32 @@ static int tinox_error_code_len(const char* text) {
     return (text[n] == ':' && n > 0) ? (int)n : 0;
 }
 
+// Typed errors (#524): a thrown `@Error` value travels as the string "CODE: message".
+// `codes` is a ';'-separated list (the caught class plus all its subclasses).
+// Returns 1 when the thrown text carries one of those codes.
+int64_t tinox_error_matches(const char* thrown, const char* codes) {
+    int clen = tinox_error_code_len(thrown);
+    if (clen <= 0 || !codes) return 0;
+    const char* p = codes;
+    while (*p) {
+        const char* end = strchr(p, ';');
+        size_t n = end ? (size_t)(end - p) : strlen(p);
+        if (n == (size_t)clen && memcmp(p, thrown, n) == 0) return 1;
+        if (!end) break;
+        p = end + 1;
+    }
+    return 0;
+}
+
+// The message part of a thrown "CODE: message" (the whole text if it has no code).
+char* tinox_error_message(const char* thrown) {
+    if (!thrown) return GC_strdup("");
+    int clen = tinox_error_code_len(thrown);
+    const char* m = clen > 0 ? thrown + clen + 1 : thrown;
+    while (clen > 0 && *m == ' ') m++;
+    return GC_strdup(m);
+}
+
 // Writes the standard error envelope with an explicit status (shared by handler errors and the
 // browser-security guards).
 static void tinox_http_error_envelope(int64_t context, int status, const char* code, const char* message) {

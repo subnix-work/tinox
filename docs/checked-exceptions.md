@@ -1,9 +1,19 @@
 # Checked exceptions: `@Error`, `@Throws` (design proposal)
 
-Status: **design for review — enforcement is not implemented.** What exists today
-(issue #524): `@ErrorMap` and the structured HTTP error envelope (stage 1), and the
-*declaration-level* surface of `@Error` and `@Throws` (they parse and are validated, they
-change no runtime behaviour). Nothing below under "Proposed" is in the compiler yet.
+Status: **decided; stages 1-2 implemented, the `@Throws` checker (stage 3) is not.**
+Decisions (owner, 2026-10-31): error classes **may extend each other**, and every failure class
+in the table of section 3 takes **Option B** (typed errors / `Result`-returning APIs); task
+cancellation, deadline and shutdown stay a separate non-catchable control signal.
+
+Implemented (issue #524): `@ErrorMap` and the structured HTTP error envelope (stage 1);
+`@Error`/`@Throws` declarations; typed `throw X { message: ... }`; `catch (e: X)` matching the
+class **and its subclasses**, where only the first matching clause runs and an unmatched error
+propagates (after `finally`). `throw "text"` and `catch (e: String)` remain valid (a `String`
+clause catches everything, typed errors included, as their `"CODE: message"` text).
+Constraints that follow from the representation: an `@Error` class carries only `message`
+(extra fields would be lost), a subclass of an `@Error` class needs its own `@Error` code, and
+the code stays program-unique. Nothing under "Proposed" about `@Throws` enforcement is in the
+compiler yet.
 
 ## Goal
 
@@ -66,7 +76,7 @@ Further rules:
 Diagnostics name the call site, the missing error class, and the two fixes (catch it / add it
 to `@Throws`), in the existing diagnostic envelope.
 
-### 3. The open decision: implicit failures
+### 3. Implicit failures (decided: Option B for every row)
 
 Java's "runtime exceptions" correspond to failures that today throw implicitly. The
 requirement "no runtime exceptions" forces a decision per class of failure — please choose:

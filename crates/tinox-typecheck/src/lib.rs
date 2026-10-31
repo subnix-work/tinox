@@ -458,6 +458,8 @@ pub struct TypeChecker {
     interface_extends: HashMap<String, (Vec<String>, tinox_common::Span)>, // interface_name -> (parent_names, span)
     interface_implementations: HashMap<String, Vec<String>>, // class_name -> [interface_names]
     class_parents: HashMap<String, String>, // child_class_name -> parent_class_name
+    /// Classes annotated `@Error`: throwable and catchable by class (#524).
+    error_classes: HashSet<String>,
     injected_fields: HashSet<String>,
     request_scoped_classes: HashSet<String>,
     current_class: Option<String>, // class currently being type-checked
@@ -1388,6 +1390,7 @@ impl TypeChecker {
             interface_extends: HashMap::new(),
             interface_implementations: HashMap::new(),
             class_parents: HashMap::new(),
+            error_classes: HashSet::new(),
             injected_fields: HashSet::new(),
             request_scoped_classes: HashSet::new(),
             current_class: None,
@@ -1818,6 +1821,9 @@ impl TypeChecker {
                     }
                     if let Some(parent) = &c.extends {
                         self.class_parents.insert(c.name.clone(), parent.clone());
+                    }
+                    if c.annotations.iter().any(|a| a.name == "Error") {
+                        self.error_classes.insert(c.name.clone());
                     }
                     // Register class->interface(s) up front, not lazily at the
                     // end of check_class(): a class-to-interface assignment
@@ -2856,7 +2862,7 @@ impl TypeChecker {
             StmtKind::Throw(expr) => {
                 let ty = self.infer_type(expr);
                 let ty_str = ty.to_string();
-                if ty_str != "String" && ty != ValueType::Any {
+                if ty_str != "String" && ty != ValueType::Any && !self.error_classes.contains(&ty_str) {
                     self.errors
                         .push(TypeError::ThrowTypeMismatch(ty_str, expr.span).to_error());
                 }
@@ -2874,11 +2880,14 @@ impl TypeChecker {
                     // any other type could never match yet used to catch
                     // everything and re-type the value.
                     let catch_ty = Self::type_to_value(&catch.ty);
-                    if catch_ty != ValueType::String && catch_ty != ValueType::Any {
+                    if catch_ty != ValueType::String
+                        && catch_ty != ValueType::Any
+                        && !self.error_classes.contains(&catch_ty.to_string())
+                    {
                         self.errors.push(Error::new(
                             catch.span,
                             format!(
-                                "catch clause type must be String (the only throwable type), found {}",
+                                "catch clause type must be String or an @Error class, found {}",
                                 catch_ty.display()
                             ),
                         ));
@@ -7662,6 +7671,14 @@ return 0 }");
             "  }\n",
             "}"
         ));
+    }
+
+    #[test]
+    fn test_typed_throw_and_catch_of_error_classes() {
+        let decl = "@Error(\"E_ONE\", 409)\nclass EOne { var message: String }\nclass Plain { var message: String }\n";
+        ok(&format!("{decl}fn f() {{ try {{ throw EOne {{ message: \"x\" }} }} catch e: EOne {{ }} }}"));
+        err_contains(&format!("{decl}fn f() {{ throw Plain {{ message: \"x\" }} }}"), "throw requires");
+        err_contains(&format!("{decl}fn f() {{ try {{ throw \"a\" }} catch e: Plain {{ }} }}"), "String or an @Error class");
     }
 
     #[test]

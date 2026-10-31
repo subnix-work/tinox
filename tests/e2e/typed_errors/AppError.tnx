@@ -1,0 +1,2 @@
+@Error("APP_ERROR", 500)
+class AppError { var message: String }
