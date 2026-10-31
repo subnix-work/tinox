@@ -67,6 +67,7 @@
     "mod-tpl",
     "mod-trie",
     "mod-ui",
+    "mod-unicode",
     "mod-uri",
     "mod-uuid",
     "mod-validation",
