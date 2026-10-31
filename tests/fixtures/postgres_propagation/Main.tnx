@@ -21,6 +21,8 @@ class Main
         f.independentFailsOuterContinues()
         println("independent sees outer: " + f.outerThenIndependentCount().toString())
         f.nestedStandalone()
+        const wanted: List<String> = ["n-outer-1", "m-outer", "nope"]
+        println("in-count: " + f.countIn(wanted).toString())
         return 0
     }
 }

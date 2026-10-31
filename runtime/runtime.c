@@ -1551,6 +1551,9 @@ typedef struct {
 //   TINOX_MAX_CONNECTIONS       open HTTP/1 connections, all workers (4096)
 //   TINOX_MAX_TASKS             concurrently running `spawn` threads (4096)
 //   TINOX_MAX_WS_CONNECTIONS    concurrently open WebSocket connections (1024)
+//   TINOX_MAX_BODY_BYTES        largest HTTP/1 request body (4 MiB); larger ones get 413. The
+//                               whole body is held in memory per request in flight, so budget
+//                               max body x concurrent uploads (issue #542)
 //   TINOX_QUEUE_WAIT_MS         how long `spawn` / a WebSocket accept may
 //                               wait for a free slot before the request is
 //                               rejected (default 0 = reject immediately)
@@ -1575,6 +1578,7 @@ typedef struct {
     int64_t max_tasks;
     int64_t max_ws_connections;
     int64_t queue_wait_ms;
+    int64_t max_body_bytes;
 } TinoxLimits;
 
 static TinoxLimits g_limits;
@@ -1721,6 +1725,7 @@ static void tinox_limits_init_once(void) {
     g_limits.max_tasks = tinox_limit_env("TINOX_MAX_TASKS", 4096, 1, 1000000);
     g_limits.max_ws_connections = tinox_limit_env("TINOX_MAX_WS_CONNECTIONS", 1024, 1, 1000000);
     g_limits.queue_wait_ms = tinox_limit_env("TINOX_QUEUE_WAIT_MS", 0, 0, 600000);
+    g_limits.max_body_bytes = tinox_limit_env("TINOX_MAX_BODY_BYTES", 4 * 1024 * 1024, 1024, 1073741824LL);
     pthread_condattr_t ca;
     pthread_condattr_init(&ca);
     pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
@@ -1810,7 +1815,7 @@ char* tinox_limits_json(void) {
         "\"connectionsOpen\":%lld,\"connectionsRejected\":%lld,"
         "\"tasksActive\":%lld,\"tasksRejected\":%lld,"
         "\"websocketConnectionsActive\":%lld,\"websocketConnectionsRejected\":%lld,"
-        "\"queueWaiting\":%lld,\"queueWaitMaxMs\":%lld,\"queueTimeouts\":%lld}",
+        "\"queueWaiting\":%lld,\"queueWaitMaxMs\":%lld,\"queueTimeouts\":%lld,\"maxBodyBytes\":%lld}",
         (long long)l->cpus, l->cpu_source, (long long)l->http_workers,
         (long long)l->max_connections, (long long)l->max_tasks,
         (long long)l->max_ws_connections, (long long)l->queue_wait_ms,
@@ -1818,7 +1823,7 @@ char* tinox_limits_json(void) {
         (long long)atomic_load(&g_active_tasks), (long long)atomic_load(&g_rejected_tasks),
         (long long)atomic_load(&g_active_ws), (long long)atomic_load(&g_rejected_ws),
         (long long)atomic_load(&g_waiting), (long long)atomic_load(&g_wait_max_ms),
-        (long long)atomic_load(&g_wait_timeouts));
+        (long long)atomic_load(&g_wait_timeouts), (long long)l->max_body_bytes);
     return buf;
 }
 
@@ -3661,6 +3666,23 @@ void tinoxBufWriteFile(const char* path, int64_t h) {
         fprintf(stderr, "runtime error: error closing file: %s\n", strerror(errno));
         exit(1);
     }
+}
+
+// Creates a NEW file (O_EXCL, never follows a symlink, mode 0600) with exactly the buffer's bytes. Returns 0, or the
+// errno of the failure; a partially written file is removed. Used for upload spooling (issue #542).
+int64_t tinoxBufWriteFileExclusive(const char* path, int64_t h) {
+    TinoxBuf* b = tinox_buf_of(h, "writeFileExclusive");
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return errno;
+    int64_t off = 0;
+    while (off < b->len) {
+        ssize_t n = write(fd, b->data + off, (size_t)(b->len - off));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { int e = errno ? errno : EIO; close(fd); unlink(path); return e; }
+        off += n;
+    }
+    if (close(fd) != 0) { int e = errno; unlink(path); return e; }
+    return 0;
 }
 
 // Streaming counterparts of tinoxFileReadChunk/WriteChunk on the same
@@ -6916,11 +6938,13 @@ static __thread size_t g_recv_cap = 0;
 
 // Bug 96: moved up from the route-based API section below (where it was
 // defined but never referenced) so conn_read_request() can enforce it.
-#define TINOX_MAX_BODY   (4 * 1024 * 1024)  /* 4 MB */
+// The cap is TINOX_MAX_BODY_BYTES (default 4 MiB, see the limits block above).
 
 // Reads a full HTTP/1.1 request from the connection into g_recv_buf (static, not freed by caller).
 // Works for both plaintext (ssl==NULL) and TLS connections via conn_recv.
 static char* conn_read_request(TinoxConn* c) {
+    // A large upload grew this per-thread buffer; do not keep tens of megabytes pinned per worker.
+    if (g_recv_buf && g_recv_cap > (size_t)16 * 1024 * 1024) { free(g_recv_buf); g_recv_buf = NULL; }
     if (!g_recv_buf) { g_recv_cap = 4096; g_recv_buf = (char*)malloc(g_recv_cap); }
     size_t used = 0;
     char* buf = g_recv_buf;
@@ -6968,7 +6992,7 @@ static char* conn_read_request(TinoxConn* c) {
             // allocation exactly like the clamp did (we never grow `cap`
             // past what a request under the cap needs), just via
             // rejection instead of quiet corruption.
-            if (body_len < 0 || body_len > TINOX_MAX_BODY) {
+            if (body_len < 0 || body_len > tinox_limits()->max_body_bytes) {
                 static const char* body413 = "Payload Too Large\n";
                 char resp413[256];
                 int rn = snprintf(resp413, sizeof(resp413),
@@ -13056,7 +13080,21 @@ static void _stmt_cache_put(const char* sql, sqlite3_stmt* stmt) {
 // (_stmt_cache_put's eviction path) while another is still using it.
 static pthread_mutex_t _tinox_sqlite_mu = PTHREAD_MUTEX_INITIALIZER;
 
-void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_params) {
+void* tinox_db_exec(void* conn, const char* sql_in, const char** params, int64_t n_params) {
+    // The ORM writes PostgreSQL-style `$n` placeholders. SQLite treats `$name` as a NAME and numbers names in order
+    // of first appearance, which only matches the ORM's numbering while the placeholders appear in order. `?NNN` is
+    // SQLite's explicitly numbered form (same length, so the rewrite is a plain character swap).
+    size_t sql_len = strlen(sql_in);
+    char* sql_buf = (char*)malloc(sql_len + 1);
+    memcpy(sql_buf, sql_in, sql_len + 1);
+    char quote = 0;
+    for (size_t i = 0; i < sql_len; i++) {
+        char ch = sql_buf[i];
+        if (quote) { if (ch == quote) quote = 0; }
+        else if (ch == '\'' || ch == '"' || ch == '`') quote = ch;
+        else if (ch == '$' && sql_buf[i + 1] >= '0' && sql_buf[i + 1] <= '9') sql_buf[i] = '?';
+    }
+    const char* sql = sql_buf;
     pthread_mutex_lock(&_tinox_sqlite_mu);
     sqlite3* db = (sqlite3*)conn;
     sqlite3_stmt* stmt = _stmt_cache_get(sql);
@@ -13067,8 +13105,11 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
             fprintf(stderr, "SQLite prepare error: %s\n", sqlite3_errmsg(db));
             pthread_mutex_unlock(&_tinox_sqlite_mu);
+            free(sql_buf);
             return NULL;
         }
+        // The statement cache keeps the SQL pointer: give it a copy that lives forever (one per distinct statement).
+        sql = strdup(sql_buf);
         _stmt_cache_put(sql, stmt);
     }
     for (int i = 0; i < (int)n_params; i++) {
@@ -13100,6 +13141,7 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
         sqlite3_reset(stmt);
         if (rows) free(rows);
         pthread_mutex_unlock(&_tinox_sqlite_mu);
+        free(sql_buf);
         return NULL;
     }
     // Do NOT finalize — statement is cached for reuse
@@ -13119,6 +13161,7 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
     }
     if (rows) free(rows);
     pthread_mutex_unlock(&_tinox_sqlite_mu);
+    free(sql_buf);
     return (void*)res;
 }
 
@@ -14169,6 +14212,79 @@ char* tinox_int_to_param(int64_t val) {
     char* buf = (char*)GC_malloc(32);
     snprintf(buf, 32, "%ld", (long)val);
     return buf;
+}
+
+// ---- `list.contains(x.field)` in ORM filters (issue #534) ----
+// A runtime-sized `col IN (...)`: ONE query for a whole batch of keys, which is how a list/detail view loads its
+// related rows without a query per row. The list is capped (hard error above the cap) and padded to the next power
+// of two with its last element, so only a handful of distinct SQL texts ever exist -- they are interned forever
+// because the SQLite driver keeps the SQL pointer of cached statements.
+#define TINOX_ORM_IN_MAX 1000
+
+char** tinox_orm_in_params(int64_t* list, int64_t is_string, int64_t* out_k) {
+    TinoxArray* arr = (TinoxArray*)list;
+    int64_t len = arr ? arr->len : 0;
+    if (len > TINOX_ORM_IN_MAX) {
+        fprintf(stderr, "runtime error: ORM list.contains(...) with %lld keys exceeds the limit of %d; load the keys in chunks\n", (long long)len, TINOX_ORM_IN_MAX);
+        exit(1);
+    }
+    int64_t k = 0;
+    if (len > 0) { k = 1; while (k < len) k *= 2; }
+    char** params = (char**)GC_malloc(sizeof(char*) * (size_t)(k > 0 ? k : 1));
+    for (int64_t i = 0; i < k; i++) {
+        int64_t v = arr->data[i < len ? i : len - 1];
+        params[i] = is_string ? (char*)(intptr_t)v : tinox_int_to_param(v);
+    }
+    *out_k = k;
+    return params;
+}
+
+char** tinox_orm_params_merge(char** a, int64_t na, char** b, int64_t nb) {
+    char** out = (char**)GC_malloc(sizeof(char*) * (size_t)(na + nb > 0 ? na + nb : 1));
+    for (int64_t i = 0; i < na; i++) out[i] = a[i];
+    for (int64_t i = 0; i < nb; i++) out[na + i] = b[i];
+    return out;
+}
+
+static struct { const char* tmpl; int64_t first; int64_t k; char* sql; } g_orm_in_cache[1024];
+static int g_orm_in_cache_n = 0;
+static pthread_mutex_t g_orm_in_mu = PTHREAD_MUTEX_INITIALIZER;
+
+const char* tinox_orm_expand_in(const char* tmpl, int64_t first_no, int64_t k) {
+    pthread_mutex_lock(&g_orm_in_mu);
+    for (int i = 0; i < g_orm_in_cache_n; i++) {
+        if (g_orm_in_cache[i].tmpl == tmpl && g_orm_in_cache[i].first == first_no && g_orm_in_cache[i].k == k) {
+            const char* sql = g_orm_in_cache[i].sql;
+            pthread_mutex_unlock(&g_orm_in_mu);
+            return sql;
+        }
+    }
+    if (g_orm_in_cache_n == 1024) {
+        pthread_mutex_unlock(&g_orm_in_mu);
+        fprintf(stderr, "runtime error: too many distinct ORM IN-list query shapes\n");
+        exit(1);
+    }
+    const char* marker = strstr(tmpl, "@IN@");
+    size_t head = marker ? (size_t)(marker - tmpl) : strlen(tmpl);
+    size_t cap = strlen(tmpl) + (size_t)(k > 0 ? k : 1) * 24 + 16;
+    char* sql = (char*)malloc(cap);
+    memcpy(sql, tmpl, head);
+    size_t pos = head;
+    if (k == 0) {
+        pos += (size_t)snprintf(sql + pos, cap - pos, "NULL");
+    } else {
+        for (int64_t i = 0; i < k; i++) {
+            pos += (size_t)snprintf(sql + pos, cap - pos, "%s$%lld", i ? "," : "", (long long)(first_no + i));
+        }
+    }
+    if (marker) snprintf(sql + pos, cap - pos, "%s", marker + 4);
+    g_orm_in_cache[g_orm_in_cache_n].tmpl = tmpl;
+    g_orm_in_cache[g_orm_in_cache_n].first = first_no;
+    g_orm_in_cache[g_orm_in_cache_n].k = k;
+    g_orm_in_cache[g_orm_in_cache_n].sql = sql;
+    g_orm_in_cache_n++;
+    pthread_mutex_unlock(&g_orm_in_mu);
+    return sql;
 }
 
 // ---- Entry point ----

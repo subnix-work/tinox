@@ -588,6 +588,9 @@ pub struct CodeGen {
     scheduled_jobs: Vec<ScheduledJobEntry>,
     outbox_dispatchers: Vec<OutboxDispatcherEntry>,
     cached_methods: HashMap<(String, String), (i64, i64)>,
+    /// The one `list.contains(x.field)` predicate of the ORM query being lowered: (list register, elements are strings)
+    orm_in: Option<(String, bool)>,
+    orm_in_conflict: bool,
     evict_methods: HashMap<(String, String), Vec<String>>,
     /// AMQP-0-9-1 consumers from @Amqp091Consumer annotation processing (Issue #126)
     amqp091_consumers: Vec<Amqp091ConsumerEntry>,
@@ -795,6 +798,8 @@ impl CodeGen {
             scheduled_jobs: Vec::new(),
             outbox_dispatchers: Vec::new(),
             cached_methods: HashMap::new(),
+            orm_in: None,
+            orm_in_conflict: false,
             evict_methods: HashMap::new(),
             amqp091_consumers: Vec::new(),
             http3_rest_controller: None,
@@ -2080,6 +2085,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_counter_inc(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_message_handler_failed(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_cache_named(i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8** @tinox_orm_in_params(i64*, i64, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i8** @tinox_orm_params_merge(i8**, i64, i8**, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_orm_expand_in(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_cache_begin(i64, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_cache_value()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_cache_store(i64, i8*, i8*, i64)").unwrap();
@@ -7820,6 +7828,24 @@ tr_done_{idx}:"#).unwrap();
             }
             ExprKind::MethodCall { obj, method, args } => {
                 let fields_clone = fields.to_vec();
+                // `keys.contains(x.field)`: a runtime-sized IN list (one query for a whole batch of keys).
+                if method == "contains" && args.len() == 1 && orm_extract_field(obj, param_name, &fields_clone).is_none() {
+                    if let Some(col) = orm_extract_field(&args[0], param_name, &fields_clone) {
+                        let col = col.to_string();
+                        let is_string = fields_clone.iter().any(|f| f.column_name == col && f.field_llvm_type == "i8*" && f.enum_name.is_none());
+                        if self.orm_in.is_some() {
+                            self.orm_in_conflict = true;
+                            return None;
+                        }
+                        let (list_reg, list_ty) = self.gen_expr(obj, ctx).ok()?;
+                        if list_ty != "i64*" {
+                            return None;
+                        }
+                        self.orm_in = Some((list_reg, is_string));
+                        // The CASE makes an empty list "matches nothing" even under `!`, where a bare IN (NULL) would yield NULL.
+                        return Some((format!("(CASE WHEN {col} IN (@IN@) THEN 1 ELSE 0 END = 1)"), vec![]));
+                    }
+                }
                 if let Some(col) = orm_extract_field(obj, param_name, &fields_clone) {
                     let col = col.to_string();
                     if args.len() == 1 && matches!(method.as_str(), "startsWith" | "endsWith" | "contains") {
@@ -7971,6 +7997,8 @@ tr_done_{idx}:"#).unwrap();
         }
         let known_fields = || fields.iter().map(|f| f.field_name.as_str()).collect::<Vec<_>>().join(", ");
 
+        self.orm_in = None;
+        self.orm_in_conflict = false;
         for (param_name, body) in &chain.filters {
             let param_name = param_name.clone();
             let body = body.clone();
@@ -7979,6 +8007,9 @@ tr_done_{idx}:"#).unwrap();
                 Some((sql, params)) => {
                     where_parts.push(sql);
                     all_params.extend(params);
+                }
+                None if self.orm_in_conflict => {
+                    return Err(orm_error("a query can use list.contains(x.field) only once (the keys of one IN list are expanded at run time)".to_string()));
                 }
                 None => {
                     return Err(orm_error(format!(
@@ -8038,15 +8069,34 @@ tr_done_{idx}:"#).unwrap();
         let sql_label = format!("__orm_query_{}", self.strings.len());
         let sql_len = full_sql.len() + 1;
         self.strings.insert(sql_label.clone(), full_sql);
-        let sql_ptr = self.temp();
+        let mut sql_ptr = self.temp();
         writeln!(&mut self.ir, "  {sql_ptr} = getelementptr [{sql_len} x i8], [{sql_len} x i8]* @{sql_label}, i64 0, i64 0").unwrap();
 
         // Allocate params array and fill it
-        let n_params = all_params.len() as i64;
-        let params_arr = self.temp();
-        writeln!(&mut self.ir, "  {params_arr} = call i8** @tinox_params_alloc(i64 {n_params})").unwrap();
+        let n_scalar = all_params.len() as i64;
+        let mut n_params = n_scalar.to_string();
+        let mut params_arr = self.temp();
+        writeln!(&mut self.ir, "  {params_arr} = call i8** @tinox_params_alloc(i64 {n_scalar})").unwrap();
         for (i, param_reg) in all_params.iter().enumerate() {
             writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {params_arr}, i64 {i}, i8* {param_reg})").unwrap();
+        }
+        // `list.contains(x.field)`: the IN list is expanded at run time -- its placeholders follow the scalar ones.
+        if let Some((list_reg, is_string)) = self.orm_in.take() {
+            let k_slot = self.temp();
+            let in_params = self.temp();
+            let k = self.temp();
+            writeln!(&mut self.ir, "  {k_slot} = alloca i64").unwrap();
+            writeln!(&mut self.ir, "  {in_params} = call i8** @tinox_orm_in_params(i64* {list_reg}, i64 {}, i64* {k_slot})", i64::from(is_string)).unwrap();
+            writeln!(&mut self.ir, "  {k} = load i64, i64* {k_slot}").unwrap();
+            let expanded = self.temp();
+            writeln!(&mut self.ir, "  {expanded} = call i8* @tinox_orm_expand_in(i8* {sql_ptr}, i64 {}, i64 {k})", n_scalar + 1).unwrap();
+            sql_ptr = expanded;
+            let merged = self.temp();
+            writeln!(&mut self.ir, "  {merged} = call i8** @tinox_orm_params_merge(i8** {params_arr}, i64 {n_scalar}, i8** {in_params}, i64 {k})").unwrap();
+            params_arr = merged;
+            let total = self.temp();
+            writeln!(&mut self.ir, "  {total} = add i64 {n_scalar}, {k}").unwrap();
+            n_params = total;
         }
 
         // Execute query

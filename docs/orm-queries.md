@@ -38,3 +38,39 @@ checker therefore enforces the real signatures for an `@Entity` class `T`:
 (`DB::of(Item).list() -> List<Item>`, ...), so tooling and AI clients get the accurate contract instead of `Any`.
 Chain intermediates (the value between `filter(...)` and `list()`) are still `Any` internally; the contract above applies at
 the terminals.
+
+## Loading related rows: explicit batches, no hidden N+1
+
+There are no lazy or eager relationship fields: nothing is loaded unless a query is written, and every query is visible.
+Related rows are fetched in **batches** with `keys.contains(x.field)`, which becomes one `col IN (...)`:
+
+```tinox
+const books: List<Book> = DB::of(Book).orderBy(b => b.id).limit(50).list()          // query 1
+var ids: List<Int64> = []
+for b in books { ids.push(b.authorId) }
+const authors = DB::of(Author).filter(a => ids.contains(a.id)).list()                // query 2, however many books
+var byId: Map<String, Author> = Map::new()
+for a in authors { byId[a.id.toString()] = a }
+for b in books { println(b.title + " by " + byId[b.authorId.toString()].name) }
+```
+
+The other direction is the same shape: `DB::of(Book).filter(b => authorIds.contains(b.authorId)).orderBy(...).limit(n).list()`.
+
+- **Query count:** a list/detail view costs `1 + number of related entity types` queries, independent of the number of rows
+  (the loop that calls `.first()` per row costs one per row -- 12 vs 1 in the test).
+- **Bounds:** at most **1000 keys** per `contains`; more is a hard runtime error ("load the keys in chunks"), so a
+  statement can never grow without limit. At most one `contains` per query (a compile error otherwise). An empty list
+  matches nothing -- also under `!` (`!keys.contains(x.id)` matches everything). The list is padded to a power of two
+  so only a few distinct SQL texts exist.
+- **Works on** PostgreSQL, MySQL and SQLite (placeholders follow the scalar ones; the SQLite driver now rewrites `$n` to
+  `?NNN` so placeholder order can never mis-bind parameters).
+- **Joins in SQL** are not offered: a joined row type would need generated result classes. The batch above returns the
+  same data with a bounded, visible number of statements.
+- **Schema agrees with access:** `@ForeignKey` (see `docs/database-changesets.md`) is checked against the program at
+  compile time (missing target, wrong column/type, cycles are errors), generated parents-first by `tinox db generate`
+  and enforced by the database, so a loaded `authorId` always has its author.
+
+Verified against a real PostgreSQL (`crates/tinox/tests/orm_relations.rs`): schema from `db generate` + `db update`, the
+server rejects orphans and parent deletes, and the server's own statement log shows 12 queries for the per-row loop vs 1
+for the batch, with identical joined output. IN lists also run in the MySQL, PostgreSQL and SQLite transaction tests and
+against sqlite3 (`orm_query_contract.rs`: duplicates, strings, empty list, `!`, 700 keys, over-limit failure).

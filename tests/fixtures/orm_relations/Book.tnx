@@ -1,0 +1,12 @@
+@Entity
+@Table("books")
+class Book
+{
+    @Id @GeneratedValue
+    var id: Int64
+    @Column("title")
+    var title: String
+    @Column("author_id")
+    @ForeignKey("authors", "id")
+    var authorId: Int64
+}

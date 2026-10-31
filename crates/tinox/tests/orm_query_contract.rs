@@ -135,3 +135,94 @@ fn describe_lists_the_typed_query_contract_of_an_entity() {
         assert!(json.contains(expected), "missing {expected:?} in\n{json}");
     }
 }
+
+#[test]
+fn contains_on_a_key_list_becomes_one_in_query() {
+    if !have_sqlite3() {
+        return;
+    }
+    let p = Project::new("in-list");
+    let main = std::fs::read_to_string(p.dir.join("src/Main.tnx")).unwrap();
+    let start = main.find("    fnc names(").unwrap();
+    let body = r#"    fnc names(rows: List<Item>) -> String
+    {
+        var out = ""
+        for r in rows {
+            out = out + r.name + " "
+        }
+        return out
+    }
+
+    fnc main() -> Int32
+    {
+        for n in ["a", "b", "c", "d", "e"] {
+            DB::of(Item).save(Item { id: 0, name: n, grp: 1 })
+        }
+        const ids: List<Int64> = [1, 3, 5, 3]
+        println("in: " + Main::names(DB::of(Item).filter(i => ids.contains(i.id)).orderBy(i => i.id).list()))
+        println("not in: " + Main::names(DB::of(Item).filter(i => !ids.contains(i.id)).orderBy(i => i.id).list()))
+        const none: List<Int64> = []
+        println("empty in: [" + Main::names(DB::of(Item).filter(i => none.contains(i.id)).list()) + "]")
+        println("empty not in: " + Main::names(DB::of(Item).filter(i => !none.contains(i.id)).orderBy(i => i.id).list()))
+        const wanted: List<String> = ["b", "e", "zzz"]
+        println("strings: " + Main::names(DB::of(Item).filter(i => wanted.contains(i.name) && i.grp == 1).orderBy(i => i.id).list()))
+        println("count: " + DB::of(Item).filter(i => ids.contains(i.id)).count().toString())
+        var many: List<Int64> = []
+        var i = 1
+        while (i <= 700) {
+            many.push(i)
+            i = i + 1
+        }
+        println("700 keys: " + DB::of(Item).filter(i => many.contains(i.id)).count().toString())
+        return 0
+    }
+}
+"#;
+    std::fs::write(p.dir.join("src/Main.tnx"), format!("{}{}", &main[..start], body)).unwrap();
+    let build = p.build();
+    assert!(build.status.success(), "{}", text(&build));
+    let run = Command::new(p.dir.join("app")).current_dir(&p.dir).output().unwrap();
+    let out = text(&run);
+    assert!(run.status.success(), "{out}");
+    for expected in [
+        "in: a c e \n",
+        "not in: b d \n",
+        "empty in: []\n",
+        "empty not in: a b c d e \n",
+        "strings: b e \n",
+        "count: 3\n",
+        "700 keys: 5\n",
+    ] {
+        assert!(out.contains(expected), "missing {expected:?} in:\n{out}");
+    }
+}
+
+#[test]
+fn a_key_list_over_the_limit_fails_visibly_and_two_lists_are_refused() {
+    if !have_sqlite3() {
+        return;
+    }
+    let p = Project::new("in-limit");
+    let main = std::fs::read_to_string(p.dir.join("src/Main.tnx")).unwrap();
+    let start = main.find("    fnc names(").unwrap();
+    let body = r#"    fnc main() -> Int32
+    {
+        var many: List<Int64> = []
+        var i = 0
+        while (i < 1001) {
+            many.push(i)
+            i = i + 1
+        }
+        println(DB::of(Item).filter(i => many.contains(i.id)).count().toString())
+        return 0
+    }
+}
+"#;
+    std::fs::write(p.dir.join("src/Main.tnx"), format!("{}{}", &main[..start], body)).unwrap();
+    let build = p.build();
+    assert!(build.status.success(), "{}", text(&build));
+    let run = Command::new(p.dir.join("app")).current_dir(&p.dir).output().unwrap();
+    assert!(!run.status.success());
+    assert!(text(&run).contains("exceeds the limit of 1000"), "{}", text(&run));
+    broken("two-lists", "const a: List<Int64> = [1]\n        const b: List<Int64> = [2]\n        println(DB::of(Item).filter(i => a.contains(i.id) || b.contains(i.id)).count().toString())", "only once");
+}

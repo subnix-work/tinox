@@ -102,6 +102,12 @@ class Flows
         return this.countTag("k-outer")
     }
 
+    // A runtime-sized IN list on every driver (placeholders after the scalar ones).
+    fn countIn(tags: List<String>) -> Int64
+    {
+        return DB::of(Note).filter(n => tags.contains(n.tag)).count()
+    }
+
     fn countTag(tag: String) -> Int64
     {
         return DB::of(Note).filter(n => n.tag == tag).count()

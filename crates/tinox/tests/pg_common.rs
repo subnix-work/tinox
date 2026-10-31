@@ -177,6 +177,17 @@ impl PgContainer {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// True when the server REJECTS the statement (constraint violations and the like).
+    #[allow(dead_code)]
+    pub fn psql_rejects(&self, sql: &str) -> bool {
+        let out = Command::new("psql")
+            .args(["-h", "127.0.0.1", "-p", &self.port.to_string(), "-U", "postgres", "-d", "postgres", "-c", sql])
+            .env("PGPASSWORD", "postgres")
+            .output()
+            .expect("spawn psql");
+        !out.status.success()
+    }
+
     pub fn url(&self) -> String {
         format!("postgres://postgres:postgres@127.0.0.1:{}/postgres", self.port)
     }

@@ -75,6 +75,7 @@ version = "1.1.0"
     assert!(stdout.contains("caught: independent failed"), "{stdout}");
     // The independent transaction runs on its own connection and cannot see uncommitted rows.
     assert!(stdout.contains("independent sees outer: 0"), "{stdout}");
+    assert!(stdout.contains("in-count: 2"), "{stdout}");
 
     let tags = pg.psql("SELECT string_agg(tag, ',' ORDER BY tag) FROM notes;");
     assert_eq!(

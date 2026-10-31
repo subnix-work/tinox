@@ -1,0 +1,44 @@
+import tinox.core.db
+import tinox.core.env
+import Author
+import Book
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const mode = Env::getVar("MODE")
+        const books: List<Book> = DB::of(Book).orderBy(b => b.id).limit(100).list()
+        if (mode == "nplus1") {
+            // What the batch below replaces: one query per book.
+            for b in books {
+                const a: Author = DB::of(Author).filter(x => x.id == b.authorId).first()
+                println(b.title + " by " + a.name)
+            }
+        }
+        if (mode == "batch") {
+            // Exactly two queries, however many books: the keys are collected, then fetched with one IN list.
+            var ids: List<Int64> = []
+            for b in books {
+                ids.push(b.authorId)
+            }
+            const authors: List<Author> = DB::of(Author).filter(x => ids.contains(x.id)).list()
+            var byId: Map<String, Author> = Map::new()
+            for a in authors {
+                byId[a.id.toString()] = a
+            }
+            for b in books {
+                println(b.title + " by " + byId[b.authorId.toString()].name)
+            }
+        }
+        if (mode == "children") {
+            // The other direction: all books of a set of authors in one query.
+            const wanted: List<Int64> = [1, 3]
+            const theirs: List<Book> = DB::of(Book).filter(b => wanted.contains(b.authorId)).orderBy(b => b.id).limit(100).list()
+            for b in theirs {
+                println(b.title)
+            }
+        }
+        return 0
+    }
+}

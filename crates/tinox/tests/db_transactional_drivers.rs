@@ -210,6 +210,7 @@ fn mysql_transactions_pool_savepoints_and_independent_transactions() {
     assert!(out.contains("refused: transaction rolled back"), "{out}");
     assert!(out.contains("outer: outer failed"), "{out}");
     assert!(out.contains("independent sees outer: 0"), "{out}");
+    assert!(out.contains("in-count: 2"), "{out}");
     let tags = my.exec("SELECT GROUP_CONCAT(tag ORDER BY tag) FROM notes").unwrap();
     assert_eq!(
         tags,
