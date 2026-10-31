@@ -26,7 +26,7 @@
  *
  * v1 scope, deliberately not covered (see issue #135):
  *   - Pooling lives in RedisPool (#544), Pub/Sub in RedisSubscriber
- *     (#546, its own connection); no Redis Cluster/Sentinel --
+ *     (#546, its own connection); Sentinel/Cluster discovery live in RedisSentinel/RedisCluster --
  *     single-node, request/response commands only here.
  *   - No Memcached client in this pass -- different wire protocol, no
  *     shared code with RESP2 beyond the raw socket layer, an explicit

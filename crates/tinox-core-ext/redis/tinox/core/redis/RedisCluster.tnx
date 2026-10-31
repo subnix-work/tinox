@@ -1,0 +1,379 @@
+module tinox.core.redis
+
+namespace tinox.core.redis
+{
+    /*
+     * Redis Cluster client (#545): slot routing, MOVED/ASK handling and topology refresh over
+     * the single-node RedisClient.
+     *
+     *   const cluster: RedisCluster = RedisCluster::create(["10.0.0.5:7000", "10.0.0.6:7000"])
+     *   if !cluster.refresh() { throw cluster.errorMessage }
+     *   cluster.set("user:42", "Ada")
+     *   const reply: RedisReply = cluster.get("user:42")
+     *   cluster.close()
+     *
+     * Routing: the key's slot is CRC16/XMODEM(key) mod 16384, honouring {hash tags}; the command
+     * goes to the master that owns the slot (topology from CLUSTER NODES, masters only). The
+     * slot table is a bounded 16384-entry list; each node gets one lazily opened connection.
+     *
+     * Redirects: MOVED updates the slot owner and triggers a full topology refresh, then the
+     * command is repeated on the new owner; ASK sends ASKING + the command to the named node
+     * without touching the table. The node did not execute a redirected command, so repeating it
+     * is safe; at most 5 redirects per call, then the last error is returned.
+     *
+     * Failure contract (same as RedisSentinel): a transport failure is NEVER retried. The failed
+     * connection is dropped, the topology is marked stale (re-read before the next command) and
+     * the failure reply is returned, so an acknowledged write is never duplicated and an
+     * unacknowledged one never silently lost; the caller decides whether to repeat it.
+     *
+     * Not supported: multi-key commands spanning slots (each call routes by ONE key; a
+     * CROSSSLOT error from the server is returned as an error reply), replica reads, Pub/Sub,
+     * hostnames announced instead of IPs when they differ from what the seeds resolve.
+     */
+    class RedisCluster
+    {
+        var seeds: List<String>
+        // slot -> "host:port" of the owning master; "" while unknown
+        var slots: List<String>
+        var clients: Map<String, RedisClient>
+        var stale: Bool
+        var errorMessage: String
+        var authUser: String
+        var authPassword: String
+        var tls: Bool
+        var tlsVerify: Bool
+        // number of completed topology refreshes (observable in tests/metrics)
+        var refreshes: Int64
+        var redirects: Int64
+
+        fn create(seeds: List<String>) -> RedisCluster
+        {
+            if (seeds.len() < 1) {
+                throw "RedisCluster needs at least one seed node"
+            }
+            var table: List<String> = []
+            var i: Int64 = 0
+            while i < 16384 {
+                table.push("")
+                i = i + 1
+            }
+            return RedisCluster { seeds: seeds, slots: table, clients: Map::new(), stale: true, errorMessage: "", authUser: "", authPassword: "", tls: false, tlsVerify: true, refreshes: 0, redirects: 0 }
+        }
+
+        fn authenticate(user: String, password: String) -> RedisCluster
+        {
+            this.authUser = user
+            this.authPassword = password
+            return this
+        }
+
+        fn useTls(verify: Bool) -> RedisCluster
+        {
+            this.tls = true
+            this.tlsVerify = verify
+            return this
+        }
+
+        // CRC16/XMODEM of the bytes of `text`.
+        fnc crc16(text: String) -> Int64
+        {
+            var crc: Int64 = 0
+            var i: Int64 = 0
+            while i < text.len() {
+                crc = crc ^ (text.charCodeAt(i) << 8)
+                var bit: Int64 = 0
+                while bit < 8 {
+                    if ((crc & 32768) != 0) {
+                        crc = ((crc << 1) ^ 4129) & 65535
+                    } else {
+                        crc = (crc << 1) & 65535
+                    }
+                    bit = bit + 1
+                }
+                i = i + 1
+            }
+            return crc
+        }
+
+        // The part that is hashed: the content of the first non-empty {tag}, else the whole key.
+        fnc hashPart(key: String) -> String
+        {
+            var open: Int64 = -1
+            var i: Int64 = 0
+            while i < key.len() {
+                if (key.charCodeAt(i) == 123) {
+                    open = i
+                    i = key.len()
+                }
+                i = i + 1
+            }
+            if (open < 0) {
+                return key
+            }
+            var close: Int64 = -1
+            var j: Int64 = open + 1
+            while j < key.len() {
+                if (key.charCodeAt(j) == 125) {
+                    close = j
+                    j = key.len()
+                }
+                j = j + 1
+            }
+            if (close <= open + 1) {
+                return key
+            }
+            return key.substring(open + 1, close)
+        }
+
+        fnc slotFor(key: String) -> Int64
+        {
+            return RedisCluster::crc16(RedisCluster::hashPart(key)) % 16384
+        }
+
+        fn dropClient(addr: String) -> Nothing
+        {
+            if (this.clients.contains(addr)) {
+                const c: RedisClient = this.clients[addr]
+                c.close()
+                this.clients.remove(addr)
+            }
+        }
+
+        // Connection to one node, opened (and authenticated) on first use; an unhealthy one is replaced.
+        fn nodeClient(addr: String) -> RedisClient
+        {
+            if (this.clients.contains(addr)) {
+                const cached: RedisClient = this.clients[addr]
+                if (cached.healthy && cached.conn > 0) {
+                    return cached
+                }
+                this.dropClient(addr)
+            }
+            const at: RedisSentinel = RedisSentinel::address(addr)
+            if (at.port <= 0) {
+                return RedisClient { conn: -1, errorMessage: "invalid node address " + addr, getFound: false, incrOk: false, healthy: false, pooled: false }
+            }
+            var c: RedisClient = RedisClient::connect(at.host, at.port)
+            if (this.tls) {
+                c = RedisClient::connectTls(at.host, at.port, this.tlsVerify)
+            }
+            if (c.conn <= 0) {
+                return c
+            }
+            if (this.authPassword != "" || this.authUser != "") {
+                if (!c.auth(this.authUser, this.authPassword)) {
+                    c.close()
+                    c.conn = -1
+                    return c
+                }
+            }
+            this.clients[addr] = c
+            return c
+        }
+
+        // Re-reads the slot table from the first reachable node (known masters first, then the seeds).
+        fn refresh() -> Bool
+        {
+            var candidates: List<String> = []
+            var s: Int64 = 0
+            while s < this.seeds.len() {
+                candidates.push(this.seeds[s])
+                s = s + 1
+            }
+            var k: Int64 = 0
+            while k < 16384 {
+                const owner = this.slots[k]
+                if (owner != "") {
+                    candidates.push(owner)
+                    k = 16384
+                }
+                k = k + 1
+            }
+            var n: Int64 = 0
+            while n < candidates.len() {
+                const c: RedisClient = this.nodeClient(candidates[n])
+                if (c.conn > 0) {
+                    const reply: RedisReply = c.command(["CLUSTER", "NODES"])
+                    if (reply.isValue()) {
+                        if (this.applyNodes(reply.text, candidates[n])) {
+                            this.stale = false
+                            this.refreshes = this.refreshes + 1
+                            this.errorMessage = ""
+                            return true
+                        }
+                    } else if (reply.isFailure()) {
+                        this.dropClient(candidates[n])
+                    }
+                }
+                n = n + 1
+            }
+            this.errorMessage = "no cluster node answered CLUSTER NODES"
+            return false
+        }
+
+        // Parses CLUSTER NODES: "<id> <host:port@cport[,hostname]> <flags> <master> ... <slot ranges>".
+        // Only complete coverage of all 16384 slots is accepted -- a partial table would route
+        // some keys to "" (no silent garbage).
+        fn applyNodes(text: String, via: String) -> Bool
+        {
+            var table: List<String> = []
+            var i: Int64 = 0
+            while i < 16384 {
+                table.push("")
+                i = i + 1
+            }
+            const lines: List<String> = text.split("\n")
+            var covered: Int64 = 0
+            var l: Int64 = 0
+            while l < lines.len() {
+                const fields: List<String> = lines[l].split(" ")
+                if (fields.len() >= 9 && fields[2].contains("master") && !fields[2].contains("fail")) {
+                    var addr: String = fields[1]
+                    const at = addr.lastIndexOf("@")
+                    if (at > 0) {
+                        addr = addr.substring(0, at)
+                    }
+                    const comma = addr.lastIndexOf(",")
+                    if (comma > 0) {
+                        addr = addr.substring(0, comma)
+                    }
+                    if (addr.startsWith(":")) {
+                        // a node that does not know its own address reports an empty host: use the one we asked
+                        const viaAt: RedisSentinel = RedisSentinel::address(via)
+                        addr = viaAt.host + addr
+                    }
+                    var f: Int64 = 8
+                    while f < fields.len() {
+                        const part = fields[f]
+                        if (part != "" && !part.startsWith("[")) {
+                            const dash = part.indexOf("-")
+                            var from: Int64 = 0
+                            var to: Int64 = 0
+                            if (dash < 0) {
+                                from = part.toInt()
+                                to = from
+                            } else {
+                                from = part.substring(0, dash).toInt()
+                                to = part.substring(dash + 1, part.len()).toInt()
+                            }
+                            var slot: Int64 = from
+                            while slot <= to && slot < 16384 {
+                                if (table[slot] == "") {
+                                    covered = covered + 1
+                                }
+                                table[slot] = addr
+                                slot = slot + 1
+                            }
+                        }
+                        f = f + 1
+                    }
+                }
+                l = l + 1
+            }
+            if (covered < 16384) {
+                this.errorMessage = "cluster topology covers only " + covered.toString() + " of 16384 slots"
+                return false
+            }
+            this.slots = table
+            return true
+        }
+
+        fn failure(message: String) -> RedisReply
+        {
+            this.errorMessage = message
+            return RedisReply { kind: 3, text: message }
+        }
+
+        // Routes one command by `key`. See the class comment for the redirect/failure contract.
+        fn command(key: String, args: List<String>) -> RedisReply
+        {
+            if (this.stale) {
+                if (!this.refresh()) {
+                    return this.failure(this.errorMessage)
+                }
+            }
+            const slot = RedisCluster::slotFor(key)
+            var target: String = this.slots[slot]
+            var asking: Bool = false
+            var attempt: Int64 = 0
+            while attempt <= 5 {
+                const c: RedisClient = this.nodeClient(target)
+                if (c.conn <= 0) {
+                    this.stale = true
+                    return this.failure("node " + target + " unreachable: " + c.errorMessage)
+                }
+                if (asking) {
+                    const ack: RedisReply = c.command(["ASKING"])
+                    if (!ack.isValue()) {
+                        this.dropClient(target)
+                        this.stale = true
+                        return this.failure("ASKING failed on " + target)
+                    }
+                }
+                const reply: RedisReply = c.command(args)
+                if (reply.isFailure()) {
+                    this.dropClient(target)
+                    this.stale = true
+                    return reply
+                }
+                if (!reply.isError()) {
+                    return reply
+                }
+                const redirect = reply.text.startsWith("MOVED ") || reply.text.startsWith("ASK ")
+                if (!redirect) {
+                    return reply
+                }
+                const parts: List<String> = reply.text.split(" ")
+                if (parts.len() != 3) {
+                    return reply
+                }
+                this.redirects = this.redirects + 1
+                target = parts[2]
+                if (parts[0] == "MOVED") {
+                    this.slots[parts[1].toInt()] = target
+                    this.stale = true
+                    asking = false
+                } else {
+                    asking = true
+                }
+                attempt = attempt + 1
+            }
+            return this.failure("too many redirects for key " + key)
+        }
+
+        fn get(key: String) -> RedisReply
+        {
+            return this.command(key, ["GET", key])
+        }
+
+        fn set(key: String, value: String) -> RedisReply
+        {
+            return this.command(key, ["SET", key, value])
+        }
+
+        fn setEx(key: String, value: String, ttlSeconds: Int64) -> RedisReply
+        {
+            return this.command(key, ["SETEX", key, ttlSeconds.toString(), value])
+        }
+
+        fn del(key: String) -> RedisReply
+        {
+            return this.command(key, ["DEL", key])
+        }
+
+        fn incr(key: String) -> RedisReply
+        {
+            return this.command(key, ["INCR", key])
+        }
+
+        fn close() -> Nothing
+        {
+            const addrs: List<String> = this.clients.keys()
+            var i: Int64 = 0
+            while i < addrs.len() {
+                this.dropClient(addrs[i])
+                i = i + 1
+            }
+        }
+    }
+}

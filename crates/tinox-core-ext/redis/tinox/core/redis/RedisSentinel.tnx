@@ -21,7 +21,7 @@ namespace tinox.core.redis
      * duplicated, and an unacknowledged one is never silently dropped. The
      * sentinel list is the caller's fixed, bounded input; nothing is cached.
      *
-     * Not supported (by design, first mode): Redis Cluster (MOVED/ASK routing),
+     * Redis Cluster lives in RedisCluster. Not supported here (by design):
      * TLS/AUTH towards sentinels, and replica reads.
      */
     class RedisSentinel
