@@ -15939,8 +15939,8 @@ tr_done_{idx}:"#).unwrap();
         // Typed `catch (e: SomeError)` clauses may not match: the error then has to
         // propagate (after `finally`), so those tries need the rethrow slot too (#524).
         let typed_catch = |c: &CatchClause| matches!(&c.ty, Type::Named(n) if self.error_class_codes.contains_key(n));
-        let any_typed = catches.iter().any(|c| typed_catch(c));
-        let last_typed = catches.last().is_some_and(|c| typed_catch(c));
+        let any_typed = catches.iter().any(&typed_catch);
+        let last_typed = catches.last().is_some_and(typed_catch);
         let rethrow_var = if (finally.is_some() || any_typed) && !catches.is_empty() {
             let v = format!("%__rethrow_{}__", self.temp_count);
             self.temp_count += 1;
