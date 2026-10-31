@@ -24,5 +24,19 @@ the JSON in `Diagnostic.data` (schema in [compiler-diagnostics.md](compiler-diag
 * Columns are UTF-16 units on the wire. The compiler counts Unicode scalar
   values; conversion happens at the boundary.
 * The project is every `.tnx` file below the nearest `tinox.toml`
-  (hidden directories, `target/` and `node_modules/` are skipped, at most
-  5000 files).
+  (hidden directories, `target/` and `node_modules/` are skipped).
+* **Scan budget (issue #555):** at most 5000 files and 256 MiB of source are
+  indexed by default; set `TINOX_LSP_MAX_FILES` / `TINOX_LSP_MAX_BYTES` in the
+  server's environment to change that (an unusable value keeps the default and
+  is reported with a warning). Open documents are always indexed. The rest is
+  taken in path order, so the indexed set is stable between requests. When
+  files are left out the index is *partial*: `rename` and `prepareRename` are
+  refused with the number of skipped files (an unseen file could reference the
+  symbol), while references, definitions and workspace symbols still answer
+  but show one warning ("workspace index incomplete: N of M files ...").
+* Unchanged files (same modified time and length) are served from an in-memory
+  cache instead of being read again; the project is still re-listed and
+  re-tokenized per navigation request, which measured 20-35 ms for 6000 small
+  files (dense and deep layouts, `large_workspace_timings` in
+  `crates/tinox-lsp/tests/navigation.rs`). A cached token index and file
+  watching are not implemented.
