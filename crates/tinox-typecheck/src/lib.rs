@@ -1,6 +1,7 @@
 pub mod dto_validation;
 pub mod semantic;
 pub mod cache;
+pub mod throws;
 
 pub mod annotations;
 

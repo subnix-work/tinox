@@ -518,6 +518,68 @@ fn read_startup_banner_config() -> bool {
     true
 }
 
+/// `[language] checked_exceptions` in the nearest `tinox.toml` (#524): `"warn"` / `true` report
+/// uncaught, undeclared `@Error` classes as warnings, `"error"` fails the build. Returns the
+/// project root together with `true` when violations are errors.
+fn read_checked_exceptions_config() -> Option<(PathBuf, bool)> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let toml_path = dir.join("tinox.toml");
+        if toml_path.exists() {
+            let content = build_cache::read_to_string(&toml_path).ok()?;
+            let mut in_language = false;
+            let mut mode = None;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    in_language = line == "[language]";
+                    continue;
+                }
+                if !in_language { continue; }
+                if let Some(rest) = line.strip_prefix("checked_exceptions") {
+                    let value = rest.trim().strip_prefix('=').map(|v| v.trim().trim_matches('"')).unwrap_or("");
+                    mode = match value {
+                        "warn" | "true" => Some(false),
+                        "error" => Some(true),
+                        _ => None,
+                    };
+                }
+            }
+            return mode.map(|errors| (dir, errors));
+        }
+        if !dir.pop() { return None; }
+    }
+}
+
+/// Runs the `@Throws` checker on the project's own sources when the project enables it.
+fn check_declared_exceptions(ast: &tinox_parser::SourceFile) -> Result<(), Failure> {
+    let Some((root, as_error)) = read_checked_exceptions_config() else { return Ok(()) };
+    let root = root.canonicalize().unwrap_or(root);
+    let report = tinox_typecheck::throws::check(&ast.decls, &|file: &str| {
+        let path = Path::new(file);
+        path.starts_with(&root) && !path.components().any(|c| c.as_os_str() == ".tinox")
+    });
+    for w in &report.warnings {
+        eprintln!("warning: {}:{}:{}: {}", w.file, w.span.start.line, w.span.start.column, w.message);
+    }
+    if as_error {
+        if let Some(first) = report.violations.first() {
+            let mut failure = Failure::new("checked-exceptions", Some(first.file.as_str()), Some(first.span), first.message.clone());
+            for v in report.violations.iter().skip(1) {
+                failure.0[0].related.push(tinox_common::diagnostic::RelatedLocation {
+                    file: v.file.clone(), range: v.span, message: v.message.clone(),
+                });
+            }
+            return Err(failure);
+        }
+    } else {
+        for v in &report.violations {
+            eprintln!("warning: {}:{}:{}: {}", v.file, v.span.start.line, v.span.start.column, v.message);
+        }
+    }
+    Ok(())
+}
+
 struct DbConfig {
     driver: String,
     url: String,
@@ -2037,6 +2099,7 @@ fn check(args: &[String]) {
         prepare_program(input).and_then(|(ast, _)| {
             let ann = tinox_typecheck::annotations::process_annotations(&ast);
             validate_program_annotations(&ast, &ann, input)?;
+            check_declared_exceptions(&ast)?;
             for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
             Ok(())
         })
@@ -5131,6 +5194,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
     drop(annotation_stage);
     validate_program_annotations(&ast, &ann_result, input_path)?;
+    check_declared_exceptions(&ast)?;
     if progress {
         for warning in ann_result.deprecated_warnings.iter().chain(&ann_result.shared_state_warnings) {
             eprintln!("warning: {}", warning);

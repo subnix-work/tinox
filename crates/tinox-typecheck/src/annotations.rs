@@ -3078,6 +3078,33 @@ fn validate_error_declarations(decls: &[tinox_parser::Decl]) -> Vec<Error> {
             }
         }
     }
+    // Interface methods may declare @Throws too (#524): same validation as class methods.
+    fn interfaces<'a>(decls: &'a [tinox_parser::Decl], out: &mut Vec<&'a tinox_parser::Interface>) {
+        for d in decls {
+            match &d.node {
+                DeclKind::Interface(i) => out.push(i),
+                DeclKind::Namespace(ns) => interfaces(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    let mut all_interfaces = Vec::new();
+    interfaces(decls, &mut all_interfaces);
+    for i in &all_interfaces {
+        for m in &i.methods {
+            let Some(throws) = m.annotations.iter().find(|a| a.name == "Throws") else { continue };
+            for arg in &throws.args {
+                match arg {
+                    AnnotationArg::TypeRef(name) if error_classes.contains(name.as_str()) => {}
+                    AnnotationArg::TypeRef(name) => errors.push(Error::new(
+                        throws.span,
+                        format!("@Throws on '{}.{}' names '{name}', which is not an @Error class", i.name, m.name),
+                    )),
+                    _ => errors.push(Error::new(throws.span, "@Throws expects error class names, e.g. @Throws(NotFound, Conflict)")),
+                }
+            }
+        }
+    }
     errors
 }
 

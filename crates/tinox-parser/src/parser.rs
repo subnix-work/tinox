@@ -601,8 +601,11 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) {
             let doc = self.take_doc();
+            // Interface methods may carry annotations (`@Throws(...)`, #524).
+            let annotations = self.parse_annotations();
             let mut m = self.parse_fn()?;
             m.doc = doc;
+            m.annotations = annotations;
             methods.push(m);
         }
 

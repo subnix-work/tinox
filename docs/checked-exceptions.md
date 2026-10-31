@@ -1,6 +1,6 @@
 # Checked exceptions: `@Error`, `@Throws` (design proposal)
 
-Status: **decided; stages 1-2 implemented, the `@Throws` checker (stage 3) is not.**
+Status: **decided; stages 1-3 implemented (the checker is opt-in), the stdlib migration (stage 4) is not.**
 Decisions (owner, 2026-10-31): error classes **may extend each other**, and every failure class
 in the table of section 3 takes **Option B** (typed errors / `Result`-returning APIs); task
 cancellation, deadline and shutdown stay a separate non-catchable control signal.
@@ -10,6 +10,17 @@ Implemented (issue #524): `@ErrorMap` and the structured HTTP error envelope (st
 class **and its subclasses**, where only the first matching clause runs and an unmatched error
 propagates (after `finally`). `throw "text"` and `catch (e: String)` remain valid (a `String`
 clause catches everything, typed errors included, as their `"CODE: message"` text).
+Stage 3 is the `@Throws` checker (`crates/tinox-typecheck/src/throws.rs`), enabled per project with
+`[language] checked_exceptions = "warn"` (or `true`; violations are warnings) or `"error"` (the build
+fails). It checks, for the project's own sources, that every `@Error` class a call or `throw` can raise
+is caught by an enclosing `catch` (a clause for the class, a superclass, or `String`) or listed in the
+caller's `@Throws` (a superclass counts); that lambdas inherit nothing; that an override (`extends` or
+`implements`, interface methods may carry `@Throws`) lists no error the overridden method does not
+allow; that `throw "text"` is refused; and warns about a `@Throws` nothing in the body can raise.
+Known limits: calls are resolved syntactically (`this`, `new T()`, class names, locals with a declared
+or `new` type), an unresolved call is not checked; `spawn` errors are not checked at `await`; stdlib calls
+are unchecked until stage 4 declares their errors.
+
 Constraints that follow from the representation: an `@Error` class carries only `message`
 (extra fields would be lost), a subclass of an `@Error` class needs its own `@Error` code, and
 the code stays program-unique. Nothing under "Proposed" about `@Throws` enforcement is in the

@@ -9,8 +9,12 @@ All notable changes to Tinox are documented in this file.
 - **Typed errors** (#524, stage 2): `throw X { message: ... }` for `@Error` classes and
   `catch (e: X)` matching the class and its subclasses (error classes may extend each other). Only the
   first matching `catch` clause runs; an unmatched error propagates after `finally`. `throw "text"` and
-  `catch (e: String)` keep working. `@Throws` enforcement and the stdlib migration are still to come, see
+  `catch (e: String)` keep working. The stdlib migration is still to come, see
   `docs/checked-exceptions.md`.
+- **`@Throws` checker** (#524, stage 3): `[language] checked_exceptions = "warn" | "error"` makes
+  `tinox build`/`check` verify that every `@Error` a call or `throw` can raise is caught or declared
+  (superclasses count, overrides may not add errors, lambdas inherit nothing). Interface methods may
+  now carry annotations such as `@Throws`.
 - **`tinox.core.unicode`** (#561): opt-in code point API (`codePoints`, `codePointCount`, `fromCodePoints`,
   `byteOffset`, `isValid`) and full default `toUpper`/`toLower` (Unicode 16.0, no locale, no final-sigma
   rule). `String` stays byte based; malformed UTF-8 throws with the first bad byte offset. Verified against
