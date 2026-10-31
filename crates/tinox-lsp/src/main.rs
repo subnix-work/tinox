@@ -120,6 +120,7 @@ const EMBEDDED_STDLIB: &[(&str, &str)] = &[
         include_str!("../../tinox-core/tinox/core/time/Timer.tnx"),
     )),
     ("uuid",          include_str!("../../tinox-core/tinox/core/uuid/Uuid.tnx")),
+    ("unicode",       include_str!("../../tinox-core/tinox/core/unicode/Unicode.tnx")),
 ];
 
 fn build_embedded_stdlib() -> TypeRegistry {

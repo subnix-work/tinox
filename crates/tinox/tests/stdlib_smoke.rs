@@ -215,6 +215,14 @@ const SMOKES: &[Smoke] = &[
         contains: &[],
     },
     Smoke {
+        key: "unicode",
+        imports: &["tinox.core.unicode"],
+        body: r#"println(Unicode::toUpper("straße"))
+    println(Unicode::codePointCount("hé").toString())"#,
+        expects: &["STRASSE", "2"],
+        contains: &[],
+    },
+    Smoke {
         key: "hex",
         imports: &["tinox.core.hex"],
         body: r#"println(Hex::encode("A"))"#,

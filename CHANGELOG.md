@@ -6,6 +6,10 @@ All notable changes to Tinox are documented in this file.
 
 ### Added
 
+- **`tinox.core.unicode`** (#561): opt-in code point API (`codePoints`, `codePointCount`, `fromCodePoints`,
+  `byteOffset`, `isValid`) and full default `toUpper`/`toLower` (Unicode 16.0, no locale, no final-sigma
+  rule). `String` stays byte based; malformed UTF-8 throws with the first bad byte offset. Verified against
+  Python for all 1,112,064 scalar values. No normalization or grapheme segmentation.
 - **`[native]` in `tinox.toml`** (#485): link third-party libraries, objects and extra
   C/C++ sources (`libs`, `lib_dirs`, `rpath`, `pkg_config`, `objects`, `sources`,
   `cflags`). Sources are compiled into `.tinox/native/` with header dependency

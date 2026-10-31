@@ -23,7 +23,7 @@ const CORE_MODULES: &[&str] = &[
     "array", "collections", "set", "queue", "heap", "trie", "graph", "iter",
     "sort", "option", "result", "cache", "pool",
     "math", "mathf", "mathx", "complex", "decimal",
-    "string", "fmt", "format", "encoding",
+    "string", "fmt", "format", "encoding", "unicode",
     "io", "fs", "env", "process", "debug", "socket",
     "semaphore", "time", "cron", "events",
     "logger", "validation", "regex", "random", "hash", "uuid",

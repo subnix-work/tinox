@@ -1035,6 +1035,15 @@ an O(code points) list plus a separate short string for every scalar value.
 Use `for ch in s.chars()` when a consumer needs complete Unicode characters;
 existing byte offsets and `charAt` retain their current behavior.
 
+`import tinox.core.unicode` adds explicit code point operations on top of the byte model:
+`Unicode::codePoints(s)` (`List<Int64>` of scalar values), `codePointCount`, `fromCodePoints`,
+`byteOffset(s, index)` (code point index to byte offset, for `substring`), `isValid`, and the full
+default `toUpper`/`toLower` mappings of Unicode 16.0 (no locale, no context rules: a capital sigma
+always lowers to U+03C3). Every function validates its input and throws a catchable error with the
+first malformed byte offset; nothing is replaced. Units are never mixed implicitly: `len()`/`s[i]`
+count bytes, `Unicode::*` counts code points, and grapheme clusters and normalization (NFC/NFD) are
+not provided (`"e"` + U+0301 is two code points).
+
 ## Regular Expressions
 
 The regex module uses POSIX extended syntax. The Perl classes `\d \D \s \S \w

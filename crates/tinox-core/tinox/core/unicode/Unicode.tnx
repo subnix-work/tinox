@@ -1,0 +1,111 @@
+/**
+ * Tinox Standard Library - Unicode Module
+ *
+ * A Tinox String is a sequence of bytes (docs/SPEC.md, "Strings"); len(), indexing and
+ * substring() count BYTES. This module adds explicit, opt-in operations in two other units:
+ *
+ *   byte        s.len(), s[i], Unicode::byteOffset            (unchanged String semantics)
+ *   code point  Unicode::codePoints / codePointCount / fromCodePoints (one UTF-8 scalar value)
+ *
+ * Grapheme clusters ("user-perceived characters") and normalization (NFC/NFD) are NOT provided:
+ * "e" + U+0301 is two code points here. Malformed UTF-8 is never repaired or replaced: every
+ * function throws a catchable error naming the first bad byte offset. Case mapping uses the
+ * full default Unicode mappings (Unicode::version()), without locale and context rules.
+ *
+ *   for cp in Unicode::codePoints("hé😀") { println(cp.toString()) }   // 104, 233, 128512
+ *   println(Unicode::toUpper("straße"))                                // STRASSE
+ *
+ * Costs: every call is O(bytes) and validates its input first; codePoints allocates an
+ * 8-byte slot per code point, toUpper/toLower allocate up to 3x the input size.
+ */
+module tinox.core.unicode
+
+namespace tinox.core.unicode
+{
+    extern fn tinoxUtf8Invalid(s: String) -> Int64
+    extern fn tinoxUtf8Count(s: String) -> Int64
+    extern fn tinoxUtf8CodePoints(s: String) -> List<Int64>
+    extern fn tinoxUnicodeInvalidScalar(codes: List<Int64>) -> Int64
+    extern fn tinoxUtf8FromCodePoints(codes: List<Int64>) -> String
+    extern fn tinoxUtf8ByteOffset(s: String, index: Int64) -> Int64
+    extern fn tinoxUnicodeCase(s: String, upper: Int64) -> String
+
+    class Unicode
+    {
+        // Unicode version of the case-mapping tables.
+        fnc version() -> String
+        {
+            return "16.0.0"
+        }
+
+        // Whether `s` is well-formed UTF-8 (no overlong forms, surrogates or values above U+10FFFF).
+        fnc isValid(s: String) -> Bool
+        {
+            return tinoxUtf8Invalid(s) < 0
+        }
+
+        // Throws "invalid UTF-8 at byte N" for malformed input.
+        fnc require(s: String) -> Nothing
+        {
+            const bad = tinoxUtf8Invalid(s)
+            if (bad >= 0)
+            {
+                throw "invalid UTF-8 at byte " + bad.toString()
+            }
+        }
+
+        fnc codePointCount(s: String) -> Int64
+        {
+            Unicode::require(s)
+            return tinoxUtf8Count(s)
+        }
+
+        // The Unicode scalar values of `s` in order ("é" is one value, "e" + U+0301 is two).
+        fnc codePoints(s: String) -> List<Int64>
+        {
+            Unicode::require(s)
+            return tinoxUtf8CodePoints(s)
+        }
+
+        // Inverse of codePoints. Throws for an element that is not a scalar value: NUL (strings are
+        // NUL-terminated), a surrogate (U+D800..U+DFFF), negative, or above U+10FFFF.
+        fnc fromCodePoints(codes: List<Int64>) -> String
+        {
+            const bad = tinoxUnicodeInvalidScalar(codes)
+            if (bad >= 0)
+            {
+                throw "element " + bad.toString() + " is not a Unicode scalar value"
+            }
+            return tinoxUtf8FromCodePoints(codes)
+        }
+
+        // Byte offset at which code point number `index` starts; `index == codePointCount(s)`
+        // returns s.len(). Use it with substring() to cut on code point boundaries.
+        fnc byteOffset(s: String, index: Int64) -> Int64
+        {
+            Unicode::require(s)
+            const offset = tinoxUtf8ByteOffset(s, index)
+            if (offset < 0)
+            {
+                throw "code point index " + index.toString() + " is out of range"
+            }
+            return offset
+        }
+
+        // Full default mapping, e.g. "ß" -> "SS", "ŉ" -> "ʼN". No locale (Turkish dotless i) and no
+        // context rules.
+        fnc toUpper(s: String) -> String
+        {
+            Unicode::require(s)
+            return tinoxUnicodeCase(s, 1)
+        }
+
+        // Full default mapping, e.g. "İ" -> "i" + U+0307. A capital sigma always becomes "σ"
+        // (the final-sigma context rule is not applied).
+        fnc toLower(s: String) -> String
+        {
+            Unicode::require(s)
+            return tinoxUnicodeCase(s, 0)
+        }
+    }
+}
