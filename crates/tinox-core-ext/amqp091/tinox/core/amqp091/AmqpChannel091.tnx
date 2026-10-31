@@ -23,18 +23,25 @@ namespace tinox.core.amqp091
         var confirmsEnabled: Bool
         var lastDeliveryTag: Int64
         var inbox: Channel<AmqpFrame091>
+        // Separate inboxes for deliveries and publisher confirms (issue #541): a consumer
+        // (nextMessage) and a confirm waiter (waitForConfirm) on the SAME channel never see
+        // each other's frames. `inbox` carries command replies and channel.close.
+        var deliveries: Channel<AmqpFrame091>
+        var confirms: Channel<AmqpFrame091>
 
         fn open(connection: AmqpConnection091) -> AmqpChannel091
         {
             if (connection.conn <= 0) {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "connection not established: " + connection.errorMessage, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel }
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "connection not established: " + connection.errorMessage, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel, deliveries: channel, confirms: channel }
             }
             const chanId = connection.allocateChanId()
             const inbox: Channel<AmqpFrame091> = channel
+            const deliveries: Channel<AmqpFrame091> = channel
+            const confirms: Channel<AmqpFrame091> = channel
             // MUST happen before writeFrame: otherwise channel.open-ok
             // could arrive before the dispatcher knows where to route it
             // (see AmqpConnection091::registerChannelInbox).
-            connection.registerChannelInbox(chanId, inbox)
+            connection.registerChannelInbox(chanId, inbox, deliveries, confirms)
 
             const w = AmqpWriter091::new()
             w.shortstr("") // reserved-1 (out-of-band, deprecated)
@@ -43,17 +50,17 @@ namespace tinox.core.amqp091
 
             const f = recv inbox
             if (f.frameType != 1) {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed (frameType=" + f.frameType.toString() + ")", confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel }
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed (frameType=" + f.frameType.toString() + ")", confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel, deliveries: channel, confirms: channel }
             }
             const mf = Amqp091::decodeMethodPayload(f.payload)
             if (mf.classId == 20 && mf.methodId == 40) {
                 const msg = Amqp091::describeAndAckClose(connection.conn, chanId, mf, 41)
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed: " + msg, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel }
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "channel.open failed: " + msg, confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel, deliveries: channel, confirms: channel }
             }
             if (mf.classId != 20 || mf.methodId != 11) {
-                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "expected channel.open-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel }
+                return AmqpChannel091 { conn: -1, chanId: 0, frameMax: 0, errorMessage: "expected channel.open-ok, got class=" + mf.classId.toString() + " method=" + mf.methodId.toString(), confirmsEnabled: false, lastDeliveryTag: 0, inbox: channel, deliveries: channel, confirms: channel }
             }
-            return AmqpChannel091 { conn: connection.conn, chanId: chanId, frameMax: connection.frameMax, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox }
+            return AmqpChannel091 { conn: connection.conn, chanId: chanId, frameMax: connection.frameMax, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox, deliveries: deliveries, confirms: confirms }
         }
 
         /*
@@ -405,7 +412,7 @@ namespace tinox.core.amqp091
          */
         fn nextMessage() -> AmqpMessage091
         {
-            const f1 = recv this.inbox
+            const f1 = recv this.deliveries
             if (f1.frameType != 1) {
                 return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected basic.deliver (frameType=" + f1.frameType.toString() + ")", redelivered: false, messageId: "" }
             }
@@ -424,7 +431,7 @@ namespace tinox.core.amqp091
             const exchange = r.shortstr()
             const routingKey = r.shortstr()
 
-            const f2 = recv this.inbox
+            const f2 = recv this.deliveries
             if (f2.frameType != 2) {
                 return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected content-header frame (frameType=" + f2.frameType.toString() + ")", redelivered: false, messageId: "" }
             }
@@ -454,7 +461,7 @@ namespace tinox.core.amqp091
 
             var body: List<Int64> = []
             while body.len() < bodySize {
-                const f3 = recv this.inbox
+                const f3 = recv this.deliveries
                 if (f3.frameType != 3) {
                     return AmqpMessage091 { deliveryTag: -1, exchange: "", routingKey: "", contentType: "", body: [], ok: false, errorMessage: "expected body frame (frameType=" + f3.frameType.toString() + ")", redelivered: false, messageId: "" }
                 }
@@ -502,15 +509,18 @@ namespace tinox.core.amqp091
          * to `nextMessage()` for consumers. Assumes `confirmSelect()`
          * was called. Frames from a DIFFERENT channel never end up here
          * (issue #123: its own inbox per channel, see the class comment
-         * above) — but consuming AND waiting for confirms on the SAME
-         * channel at the same time remains unsafe: `basic.deliver`
-         * frames would be wrongly interpreted as a confirm here, because
-         * dispatch within a channel still isn't done by method type
-         * (deliver vs. ack/nack), only by chanId.
+         * above). Since issue #541 the dispatcher also routes by method
+         * type within a channel (deliveries / confirms / command replies
+         * each have their own inbox), so one thread may consume
+         * (nextMessage) while another publishes and waits for confirms on
+         * the SAME channel. Two threads must still not call the SAME kind
+         * of blocking method (two waitForConfirm, two nextMessage) on one
+         * channel at once, and confirms are returned in broker order --
+         * correlate them by deliveryTag/multiple.
          */
         fn waitForConfirm() -> AmqpConfirmResult091
         {
-            const f = recv this.inbox
+            const f = recv this.confirms
             if (f.frameType != 1) {
                 return AmqpConfirmResult091 { deliveryTag: -1, multiple: false, ack: false, ok: false, errorMessage: "expected basic.ack/basic.nack (frameType=" + f.frameType.toString() + ")" }
             }

@@ -39,6 +39,13 @@ namespace tinox.core.amqp091
          */
         var channelIds: List<Int64>
         var channelInboxes: List<Channel<AmqpFrame091>>
+        // Per-channel event routing (issue #541), parallel to channelIds: basic.deliver and its
+        // header/body frames go to channelDeliveries, basic.ack/nack to channelConfirms, everything
+        // else (command replies, channel.close) to channelInboxes. channelContent remembers where the
+        // header/body frames of the message in flight belong (0 = command inbox, 1 = deliveries).
+        var channelDeliveries: List<Channel<AmqpFrame091>>
+        var channelConfirms: List<Channel<AmqpFrame091>>
+        var channelContent: List<Int64>
         var connectionInbox: Channel<AmqpFrame091>
         var dispatcherRunning: Bool
         var dispatcherHandle: Int64
@@ -60,7 +67,7 @@ namespace tinox.core.amqp091
         {
             const conn = Amqp091::dial(host, port)
             if (conn <= 0) {
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial failed", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial failed", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
             return AmqpConnection091::finishHandshake(conn, vhost, user, pass)
         }
@@ -79,7 +86,7 @@ namespace tinox.core.amqp091
         {
             const conn = Amqp091::dialTls(host, port, verify)
             if (conn <= 0) {
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial failed (TLS)", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "dial failed (TLS)", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
             return AmqpConnection091::finishHandshake(conn, vhost, user, pass)
         }
@@ -98,12 +105,12 @@ namespace tinox.core.amqp091
             const f1 = Amqp091::readFrame(conn)
             if (f1.frameType != 1) {
                 httpConnClose(conn)
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "protocol header rejected or handshake failed (frameType=" + f1.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "protocol header rejected or handshake failed (frameType=" + f1.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
             const startMethod = Amqp091::decodeMethodPayload(f1.payload)
             if (startMethod.classId != 10 || startMethod.methodId != 10) {
                 httpConnClose(conn)
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.start, got class=" + startMethod.classId.toString() + " method=" + startMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.start, got class=" + startMethod.classId.toString() + " method=" + startMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
             const startArgs = AmqpReader091::new(startMethod.args)
             startArgs.octet() // version-major (not checked — already validated via the protocol header)
@@ -114,7 +121,7 @@ namespace tinox.core.amqp091
 
             if (!mechanisms.contains("PLAIN")) {
                 httpConnClose(conn)
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "broker does not offer SASL mechanism PLAIN (offered: " + mechanisms + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "broker does not offer SASL mechanism PLAIN (offered: " + mechanisms + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
 
             // --- connection.start-ok ---
@@ -134,17 +141,17 @@ namespace tinox.core.amqp091
             const f2 = Amqp091::readFrame(conn)
             if (f2.frameType != 1) {
                 httpConnClose(conn)
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.tune (frameType=" + f2.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.tune (frameType=" + f2.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
             const tuneMethod = Amqp091::decodeMethodPayload(f2.payload)
             if (tuneMethod.classId == 10 && tuneMethod.methodId == 50) {
                 const msg = Amqp091::describeAndAckClose(conn, 0, tuneMethod, 51)
                 httpConnClose(conn)
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "SASL/handshake failed: " + msg, heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "SASL/handshake failed: " + msg, heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
             if (tuneMethod.classId != 10 || tuneMethod.methodId != 30) {
                 httpConnClose(conn)
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.tune, got class=" + tuneMethod.classId.toString() + " method=" + tuneMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.tune, got class=" + tuneMethod.classId.toString() + " method=" + tuneMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
             const tuneArgs = AmqpReader091::new(tuneMethod.args)
             const serverChannelMax = tuneArgs.short()
@@ -179,24 +186,24 @@ namespace tinox.core.amqp091
             const f3 = Amqp091::readFrame(conn)
             if (f3.frameType != 1) {
                 httpConnClose(conn)
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.open-ok (frameType=" + f3.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.open-ok (frameType=" + f3.frameType.toString() + ")", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
             const openMethod = Amqp091::decodeMethodPayload(f3.payload)
             if (openMethod.classId == 10 && openMethod.methodId == 50) {
                 const msg = Amqp091::describeAndAckClose(conn, 0, openMethod, 51)
                 httpConnClose(conn)
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "connection.open failed: " + msg, heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "connection.open failed: " + msg, heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
             if (openMethod.classId != 10 || openMethod.methodId != 41) {
                 httpConnClose(conn)
-                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.open-ok, got class=" + openMethod.classId.toString() + " method=" + openMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
+                return AmqpConnection091 { conn: -1, frameMax: 0, channelMax: 0, heartbeat: 0, errorMessage: "expected connection.open-ok, got class=" + openMethod.classId.toString() + " method=" + openMethod.methodId.toString(), heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: false, dispatcherHandle: -1, nextChanId: 0 }
             }
 
             // The dispatcher (issue #123) must be running BEFORE any
             // AmqpChannel091::open() can be called — so it's started
             // here, right before the finished connection is returned,
             // instead of relying on the caller to trigger it explicitly.
-            var result = AmqpConnection091 { conn: conn, frameMax: negotiatedFrameMax, channelMax: serverChannelMax, heartbeat: serverHeartbeat, errorMessage: "", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], connectionInbox: channel, dispatcherRunning: true, dispatcherHandle: -1, nextChanId: 0 }
+            var result = AmqpConnection091 { conn: conn, frameMax: negotiatedFrameMax, channelMax: serverChannelMax, heartbeat: serverHeartbeat, errorMessage: "", heartbeatRunning: false, heartbeatHandle: -1, channelIds: [], channelInboxes: [], channelDeliveries: [], channelConfirms: [], channelContent: [], connectionInbox: channel, dispatcherRunning: true, dispatcherHandle: -1, nextChanId: 0 }
             result.dispatcherHandle = spawn amqp091DispatchLoop(result)
             return result
         }
@@ -221,10 +228,13 @@ namespace tinox.core.amqp091
          * frame for lack of a registered chanId (see
          * amqp091DispatchLoop).
          */
-        fn registerChannelInbox(chanId: Int64, inbox: Channel<AmqpFrame091>) -> Nothing
+        fn registerChannelInbox(chanId: Int64, inbox: Channel<AmqpFrame091>, deliveries: Channel<AmqpFrame091>, confirms: Channel<AmqpFrame091>) -> Nothing
         {
             this.channelIds.push(chanId)
             this.channelInboxes.push(inbox)
+            this.channelDeliveries.push(deliveries)
+            this.channelConfirms.push(confirms)
+            this.channelContent.push(0)
         }
 
         /*
@@ -334,6 +344,8 @@ namespace tinox.core.amqp091
                     send connection.connectionInbox -> f
                     for i in 0..connection.channelInboxes.len() {
                         send connection.channelInboxes[i] -> f
+                        send connection.channelDeliveries[i] -> f
+                        send connection.channelConfirms[i] -> f
                     }
                     break
                 }
@@ -342,10 +354,24 @@ namespace tinox.core.amqp091
                 }
                 if (f.chanId == 0) {
                     send connection.connectionInbox -> f
+                    // A broker-initiated connection.close (10/50) would otherwise leave every
+                    // blocked channel waiter hanging: acknowledge it and wake them all with a
+                    // synthetic error frame (the payload keeps the reply code/text).
+                    if (f.frameType == 1 && f.payload.len() >= 4 && f.payload[0] == 0 && f.payload[1] == 10 && f.payload[2] == 0 && f.payload[3] == 50) {
+                        connection.dispatcherRunning = false
+                        Amqp091::writeFrame(connection.conn, 1, 0, Amqp091::encodeMethodPayload(10, 51, []))
+                        const gone = AmqpFrame091 { frameType: -1, chanId: 0, payload: f.payload }
+                        for i in 0..connection.channelInboxes.len() {
+                            send connection.channelInboxes[i] -> gone
+                            send connection.channelDeliveries[i] -> gone
+                            send connection.channelConfirms[i] -> gone
+                        }
+                        break
+                    }
                 } else {
                     for i in 0..connection.channelIds.len() {
                         if (connection.channelIds[i] == f.chanId) {
-                            send connection.channelInboxes[i] -> f
+                            amqp091RouteChannelFrame(connection, i, f)
                         }
                     }
                     // Unknown chanId (e.g. a race during channel setup) --
@@ -353,6 +379,45 @@ namespace tinox.core.amqp091
                 }
             }
             return 1
+        }
+
+        /*
+         * Per-channel routing (issue #541), called only from the dispatcher (the single reader, so
+         * channelContent needs no lock). A method frame is classified by class/method id:
+         * basic.deliver (60/60) starts a delivery and sends it plus its header/body frames to the
+         * deliveries inbox; basic.ack/nack (60/80, 60/120) go to the confirms inbox; channel.close
+         * (20/40) wakes all three waiters; everything else (including basic.return's content, which
+         * the command path has always received) goes to the command inbox.
+         */
+        fnc amqp091RouteChannelFrame(connection: AmqpConnection091, i: Int64, f: AmqpFrame091) -> Nothing
+        {
+            if (f.frameType == 2 || f.frameType == 3) {
+                if (connection.channelContent[i] == 1) {
+                    send connection.channelDeliveries[i] -> f
+                } else {
+                    send connection.channelInboxes[i] -> f
+                }
+                return
+            }
+            if (f.frameType != 1 || f.payload.len() < 4) {
+                send connection.channelInboxes[i] -> f
+                return
+            }
+            const classId = f.payload[0] * 256 + f.payload[1]
+            const methodId = f.payload[2] * 256 + f.payload[3]
+            connection.channelContent[i] = 0
+            if (classId == 60 && methodId == 60) {
+                connection.channelContent[i] = 1
+                send connection.channelDeliveries[i] -> f
+            } else if (classId == 60 && (methodId == 80 || methodId == 120)) {
+                send connection.channelConfirms[i] -> f
+            } else if (classId == 20 && methodId == 40) {
+                send connection.channelInboxes[i] -> f
+                send connection.channelDeliveries[i] -> f
+                send connection.channelConfirms[i] -> f
+            } else {
+                send connection.channelInboxes[i] -> f
+            }
         }
 
         /*
