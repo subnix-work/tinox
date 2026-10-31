@@ -9,8 +9,8 @@ the JSON in `Diagnostic.data` (schema in [compiler-diagnostics.md](compiler-diag
 |---|---|
 | `publishDiagnostics` | Exact ranges (UTF-16), `code`, `source = tinox`, severity, `relatedInformation`. Re-analysis starts 120 ms after the last edit; superseded results are dropped, late older versions ignored, diagnostics are cleared on close. Open (unsaved) buffers of imported project files are used, and open documents that import a changed file are re-analysed. |
 | `hover`, `definition`, `documentSymbol`, `completion` | Syntactic, per file plus standard library. |
-| `references` | Project-wide, token based. For members the receiver type is unknown, so every same-named member is reported. |
-| `prepareRename` / `rename` | Project-wide. Refused, with a reason, when it cannot be proven safe: ambiguous or shadowed names, members declared by several types, names that also exist on standard-library or builtin types, fields of classes with member-generating annotations (`@Getter`, ...), `extern fn`. Renaming a type also renames its file (`RenameFile` when the client supports it, a visible warning otherwise). |
+| `references` | Project-wide, token based. A member name declared by several types is narrowed with the checker's resolved receiver types (issue #554): accesses and declarations of unrelated types are dropped, overrides and calls through a base type stay (same class or ancestor/descendant). Accesses whose receiver the checker could not resolve are still reported. |
+| `prepareRename` / `rename` | Project-wide. Refused, with a reason, when it cannot be proven safe: ambiguous or shadowed names, members declared by several types unless the checker resolved every access (a single unresolved receiver, e.g. an untyped lambda parameter, refuses the rename and names the first location), names that also exist on standard-library or builtin types, fields of classes with member-generating annotations (`@Getter`, ...), `extern fn`. Renaming a type also renames its file (`RenameFile` when the client supports it, a visible warning otherwise). |
 | `workspace/symbol` | Fuzzy search over types, functions, methods and fields of the project. |
 | `formatting` / `rangeFormatting` | Identical to `tinox fmt` (editor tab options are ignored: the formatter is opinionated). Returns line-level edits; a file with syntax errors is never touched (`RequestFailed` with the reason). |
 | `semanticTokens` (`full`, `full/delta`, `range`) | Types, members, locals, parameters, enum members, type parameters, decorators, namespaces; modifiers `declaration`, `readonly`, `static`, `defaultLibrary`. Types declared in other files are coloured by naming convention. |
@@ -19,8 +19,14 @@ the JSON in `Diagnostic.data` (schema in [compiler-diagnostics.md](compiler-diag
 
 ## Limits worth knowing
 
-* No type information at the LSP layer: member navigation is name based and
-  conservative (see rename above).
+* Member navigation is token based. Only when a member name is declared by
+  several project types does it ask the compiler's own checker (resolved calls
+  and field accesses, run per file with the other project files as
+  declarations, open buffers included) which class each `x.member` reaches;
+  it is not a second analyzer. Unresolved accesses stay conservative: they are
+  listed by `references` and refuse a rename. Cost: one checker run per file
+  that mentions the name, per request (not cached). Receivers of `a.b.c`
+  chains and generic receivers are only as precise as the checker's own result.
 * Columns are UTF-16 units on the wire. The compiler counts Unicode scalar
   values; conversion happens at the boundary.
 * The project is every `.tnx` file below the nearest `tinox.toml`

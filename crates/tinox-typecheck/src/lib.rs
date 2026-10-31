@@ -5206,6 +5206,22 @@ pub fn typecheck(source: &SourceFile) -> Result<SourceFile, ErrorBag> {
 
 /// Like `typecheck`, but first registers declarations from `preludes` (e.g. resolved stdlib
 /// imports) so that extern functions and types declared there are known to the checker.
+/// The checker's resolved calls and fields for `source` with `preludes` declared (issue #554).
+/// Type errors do not matter here: whatever the checker could resolve before and after them is
+/// returned, so editor navigation keeps working in a file that is mid-edit. Node ids must have been
+/// assigned (`tinox_parser::assign_node_ids`); without them nothing is recorded.
+pub fn semantic_facts_with_prelude(source: &SourceFile, preludes: &[&SourceFile]) -> semantic::SemanticFacts {
+    let mut checker = TypeChecker::new();
+    for prelude in preludes {
+        checker.register_declarations(prelude);
+        checker.errors.clear();
+    }
+    checker.expand_prelude_class_inheritance();
+    checker.errors.clear();
+    let _ = checker.check(source);
+    checker.semantic_facts()
+}
+
 pub fn typecheck_with_prelude(source: &SourceFile, preludes: &[&SourceFile]) -> Result<SourceFile, ErrorBag> {
     let mut checker = TypeChecker::new();
     for prelude in preludes {

@@ -1,5 +1,6 @@
 mod actions;
 mod analysis;
+mod checked;
 mod formatting;
 mod navigation;
 mod semantic;

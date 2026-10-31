@@ -189,3 +189,107 @@ fn large_workspace_timings() {
         lsp.shutdown();
     }
 }
+
+// Issue #554: same-named members of unrelated types are told apart with the checker's receiver types.
+const CA: &str = "class Alpha\n{\n    var label: String\n\n    fn describe() -> String\n    {\n        return this.label\n    }\n}\n";
+const CB: &str = "class Beta\n{\n    var label: String\n\n    fn describe() -> String\n    {\n        return this.label\n    }\n}\n";
+const CC: &str = "class Gamma extends Alpha\n{\n    fn describe() -> String\n    {\n        return \"gamma\"\n    }\n}\n";
+const USE: &str = "import Alpha\nimport Beta\nimport Gamma\n\nclass Use\n{\n    fnc run(a: Alpha, b: Beta, g: Gamma) -> String\n    {\n        const x = a.describe()\n        const y = b.describe()\n        const z = g.describe()\n        const l = a.label\n        const m = b.label\n        return x + y + z + l + m\n    }\n}\n";
+
+fn typed_setup(name: &str, extra: &[(&str, &str)]) -> (std::path::PathBuf, Lsp) {
+    let root = temp_project(name);
+    let mut files = vec![("Alpha.tnx", CA), ("Beta.tnx", CB), ("Gamma.tnx", CC), ("Use.tnx", USE)];
+    files.extend_from_slice(extra);
+    for (n, t) in &files {
+        std::fs::write(root.join(n), t).unwrap();
+    }
+    let mut lsp = Lsp::start(&root, false);
+    for (n, t) in &files {
+        lsp.open(&root.join(n), t);
+    }
+    (root, lsp)
+}
+
+fn lines_of(r: &serde_json::Value, file: &str) -> Vec<u64> {
+    let mut v: Vec<u64> = r
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["uri"].as_str().unwrap().ends_with(file))
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap())
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn references_distinguish_same_named_members_of_unrelated_types() {
+    let (root, mut lsp) = typed_setup("typed-refs", &[]);
+    let uri = url(&root.join("Alpha.tnx"));
+    // `describe` declared in Alpha (line 4, col 7)
+    let r = lsp.request("textDocument/references", json!({"textDocument": {"uri": uri}, "position": pos(4, 8), "context": {"includeDeclaration": true}}));
+    // Alpha.describe, the override in Gamma, a.describe() and g.describe() -- never Beta's
+    assert_eq!(lines_of(&r, "Beta.tnx"), Vec::<u64>::new(), "{r}");
+    assert_eq!(lines_of(&r, "Alpha.tnx"), vec![4], "{r}");
+    assert_eq!(lines_of(&r, "Gamma.tnx"), vec![2], "{r}");
+    assert_eq!(lines_of(&r, "Use.tnx"), vec![8, 10], "{r}");
+    // the field `label` of Beta
+    let uri_b = url(&root.join("Beta.tnx"));
+    let r = lsp.request("textDocument/references", json!({"textDocument": {"uri": uri_b}, "position": pos(2, 9), "context": {"includeDeclaration": true}}));
+    assert_eq!(lines_of(&r, "Alpha.tnx"), Vec::<u64>::new(), "{r}");
+    assert_eq!(lines_of(&r, "Beta.tnx"), vec![2, 6], "{r}");
+    assert_eq!(lines_of(&r, "Use.tnx"), vec![12], "{r}");
+    lsp.shutdown();
+}
+
+#[test]
+fn rename_of_a_shared_member_name_edits_only_the_intended_type() {
+    let (root, mut lsp) = typed_setup("typed-rename", &[]);
+    let uri = url(&root.join("Alpha.tnx"));
+    let r = lsp.request("textDocument/rename", json!({"textDocument": {"uri": uri}, "position": pos(2, 9), "newName": "title"}));
+    let changes = r["changes"].as_object().unwrap();
+    let touched: Vec<&String> = changes.keys().collect();
+    assert!(touched.iter().all(|u| !u.ends_with("Beta.tnx")), "{r}");
+    let edits = |file: &str| changes.iter().find(|(u, _)| u.ends_with(file)).map(|(_, e)| e.as_array().unwrap().len()).unwrap_or(0);
+    assert_eq!(edits("Alpha.tnx"), 2, "{r}"); // declaration and this.label
+    assert_eq!(edits("Use.tnx"), 1, "{r}"); // a.label only, not b.label
+    // renaming the overridden method moves the override and every call through the hierarchy
+    let r = lsp.request("textDocument/rename", json!({"textDocument": {"uri": uri}, "position": pos(4, 8), "newName": "text"}));
+    let changes = r["changes"].as_object().unwrap();
+    assert!(changes.keys().all(|u| !u.ends_with("Beta.tnx")), "{r}");
+    assert!(changes.keys().any(|u| u.ends_with("Gamma.tnx")), "{r}");
+    lsp.shutdown();
+}
+
+#[test]
+fn rename_refuses_when_a_receiver_type_cannot_be_resolved() {
+    let unknown = "class Mystery\n{\n    fnc run(items: List<Alpha>) -> Nothing\n    {\n        const f = (v) => v.label\n    }\n}\n";
+    let (root, mut lsp) = typed_setup("typed-unresolved", &[("Mystery.tnx", unknown)]);
+    let uri = url(&root.join("Alpha.tnx"));
+    let r = lsp.request_raw("textDocument/rename", json!({"textDocument": {"uri": uri}, "position": pos(2, 9), "newName": "title"}));
+    let message = r["error"]["message"].as_str().unwrap_or_default().to_string();
+    assert!(message.contains("no resolved receiver type") && message.contains("Mystery.tnx"), "{r}");
+    lsp.shutdown();
+}
+
+#[test]
+fn checked_member_navigation_uses_unsaved_buffers_and_utf16_columns() {
+    let root = temp_project("typed-overlay");
+    // On disk `Use` does not touch Beta.label at all; the editor buffer does, after an emoji.
+    let disk_use = "import Alpha\nimport Beta\n\nclass Use\n{\n    fnc run(a: Alpha, b: Beta) -> String\n    {\n        return a.describe()\n    }\n}\n";
+    let buffer_use = "import Alpha\nimport Beta\n\nclass Use\n{\n    fnc run(a: Alpha, b: Beta) -> String\n    {\n        const t = \"\u{1F600}\" + b.label\n        return a.describe() + t\n    }\n}\n";
+    for (n, t) in [("Alpha.tnx", CA), ("Beta.tnx", CB), ("Use.tnx", disk_use)] {
+        std::fs::write(root.join(n), t).unwrap();
+    }
+    let mut lsp = Lsp::start(&root, false);
+    lsp.open(&root.join("Alpha.tnx"), CA);
+    lsp.open(&root.join("Beta.tnx"), CB);
+    lsp.open(&root.join("Use.tnx"), buffer_use);
+    let uri_b = url(&root.join("Beta.tnx"));
+    let r = lsp.request("textDocument/references", json!({"textDocument": {"uri": uri_b}, "position": pos(2, 9), "context": {"includeDeclaration": false}}));
+    let in_use: Vec<&serde_json::Value> = r.as_array().unwrap().iter().filter(|l| l["uri"].as_str().unwrap().ends_with("Use.tnx")).collect();
+    assert_eq!(in_use.len(), 1, "{r}");
+    // `        const t = "😀" + b.label`: the emoji is two UTF-16 units, so `label` starts at column 27
+    assert_eq!(in_use[0]["range"]["start"], json!({"line": 7, "character": 27}), "{r}");
+    lsp.shutdown();
+}

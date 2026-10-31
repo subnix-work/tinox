@@ -557,6 +557,43 @@ struct Target<'a> {
     file: usize,
     tok: usize,
     files: &'a [FileIndex],
+    /// Checked receiver identities for a member target (issue #554), computed on first use.
+    checked: std::cell::OnceCell<crate::checked::Checked>,
+}
+
+/// What the checker established about a member name declared by several types.
+struct MemberScope {
+    /// the declaring class the target belongs to
+    owner: String,
+}
+
+impl Target<'_> {
+    fn checked(&self) -> &crate::checked::Checked {
+        self.checked.get_or_init(|| match &self.sym {
+            Sym::Member(name) => crate::checked::Checked::analyze(self.files, name),
+            _ => crate::checked::Checked::analyze(self.files, ""),
+        })
+    }
+
+    /// The declaring class the cursor's member belongs to: the container of a declaration site,
+    /// or, for an access, the nearest class of the checked receiver's chain that declares the name.
+    /// `None` when the checker could not resolve the receiver.
+    fn member_scope(&self) -> Option<MemberScope> {
+        let Sym::Member(name) = &self.sym else { return None };
+        let f = &self.files[self.file];
+        if let Some(d) = f.decls.iter().find(|d| d.tok == self.tok && matches!(d.kind, DeclType::Method | DeclType::Field)) {
+            return d.container.clone().map(|owner| MemberScope { owner });
+        }
+        let receiver = self.checked().owner_of(&f.uri, f.toks[self.tok].start)?;
+        let declaring: HashSet<&str> = self
+            .files
+            .iter()
+            .flat_map(|x| x.decls.iter())
+            .filter(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && &d.name == name)
+            .filter_map(|d| d.container.as_deref())
+            .collect();
+        self.checked().chain(receiver).into_iter().find(|c| declaring.contains(c.as_str())).map(|owner| MemberScope { owner })
+    }
 }
 
 fn resolve<'a>(files: &'a [FileIndex], at: &Url, offset: usize) -> Result<Target<'a>, String> {
@@ -573,29 +610,29 @@ fn resolve<'a>(files: &'a [FileIndex], at: &Url, offset: usize) -> Result<Target
     let after_access = prev.is_some_and(|p| p.is(&TokenKind::Dot) || p.is(&TokenKind::ColonColon));
     // import path segments naming a project type
     if f.is_import(tok) && !declared_types.is_empty() {
-        return Ok(Target { sym: Sym::Type(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Type(name), file: fi, tok, files, checked: Default::default() });
     }
     if !after_access && !declared_types.is_empty() {
-        return Ok(Target { sym: Sym::Type(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Type(name), file: fi, tok, files, checked: Default::default() });
     }
     // declaration sites of members on this very token
     if f.decls.iter().any(|d| d.tok == tok && matches!(d.kind, DeclType::Method | DeclType::Field)) {
-        return Ok(Target { sym: Sym::Member(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Member(name), file: fi, tok, files, checked: Default::default() });
     }
     if f.decls.iter().any(|d| d.tok == tok && d.kind == DeclType::Function) {
-        return Ok(Target { sym: Sym::Function(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Function(name), file: fi, tok, files, checked: Default::default() });
     }
     if after_access || f.struct_literal_key_of(tok).is_some() {
-        return Ok(Target { sym: Sym::Member(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Member(name), file: fi, tok, files, checked: Default::default() });
     }
     // bare identifier: local/parameter of the enclosing function, or a top-level function
     if let Some(func) = f.innermost_fn(tok) {
         if local_decl_count(f, func, &name) > 0 {
-            return Ok(Target { sym: Sym::Local { name, fn_start: func.start, file: fi }, file: fi, tok, files });
+            return Ok(Target { sym: Sym::Local { name, fn_start: func.start, file: fi }, file: fi, tok, files, checked: Default::default() });
         }
     }
     if files.iter().flat_map(|x| x.decls.iter()).any(|d| d.kind == DeclType::Function && d.name == name) {
-        return Ok(Target { sym: Sym::Function(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Function(name), file: fi, tok, files, checked: Default::default() });
     }
     Err(format!("`{name}` is not declared in this project (standard library, builtin or unresolved)"))
 }
@@ -634,6 +671,9 @@ struct Occurrence {
     file: usize,
     tok: usize,
     is_decl: bool,
+    /// a member access whose receiver the checker could not resolve (issue #554); only set when the
+    /// member name is declared by several types and the target's declaring class is known
+    unresolved: bool,
 }
 
 fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
@@ -655,7 +695,7 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                         continue;
                     }
                     let is_decl = f.decls.iter().any(|d| d.tok == i && d.kind == DeclType::Type);
-                    out.push(Occurrence { file: fi, tok: i, is_decl });
+                    out.push(Occurrence { file: fi, tok: i, is_decl, unresolved: false });
                 }
             }
         }
@@ -672,7 +712,7 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                         continue;
                     }
                     let is_decl = f.decls.iter().any(|d| d.tok == i && d.kind == DeclType::Function);
-                    out.push(Occurrence { file: fi, tok: i, is_decl });
+                    out.push(Occurrence { file: fi, tok: i, is_decl, unresolved: false });
                 }
             }
         }
@@ -688,6 +728,8 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                 v.dedup();
                 v
             };
+            // Several declaring types: narrow to the target's class group with checked receivers.
+            let scope = if owners.len() > 1 { t.member_scope() } else { None };
             notes = owners;
             let _ = ctx;
             for (fi, f) in files.iter().enumerate() {
@@ -696,14 +738,33 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                         continue;
                     }
                     let access = f.prev(i).is_some_and(|p| p.is(&TokenKind::Dot) || p.is(&TokenKind::ColonColon));
-                    let is_decl = f
-                        .decls
-                        .iter()
-                        .any(|d| d.tok == i && matches!(d.kind, DeclType::Method | DeclType::Field));
-                    let key = f.struct_literal_key_of(i).is_some_and(|lit| notes.contains(&lit));
-                    if access || is_decl || key {
-                        out.push(Occurrence { file: fi, tok: i, is_decl });
+                    let decl = f.decls.iter().find(|d| d.tok == i && matches!(d.kind, DeclType::Method | DeclType::Field));
+                    let is_decl = decl.is_some();
+                    let lit = f.struct_literal_key_of(i);
+                    let key = lit.as_ref().is_some_and(|lit| notes.contains(lit));
+                    if !(access || is_decl || key) {
+                        continue;
                     }
+                    let mut unresolved = false;
+                    if let Some(scope) = &scope {
+                        let checked = t.checked();
+                        if let Some(d) = decl {
+                            if !d.container.as_deref().is_some_and(|c| checked.related(c, &scope.owner)) {
+                                continue;
+                            }
+                        } else if key && !access {
+                            if !lit.as_deref().is_some_and(|c| checked.related(c, &scope.owner)) {
+                                continue;
+                            }
+                        } else {
+                            match checked.owner_of(&f.uri, tok.start) {
+                                Some(receiver) if !checked.related(receiver, &scope.owner) => continue,
+                                Some(_) => {}
+                                None => unresolved = true,
+                            }
+                        }
+                    }
+                    out.push(Occurrence { file: fi, tok: i, is_decl, unresolved });
                 }
             }
         }
@@ -725,7 +786,7 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                         matches!(p.kind, TokenKind::Keyword(Keyword::Var | Keyword::Val | Keyword::Let | Keyword::Const))
                     }) || f.next(i).is_some_and(|n| n.is(&TokenKind::Colon))
                         && prev.is_some_and(|p| p.is(&TokenKind::LParen) || p.is(&TokenKind::Comma));
-                    out.push(Occurrence { file: *file, tok: i, is_decl });
+                    out.push(Occurrence { file: *file, tok: i, is_decl, unresolved: false });
                 }
             }
         }
@@ -832,11 +893,40 @@ fn check_renamable(t: &Target, ctx: &Ctx) -> Result<(), String> {
                 return Err(format!("member `{name}` is not declared in this project (standard library or unresolved)"));
             }
             if owners.len() > 1 {
-                return Err(format!(
-                    "member `{name}` is declared by {} types ({}); without receiver types a rename could touch the wrong one",
-                    owners.len(),
-                    owners.join(", ")
-                ));
+                let refuse = |why: &str| {
+                    format!("member `{name}` is declared by {} types ({}); {why}", owners.len(), owners.join(", "))
+                };
+                // The checker may still pin the target to one class group (overrides included).
+                let Some(scope) = t.member_scope() else {
+                    return Err(refuse("the checker could not resolve the receiver type at this position, so a rename could touch the wrong one"));
+                };
+                let (occ, _) = collect(t, ctx);
+                if let Some(u) = occ.iter().find(|o| o.unresolved) {
+                    let f = &files[u.file];
+                    let line = f.position(f.toks[u.tok].start).line + 1;
+                    let count = occ.iter().filter(|o| o.unresolved).count();
+                    return Err(refuse(&format!(
+                        "{count} access(es) have no resolved receiver type (first at {}:{line}), so they cannot be proven to belong to `{}`",
+                        f.uri.path().rsplit('/').next().unwrap_or(""),
+                        scope.owner
+                    )));
+                }
+                let group: Vec<&&DeclSite> = sites.iter().filter(|d| d.container.as_deref().is_some_and(|c| t.checked().related(c, &scope.owner))).collect();
+                let mut containers: Vec<&str> = group.iter().filter_map(|d| d.container.as_deref()).collect();
+                let distinct = containers.len();
+                containers.sort();
+                containers.dedup();
+                if containers.len() != distinct {
+                    return Err(format!("member `{name}` is declared more than once in one type of `{}`'s group (overloads); rename would be ambiguous", scope.owner));
+                }
+                if ctx.stdlib_member_names.contains(name.as_str()) || BUILTIN_MEMBERS.contains(&name.as_str()) {
+                    return Err(format!("`{name}` is also a standard-library or builtin member name; uses of it cannot be told apart without type information"));
+                }
+                if let Some(d) = group.iter().find(|d| d.kind == DeclType::Field && d.class_annotations.iter().any(|a| GENERATING_ANNOTATIONS.contains(&a.as_str()))) {
+                    let a = d.class_annotations.iter().find(|a| GENERATING_ANNOTATIONS.contains(&a.as_str())).unwrap();
+                    return Err(format!("`{name}` belongs to a class annotated @{a}, which generates members from field names; rename it by hand"));
+                }
+                return Ok(());
             }
             if sites.len() > 1 {
                 return Err(format!("member `{name}` is declared {} times in `{}` (overloads); rename would be ambiguous", sites.len(), owners[0]));
@@ -897,13 +987,29 @@ pub fn rename(files: &[(Url, String)], at: &Url, offset: usize, new_name: &str, 
             }
         }
         Sym::Member(_) => {
-            let owner = idx
+            let scope = target.member_scope();
+            let group_owners: Vec<String> = match &scope {
+                Some(sc) => idx
+                    .iter()
+                    .flat_map(|f| f.decls.iter())
+                    .filter(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == old)
+                    .filter_map(|d| d.container.clone())
+                    .filter(|c| target.checked().related(c, &sc.owner))
+                    .collect(),
+                None => idx
+                    .iter()
+                    .flat_map(|f| f.decls.iter())
+                    .find(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == old)
+                    .and_then(|d| d.container.clone())
+                    .into_iter()
+                    .collect(),
+            };
+            if let Some(clash) = idx
                 .iter()
                 .flat_map(|f| f.decls.iter())
-                .find(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == old)
-                .and_then(|d| d.container.clone());
-            if idx.iter().flat_map(|f| f.decls.iter()).any(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == new_name && d.container == owner) {
-                return Err(format!("`{}` already has a member named `{new_name}`", owner.unwrap_or_default()));
+                .find(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == new_name && d.container.as_ref().is_some_and(|c| group_owners.contains(c)))
+            {
+                return Err(format!("`{}` already has a member named `{new_name}`", clash.container.clone().unwrap_or_default()));
             }
         }
         Sym::Local { fn_start, file, .. } => {
@@ -1108,10 +1214,17 @@ mod tests {
         let b = "namespace x\n{\n    class B\n    {\n        fn run() -> Int64\n        {\n            return 3\n        }\n    }\n}\n";
         let files = vec![(url("x/A.tnx"), a.to_string()), (url("x/B.tnx"), b.to_string())];
         let at = url("x/A.tnx");
-        let err = rename(&files, &at, offset_of(a, "run", 0), "go", &ctx()).err().unwrap();
-        assert!(err.contains("declared by 2 types"), "{err}");
-        // references still list every candidate
-        assert_eq!(references(&files, &at, offset_of(a, "run", 0), true, &ctx()).unwrap().len(), 2);
+        // Issue #554: the two `run` members belong to unrelated types, so the declaration the
+        // cursor is on is renamed on its own and B.run is left alone.
+        let res = rename(&files, &at, offset_of(a, "run", 0), "go", &ctx()).unwrap();
+        assert_eq!(res.edits.len(), 1);
+        assert!(res.edits.contains_key(&at));
+        assert_eq!(references(&files, &at, offset_of(a, "run", 0), true, &ctx()).unwrap().len(), 1);
+        // an access whose receiver type is unknown cannot be attributed: refused again
+        let c = "namespace x\n{\n    class C\n    {\n        fn use() -> Int64\n        {\n            const f = (v) => v.run()\n            return 0\n        }\n    }\n}\n";
+        let with_unknown = vec![(url("x/A.tnx"), a.to_string()), (url("x/B.tnx"), b.to_string()), (url("x/C.tnx"), c.to_string())];
+        let err = rename(&with_unknown, &at, offset_of(a, "run", 0), "go", &ctx()).err().unwrap();
+        assert!(err.contains("declared by 2 types") && err.contains("no resolved receiver type"), "{err}");
         let err = rename(&files, &at, offset_of(a, "size", 0), "count", &ctx()).err().unwrap();
         assert!(err.contains("builtin member name"), "{err}");
 
