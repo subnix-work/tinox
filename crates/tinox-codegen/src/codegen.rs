@@ -305,6 +305,7 @@ struct DbgVar {
     /// Tinox class name or container marker from `GenCtx::local_types`.
     class: Option<String>,
     line: u32,
+    column: u32,
 }
 
 /// A parameter of the function being generated (issue #499).
@@ -399,6 +400,10 @@ pub struct CodeGen {
     debug_variables: bool,
     /// Variables declared in the function being generated: `(slot, name, ty, class, line)`.
     dbg_vars: Vec<DbgVar>,
+    /// Source of unique lexical-block ids (issue #556).
+    dbg_block_seq: u32,
+    /// Enum name -> (variant, payload types), for the debugger's enum description.
+    enum_defs: HashMap<String, Vec<(String, Vec<Type>)>>,
     /// `llvm.dbg.declare` was used, so the module needs its declaration.
     dbg_declare_used: bool,
     /// DI type nodes by a stable description, so each is emitted once.
@@ -737,6 +742,8 @@ impl CodeGen {
             di_subroutine_type_id: None,
             debug_variables: false,
             dbg_vars: Vec::new(),
+            dbg_block_seq: 0,
+            enum_defs: HashMap::new(),
             dbg_declare_used: false,
             di_type_cache: HashMap::new(),
             struct_layouts: HashMap::new(),
@@ -2253,6 +2260,7 @@ impl CodeGen {
             match &decl.node {
                 DeclKind::Enum(e) => {
                     self.known_enum_types.insert(e.name.clone());
+                    self.enum_defs.insert(e.name.clone(), e.variants.iter().map(|v| (v.name.clone(), v.args.clone())).collect());
                     for variant in &e.variants {
                         self.known_enum_variants.insert(variant.name.clone());
                         self.register_variant_owner(&e.name, &variant.name);
@@ -2266,6 +2274,7 @@ impl CodeGen {
                     for inner in &ns.decls {
                         if let DeclKind::Enum(e) = &inner.node {
                             self.known_enum_types.insert(e.name.clone());
+                    self.enum_defs.insert(e.name.clone(), e.variants.iter().map(|v| (v.name.clone(), v.args.clone())).collect());
                             for variant in &e.variants {
                                 self.known_enum_variants.insert(variant.name.clone());
                                 self.register_variant_owner(&e.name, &variant.name);
@@ -2562,6 +2571,7 @@ impl CodeGen {
                 }
                 DeclKind::Enum(e) => {
                     self.known_enum_types.insert(e.name.clone());
+                    self.enum_defs.insert(e.name.clone(), e.variants.iter().map(|v| (v.name.clone(), v.args.clone())).collect());
                     for variant in &e.variants {
                         self.known_enum_variants.insert(variant.name.clone());
                         self.register_variant_owner(&e.name, &variant.name);
@@ -2579,6 +2589,7 @@ impl CodeGen {
                             }
                         } else if let DeclKind::Enum(e) = &inner.node {
                             self.known_enum_types.insert(e.name.clone());
+                    self.enum_defs.insert(e.name.clone(), e.variants.iter().map(|v| (v.name.clone(), v.args.clone())).collect());
                             for variant in &e.variants {
                                 self.known_enum_variants.insert(variant.name.clone());
                                 self.register_variant_owner(&e.name, &variant.name);
@@ -6070,9 +6081,23 @@ tr_done_{idx}:"#).unwrap();
     /// its field layout (8 bytes per field, in declaration order).
     fn di_class(&mut self, name: &str) -> Option<u32> {
         let layout = self.struct_layouts.get(name)?.clone();
-        let decls = self.struct_field_decl_types.get(name).cloned().unwrap_or_default();
+        let mut decls = self.struct_field_decl_types.get(name).cloned().unwrap_or_default();
         let llvms = self.struct_field_llvm_types.get(name).cloned().unwrap_or_default();
-        Some(self.di_named_struct(format!("class|{name}"), name, |this, comp| {
+        // A specialization of a generic class (`Box__i64`) is described under its Tinox name
+        // (`Box<Int64>`) with the type arguments substituted into the field types (issue #556).
+        let mut display = name.to_string();
+        if let Some(spec) = self.specialization_types.get(name).cloned() {
+            if let Type::Generic { name: generic, args } = &spec {
+            if let Some(gc) = self.generic_classes.get(generic.as_str()) {
+                let bindings: HashMap<String, Type> = gc.type_params.iter().cloned().zip(args.iter().cloned()).collect();
+                for f in &gc.fields {
+                    decls.insert(f.name.clone(), Self::substitute_type(&f.field_type, &bindings));
+                }
+                display = tinox_parser::api::type_name(&spec);
+            }
+            }
+        }
+        Some(self.di_named_struct(format!("class|{name}"), &display, |this, comp| {
             let mut members = Vec::new();
             for (i, field) in layout.iter().enumerate() {
                 let base = match decls.get(field) {
@@ -6088,6 +6113,53 @@ tr_done_{idx}:"#).unwrap();
             }
             (members, layout.len() as u32 * 64)
         }))
+    }
+
+    /// An enum: an enumeration type whose enumerators carry the variant discriminators. A variant
+    /// with a payload is named `Variant#KINDS` (one letter per payload slot: I integer, S string,
+    /// F float, O other pointer); `runtime/tinox-gdb.py` reads those slots from the heap block the
+    /// value points to. Raw access stays possible: `print/d` shows the 8-byte value as stored.
+    fn di_enum(&mut self, name: &str) -> u32 {
+        let key = format!("enum|{name}");
+        if let Some(id) = self.di_type_cache.get(&key) {
+            return *id;
+        }
+        let variants = self.enum_defs.get(name).cloned().unwrap_or_default();
+        let base = self.di_basic("UInt64", 64, "DW_ATE_unsigned");
+        let mut ids = Vec::new();
+        for (variant, payload) in &variants {
+            let disc_key = self.variant_discriminator_key(Some(name), variant);
+            let (shown, value) = if payload.is_empty() {
+                (variant.clone(), Self::enum_discriminator_noarg(&disc_key))
+            } else {
+                let kinds: String = payload
+                    .iter()
+                    .map(|t| match t {
+                        Type::String => 'S',
+                        Type::Float32 | Type::Float64 => 'F',
+                        Type::Bool | Type::Char | Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::UInt8 | Type::UInt16 | Type::UInt32 | Type::UInt64 => 'I',
+                        _ => 'O',
+                    })
+                    .collect();
+                (format!("{variant}#{kinds}"), Self::enum_discriminator(&disc_key))
+            };
+            let id = self.di_next_id;
+            self.di_next_id += 1;
+            self.di_metadata.push(format!("!{id} = !DIEnumerator(name: \"{}\", value: {}, isUnsigned: true)", Self::escape_di_string(&shown), value as u64));
+            ids.push(id);
+        }
+        let elems = self.di_next_id;
+        self.di_next_id += 1;
+        let list = ids.iter().map(|m| format!("!{m}")).collect::<Vec<_>>().join(", ");
+        self.di_metadata.push(format!("!{elems} = !{{{list}}}"));
+        let id = self.di_next_id;
+        self.di_next_id += 1;
+        self.di_metadata.push(format!(
+            "!{id} = !DICompositeType(tag: DW_TAG_enumeration_type, name: \"{}\", baseType: !{base}, size: 64, elements: !{elems})",
+            Self::escape_di_string(name)
+        ));
+        self.di_type_cache.insert(key, id);
+        id
     }
 
     /// `List<T>` / `Array`: the runtime's `{len, cap, data}` array handle.
@@ -6177,6 +6249,11 @@ tr_done_{idx}:"#).unwrap();
                 let ch = self.di_basic("char", 8, "DW_ATE_signed_char");
                 self.di_pointer("String", Some(ch))
             }
+            // an enum is either a bare discriminator or a pointer to [discriminator, payload...]
+            (Some(Type::Named(n)), _) if self.enum_defs.contains_key(n) && self.known_enum_types.contains(n) && matches!(llvm, "i64" | "i64*") => {
+                let n = n.clone();
+                self.di_enum(&n)
+            }
             // enums and anything else stored in an integer slot
             (_, "i8" | "i16" | "i32" | "i64") => self.di_basic(&format!("Int{size}"), size, "DW_ATE_signed"),
             // pointers: classes, containers, maps, closures
@@ -6187,6 +6264,20 @@ tr_done_{idx}:"#).unwrap();
             (None, _) if class.is_some_and(|c| self.struct_layouts.contains_key(c)) => {
                 let c = class.unwrap().to_string();
                 self.di_class(&c).unwrap_or_else(|| self.di_pointer("pointer", None))
+            }
+            // `Box<Int64>` -> the layout of its specialization
+            (Some(Type::Generic { name: g, args }), _)
+                if self.generic_classes.get(g.as_str()).is_some_and(|gc| gc.type_params.len() == args.len())
+                    && self.struct_layouts.contains_key(&Self::mangle_generic_name(
+                        g,
+                        &self.generic_classes[g.as_str()].type_params,
+                        &self.generic_classes[g.as_str()].type_params.iter().cloned().zip(args.iter().cloned()).collect(),
+                    )) =>
+            {
+                let params = self.generic_classes[g.as_str()].type_params.clone();
+                let bindings: HashMap<String, Type> = params.iter().cloned().zip(args.iter().cloned()).collect();
+                let mangled = Self::mangle_generic_name(g, &params, &bindings);
+                self.di_class(&mangled).unwrap_or_else(|| self.di_pointer("pointer", None))
             }
             (Some(Type::Array(inner)), _) => {
                 let name = format!("List<{}>", tinox_parser::api::type_name(inner));
@@ -6222,16 +6313,21 @@ tr_done_{idx}:"#).unwrap();
     fn attach_dbg(&mut self, body_start: usize, scope: Option<DbgScope>, params: &[DbgParam]) {
         let vars = std::mem::take(&mut self.dbg_vars);
         let Some(scope) = scope else { return };
-        let mut locs: HashMap<(u32, u32), u32> = HashMap::new();
-        let mut loc_for = |this: &mut Self, line: u32, col: u32| -> u32 {
-            *locs.entry((line, col)).or_insert_with(|| {
+        let mut locs: HashMap<(u32, u32, u32), u32> = HashMap::new();
+        let mut loc_for = |this: &mut Self, line: u32, col: u32, sc: u32| -> u32 {
+            *locs.entry((line, col, sc)).or_insert_with(|| {
                 let id = this.di_next_id;
                 this.di_next_id += 1;
-                this.di_metadata.push(format!("!{id} = !DILocation(line: {line}, column: {col}, scope: !{})", scope.sp_id));
+                this.di_metadata.push(format!("!{id} = !DILocation(line: {line}, column: {col}, scope: !{sc})"));
                 id
             })
         };
-        let mut cur = loc_for(self, scope.line, 1);
+        // Open lexical scopes, innermost last: (block id, 0 for a declaration scope; metadata id).
+        // A source block opens one scope, and every local declared in it opens a nested one that
+        // lasts until the block ends, so a name is only visible after its declaration (issue #556).
+        let mut open_scopes: Vec<(u32, u32)> = Vec::new();
+        let mut cur_pos = (scope.line, 1u32);
+        let mut cur = loc_for(self, scope.line, 1, scope.sp_id);
         let mut body = self.ir[body_start..].to_string();
         // Parameters get a stack copy to describe (issue #499, `--debug` only).
         if self.debug_variables {
@@ -6267,7 +6363,31 @@ tr_done_{idx}:"#).unwrap();
             if let Some(rest) = t.strip_prefix("; @tnxdbg ") {
                 let mut it = rest.split_whitespace().filter_map(|x| x.parse::<u32>().ok());
                 if let (Some(l), Some(c)) = (it.next(), it.next()) {
-                    cur = loc_for(self, l, c);
+                    cur_pos = (l, c);
+                    cur = loc_for(self, l, c, open_scopes.last().map_or(scope.sp_id, |s| s.1));
+                }
+                out.push_str(line);
+                continue;
+            }
+            if let Some(rest) = t.strip_prefix("; @tnxscope ") {
+                let mut words = rest.split_whitespace();
+                let kind = words.next().unwrap_or("");
+                let nums: Vec<u32> = words.filter_map(|x| x.parse().ok()).collect();
+                if kind == "begin" && nums.len() == 3 {
+                    let parent = open_scopes.last().map_or(scope.sp_id, |s| s.1);
+                    let id = self.di_next_id;
+                    self.di_next_id += 1;
+                    self.di_metadata.push(format!(
+                        "!{id} = distinct !DILexicalBlock(scope: !{parent}, file: !{}, line: {}, column: {})",
+                        scope.file_id, nums[1], nums[2]
+                    ));
+                    open_scopes.push((nums[0], id));
+                    cur = loc_for(self, cur_pos.0, cur_pos.1, id);
+                } else if kind == "end" && nums.len() == 1 && open_scopes.iter().any(|s| s.0 == nums[0]) {
+                    // The location is kept until the next statement: the closing jump still belongs
+                    // to the block, and a second location in the parent scope would make a
+                    // breakpoint on the block's last line resolve twice.
+                    while open_scopes.pop().is_some_and(|s| s.0 != nums[0]) {}
                 }
                 out.push_str(line);
                 continue;
@@ -6293,11 +6413,20 @@ tr_done_{idx}:"#).unwrap();
                 if let Some(v) = var_by_slot.get(lhs.trim().trim_start_matches('%')) {
                     let llvm = rhs.split(',').next().unwrap_or("").trim().to_string();
                     let ty = self.di_type(v.ty.as_ref(), &llvm, v.class.as_deref());
+                    let decl_scope = self.di_next_id;
+                    self.di_next_id += 1;
+                    let parent = open_scopes.last().map_or(scope.sp_id, |s| s.1);
+                    self.di_metadata.push(format!(
+                        "!{decl_scope} = distinct !DILexicalBlock(scope: !{parent}, file: !{}, line: {}, column: {})",
+                        scope.file_id, v.line, v.column
+                    ));
+                    open_scopes.push((0, decl_scope));
+                    cur = loc_for(self, cur_pos.0, cur_pos.1, decl_scope);
                     let var = self.di_next_id;
                     self.di_next_id += 1;
                     self.di_metadata.push(format!(
-                        "!{var} = !DILocalVariable(name: \"{}\", scope: !{}, file: !{}, line: {}, type: !{ty})",
-                        Self::escape_di_string(&v.name), scope.sp_id, scope.file_id, v.line
+                        "!{var} = !DILocalVariable(name: \"{}\", scope: !{decl_scope}, file: !{}, line: {}, type: !{ty})",
+                        Self::escape_di_string(&v.name), scope.file_id, v.line
                     ));
                     self.dbg_declare_used = true;
                     out.push_str(&format!(
@@ -9137,6 +9266,7 @@ tr_done_{idx}:"#).unwrap();
                     name,
                     ty,
                     line: stmt.span.start.line,
+                    column: stmt.span.start.column.max(1),
                 });
             }
         }
@@ -9152,6 +9282,11 @@ tr_done_{idx}:"#).unwrap();
                 return Ok(());
             }
             StmtKind::Block(stmts) => {
+                // Lexical block for the debugger (issue #556): markers `attach_dbg` turns into a
+                // `DILexicalBlock` whose range is the instructions generated in between.
+                self.dbg_block_seq += 1;
+                let block_id = self.dbg_block_seq;
+                writeln!(&mut self.ir, "; @tnxscope begin {} {} {}", block_id, stmt.span.start.line, stmt.span.start.column.max(1)).unwrap();
                 if !ctx.in_defer_exec {
                     ctx.defer_stack.push(Vec::new());
                 }
@@ -9173,6 +9308,7 @@ tr_done_{idx}:"#).unwrap();
                     self.gen_defer_scope(ctx)?;
                     ctx.defer_stack.pop();
                 }
+                writeln!(&mut self.ir, "; @tnxscope end {}", block_id).unwrap();
                 return Ok(());
             }
             StmtKind::Return(Some(expr)) => {
