@@ -11,15 +11,15 @@ namespace tinox.core.amqp10
      * equivalent in 0-9-1 (there, `basic.publish`/`basic.consume` run
      * implicitly on the channel).
      *
-     * Issue 76: multiple links per session are now structurally possible
-     * (every attach() gets its own, guaranteed-unique handle from
-     * Amqp10Session.nextLinkHandle instead of the previously hardcoded
-     * handle 0) — the same v1 limitation as with Amqp10Session applies
-     * here too: no real frame dispatcher, multiple links work correctly
-     * with sequential use, not with truly simultaneous blocking waits on
-     * two links. nextMessage() checks the received `handle` field
-     * against this.handle, so a misattributed transfer shows up as a
-     * hard error instead of silently delivering the wrong message body.
+     * Issue 76 gave every link a unique handle; since issue #539 a
+     * connection-level dispatcher routes incoming frames by session and
+     * link identity (the broker's link handle, learned from the attach
+     * response) into this link's bounded inbox, so several links can
+     * block in nextMessage()/awaitFlow() at the same time from different
+     * tasks. A link must still be driven by ONE task at a time (two
+     * tasks in nextMessage() of the same link would just split its
+     * messages), and the inbox bound (4096 unread frames) fails the link
+     * visibly instead of growing without limit.
      */
     class Amqp10Link
     {
@@ -35,6 +35,13 @@ namespace tinox.core.amqp10
         // unsettled — only populated by attachWithRecovery() (see
         // there), otherwise always empty.
         var recoveredUnsettledTags: List<List<Int64>>
+        // Issue #539: this link's bounded inbox (transfers, attach/detach responses), the session's
+        // inbox (dispositions, end) and the routing table. flowSeen is the last flow of the inbox
+        // this link has applied.
+        var inbox: Amqp10Inbox
+        var sessionInbox: Amqp10Inbox
+        var router: Amqp10Router
+        var flowSeen: Int64
 
         /*
          * role: false = sender (target carries the destination address,
@@ -125,16 +132,19 @@ namespace tinox.core.amqp10
                 Amqp10Value::BoolVal(false), // incomplete-unsettled: false (spec default, set explicitly)
                 Amqp10Value::UIntVal(0)    // initial-delivery-count (only relevant for role=sender, ignored otherwise)
             ]
+            // Issue #539: register BEFORE sending, otherwise the attach response could be routed nowhere.
+            const inbox = Amqp10Inbox::create(4096)
+            session.router.registerLink(session.chanId, name, inbox)
             const attachBody = Amqp10::encodePerformative(0x12, attachFields)
             Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody)
 
-            const f = Amqp10::readFrame(session.conn)
+            const f = inbox.take()
             if (f.frameType != 0) {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] }
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + inbox.why(f), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
             }
             const p = Amqp10::decodePerformative(f.body)
             if (p.descriptor != 0x12) {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] }
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
             }
             // Evaluate the broker's own unsettled field (position 7) —
             // only the tags themselves (not their state details, see the
@@ -156,7 +166,7 @@ namespace tinox.core.amqp10
                     _ => {}
                 }
             }
-            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: recoveredTags }
+            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: recoveredTags, inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
         }
 
         /*
@@ -170,44 +180,31 @@ namespace tinox.core.amqp10
             var detachFields: List<Amqp10Value> = [Amqp10Value::UIntVal(this.handle)]
             const detachBody = Amqp10::encodePerformative(0x16, detachFields)
             Amqp10::writeFrame(this.conn, 0, this.chanId, detachBody)
-            Amqp10::readFrame(this.conn)
+            this.inbox.take()
+            this.router.releaseLink(this.inbox)
         }
 
         /*
-         * Reads ONE frame and expects a `flow` (0x13) — RabbitMQ sends
-         * it unsolicited, for example, right after a sender attach
-         * (found live against a real broker). Updates `this.linkCredit`
-         * from the `link-credit` field (position 6). v1 doesn't have a
-         * real frame dispatcher yet — whoever waits for `flow` MUST
-         * therefore be sure that only `flow` can really come next (here:
-         * right after attach, or when credit is exhausted).
+         * Waits for a `flow` (0x13) newer than the last one applied --
+         * RabbitMQ sends one unsolicited, for example, right after a
+         * sender attach (found live against a real broker). Updates
+         * `this.linkCredit` from the `link-credit` field (position 6).
+         * Since issue #539 the dispatcher routes flows to the right
+         * link, so no other frame type can be mistaken for it.
          */
         fn awaitFlow() -> Nothing
         {
-            const f = Amqp10::readFrame(this.conn)
-            if (f.frameType != 0) {
-                this.errorMessage = "expected AMQP frame (type=0) while waiting for flow, got frameType=" + f.frameType.toString()
-                return
+            // The dispatcher keeps the latest flow of this link in the inbox (no queue); wait for one
+            // newer than the last applied. sleep_ms is a cancellation point.
+            while this.inbox.flowSeq <= this.flowSeen {
+                if (this.inbox.failure != "") {
+                    this.errorMessage = "waiting for flow failed: " + this.inbox.failure
+                    return
+                }
+                sleep_ms(1)
             }
-            // Issue 76: a channel check like in nextMessage() — prevents
-            // a flow from a DIFFERENT session from wrongly being applied
-            // as credit for this link (no real frame dispatcher in v1,
-            // see the class comment).
-            if (f.chanId != this.chanId) {
-                this.errorMessage = "flow received on the wrong channel " + f.chanId.toString() + " (expected: " + this.chanId.toString() + ") — no frame dispatcher in v1, see issue 76"
-                return
-            }
-            const p = Amqp10::decodePerformative(f.body)
-            if (p.descriptor != 0x13) {
-                this.errorMessage = "expected flow (0x13), got descriptor=" + p.descriptor.toString()
-                return
-            }
-            // Field positions: next-incoming-id(0), incoming-window(1),
-            // next-outgoing-id(2), outgoing-window(3), handle(4),
-            // delivery-count(5), link-credit(6).
-            if (p.fields.len() > 6) {
-                match p.fields[6] { UIntVal(n) => { this.linkCredit = n } _ => {} }
-            }
+            this.flowSeen = this.inbox.flowSeq
+            this.linkCredit = this.inbox.flowCredit
         }
 
         /*
@@ -357,19 +354,9 @@ namespace tinox.core.amqp10
          */
         fn nextMessage() -> Amqp10Message
         {
-            const f = Amqp10::readFrameSkipHeartbeats(this.conn)
+            const f = this.inbox.take()
             if (f.frameType != 0) {
-                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() }
-            }
-            // Issue 76: there is no real frame dispatcher — with
-            // multiple sessions/links on the same connection, this MUST
-            // check that the frame read really belongs to THIS link,
-            // instead of silently delivering someone else's transfer as
-            // its own message (a wrong message body would be a classic
-            // case of silent garbage). Channel first (cheap, from the
-            // frame header, no performative decoding needed).
-            if (f.chanId != this.chanId) {
-                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "frame received on the wrong channel " + f.chanId.toString() + " (expected: " + this.chanId.toString() + ") — no frame dispatcher in v1, see issue 76" }
+                return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + this.inbox.why(f) }
             }
             const r = Amqp10Reader::new(f.body)
             const v = r.readValue()
@@ -385,16 +372,6 @@ namespace tinox.core.amqp10
             }
             if (descriptor != 0x14) {
                 return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "expected transfer (0x14), got descriptor=" + descriptor.toString() }
-            }
-            if (fields.len() > 0) {
-                match fields[0] {
-                    UIntVal(fh) => {
-                        if (fh != this.handle) {
-                            return Amqp10Message { body: [], contentType: "", deliveryId: -1, ok: false, errorMessage: "transfer received for the wrong link handle " + fh.toString() + " (expected: " + this.handle.toString() + ") — no frame dispatcher in v1, see issue 76" }
-                        }
-                    }
-                    _ => {}
-                }
             }
             var deliveryId: Int64 = -1
             if (fields.len() > 1) {
@@ -616,23 +593,26 @@ namespace tinox.core.amqp10
                 Amqp10Value::BoolVal(false), // incomplete-unsettled
                 Amqp10Value::UIntVal(0)      // initial-delivery-count (role=sender)
             ]
+            // Issue #539: register BEFORE sending, otherwise the attach response could be routed nowhere.
+            const inbox = Amqp10Inbox::create(4096)
+            session.router.registerLink(session.chanId, name, inbox)
             const attachBody = Amqp10::encodePerformative(0x12, attachFields)
             Amqp10::writeFrame(session.conn, 0, session.chanId, attachBody)
 
-            const f = Amqp10::readFrame(session.conn)
+            const f = inbox.take()
             if (f.frameType != 0) {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), recoveredUnsettledTags: [] }
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + inbox.why(f), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
             }
             const p = Amqp10::decodePerformative(f.body)
             if (p.descriptor != 0x12) {
-                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [] }
+                return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: -1, maxFrameSize: session.maxFrameSize, linkCredit: 0, deliveryCount: 0, errorMessage: "expected attach (0x12), got descriptor=" + p.descriptor.toString(), recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
             }
             // Coordinator links never receive flow -- the broker accepts
             // declare/discharge transfers unconditionally regardless of
             // link credit (a control channel, not a message flow). v1
             // therefore generously grants itself credit instead of
             // waiting for a flow that never comes.
-            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 2147483647, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: [] }
+            return Amqp10Link { conn: session.conn, chanId: session.chanId, handle: handle, maxFrameSize: session.maxFrameSize, linkCredit: 2147483647, deliveryCount: 0, errorMessage: "", recoveredUnsettledTags: [], inbox: inbox, sessionInbox: session.inbox, router: session.router, flowSeen: 0 }
         }
 
         /*
@@ -663,9 +643,10 @@ namespace tinox.core.amqp10
             Amqp10::writeFrame(this.conn, 0, this.chanId, fullFrame)
             this.deliveryCount = this.deliveryCount + 1
 
-            const f = Amqp10::readFrame(this.conn)
+            // The matching disposition arrives through the session inbox.
+            const f = this.sessionInbox.take()
             if (f.frameType != 0) {
-                return Amqp10Value::ErrorVal("expected AMQP frame (type=0), got frameType=" + f.frameType.toString())
+                return Amqp10Value::ErrorVal("expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + this.sessionInbox.why(f))
             }
             const p = Amqp10::decodePerformative(f.body)
             if (p.descriptor != 0x15) {

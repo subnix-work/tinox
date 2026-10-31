@@ -13,23 +13,11 @@ namespace tinox.core.amqp10
      * would add that for the actual message flow, `begin` itself only
      * needs plausible starting values).
      *
-     * Issue 76: multiple sessions per connection are now structurally
-     * possible (every begin() gets its own, guaranteed-unique channel
-     * from Amqp10Connection.nextChannelId instead of the previously
-     * hardcoded channel 1) — a v1 limitation remains, though: there is
-     * NO real frame dispatcher at the connection level (see
-     * Amqp10Link::awaitFlow()'s comment about the same gap in the
-     * single-link case). readFrame()/readFrameSkipHeartbeats() ALWAYS
-     * read the next frame on the connection, regardless of which
-     * channel carries it — multiple sessions therefore work correctly
-     * ONLY as long as the application calls its blocking operations
-     * (begin/attach/nextMessage/...) SEQUENTIALLY across all
-     * sessions/links (no simultaneous waiting on two sessions from two
-     * application threads). nextMessage() at least checks the received
-     * `handle` field against this.handle (see there) — a transfer
-     * mistakenly read for a different link is thereby made visible as a
-     * hard error instead of silent garbage (misattributed message
-     * content).
+     * Issue 76 gave every session its own channel; since issue #539 a
+     * single connection-level dispatcher reads the socket and routes
+     * frames by session/link identity into bounded inboxes (see
+     * Amqp10Router), so sessions and links can be waited on from
+     * different tasks at the same time.
      */
     class Amqp10Session
     {
@@ -40,11 +28,18 @@ namespace tinox.core.amqp10
         // Issue 76: the next link-handle number to assign within this
         // session (analogous to Amqp10Connection.nextChannelId).
         var nextLinkHandle: Int64
+        // Issue #539: this session's bounded inbox and the connection's routing table (links
+        // register themselves there before they attach).
+        var inbox: Amqp10Inbox
+        var router: Amqp10Router
 
         fn begin(connection: Amqp10Connection) -> Amqp10Session
         {
             const chanId = connection.nextChannelId
             connection.nextChannelId = connection.nextChannelId + 1
+            const inbox = Amqp10Inbox::create(4096)
+            // MUST happen before `begin` is sent, otherwise the response could be routed nowhere.
+            connection.router.registerSession(chanId, inbox)
 
             var beginFields: List<Amqp10Value> = [
                 Amqp10Value::NullVal,             // remote-channel (only set in responses)
@@ -55,15 +50,15 @@ namespace tinox.core.amqp10
             const beginBody = Amqp10::encodePerformative(0x11, beginFields)
             Amqp10::writeFrame(connection.conn, 0, chanId, beginBody)
 
-            const f = Amqp10::readFrame(connection.conn)
+            const f = inbox.take()
             if (f.frameType != 0) {
-                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), nextLinkHandle: 0 }
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString() + ": " + inbox.why(f), nextLinkHandle: 0, inbox: inbox, router: connection.router }
             }
             const p = Amqp10::decodePerformative(f.body)
             if (p.descriptor != 0x11) {
-                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected begin (0x11), got descriptor=" + p.descriptor.toString(), nextLinkHandle: 0 }
+                return Amqp10Session { conn: connection.conn, chanId: -1, maxFrameSize: connection.maxFrameSize, errorMessage: "expected begin (0x11), got descriptor=" + p.descriptor.toString(), nextLinkHandle: 0, inbox: inbox, router: connection.router }
             }
-            return Amqp10Session { conn: connection.conn, chanId: chanId, maxFrameSize: connection.maxFrameSize, errorMessage: "", nextLinkHandle: 0 }
+            return Amqp10Session { conn: connection.conn, chanId: chanId, maxFrameSize: connection.maxFrameSize, errorMessage: "", nextLinkHandle: 0, inbox: inbox, router: connection.router }
         }
 
         /*
@@ -74,7 +69,16 @@ namespace tinox.core.amqp10
         {
             const endBody = Amqp10::encodePerformative(0x17, [])
             Amqp10::writeFrame(this.conn, 0, this.chanId, endBody)
-            Amqp10::readFrame(this.conn)
+            // The broker's `end` (or a failure of the connection) arrives through the session inbox.
+            var waiting: Bool = true
+            while waiting {
+                const f = this.inbox.take()
+                if (f.frameType != 0) {
+                    waiting = false
+                } else if (Amqp10::decodePerformative(f.body).descriptor == 0x17) {
+                    waiting = false
+                }
+            }
         }
     }
 }

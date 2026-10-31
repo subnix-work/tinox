@@ -1,0 +1,91 @@
+module tinox.core.amqp10
+
+import tinox.core.semaphore
+
+namespace tinox.core.amqp10
+{
+    /*
+     * Bounded frame inbox of one session or link (issue #539). The connection's single reader
+     * (Amqp10Router / amqp10DispatchLoop) posts frames into it; the application task that owns the
+     * session/link takes them out.
+     *
+     * Bound: at most `capacity` unread frames. An overflow is NOT dropped silently: the inbox is
+     * failed instead (`failure` says why), the owner's next take() returns the failure frame and every
+     * later take() keeps returning it, so a link that cannot keep up fails visibly. Frames posted
+     * before the failure are still delivered first. Well-behaved receivers stay far below the bound
+     * because the broker may only send as many transfers as link credit was granted.
+     *
+     * Flow frames never queue: the latest one is kept in flowSeq/flowCredit (a sender only ever needs
+     * the newest credit), which keeps a long-lived publisher from accumulating unread flows.
+     */
+    class Amqp10Inbox
+    {
+        var frames: Channel<Amqp10Frame>
+        var permits: Semaphore
+        var capacity: Int64
+        // "" while healthy; set (once) by fail().
+        var failure: String
+        var failureSeen: Bool
+        // latest flow frame seen for this link: sequence number and its link-credit
+        var flowSeq: Int64
+        var flowCredit: Int64
+        // index in the router's link table (-1 for session/connection inboxes)
+        var slot: Int64
+
+        fn create(capacity: Int64) -> Amqp10Inbox
+        {
+            return Amqp10Inbox { frames: channel, permits: Semaphore::new(capacity), capacity: capacity, failure: "", failureSeen: false, flowSeq: 0, flowCredit: 0, slot: -1 }
+        }
+
+        // Called by the dispatcher only. Returns false when the inbox overflowed (and is now failed).
+        fn post(f: Amqp10Frame) -> Bool
+        {
+            if (this.failure != "") {
+                return false
+            }
+            if (!Semaphore::tryAcquire(this.permits)) {
+                this.fail("inbox overflow: more than " + this.capacity.toString() + " unread frames (consumer too slow or link credit larger than the inbox)")
+                return false
+            }
+            send this.frames -> f
+            return true
+        }
+
+        // Called by the dispatcher only; wakes the owner with a failure frame (frameType -3).
+        fn fail(reason: String) -> Nothing
+        {
+            if (this.failure != "") {
+                return
+            }
+            this.failure = reason
+            send this.frames -> Amqp10Frame { frameType: -3, chanId: 0, body: [] }
+        }
+
+        // Blocks until a frame arrives; a failed inbox yields its failure frame (frameType < 0) forever.
+        fn take() -> Amqp10Frame
+        {
+            if (this.failureSeen) {
+                return Amqp10Frame { frameType: -3, chanId: 0, body: [] }
+            }
+            const f = recv this.frames
+            if (f.frameType < 0) {
+                this.failureSeen = true
+                return f
+            }
+            Semaphore::release(this.permits)
+            return f
+        }
+
+        // Human-readable cause for a frame with frameType < 0.
+        fn why(f: Amqp10Frame) -> String
+        {
+            if (this.failure != "") {
+                return this.failure
+            }
+            if (f.frameType == -1) {
+                return "connection closed"
+            }
+            return "protocol error (frameType=" + f.frameType.toString() + ")"
+        }
+    }
+}

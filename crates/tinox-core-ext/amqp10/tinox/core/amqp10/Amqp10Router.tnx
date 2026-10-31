@@ -1,0 +1,209 @@
+module tinox.core.amqp10
+
+namespace tinox.core.amqp10
+{
+    /*
+     * Frame routing table of one connection (issue #539). ONE background task
+     * (Amqp10Connection::amqp10DispatchLoop) is the only reader of the socket; it classifies every
+     * frame and posts it into the bounded inbox of the session or link it belongs to, so several
+     * sessions and links can wait at the same time without competing socket reads:
+     *
+     *   - heartbeats are absorbed; frames that are not AMQP frames and `close` go to connectionInbox
+     *   - session identity: the broker's channel number, learned from the begin response (whose
+     *     remote-channel field names OUR channel)
+     *   - link identity: the broker's link handle, learned from the attach response (matched by link
+     *     name within the session). transfer and detach are routed by that handle; flow updates the
+     *     link inbox's latest-credit state without queueing; the session-level frames (begin, end,
+     *     disposition) go to the session inbox; session-level flow (no handle) is dropped (v1 does not
+     *     track the transfer windows, #540).
+     *
+     * Registration (session/link) happens BEFORE the begin/attach frame is sent, otherwise the
+     * response could arrive before the dispatcher knows where to route it.
+     *
+     * EOF, a protocol error or a broker-initiated `close` fail every inbox, so every waiter is
+     * woken with a visible error. Parallel lists instead of maps (maps keyed by Int64 are not
+     * reliable, see issue #129).
+     */
+    class Amqp10Router
+    {
+        var running: Bool
+        // set by Amqp10Connection::close() before it sends `close`, so the broker's reply is not
+        // answered with a second `close`
+        var closing: Bool
+        var connectionInbox: Amqp10Inbox
+        var sessionChans: List<Int64>
+        var sessionRemote: List<Int64>
+        var sessionInboxes: List<Amqp10Inbox>
+        var linkSessions: List<Int64>
+        var linkNames: List<String>
+        var linkRemote: List<Int64>
+        var linkActive: List<Bool>
+        var linkInboxes: List<Amqp10Inbox>
+        // frames that could not be attributed to any session/link (observable, never queued)
+        var unroutable: Int64
+
+        fn create() -> Amqp10Router
+        {
+            return Amqp10Router { running: false, closing: false, connectionInbox: Amqp10Inbox::create(64), sessionChans: [], sessionRemote: [], sessionInboxes: [], linkSessions: [], linkNames: [], linkRemote: [], linkActive: [], linkInboxes: [], unroutable: 0 }
+        }
+
+        fn registerSession(chanId: Int64, inbox: Amqp10Inbox) -> Nothing
+        {
+            this.sessionChans.push(chanId)
+            this.sessionRemote.push(-1)
+            this.sessionInboxes.push(inbox)
+        }
+
+        fn registerLink(sessionChan: Int64, name: String, inbox: Amqp10Inbox) -> Nothing
+        {
+            inbox.slot = this.linkNames.len()
+            this.linkSessions.push(sessionChan)
+            this.linkNames.push(name)
+            this.linkRemote.push(-1)
+            this.linkActive.push(true)
+            this.linkInboxes.push(inbox)
+        }
+
+        // After detach: later frames for this link are no longer routed.
+        fn releaseLink(inbox: Amqp10Inbox) -> Nothing
+        {
+            if (inbox.slot >= 0) {
+                this.linkActive[inbox.slot] = false
+            }
+        }
+
+        fn failAll(reason: String) -> Nothing
+        {
+            this.connectionInbox.fail(reason)
+            for i in 0..this.sessionInboxes.len() {
+                this.sessionInboxes[i].fail(reason)
+            }
+            for i in 0..this.linkInboxes.len() {
+                this.linkInboxes[i].fail(reason)
+            }
+        }
+
+        fn uint(v: Amqp10Value) -> Int64
+        {
+            var out: Int64 = -1
+            match v {
+                UIntVal(n) => { out = n }
+                UShortVal(n) => { out = n }
+                _ => {}
+            }
+            return out
+        }
+
+        // Routes one frame read from the socket. Returns false when the dispatcher must stop.
+        fn route(connection: Amqp10Connection, f: Amqp10Frame) -> Bool
+        {
+            if (f.frameType < 0) {
+                this.running = false
+                var reason: String = "protocol error while reading frames"
+                if (f.frameType == -1) {
+                    reason = "connection closed"
+                }
+                this.failAll(reason)
+                return false
+            }
+            if (f.body.len() == 0) {
+                return true
+            }
+            if (f.frameType != 0) {
+                this.connectionInbox.post(f)
+                return true
+            }
+            const p = Amqp10::decodePerformative(f.body)
+            if (p.descriptor == 0x18) {
+                this.connectionInbox.post(f)
+                this.running = false
+                if (!this.closing) {
+                    Amqp10::writeFrame(connection.conn, 0, 0, Amqp10::encodePerformative(0x18, []))
+                    this.failAll("connection closed by the broker")
+                }
+                return false
+            }
+            var s: Int64 = -1
+            if (p.descriptor == 0x11) {
+                var ours: Int64 = -1
+                if (p.fields.len() > 0) {
+                    ours = Amqp10Router::uint(p.fields[0])
+                }
+                for i in 0..this.sessionChans.len() {
+                    if (this.sessionChans[i] == ours) {
+                        this.sessionRemote[i] = f.chanId
+                        s = i
+                    }
+                }
+            } else {
+                for i in 0..this.sessionRemote.len() {
+                    if (this.sessionRemote[i] == f.chanId) {
+                        s = i
+                    }
+                }
+            }
+            if (s < 0) {
+                this.unroutable = this.unroutable + 1
+                return true
+            }
+            if (p.descriptor == 0x12 && p.fields.len() > 1) {
+                const name = this.nameOf(p.fields[0])
+                for i in 0..this.linkNames.len() {
+                    if (this.linkSessions[i] == this.sessionChans[s] && this.linkNames[i] == name && this.linkRemote[i] < 0 && this.linkActive[i]) {
+                        this.linkRemote[i] = Amqp10Router::uint(p.fields[1])
+                        this.linkInboxes[i].post(f)
+                        return true
+                    }
+                }
+                this.unroutable = this.unroutable + 1
+                return true
+            }
+            if (p.descriptor == 0x14 || p.descriptor == 0x16 || p.descriptor == 0x13) {
+                var handle: Int64 = -1
+                if (p.descriptor == 0x13) {
+                    if (p.fields.len() > 4) {
+                        handle = Amqp10Router::uint(p.fields[4])
+                    }
+                } else if (p.fields.len() > 0) {
+                    handle = Amqp10Router::uint(p.fields[0])
+                }
+                if (handle >= 0) {
+                    var found: Bool = false
+                    for i in 0..this.linkRemote.len() {
+                        if (this.linkSessions[i] == this.sessionChans[s] && this.linkRemote[i] == handle && this.linkActive[i]) {
+                            found = true
+                            if (p.descriptor == 0x13) {
+                                const inbox = this.linkInboxes[i]
+                                if (p.fields.len() > 6) {
+                                    inbox.flowCredit = Amqp10Router::uint(p.fields[6])
+                                }
+                                inbox.flowSeq = inbox.flowSeq + 1
+                            } else {
+                                this.linkInboxes[i].post(f)
+                            }
+                        }
+                    }
+                    if (!found) {
+                        this.unroutable = this.unroutable + 1
+                    }
+                    return true
+                }
+                if (p.descriptor == 0x13) {
+                    return true
+                }
+            }
+            this.sessionInboxes[s].post(f)
+            return true
+        }
+
+        fn nameOf(v: Amqp10Value) -> String
+        {
+            var out: String = ""
+            match v {
+                StrVal(s) => { out = s }
+                _ => {}
+            }
+            return out
+        }
+    }
+}
