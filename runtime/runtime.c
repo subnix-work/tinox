@@ -1157,6 +1157,11 @@ static void telemetry_leave(int64_t token) {
     if (!token) return;
     while (telemetry_depth >= token) telemetryEnd(telemetry_depth);
 }
+// Automatic message boundaries (WebSocket @OnMessage, AMQP consumers, issue #548): every message
+// starts a fresh consumer span (kind 5) so no context from a previous message on a reused worker
+// can leak into it; the scope is closed (together with anything the handler left open) afterwards.
+int64_t tinox_telemetry_message_begin(const char* name) { return telemetry_enter(name, "", NULL, 5); }
+void tinox_telemetry_message_end(int64_t token) { telemetry_leave(token); }
 char* telemetryTraceparent(void) {
     char p[56] = "";
     if (telemetry_context.trace[0]) snprintf(p, sizeof(p), "00-%s-%s-%02x", telemetry_context.trace, telemetry_context.span, telemetry_context.sampled);

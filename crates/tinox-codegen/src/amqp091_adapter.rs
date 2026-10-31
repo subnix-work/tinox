@@ -265,12 +265,15 @@ impl CodeGen {
             let dlq_ptr = self.emit_lambda_string_literal(&dead_letter);
             writeln!(&mut self.lambda_ir, "  %attempt_slot = alloca i64\n  store i64 1, i64* %attempt_slot\n  br label %attempt_loop\nattempt_loop:").unwrap();
             if let Some(ref on_message) = c.on_message {
+                let span_name = self.emit_lambda_string_literal("amqp091.consume");
+                writeln!(&mut self.lambda_ir, "  %msg_span = call i64 @tinox_telemetry_message_begin(i8* {span_name})").unwrap();
                 writeln!(
                     &mut self.lambda_ir,
                     "  call void @{}_{}(i64* %inst, i64* %msg_obj)",
                     c.class_name, on_message
                 )
                 .unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @tinox_telemetry_message_end(i64 %msg_span)").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  %handler_err = load i64, i64* @__tinox_err").unwrap();
             writeln!(&mut self.lambda_ir, "  %handler_failed = call i64 @tinox_message_handler_failed(i8* {handler_label}, i64 %handler_err)").unwrap();

@@ -2084,6 +2084,8 @@ impl CodeGen {
         // Metrics runtime
         writeln!(&mut self.ir, "declare void @tinox_counter_inc(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_message_handler_failed(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_telemetry_message_begin(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_telemetry_message_end(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_cache_named(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i8** @tinox_orm_in_params(i64*, i64, i64*)").unwrap();
         writeln!(&mut self.ir, "declare i8** @tinox_orm_params_merge(i8**, i64, i8**, i64)").unwrap();
@@ -4020,7 +4022,10 @@ tr_done_{idx}:"#).unwrap();
             }
             if let Some(ref on_message) = ep.on_message {
                 writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
+                let span_name = self.emit_lambda_string_literal("ws.message");
+                writeln!(&mut self.lambda_ir, "  %msg_span = call i64 @tinox_telemetry_message_begin(i8* {span_name})").unwrap();
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn, i8* %msg)", ep.class_name, on_message).unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @tinox_telemetry_message_end(i64 %msg_span)").unwrap();
             }
             if self.service_enabled() {
                 let label = self.emit_lambda_string_literal("WebSocket callback failed");
@@ -4624,7 +4629,10 @@ tr_done_{idx}:"#).unwrap();
             let handler_label = self.emit_lambda_string_literal(&format!("{}.{}", c.class_name, c.on_message.clone().unwrap_or_default()));
             writeln!(&mut self.lambda_ir, "  %attempt_slot = alloca i64\n  store i64 1, i64* %attempt_slot\n  br label %attempt_loop\nattempt_loop:").unwrap();
             if let Some(ref on_message) = c.on_message {
+                let span_name = self.emit_lambda_string_literal("amqp10.consume");
+                writeln!(&mut self.lambda_ir, "  %msg_span = call i64 @tinox_telemetry_message_begin(i8* {span_name})").unwrap();
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @tinox_telemetry_message_end(i64 %msg_span)").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  %handler_err = load i64, i64* @__tinox_err").unwrap();
             writeln!(&mut self.lambda_ir, "  %handler_failed = call i64 @tinox_message_handler_failed(i8* {handler_label}, i64 %handler_err)").unwrap();
