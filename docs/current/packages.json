@@ -183,11 +183,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/fs/1-1-1/docs.html",
+      "docs": "docs/tinox-core/fs/1-1-2/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core/packages/fs/tinox.toml",
       "name": "fs",
-      "version": "1.1.1"
+      "version": "1.1.2"
     },
     {
       "dependencies": [],
@@ -407,11 +407,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/amqp091/1-4-1/docs.html",
+      "docs": "docs/tinox-core/amqp091/1-4-2/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/amqp091/tinox.toml",
       "name": "amqp091",
-      "version": "1.4.1"
+      "version": "1.4.2"
     },
     {
       "dependencies": [],
@@ -498,11 +498,11 @@
           "version": "1.2.2"
         }
       ],
-      "docs": "docs/tinox-core/http2_server/1-1-5/docs.html",
+      "docs": "docs/tinox-core/http2_server/1-1-6/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/http2_server/tinox.toml",
       "name": "http2_server",
-      "version": "1.1.5"
+      "version": "1.1.6"
     },
     {
       "dependencies": [
@@ -675,14 +675,14 @@
         {
           "artifactId": "amqp091",
           "group": "tinox.core",
-          "version": "1.4.1"
+          "version": "1.4.2"
         }
       ],
-      "docs": "docs/tinox-core/outbox/1-1-1/docs.html",
+      "docs": "docs/tinox-core/outbox/1-1-2/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/outbox/tinox.toml",
       "name": "outbox",
-      "version": "1.1.1"
+      "version": "1.1.2"
     },
     {
       "dependencies": [],
