@@ -19,24 +19,26 @@ namespace tinox.core.collections
             this.data.push(value)
         }
 
+        @Throws(EmptyCollectionError)
         fn pop() -> T
         {
             const len: Int64 = this.data.len()
             if (len == 0)
             {
-                throw "Stack is empty"
+                throw EmptyCollectionError { message: "Stack is empty" }
             }
             const value: T = this.data[len - 1]
             this.data.pop()
             return value
         }
 
+        @Throws(EmptyCollectionError)
         fn peek() -> T
         {
             const len: Int64 = this.data.len()
             if (len == 0)
             {
-                throw "Stack is empty"
+                throw EmptyCollectionError { message: "Stack is empty" }
             }
             return this.data[len - 1]
         }

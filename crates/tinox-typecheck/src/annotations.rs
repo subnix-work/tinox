@@ -3019,7 +3019,8 @@ fn validate_error_declarations(decls: &[tinox_parser::Decl]) -> Vec<Error> {
         if !valid {
             errors.push(Error::new(ann.span, format!("@Error code '{code}' must be UPPER_SNAKE_CASE")));
         }
-        if let Some(other) = codes.insert(code.clone(), c.name.as_str()) {
+        // A namespaced class can appear twice in the merged list (namespace + flattened copy).
+        if let Some(other) = codes.insert(code.clone(), c.name.as_str()).filter(|o| *o != c.name) {
             errors.push(Error::new(ann.span, format!("@Error code '{code}' is already used by class '{other}'")));
         }
         if let Some(status) = ann.args.get(1) {

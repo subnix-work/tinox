@@ -1,0 +1,28 @@
+// expect: stack typed: Stack is empty
+// expect: queue typed: Queue is empty
+// expect: io typed
+// expect: io text IO_ERROR
+
+import tinox.core.collections
+import tinox.core.fs
+
+class Main {
+    fnc main() -> Int32 {
+        const s: Stack<Int64> = Stack<Int64> { data: [] }
+        try { s.pop() } catch (e: EmptyCollectionError) { println("stack typed: " + e.message) }
+        const q: Queue<Int64> = Queue<Int64> { data: [] }
+        try { q.dequeue() } catch (e: EmptyCollectionError) { println("queue typed: " + e.message) }
+        const fs = new Fs()
+        try {
+            fs.writeFile("/nonexistent-dir-tinox/x.txt", "x")
+        } catch (e: IoError) {
+            println("io typed")
+        }
+        try {
+            fs.writeFile("/nonexistent-dir-tinox/x.txt", "x")
+        } catch (e: String) {
+            println("io text " + e.split(":")[0])
+        }
+        return 0
+    }
+}
