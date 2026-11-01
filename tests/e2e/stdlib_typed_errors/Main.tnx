@@ -6,6 +6,16 @@
 // expect: result Boom
 // expect: math Math.pow: negative exponent
 // expect: heap Heap is empty
+// expect: index 20
+// expect: index err index 5 out of range for length 2
+// expect: key 2
+// expect: key err key 'zz' not found
+// expect: add Math: Int64 overflow
+// expect: sub Math: Int64 overflow
+// expect: div Math: division by zero
+// expect: rem Math: division by zero
+// expect: min Math: Int64 overflow
+// expect: ok 7 1 8
 
 import tinox.core.collections
 import tinox.core.fs
@@ -35,9 +45,23 @@ class Main {
         try { o.unwrap() } catch (e: NoneError) { println("none typed") }
         const r: Result<Int64> = Result<Int64> { values: [], error: "Boom" }
         try { r.unwrap() } catch (e: ResultError) { println("result " + e.message) }
-        try { Math::pow(2, 0 - 1) } catch (e: MathError) { println("math " + e.message) }
+        try { Math::pow(2, 0 - 1) } catch (e: ArithmeticError) { println("math " + e.message) }
         const h: MinHeap<Int64> = MinHeap<Int64> { heap: Heap<Int64> { items: [] } }
         try { h.pop(h) } catch (e: EmptyHeapError) { println("heap " + e.message) }
+        const xs: List<Int64> = [10, 20]
+        println("index " + Lists::get(xs, 1).toString())
+        try { Lists::get(xs, 5) } catch (e: IndexError) { println("index err " + e.message) }
+        var m: Map<String, Int64> = Map::new()
+        m["a"] = 2
+        println("key " + Maps::getOrThrow(m, "a").toString())
+        try { Maps::getOrThrow(m, "zz") } catch (e: KeyError) { println("key err " + e.message) }
+        const max: Int64 = 9223372036854775807
+        try { Math::addChecked(max, 1) } catch (e: ArithmeticError) { println("add " + e.message) }
+        try { Math::subChecked(0 - max - 1, 1) } catch (e: ArithmeticError) { println("sub " + e.message) }
+        try { Math::divChecked(1, 0) } catch (e: ArithmeticError) { println("div " + e.message) }
+        try { Math::remChecked(1, 0) } catch (e: ArithmeticError) { println("rem " + e.message) }
+        try { Math::divChecked(0 - max - 1, 0 - 1) } catch (e: ArithmeticError) { println("min " + e.message) }
+        println("ok " + Math::addChecked(3, 4).toString() + " " + Math::remChecked(7, 3).toString() + " " + Math::divChecked(16, 2).toString())
         return 0
     }
 }

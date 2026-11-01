@@ -21,7 +21,7 @@ Known limits: calls are resolved syntactically (`this`, `new T()`, class names, 
 or `new` type), an unresolved call is not checked; `spawn` errors are not checked at `await`; stdlib calls
 are unchecked unless the stdlib method declares its errors; stage 4 has migrated `Stack`/`Queue`
 (`EmptyCollectionError`), `Fs` (`IoError`), `Option.unwrap` (`NoneError`), `Result.unwrap`
-(`ResultError`), `Math` (`MathError`) and `Heap` (`EmptyHeapError`) so far.
+(`ResultError`), `Math` (`ArithmeticError`) and `Heap` (`EmptyHeapError`) so far.
 
 Constraints that follow from the representation: an `@Error` class carries only `message`
 (extra fields would be lost), a subclass of an `@Error` class needs its own `@Error` code, and
@@ -40,8 +40,8 @@ with the next compiler release, because typed errors need it (published packages
 `Socket` returns `Bool` instead of throwing, which already is the Result-style API of Option B.
 Deviation from the table in section 3, proposed by the implementer and accepted by the owner (2026-11-01):
 `a[i]`, `Map` strict get, integer overflow and `/` by zero stay hard aborts (as a catchable error they would
-force `@Throws` onto almost every function); explicit variants that throw an `@Error` (`list.get(i)`,
-`Math::divChecked`, ...) are the follow-up.
+force `@Throws` onto almost every function); explicit variants that throw an `@Error` are available: `Lists::get` (`IndexError`), `Maps::getOrThrow` (`KeyError`)
+in `tinox.core.collections`, and `Math::addChecked`/`subChecked`/`mulChecked`/`divChecked`/`remChecked` (`ArithmeticError`).
 
 ## Goal
 

@@ -1,0 +1,21 @@
+module tinox.core.collections
+
+namespace tinox.core.collections
+{
+    /**
+     * Checked map access: strict `map.get` aborts on a missing key, `Maps::getOrThrow`
+     * throws a typed `KeyError` the caller can catch or declare.
+     */
+    class Maps<V>
+    {
+        @Throws(KeyError)
+        fn getOrThrow(map: Map<String, V>, key: String) -> V
+        {
+            if (map.contains(key) == false)
+            {
+                throw KeyError { message: "key '" + key + "' not found" }
+            }
+            return map.get(key)
+        }
+    }
+}
