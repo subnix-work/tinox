@@ -1,0 +1,25 @@
+module tinox.core.bytes
+
+namespace tinox.core.bytes
+{
+    extern fn tinoxIoCause(code: Int64) -> String
+
+    class StreamResult
+    {
+        // Zero = success, nonzero = OS errno (including timeout/cancellation).
+        var operation: String
+        var target: String
+        var cause: String
+        var code: Int64
+        var bytes: Bytes
+        var transferred: Int64
+        fn isOk() -> Bool { return this.code == 0 }
+        // Only meaningful for read results.
+        fn isEof() -> Bool { return this.code == 0 && this.transferred == 0 }
+        fn decode(data: List<Int64>, operation: String, target: String) -> StreamResult
+        {
+            return StreamResult { code: data[0], bytes: Bytes { handle: data[1] }, transferred: data[2],
+                operation: operation, target: target, cause: tinoxIoCause(data[0]) }
+        }
+    }
+}

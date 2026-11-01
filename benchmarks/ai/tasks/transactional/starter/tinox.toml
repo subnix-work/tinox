@@ -1,0 +1,14 @@
+[package]
+compiler = "2.8.0"
+name = "transaction_eval"
+version = "0.0.0"
+
+[database]
+driver = "postgres"
+url = "postgres://postgres@127.0.0.1:5432/postgres"
+pool = 2
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "db"
+version = "1.1.0"

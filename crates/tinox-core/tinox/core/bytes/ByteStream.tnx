@@ -1,0 +1,64 @@
+module tinox.core.bytes
+
+namespace tinox.core.bytes
+{
+    extern fn httpStreamClose(conn: Int64) -> Nothing
+    extern fn httpStreamPrepare(conn: Int64) -> Int64
+    extern fn httpStreamReadHead(conn: Int64, maximum: Int64, timeout: Int64) -> List<Int64>
+    extern fn httpStreamRead(conn: Int64, maximum: Int64, timeout: Int64) -> List<Int64>
+    extern fn httpStreamWrite(conn: Int64, handle: Int64, timeout: Int64) -> List<Int64>
+
+    // Takes exclusive ownership of a connected TCP/TLS TinoxConn. No framing:
+    // a read is one bounded transport chunk, not an entire HTTP body/message.
+    class ByteStream
+    {
+        var conn: Int64
+
+        fn own(conn: Int64) -> ByteStream
+        {
+            const stream = ByteStream { conn: conn }
+            const error: Int64 = httpStreamPrepare(conn)
+            if (error != 0)
+            {
+                stream.close()
+                throw "cannot prepare byte stream: " + error.toString()
+            }
+            return stream
+        }
+
+        // 1..1 MiB per read, total operation deadline in milliseconds.
+        // An error closes the transport; EOF requires explicit close/finally.
+        fn read(maximum: Int64, timeout: Int64) -> StreamResult
+        {
+            const result = StreamResult::decode(httpStreamRead(this.conn, maximum, timeout), "read", "connection " + this.conn.toString())
+            if (!result.isOk()) { this.close() }
+            return result
+        }
+
+        fn readHead(timeout: Int64) -> StreamResult
+        {
+            const result = StreamResult::decode(httpStreamReadHead(this.conn, 16384, timeout), "read headers", "connection " + this.conn.toString())
+            if (!result.isOk()) { this.close() }
+            return result
+        }
+
+        // At most 1 MiB. Blocks with backpressure until sent/error/deadline.
+        // On failure transferred can be nonzero; retrying the whole chunk
+        // would duplicate bytes. Errors close the transport automatically.
+        fn write(bytes: Bytes, timeout: Int64) -> StreamResult
+        {
+            const result = StreamResult::decode(httpStreamWrite(this.conn, bytes.handle, timeout), "write", "connection " + this.conn.toString())
+            if (!result.isOk()) { this.close() }
+            return result
+        }
+
+        fn close() -> Nothing
+        {
+            if (this.conn > 0)
+            {
+                httpStreamClose(this.conn)
+                this.conn = 0
+            }
+        }
+    }
+}

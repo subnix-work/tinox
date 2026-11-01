@@ -1,0 +1,9 @@
+import Processor
+class Main
+{
+    fnc main() -> Int32
+    {
+        println("Submit to run against a disposable RabbitMQ broker.")
+        return 0
+    }
+}

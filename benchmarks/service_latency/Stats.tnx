@@ -1,0 +1,9 @@
+import tinox.core.json
+
+@JsonSerializable
+class Stats
+{
+    var id: Int64
+    var allocatedBytes: Int64
+    var limits: String
+}

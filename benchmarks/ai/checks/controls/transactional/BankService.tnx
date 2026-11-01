@@ -1,0 +1,19 @@
+import tinox.core.db
+import Account
+
+class BankService
+{
+    @Transactional
+    fn transfer(fromId: Int64, toId: Int64, amount: Int64) -> Nothing
+    {
+        if (amount <= 0 || fromId == toId) { throw "invalid transfer" }
+        const source: Account = DB::of(Account).filter(a => a.id == fromId).first()
+        const target: Account = DB::of(Account).filter(a => a.id == toId).first()
+        if (source.id == 0 || target.id == 0) { throw "account not found" }
+        if (source.balance < amount) { throw "insufficient funds" }
+        source.balance = source.balance - amount
+        target.balance = target.balance + amount
+        DB::of(Account).save(source)
+        DB::of(Account).save(target)
+    }
+}

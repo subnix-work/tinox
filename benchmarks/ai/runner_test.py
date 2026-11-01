@@ -213,6 +213,29 @@ class AdapterTests(unittest.TestCase):
 
 
 class RealCompilerChecks(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("TINOX_EVAL_TEST_COMPILER"), "set TINOX_EVAL_TEST_COMPILER for real preflight regression")
+    def test_missing_broker_image_stops_before_any_provider_call(self):
+        compiler = str(Path(os.environ["TINOX_EVAL_TEST_COMPILER"]).resolve())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "provider-called"
+            adapter = root / "adapter.py"
+            adapter.write_text("from pathlib import Path\nPath(" + repr(str(marker)) + ").write_text('called')\n")
+            docker = root / "docker"
+            docker.write_text("#!/bin/sh\nexit 1\n")
+            docker.chmod(0o755)
+            config = json.loads((runner.HERE / "config.example.json").read_text())
+            config.update(command=[sys.executable, str(adapter)], runs=2, max_turns=1)
+            path = root / "config.json"
+            path.write_text(json.dumps(config))
+            result = subprocess.run([sys.executable, str(runner.HERE / "runner.py"), "--config", str(path),
+                                     "--out", str(root / "output"), "--tinox", compiler,
+                                     "--tasks", "broker", "--execute"], capture_output=True, text=True,
+                                    env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ.get("PATH", "")))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("preload and pin required service image", result.stderr)
+            self.assertFalse(marker.exists())
+
     @unittest.skipUnless(os.environ.get("TINOX_EVAL_TEST_COMPILER"), "set TINOX_EVAL_TEST_COMPILER for real acceptance regression")
     def test_bugfix_positive_and_negative_controls(self):
         compiler = str(Path(os.environ["TINOX_EVAL_TEST_COMPILER"]).resolve())

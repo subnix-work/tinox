@@ -1,0 +1,65 @@
+{
+  "recorded_utc": "2026-11-01T14:08:45Z",
+  "branch": "feature/complete-306-311-312-315",
+  "base_commit": "e314b6f68bb4c14e0c1048ed2be88c499c3e5b28",
+  "aggregate": {
+    "command": "NEXTEST_TEST_THREADS=2 TINOX_HOME=/tmp/tinox-session-packages-cache TINOX_RUNTIME_CACHE_DIR=/tmp/tinox-session-runtime-cache TINOX_EVAL_TEST_COMPILER=<checkout>/target/release/tinox DOGFOOD_DIR=/tmp/tinox-session-jgrep-tinox make check",
+    "exit": 0,
+    "rust_tests": {
+      "run": 1820,
+      "passed": 1820,
+      "failed": 0,
+      "skipped": 0
+    },
+    "workspace_stdlib_tests": 5,
+    "ai_protocol_tests": 17,
+    "service_client_tests": 2,
+    "grammar_sync": "passed",
+    "docs_check": "passed",
+    "clippy": "passed",
+    "dogfood": "passed including jgrep"
+  },
+  "compiler_sha256": "38bcd30d0e4107c4aa1e1fb854905d98944f5410210d505bb15f0e8971481674",
+  "runtime_sha256": "3b4f2ae27ced205dcac693d14bd307fa7a49b0396b29dcdcf5b52e19d97b8270",
+  "targeted_evidence": {
+    "io_outcomes": "passed including partial-read/close fault injection and 2048 repeated cleanup paths",
+    "byte_stream": "210 positive TCP/TLS/HTTP1 stream trials, 180 malformed-header trials and independent gzip checks passed",
+    "protocol_bytes": "15 HTTP2 + 15 HTTP3 binary round trips, invalid frame-size GOAWAY, forced GC, and 32KiB multi-frame payloads passed",
+    "amqp_compact": "15 real RabbitMQ trials with binary multi-frame payloads, publisher confirms and independent HTTP management verification passed",
+    "checker_controls": "48 pinned independent positive/negative controls passed; not model baselines"
+  },
+  "downstream": {
+    "repository": "subnix-work/jgrep-tinox",
+    "commit": "3a28cb4ed9d4abd7092ab2143f6e5f9d5920e61b",
+    "build_and_suites": [
+      {
+        "kind": "build",
+        "exit": 0
+      },
+      {
+        "kind": "YamlParserTest.tnx",
+        "exit": 0
+      },
+      {
+        "kind": "MatcherTest.tnx",
+        "exit": 0
+      },
+      {
+        "kind": "JsonParserTest.tnx",
+        "exit": 0
+      },
+      {
+        "kind": "FilterTest.tnx",
+        "exit": 0
+      },
+      {
+        "kind": "BuiltinsTest.tnx",
+        "exit": 0
+      }
+    ]
+  },
+  "initial_aggregate_failure": "1818/1820 passed; PostgreSQL and MySQL test-container readiness timed out during the full-root episode before Tinox program execution. Both targeted reruns and the complete rerun passed without modifying those tests.",
+  "model_runs": 0,
+  "provider_model_spending_usd": 0,
+  "issue315_remaining": "Explicit provider/model configuration and authorized total spending cap, then repeated measured baseline and controlled comparison; no efficiency improvement claimed."
+}

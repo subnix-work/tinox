@@ -1,0 +1,18 @@
+module tinox.core.fs
+
+namespace tinox.core.fs
+{
+    // Immutable-by-convention snapshot; errno codes are platform-specific.
+    class IoFailure
+    {
+        var code: Int64
+        var operation: String
+        var target: String
+        var cause: String
+
+        fn message() -> String
+        {
+            return this.operation + " " + this.target + ": " + this.cause
+        }
+    }
+}
