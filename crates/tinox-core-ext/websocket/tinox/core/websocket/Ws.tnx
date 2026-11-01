@@ -26,6 +26,14 @@ namespace tinox.core.websocket
     extern fn tinoxDeflateRaw(bytes: List<Int64>) -> List<Int64>
     extern fn tinoxInflateRaw(bytes: List<Int64>) -> List<Int64>
     extern fn wsLastInflateOk() -> Bool
+    // Opt-in context takeover (issue #560): tinox.websocket.compression = context.
+    extern fn wsContextTakeoverConfigured() -> Bool
+    extern fn wsSetContext(conn: Int64, serverNoCtx: Bool, clientNoCtx: Bool, bits: Int64) -> Nothing
+    extern fn wsHasContext(conn: Int64) -> Bool
+    extern fn wsDefLock(conn: Int64) -> Nothing
+    extern fn wsDefUnlock(conn: Int64) -> Nothing
+    extern fn wsDeflateMsg(conn: Int64, bytes: List<Int64>) -> List<Int64>
+    extern fn wsInflateMsg(conn: Int64, bytes: List<Int64>) -> List<Int64>
     extern fn tinoxBytesToString(bytes: List<Int64>) -> String
 
     class Ws
@@ -44,6 +52,18 @@ namespace tinox.core.websocket
          * regardless of whether the client had them in its offer) — see
          * the module comment above for the rationale behind this
          * deliberate v1 simplification.
+         *
+         * Opt-in context takeover (issue #560): with
+         * `tinox.websocket.compression = context` in application.properties
+         * (or the environment variable TINOX_WEBSOCKET_COMPRESSION=context) the
+         * connection instead keeps one DEFLATE and one INFLATE context for its
+         * life, which makes repeated small messages several times smaller
+         * (see benchmarks/websocket_compression/results.md) at about 99 KiB of
+         * memory per connection. The client's `client_no_context_takeover`,
+         * `server_no_context_takeover` and `server_max_window_bits` (9..15)
+         * parameters of the first offer are honoured and echoed; a window below
+         * 9 bits declines the extension. Any other configured value aborts
+         * the process at the first handshake.
          */
         fn handshake(conn: Int64) -> Bool
         {
@@ -55,6 +75,9 @@ namespace tinox.core.websocket
             var version: String = ""
             var hasUpgrade: Bool = false
             var offeredDeflate: Bool = false
+            var offerClientNoCtx: Bool = false
+            var offerServerNoCtx: Bool = false
+            var offerServerBits: Int64 = 15
             const lines = req.split("\r\n")
             for i in 0..lines.len() {
                 const line = lines[i]
@@ -73,6 +96,23 @@ namespace tinox.core.websocket
                 if (lower.startsWith("sec-websocket-extensions:")) {
                     if (lower.contains("permessage-deflate")) {
                         offeredDeflate = true
+                        // Parameters of the FIRST permessage-deflate offer (RFC 7692 §7.1): only the
+                        // opt-in context mode honours them, the stateless mode ignores them as before.
+                        const offers = lower.substring(25, lower.len()).split(",")
+                        var first = offers[0]
+                        for k in 0..offers.len() {
+                            if (offers[k].contains("permessage-deflate")) {
+                                first = offers[k]
+                                break
+                            }
+                        }
+                        offerClientNoCtx = first.contains("client_no_context_takeover")
+                        offerServerNoCtx = first.contains("server_no_context_takeover")
+                        const bitsAt = first.indexOf("server_max_window_bits=")
+                        if (bitsAt >= 0) {
+                            const rest = first.substring(bitsAt + 23, first.len()).split(";")[0].trim()
+                            offerServerBits = rest.toInt()
+                        }
                     }
                 }
             }
@@ -82,7 +122,19 @@ namespace tinox.core.websocket
             }
             const accept = wsAcceptKey(key)
             var response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n"
-            if (offeredDeflate) {
+            if (offeredDeflate && wsContextTakeoverConfigured()) {
+                // Context takeover (opt-in): echo the client's parameters, keep the contexts otherwise.
+                // A window below 9 bits cannot be honoured by zlib, so the extension is declined then.
+                if (offerServerBits >= 9 && offerServerBits <= 15) {
+                    wsSetCompressed(conn, true)
+                    wsSetContext(conn, offerServerNoCtx, offerClientNoCtx, offerServerBits)
+                    var ext = "permessage-deflate"
+                    if (offerClientNoCtx) { ext = ext + "; client_no_context_takeover" }
+                    if (offerServerNoCtx) { ext = ext + "; server_no_context_takeover" }
+                    if (offerServerBits < 15) { ext = ext + "; server_max_window_bits=" + offerServerBits.toString() }
+                    response = response + "Sec-WebSocket-Extensions: " + ext + "\r\n"
+                }
+            } else if (offeredDeflate) {
                 wsSetCompressed(conn, true)
                 response = response + "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover\r\n"
             }
@@ -220,8 +272,14 @@ namespace tinox.core.websocket
             var actualPayload: List<Int64> = payload
             var rsv1Bit: Int64 = 0
             const isDataFrame = opcode == 1 || opcode == 2
+            // With context takeover the peer decompresses in the order we compress, so the
+            // compress step and the write of its frame must not interleave with another sender.
+            const ordered: Bool = isDataFrame && wsHasContext(conn)
+            if (ordered) {
+                wsDefLock(conn)
+            }
             if (isDataFrame && wsIsCompressed(conn)) {
-                actualPayload = tinoxDeflateRaw(payload)
+                actualPayload = wsDeflateMsg(conn, payload)
                 rsv1Bit = 0x40
             }
             var out: List<Int64> = []
@@ -259,6 +317,9 @@ namespace tinox.core.websocket
                 }
             }
             httpConnWriteBytes(conn, out)
+            if (ordered) {
+                wsDefUnlock(conn)
+            }
         }
 
         /*
@@ -379,7 +440,7 @@ namespace tinox.core.websocket
             if (!compressed) {
                 return WsFrame { fin: true, opcode: opcode, payload: payload, rsv1: false }
             }
-            const decompressed = tinoxInflateRaw(payload)
+            const decompressed = wsInflateMsg(conn, payload)
             if (!wsLastInflateOk()) {
                 Ws::sendCloseGeneric(conn, 1002, maskOutgoing)
                 return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false }

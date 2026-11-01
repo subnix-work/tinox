@@ -7868,7 +7868,30 @@ static size_t fast_i64_write(int64_t val, char* buf);
 // on the same fd. conn_close() then waits for `inflight` to drop to 0
 // (every in-flight recv/send has actually returned and is no longer
 // touching `ssl`/`fd`) before it's safe to SSL_free()/close().
-typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; atomic_int inflight; atomic_bool closing; } TinoxConn;   // ssl==NULL => plaintext
+// permessage-deflate context takeover (issue #560, opt-in): wsCtx marks a connection that keeps one
+// DEFLATE and one INFLATE context for its whole life instead of a fresh one per message. wsDef/wsInf
+// are lazily created z_streams (about 99 KiB per connection together), released by conn_close.
+// defLock serialises compress+write so frames leave in the order they were compressed (the peer's
+// window follows that order); infLock guards the inflate context against a concurrent close.
+typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; atomic_int inflight; atomic_bool closing;
+                 bool wsCtx; bool wsDefReset; bool wsInfReset; int wsDefBits; void* wsDef; void* wsInf;
+                 pthread_mutex_t defLock; pthread_mutex_t infLock; } TinoxConn;   // ssl==NULL => plaintext
+static void conn_ws_init(TinoxConn* c) {
+    c->wsCtx = false; c->wsDefReset = false; c->wsInfReset = false; c->wsDefBits = 15;
+    c->wsDef = NULL; c->wsInf = NULL;
+    pthread_mutex_init(&c->defLock, NULL);
+    pthread_mutex_init(&c->infLock, NULL);
+}
+static void conn_ws_release(TinoxConn* c) {
+    pthread_mutex_lock(&c->defLock);
+    if (c->wsDef) { deflateEnd((z_stream*)c->wsDef); free(c->wsDef); c->wsDef = NULL; }
+    pthread_mutex_unlock(&c->defLock);
+    pthread_mutex_lock(&c->infLock);
+    if (c->wsInf) { inflateEnd((z_stream*)c->wsInf); free(c->wsInf); c->wsInf = NULL; }
+    pthread_mutex_unlock(&c->infLock);
+    pthread_mutex_destroy(&c->defLock);
+    pthread_mutex_destroy(&c->infLock);
+}
 static void conn_send_all(TinoxConn* c, const char* data, size_t len);
 
 #ifdef TINOX_TLS
@@ -7957,6 +7980,7 @@ static void conn_close(TinoxConn* c) {
     if (c->ssl) { SSL_shutdown((SSL*)c->ssl); SSL_free((SSL*)c->ssl); c->ssl = NULL; }
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
     pthread_mutex_destroy(&c->writeLock);
+    conn_ws_release(c);
 }
 #else
 // Plaintext-only fallback — identical semantics without OpenSSL. For the
@@ -7989,6 +8013,7 @@ static void conn_close(TinoxConn* c) {
     }
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
     pthread_mutex_destroy(&c->writeLock);
+    conn_ws_release(c);
 }
 #endif
 
@@ -8273,6 +8298,7 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
     c->wsCompressed = false;
     c->inflight = 0;
     c->closing = false;
+    conn_ws_init(c);
     return (int64_t)(intptr_t)c;
 #else
     (void)server_fd;
@@ -8297,6 +8323,7 @@ int64_t httpServerAcceptConnHandle(int64_t server_fd) {
     c->wsCompressed = false;
     c->inflight = 0;
     c->closing = false;
+    conn_ws_init(c);
     return (int64_t)(intptr_t)c;
 }
 
@@ -8329,6 +8356,7 @@ int64_t httpConnFromFd(int64_t fd) {
     c->wsCompressed = false;
     c->inflight = 0;
     c->closing = false;
+    conn_ws_init(c);
     return (int64_t)(intptr_t)c;
 }
 
@@ -8343,6 +8371,151 @@ void wsSetCompressed(int64_t conn, bool val) {
 bool wsIsCompressed(int64_t conn) {
     if (conn <= 0) return false;
     return ((TinoxConn*)(intptr_t)conn)->wsCompressed;
+}
+
+// ---- permessage-deflate context takeover (issue #560) ----
+//
+// Opt-in: `tinox.websocket.compression = context` in application.properties (or the environment
+// variable TINOX_WEBSOCKET_COMPRESSION) makes Ws::handshake keep one DEFLATE and one INFLATE
+// context per connection instead of negotiating no_context_takeover. The default ("stateless")
+// is unchanged. Anything else is a hard startup error (no silent fallback).
+static const char* tinox_config_resolve(const char* key);
+bool wsContextTakeoverConfigured(void) {
+    static int cached = -1;
+    if (cached >= 0) return cached == 1;
+    const char* v = tinox_config_resolve("tinox.websocket.compression");
+    if (!v || !*v || strcmp(v, "stateless") == 0) cached = 0;
+    else if (strcmp(v, "context") == 0) cached = 1;
+    else {
+        fprintf(stderr, "tinox.websocket.compression must be 'stateless' or 'context', got '%s'\n", v);
+        exit(1);
+    }
+    return cached == 1;
+}
+
+// Called by Ws::handshake after it accepted the offer: the connection then uses persistent contexts.
+// serverNoCtx/clientNoCtx are the no_context_takeover parameters the client asked for (and the
+// response echoes): the matching context is reset after every message. bits is the negotiated
+// server_max_window_bits (9..15).
+void wsSetContext(int64_t conn, bool serverNoCtx, bool clientNoCtx, int64_t bits) {
+    if (conn <= 0) return;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    c->wsCtx = true;
+    c->wsDefReset = serverNoCtx;
+    c->wsInfReset = clientNoCtx;
+    c->wsDefBits = (bits >= 9 && bits <= 15) ? (int)bits : 15;
+}
+bool wsHasContext(int64_t conn) {
+    return conn > 0 && ((TinoxConn*)(intptr_t)conn)->wsCtx;
+}
+void wsDefLock(int64_t conn) {
+    if (conn > 0) pthread_mutex_lock(&((TinoxConn*)(intptr_t)conn)->defLock);
+}
+void wsDefUnlock(int64_t conn) {
+    if (conn > 0) pthread_mutex_unlock(&((TinoxConn*)(intptr_t)conn)->defLock);
+}
+
+// Compresses one outgoing message. Without context takeover this is tinoxDeflateRaw. With it, the
+// caller holds wsDefLock across this call AND the write of the frame.
+int64_t* wsDeflateMsg(int64_t conn, int64_t* bytes) {
+    if (conn <= 0 || !((TinoxConn*)(intptr_t)conn)->wsCtx) return tinoxDeflateRaw(bytes);
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    if (!c->wsDef) {
+        z_stream* z = (z_stream*)calloc(1, sizeof(z_stream));
+        if (!z || deflateInit2(z, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -c->wsDefBits, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+            free(z);
+            fprintf(stderr, "websocket: cannot allocate a DEFLATE context\n");
+            exit(1);
+        }
+        c->wsDef = z;
+    } else if (c->wsDefReset) {
+        deflateReset((z_stream*)c->wsDef);
+    }
+    z_stream* z = (z_stream*)c->wsDef;
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t n = a ? a->len : 0;
+    unsigned char* in = (unsigned char*)malloc(n > 0 ? (size_t)n : 1);
+    for (int64_t i = 0; i < n; i++) in[i] = (unsigned char)(a->data[i] & 0xff);
+    z->next_in = in;
+    z->avail_in = (uInt)n;
+    size_t cap = (size_t)(n > 0 ? n : 1) + 64;
+    unsigned char* out = (unsigned char*)malloc(cap);
+    size_t total = 0;
+    for (;;) {
+        z->next_out = out + total;
+        z->avail_out = (uInt)(cap - total);
+        deflate(z, Z_SYNC_FLUSH);
+        total = cap - z->avail_out;
+        if (z->avail_out > 0) break;
+        cap *= 2;
+        out = (unsigned char*)realloc(out, cap);
+    }
+    free(in);
+    if (total >= 4 && out[total-4] == 0x00 && out[total-3] == 0x00 && out[total-2] == 0xFF && out[total-1] == 0xFF) total -= 4;
+    int64_t* nh = tinox_array_new(0, total > 0 ? (int64_t)total : 4);
+    for (size_t i = 0; i < total; i++) tinox_array_push(nh, out[i]);
+    free(out);
+    return nh;
+}
+
+// Decompresses one fully reassembled incoming message; failure is signalled through
+// wsLastInflateOk() exactly like tinoxInflateRaw. After a failure the context is discarded: the
+// caller closes the connection.
+int64_t* wsInflateMsg(int64_t conn, int64_t* bytes) {
+    if (conn <= 0 || !((TinoxConn*)(intptr_t)conn)->wsCtx) return tinoxInflateRaw(bytes);
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    _tinox_inflate_ok = true;
+    pthread_mutex_lock(&c->infLock);
+    if (!c->wsInf) {
+        z_stream* z = (z_stream*)calloc(1, sizeof(z_stream));
+        if (!z || inflateInit2(z, -15) != Z_OK) {
+            free(z);
+            pthread_mutex_unlock(&c->infLock);
+            _tinox_inflate_ok = false;
+            return tinox_array_new(0, 4);
+        }
+        c->wsInf = z;
+    } else if (c->wsInfReset) {
+        inflateReset((z_stream*)c->wsInf);
+    }
+    z_stream* z = (z_stream*)c->wsInf;
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t n = a ? a->len : 0;
+    unsigned char* in = (unsigned char*)malloc((size_t)n + 4);
+    for (int64_t i = 0; i < n; i++) in[i] = (unsigned char)(a->data[i] & 0xff);
+    in[n] = 0x00; in[n+1] = 0x00; in[n+2] = 0xFF; in[n+3] = 0xFF;
+    z->next_in = in;
+    z->avail_in = (uInt)(n + 4);
+    size_t cap = 4096;
+    unsigned char* out = (unsigned char*)malloc(cap);
+    size_t total = 0;
+    bool failed = false;
+    for (;;) {
+        z->next_out = out + total;
+        z->avail_out = (uInt)(cap - total);
+        int ret = inflate(z, Z_SYNC_FLUSH);
+        total = cap - z->avail_out;
+        if (total > 16777216) { failed = true; break; }
+        if (ret == Z_STREAM_END) { inflateReset(z); break; }
+        if (ret != Z_OK && ret != Z_BUF_ERROR) { failed = true; break; }
+        if (z->avail_out == 0) { cap *= 2; out = (unsigned char*)realloc(out, cap); continue; }
+        if (z->avail_in == 0) break;
+        failed = true; // input left but no progress: truncated or corrupt stream
+        break;
+    }
+    free(in);
+    if (failed) {
+        inflateEnd(z); free(z); c->wsInf = NULL;
+        pthread_mutex_unlock(&c->infLock);
+        free(out);
+        _tinox_inflate_ok = false;
+        return tinox_array_new(0, 4);
+    }
+    pthread_mutex_unlock(&c->infLock);
+    int64_t* nh = tinox_array_new(0, total > 0 ? (int64_t)total : 4);
+    for (size_t i = 0; i < total; i++) tinox_array_push(nh, out[i]);
+    free(out);
+    return nh;
 }
 
 // Wraps an already-connected socket fd (client side, e.g. via
@@ -8437,6 +8610,7 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     c->wsCompressed = false;
     c->inflight = 0;
     c->closing = false;
+    conn_ws_init(c);
     return (int64_t)(intptr_t)c;
 #else
     // Bug 90: the TLS-enabled branch above closes `fd` on every error path;
