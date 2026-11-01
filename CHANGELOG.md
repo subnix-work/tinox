@@ -4,6 +4,10 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **WebSocket context takeover** (#560, opt-in): `tinox.websocket.compression = context` (application.properties or `TINOX_WEBSOCKET_COMPRESSION`) keeps one DEFLATE and one INFLATE context per connection and honours the client's `*_no_context_takeover` / `server_max_window_bits` parameters. About 4x less wire data for repeated small messages at ~99 KiB per connection; the default stays stateless. Measurements: `benchmarks/websocket_compression/results.md`. `tinox.core.websocket` 1.1.3, `tinox.core.ui` 1.1.3.
+
 ## [2.9.0] - 2026-11-01
 
 **Notable change:** `catch (e: String)` now sees typed stdlib errors as `CODE: message` (for example `IO_ERROR: ...`) instead of the bare text; catch the `@Error` class (`catch (e: IoError)`) or run `tinox migrate-exceptions`. Every package is republished for compiler 2.9.0 (patch version bump).

@@ -57,3 +57,29 @@ for chatty small-message endpoints, bounded by the existing connection budget, a
 connection. Not measured here: RSS of the full server under load and latency at the tail, which
 belong with the implementation. A cheap, default-compatible improvement that needs no new state is
 to send a message uncompressed (RSV1 clear) when deflate does not shrink it.
+
+## Implemented: opt-in context takeover (`tinox.websocket.compression = context`)
+
+`tinox.core.websocket` 1.1.3 keeps one DEFLATE and one INFLATE context per connection when the
+setting is `context` (application.properties key or `TINOX_WEBSOCKET_COMPRESSION`); the default
+`stateless` is unchanged. Same corpora, 500 messages, `websockets` client through the counting
+proxy, server->client bytes:
+
+| corpus | stateless | context takeover | smaller by |
+|---|---|---|---|
+| chat json | 46365 | 11377 | 4.1x |
+| telemetry json | 31009 | 6890 | 4.5x |
+| log lines | 42694 | 9528 | 4.5x |
+| random hex (control) | 42018 | 46817 | 0.9x (slightly larger) |
+
+Verified by `crates/tinox/tests/ws_context_takeover.rs` with the independent client: negotiation echoes
+`client_no_context_takeover`, `server_no_context_takeover` and `server_max_window_bits` (9 and 10 tried),
+300 messages plus a 100 KB and an empty message stay byte-exact on one context, the wire is at least
+halved against the stateless default, 150 closed connections do not accumulate per-connection state
+(RSS growth under 8 MiB; a leak would be ~15 MiB), and an unknown setting value aborts the process.
+
+Limits: only the server side (WsServer / `@WebsocketEndpoint` / Tinox UI) honours the setting, `WsClient`
+stays stateless; the first `permessage-deflate` offer is the one considered; a `server_max_window_bits`
+below 9 declines the extension; incompressible payloads cost slightly more than stateless. The idea of
+sending a message uncompressed when deflate does not shrink it is not part of this change: with context
+takeover it would desynchronise the peer's window, and the stateless default keeps its behaviour.
