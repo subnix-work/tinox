@@ -1,0 +1,7 @@
+// expect-exit: 1
+// expect: cleanup
+// expect: tinox: service failed: OnStart Broken.start failed: provider initialization failed
+import App
+@Service(2000, 1000)
+class Main { fnc main() -> Int32 { println("Main must not run")
+return 0 } }

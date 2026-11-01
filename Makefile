@@ -7,7 +7,7 @@ export DOGFOOD_DIR
 
 .PHONY: check test-and-dogfood test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync workspace-ext
 
-check: clippy test-and-dogfood grammar-sync workspace-stdlib docs-check ai-eval-test
+check: clippy test-and-dogfood grammar-sync workspace-stdlib docs-check ai-eval-test service-benchmark-test
 
 # Runs `test` and `dogfood` concurrently (CI's `test` job runs this alone).
 # The recursive make gives -j2 its own job server regardless of how `check`
@@ -233,3 +233,8 @@ docs-release-check:
 .PHONY: workspace-stdlib
 workspace-stdlib:
 	bash scripts/check-workspace-stdlib.sh
+
+# Independent HTTP lifecycle regression for benchmark load accounting (#312).
+.PHONY: service-benchmark-test
+service-benchmark-test:
+	python3 -m unittest discover -s benchmarks/service_latency -p '*_test.py'

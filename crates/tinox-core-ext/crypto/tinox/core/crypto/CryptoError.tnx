@@ -1,0 +1,13 @@
+module tinox.core.crypto
+
+namespace tinox.core.crypto
+{
+    /**
+     * A cryptographic operation failed.
+     */
+    @Error("CRYPTO_ERROR", 500)
+    class CryptoError
+    {
+        var message: String
+    }
+}

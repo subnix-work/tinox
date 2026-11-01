@@ -1,0 +1,55 @@
+// Issue #564: an omitted C-style condition means an unconditional loop.
+// expect: empty clauses done
+// expect: 3
+// expect: 5
+// expect: 2
+// expect: 4
+class Main
+{
+    fnc main() -> Int32
+    {
+        for (;;) { break }
+        println("empty clauses done")
+
+        var steps: Int64 = 0
+        for (;; steps = steps + 1)
+        {
+            if (steps < 3) { continue }
+            break
+        }
+        println(steps)
+
+        var total: Int64 = 0
+        for (var i: Int64 = 0;; i = i + 1)
+        {
+            if (i == 1) { continue }
+            if (i == 4) { break }
+            total = total + i
+        }
+        println(total)
+
+        var visits: Int64 = 0
+        for (var counter: Int64 = 0;;)
+        {
+            counter = counter + 1
+            if (counter == 2) { continue }
+            if (counter == 4) { break }
+            visits = visits + 1
+        }
+        println(visits)
+
+        var nested: Int64 = 0
+        for (var outer: Int64 = 0;; outer = outer + 1)
+        {
+            if (outer == 2) { break }
+            for (var inner: Int64 = 0;; inner = inner + 1)
+            {
+                if (inner == 1) { continue }
+                if (inner == 3) { break }
+                nested = nested + 1
+            }
+        }
+        println(nested)
+        return 0
+    }
+}

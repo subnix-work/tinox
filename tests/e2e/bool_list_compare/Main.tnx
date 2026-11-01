@@ -1,0 +1,15 @@
+// expect: true
+// expect: false
+
+class Main
+{
+    fnc yes() -> Bool { return true }
+    fnc main() -> Int32
+    {
+        for preferred in [true, false]
+        {
+            println(Main::yes() == preferred)
+        }
+        return 0
+    }
+}

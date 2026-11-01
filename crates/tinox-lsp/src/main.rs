@@ -1,5 +1,6 @@
 mod actions;
 mod analysis;
+mod checked;
 mod formatting;
 mod navigation;
 mod semantic;
@@ -119,6 +120,7 @@ const EMBEDDED_STDLIB: &[(&str, &str)] = &[
         include_str!("../../tinox-core/tinox/core/time/Timer.tnx"),
     )),
     ("uuid",          include_str!("../../tinox-core/tinox/core/uuid/Uuid.tnx")),
+    ("unicode",       include_str!("../../tinox-core/tinox/core/unicode/Unicode.tnx")),
 ];
 
 fn build_embedded_stdlib() -> TypeRegistry {
@@ -164,6 +166,67 @@ struct Inner {
     doc_versions: DashMap<Url, i32>,
     /// (import path, class names) for every embedded standard-library module.
     stdlib_import_map: Vec<(String, Vec<String>)>,
+    /// Issue #555: resource budget of the project scan, a misconfiguration message to report once,
+    /// the disk-read cache (path -> modified time, length, text) and the last partial-index warning.
+    budget: ScanBudget,
+    budget_problem: Option<String>,
+    disk_cache: DashMap<PathBuf, (std::time::SystemTime, u64, String)>,
+    partial_warned: std::sync::Mutex<Option<usize>>,
+}
+
+/// Limits of one project scan (issue #555). `TINOX_LSP_MAX_FILES` / `TINOX_LSP_MAX_BYTES` override
+/// the defaults; the open documents are always indexed, whatever the budget.
+#[derive(Clone, Copy)]
+struct ScanBudget {
+    max_files: usize,
+    max_bytes: u64,
+}
+
+impl ScanBudget {
+    const DEFAULT_FILES: usize = 5000;
+    const DEFAULT_BYTES: u64 = 256 * 1024 * 1024;
+
+    /// Reads the overrides; an unusable value keeps the default and is reported, never ignored silently.
+    fn from_env() -> (ScanBudget, Option<String>) {
+        let mut budget = ScanBudget { max_files: Self::DEFAULT_FILES, max_bytes: Self::DEFAULT_BYTES };
+        let mut problems = Vec::new();
+        if let Ok(v) = std::env::var("TINOX_LSP_MAX_FILES") {
+            match v.parse::<usize>() {
+                Ok(n) if n > 0 => budget.max_files = n,
+                _ => problems.push(format!("TINOX_LSP_MAX_FILES must be a positive integer (keeping {})", Self::DEFAULT_FILES)),
+            }
+        }
+        if let Ok(v) = std::env::var("TINOX_LSP_MAX_BYTES") {
+            match v.parse::<u64>() {
+                Ok(n) if n > 0 => budget.max_bytes = n,
+                _ => problems.push(format!("TINOX_LSP_MAX_BYTES must be a positive integer (keeping {})", Self::DEFAULT_BYTES)),
+            }
+        }
+        (budget, if problems.is_empty() { None } else { Some(problems.join("; ")) })
+    }
+}
+
+/// The files of one project scan and what the budget left out (issue #555). Operations that need
+/// every file to be correct (rename) must check `complete()`.
+struct ProjectScan {
+    files: Vec<(Url, String)>,
+    /// `.tnx` files found on disk that were not indexed because of the budget
+    skipped: usize,
+    total: usize,
+    budget: ScanBudget,
+}
+
+impl ProjectScan {
+    fn complete(&self) -> bool {
+        self.skipped == 0
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "workspace index incomplete: {} of {} .tnx files are not indexed (budget {} files / {} bytes; raise TINOX_LSP_MAX_FILES or TINOX_LSP_MAX_BYTES)",
+            self.skipped, self.total, self.budget.max_files, self.budget.max_bytes
+        )
+    }
 }
 
 impl Inner {
@@ -199,6 +262,7 @@ impl Inner {
             })
             .collect();
         stdlib_import_map.sort();
+        let (budget, budget_problem) = ScanBudget::from_env();
         Self {
             client,
             docs: DashMap::new(),
@@ -212,6 +276,10 @@ impl Inner {
             stdlib_import_map,
             generations: DashMap::new(),
             doc_versions: DashMap::new(),
+            budget,
+            budget_problem,
+            disk_cache: DashMap::new(),
+            partial_warned: std::sync::Mutex::new(None),
         }
     }
 
@@ -227,11 +295,21 @@ impl Inner {
 
     /// Standard-library classes plus the project's own, and the project's
     /// top-level functions (name, signature, doc).
-    fn project_signatures(&self, uri: &Url) -> (TypeRegistry, Vec<(String, String, Option<String>)>) {
+    ///
+    /// `cursor` is the edit position in `uri`: when that buffer does not parse (an
+    /// unfinished call), its declarations are recovered by blanking the cursor
+    /// line, exactly as completion does, instead of dropping the whole file.
+    fn project_signatures(&self, uri: &Url, cursor: Option<usize>) -> (TypeRegistry, Vec<(String, String, Option<String>)>) {
         let mut registry = self.stdlib_registry.clone();
         let mut functions = Vec::new();
-        for (_, text) in self.project_files(uri) {
-            let Ok(ast) = tinox_parser::parse_source_cached(&text) else { continue };
+        for (file_uri, text) in self.project_files(uri) {
+            let ast = match tinox_parser::parse_source_cached(&text) {
+                Ok(ast) => ast,
+                Err(_) => match cursor.filter(|_| &file_uri == uri).and_then(|c| parse_for_completion(&text, c as u32)) {
+                    Some(ast) => ast,
+                    None => continue,
+                },
+            };
             registry.extend(build_registry_from_source(&ast));
             fn top_level(decls: &[tinox_parser::ast::Decl], out: &mut Vec<(String, String, Option<String>)>) {
                 for d in decls {
@@ -288,8 +366,16 @@ impl Inner {
     /// `tinox.toml` upwards; just the file's directory tree otherwise),
     /// with open documents overriding what is on disk.
     fn project_files(&self, uri: &Url) -> Vec<(Url, String)> {
-        let mut out: Vec<(Url, String)> = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        self.project_scan(uri).files
+    }
+
+    /// Like `project_files`, but also reports what the resource budget left out. The walk only
+    /// lists paths; file contents are read lazily and an unchanged file (same modified time and
+    /// length) is served from `disk_cache`, so repeated requests and edits do not re-read the
+    /// workspace. Open documents are always included first; the rest follows in path order, so
+    /// the set that fits the budget is stable between scans.
+    fn project_scan(&self, uri: &Url) -> ProjectScan {
+        let mut paths: Vec<PathBuf> = Vec::new();
         if let Ok(path) = uri.to_file_path() {
             let dir = path.parent().unwrap_or(Path::new("."));
             let root = find_project_root(dir).unwrap_or_else(|| dir.to_path_buf());
@@ -304,21 +390,56 @@ impl Inner {
                         if !name.starts_with('.') && name != "target" && name != "node_modules" {
                             stack.push(p);
                         }
-                    } else if ft.is_file() && p.extension().is_some_and(|e| e == "tnx") && out.len() < 5000 {
-                        if let Ok(u) = Url::from_file_path(&p) {
-                            let text = match self.docs.get(&u) {
-                                Some(t) => t.clone(),
-                                None => match std::fs::read_to_string(&p) {
-                                    Ok(t) => t,
-                                    Err(_) => continue,
-                                },
-                            };
-                            seen.insert(u.clone());
-                            out.push((u, text));
-                        }
+                    } else if ft.is_file() && p.extension().is_some_and(|e| e == "tnx") {
+                        paths.push(p);
                     }
                 }
             }
+        }
+        paths.sort();
+        let total = paths.len();
+        let mut out: Vec<(Url, String)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut bytes: u64 = 0;
+        // open documents first: they are what the user is editing and must never be dropped
+        for p in &paths {
+            if let Ok(u) = Url::from_file_path(p) {
+                if let Some(t) = self.docs.get(&u) {
+                    bytes += t.len() as u64;
+                    seen.insert(u.clone());
+                    out.push((u, t.clone()));
+                }
+            }
+        }
+        let mut skipped = 0;
+        for p in &paths {
+            let Ok(u) = Url::from_file_path(p) else { continue };
+            if seen.contains(&u) {
+                continue;
+            }
+            let meta = std::fs::metadata(p).ok();
+            let len = meta.as_ref().map_or(0, |m| m.len());
+            if out.len() >= self.budget.max_files || bytes + len > self.budget.max_bytes {
+                skipped += 1;
+                continue;
+            }
+            let modified = meta.and_then(|m| m.modified().ok());
+            let cached = modified.and_then(|mt| self.disk_cache.get(p).filter(|c| c.0 == mt && c.1 == len).map(|c| c.2.clone()));
+            let text = match cached {
+                Some(t) => t,
+                None => match std::fs::read_to_string(p) {
+                    Ok(t) => {
+                        if let Some(mt) = modified {
+                            self.disk_cache.insert(p.clone(), (mt, len, t.clone()));
+                        }
+                        t
+                    }
+                    Err(_) => continue,
+                },
+            };
+            bytes += len;
+            seen.insert(u.clone());
+            out.push((u, text));
         }
         // open documents that are not on disk (untitled) or outside the tree
         for entry in self.docs.iter() {
@@ -326,7 +447,24 @@ impl Inner {
                 out.push((entry.key().clone(), entry.value().clone()));
             }
         }
-        out
+        ProjectScan { files: out, skipped, total, budget: self.budget }
+    }
+
+    /// Tells the user (once per distinct skipped count) that results come from a partial index.
+    async fn warn_if_partial(&self, scan: &ProjectScan) {
+        if scan.complete() {
+            *self.partial_warned.lock().unwrap() = None;
+            return;
+        }
+        let first = {
+            let mut last = self.partial_warned.lock().unwrap();
+            let first = *last != Some(scan.skipped);
+            *last = Some(scan.skipped);
+            first
+        };
+        if first {
+            self.client.show_message(MessageType::WARNING, format!("Tinox: {}; results may miss symbols in the skipped files.", scan.describe())).await;
+        }
     }
 }
 
@@ -801,6 +939,9 @@ impl LanguageServer for Backend {
         self.client
             .log_message(MessageType::INFO, "tinox-lsp ready")
             .await;
+        if let Some(problem) = &self.budget_problem {
+            self.client.show_message(MessageType::WARNING, format!("Tinox: invalid workspace budget setting: {problem}")).await;
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -970,15 +1111,29 @@ impl LanguageServer for Backend {
         };
 
         let offset = lsp_pos_to_offset(&text, pos);
-        let loc = definition_at(&ast, uri, offset);
-        Ok(loc.map(GotoDefinitionResponse::Scalar))
+        // The checked AST answers locals and same-file declarations precisely;
+        // anything it cannot place is resolved across the project's files.
+        if let Some(loc) = definition_at(&ast, uri, offset) {
+            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+        }
+        let scan = self.project_scan(uri);
+        self.warn_if_partial(&scan).await;
+        let files = scan.files;
+        let mut found = navigation::definitions(&files, uri, offset as usize, &self.nav_ctx());
+        Ok(match found.len() {
+            0 => None,
+            1 => Some(GotoDefinitionResponse::Scalar(found.remove(0))),
+            _ => Some(GotoDefinitionResponse::Array(found)),
+        })
     }
 
     async fn references(&self, p: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &p.text_document_position.text_document.uri;
         let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
         let offset = lsp_pos_to_offset(&text, p.text_document_position.position) as usize;
-        let files = self.project_files(uri);
+        let scan = self.project_scan(uri);
+        self.warn_if_partial(&scan).await;
+        let files = scan.files;
         match navigation::references(&files, uri, offset, p.context.include_declaration, &self.nav_ctx()) {
             Ok(locations) => Ok(Some(locations)),
             Err(_) => Ok(None),
@@ -989,7 +1144,11 @@ impl LanguageServer for Backend {
         let uri = &p.text_document.uri;
         let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
         let offset = lsp_pos_to_offset(&text, p.position) as usize;
-        let files = self.project_files(uri);
+        let scan = self.project_scan(uri);
+        if !scan.complete() {
+            return Err(tower_lsp::jsonrpc::Error::invalid_params(format!("rename refused: {}", scan.describe())));
+        }
+        let files = scan.files;
         match navigation::prepare_rename(&files, uri, offset, &self.nav_ctx()) {
             Ok(r) => Ok(Some(PrepareRenameResponse::RangeWithPlaceholder { range: r.range, placeholder: r.placeholder })),
             Err(message) => Err(tower_lsp::jsonrpc::Error::invalid_params(message)),
@@ -1000,7 +1159,11 @@ impl LanguageServer for Backend {
         let uri = &p.text_document_position.text_document.uri;
         let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
         let offset = lsp_pos_to_offset(&text, p.text_document_position.position) as usize;
-        let files = self.project_files(uri);
+        let scan = self.project_scan(uri);
+        if !scan.complete() {
+            return Err(tower_lsp::jsonrpc::Error::invalid_params(format!("rename refused: {}", scan.describe())));
+        }
+        let files = scan.files;
         let result = navigation::rename(&files, uri, offset, &p.new_name, &self.nav_ctx())
             .map_err(tower_lsp::jsonrpc::Error::invalid_params)?;
         let text_edits = |edits: Vec<TextEdit>, uri: Url| TextDocumentEdit {
@@ -1044,7 +1207,9 @@ impl LanguageServer for Backend {
     async fn symbol(&self, p: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
         // Any open document locates the project; without one there is nothing to search.
         let Some(any) = self.docs.iter().next().map(|e| e.key().clone()) else { return Ok(None) };
-        let files = self.project_files(&any);
+        let scan = self.project_scan(&any);
+        self.warn_if_partial(&scan).await;
+        let files = scan.files;
         Ok(Some(navigation::workspace_symbols(&files, &p.query)))
     }
 
@@ -1093,7 +1258,7 @@ impl LanguageServer for Backend {
         let Some(text) = self.docs.get(uri).map(|t| t.clone()) else { return Ok(None) };
         let offset = lsp_pos_to_offset(&text, p.text_document_position_params.position) as usize;
         let Some(ctx) = signature::call_context(&text, offset) else { return Ok(None) };
-        let (registry, functions) = self.project_signatures(uri);
+        let (registry, functions) = self.project_signatures(uri, Some(offset));
         Ok(signature::build(&ctx, signature::candidates(&ctx.callee, &registry, &functions)))
     }
 
@@ -1147,7 +1312,11 @@ impl LanguageServer for Backend {
         let Some(ast) = self.asts.get(uri) else {
             return Ok(None);
         };
-        Ok(Some(DocumentSymbolResponse::Nested(document_symbols(&ast))))
+        let mut symbols = document_symbols(&ast);
+        if let Some(text) = self.docs.get(uri) {
+            navigation::refine_document_symbols(&mut symbols, uri, &text);
+        }
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 }
 
@@ -1193,6 +1362,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unfinished_call_keeps_same_file_methods_for_signature_help() {
+        let text = "class Main\n{\n    fn acceptBox(first: Int64, second: String) -> Nothing {}\n    fn run() -> Nothing\n    {\n        this.acceptBox(1, \n    }\n}\n";
+        assert!(tinox_parser::parse_source_cached(text).is_err());
+        let cursor = text.find("this.acceptBox(1, ").unwrap() + "this.acceptBox(1, ".len();
+        let ast = parse_for_completion(text, cursor as u32).expect("recoverable");
+        let registry = build_registry_from_source(&ast);
+        assert!(registry["Main"].methods.iter().any(|m| m.name == "acceptBox"));
+    }
+
+    #[test]
     fn test_embedded_stdlib_has_http_context() {
         let reg = build_embedded_stdlib();
         println!("embedded stdlib classes: {:?}", reg.keys().collect::<Vec<_>>());
@@ -1216,7 +1395,7 @@ mod tests {
     fn write_demo_fixture(root: &std::path::Path) {
         std::fs::create_dir_all(root.join("demo/model")).unwrap();
         std::fs::create_dir_all(root.join("demo/dao")).unwrap();
-        std::fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.8.0\"\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        std::fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.9.0\"\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
         std::fs::write(
             root.join("demo/model/Person.tnx"),
             "namespace demo.model {\n    class Person {\n        var id: Int64\n    }\n}\n",
@@ -1355,7 +1534,7 @@ mod diagnostic_tests {
         let local = root.join("package/src/tinox/core/json");
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(root.join("tinox.toml"), "[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"json\"\nversion=\"1.0.0\"\n").unwrap();
-        std::fs::write(root.join("package/tinox.toml"), "[package]\ncompiler = \"2.8.0\"\nname=\"json\"\nversion=\"1.0.0\"\n").unwrap();
+        std::fs::write(root.join("package/tinox.toml"), "[package]\ncompiler = \"2.9.0\"\nname=\"json\"\nversion=\"1.0.0\"\n").unwrap();
         std::fs::write(root.join("tinox.overrides.yaml"), "overrides:\n  'tinox.core:json:1.0.0': package\n").unwrap();
         let entry = root.join("Main.tnx");
         let source = "import tinox.core.json.LocalJson\nclass Main { fnc main() -> Int32 { const n: Int64 = LocalJson::unpublished()\nreturn 0 } }";

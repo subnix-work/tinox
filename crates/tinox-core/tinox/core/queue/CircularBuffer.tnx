@@ -26,11 +26,12 @@ namespace tinox.core.queue
             return true
         }
 
+        @Throws(EmptyQueueError)
         fn pop(buf: CircularBuffer<T>) -> T
         {
             if (buf.count == 0)
             {
-                throw "Buffer is empty"
+                throw EmptyQueueError { message: "Buffer is empty" }
             }
             const item: T = buf.data[0]
             buf.data.removeAt(0)

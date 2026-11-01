@@ -6,6 +6,7 @@ namespace tinox.core.cron
     {
         expr: CronExpr
         callback: fnc() -> Nothing
+        /** Last attempted scheduled UTC minute boundary; -1 means never run. */
         lastRun: Int64
     }
 }

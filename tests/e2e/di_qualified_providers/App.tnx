@@ -1,0 +1,13 @@
+import Store
+import Fast
+import Safe
+@Startup
+class App {
+    @Inject @Qualifier("fast") var first: Store
+    @Inject @Qualifier("fast") var alias: Store
+    @Inject @Qualifier("safe") var second: Store
+    @OnStart
+    fn start() -> Nothing { println(this.first.next())
+    println(this.alias.next())
+    println(this.second.next()) }
+}

@@ -6,10 +6,14 @@ this). They apply to the typedefs a `tinox build --debug` binary describes:
 * `Name`        a class or immutable: shown as {field = value, ...}, `null` for 0
 * `List<T>`     the runtime's {len, cap, data} array: shown as {a, b, c}
 * `Map<String, V>`  the runtime's open-addressing table: shown as {["k"] = v}
+* an enum       `Color::Green`, `Shape::Square(3, 4)` (payload read from the heap block)
+* `Char`        `'x' (120)`
+* `Box<Int64>`  a generic class instantiation, like any class
 
 `String` needs no printer: it is described as `char *`.
 """
 import builtins
+import struct
 
 import gdb
 import gdb.printing
@@ -48,7 +52,7 @@ def _inline(v, depth=1):
             if int(v) == 0:
                 return "null"
             if t.target().strip_typedefs().sizeof == 1:
-                return '"%s"' % v.string(errors="replace", length=60)
+                return '"%s"' % v.string(errors="replace")[:60]
             if depth > 0:
                 lookup_result = lookup(v)
                 if lookup_result is not None and hasattr(lookup_result, "summary"):
@@ -190,7 +194,75 @@ class MapPrinter:
                 return
 
 
+def _mask(v):
+    return int(v) & 0xFFFFFFFFFFFFFFFF
+
+
+def _read_u64(addr):
+    return struct.unpack("<Q", bytes(gdb.selected_inferior().read_memory(addr, 8)))[0]
+
+
+def _cstring(addr):
+    return gdb.Value(addr).cast(gdb.lookup_type("char").pointer()).string(errors="replace")[:60]
+
+
+class EnumPrinter:
+    """An enum value: a bare discriminator (<= 65535) or a pointer to [discriminator, payload...].
+
+    The compiler names payload variants `Variant#KINDS` (I integer, S string, F float, O other).
+    """
+
+    def __init__(self, val):
+        self.val = val
+        self.type = val.type.strip_typedefs()
+
+    def to_string(self):
+        enum = self.type.name or "enum"
+        by_value = {_mask(f.enumval): f.name for f in self.type.fields()}
+        raw = _mask(self.val)
+        try:
+            if raw <= 65535:
+                name = by_value.get(raw)
+                return "%s::%s" % (enum, name) if name else "%s::<unknown %d>" % (enum, raw)
+            name = by_value.get(_read_u64(raw))
+            if name is None:
+                return "%s::<unknown payload variant at 0x%x>" % (enum, raw)
+            variant, _, kinds = name.partition("#")
+            parts = []
+            for i, kind in enumerate(kinds):
+                word = _read_u64(raw + 8 * (i + 1))
+                if kind == "S":
+                    parts.append("null" if word == 0 else '"%s"' % _cstring(word))
+                elif kind == "F":
+                    parts.append(repr(struct.unpack("<d", struct.pack("<Q", word))[0]))
+                elif kind == "I":
+                    parts.append(str(word - (1 << 64) if word >= 1 << 63 else word))
+                else:
+                    parts.append("0x%x" % word)
+            return "%s::%s(%s)" % (enum, variant, ", ".join(parts))
+        except gdb.error:
+            return "%s::<unreadable 0x%x>" % (enum, raw)
+
+
+class CharPrinter:
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
+        code = int(self.val)
+        if code == 0x27:
+            return "'\\'' (39)"
+        if 32 <= code < 127 or (code > 160 and code <= 0x10FFFF and chr(code).isprintable()):
+            return "'%s' (%d)" % (chr(code), code)
+        return "'\\u{%x}' (%d)" % (code, code)
+
+
 def lookup(val):
+    code = val.type.strip_typedefs().code
+    if code == gdb.TYPE_CODE_ENUM:
+        return EnumPrinter(val)
+    if code == gdb.TYPE_CODE_CHAR and val.type.strip_typedefs().name == "Char":
+        return CharPrinter(val)
     found = _struct_of(val)
     if found is None:
         return None

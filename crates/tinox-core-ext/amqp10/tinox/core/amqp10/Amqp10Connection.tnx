@@ -39,6 +39,11 @@ namespace tinox.core.amqp10
         // guaranteed distinct channels instead of all sharing the same
         // fixed channel 1 (the earlier v1 behavior).
         var nextChannelId: Int64
+        // Issue #539: the single socket reader. After open-ok one background task reads every frame
+        // and routes it by session/link identity into bounded inboxes (see Amqp10Router), so several
+        // sessions and links can block at the same time. Handshake frames are still read directly.
+        var router: Amqp10Router
+        var dispatcherHandle: Int64
 
         /*
          * Builds a complete AMQP-1.0 connection: dial + SASL header +
@@ -57,7 +62,7 @@ namespace tinox.core.amqp10
         {
             const conn = Amqp10::dial(host, port)
             if (conn <= 0) {
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "dial failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 }
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "dial failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1, router: Amqp10Router::create(), dispatcherHandle: -1 }
             }
             return Amqp10Connection::negotiateOnConn(conn, host, port, user, pass)
         }
@@ -76,7 +81,7 @@ namespace tinox.core.amqp10
         {
             const conn = Amqp10::dialTls(host, port, verify)
             if (conn <= 0) {
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "TLS dial failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 }
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "TLS dial failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1, router: Amqp10Router::create(), dispatcherHandle: -1 }
             }
             return Amqp10Connection::negotiateOnConn(conn, host, port, user, pass)
         }
@@ -93,19 +98,19 @@ namespace tinox.core.amqp10
             Amqp10::sendSaslProtocolHeader(conn)
             if (!Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 3, 1, 0, 0])) {
                 httpConnClose(conn)
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "SASL protocol-header handshake failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 }
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "SASL protocol-header handshake failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1, router: Amqp10Router::create(), dispatcherHandle: -1 }
             }
             const sasl = Amqp10::negotiateSasl(conn, user, pass)
             if (!sasl.ok) {
                 httpConnClose(conn)
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: sasl.errorMessage, host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 }
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: sasl.errorMessage, host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1, router: Amqp10Router::create(), dispatcherHandle: -1 }
             }
 
             // --- AMQP header ---
             Amqp10::sendAmqpProtocolHeader(conn)
             if (!Amqp10::checkProtocolHeaderEcho(conn, [65, 77, 81, 80, 0, 1, 0, 0])) {
                 httpConnClose(conn)
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "AMQP protocol-header handshake failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 }
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "AMQP protocol-header handshake failed", host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1, router: Amqp10Router::create(), dispatcherHandle: -1 }
             }
 
             // --- send open: container-id, hostname(null), max-frame-size/
@@ -124,12 +129,12 @@ namespace tinox.core.amqp10
             const f = Amqp10::readFrame(conn)
             if (f.frameType != 0) {
                 httpConnClose(conn)
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 }
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "expected AMQP frame (type=0), got frameType=" + f.frameType.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1, router: Amqp10Router::create(), dispatcherHandle: -1 }
             }
             const p = Amqp10::decodePerformative(f.body)
             if (p.descriptor != 0x10) {
                 httpConnClose(conn)
-                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "expected open (0x10), got descriptor=" + p.descriptor.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 }
+                return Amqp10Connection { conn: -1, maxFrameSize: 0, channelMax: 0, errorMessage: "expected open (0x10), got descriptor=" + p.descriptor.toString(), host: host, port: port, user: user, pass: pass, idleTimeoutMs: 0, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1, router: Amqp10Router::create(), dispatcherHandle: -1 }
             }
             // Field positions: container-id(0), hostname(1),
             // max-frame-size(2), channel-max(3), idle-time-out(4) —
@@ -147,7 +152,10 @@ namespace tinox.core.amqp10
             if (p.fields.len() > 4) {
                 match p.fields[4] { UIntVal(n) => { idleTimeoutMs = n } _ => {} }
             }
-            return Amqp10Connection { conn: conn, maxFrameSize: maxFrameSize, channelMax: channelMax, errorMessage: "", host: host, port: port, user: user, pass: pass, idleTimeoutMs: idleTimeoutMs, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1 }
+            var result = Amqp10Connection { conn: conn, maxFrameSize: maxFrameSize, channelMax: channelMax, errorMessage: "", host: host, port: port, user: user, pass: pass, idleTimeoutMs: idleTimeoutMs, heartbeatRunning: false, heartbeatHandle: -1, nextChannelId: 1, router: Amqp10Router::create(), dispatcherHandle: -1 }
+            result.router.running = true
+            result.dispatcherHandle = spawn amqp10DispatchLoop(result)
+            return result
         }
 
         /*
@@ -208,10 +216,16 @@ namespace tinox.core.amqp10
         fn close() -> Nothing
         {
             this.stopHeartbeat()
+            this.router.closing = true
             const closeBody = Amqp10::encodePerformative(0x18, [])
             Amqp10::writeFrame(this.conn, 0, 0, closeBody)
-            Amqp10::readFrame(this.conn)
+            // The broker's `close` (or EOF) arrives through the connection inbox; the dispatcher then
+            // ends on its own and is joined below.
+            this.router.connectionInbox.take()
             httpConnClose(this.conn)
+            if (this.dispatcherHandle >= 0) {
+                await this.dispatcherHandle
+            }
         }
 
         /*
@@ -229,6 +243,22 @@ namespace tinox.core.amqp10
         fn reconnect() -> Amqp10Connection
         {
             return Amqp10Connection::connect(this.host, this.port, this.user, this.pass)
+        }
+
+        /*
+         * The connection's only socket reader (issue #539), started once the handshake is done. Ends
+         * on EOF, a protocol error or a `close` frame; every waiter is then failed by the router. A
+         * STATIC method for the same reason as amqp10HeartbeatLoop.
+         */
+        async fnc amqp10DispatchLoop(connection: Amqp10Connection) -> Int64
+        {
+            while connection.router.running {
+                const f = Amqp10::readFrame(connection.conn)
+                if (!connection.router.route(connection, f)) {
+                    break
+                }
+            }
+            return 1
         }
 
         /*

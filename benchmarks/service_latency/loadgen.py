@@ -20,7 +20,7 @@ Two pacing modes:
 Output: one JSON object on stdout with the raw per-request latencies (ms,
 rounded to 3 decimals) and counters, plus derived percentiles.
 """
-import argparse, asyncio, json, multiprocessing as mp, random, re, sys, time
+import argparse, asyncio, json, multiprocessing as mp, random, re, sys, time, ssl
 
 
 def pct(sorted_vals, p):
@@ -34,12 +34,17 @@ async def read_response(reader):
     head = await reader.readuntil(b"\r\n\r\n")
     status = int(head.split(b" ", 2)[1])
     clen = 0
+    close = head.startswith(b"HTTP/1.0")
     for line in head.split(b"\r\n")[1:]:
         if line[:15].lower() == b"content-length:":
             clen = int(line[15:])
+        if line[:11].lower() == b"connection:":
+            tokens = [value.strip() for value in line[11:].lower().split(b",")]
+            if b"close" in tokens: close = True
+            elif b"keep-alive" in tokens: close = False
     if clen:
         await reader.readexactly(clen)
-    return status
+    return status, close
 
 
 def build_req(args):
@@ -57,6 +62,7 @@ def build_req(args):
 
 async def conn_worker(args, req, t_start, t_end, interval, lat, counters):
     reader = writer = None
+    context = ssl.create_default_context(cafile=args.ca_cert) if args.tls else None
     next_t = t_start
     while True:
         now = time.monotonic()
@@ -80,11 +86,20 @@ async def conn_worker(args, req, t_start, t_end, interval, lat, counters):
                 break
             intended = now
         try:
+            # A keep-alive peer can legitimately close while this paced
+            # connection is idle. Reconnect before sending a new request;
+            # never replay a request after a write/response failure.
+            if writer is not None and (reader.at_eof() or writer.is_closing()):
+                writer.close()
+                writer = None
             if writer is None:
                 reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(args.host, args.port), args.timeout)
+                    asyncio.open_connection(args.host, args.port, **({"ssl": context, "server_hostname": "localhost"} if context else {})), args.timeout)
             writer.write(req())
-            status = await asyncio.wait_for(read_response(reader), args.timeout)
+            status, closed = await asyncio.wait_for(read_response(reader), args.timeout)
+            if closed:
+                writer.close()
+                writer = None
             ms = (time.monotonic() - intended) * 1000.0
             if 200 <= status < 300:
                 lat.append(round(ms, 3))
@@ -92,9 +107,11 @@ async def conn_worker(args, req, t_start, t_end, interval, lat, counters):
                 counters["http_error"] += 1
         except asyncio.TimeoutError:
             counters["timeout"] += 1
+            if writer is not None: writer.close()
             writer = None
         except (OSError, asyncio.IncompleteReadError, ConnectionError):
             counters["conn_error"] += 1
+            if writer is not None: writer.close()
             writer = None
     if writer is not None:
         writer.close()
@@ -118,6 +135,8 @@ def proc_main(args, conns, phase_s, interval, q):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    ap.add_argument("--tls", action="store_true")
+    ap.add_argument("--ca-cert", help="trusted fixture CA for TLS measurements")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--path", required=True, help="may contain {rand:N}")

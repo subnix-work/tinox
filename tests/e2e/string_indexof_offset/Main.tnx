@@ -1,0 +1,88 @@
+// expect: 0
+// expect: 9
+// expect: -1
+// expect: 0
+// expect: 0
+// expect: 3
+// expect: -1
+// expect: 0
+// expect: -1
+// expect: -1
+// expect: 0
+// expect: 0
+// expect: -1
+// expect: -1
+// expect: 2
+// expect: 1
+// expect: 3
+// expect: 6
+// expect: 6
+// expect: 2
+// expect: 5
+// expect: 6
+// expect: 6
+// expect: -1
+// expect: 0
+// expect: 9
+// expect: 1
+// expect: 9
+// expect: -1
+// expect: -1
+// expect: -1
+// expect: -1
+// expect: 9
+// expect: 0
+// expect: -1
+
+class Main {
+    fnc main() -> Int32 {
+        println("needle x needle".indexOf("needle"))
+        println("needle x needle".indexOf("needle", 6))
+        println("needle x needle".indexOf("needle", 15))
+        println("needle x needle".indexOf("needle", -8))
+        println("abc".indexOf("", 0))
+        println("abc".indexOf("", 3))
+        println("abc".indexOf("", 4))
+        println("abc".indexOf("", -1))
+        println("abc".indexOf("x", 3))
+        println("abc".indexOf("a", 9223372036854775807))
+        println("abc".indexOf("a", -9223372036854775807))
+        println("".indexOf("", 0))
+        println("".indexOf("", 1))
+        println("".indexOf("x", 0))
+        println("ababa".indexOf("aba", 1))
+        println("hééxé".indexOf("é", 0))
+        println("hééxé".indexOf("é", 2))
+        println("hééxé".indexOf("é", 4))
+        println("hééxé".indexOf("é", 6))
+        println("hééxé".indexOf("", 2))
+        println("hééxé".indexOf("x", 2))
+        println("a😀b😀".indexOf("😀", 2))
+        println("a😀b😀".indexOf("😀", 6))
+        println("ab".indexOf("abc", 0))
+        const h = "needle x needle"
+        var at = h.indexOf("needle")
+        var count = 0
+        while (at >= 0) {
+            println(at)
+            count = count + 1
+            if (count >= 3) { return 1 }
+            at = h.indexOf("needle", at + 1)
+        }
+        const narrow: Int32 = -2
+        println("abc".indexOf("b", narrow))
+        const narrowPositive: Int32 = 6
+        println(h.indexOf("needle", narrowPositive))
+        const u8: UInt8 = 255
+        const u32: UInt32 = 4294967295
+        const u64: UInt64 = 18446744073709551615
+        println("abc".indexOf("a", u8))
+        println("abc".indexOf("a", u32))
+        println("abc".indexOf("a", u64))
+        println("abc".indexOf("", u64))
+        println(String_indexOf(h, "needle", 6))
+        println(String_indexOf(h, "needle"))
+        println(String_indexOf(h, "needle", u64))
+        return 0
+    }
+}

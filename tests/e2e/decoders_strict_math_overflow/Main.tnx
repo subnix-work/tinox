@@ -7,15 +7,15 @@
 // expect: a b
 // expect: 4611686018427387904
 // expect: 2432902008176640000
-// expect: caught Base64: invalid character '!'
-// expect: caught Hex: odd number of digits
-// expect: caught Hex: invalid digit 'z'
-// expect: caught Uri: invalid hex digit 'z' in percent-escape
-// expect: caught Uri: truncated percent-escape
-// expect: caught Math: Int64 overflow
-// expect: caught Math.pow: negative exponent
-// expect: caught Math: Int64 overflow
-// expect: caught Math.factorial: negative argument
+// expect: caught BASE64_ERROR: Base64: invalid character '!'
+// expect: caught HEX_ERROR: Hex: odd number of digits
+// expect: caught HEX_ERROR: Hex: invalid digit 'z'
+// expect: caught URI_ERROR: Uri: invalid hex digit 'z' in percent-escape
+// expect: caught URI_ERROR: Uri: truncated percent-escape
+// expect: caught ARITHMETIC_ERROR: Math: Int64 overflow
+// expect: caught ARITHMETIC_ERROR: Math.pow: negative exponent
+// expect: caught ARITHMETIC_ERROR: Math: Int64 overflow
+// expect: caught ARITHMETIC_ERROR: Math.factorial: negative argument
 import tinox.core.base64
 import tinox.core.hex
 import tinox.core.uri

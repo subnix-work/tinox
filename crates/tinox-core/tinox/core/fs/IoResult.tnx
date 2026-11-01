@@ -1,0 +1,34 @@
+module tinox.core.fs
+
+namespace tinox.core.fs
+{
+    // Status and payload travel together; no sentinel or thread-local lookup.
+    class IoResult<T>
+    {
+        var values: List<T>
+        var failures: List<IoFailure>
+
+        fn ok(value: T) -> IoResult<T>
+        {
+            return IoResult<T> { values: [value], failures: [] }
+        }
+
+        fn fail(data: List<String>) -> IoResult<T>
+        {
+            return IoResult<T> { values: [], failures: [IoFailure {
+                code: data[0].toInt(), operation: data[1], target: data[2], cause: data[3] }] }
+        }
+
+        fn isOk() -> Bool { return this.failures.len() == 0 }
+        fn isErr() -> Bool { return this.failures.len() != 0 }
+
+        fn unwrap() -> T
+        {
+            if (this.isErr()) { throw this.failures[0].message() }
+            return this.values[0]
+        }
+
+        // Precondition: isErr(). The list access rejects misuse visibly.
+        fn failure() -> IoFailure { return this.failures[0] }
+    }
+}

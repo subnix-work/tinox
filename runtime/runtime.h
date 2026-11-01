@@ -36,6 +36,8 @@ void* tinox_array_alloc(size_t element_size, size_t length);
 // String operations
 int64_t tinox_string_length(const char* str);
 char* tinox_string_concat(const char* a, const char* b);
+// One UTF-8 string per Unicode scalar value; malformed UTF-8 aborts.
+int64_t* tinox_string_chars(const char* str);
 
 // Map operations (opaque i8* handle)
 void* tinox_map_create(void);

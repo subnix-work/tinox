@@ -357,14 +357,38 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
     match kind {
         "tag" => { tag_name(spec, &ctx)?; Ok(vec![]) }
         "createTable" => {
-            check_keys(spec, &["tableName", "columns"], &ctx)?;
+            check_keys(spec, &["tableName", "columns", "primaryKey"], &ctx)?;
             let t = table(spec, "tableName")?;
-            let cols = columns_of(d, spec, &ctx)?;
+            let mut cols = columns_of(d, spec, &ctx)?;
             let pk_count = cols.iter().filter(|c| c.primary_key).count();
-            if pk_count > 1 {
-                return Err(format!("{ctx}: more than one primaryKey column (composite keys: use a 'sql:' change)"));
+            // A composite key is declared as an ordered list; the order is the index order.
+            let mut table_pk = None;
+            if get(spec, "primaryKey").is_some() || pk_count > 1 {
+                let order = name_list(d, spec, "primaryKey", &ctx).map_err(|e| {
+                    if pk_count > 1 { format!("{ctx}: several primaryKey columns need an ordered 'primaryKey: [col, ...]' list ({e})") } else { e }
+                })?;
+                let mut flagged: Vec<&str> = cols.iter().filter(|c| c.primary_key).map(|c| c.name.as_str()).collect();
+                let mut listed: Vec<&str> = order.iter().map(String::as_str).collect();
+                flagged.sort_unstable();
+                listed.sort_unstable();
+                if flagged != listed || order.len() != listed.windows(2).filter(|w| w[0] != w[1]).count() + 1 {
+                    return Err(format!("{ctx}: 'primaryKey' must list exactly the columns flagged primaryKey, once each"));
+                }
+                if order.len() > 1 {
+                    if cols.iter().any(|c| c.auto_increment) {
+                        return Err(format!("{ctx}: a composite primary key cannot contain an autoIncrement column"));
+                    }
+                    for c in cols.iter_mut().filter(|c| c.primary_key) {
+                        c.primary_key = false;
+                        c.not_null = true;
+                    }
+                    table_pk = Some(order);
+                }
             }
-            let body: Vec<String> = cols.iter().map(|c| column_sql(d, c)).collect();
+            let mut body: Vec<String> = cols.iter().map(|c| column_sql(d, c)).collect();
+            if let Some(order) = table_pk {
+                body.push(format!("PRIMARY KEY ({})", order.join(", ")));
+            }
             Ok(vec![format!("CREATE TABLE {t} ({})", body.join(", "))])
         }
         "dropTable" => {
@@ -893,6 +917,22 @@ mod tests {
         let pg = cs(Dialect::Postgres, y).unwrap().unwrap();
         assert_eq!(pg.stmts[0], "CREATE TABLE \"person\" (\"id\" BIGSERIAL PRIMARY KEY, \"name\" VARCHAR(10) NOT NULL, \"active\" BOOLEAN DEFAULT 1)");
         assert_eq!(sq.checksum, pg.checksum, "checksum must not depend on the driver");
+    }
+
+    #[test]
+    fn composite_primary_key_is_ordered_and_validated() {
+        let col = |n: &str, pk: bool| format!("        - column: {{name: {n}, type: bigint, constraints: {{primaryKey: {pk}}}}}\n");
+        let head = "id: 1\nauthor: a\nchanges:\n  - createTable:\n      tableName: m\n";
+        let ok = format!("{head}      primaryKey: [b, a]\n      columns:\n{}{}{}", col("a", true), col("b", true), col("c", false));
+        let sq = cs(Dialect::Sqlite, &ok).unwrap().unwrap();
+        assert_eq!(sq.stmts[0], "CREATE TABLE \"m\" (\"a\" INTEGER NOT NULL, \"b\" INTEGER NOT NULL, \"c\" INTEGER, PRIMARY KEY (\"b\", \"a\"))");
+        // several primaryKey columns without the ordered list, or a list that disagrees: refused
+        let unordered = format!("{head}      columns:\n{}{}", col("a", true), col("b", true));
+        assert!(cs(Dialect::Sqlite, &unordered).is_err());
+        let wrong = format!("{head}      primaryKey: [a]\n      columns:\n{}{}", col("a", true), col("b", true));
+        assert!(cs(Dialect::Sqlite, &wrong).is_err());
+        let twice = format!("{head}      primaryKey: [a, a]\n      columns:\n{}{}", col("a", true), col("b", true));
+        assert!(cs(Dialect::Sqlite, &twice).is_err());
     }
 
     #[test]

@@ -75,3 +75,5 @@ checks wire statuses/headers/JSON against the generated contract, and
 repeats server startup and requests 15 times per supported transport.
 HTTP/3 requires curl with HTTP/3 and ngtcp2/nghttp3 development libraries;
 the TCP test always runs. The required final gate remains `make check`.
+
+Request field constraints and pre-handler validation are described in [Recursive request DTO validation](request-validation.md).

@@ -1,0 +1,37 @@
+import tinox.core.db
+import Account
+import tinox.core.http
+import tinox.core.env
+@ApplicationComponent @Synchronized
+class State {
+ private var count: Int64 = 0
+ fn add() -> Int64 { this.count = this.count + 1
+ return this.count }
+ fn read() -> Int64 { return this.count }
+ @Transactional
+ fn change(fail: Bool) -> Int64 {
+  const account = DB::of(Account).filter(a => a.id == 1).first()
+  account.balance = account.balance + 1
+  DB::of(Account).save(account)
+  if (fail) { throw "rollback requested" }
+  return account.balance
+ }
+ @Transactional
+ fn cancelled(ready: Int64) -> Nothing {
+  const account = DB::of(Account).filter(a => a.id == 1).first()
+  account.balance = account.balance + 10000
+  DB::of(Account).save(account)
+  send ready -> 1
+  sleep(10000)
+ }
+ @Transactional
+ fn dependentChange() -> Nothing {
+  const account = DB::of(Account).filter(a => a.id == 1).first()
+  account.balance = account.balance + 10000
+  DB::of(Account).save(account)
+  const response = httpGet(Env::getVar("COMPOSITION_DEPENDENCY"))
+  if (httpStatusCode(response) != 200) { throw "dependency unavailable" }
+  throw "dependency rollback"
+ }
+ @OnStop fn stop() -> Nothing { println("disposed:" + this.count.toString()) }
+}

@@ -3,6 +3,7 @@ pub mod node_ids;
 pub mod formatter;
 mod layout;
 pub mod parser;
+pub mod resilience;
 
 pub use ast::*;
 pub use node_ids::assign_node_ids;

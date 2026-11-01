@@ -1,0 +1,228 @@
+//! ORM query contract (issue #533): deterministic pages, explicit absence, and compile errors for
+//! anything that cannot be lowered to SQL (it used to be silently dropped). Rows are cross-checked
+//! with an independent `sqlite3`.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+fn text(o: &Output) -> String {
+    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+}
+
+struct Project {
+    dir: PathBuf,
+}
+
+impl Project {
+    fn new(tag: &str) -> Project {
+        let dir = std::env::temp_dir().join(format!("tinox-ormq-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/orm_paging");
+        for f in ["Item.tnx", "Main.tnx"] {
+            std::fs::copy(from.join(f), dir.join("src").join(f)).unwrap();
+        }
+        let db = dir.join("data.db");
+        let out = Command::new("sqlite3")
+            .arg(&db)
+            .arg("CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, grp INTEGER NOT NULL);")
+            .output()
+            .expect("sqlite3");
+        assert!(out.status.success(), "{}", text(&out));
+        std::fs::write(
+            dir.join("tinox.toml"),
+            format!("[package]\ncompiler = \"2.9.0\"\nname = \"ormq\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n", db.display()),
+        )
+        .unwrap();
+        let install = Command::new(env!("CARGO_BIN_EXE_tinox")).arg("install").current_dir(&dir).output().unwrap();
+        assert!(install.status.success(), "{}", text(&install));
+        Project { dir }
+    }
+
+    fn build(&self) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "src/Main.tnx", "-o", "app"]).current_dir(&self.dir).output().unwrap()
+    }
+}
+
+impl Drop for Project {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn have_sqlite3() -> bool {
+    Command::new("sqlite3").arg("--version").output().is_ok()
+}
+
+#[test]
+fn pages_are_deterministic_and_absence_is_explicit() {
+    if !have_sqlite3() {
+        eprintln!("SKIP orm query contract (sqlite3 not installed)");
+        return;
+    }
+    let p = Project::new("pages");
+    let build = p.build();
+    assert!(build.status.success(), "{}", text(&build));
+    let run = Command::new(p.dir.join("app")).current_dir(&p.dir).output().unwrap();
+    let out = text(&run);
+    assert!(run.status.success(), "{out}");
+    for expected in [
+        "empty count: 0",
+        "empty first: []",
+        "page0: a b ",
+        "page1: c d ",
+        "page2: e ",
+        "page3: \n",
+        "desc: e d ",
+        "first: e",
+        "missing: []",
+        "none: 0",
+    ] {
+        assert!(out.contains(expected), "missing {expected:?} in:\n{out}");
+    }
+    let db = p.dir.join("data.db");
+    let rows = Command::new("sqlite3").arg(&db).arg("SELECT group_concat(name, '') FROM (SELECT name FROM items ORDER BY id)").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&rows.stdout).trim(), "abcde");
+}
+
+fn broken(tag: &str, query: &str, needle: &str) {
+    let p = Project::new(tag);
+    let main = std::fs::read_to_string(p.dir.join("src/Main.tnx")).unwrap();
+    let start = main.find("    fnc main()").unwrap();
+    let patched = format!("{}    fnc main() -> Int32\n    {{\n        {query}\n        return 0\n    }}\n}}\n", &main[..start]);
+    std::fs::write(p.dir.join("src/Main.tnx"), patched).unwrap();
+    let build = p.build();
+    assert!(!build.status.success(), "{tag}: must not compile");
+    let msg = text(&build);
+    assert!(msg.contains(needle), "{tag}: expected {needle:?} in:\n{msg}");
+}
+
+#[test]
+fn unsupported_queries_fail_at_compile_time() {
+    if !have_sqlite3() {
+        return;
+    }
+    broken("unknown-field", "println(DB::of(Item).filter(i => i.nope == 1).count().toString())", "has no field 'nope'");
+    broken("unsupported-expr", "println(DB::of(Item).filter(i => i.name.len() > 2).count().toString())", "cannot be translated to SQL");
+    broken("order-unknown", "println(DB::of(Item).orderBy(i => i.nope).count().toString())", "has no field 'nope'");
+    // The typed contract of a chain: wrong entity, wrong list type, non-integer limit.
+    broken("save-wrong-type", "println(DB::of(Item).save(\"nope\").id.toString())", "DB::of(Item).save expects Item, found String");
+    broken("list-typed", "const names: List<String> = DB::of(Item).list()", "found List<Item>");
+    broken("limit-type", "println(DB::of(Item).orderBy(i => i.name).limit(\"3\").list().len().toString())", "expects an Int");
+    broken("limit-var", "const n = 3\n        println(DB::of(Item).orderBy(i => i.name).limit(n).list().len().toString())", "limit(...) must be an integer literal");
+    broken("limit-big", "println(DB::of(Item).orderBy(i => i.name).limit(100000).list().len().toString())", "page size");
+    broken("offset-alone", "println(DB::of(Item).orderBy(i => i.name).offset(2).list().len().toString())", "needs limit");
+}
+
+#[test]
+fn describe_lists_the_typed_query_contract_of_an_entity() {
+    if !have_sqlite3() {
+        return;
+    }
+    let p = Project::new("describe");
+    let out = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["describe", "Item", "--file", "src/Main.tnx", "--json"]).current_dir(&p.dir).output().unwrap();
+    let json = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "{json}{}", String::from_utf8_lossy(&out.stderr));
+    for expected in [
+        "DB::of(Item).list() -> List<Item>",
+        "DB::of(Item).first() -> Item",
+        "DB::of(Item).count() -> Int64",
+        "DB::of(Item).save(entity: Item) -> Item",
+        "DB::of(Item).saveAll(entities: List<Item>) -> Nothing",
+        "DB::of(Item).filter(predicate: fnc(Item) -> Bool) -> query",
+        "\"kind\":\"orm-query\"",
+    ] {
+        assert!(json.contains(expected), "missing {expected:?} in\n{json}");
+    }
+}
+
+#[test]
+fn contains_on_a_key_list_becomes_one_in_query() {
+    if !have_sqlite3() {
+        return;
+    }
+    let p = Project::new("in-list");
+    let main = std::fs::read_to_string(p.dir.join("src/Main.tnx")).unwrap();
+    let start = main.find("    fnc names(").unwrap();
+    let body = r#"    fnc names(rows: List<Item>) -> String
+    {
+        var out = ""
+        for r in rows {
+            out = out + r.name + " "
+        }
+        return out
+    }
+
+    fnc main() -> Int32
+    {
+        for n in ["a", "b", "c", "d", "e"] {
+            DB::of(Item).save(Item { id: 0, name: n, grp: 1 })
+        }
+        const ids: List<Int64> = [1, 3, 5, 3]
+        println("in: " + Main::names(DB::of(Item).filter(i => ids.contains(i.id)).orderBy(i => i.id).list()))
+        println("not in: " + Main::names(DB::of(Item).filter(i => !ids.contains(i.id)).orderBy(i => i.id).list()))
+        const none: List<Int64> = []
+        println("empty in: [" + Main::names(DB::of(Item).filter(i => none.contains(i.id)).list()) + "]")
+        println("empty not in: " + Main::names(DB::of(Item).filter(i => !none.contains(i.id)).orderBy(i => i.id).list()))
+        const wanted: List<String> = ["b", "e", "zzz"]
+        println("strings: " + Main::names(DB::of(Item).filter(i => wanted.contains(i.name) && i.grp == 1).orderBy(i => i.id).list()))
+        println("count: " + DB::of(Item).filter(i => ids.contains(i.id)).count().toString())
+        var many: List<Int64> = []
+        var i = 1
+        while (i <= 700) {
+            many.push(i)
+            i = i + 1
+        }
+        println("700 keys: " + DB::of(Item).filter(i => many.contains(i.id)).count().toString())
+        return 0
+    }
+}
+"#;
+    std::fs::write(p.dir.join("src/Main.tnx"), format!("{}{}", &main[..start], body)).unwrap();
+    let build = p.build();
+    assert!(build.status.success(), "{}", text(&build));
+    let run = Command::new(p.dir.join("app")).current_dir(&p.dir).output().unwrap();
+    let out = text(&run);
+    assert!(run.status.success(), "{out}");
+    for expected in [
+        "in: a c e \n",
+        "not in: b d \n",
+        "empty in: []\n",
+        "empty not in: a b c d e \n",
+        "strings: b e \n",
+        "count: 3\n",
+        "700 keys: 5\n",
+    ] {
+        assert!(out.contains(expected), "missing {expected:?} in:\n{out}");
+    }
+}
+
+#[test]
+fn a_key_list_over_the_limit_fails_visibly_and_two_lists_are_refused() {
+    if !have_sqlite3() {
+        return;
+    }
+    let p = Project::new("in-limit");
+    let main = std::fs::read_to_string(p.dir.join("src/Main.tnx")).unwrap();
+    let start = main.find("    fnc names(").unwrap();
+    let body = r#"    fnc main() -> Int32
+    {
+        var many: List<Int64> = []
+        var i = 0
+        while (i < 1001) {
+            many.push(i)
+            i = i + 1
+        }
+        println(DB::of(Item).filter(i => many.contains(i.id)).count().toString())
+        return 0
+    }
+}
+"#;
+    std::fs::write(p.dir.join("src/Main.tnx"), format!("{}{}", &main[..start], body)).unwrap();
+    let build = p.build();
+    assert!(build.status.success(), "{}", text(&build));
+    let run = Command::new(p.dir.join("app")).current_dir(&p.dir).output().unwrap();
+    assert!(!run.status.success());
+    assert!(text(&run).contains("exceeds the limit of 1000"), "{}", text(&run));
+    broken("two-lists", "const a: List<Int64> = [1]\n        const b: List<Int64> = [2]\n        println(DB::of(Item).filter(i => a.contains(i.id) || b.contains(i.id)).count().toString())", "only once");
+}

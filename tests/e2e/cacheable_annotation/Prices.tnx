@@ -1,0 +1,44 @@
+class Prices
+{
+    var calls: Int64
+
+    @Cacheable(60, 100)
+    fn price(sku: String, qty: Int64) -> Int64
+    {
+        this.calls = this.calls + 1
+        sleep(100)
+        return qty * 10
+    }
+
+    @Cacheable(60, 10)
+    fn join(a: String, b: String) -> String
+    {
+        this.calls = this.calls + 1
+        return a + "+" + b
+    }
+
+    @Cacheable(60, 10)
+    fn big(n: Int64) -> Bool
+    {
+        this.calls = this.calls + 1
+        return n > 5
+    }
+
+    @Cacheable(60, 10)
+    fn boom(n: Int64) -> Int64
+    {
+        this.calls = this.calls + 1
+        throw "boom"
+    }
+
+    @CacheEvict("Prices.price", "Prices.join")
+    fn reprice() -> Nothing
+    {
+    }
+
+    @CacheEvict("Prices.price")
+    fn failingEvict() -> Nothing
+    {
+        throw "update failed"
+    }
+}

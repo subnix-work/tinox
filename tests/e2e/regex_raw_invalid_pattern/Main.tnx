@@ -1,0 +1,12 @@
+// The legacy raw builtin boundary still fails visibly (#468/#472).
+// expect: runtime error: invalid regular expression "(": Unmatched ( or \(
+// expect-exit: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        regexIsMatch("(", "")
+        println("unreachable")
+        return 0
+    }
+}

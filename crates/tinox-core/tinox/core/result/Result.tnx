@@ -31,11 +31,12 @@ namespace tinox.core.result
             return this.values.len() == 0
         }
 
+        @Throws(ResultError)
         fn unwrap() -> T
         {
             if (this.values.len() == 0)
             {
-                throw this.error
+                throw ResultError { message: this.error }
             }
             return this.values[0]
         }

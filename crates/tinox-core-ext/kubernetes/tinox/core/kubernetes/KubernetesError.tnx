@@ -1,0 +1,13 @@
+module tinox.core.kubernetes
+
+namespace tinox.core.kubernetes
+{
+    /**
+     * A Kubernetes client or API operation failed.
+     */
+    @Error("KUBERNETES_ERROR", 502)
+    class KubernetesError
+    {
+        var message: String
+    }
+}

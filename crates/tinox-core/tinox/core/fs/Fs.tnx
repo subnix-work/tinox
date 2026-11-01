@@ -2,19 +2,74 @@ module tinox.core.fs
 
 namespace tinox.core.fs
 {
+    extern fn fsMetadataChecked(path: String, listing: Int64) -> List<String>
+    extern fn fsRenameChecked(from: String, to: String) -> String
+    extern fn fsRemoveDirectoryChecked(path: String, recursive: Int64) -> String
+    extern fn fsRealPathChecked(path: String) -> List<String>
+    extern fn fsHomeDirectoryChecked() -> List<String>
+
+    extern fn fsReadTextOutcome(path: String) -> List<String>
+    extern fn fsWriteTextOutcome(path: String, text: String, append: Int64) -> List<String>
+    extern fn fsCopyOutcome(from: String, to: String) -> List<String>
+    extern fn fsMutateOutcome(from: String, to: String, move: Int64) -> List<String>
+
     class Fs
     {
+        // Additive checked alternatives. Empty text is success; absence is an
+        // operational error here, unlike stat(), whose null means no entry.
+        fn tryReadFile(path: String) -> IoResult<String>
+        {
+            const data: List<String> = fsReadTextOutcome(path)
+            if (data[0] != "0") { return IoResult<String>::fail(data) }
+            return IoResult<String>::ok(data[4])
+        }
+
+        fn mutationResult(data: List<String>) -> IoResult<Bool>
+        {
+            if (data[0] != "0") { return IoResult<Bool>::fail(data) }
+            return IoResult<Bool>::ok(true)
+        }
+
+        fn tryWriteFile(path: String, text: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsWriteTextOutcome(path, text, 0))
+        }
+
+        fn tryAppendFile(path: String, text: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsWriteTextOutcome(path, text, 1))
+        }
+
+        // Bounded binary copy. Failure can leave a partial destination; the
+        // source is never removed. A source/destination inode alias is rejected.
+        fn tryCopyFile(from: String, to: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsCopyOutcome(from, to))
+        }
+
+        // Atomic rename only; cross-device moves fail and preserve the source.
+        fn tryMoveFile(from: String, to: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsMutateOutcome(from, to, 1))
+        }
+
+        fn tryDeleteFile(path: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsMutateOutcome(path, "", 0))
+        }
+
         fn readFile(path: String) -> String
         {
             return fileReadAllText(path)
         }
 
+        @Throws(IoError)
         fn writeFile(path: String, content: String) -> Nothing
         {
             let err: String = fileWriteAllTextChecked(path, content)
             if (err != "")
             {
-                throw err
+                throw IoError { message: err }
             }
         }
 
@@ -28,12 +83,14 @@ namespace tinox.core.fs
             deleteFile(path)
         }
 
+        @Throws(IoError)
         fn copyFile(src: String, dest: String) -> Nothing
         {
             const content: String = Fs::readFile(src)
             Fs::writeFile(dest, content)
         }
 
+        @Throws(IoError)
         fn moveFile(src: String, dest: String) -> Nothing
         {
             Fs::copyFile(src, dest)
@@ -45,28 +102,117 @@ namespace tinox.core.fs
             return dirList(path)
         }
 
+        @Throws(IoError)
         fn createDirectory(path: String) -> Nothing
         {
             let err: String = dirCreateChecked(path)
             if (err != "")
             {
-                throw err
+                throw IoError { message: err }
             }
         }
 
         // Recursive, like `mkdir -p`; succeeds if the directory already exists.
+        @Throws(IoError)
         fn createDirectories(path: String) -> Nothing
         {
             let err: String = dirCreateAllChecked(path)
             if (err != "")
             {
-                throw err
+                throw IoError { message: err }
             }
         }
 
+        @Throws(IoError)
         fn deleteDirectory(path: String) -> Nothing
         {
-            dirDelete(path)
+            const err: String = fsRemoveDirectoryChecked(path, 0)
+            if (err != "") { throw IoError { message: err } }
+        }
+        // Metadata describes the entry itself, never the target of a symlink.
+        // Only ENOENT/ENOTDIR are absence; all other failures throw.
+        @Throws(IoError)
+        fn stat(path: String) -> FileInfo?
+        {
+            const data: List<String> = fsMetadataChecked(path, 0)
+            if (data[0] != "") { throw IoError { message: data[0] } }
+            if (data.len() == 1) { return null }
+            return Fs::decodeInfo(data, 1)
+        }
+
+        fn decodeInfo(data: List<String>, offset: Int64) -> FileInfo
+        {
+            return FileInfo { name: data[offset], kind: data[offset + 1],
+                size: data[offset + 2].toInt(), modifiedNanoseconds: data[offset + 3].toInt(),
+                permissions: data[offset + 4].toInt() }
+        }
+
+        fn isDirectory(path: String) -> Bool
+        {
+            const info: FileInfo? = Fs::stat(path)
+            if (info == null) { return false }
+            return (info as FileInfo).kind == "directory"
+        }
+
+        fn isFile(path: String) -> Bool
+        {
+            const info: FileInfo? = Fs::stat(path)
+            if (info == null) { return false }
+            return (info as FileInfo).kind == "file"
+        }
+
+        fn isSymlink(path: String) -> Bool
+        {
+            const info: FileInfo? = Fs::stat(path)
+            if (info == null) { return false }
+            return (info as FileInfo).kind == "symlink"
+        }
+
+        // One native batch; filesystem order, excluding dot and dot-dot.
+        @Throws(IoError)
+        fn listEntries(path: String) -> List<FileInfo>
+        {
+            const data: List<String> = fsMetadataChecked(path, 1)
+            if (data[0] != "") { throw IoError { message: data[0] } }
+            var entries: List<FileInfo> = []
+            var i: Int64 = 1
+            while (i < data.len())
+            {
+                entries.push(Fs::decodeInfo(data, i))
+                i = i + 5
+            }
+            return entries
+        }
+
+        @Throws(IoError)
+        fn rename(from: String, to: String) -> Nothing
+        {
+            const err: String = fsRenameChecked(from, to)
+            if (err != "") { throw IoError { message: err } }
+        }
+
+        // Removes a directory tree or a symlink itself, never its target.
+        @Throws(IoError)
+        fn deleteDirectoryRecursive(path: String) -> Nothing
+        {
+            const err: String = fsRemoveDirectoryChecked(path, 1)
+            if (err != "") { throw IoError { message: err } }
+        }
+
+        @Throws(IoError)
+        fn realPath(path: String) -> String
+        {
+            const result: List<String> = fsRealPathChecked(path)
+            if (result[0] != "") { throw IoError { message: result[0] } }
+            return result[1]
+        }
+
+        @Throws(IoError)
+        fn homeDirectory() -> String
+        {
+            const result: List<String> = fsHomeDirectoryChecked()
+            if (result[0] != "") { throw IoError { message: result[0] } }
+            return result[1]
         }
     }
 }

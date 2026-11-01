@@ -1,0 +1,12 @@
+class AmqpConnection091 {
+    var conn: Int64
+    fn connect(host: String, port: Int64, vhost: String, user: String, pass: String) -> AmqpConnection091 {
+        println(" " + host + " ")
+        var value = -1
+        if (host == "open-fail") { value = 1 }
+        if (host == "qos-fail") { value = 2 }
+        if (host == "consume-fail") { value = 3 }
+        return AmqpConnection091 { conn: value }
+    }
+    fn close() -> Nothing {}
+}

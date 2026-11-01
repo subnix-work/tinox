@@ -68,12 +68,12 @@ class Main
         var caught: Bool = false
         var cleaned: Bool = false
         try { err.unwrap() }
-        catch e: String { caught = e == "read /missing: permission denied" }
+        catch e: ResultError { caught = e.message == "read /missing: permission denied" }
         finally { cleaned = true }
         check(caught && cleaned, "Result unwrap propagation and cleanup")
         caught = false
         try { req.findHeader("missing").unwrap() }
-        catch e: String { caught = e == "Option is None" }
+        catch e: NoneError { caught = e.message == "Option is None" }
         check(caught, "Option unwrap contract")
         println("contracts ok")
         return 0

@@ -1,0 +1,12 @@
+// Translator rejections keep the legacy raw builtin failure contract.
+// expect: runtime error: invalid regular expression "[\D]": \D inside [...] is not supported
+// expect-exit: 1
+class Main
+{
+    fnc main() -> Int32
+    {
+        regexIsMatch("[\\D]", "")
+        println("unreachable")
+        return 0
+    }
+}

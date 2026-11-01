@@ -1,0 +1,13 @@
+module tinox.core.heap
+
+namespace tinox.core.heap
+{
+    /**
+     * Thrown by `Heap.pop/peek` on an empty heap.
+     */
+    @Error("HEAP_EMPTY", 409)
+    class EmptyHeapError
+    {
+        var message: String
+    }
+}

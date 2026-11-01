@@ -1,0 +1,13 @@
+module tinox.core.xml
+
+namespace tinox.core.xml
+{
+    /**
+     * An XML lookup failed.
+     */
+    @Error("XML_ERROR", 404)
+    class XmlError
+    {
+        var message: String
+    }
+}

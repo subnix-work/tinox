@@ -1,0 +1,29 @@
+import Job
+
+class Main
+{
+    fnc parallelChecksum(values: List<Int64>, limit: Int64) -> Int64
+    {
+        if (limit <= 0) { throw "invalid parallel limit" }
+        var total: Int64 = 0
+        var offset: Int64 = 0
+        while (offset < values.len())
+        {
+            scope
+            {
+                var jobs: List<Task<Int64>> = []
+                var count: Int64 = 0
+                while (count < limit && offset + count < values.len())
+                {
+                    const value = values[offset + count]
+                    jobs.push(spawn Job::run(value))
+                    count = count + 1
+                }
+                for job in jobs { total = total + await job }
+                offset = offset + count
+            }
+        }
+        return total
+    }
+    fnc main() -> Int32 { return 0 }
+}

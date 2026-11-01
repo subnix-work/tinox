@@ -1,0 +1,29 @@
+module tinox.core.oidc
+
+import tinox.core.json
+
+namespace tinox.core.oidc
+{
+    /*
+     * The result of looking at a request's session cookie (see SessionManager). `valid` is false
+     * with a machine-readable `reason` ("missing", "invalid", "expired", "idle", "revoked") when
+     * the request has no usable session; the other fields are then empty/zero.
+     */
+    class Session
+    {
+        var valid: Bool
+        var reason: String
+        var id: String
+        var claims: Map<String, JsonValue>
+        var issuedAt: Int64
+        var expiresAt: Int64
+        var seenAt: Int64
+        // True when this call re-issued the cookie (sliding renewal, rotation or re-sealing under a newer key).
+        var renewed: Bool
+
+        fnc invalid(reason: String) -> Session
+        {
+            return Session { valid: false, reason: reason, id: "", claims: Map::new(), issuedAt: 0, expiresAt: 0, seenAt: 0, renewed: false }
+        }
+    }
+}

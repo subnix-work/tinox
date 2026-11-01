@@ -1,0 +1,2 @@
+@Error("CONFLICT", 409)
+class Conflict { var message: String }

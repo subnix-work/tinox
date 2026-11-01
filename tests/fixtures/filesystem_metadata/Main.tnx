@@ -1,0 +1,91 @@
+import tinox.core.fs
+import tinox.core.env
+class Main
+{
+    fnc main() -> Int32
+    {
+        const root: String = Env::getVar("TINOX_FS_CASE")
+        if (Env::getVar("TINOX_FS_MODE") == "benchmark")
+        {
+            const start: Int64 = now()
+            var count: Int64 = 0
+            var i: Int64 = 0
+            while (i < 20)
+            {
+                count = count + Fs::listEntries(root + "/large").len()
+                i = i + 1
+            }
+            println(count)
+            println(now() - start)
+            return 0
+        }
+        if (Env::getVar("TINOX_FS_MODE") == "home")
+        {
+            println(Fs::homeDirectory())
+            return 0
+        }
+        if (Env::getVar("TINOX_FS_MODE") == "overflow")
+        {
+            try { Fs::stat(root + "/future") }
+            catch error: String { println(error.contains("Value too large")) }
+            return 0
+        }
+        if (Env::getVar("TINOX_FS_MODE") == "permission")
+        {
+            try { Fs::stat(root + "/denied/entry") }
+            catch error: String { println(error.contains("Permission denied")) }
+            try { Fs::listEntries(root + "/denied") }
+            catch error: String { println(error.contains("Permission denied")) }
+            return 0
+        }
+        if (Env::getVar("TINOX_FS_MODE") == "cross-device")
+        {
+            try { Fs::rename(root + "/source", Env::getVar("TINOX_FS_CROSS")) }
+            catch error: String { println(error.contains("EXDEV")) }
+            return 0
+        }
+        const info: FileInfo = Fs::stat(root + "/source/file") as FileInfo
+        println(info.kind)
+        println(info.size)
+        println(info.permissions)
+        println(info.modifiedNanoseconds)
+        println(Fs::stat(root + "/missing") == null)
+        println(Fs::isFile(root + "/source/file"))
+        println(Fs::isDirectory(root + "/source"))
+        println(Fs::isSymlink(root + "/source/link/"))
+        println(Fs::isDirectory(root + "/source/link"))
+        println(Fs::isFile(root + "/missing"))
+        println(Fs::isSymlink(root + "/source/dangling"))
+        println((Fs::stat(root + "/source/socket") as FileInfo).kind)
+        const entries: List<FileInfo> = Fs::listEntries(root + "/large")
+        println(entries.len())
+        var total: Int64 = 0
+        for entry in entries
+        {
+            if (entry.kind == "file") { total = total + 1 }
+            if (entry.name == "0000") { println(entry.size) }
+        }
+        println(total)
+        Fs::rename(root + "/source", root + "/renamed")
+        if (Env::getVar("TINOX_FS_MODE") == "keep-rename") { return 0 }
+        println(Fs::isDirectory(root + "/renamed"))
+        println(Fs::isDirectory(root + "/source"))
+        println(Fs::realPath(root + "/renamed/link") == root + "/outside")
+        println(Fs::homeDirectory() == root + "/home")
+        try { Fs::deleteDirectory(root + "/renamed") }
+        catch error: String { println(error.contains("cannot remove directory")) }
+        try { Fs::listEntries(root + "/missing") }
+        catch error: String { println(error.contains("cannot read metadata")) }
+        try { Fs::stat(root + "/loop/entry") }
+        catch error: String { println(error.contains("cannot read metadata")) }
+        try { Fs::deleteDirectoryRecursive(root + "/renamed/link/child") }
+        catch error: String { println(error.contains("cannot remove directory")) }
+        Fs::deleteDirectoryRecursive(root + "/rootlink/")
+        Fs::deleteDirectoryRecursive(root + "/renamed")
+        println(Fs::isDirectory(root + "/outside"))
+        Fs::createDirectory(root + "/empty")
+        Fs::deleteDirectory(root + "/empty")
+        println(Fs::stat(root + "/empty") == null)
+        return 0
+    }
+}

@@ -55,6 +55,7 @@ namespace tinox.core.ui
         // The wire format itself is UNCHANGED (still "|"-joined) -- this
         // is purely a validation added in front of the existing
         // encoding, not a new encoding; the client JS needs no changes.
+        @Throws(UiError)
         fnc encodePipeList(items: List<String>) -> String
         {
             var i: Int64 = 0
@@ -62,7 +63,7 @@ namespace tinox.core.ui
             {
                 if (items[i].contains("|"))
                 {
-                    throw "Component: list item " + i.toString() + " (\"" + items[i] + "\") contains \"|\", which cannot round-trip through this widget's \"|\"-joined wire encoding -- remove or replace the \"|\" character"
+                    throw UiError { message: "Component: list item " + i.toString() + " (\"" + items[i] + "\") contains \"|\", which cannot round-trip through this widget's \"|\"-joined wire encoding -- remove or replace the \"|\" character" }
                 }
                 i = i + 1
             }
@@ -187,6 +188,7 @@ namespace tinox.core.ui
         // Named `dropdown`, not `select` -- `select` is a reserved Tinox
         // keyword (the channel select statement), not available as a
         // method name.
+        @Throws(UiError)
         fnc dropdown(options: List<String>, selected: String, onChange: fnc(String) -> Nothing) -> Component
         {
             const props: Map<String, String> = Map::new()
@@ -238,6 +240,7 @@ namespace tinox.core.ui
 
         // Same "|"-joined options convention as dropdown (see its own doc
         // comment for the v1 limitation this implies).
+        @Throws(UiError)
         fnc radioGroup(options: List<String>, selected: String, onChange: fnc(String) -> Nothing) -> Component
         {
             const props: Map<String, String> = Map::new()
@@ -293,6 +296,7 @@ namespace tinox.core.ui
         // inconsistent state-management mechanism just for tabs.
         // onTabChange receives the clicked tab's index as a String
         // (`.toInt()` it in the handler).
+        @Throws(UiError)
         fnc tabs(labels: List<String>, activeIndex: Int64, content: Component, onTabChange: fnc(String) -> Nothing) -> Component
         {
             const props: Map<String, String> = Map::new()
@@ -580,6 +584,7 @@ namespace tinox.core.ui
         // free-text value not among `options` is still reported as-is
         // (same as a plain textField); validating against the option list
         // is left to the app, same as every other widget here.
+        @Throws(UiError)
         fnc comboBox(options: List<String>, value: String, onChange: fnc(String) -> Nothing) -> Component
         {
             const props: Map<String, String> = Map::new()
@@ -593,6 +598,7 @@ namespace tinox.core.ui
         // FULL new selection as a "|"-joined string on every toggle (the
         // app splits it back into a List<String> itself), same convention
         // dropdown/radioGroup already use for their own options encoding.
+        @Throws(UiError)
         fnc checkboxGroup(options: List<String>, selected: List<String>, onChange: fnc(String) -> Nothing) -> Component
         {
             const props: Map<String, String> = Map::new()
@@ -621,6 +627,7 @@ namespace tinox.core.ui
         // same flat-string-encoding convention dropdown/radioGroup/
         // checkboxGroup already use for their own option lists. onSelect
         // reports "TopLabel:SubLabel" for whichever sub-item was clicked.
+        @Throws(UiError)
         fnc menuBar(menus: List<String>, onSelect: fnc(String) -> Nothing) -> Component
         {
             const props: Map<String, String> = Map::new()

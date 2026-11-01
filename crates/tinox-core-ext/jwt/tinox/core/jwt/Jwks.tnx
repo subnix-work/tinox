@@ -15,6 +15,7 @@ namespace tinox.core.jwt
      */
     class Jwks
     {
+        @Throws(JwtError)
         /*
          * `kid` is the token header's "kid" claim, or "" if the token
          * omitted it (legal per RFC 7515 -- in that case the JWKS MUST
@@ -32,17 +33,17 @@ namespace tinox.core.jwt
             const resp = Http::get(jwksUri)
             if (resp.statusCode() == 0)
             {
-                throw "network error fetching JWKS from " + jwksUri + " (connection failed or TLS/certificate error)"
+                throw JwtError { message: "network error fetching JWKS from " + jwksUri + " (connection failed or TLS/certificate error)" }
             }
             if (resp.statusCode() < 200 || resp.statusCode() >= 300)
             {
-                throw "JWKS endpoint " + jwksUri + " returned HTTP " + resp.statusCode().toString()
+                throw JwtError { message: "JWKS endpoint " + jwksUri + " returned HTTP " + resp.statusCode().toString() }
             }
 
             const doc: Map<String, JsonValue> = Json::parse(resp.body()).asTable()
             if (!doc.contains("keys"))
             {
-                throw "JWKS document from " + jwksUri + " has no 'keys' field"
+                throw JwtError { message: "JWKS document from " + jwksUri + " has no 'keys' field" }
             }
             const keys: List<JsonValue> = doc["keys"].asList()
 
@@ -72,11 +73,11 @@ namespace tinox.core.jwt
 
             if (matches == 0)
             {
-                throw "no matching RSA key found in JWKS (" + jwksUri + ") for kid \"" + kid + "\""
+                throw JwtError { message: "no matching RSA key found in JWKS (" + jwksUri + ") for kid \"" + kid + "\"" }
             }
             if (matches > 1)
             {
-                throw "ambiguous JWKS (" + jwksUri + "): multiple RSA keys match kid \"" + kid + "\""
+                throw JwtError { message: "ambiguous JWKS (" + jwksUri + "): multiple RSA keys match kid \"" + kid + "\"" }
             }
 
             var result: Map<String, String> = Map::new()

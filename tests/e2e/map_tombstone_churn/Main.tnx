@@ -1,0 +1,32 @@
+// expect: removed
+// expect: false
+// expect: 2
+// expect: 3
+// expect: 4
+// expect: done
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        var values: Map<String, Int64> = Map::new()
+        for i in 0..100
+        {
+            const key: String = i.toString()
+            values.set(key, i)
+            values.remove(key)
+        }
+        println("removed")
+        println(values.contains("absent").toString())
+        values.set("a", 1)
+        values.set("b", 2)
+        values.remove("a")
+        values.set("b", 3)
+        values.set("a", 4)
+        println(values.len().toString())
+        println(values.get("b").toString())
+        println(values.get("a").toString())
+        println("done")
+        return 0
+    }
+}

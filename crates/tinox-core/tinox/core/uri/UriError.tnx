@@ -1,0 +1,13 @@
+module tinox.core.uri
+
+namespace tinox.core.uri
+{
+    /**
+     * Malformed percent-escape in a URI.
+     */
+    @Error("URI_ERROR", 400)
+    class UriError
+    {
+        var message: String
+    }
+}

@@ -2,6 +2,8 @@
 pub mod bootstrap;
 #[path = "lifecycle.rs"]
 pub mod lifecycle;
+#[path = "amqp091_adapter.rs"]
+mod amqp091_adapter;
 use bootstrap::{BackgroundTask, Endpoint};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -24,6 +26,8 @@ pub enum DiScope {
 pub struct DiInjectField {
     pub field_name: String,
     pub field_type: String,
+    pub provider_class: String,
+    pub qualifier: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +44,7 @@ pub struct ConfigFieldInfo {
     pub config_key: String,
     /// LLVM type: "i8*" for String, "i64" for Int*, "i1" for Bool
     pub field_llvm_type: String,
+    pub has_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +120,7 @@ pub enum RouteParamKind {
     PathParam,
     QueryParam,
     PostParam,
+    MultipartParam,
     HttpContext,
 }
 
@@ -169,7 +175,7 @@ pub struct AnnotationInfo {
     pub inline_meths: HashSet<(String, String)>,
     /// (class, method) pairs wrapped in a DB transaction (issue #191) --
     /// see gen_transactional_wrapper.
-    pub transactional_methods: HashSet<(String, String)>,
+    pub transactional_methods: HashMap<(String, String), i64>,
     pub routes: Vec<RouteEntry>,
     pub di_components: Vec<DiComponentInfo>,
     pub log_classes: HashSet<String>,
@@ -203,6 +209,29 @@ pub struct Amqp10ConsumerEntry {
     pub pass: String,
     pub address: String,
     pub on_message: Option<String>,
+    /// @MessageFailure(maxAttempts, backoffMs) on the handler
+    pub failure: Option<(i64, i64)>,
+}
+
+/// A class annotated `@OutboxDispatcher(...)` (issue #538).
+#[derive(Debug, Clone)]
+pub struct OutboxDispatcherEntry {
+    pub class_name: String,
+    pub host: String,
+    pub port: i64,
+    pub vhost: String,
+    pub user: String,
+    pub pass: String,
+    pub max_attempts: i64,
+    pub backoff_ms: i64,
+}
+
+/// A `@Scheduled(cron)` method (issue #536).
+#[derive(Debug, Clone)]
+pub struct ScheduledJobEntry {
+    pub class_name: String,
+    pub method_name: String,
+    pub cron: String,
 }
 
 /// AMQP-0-9-1 consumer entry produced by @Amqp091Consumer annotation processing (Issue #126).
@@ -216,6 +245,8 @@ pub struct Amqp091ConsumerEntry {
     pub pass: String,
     pub queue: String,
     pub on_message: Option<String>,
+    /// @MessageFailure(maxAttempts, backoffMs[, deadLetterQueue]) on the handler
+    pub failure: Option<(i64, i64, String)>,
 }
 
 /// @Http3RestController(port, certPath, keyPath) entry: routes every
@@ -274,6 +305,7 @@ struct DbgVar {
     /// Tinox class name or container marker from `GenCtx::local_types`.
     class: Option<String>,
     line: u32,
+    column: u32,
 }
 
 /// A parameter of the function being generated (issue #499).
@@ -294,7 +326,28 @@ struct DbgScope {
     line: u32,
 }
 
+/// Literal argument of a parameterized `@Case` (#547).
+#[derive(Debug, Clone)]
+pub enum TestArg {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+}
+
+/// One executable test: the method, its `@Case` arguments and the class's
+/// `@BeforeEach` / `@AfterEach` methods, in declaration order.
+#[derive(Debug, Clone)]
+pub struct TestEntry {
+    pub class: String,
+    pub method: String,
+    pub args: Vec<TestArg>,
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+}
+
 pub struct CodeGen {
+    request_validation_schema: String,
     ir: String,
     lambda_ir: String,
     strings: HashMap<String, String>,
@@ -347,6 +400,10 @@ pub struct CodeGen {
     debug_variables: bool,
     /// Variables declared in the function being generated: `(slot, name, ty, class, line)`.
     dbg_vars: Vec<DbgVar>,
+    /// Source of unique lexical-block ids (issue #556).
+    dbg_block_seq: u32,
+    /// Enum name -> (variant, payload types), for the debugger's enum description.
+    enum_defs: HashMap<String, Vec<(String, Vec<Type>)>>,
     /// `llvm.dbg.declare` was used, so the module needs its declaration.
     dbg_declare_used: bool,
     /// DI type nodes by a stable description, so each is emitted once.
@@ -489,6 +546,10 @@ pub struct CodeGen {
     enum_variant_payloads: HashMap<String, Vec<String>>,
     /// Set of enum type names (for type_to_llvm: enums are i64, not i64*)
     known_enum_types: HashSet<String>,
+    /// `@Error` class -> its program-unique code (#524).
+    error_class_codes: HashMap<String, String>,
+    /// `@Error` class -> ';'-joined codes of itself and every subclass (what `catch (e: Class)` matches).
+    error_catch_sets: HashMap<String, String>,
     /// variant name → owning enum name, but only while the name is UNIQUE across
     /// all enums seen so far; a second differently-owned sighting flips the entry
     /// to `None` (ambiguous). Lets `variant_discriminator_key` scope the
@@ -504,7 +565,7 @@ pub struct CodeGen {
     /// Annotation processing: (class_name, method_name) pairs wrapped in a
     /// DB transaction, either directly @Transactional or via a class-level
     /// @Transactional (issue #191). See gen_transactional_wrapper.
-    transactional_methods: HashSet<(String, String)>,
+    transactional_methods: HashMap<(String, String), i64>,
     /// REST route entries collected from annotation processing
     route_entries: Vec<RouteEntry>,
     /// DI component info from annotation processing
@@ -533,6 +594,13 @@ pub struct CodeGen {
     tinoxui_apps: Vec<TinoxUIAppEntry>,
     /// AMQP-1.0 consumers from @Amqp10Consumer annotation processing (Issue #81)
     amqp10_consumers: Vec<Amqp10ConsumerEntry>,
+    scheduled_jobs: Vec<ScheduledJobEntry>,
+    outbox_dispatchers: Vec<OutboxDispatcherEntry>,
+    cached_methods: HashMap<(String, String), (i64, i64)>,
+    /// The one `list.contains(x.field)` predicate of the ORM query being lowered: (list register, elements are strings)
+    orm_in: Option<(String, bool)>,
+    orm_in_conflict: bool,
+    evict_methods: HashMap<(String, String), Vec<String>>,
     /// AMQP-0-9-1 consumers from @Amqp091Consumer annotation processing (Issue #126)
     amqp091_consumers: Vec<Amqp091ConsumerEntry>,
     /// @Http3RestController: routes route_entries through Http3Server
@@ -559,8 +627,11 @@ pub struct CodeGen {
     migration_payload: Option<String>,
     /// Whether a [metrics] endpoint is enabled (path to expose on)
     metrics_path: Option<String>,
-    /// If set, emit a test-runner main that calls this (class, method) and exits 0/1
-    test_entry: Option<(String, String)>,
+    /// Selected (class, method) pairs dispatched by a test index in a shared executable.
+    test_entries: Vec<TestEntry>,
+    /// `@ErrorMap` (code, status) pairs, emitted as the runtime's error table (#524).
+    error_map: Vec<(String, i64)>,
+    security_policy: Vec<String>,
     /// Whether a user-defined main function was compiled (prevents auto-generated main)
     has_main: bool,
     /// Names of `__tinox_run_<kind>()` functions emitted by the REST/HTTP3/
@@ -662,6 +733,7 @@ impl CodeGen {
             target: crate::target::Target::resolve()
                 .or_else(|_| crate::target::Target::host())
                 .unwrap_or(crate::target::Target::X86_64),
+            request_validation_schema: String::new(),
             ir: String::new(),
             lambda_ir: String::new(),
             strings: HashMap::new(),
@@ -674,6 +746,8 @@ impl CodeGen {
             di_subroutine_type_id: None,
             debug_variables: false,
             dbg_vars: Vec::new(),
+            dbg_block_seq: 0,
+            enum_defs: HashMap::new(),
             dbg_declare_used: false,
             di_type_cache: HashMap::new(),
             struct_layouts: HashMap::new(),
@@ -714,10 +788,12 @@ impl CodeGen {
             known_enum_variants: HashSet::new(),
             enum_variant_payloads: HashMap::new(),
             known_enum_types: HashSet::new(),
+            error_class_codes: HashMap::new(),
+            error_catch_sets: HashMap::new(),
             variant_owner: HashMap::new(),
             inline_functions: HashSet::new(),
             inline_methods: HashSet::new(),
-            transactional_methods: HashSet::new(),
+            transactional_methods: HashMap::new(),
             route_entries: Vec::new(),
             di_components: Vec::new(),
             log_classes: HashSet::new(),
@@ -732,6 +808,12 @@ impl CodeGen {
             ws_endpoints: Vec::new(),
             tinoxui_apps: Vec::new(),
             amqp10_consumers: Vec::new(),
+            scheduled_jobs: Vec::new(),
+            outbox_dispatchers: Vec::new(),
+            cached_methods: HashMap::new(),
+            orm_in: None,
+            orm_in_conflict: false,
+            evict_methods: HashMap::new(),
             amqp091_consumers: Vec::new(),
             http3_rest_controller: None,
             expr_value_types: HashMap::new(),
@@ -742,7 +824,9 @@ impl CodeGen {
             db_pool_size: 5,
             migration_payload: None,
             metrics_path: None,
-            test_entry: None,
+            test_entries: Vec::new(),
+            error_map: Vec::new(),
+            security_policy: Vec::new(),
             has_main: false,
             background_tasks: Vec::new(),
             bootstrap_emitted: false,
@@ -848,6 +932,19 @@ impl CodeGen {
         self.tinoxui_apps = apps;
     }
 
+    pub fn set_cache_methods(&mut self, cached: HashMap<(String, String), (i64, i64)>, evict: HashMap<(String, String), Vec<String>>) {
+        self.cached_methods = cached;
+        self.evict_methods = evict;
+    }
+
+    pub fn set_outbox_dispatchers(&mut self, dispatchers: Vec<OutboxDispatcherEntry>) {
+        self.outbox_dispatchers = dispatchers;
+    }
+
+    pub fn set_scheduled_jobs(&mut self, jobs: Vec<ScheduledJobEntry>) {
+        self.scheduled_jobs = jobs;
+    }
+
     pub fn set_amqp10_consumers(&mut self, consumers: Vec<Amqp10ConsumerEntry>) {
         self.amqp10_consumers = consumers;
     }
@@ -890,10 +987,19 @@ impl CodeGen {
         writeln!(&mut self.ir, "call void @tinox_histogram_record(i8* {}, i64 {})", name_ptr, dur_reg).unwrap();
     }
 
-    /// Configure a single test to run: generates `tinox_main` that calls
-    /// `ClassName_methodName()` and exits 0 (pass) or 1 (fail via panic).
-    pub fn set_test_entry(&mut self, class_name: String, method_name: String) {
-        self.test_entry = Some((class_name, method_name));
+    /// Generate one test executable for these methods. The runner selects an index
+    /// with the private argv pair `--tinox-test-index N` and starts a fresh process
+    /// for every method. Test programs inspecting argv can see this selector.
+    pub fn set_security_policy(&mut self, lines: Vec<String>) {
+        self.security_policy = lines;
+    }
+
+    pub fn set_error_map(&mut self, map: Vec<(String, i64)>) {
+        self.error_map = map;
+    }
+
+    pub fn set_test_entries(&mut self, entries: Vec<TestEntry>) {
+        self.test_entries = entries;
     }
 
     /// Provide interface metadata from the type checker.
@@ -1794,7 +1900,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_print_bool(i1)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_newline()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_alloc(i64)").unwrap();
-        writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_panic(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_task_spawn(i8* (i8*)*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_task_spawn_detached(i8* (i8*)*, i8*)").unwrap();
         // WebSocket connection budget (#302): the accept loops ask before
@@ -1825,6 +1931,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_string_is_float(i8*)").unwrap();
         // Strict @PathParam/@QueryParam conversion + bare-string JSON
         // encoding for auto-serialize REST responses (emit_route_shim_body).
+        writeln!(&mut self.ir, "declare i8* @tinox_request_validate(i8*, i8*, i8*, i64**)").unwrap();
         writeln!(&mut self.ir, "declare i32 @tinox_parse_int_checked(i8*, i64*)").unwrap();
         writeln!(&mut self.ir, "declare i32 @tinox_parse_float_checked(i8*, double*)").unwrap();
         writeln!(&mut self.ir, "declare i32 @tinox_parse_bool_checked(i8*, i32*)").unwrap();
@@ -1876,10 +1983,13 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_config_get(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_config_get_int(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_config_get_bool(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_config_present(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_config_missing(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_equals(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_compare(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_contains(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_index_of(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_string_index_of_from(i8*, i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_last_index_of(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_reverse(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_to_upper(i8*)").unwrap();
@@ -1891,6 +2001,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64 @tinox_string_char_code_at(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_replace(i8*, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_string_split(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64* @tinox_string_chars(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_join(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_json_list_serialize(i64*, ptr)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_array_sort(i64*)").unwrap();
@@ -1970,7 +2081,13 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @httpConnReadN(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpConnWriteBytes(i64, i64*)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnClose(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_config_validate(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @resilienceNow()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @resilienceAllow(i8*, i64, i64, i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @resilienceRecord(i8*, i64, i64, i8*, i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @resilienceRetry(i8*, i64, i8*, i8*, i64, i64, i64, i64, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnClearRecvTimeout(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpConnWaitReadable(i64, i64)").unwrap();
         // CLI helpers (@Command / @Option / @Argument)
         writeln!(&mut self.ir, "declare i8* @tinox_cli_get_string(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_cli_has_flag(i8*, i8*)").unwrap();
@@ -1979,6 +2096,18 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_cli_print_option(i8*, i8*)").unwrap();
         // Metrics runtime
         writeln!(&mut self.ir, "declare void @tinox_counter_inc(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_message_handler_failed(i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_telemetry_message_begin(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_telemetry_message_end(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_cache_named(i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8** @tinox_orm_in_params(i64*, i64, i64*)").unwrap();
+        writeln!(&mut self.ir, "declare i8** @tinox_orm_params_merge(i8**, i64, i8**, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_orm_expand_in(i8*, i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_cache_begin(i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_cache_value()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_cache_store(i64, i8*, i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_cache_abort(i64, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_cache_evict_named(i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_histogram_record(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_gauge_set(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_clock_nanos()").unwrap();
@@ -1988,9 +2117,8 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_migrate_run(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_acquire_stmt_conn()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_db_release_stmt_conn(i8*)").unwrap();
-        writeln!(&mut self.ir, "declare i8* @tinox_db_tx_begin()").unwrap();
-        writeln!(&mut self.ir, "declare void @tinox_db_tx_commit()").unwrap();
-        writeln!(&mut self.ir, "declare void @tinox_db_tx_rollback()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_db_tx_enter(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_db_tx_leave(i64, i1)").unwrap();
         writeln!(&mut self.ir, "declare i1 @tinox_db_tx_active()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_db_exec(i8*, i8*, i8**, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_db_nrows(i8*)").unwrap();
@@ -2052,6 +2180,7 @@ impl CodeGen {
         self.emit_service_declarations();
         writeln!(&mut self.ir, "declare void @tinox_di_enter()").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_di_exit()").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_request_begin()\ndeclare void @tinox_request_end()\ndeclare i64* @tinox_request_get(i64)\ndeclare void @tinox_request_put(i64, i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_monitor_enter(i64*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_monitor_exit(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @mutexNew()").unwrap();
@@ -2074,6 +2203,19 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @processKillInteractive(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @gcCollect()").unwrap();
         writeln!(&mut self.ir, "declare i64 @memoryUsage()").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_error_matches(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_error_message(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @gcStat(i64)").unwrap();
+        if !self.error_map.is_empty() {
+            // Strong definition of the runtime's weak `tinox_error_table_data`: "CODE=status;..."
+            let table = self.error_map.iter().map(|(c, s)| format!("{c}={s}")).collect::<Vec<_>>().join(";");
+            writeln!(&mut self.ir, "@tinox_error_table_data = constant [{} x i8] c\"{}\\00\"", table.len() + 1, Self::escape_llvm_string(&table)).unwrap();
+        }
+        if !self.security_policy.is_empty() {
+            // Strong definition of the runtime's weak `tinox_security_policy_data` (@Cors/@Csrf, #529).
+            let text = self.security_policy.join("\n");
+            writeln!(&mut self.ir, "@tinox_security_policy_data = constant [{} x i8] c\"{}\\00\"", text.len() + 1, Self::escape_llvm_string(&text)).unwrap();
+        }
         writeln!(&mut self.ir, "declare void @printStackTrace()").unwrap();
         writeln!(&mut self.ir, "declare i64 @now()").unwrap();
         for name in ["taskCancel", "taskDetach", "taskSetDeadline", "taskWaitReadable"] {
@@ -2118,12 +2260,43 @@ impl CodeGen {
             .map(|c| (c.name.clone(), c))
             .collect();
 
+        // Typed errors (#524): code per @Error class and, per class, the codes it catches (itself + subclasses).
+        for c in class_ast_map.values() {
+            if let Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))) =
+                c.annotations.iter().find(|a| a.name == "Error").and_then(|a| a.args.first())
+            {
+                self.error_class_codes.insert(c.name.clone(), code.clone());
+            }
+        }
+        for name in self.error_class_codes.keys().cloned().collect::<Vec<_>>() {
+            let mut codes: Vec<String> = Vec::new();
+            for (sub, code) in &self.error_class_codes {
+                let mut cur = Some(sub.as_str());
+                let mut hops = 0;
+                while let Some(n) = cur {
+                    if n == name {
+                        codes.push(code.clone());
+                        break;
+                    }
+                    hops += 1;
+                    if hops > 64 {
+                        break;
+                    }
+                    cur = class_ast_map.get(n).and_then(|c| c.extends.as_deref());
+                }
+            }
+            codes.sort();
+            self.error_catch_sets.insert(name, codes.join(";"));
+        }
+        self.request_validation_schema = tinox_typecheck::dto_validation::document(&class_ast_map.iter().map(|(k,v)| (k.clone(),v.clone())).collect());
+
         // Pre-pass: register all enum type names so that method return type resolution
         // (which calls type_to_llvm_inst) can correctly classify Named enum types as i64.
         for decl in &source.decls {
             match &decl.node {
                 DeclKind::Enum(e) => {
                     self.known_enum_types.insert(e.name.clone());
+                    self.enum_defs.insert(e.name.clone(), e.variants.iter().map(|v| (v.name.clone(), v.args.clone())).collect());
                     for variant in &e.variants {
                         self.known_enum_variants.insert(variant.name.clone());
                         self.register_variant_owner(&e.name, &variant.name);
@@ -2137,6 +2310,7 @@ impl CodeGen {
                     for inner in &ns.decls {
                         if let DeclKind::Enum(e) = &inner.node {
                             self.known_enum_types.insert(e.name.clone());
+                    self.enum_defs.insert(e.name.clone(), e.variants.iter().map(|v| (v.name.clone(), v.args.clone())).collect());
                             for variant in &e.variants {
                                 self.known_enum_variants.insert(variant.name.clone());
                                 self.register_variant_owner(&e.name, &variant.name);
@@ -2433,6 +2607,7 @@ impl CodeGen {
                 }
                 DeclKind::Enum(e) => {
                     self.known_enum_types.insert(e.name.clone());
+                    self.enum_defs.insert(e.name.clone(), e.variants.iter().map(|v| (v.name.clone(), v.args.clone())).collect());
                     for variant in &e.variants {
                         self.known_enum_variants.insert(variant.name.clone());
                         self.register_variant_owner(&e.name, &variant.name);
@@ -2450,6 +2625,7 @@ impl CodeGen {
                             }
                         } else if let DeclKind::Enum(e) = &inner.node {
                             self.known_enum_types.insert(e.name.clone());
+                    self.enum_defs.insert(e.name.clone(), e.variants.iter().map(|v| (v.name.clone(), v.args.clone())).collect());
                             for variant in &e.variants {
                                 self.known_enum_variants.insert(variant.name.clone());
                                 self.register_variant_owner(&e.name, &variant.name);
@@ -2561,6 +2737,12 @@ impl CodeGen {
         // Emit the auto-run connect/receive loop for an @Amqp091Consumer class
         self.emit_amqp091_consumer_code();
 
+        // Emit one runner per @Scheduled method (issue #536)
+        self.emit_scheduled_code();
+
+        // Emit one runner per @OutboxDispatcher class (issue #538)
+        self.emit_outbox_dispatcher_code();
+
         // Emit the dev-mode introspection API (no-op unless [dev] enabled)
         self.emit_devui_code(&class_ast_map);
 
@@ -2580,7 +2762,7 @@ impl CodeGen {
         self.emit_json_serialize_code();
         self.emit_json_deserialize_code();
 
-        // Emit test-runner main if set_test_entry() was called
+        // Emit test-runner main if set_test_entries() was called
         self.emit_test_code();
 
         // Emit SQL-constant functions and row-mapping helpers for @Entity classes
@@ -2637,11 +2819,7 @@ impl CodeGen {
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__route_{}_{}", route.class_name, route.method_name);
 
-            let body_shim = if self.service_enabled() {
-                format!("{shim}__body")
-            } else {
-                shim.clone()
-            };
+            let body_shim = format!("{shim}__body");
             writeln!(&mut self.lambda_ir, "define void @{body_shim}(i64 %ctx_i64) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
@@ -3004,7 +3182,7 @@ impl CodeGen {
                         let inject_fields: Vec<(String, String)> = self.di_components.iter()
                             .find(|c| c.class_name == route.class_name)
                             .map(|c| c.inject_fields.iter()
-                                .map(|f| (f.field_name.clone(), f.field_type.clone()))
+                                .map(|f| (f.field_name.clone(), f.provider_class.clone()))
                                 .collect())
                             .unwrap_or_default();
                         for (fi, (fname, ftype)) in inject_fields.iter().enumerate() {
@@ -3165,6 +3343,35 @@ impl CodeGen {
                         }
                     }
                 }
+                RouteParamKind::MultipartParam => {
+                    // Parse the body byte-exactly with the default budgets; any failure is a 400 before the handler.
+                    writeln!(&mut self.lambda_ir, "  %req_field_{n} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %req_i64_{n} = load i64, i64* %req_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %req_ptr_{n} = inttoptr i64 %req_i64_{n} to i64*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %body_field_{n} = getelementptr i64, i64* %req_ptr_{n}, i64 2").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %body_i64_{n} = load i64, i64* %body_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %body_ptr_{n} = inttoptr i64 %body_i64_{n} to i8*").unwrap();
+                    let ct_name = self.emit_lambda_string_literal("Content-Type");
+                    writeln!(&mut self.lambda_ir, "  %ct_{n} = call i8* @HttpRequest_getHeader(i64* %req_ptr_{n}, i8* {ct_name})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_bytes_{n} = call i64* @Bytes_fromRequestBody(i64* null, i8* %body_ptr_{n})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_limits_{n} = call i64* @MultipartLimits_defaults()").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_{n} = call i64* @Multipart_parse(i8* %ct_{n}, i64* %mp_bytes_{n}, i64* %mp_limits_{n})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_ok_field_{n} = getelementptr i64, i64* %mp_{n}, i64 0").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_ok_{n} = load i64, i64* %mp_ok_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_good_{n} = icmp ne i64 %mp_ok_{n}, 0").unwrap();
+                    writeln!(&mut self.lambda_ir, "  br i1 %mp_good_{n}, label %mp_pass_{n}, label %mp_fail_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "mp_fail_{n}:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_err_field_{n} = getelementptr i64, i64* %mp_{n}, i64 1").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_err_i64_{n} = load i64, i64* %mp_err_field_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_err_{n} = inttoptr i64 %mp_err_i64_{n} to i8*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_rf_{n} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_ri_{n} = load i64, i64* %mp_rf_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_rp_{n} = inttoptr i64 %mp_ri_{n} to i64*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %mp_resp_{n} = call i64* @HttpResponse_badRequest(i64* %mp_rp_{n}, i8* %mp_err_{n})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+                    writeln!(&mut self.lambda_ir, "mp_pass_{n}:").unwrap();
+                    call_args.push(format!("i64* %mp_{n}"));
+                }
                 RouteParamKind::PostParam => {
                     writeln!(&mut self.lambda_ir, "  %req_field_{n} = getelementptr i64, i64* %ctx_ptr, i64 0").unwrap();
                     writeln!(&mut self.lambda_ir, "  %req_i64_{n} = load i64, i64* %req_field_{n}").unwrap();
@@ -3178,16 +3385,23 @@ impl CodeGen {
                         Type::Named(c) => c.clone(),
                         _ => unreachable!("@PostParam target type validated as a class at typecheck time"),
                     };
-                    let gm = self.generic_methods.get("Json_deserialize").cloned()
-                        .expect("Json::deserialize<T> must be registered when @PostParam is used -- it requires a \
-                                 @JsonSerializable type, which requires importing tinox.core.json, which also \
-                                 defines Json.deserialize<T> (same module directory, one import pulls in both)");
-                    let (mangled, ret_llvm) = self
-                        .ensure_generic_method_specialization("Json_deserialize", &gm, &[Type::Named(target_class)])
-                        .expect("Json::deserialize<T> specialization should always succeed for an already-typechecked @JsonSerializable class");
-                    writeln!(&mut self.lambda_ir,
-                        "  %val_{n} = call {ret_llvm} @{mangled}(i8* %body_ptr_{n})").unwrap();
-                    call_args.push(format!("{ret_llvm} %val_{n}"));
+                    let schema = self.emit_lambda_string_literal(&self.request_validation_schema.clone());
+                    let class = self.emit_lambda_string_literal(&target_class);
+                    writeln!(&mut self.lambda_ir, "  %parsed_slot_{n} = alloca i64*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %validation_{n} = call i8* @tinox_request_validate(i8* %body_ptr_{n}, i8* {schema}, i8* {class}, i64** %parsed_slot_{n})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %invalid_{n} = icmp ne i8* %validation_{n}, null").unwrap();
+                    writeln!(&mut self.lambda_ir, "  br i1 %invalid_{n}, label %dto_fail_{n}, label %dto_ok_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "dto_fail_{n}:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %dto_rf_{n} = getelementptr i64, i64* %ctx_ptr, i64 1").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %dto_ri_{n} = load i64, i64* %dto_rf_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %dto_rp_{n} = inttoptr i64 %dto_ri_{n} to i64*").unwrap();
+                    writeln!(&mut self.lambda_ir, "  store i64 400, i64* %dto_rp_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %dto_response_{n} = call i64* @HttpResponse_json(i64* %dto_rp_{n}, i8* %validation_{n})").unwrap();
+                    writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+                    writeln!(&mut self.lambda_ir, "dto_ok_{n}:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %parsed_{n} = load i64*, i64** %parsed_slot_{n}").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %val_{n} = call i64* @{target_class}_fromJson(i64* %parsed_{n})").unwrap();
+                    call_args.push(format!("i64* %val_{n}"));
                 }
             }
         }
@@ -3496,11 +3710,7 @@ tr_done_{idx}:"#).unwrap();
         // ── Per-route shims (closure-callable: trailing i64* %env) ──────────────
         for (idx, route) in routes.iter().enumerate() {
             let shim = format!("__h3route_{}_{}", route.class_name, route.method_name);
-            let body_shim = if self.service_enabled() {
-                format!("{shim}__body")
-            } else {
-                shim.clone()
-            };
+            let body_shim = format!("{shim}__body");
             writeln!(&mut self.lambda_ir, "define void @{body_shim}(i64 %ctx_i64, i64* %env) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ctx_ptr = inttoptr i64 %ctx_i64 to i64*").unwrap();
@@ -3814,9 +4024,17 @@ tr_done_{idx}:"#).unwrap();
             // its one argument.
             writeln!(&mut self.lambda_ir, "define i64 @{worker_fn}(i64 %conn) {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
-            writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
-            writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-            self.emit_field_defaults(&ep.class_name, "%inst");
+            let shared_endpoint = self.di_components.iter().any(|component|
+                component.class_name == ep.class_name
+                    && matches!(component.scope, DiScope::Application | DiScope::Startup));
+            if shared_endpoint {
+                // Explicit singleton scope owns endpoint identity and injection.
+                writeln!(&mut self.lambda_ir, "  %inst = call i64* @{}_di_get()", ep.class_name).unwrap();
+            } else {
+                writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+                writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+                self.emit_field_defaults(&ep.class_name, "%inst");
+            }
             if self.service_enabled() {
                 writeln!(&mut self.lambda_ir, "  call void @tinox_service_existing_work_enter()"
                 )
@@ -3851,7 +4069,10 @@ tr_done_{idx}:"#).unwrap();
             }
             if let Some(ref on_message) = ep.on_message {
                 writeln!(&mut self.lambda_ir, "  %msg = call i8* @Ws_text(i64* null, i64* %f)").unwrap();
+                let span_name = self.emit_lambda_string_literal("ws.message");
+                writeln!(&mut self.lambda_ir, "  %msg_span = call i64 @tinox_telemetry_message_begin(i8* {span_name})").unwrap();
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64 %conn, i8* %msg)", ep.class_name, on_message).unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @tinox_telemetry_message_end(i64 %msg_span)").unwrap();
             }
             if self.service_enabled() {
                 let label = self.emit_lambda_string_literal("WebSocket callback failed");
@@ -4448,22 +4669,41 @@ tr_done_{idx}:"#).unwrap();
             if self.service_enabled() {
                 writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %message_next, label %service_close\nmessage_next:").unwrap();
             }
+            // Failure policy (issue #537), same contract as the 0-9-1 consumer: settle as accepted only when the
+            // handler returned normally; otherwise retry with backoff up to maxAttempts, then reject
+            // (MessageFailure10.onFailure) so the queue's own dead-letter exchange decides.
+            let (max_attempts, backoff_ms) = c.failure.unwrap_or((1, 0));
+            let handler_label = self.emit_lambda_string_literal(&format!("{}.{}", c.class_name, c.on_message.clone().unwrap_or_default()));
+            writeln!(&mut self.lambda_ir, "  %attempt_slot = alloca i64\n  store i64 1, i64* %attempt_slot\n  br label %attempt_loop\nattempt_loop:").unwrap();
             if let Some(ref on_message) = c.on_message {
+                let span_name = self.emit_lambda_string_literal("amqp10.consume");
+                writeln!(&mut self.lambda_ir, "  %msg_span = call i64 @tinox_telemetry_message_begin(i8* {span_name})").unwrap();
                 writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @tinox_telemetry_message_end(i64 %msg_span)").unwrap();
             }
+            writeln!(&mut self.lambda_ir, "  %handler_err = load i64, i64* @__tinox_err").unwrap();
+            writeln!(&mut self.lambda_ir, "  %handler_failed = call i64 @tinox_message_handler_failed(i8* {handler_label}, i64 %handler_err)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %did_fail = icmp ne i64 %handler_failed, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %did_fail, label %on_fail, label %ack_message").unwrap();
+            writeln!(&mut self.lambda_ir, "on_fail:").unwrap();
             if self.service_enabled() {
-                let label = self.emit_lambda_string_literal("AMQP handler failed");
-                writeln!(&mut self.lambda_ir, "  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %ack_message, label %handler_failed\nhandler_failed:\n  call void @tinox_service_work_exit()\n  br label %service_close\nack_message:").unwrap();
+                writeln!(&mut self.lambda_ir, "  %fail_stopping = call i1 @serviceIsStopping()\n  br i1 %fail_stopping, label %fail_abandon, label %fail_settle\nfail_abandon:\n  call void @tinox_service_work_exit()\n  br label %service_close\nfail_settle:").unwrap();
             }
+            writeln!(&mut self.lambda_ir, "  %attempt = load i64, i64* %attempt_slot").unwrap();
+            writeln!(&mut self.lambda_ir, "  %settled = call i64 @MessageFailure10_onFailure(i64* %link_obj, i64* %msg_obj, i64 %attempt, i64 {max_attempts}, i64 {backoff_ms})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %retry = icmp eq i64 %settled, 0\n  br i1 %retry, label %retry_attempt, label %settled_done").unwrap();
+            writeln!(&mut self.lambda_ir, "retry_attempt:\n  %next_attempt = add i64 %attempt, 1\n  store i64 %next_attempt, i64* %attempt_slot\n  br label %attempt_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "settled_done:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
+            writeln!(&mut self.lambda_ir, "ack_message:").unwrap();
             writeln!(&mut self.lambda_ir, "  %delivery_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 2").unwrap();
             writeln!(&mut self.lambda_ir, "  %delivery_val = load i64, i64* %delivery_field").unwrap();
             writeln!(&mut self.lambda_ir, "  call void @Amqp10Link_ack(i64* %link_obj, i64 %delivery_val)").unwrap();
             if self.service_enabled() {
-                writeln!(
-                    &mut self.lambda_ir,
-                    "  call void @tinox_service_work_exit()"
-                )
-                .unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()").unwrap();
             }
             writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
 
@@ -4482,166 +4722,128 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
-    /// Generates an auto-run `main` for a single `@Amqp091Consumer`-annotated
-    /// class (Issue #126): connect/open/qos/consume/nextMessage/ack loop,
-    /// calling the class's `@OnMessage` method directly by its mangled
-    /// `{Class}_{method}` symbol — same hand-emitted-IR technique as
-    /// `emit_amqp10_consumer_code`, calling the already-compiled
-    /// `AmqpConnection091`/`AmqpChannel091` static/instance methods from
-    /// `tinox.core.amqp091` (which the file must import). The handler
-    /// receives the whole `AmqpMessage091` pointer (not a decoded body) so
-    /// no string-building loop needs to be hand-rolled in raw IR. Prefetch
-    /// is hardcoded to 1 (mirrors amqp10's per-message `grantCredit(1)`) —
-    /// no annotation argument for it in v1.
-    ///
-    /// Fires once per `@Amqp091Consumer` class found (no upper limit — each
-    /// gets its own uniquely-named `__tinox_run_amqp091_<idx>()`, spawned on
-    /// its own thread by `emit_tinox_main_bootstrap`; multiple consumers
-    /// against the same broker/port but different queues is a normal,
-    /// expected shape, unlike WS where the same port would collide).
-    fn emit_amqp091_consumer_code(&mut self) {
-        if self.amqp091_consumers.is_empty() || self.has_main {
+    /// One `__tinox_run_outbox_<idx>()` per @OutboxDispatcher class (issue #538), spawned on its own thread. The
+    /// loop publishes one batch per pass (a batch is admitted as in-flight service work, so a draining service
+    /// waits for it), reports the backlog gauges, sleeps while idle and, on an error from the batch, reports
+    /// it and backs off instead of dying. With a @Service it ends when the service stops, closing the connection.
+    fn emit_outbox_dispatcher_code(&mut self) {
+        if self.outbox_dispatchers.is_empty() || self.has_main {
             return;
         }
-
-        if !self.class_named_types.contains("AmqpMessage091") {
-            panic!("@Amqp091Consumer requires `import tinox.core.amqp091;` (AmqpMessage091 type not found)");
+        if !self.class_named_types.contains("OutboxDispatcher") {
+            panic!("@OutboxDispatcher requires `import tinox.core.outbox;` (OutboxDispatcher type not found)");
         }
-
-        let consumers = self.amqp091_consumers.clone();
-        for (idx, c) in consumers.iter().enumerate() {
-            let inst_size = self.struct_layouts.get(c.class_name.as_str())
-                .map(|f| (f.len().max(1) * 8) as i64)
-                .unwrap_or(8);
-
-            // The connect/receive loop lives in __tinox_run_amqp091_<idx>(),
-            // a plain callee (not @tinox_main directly), so
-            // emit_tinox_main_bootstrap can run it on its own thread instead
-            // of tail-calling it inline.
-            let run_fn = format!("__tinox_run_amqp091_{idx}");
+        let dispatchers = self.outbox_dispatchers.clone();
+        for (idx, d) in dispatchers.iter().enumerate() {
+            let run_fn = format!("__tinox_run_outbox_{idx}");
             writeln!(&mut self.lambda_ir, "define i64 @{run_fn}() {{").unwrap();
             writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
-
-            let host_ptr = self.emit_lambda_string_literal(&c.host);
-            let vhost_ptr = self.emit_lambda_string_literal(&c.vhost);
-            let user_ptr = self.emit_lambda_string_literal(&c.user);
-            let pass_ptr = self.emit_lambda_string_literal(&c.pass);
-            let queue_ptr = self.emit_lambda_string_literal(&c.queue);
-
-            writeln!(&mut self.lambda_ir, "  %conn_obj = call i64* @AmqpConnection091_connect(i64* null, i8* {host_ptr}, i64 {port}, i8* {vhost_ptr}, i8* {user_ptr}, i8* {pass_ptr})", port = c.port).unwrap();
-            writeln!(&mut self.lambda_ir, "  %conn_field = getelementptr %class.AmqpConnection091, ptr %conn_obj, i32 0, i32 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  %conn_val = load i64, i64* %conn_field").unwrap();
-            writeln!(&mut self.lambda_ir, "  %conn_bad = icmp sle i64 %conn_val, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %conn_bad, label %connect_fail, label %do_open").unwrap();
-
-            writeln!(&mut self.lambda_ir, "connect_fail:").unwrap();
-            writeln!(&mut self.lambda_ir, "  ret i64 1").unwrap();
-
-            writeln!(&mut self.lambda_ir, "do_open:").unwrap();
-            writeln!(&mut self.lambda_ir, "  %chan_obj = call i64* @AmqpChannel091_open(i64* null, i64* %conn_obj)").unwrap();
-            writeln!(&mut self.lambda_ir, "  %chanid_field = getelementptr %class.AmqpChannel091, ptr %chan_obj, i32 0, i32 1").unwrap();
-            writeln!(&mut self.lambda_ir, "  %chanid_val = load i64, i64* %chanid_field").unwrap();
-            writeln!(&mut self.lambda_ir, "  %chan_bad = icmp eq i64 %chanid_val, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %chan_bad, label %open_fail, label %do_qos").unwrap();
-
-            writeln!(&mut self.lambda_ir, "open_fail:").unwrap();
+            let host = self.emit_lambda_string_literal(&d.host);
+            let vhost = self.emit_lambda_string_literal(&d.vhost);
+            let user = self.emit_lambda_string_literal(&d.user);
+            let pass = self.emit_lambda_string_literal(&d.pass);
+            let label = self.emit_lambda_string_literal(&format!("{} outbox dispatcher", d.class_name));
+            writeln!(&mut self.lambda_ir, "  %d = call i64* @OutboxDispatcher_create(i8* {host}, i64 {}, i8* {vhost}, i8* {user}, i8* {pass}, i64 {}, i64 {})", d.port, d.max_attempts, d.backoff_ms).unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
+            writeln!(&mut self.lambda_ir, "tick:").unwrap();
             if self.service_enabled() {
-                writeln!(
-                    &mut self.lambda_ir,
-                    "  call void @tinox_service_close_connection(i64 %conn_val)"
-                )
-                .unwrap();
+                writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %stop, label %go\ngo:\n  call void @tinox_service_listener_ready(i64 -1)\n  %admitted = call i64 @tinox_service_work_enter()\n  %admit_ok = icmp ne i64 %admitted, 0\n  br i1 %admit_ok, label %batch, label %stop\nbatch:").unwrap();
             }
-            writeln!(&mut self.lambda_ir, "  ret i64 2").unwrap();
-
-            writeln!(&mut self.lambda_ir, "do_qos:").unwrap();
-            writeln!(&mut self.lambda_ir, "  %qos_ok = call i1 @AmqpChannel091_qos(i64* %chan_obj, i64 1)").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %qos_ok, label %do_consume, label %qos_fail").unwrap();
-
-            writeln!(&mut self.lambda_ir, "qos_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %n = call i64 @OutboxDispatcher_runOnce(i64* %d)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %err = load i64, i64* @__tinox_err").unwrap();
+            writeln!(&mut self.lambda_ir, "  %failed = call i64 @tinox_message_handler_failed(i8* {label}, i64 %err)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %reported = call i1 @OutboxDispatcher_report(i64* %d)").unwrap();
             if self.service_enabled() {
-                writeln!(
-                    &mut self.lambda_ir,
-                    "  call void @tinox_service_close_connection(i64 %conn_val)"
-                )
-                .unwrap();
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()").unwrap();
             }
-            writeln!(&mut self.lambda_ir, "  ret i64 3").unwrap();
-
-            writeln!(&mut self.lambda_ir, "do_consume:").unwrap();
-            writeln!(&mut self.lambda_ir, "  %tag_ptr = call i8* @AmqpChannel091_consume(i64* %chan_obj, i8* {queue_ptr})").unwrap();
-            writeln!(&mut self.lambda_ir, "  %tag_len = call i64 @tinox_string_length(i8* %tag_ptr)").unwrap();
-            writeln!(&mut self.lambda_ir, "  %tag_bad = icmp eq i64 %tag_len, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %tag_bad, label %consume_fail, label %consumer_ready").unwrap();
-
-            writeln!(&mut self.lambda_ir, "consume_fail:").unwrap();
-            if self.service_enabled() {
-                writeln!(
-                    &mut self.lambda_ir,
-                    "  call void @tinox_service_close_connection(i64 %conn_val)"
-                )
-                .unwrap();
-            }
-            writeln!(&mut self.lambda_ir, "  ret i64 4").unwrap();
-
-            writeln!(&mut self.lambda_ir, "consumer_ready:").unwrap();
-            writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
-            writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
-            self.emit_field_defaults(&c.class_name, "%inst");
-            writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
-
-            writeln!(&mut self.lambda_ir, "recv_loop:").unwrap();
-            if self.service_enabled() {
-                writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %service_close, label %recv_next\nrecv_next:").unwrap();
-            }
-            if self.service_enabled() {
-                writeln!(
-                    &mut self.lambda_ir,
-                    "  call void @tinox_service_listener_ready(i64 -1)"
-                )
-                .unwrap();
-            }
-            writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @AmqpChannel091_nextMessage(i64* %chan_obj)").unwrap();
-            writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 5").unwrap();
-            writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
-            writeln!(&mut self.lambda_ir, "  %is_ok = icmp ne i64 %ok_val, 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  br i1 %is_ok, label %handle_msg, label %recv_loop").unwrap();
-
-            writeln!(&mut self.lambda_ir, "handle_msg:").unwrap();
-            if self.service_enabled() {
-                writeln!(&mut self.lambda_ir, "  %message_admitted = call i64 @tinox_service_work_enter()\n  %message_ok = icmp ne i64 %message_admitted, 0\n  br i1 %message_ok, label %message_next, label %service_close\nmessage_next:").unwrap();
-            }
-            if let Some(ref on_message) = c.on_message {
-                writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst, i64* %msg_obj)", c.class_name, on_message).unwrap();
-            }
-            if self.service_enabled() {
-                let label = self.emit_lambda_string_literal("AMQP handler failed");
-                writeln!(&mut self.lambda_ir, "  %callback_ok = call i64 @tinox_service_check_error(i8* {label})\n  %callback_succeeded = icmp ne i64 %callback_ok, 0\n  br i1 %callback_succeeded, label %ack_message, label %handler_failed\nhandler_failed:\n  call void @tinox_service_work_exit()\n  br label %service_close\nack_message:").unwrap();
-            }
-            writeln!(&mut self.lambda_ir, "  %tag_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 0").unwrap();
-            writeln!(&mut self.lambda_ir, "  %tag_val = load i64, i64* %tag_field").unwrap();
-            writeln!(&mut self.lambda_ir, "  call void @AmqpChannel091_ack(i64* %chan_obj, i64 %tag_val)").unwrap();
-            if self.service_enabled() {
-                writeln!(
-                    &mut self.lambda_ir,
-                    "  call void @tinox_service_work_exit()"
-                )
-                .unwrap();
-            }
-            writeln!(&mut self.lambda_ir, "  br label %recv_loop").unwrap();
-
-            if self.service_enabled() {
-                writeln!(&mut self.lambda_ir, "service_close:\n  call void @tinox_service_cleanup_enter()\n  call void @AmqpConnection091_close(i64* %conn_obj)\n  call void @tinox_service_close_connection(i64 %conn_val)\n  ret i64 0").unwrap();
-            }
-
+            writeln!(&mut self.lambda_ir, "  %did_fail = icmp ne i64 %failed, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  %was_idle = icmp eq i64 %n, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  %pause = select i1 %did_fail, i64 1000, i64 250").unwrap();
+            writeln!(&mut self.lambda_ir, "  %sleep_needed = or i1 %did_fail, %was_idle").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %sleep_needed, label %nap, label %tick").unwrap();
+            writeln!(&mut self.lambda_ir, "nap:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @OutboxDispatcher_idle(i64* %d, i64 %pause)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
+            writeln!(&mut self.lambda_ir, "stop:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @OutboxDispatcher_close(i64* %d)").unwrap();
+            writeln!(&mut self.lambda_ir, "  ret i64 0").unwrap();
             writeln!(&mut self.lambda_ir, "}}").unwrap();
             writeln!(&mut self.lambda_ir).unwrap();
+            self.register_background_task(BackgroundTask::new("outbox", Some(&d.class_name), &run_fn, "per_dispatcher", "one thread, sequential batches of confirmed publishes", Endpoint::connect("AMQP 0-9-1 (outbox)", d.port, &d.host, "tinox_outbox")));
+        }
+    }
 
-            self.register_background_task(BackgroundTask::new("amqp091", Some(&c.class_name), &run_fn, "per_consumer_connection", "sequential receive/handler/ack loop", Endpoint::connect("AMQP 0-9-1", c.port, &c.host, &c.queue)));
-            self.startup_endpoints.push((
-                "AMQP 0-9-1 (consumer)".to_string(),
-                format!("{}:{} (queue: {})", c.host, c.port, c.queue),
-            ));
+    /// One `__tinox_run_scheduled_<idx>()` per @Scheduled method (issue #536), spawned on its own
+    /// thread by the bootstrap. The loop checks the job every 250 ms: the UTC schedule is
+    /// evaluated by `ScheduledJob.due` (claims a minute once), the method runs on this thread only
+    /// (no overlap with itself; minutes passed meanwhile are skipped), a failing run is logged and
+    /// counted but never stops the job, and with a @Service the loop ends when the service stops.
+    /// Metrics per job: runs_total, failures_total, lag_ms (start delay after the scheduled minute).
+    fn emit_scheduled_code(&mut self) {
+        if self.scheduled_jobs.is_empty() || self.has_main {
+            return;
+        }
+        if !self.class_named_types.contains("ScheduledJob") {
+            panic!("@Scheduled requires `import tinox.core.cron;` (ScheduledJob type not found)");
+        }
+        writeln!(&mut self.lambda_ir, "declare i64 @tinox_scheduled_report(i8*, i64)").unwrap();
+        let jobs = self.scheduled_jobs.clone();
+        for (idx, job) in jobs.iter().enumerate() {
+            let inst_size = self.struct_layouts.get(job.class_name.as_str())
+                .map(|f| (f.len().max(1) * 8) as i64)
+                .unwrap_or(8);
+            let run_fn = format!("__tinox_run_scheduled_{idx}");
+            let label = format!("{}.{}", job.class_name, job.method_name);
+            let metric = format!("tinox_scheduled_{}_{}", job.class_name, job.method_name).to_lowercase();
+            writeln!(&mut self.lambda_ir, "define i64 @{run_fn}() {{").unwrap();
+            writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+            let cron_ptr = self.emit_lambda_string_literal(&job.cron);
+            let label_ptr = self.emit_lambda_string_literal(&label);
+            let runs_ptr = self.emit_lambda_string_literal(&format!("{metric}_runs_total"));
+            let fails_ptr = self.emit_lambda_string_literal(&format!("{metric}_failures_total"));
+            let lag_ptr = self.emit_lambda_string_literal(&format!("{metric}_lag_ms"));
+            writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {inst_size})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
+            self.emit_field_defaults(&job.class_name, "%inst");
+            writeln!(&mut self.lambda_ir, "  %job = call i64* @ScheduledJob_create(i8* {cron_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
+            writeln!(&mut self.lambda_ir, "tick:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %stopping = call i1 @serviceIsStopping()\n  br i1 %stopping, label %stop, label %check\ncheck:").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  %now = call i64 @ScheduledJob_nowMs(i64* %job)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %due = call i64 @ScheduledJob_due(i64* %job, i64 %now)").unwrap();
+            writeln!(&mut self.lambda_ir, "  %is_due = icmp sge i64 %due, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %is_due, label %run, label %wait").unwrap();
+            writeln!(&mut self.lambda_ir, "run:").unwrap();
+            writeln!(&mut self.lambda_ir, "  %lag = sub i64 %now, %due").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_gauge_set(i8* {lag_ptr}, i64 %lag)").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  %admitted = call i64 @tinox_service_work_enter()\n  %admit_ok = icmp ne i64 %admitted, 0\n  br i1 %admit_ok, label %invoke, label %stop\ninvoke:").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  call void @{}_{}(i64* %inst)", job.class_name, job.method_name).unwrap();
+            writeln!(&mut self.lambda_ir, "  %err = load i64, i64* @__tinox_err").unwrap();
+            writeln!(&mut self.lambda_ir, "  %failed = call i64 @tinox_scheduled_report(i8* {label_ptr}, i64 %err)").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_counter_inc(i8* {runs_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  %did_fail = icmp ne i64 %failed, 0").unwrap();
+            writeln!(&mut self.lambda_ir, "  br i1 %did_fail, label %count_fail, label %after_run").unwrap();
+            writeln!(&mut self.lambda_ir, "count_fail:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @tinox_counter_inc(i8* {fails_ptr})").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %after_run").unwrap();
+            writeln!(&mut self.lambda_ir, "after_run:").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_work_exit()").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "  br label %wait").unwrap();
+            writeln!(&mut self.lambda_ir, "wait:").unwrap();
+            writeln!(&mut self.lambda_ir, "  call void @ScheduledJob_pause(i64* %job, i64 250)").unwrap();
+            writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
+            if self.service_enabled() {
+                writeln!(&mut self.lambda_ir, "stop:\n  ret i64 0").unwrap();
+            }
+            writeln!(&mut self.lambda_ir, "}}").unwrap();
+            writeln!(&mut self.lambda_ir).unwrap();
+            self.register_background_task(BackgroundTask::new("scheduled", Some(&job.class_name), &run_fn, "per_job_instance", "one thread per job, sequential runs, no overlap", Endpoint::listen("Schedule", 0, "annotation", Some(&format!("{label} [{}]", job.cron)))));
         }
     }
 
@@ -4707,6 +4909,7 @@ tr_done_{idx}:"#).unwrap();
         self.emit_devui_config_handler();
         self.emit_devui_components_handler();
         self.emit_devui_limits_handler();
+        self.emit_devui_security_handler();
         self.emit_devui_tests_run_handler();
 
         writeln!(&mut self.lambda_ir, "define i64 @__tinox_run_devui() {{").unwrap();
@@ -4721,6 +4924,7 @@ tr_done_{idx}:"#).unwrap();
             ("/info", "__devui_info"),
             ("/config", "__devui_config"),
             ("/limits", "__devui_limits"),
+            ("/security", "__devui_security"),
             ("/components", "__devui_components"),
             ("/tests/run", "__devui_tests_run"),
         ] {
@@ -4824,6 +5028,7 @@ tr_done_{idx}:"#).unwrap();
                 RouteParamKind::PathParam => "PathParam",
                 RouteParamKind::QueryParam => "QueryParam",
                 RouteParamKind::PostParam => "PostParam",
+                RouteParamKind::MultipartParam => "MultipartParam",
                 RouteParamKind::HttpContext => "HttpContext",
             };
             let type_json = match p.kind {
@@ -5056,6 +5261,17 @@ tr_done_{idx}:"#).unwrap();
         let suffix_ptr = self.emit_lambda_string_literal("}");
         writeln!(&mut self.lambda_ir,
             "  %json = call i8* @tinox_string_concat(i8* %s3, i8* {suffix_ptr})").unwrap();
+        self.emit_devui_finish_response("%json");
+        writeln!(&mut self.lambda_ir, "}}").unwrap();
+        writeln!(&mut self.lambda_ir).unwrap();
+    }
+
+    /// `/security`: the active @Cors/@Csrf policy (`tinox_security_json`, runtime.c; issue #529).
+    fn emit_devui_security_handler(&mut self) {
+        writeln!(&mut self.lambda_ir, "declare i8* @tinox_security_json()").unwrap();
+        writeln!(&mut self.lambda_ir, "define void @__devui_security(i64 %ctx_i64) {{").unwrap();
+        writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+        writeln!(&mut self.lambda_ir, "  %json = call i8* @tinox_security_json()").unwrap();
         self.emit_devui_finish_response("%json");
         writeln!(&mut self.lambda_ir, "}}").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
@@ -5392,14 +5608,14 @@ tr_done_{idx}:"#).unwrap();
         // HTTP server, blocks forever waiting for its listener thread to
         // join) and the actual @Test method is never even called. No
         // error, no wrong-answer test failure either -- the process just
-        // hangs, which is arguably worse. `test_entry.is_some()` means
+        // hangs, which is arguably worse. `!test_entries.is_empty()` means
         // `emit_test_code` is going to define `@tinox_main` itself
         // (guarded on `!has_main`, so it MUST see this function skip);
         // background_tasks/route_entries etc. still get populated and
         // their functions still get emitted as harmless unused IR -- only
         // this bootstrap step (deciding what `@tinox_main` becomes) needs
         // to defer to the test runner.
-        if self.test_entry.is_some() {
+        if !self.test_entries.is_empty() {
             return;
         }
         if self.has_main {
@@ -5470,6 +5686,17 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.lambda_ir, "define i32 @tinox_main() {{").unwrap();
         writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
 
+        // Aggregated @Config check (#308): every required key present and every int/bool value
+        // parseable is verified before anything starts, with ALL problems reported at once.
+        if !self.config_fields.is_empty() {
+            let mut table = String::new();
+            for f in &self.config_fields {
+                let kind = match f.field_llvm_type.as_str() { "i8*" => "s", "i1" => "b", _ => "i" };
+                table.push_str(&format!("{}\t{}\t{}\n", f.config_key, kind, if f.has_default { 0 } else { 1 }));
+            }
+            let table_ptr = self.emit_lambda_string_literal(&table);
+            writeln!(&mut self.lambda_ir, "  call void @tinox_config_validate(i8* {table_ptr})").unwrap();
+        }
         self.emit_service_bootstrap_start(handles.len());
 
         // t0: captured before anything else runs, so the elapsed time
@@ -5547,6 +5774,10 @@ tr_done_{idx}:"#).unwrap();
         self.has_main = true;
     }
 
+    pub(super) fn has_request_scope(&self) -> bool {
+        self.di_components.iter().any(|c| matches!(c.scope, DiScope::HttpRequest))
+    }
+
     fn emit_di_code(&mut self) {
         let components = self.di_components.clone();
         if components.is_empty() {
@@ -5563,7 +5794,7 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
         // Getter / factory for each component
-        for comp in &components {
+        for (component_id, comp) in components.iter().enumerate() {
             let name = &comp.class_name;
             let size = self.struct_layouts.get(name.as_str())
                 .map(|f| (f.len().max(1) * 8) as i64)
@@ -5589,12 +5820,15 @@ tr_done_{idx}:"#).unwrap();
                     // default was silently ignored -- @Inject fields were
                     // the only ones ever initialised.
                     self.emit_field_defaults(name, "%new_inst");
+                    if let Some(count) = self.vtable_sizes.get(name) {
+                        writeln!(&mut self.lambda_ir, "  %di_vtable = ptrtoint [{count} x i64]* @{name}_vtable to i64\n  store i64 %di_vtable, i64* %new_inst").unwrap();
+                    }
 
                     for (fi, field) in comp.inject_fields.iter().enumerate() {
                         let field_offset = self.struct_layouts.get(name.as_str())
                             .and_then(|layout| layout.iter().position(|f| f == &field.field_name))
                             .unwrap_or(0);
-                        let dep = &field.field_type;
+                        let dep = &field.provider_class;
                         let dep_is_app = components.iter().any(|c|
                             c.class_name == *dep && matches!(c.scope, DiScope::Application | DiScope::Startup));
                         if dep_is_app {
@@ -5621,16 +5855,20 @@ tr_done_{idx}:"#).unwrap();
                 DiScope::HttpRequest => {
                     writeln!(&mut self.lambda_ir, "define i64* @{name}_di_create() {{").unwrap();
                     writeln!(&mut self.lambda_ir, "entry.tnx:").unwrap();
+                    writeln!(&mut self.lambda_ir, "  %cached = call i64* @tinox_request_get(i64 {component_id})\n  %exists = icmp ne i64* %cached, null\n  br i1 %exists, label %cached_return, label %create\ncached_return:\n  ret i64* %cached\ncreate:").unwrap();
                     writeln!(&mut self.lambda_ir, "  %raw = call i8* @tinox_alloc(i64 {size})").unwrap();
                     writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
                     // See the Application/Startup arm above -- same reason.
                     self.emit_field_defaults(name, "%inst");
+                    if let Some(count) = self.vtable_sizes.get(name) {
+                        writeln!(&mut self.lambda_ir, "  %di_vtable = ptrtoint [{count} x i64]* @{name}_vtable to i64\n  store i64 %di_vtable, i64* %inst").unwrap();
+                    }
 
                     for (fi, field) in comp.inject_fields.iter().enumerate() {
                         let field_offset = self.struct_layouts.get(name.as_str())
                             .and_then(|layout| layout.iter().position(|f| f == &field.field_name))
                             .unwrap_or(0);
-                        let dep = &field.field_type;
+                        let dep = &field.provider_class;
                         let dep_is_app = components.iter().any(|c|
                             c.class_name == *dep && matches!(c.scope, DiScope::Application | DiScope::Startup));
                         if dep_is_app {
@@ -5643,6 +5881,7 @@ tr_done_{idx}:"#).unwrap();
                         writeln!(&mut self.lambda_ir, "  store i64 %dep_i64_{fi}, i64* %fptr_{fi}").unwrap();
                     }
 
+                    writeln!(&mut self.lambda_ir, "  call void @tinox_request_put(i64 {component_id}, i64* %inst)").unwrap();
                     writeln!(&mut self.lambda_ir, "  ret i64* %inst").unwrap();
                     writeln!(&mut self.lambda_ir, "}}").unwrap();
                     writeln!(&mut self.lambda_ir).unwrap();
@@ -5878,9 +6117,23 @@ tr_done_{idx}:"#).unwrap();
     /// its field layout (8 bytes per field, in declaration order).
     fn di_class(&mut self, name: &str) -> Option<u32> {
         let layout = self.struct_layouts.get(name)?.clone();
-        let decls = self.struct_field_decl_types.get(name).cloned().unwrap_or_default();
+        let mut decls = self.struct_field_decl_types.get(name).cloned().unwrap_or_default();
         let llvms = self.struct_field_llvm_types.get(name).cloned().unwrap_or_default();
-        Some(self.di_named_struct(format!("class|{name}"), name, |this, comp| {
+        // A specialization of a generic class (`Box__i64`) is described under its Tinox name
+        // (`Box<Int64>`) with the type arguments substituted into the field types (issue #556).
+        let mut display = name.to_string();
+        if let Some(spec) = self.specialization_types.get(name).cloned() {
+            if let Type::Generic { name: generic, args } = &spec {
+            if let Some(gc) = self.generic_classes.get(generic.as_str()) {
+                let bindings: HashMap<String, Type> = gc.type_params.iter().cloned().zip(args.iter().cloned()).collect();
+                for f in &gc.fields {
+                    decls.insert(f.name.clone(), Self::substitute_type(&f.field_type, &bindings));
+                }
+                display = tinox_parser::api::type_name(&spec);
+            }
+            }
+        }
+        Some(self.di_named_struct(format!("class|{name}"), &display, |this, comp| {
             let mut members = Vec::new();
             for (i, field) in layout.iter().enumerate() {
                 let base = match decls.get(field) {
@@ -5896,6 +6149,53 @@ tr_done_{idx}:"#).unwrap();
             }
             (members, layout.len() as u32 * 64)
         }))
+    }
+
+    /// An enum: an enumeration type whose enumerators carry the variant discriminators. A variant
+    /// with a payload is named `Variant#KINDS` (one letter per payload slot: I integer, S string,
+    /// F float, O other pointer); `runtime/tinox-gdb.py` reads those slots from the heap block the
+    /// value points to. Raw access stays possible: `print/d` shows the 8-byte value as stored.
+    fn di_enum(&mut self, name: &str) -> u32 {
+        let key = format!("enum|{name}");
+        if let Some(id) = self.di_type_cache.get(&key) {
+            return *id;
+        }
+        let variants = self.enum_defs.get(name).cloned().unwrap_or_default();
+        let base = self.di_basic("UInt64", 64, "DW_ATE_unsigned");
+        let mut ids = Vec::new();
+        for (variant, payload) in &variants {
+            let disc_key = self.variant_discriminator_key(Some(name), variant);
+            let (shown, value) = if payload.is_empty() {
+                (variant.clone(), Self::enum_discriminator_noarg(&disc_key))
+            } else {
+                let kinds: String = payload
+                    .iter()
+                    .map(|t| match t {
+                        Type::String => 'S',
+                        Type::Float32 | Type::Float64 => 'F',
+                        Type::Bool | Type::Char | Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::UInt8 | Type::UInt16 | Type::UInt32 | Type::UInt64 => 'I',
+                        _ => 'O',
+                    })
+                    .collect();
+                (format!("{variant}#{kinds}"), Self::enum_discriminator(&disc_key))
+            };
+            let id = self.di_next_id;
+            self.di_next_id += 1;
+            self.di_metadata.push(format!("!{id} = !DIEnumerator(name: \"{}\", value: {}, isUnsigned: true)", Self::escape_di_string(&shown), value as u64));
+            ids.push(id);
+        }
+        let elems = self.di_next_id;
+        self.di_next_id += 1;
+        let list = ids.iter().map(|m| format!("!{m}")).collect::<Vec<_>>().join(", ");
+        self.di_metadata.push(format!("!{elems} = !{{{list}}}"));
+        let id = self.di_next_id;
+        self.di_next_id += 1;
+        self.di_metadata.push(format!(
+            "!{id} = !DICompositeType(tag: DW_TAG_enumeration_type, name: \"{}\", baseType: !{base}, size: 64, elements: !{elems})",
+            Self::escape_di_string(name)
+        ));
+        self.di_type_cache.insert(key, id);
+        id
     }
 
     /// `List<T>` / `Array`: the runtime's `{len, cap, data}` array handle.
@@ -5985,6 +6285,11 @@ tr_done_{idx}:"#).unwrap();
                 let ch = self.di_basic("char", 8, "DW_ATE_signed_char");
                 self.di_pointer("String", Some(ch))
             }
+            // an enum is either a bare discriminator or a pointer to [discriminator, payload...]
+            (Some(Type::Named(n)), _) if self.enum_defs.contains_key(n) && self.known_enum_types.contains(n) && matches!(llvm, "i64" | "i64*") => {
+                let n = n.clone();
+                self.di_enum(&n)
+            }
             // enums and anything else stored in an integer slot
             (_, "i8" | "i16" | "i32" | "i64") => self.di_basic(&format!("Int{size}"), size, "DW_ATE_signed"),
             // pointers: classes, containers, maps, closures
@@ -5995,6 +6300,20 @@ tr_done_{idx}:"#).unwrap();
             (None, _) if class.is_some_and(|c| self.struct_layouts.contains_key(c)) => {
                 let c = class.unwrap().to_string();
                 self.di_class(&c).unwrap_or_else(|| self.di_pointer("pointer", None))
+            }
+            // `Box<Int64>` -> the layout of its specialization
+            (Some(Type::Generic { name: g, args }), _)
+                if self.generic_classes.get(g.as_str()).is_some_and(|gc| gc.type_params.len() == args.len())
+                    && self.struct_layouts.contains_key(&Self::mangle_generic_name(
+                        g,
+                        &self.generic_classes[g.as_str()].type_params,
+                        &self.generic_classes[g.as_str()].type_params.iter().cloned().zip(args.iter().cloned()).collect(),
+                    )) =>
+            {
+                let params = self.generic_classes[g.as_str()].type_params.clone();
+                let bindings: HashMap<String, Type> = params.iter().cloned().zip(args.iter().cloned()).collect();
+                let mangled = Self::mangle_generic_name(g, &params, &bindings);
+                self.di_class(&mangled).unwrap_or_else(|| self.di_pointer("pointer", None))
             }
             (Some(Type::Array(inner)), _) => {
                 let name = format!("List<{}>", tinox_parser::api::type_name(inner));
@@ -6030,16 +6349,21 @@ tr_done_{idx}:"#).unwrap();
     fn attach_dbg(&mut self, body_start: usize, scope: Option<DbgScope>, params: &[DbgParam]) {
         let vars = std::mem::take(&mut self.dbg_vars);
         let Some(scope) = scope else { return };
-        let mut locs: HashMap<(u32, u32), u32> = HashMap::new();
-        let mut loc_for = |this: &mut Self, line: u32, col: u32| -> u32 {
-            *locs.entry((line, col)).or_insert_with(|| {
+        let mut locs: HashMap<(u32, u32, u32), u32> = HashMap::new();
+        let mut loc_for = |this: &mut Self, line: u32, col: u32, sc: u32| -> u32 {
+            *locs.entry((line, col, sc)).or_insert_with(|| {
                 let id = this.di_next_id;
                 this.di_next_id += 1;
-                this.di_metadata.push(format!("!{id} = !DILocation(line: {line}, column: {col}, scope: !{})", scope.sp_id));
+                this.di_metadata.push(format!("!{id} = !DILocation(line: {line}, column: {col}, scope: !{sc})"));
                 id
             })
         };
-        let mut cur = loc_for(self, scope.line, 1);
+        // Open lexical scopes, innermost last: (block id, 0 for a declaration scope; metadata id).
+        // A source block opens one scope, and every local declared in it opens a nested one that
+        // lasts until the block ends, so a name is only visible after its declaration (issue #556).
+        let mut open_scopes: Vec<(u32, u32)> = Vec::new();
+        let mut cur_pos = (scope.line, 1u32);
+        let mut cur = loc_for(self, scope.line, 1, scope.sp_id);
         let mut body = self.ir[body_start..].to_string();
         // Parameters get a stack copy to describe (issue #499, `--debug` only).
         if self.debug_variables {
@@ -6075,7 +6399,31 @@ tr_done_{idx}:"#).unwrap();
             if let Some(rest) = t.strip_prefix("; @tnxdbg ") {
                 let mut it = rest.split_whitespace().filter_map(|x| x.parse::<u32>().ok());
                 if let (Some(l), Some(c)) = (it.next(), it.next()) {
-                    cur = loc_for(self, l, c);
+                    cur_pos = (l, c);
+                    cur = loc_for(self, l, c, open_scopes.last().map_or(scope.sp_id, |s| s.1));
+                }
+                out.push_str(line);
+                continue;
+            }
+            if let Some(rest) = t.strip_prefix("; @tnxscope ") {
+                let mut words = rest.split_whitespace();
+                let kind = words.next().unwrap_or("");
+                let nums: Vec<u32> = words.filter_map(|x| x.parse().ok()).collect();
+                if kind == "begin" && nums.len() == 3 {
+                    let parent = open_scopes.last().map_or(scope.sp_id, |s| s.1);
+                    let id = self.di_next_id;
+                    self.di_next_id += 1;
+                    self.di_metadata.push(format!(
+                        "!{id} = distinct !DILexicalBlock(scope: !{parent}, file: !{}, line: {}, column: {})",
+                        scope.file_id, nums[1], nums[2]
+                    ));
+                    open_scopes.push((nums[0], id));
+                    cur = loc_for(self, cur_pos.0, cur_pos.1, id);
+                } else if kind == "end" && nums.len() == 1 && open_scopes.iter().any(|s| s.0 == nums[0]) {
+                    // The location is kept until the next statement: the closing jump still belongs
+                    // to the block, and a second location in the parent scope would make a
+                    // breakpoint on the block's last line resolve twice.
+                    while open_scopes.pop().is_some_and(|s| s.0 != nums[0]) {}
                 }
                 out.push_str(line);
                 continue;
@@ -6101,11 +6449,20 @@ tr_done_{idx}:"#).unwrap();
                 if let Some(v) = var_by_slot.get(lhs.trim().trim_start_matches('%')) {
                     let llvm = rhs.split(',').next().unwrap_or("").trim().to_string();
                     let ty = self.di_type(v.ty.as_ref(), &llvm, v.class.as_deref());
+                    let decl_scope = self.di_next_id;
+                    self.di_next_id += 1;
+                    let parent = open_scopes.last().map_or(scope.sp_id, |s| s.1);
+                    self.di_metadata.push(format!(
+                        "!{decl_scope} = distinct !DILexicalBlock(scope: !{parent}, file: !{}, line: {}, column: {})",
+                        scope.file_id, v.line, v.column
+                    ));
+                    open_scopes.push((0, decl_scope));
+                    cur = loc_for(self, cur_pos.0, cur_pos.1, decl_scope);
                     let var = self.di_next_id;
                     self.di_next_id += 1;
                     self.di_metadata.push(format!(
-                        "!{var} = !DILocalVariable(name: \"{}\", scope: !{}, file: !{}, line: {}, type: !{ty})",
-                        Self::escape_di_string(&v.name), scope.sp_id, scope.file_id, v.line
+                        "!{var} = !DILocalVariable(name: \"{}\", scope: !{decl_scope}, file: !{}, line: {}, type: !{ty})",
+                        Self::escape_di_string(&v.name), scope.file_id, v.line
                     ));
                     self.dbg_declare_used = true;
                     out.push_str(&format!(
@@ -6359,7 +6716,13 @@ tr_done_{idx}:"#).unwrap();
         let public_name = format!("{}_{}", class_name, method.name);
         let synchronized = !method.static_ && (self.synchronized_classes.contains(class_name)
             || method.annotations.iter().any(|a| a.name == "Synchronized"));
-        let fn_name = if synchronized { format!("__tinox_sync_body_{public_name}") } else { public_name.clone() };
+        let cache_cfg = self.cached_methods.get(&(class_name.to_string(), method.name.clone())).copied();
+        let evict_cfg = self.evict_methods.get(&(class_name.to_string(), method.name.clone())).cloned();
+        let wrapped = cache_cfg.is_some() || evict_cfg.is_some();
+        // The name the body (or the @Synchronized wrapper around it) is defined under; the cache
+        // wrapper, when present, takes over the public name.
+        let inner_public = if wrapped { format!("__tinox_cache_body_{public_name}") } else { public_name.clone() };
+        let fn_name = if synchronized { format!("__tinox_sync_body_{public_name}") } else { inner_public.clone() };
         self.method_ret_types.insert(public_name.clone(), ret_type.clone());
 
         let mut ctx = GenCtx {
@@ -6466,8 +6829,8 @@ tr_done_{idx}:"#).unwrap();
             ctx.timed_metric = Some((label.clone(), start_reg));
         }
 
-        if self.transactional_methods.contains(&(class_name.to_string(), method.name.clone())) {
-            self.gen_transactional_wrapper(method, &mut ctx)?;
+        if let Some(mode) = self.transactional_methods.get(&(class_name.to_string(), method.name.clone())).copied() {
+            self.gen_transactional_wrapper(method, mode, &mut ctx)?;
         } else {
             self.gen_stmt_body(&method.body, &mut ctx)?;
         }
@@ -6495,7 +6858,7 @@ tr_done_{idx}:"#).unwrap();
         self.attach_dbg(body_start, dbg_scope, &dbg_params);
         self.dbg_vars = outer_vars;
         if synchronized {
-            writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
+            writeln!(&mut self.ir, "define {ret_type} @{inner_public}({params_str}) {{").unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
             writeln!(&mut self.ir, "  %locked = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
             writeln!(&mut self.ir, "  %acquired = icmp ne i64 %locked, 0").unwrap();
@@ -6514,8 +6877,164 @@ tr_done_{idx}:"#).unwrap();
             }
             writeln!(&mut self.ir, "}}\n").unwrap();
         }
+        if let Some((ttl_s, cap)) = cache_cfg {
+            self.emit_cache_wrapper(class_name, method, &ret_type, &params_str, &inner_public, ttl_s, cap);
+        } else if let Some(names) = evict_cfg {
+            self.emit_evict_wrapper(&public_name, &ret_type, &params_str, &inner_public, &names);
+        }
 
         Ok(())
+    }
+
+    /// `@Cacheable(ttlSeconds, maxEntries)` (issue #543): the public symbol becomes a wrapper around the
+    /// real body (`__tinox_cache_body_*`). It builds a collision-free key from the argument values
+    /// (length-prefixed strings, tagged numbers), asks the method's LoadingCache (single-flight: concurrent
+    /// identical misses run the body once) and stores the result unless the body failed. A thrown error
+    /// is passed on untouched and caches nothing. The cache belongs to the method, not to an instance.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_cache_wrapper(&mut self, class_name: &str, method: &Method, ret_type: &str, params_str: &str, inner: &str, ttl_s: i64, cap: i64) {
+        let public_name = format!("{}_{}", class_name, method.name);
+        let name_lit = self.make_string_const(&format!("{}.{}", class_name, method.name));
+        let empty = self.make_string_const("");
+        let colon = self.make_string_const(":");
+        let semi = self.make_string_const(";");
+        let tag_i = self.make_string_const("i");
+        let tag_b = self.make_string_const("b");
+        writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
+        let handle = self.temp();
+        writeln!(&mut self.ir, "  {handle} = call i64 @tinox_cache_named(i8* {name_lit}, i64 {cap}, i64 {ttl_s})").unwrap();
+        let mut key = empty;
+        for p in &method.params {
+            let ty = self.type_to_llvm_inst(&p.param_type);
+            let piece = match ty.as_str() {
+                "i8*" => {
+                    let len = self.temp();
+                    let len_s = self.temp();
+                    let a = self.temp();
+                    let b = self.temp();
+                    let c = self.temp();
+                    writeln!(&mut self.ir, "  {len} = call i64 @tinox_string_length(i8* %{})", p.name).unwrap();
+                    writeln!(&mut self.ir, "  {len_s} = call i8* @tinox_int_to_param(i64 {len})").unwrap();
+                    writeln!(&mut self.ir, "  {a} = call i8* @tinox_string_concat(i8* {len_s}, i8* {colon})").unwrap();
+                    writeln!(&mut self.ir, "  {b} = call i8* @tinox_string_concat(i8* {a}, i8* %{})", p.name).unwrap();
+                    writeln!(&mut self.ir, "  {c} = call i8* @tinox_string_concat(i8* {b}, i8* {semi})").unwrap();
+                    c
+                }
+                other => {
+                    let wide = self.temp();
+                    let tag = if other == "i1" { &tag_b } else { &tag_i };
+                    match other {
+                        "i1" => writeln!(&mut self.ir, "  {wide} = zext i1 %{} to i64", p.name).unwrap(),
+                        "i64" => writeln!(&mut self.ir, "  {wide} = add i64 %{}, 0", p.name).unwrap(),
+                        _ => writeln!(&mut self.ir, "  {wide} = sext {other} %{} to i64", p.name).unwrap(),
+                    }
+                    let num = self.temp();
+                    let a = self.temp();
+                    let b = self.temp();
+                    writeln!(&mut self.ir, "  {num} = call i8* @tinox_int_to_param(i64 {wide})").unwrap();
+                    writeln!(&mut self.ir, "  {a} = call i8* @tinox_string_concat(i8* {tag}, i8* {num})").unwrap();
+                    writeln!(&mut self.ir, "  {b} = call i8* @tinox_string_concat(i8* {a}, i8* {semi})").unwrap();
+                    b
+                }
+            };
+            let next = self.temp();
+            writeln!(&mut self.ir, "  {next} = call i8* @tinox_string_concat(i8* {key}, i8* {piece})").unwrap();
+            key = next;
+        }
+        let token = self.temp();
+        writeln!(&mut self.ir, "  {token} = call i64 @tinox_cache_begin(i64 {handle}, i8* {key})").unwrap();
+        let hit = self.temp();
+        writeln!(&mut self.ir, "  {hit} = icmp eq i64 {token}, 1").unwrap();
+        writeln!(&mut self.ir, "  br i1 {hit}, label %cache_hit, label %cache_miss").unwrap();
+        writeln!(&mut self.ir, "cache_hit:").unwrap();
+        let cached = self.temp();
+        writeln!(&mut self.ir, "  {cached} = call i8* @tinox_cache_value()").unwrap();
+        if ret_type == "i8*" {
+            writeln!(&mut self.ir, "  ret i8* {cached}").unwrap();
+        } else {
+            let parsed = self.temp();
+            writeln!(&mut self.ir, "  {parsed} = call i64 @tinox_string_to_int(i8* {cached})").unwrap();
+            match ret_type {
+                "i64" => writeln!(&mut self.ir, "  ret i64 {parsed}").unwrap(),
+                "i1" => {
+                    let b = self.temp();
+                    writeln!(&mut self.ir, "  {b} = icmp ne i64 {parsed}, 0").unwrap();
+                    writeln!(&mut self.ir, "  ret i1 {b}").unwrap();
+                }
+                other => {
+                    let t = self.temp();
+                    writeln!(&mut self.ir, "  {t} = trunc i64 {parsed} to {other}").unwrap();
+                    writeln!(&mut self.ir, "  ret {other} {t}").unwrap();
+                }
+            }
+        }
+        writeln!(&mut self.ir, "cache_miss:").unwrap();
+        let result = self.temp();
+        writeln!(&mut self.ir, "  {result} = call {ret_type} @{inner}({params_str})").unwrap();
+        let err = self.temp();
+        let failed = self.temp();
+        writeln!(&mut self.ir, "  {err} = load i64, i64* @__tinox_err").unwrap();
+        writeln!(&mut self.ir, "  {failed} = icmp ne i64 {err}, 0").unwrap();
+        writeln!(&mut self.ir, "  br i1 {failed}, label %cache_fail, label %cache_store").unwrap();
+        writeln!(&mut self.ir, "cache_fail:").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_cache_abort(i64 {handle}, i8* {key})").unwrap();
+        writeln!(&mut self.ir, "  ret {ret_type} {result}").unwrap();
+        writeln!(&mut self.ir, "cache_store:").unwrap();
+        if ret_type == "i8*" {
+            let is_null = self.temp();
+            writeln!(&mut self.ir, "  {is_null} = icmp eq i8* {result}, null").unwrap();
+            writeln!(&mut self.ir, "  br i1 {is_null}, label %cache_null, label %cache_put").unwrap();
+            writeln!(&mut self.ir, "cache_null:").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_cache_abort(i64 {handle}, i8* {key})").unwrap();
+            writeln!(&mut self.ir, "  ret i8* null").unwrap();
+            writeln!(&mut self.ir, "cache_put:").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_cache_store(i64 {handle}, i8* {key}, i8* {result}, i64 {token})").unwrap();
+        } else {
+            let wide = self.temp();
+            match ret_type {
+                "i1" => writeln!(&mut self.ir, "  {wide} = zext i1 {result} to i64").unwrap(),
+                "i64" => writeln!(&mut self.ir, "  {wide} = add i64 {result}, 0").unwrap(),
+                other => writeln!(&mut self.ir, "  {wide} = sext {other} {result} to i64").unwrap(),
+            }
+            let text = self.temp();
+            writeln!(&mut self.ir, "  {text} = call i8* @tinox_int_to_param(i64 {wide})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_cache_store(i64 {handle}, i8* {key}, i8* {text}, i64 {token})").unwrap();
+        }
+        writeln!(&mut self.ir, "  ret {ret_type} {result}").unwrap();
+        writeln!(&mut self.ir, "}}\n").unwrap();
+    }
+
+    /// `@CacheEvict("Class.method", ...)`: runs the real body, and only if it completed without a pending
+    /// error empties the named caches -- after the body's own `@Transactional` commit, so a reader that
+    /// reloads right after the eviction sees committed data. Loads in flight are invalidated by the eviction.
+    fn emit_evict_wrapper(&mut self, public_name: &str, ret_type: &str, params_str: &str, inner: &str, names: &[String]) {
+        writeln!(&mut self.ir, "define {ret_type} @{public_name}({params_str}) {{").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
+        let result = self.temp();
+        if ret_type == "void" {
+            writeln!(&mut self.ir, "  call void @{inner}({params_str})").unwrap();
+        } else {
+            writeln!(&mut self.ir, "  {result} = call {ret_type} @{inner}({params_str})").unwrap();
+        }
+        let err = self.temp();
+        let failed = self.temp();
+        writeln!(&mut self.ir, "  {err} = load i64, i64* @__tinox_err").unwrap();
+        writeln!(&mut self.ir, "  {failed} = icmp ne i64 {err}, 0").unwrap();
+        writeln!(&mut self.ir, "  br i1 {failed}, label %evict_skip, label %evict_run").unwrap();
+        writeln!(&mut self.ir, "evict_run:").unwrap();
+        for name in names {
+            let lit = self.make_string_const(name);
+            writeln!(&mut self.ir, "  call void @tinox_cache_evict_named(i8* {lit})").unwrap();
+        }
+        writeln!(&mut self.ir, "  br label %evict_skip").unwrap();
+        writeln!(&mut self.ir, "evict_skip:").unwrap();
+        if ret_type == "void" {
+            writeln!(&mut self.ir, "  ret void").unwrap();
+        } else {
+            writeln!(&mut self.ir, "  ret {ret_type} {result}").unwrap();
+        }
+        writeln!(&mut self.ir, "}}\n").unwrap();
     }
 
     /// Emit the auto-generated `ClassName_new(field1, field2, ...) -> i64*` function
@@ -7086,6 +7605,11 @@ tr_done_{idx}:"#).unwrap();
 
             writeln!(&mut self.ir, "define i8* @{}_toJson(i64* %self) {{", class_name).unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
+            let null_label=format!("str{}",self.strings.len());
+            self.strings.insert(null_label.clone(),"null".into());
+            writeln!(&mut self.ir,"  %json_self_null = icmp eq i64* %self, null").unwrap();
+            writeln!(&mut self.ir,"  br i1 %json_self_null, label %json_null, label %json_object").unwrap();
+            writeln!(&mut self.ir,"json_null:\n  ret i8* getelementptr ([5 x i8], [5 x i8]* @{null_label}, i64 0, i64 0)\njson_object:").unwrap();
             let builder = self.temp();
             writeln!(&mut self.ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
 
@@ -7133,7 +7657,14 @@ tr_done_{idx}:"#).unwrap();
                         writeln!(&mut self.ir, "  {str_val} = inttoptr i64 {raw} to i8*").unwrap();
                         writeln!(&mut self.ir, "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {str_val})").unwrap();
                     }
-                    "double" | "float" => {
+                    "float" => {
+                        let bits=self.temp();let value=self.temp();let dbl=self.temp();
+                        writeln!(&mut self.ir,"  {bits} = trunc i64 {raw} to i32").unwrap();
+                        writeln!(&mut self.ir,"  {value} = bitcast i32 {bits} to float").unwrap();
+                        writeln!(&mut self.ir,"  {dbl} = fpext float {value} to double").unwrap();
+                        writeln!(&mut self.ir,"  call void @jsonBuilderAddFloat(i8* {builder}, i8* {key_ptr}, double {dbl})").unwrap();
+                    }
+                    "double" => {
                         let dbl = self.temp();
                         writeln!(&mut self.ir, "  {dbl} = bitcast i64 {raw} to double").unwrap();
                         writeln!(&mut self.ir, "  call void @jsonBuilderAddFloat(i8* {builder}, i8* {key_ptr}, double {dbl})").unwrap();
@@ -7247,6 +7778,12 @@ tr_done_{idx}:"#).unwrap();
 
             writeln!(&mut self.ir, "define i64* @{}_fromJson(i64* %json_val) {{", class_name).unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
+            writeln!(&mut self.ir, "  %json_absent = icmp eq i64* %json_val, null").unwrap();
+            writeln!(&mut self.ir, "  br i1 %json_absent, label %json_null, label %json_present").unwrap();
+            writeln!(&mut self.ir, "json_null:\n  ret i64* null\njson_present:").unwrap();
+            writeln!(&mut self.ir, "  %json_kind = load i64, i64* %json_val").unwrap();
+            writeln!(&mut self.ir, "  %json_is_null = icmp eq i64 %json_kind, 0").unwrap();
+            writeln!(&mut self.ir, "  br i1 %json_is_null, label %json_null, label %json_object\njson_object:").unwrap();
             let raw  = self.temp();
             let self_ = self.temp();
             writeln!(&mut self.ir, "  {raw}   = call i8* @tinox_alloc(i64 {byte_size})").unwrap();
@@ -7309,7 +7846,15 @@ tr_done_{idx}:"#).unwrap();
                         writeln!(&mut self.ir, "  {as_i64}  = ptrtoint i8* {str_val} to i64").unwrap();
                         Some(as_i64)
                     }
-                    "double" | "float" => {
+                    "float" => {
+                        let dbl=self.temp();let value=self.temp();let bits=self.temp();let as_i64=self.temp();
+                        writeln!(&mut self.ir,"  {dbl} = call double @jsonGetFloatField(i64* %json_val, i8* {key_ptr})").unwrap();
+                        writeln!(&mut self.ir,"  {value} = fptrunc double {dbl} to float").unwrap();
+                        writeln!(&mut self.ir,"  {bits} = bitcast float {value} to i32").unwrap();
+                        writeln!(&mut self.ir,"  {as_i64} = zext i32 {bits} to i64").unwrap();
+                        Some(as_i64)
+                    }
+                    "double" => {
                         let dbl    = self.temp();
                         let as_i64 = self.temp();
                         writeln!(&mut self.ir, "  {dbl}    = call double @jsonGetFloatField(i64* %json_val, i8* {key_ptr})").unwrap();
@@ -7456,6 +8001,24 @@ tr_done_{idx}:"#).unwrap();
             }
             ExprKind::MethodCall { obj, method, args } => {
                 let fields_clone = fields.to_vec();
+                // `keys.contains(x.field)`: a runtime-sized IN list (one query for a whole batch of keys).
+                if method == "contains" && args.len() == 1 && orm_extract_field(obj, param_name, &fields_clone).is_none() {
+                    if let Some(col) = orm_extract_field(&args[0], param_name, &fields_clone) {
+                        let col = col.to_string();
+                        let is_string = fields_clone.iter().any(|f| f.column_name == col && f.field_llvm_type == "i8*" && f.enum_name.is_none());
+                        if self.orm_in.is_some() {
+                            self.orm_in_conflict = true;
+                            return None;
+                        }
+                        let (list_reg, list_ty) = self.gen_expr(obj, ctx).ok()?;
+                        if list_ty != "i64*" {
+                            return None;
+                        }
+                        self.orm_in = Some((list_reg, is_string));
+                        // The CASE makes an empty list "matches nothing" even under `!`, where a bare IN (NULL) would yield NULL.
+                        return Some((format!("(CASE WHEN {col} IN (@IN@) THEN 1 ELSE 0 END = 1)"), vec![]));
+                    }
+                }
                 if let Some(col) = orm_extract_field(obj, param_name, &fields_clone) {
                     let col = col.to_string();
                     if args.len() == 1 && matches!(method.as_str(), "startsWith" | "endsWith" | "contains") {
@@ -7583,6 +8146,7 @@ tr_done_{idx}:"#).unwrap();
     fn gen_orm_query(
         &mut self,
         chain: &OrmChain,
+        span: Span,
         ctx: &mut GenCtx,
     ) -> Result<(String, String), ErrorBag> {
         let entity = self.entity_entries.iter().find(|e| e.class_name == chain.entity_class).cloned();
@@ -7596,33 +8160,70 @@ tr_done_{idx}:"#).unwrap();
         let mut all_params: Vec<String> = Vec::new();
         let fields = entity.fields.clone();
 
+        let orm_error = |message: String| -> ErrorBag {
+            let mut bag = ErrorBag::new();
+            bag.push(Error::new(span, format!("DB::of({}): {message}", entity.class_name)));
+            bag
+        };
+        if let Some(problem) = chain.problems.first() {
+            return Err(orm_error(problem.clone()));
+        }
+        let known_fields = || fields.iter().map(|f| f.field_name.as_str()).collect::<Vec<_>>().join(", ");
+
+        self.orm_in = None;
+        self.orm_in_conflict = false;
         for (param_name, body) in &chain.filters {
             let param_name = param_name.clone();
             let body = body.clone();
             let offset = all_params.len();
-            if let Some((sql, params)) = self.lambda_to_sql_and_params(&body, &param_name, &fields, offset, ctx) {
-                where_parts.push(sql);
-                all_params.extend(params);
+            match self.lambda_to_sql_and_params(&body, &param_name, &fields, offset, ctx) {
+                Some((sql, params)) => {
+                    where_parts.push(sql);
+                    all_params.extend(params);
+                }
+                None if self.orm_in_conflict => {
+                    return Err(orm_error("a query can use list.contains(x.field) only once (the keys of one IN list are expanded at run time)".to_string()));
+                }
+                None => {
+                    return Err(orm_error(format!(
+                        "this filter cannot be translated to SQL and would silently match every row. Supported: comparing an entity field with a value (== != < <= > >=, the field is `{param_name}.<field>`; fields: {}), combined with && || !, and startsWith/endsWith/contains on a String field",
+                        known_fields()
+                    )));
+                }
             }
         }
 
-        // Build ORDER BY clause
-        let order_sql = if chain.order_by.is_empty() {
+        // ORDER BY: explicit columns first (validated), then the primary key as a tiebreaker so the
+        // order -- and therefore every page -- is deterministic.
+        let mut order_cols: Vec<String> = Vec::new();
+        for (col, desc) in &chain.order_by {
+            let Some(f) = entity.fields.iter().find(|f| f.field_name == *col) else {
+                return Err(orm_error(format!("orderBy: unknown field '{col}' (fields: {})", known_fields())));
+            };
+            order_cols.push(format!("{} {}", f.column_name, if *desc { "DESC" } else { "ASC" }));
+        }
+        let key_cols: Vec<&EntityFieldEntry> = entity.fields.iter().filter(|f| f.is_id).collect();
+        for k in &key_cols {
+            if !chain.order_by.iter().any(|(c, _)| *c == k.field_name) {
+                order_cols.push(format!("{} ASC", k.column_name));
+            }
+        }
+        if (chain.limit.is_some() || chain.offset_val.is_some()) && order_cols.is_empty() {
+            return Err(orm_error("limit/offset need a deterministic order: add orderBy(...) (this entity has no @Id to order by)".to_string()));
+        }
+        if chain.offset_val.is_some() && chain.limit.is_none() && chain.terminal != "first" {
+            return Err(orm_error("offset(...) needs limit(...): an unbounded page is not allowed".to_string()));
+        }
+        let order_sql = if order_cols.is_empty() || chain.terminal == "count" {
             String::new()
         } else {
-            let parts: Vec<String> = chain.order_by.iter().map(|(col, desc)| {
-                // Look up column name from field name
-                let col_name = entity.fields.iter()
-                    .find(|f| f.field_name == *col || f.column_name == *col)
-                    .map(|f| f.column_name.as_str())
-                    .unwrap_or(col.as_str());
-                if *desc { format!("{} DESC", col_name) } else { format!("{} ASC", col_name) }
-            }).collect();
-            format!(" ORDER BY {}", parts.join(", "))
+            format!(" ORDER BY {}", order_cols.join(", "))
         };
 
         // Build LIMIT / OFFSET
-        let limit_sql = chain.limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default();
+        // first() needs one row only.
+        let limit = chain.limit.or(if chain.terminal == "first" { Some(1) } else { None });
+        let limit_sql = limit.map(|n| format!(" LIMIT {}", n)).unwrap_or_default();
         let offset_sql = chain.offset_val.map(|n| format!(" OFFSET {}", n)).unwrap_or_default();
 
         // Build the full SQL string at compile time if possible (no runtime concatenation needed
@@ -7641,15 +8242,34 @@ tr_done_{idx}:"#).unwrap();
         let sql_label = format!("__orm_query_{}", self.strings.len());
         let sql_len = full_sql.len() + 1;
         self.strings.insert(sql_label.clone(), full_sql);
-        let sql_ptr = self.temp();
+        let mut sql_ptr = self.temp();
         writeln!(&mut self.ir, "  {sql_ptr} = getelementptr [{sql_len} x i8], [{sql_len} x i8]* @{sql_label}, i64 0, i64 0").unwrap();
 
         // Allocate params array and fill it
-        let n_params = all_params.len() as i64;
-        let params_arr = self.temp();
-        writeln!(&mut self.ir, "  {params_arr} = call i8** @tinox_params_alloc(i64 {n_params})").unwrap();
+        let n_scalar = all_params.len() as i64;
+        let mut n_params = n_scalar.to_string();
+        let mut params_arr = self.temp();
+        writeln!(&mut self.ir, "  {params_arr} = call i8** @tinox_params_alloc(i64 {n_scalar})").unwrap();
         for (i, param_reg) in all_params.iter().enumerate() {
             writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {params_arr}, i64 {i}, i8* {param_reg})").unwrap();
+        }
+        // `list.contains(x.field)`: the IN list is expanded at run time -- its placeholders follow the scalar ones.
+        if let Some((list_reg, is_string)) = self.orm_in.take() {
+            let k_slot = self.temp();
+            let in_params = self.temp();
+            let k = self.temp();
+            writeln!(&mut self.ir, "  {k_slot} = alloca i64").unwrap();
+            writeln!(&mut self.ir, "  {in_params} = call i8** @tinox_orm_in_params(i64* {list_reg}, i64 {}, i64* {k_slot})", i64::from(is_string)).unwrap();
+            writeln!(&mut self.ir, "  {k} = load i64, i64* {k_slot}").unwrap();
+            let expanded = self.temp();
+            writeln!(&mut self.ir, "  {expanded} = call i8* @tinox_orm_expand_in(i8* {sql_ptr}, i64 {}, i64 {k})", n_scalar + 1).unwrap();
+            sql_ptr = expanded;
+            let merged = self.temp();
+            writeln!(&mut self.ir, "  {merged} = call i8** @tinox_orm_params_merge(i8** {params_arr}, i64 {n_scalar}, i8** {in_params}, i64 {k})").unwrap();
+            params_arr = merged;
+            let total = self.temp();
+            writeln!(&mut self.ir, "  {total} = add i64 {n_scalar}, {k}").unwrap();
+            n_params = total;
         }
 
         // Execute query
@@ -7744,6 +8364,8 @@ tr_done_{idx}:"#).unwrap();
             None => return Ok(("0".to_string(), "i64".to_string())),
         };
         let id_slot = entity.fields.iter().position(|f| f.is_id).unwrap_or(0);
+        let n_keys = entity.fields.iter().filter(|f| f.is_id).count() as i64;
+        let composite = n_keys > 1;
 
         let (arg_val, arg_ty) = self.gen_expr(arg, ctx)?;
         let entity_ptr = if arg_ty == "i64" {
@@ -7756,6 +8378,22 @@ tr_done_{idx}:"#).unwrap();
 
         let conn_reg = self.temp();
         writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
+
+        if op == "delete" && composite {
+            // Every key component is part of the WHERE clause: unrelated rows are never touched.
+            let key_params = self.temp();
+            writeln!(&mut self.ir, "  {key_params} = call i8** @{entity_class}_toKeyParams(i64* {entity_ptr})").unwrap();
+            let sql_ptr = self.temp();
+            writeln!(&mut self.ir, "  {sql_ptr} = call i8* @{entity_class}_deleteSql()").unwrap();
+            let result_reg = self.temp();
+            writeln!(&mut self.ir, "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {key_params}, i64 {n_keys})").unwrap();
+            self.emit_orm_save_check(&result_reg, &entity.table_name);
+            writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
+            let as_i64 = self.temp();
+            writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
+            return Ok((as_i64, "i64".to_string()));
+        }
 
         if op == "delete" {
             let id_ptr = self.temp();
@@ -7776,6 +8414,59 @@ tr_done_{idx}:"#).unwrap();
             )
             .unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
+            let as_i64 = self.temp();
+            writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
+            return Ok((as_i64, "i64".to_string()));
+        }
+
+        if composite {
+            // save with a composite key: the caller supplies the key, so the row's existence
+            // decides between UPDATE and INSERT. Wrap concurrent writers in @Transactional.
+            let key_params = self.temp();
+            writeln!(&mut self.ir, "  {key_params} = call i8** @{entity_class}_toKeyParams(i64* {entity_ptr})").unwrap();
+            let exists_sql = self.temp();
+            writeln!(&mut self.ir, "  {exists_sql} = call i8* @{entity_class}_existsSql()").unwrap();
+            let exists_res = self.temp();
+            writeln!(&mut self.ir, "  {exists_res} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {exists_sql}, i8** {key_params}, i64 {n_keys})").unwrap();
+            self.emit_orm_save_check(&exists_res, &entity.table_name);
+            let nrows = self.temp();
+            writeln!(&mut self.ir, "  {nrows} = call i64 @tinox_db_nrows(i8* {exists_res})").unwrap();
+            writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {exists_res})").unwrap();
+            let present = self.temp();
+            writeln!(&mut self.ir, "  {present} = icmp sgt i64 {nrows}, 0").unwrap();
+            let insert_bb = self.new_bb("orm_save_insert");
+            let update_bb = self.new_bb("orm_save_update");
+            let done_bb = self.new_bb("orm_save_done");
+            writeln!(&mut self.ir, "  br i1 {present}, label %{update_bb}, label %{insert_bb}").unwrap();
+
+            writeln!(&mut self.ir, "{insert_bb}:").unwrap();
+            let n_ins = entity.fields.iter().filter(|f| !f.is_generated).count() as i64;
+            let out_n = self.temp();
+            writeln!(&mut self.ir, "  {out_n} = alloca i64").unwrap();
+            let ins_params = self.temp();
+            writeln!(&mut self.ir, "  {ins_params} = call i8** @{entity_class}_toParams(i64* {entity_ptr}, i64* {out_n})").unwrap();
+            let ins_sql = self.temp();
+            writeln!(&mut self.ir, "  {ins_sql} = call i8* @{entity_class}_insertSql()").unwrap();
+            let ins_result = self.temp();
+            writeln!(&mut self.ir, "  {ins_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {ins_sql}, i8** {ins_params}, i64 {n_ins})").unwrap();
+            self.emit_orm_save_check(&ins_result, &entity.table_name);
+            writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {ins_result})").unwrap();
+            writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
+
+            writeln!(&mut self.ir, "{update_bb}:").unwrap();
+            let n_upd = entity.fields.len() as i64;
+            let upd_params = self.temp();
+            writeln!(&mut self.ir, "  {upd_params} = call i8** @{entity_class}_toUpdateParams(i64* {entity_ptr})").unwrap();
+            let upd_sql = self.temp();
+            writeln!(&mut self.ir, "  {upd_sql} = call i8* @{entity_class}_updateSql()").unwrap();
+            let upd_result = self.temp();
+            writeln!(&mut self.ir, "  {upd_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {upd_sql}, i8** {upd_params}, i64 {n_upd})").unwrap();
+            self.emit_orm_save_check(&upd_result, &entity.table_name);
+            writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {upd_result})").unwrap();
+            writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
+
+            writeln!(&mut self.ir, "{done_bb}:").unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
             let as_i64 = self.temp();
             writeln!(&mut self.ir, "  {as_i64} = ptrtoint i64* {entity_ptr} to i64").unwrap();
@@ -7981,27 +8672,45 @@ tr_done_{idx}:"#).unwrap();
             let ins_fields: Vec<&EntityFieldEntry> = fields.iter().filter(|f| !f.is_generated).collect();
             let ins_cols: Vec<&str> = ins_fields.iter().map(|f| f.column_name.as_str()).collect();
             let ins_phs: Vec<String> = (1..=ins_fields.len()).map(|i| format!("${i}")).collect();
+            let id_fields: Vec<&EntityFieldEntry> = fields.iter().filter(|f| f.is_id).collect();
+            // A composite key is supplied by the caller, so there is no generated id to read back.
+            let composite = id_fields.len() > 1;
             let insert_sql = format!(
-                "INSERT INTO {table} ({}) VALUES ({}) RETURNING id",
+                "INSERT INTO {table} ({}) VALUES ({}){}",
                 ins_cols.join(", "),
-                ins_phs.join(", ")
+                ins_phs.join(", "),
+                if composite { "" } else { " RETURNING id" }
             );
             self.emit_sql_const_fn(&format!("{cn}_insertSql"), &insert_sql);
 
-            // UPDATE sql (non-id fields in SET, id field in WHERE)
-            let id_col = fields.iter().find(|f| f.is_id).map(|f| f.column_name.clone()).unwrap_or_else(|| "id".to_string());
+            // UPDATE sql (non-id fields in SET, every id field in WHERE)
             let non_id: Vec<&EntityFieldEntry> = fields.iter().filter(|f| !f.is_id).collect();
             let set_clauses: Vec<String> = non_id.iter().enumerate().map(|(i, f)| format!("{} = ${}", f.column_name, i + 1)).collect();
+            let key_where = |first: usize| -> String {
+                if id_fields.is_empty() {
+                    return format!("id = ${first}");
+                }
+                id_fields.iter().enumerate()
+                    .map(|(i, f)| format!("{} = ${}", f.column_name, first + i))
+                    .collect::<Vec<_>>()
+                    .join(" AND ")
+            };
             let update_sql = format!(
-                "UPDATE {table} SET {} WHERE {id_col} = ${}",
+                "UPDATE {table} SET {} WHERE {}",
                 set_clauses.join(", "),
-                non_id.len() + 1
+                key_where(non_id.len() + 1)
             );
             self.emit_sql_const_fn(&format!("{cn}_updateSql"), &update_sql);
 
             // DELETE sql
-            let delete_sql = format!("DELETE FROM {table} WHERE {id_col} = $1");
+            let delete_sql = format!("DELETE FROM {table} WHERE {}", key_where(1));
             self.emit_sql_const_fn(&format!("{cn}_deleteSql"), &delete_sql);
+
+            if composite {
+                let exists_sql = format!("SELECT 1 FROM {table} WHERE {}", key_where(1));
+                self.emit_sql_const_fn(&format!("{cn}_existsSql"), &exists_sql);
+                self.emit_entity_to_key_params(&cn, &fields);
+            }
 
             // fromRow and toParams
             self.emit_entity_from_row(&cn, &fields);
@@ -8130,6 +8839,39 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir).unwrap();
     }
 
+    /// The `i8*` bind-parameter string for one entity field value (enum name, string, or int).
+    fn entity_param_string(&mut self, field: &EntityFieldEntry, fval: &str) -> String {
+        let s = self.temp();
+        if let Some(enum_name) = field.enum_name.as_deref() {
+            writeln!(&mut self.ir, "  {s} = call i8* @{}{enum_name}_name(i64 {fval})", tinox_parser::ENUM_HELPER_PREFIX).unwrap();
+        } else if field.field_llvm_type == "i8*" {
+            writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
+        } else {
+            writeln!(&mut self.ir, "  {s} = call i8* @tinox_int_to_param(i64 {fval})").unwrap();
+        }
+        s
+    }
+
+    /// Composite keys: the bind parameters of every @Id field, in declaration order.
+    fn emit_entity_to_key_params(&mut self, class_name: &str, fields: &[EntityFieldEntry]) {
+        let id_fields: Vec<(usize, &EntityFieldEntry)> = fields.iter().enumerate().filter(|(_, f)| f.is_id).collect();
+        writeln!(&mut self.ir, "define i8** @{class_name}_toKeyParams(i64* %entity) {{").unwrap();
+        writeln!(&mut self.ir, "entry.tnx:").unwrap();
+        let arr = self.temp();
+        writeln!(&mut self.ir, "  {arr} = call i8** @tinox_params_alloc(i64 {})", id_fields.len()).unwrap();
+        for (key_idx, (slot_idx, field)) in id_fields.iter().enumerate() {
+            let fptr = self.temp();
+            let fval = self.temp();
+            writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
+            writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
+            let pstr = self.entity_param_string(field, &fval);
+            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {key_idx}, i8* {pstr})").unwrap();
+        }
+        writeln!(&mut self.ir, "  ret i8** {arr}").unwrap();
+        writeln!(&mut self.ir, "}}").unwrap();
+        writeln!(&mut self.ir).unwrap();
+    }
+
     /// UPDATE variant of `emit_entity_to_params`: non-id fields (in field order,
     /// matching `SET col = $1, ...`), then the @Id field's current value last
     /// (matching the `WHERE id = $N` placeholder in `{class}_updateSql`).
@@ -8138,8 +8880,8 @@ tr_done_{idx}:"#).unwrap();
             .enumerate()
             .filter(|(_, f)| !f.is_id)
             .collect();
-        let id_field = fields.iter().enumerate().find(|(_, f)| f.is_id);
-        let n = non_id.len() + if id_field.is_some() { 1 } else { 0 };
+        let id_fields: Vec<(usize, &EntityFieldEntry)> = fields.iter().enumerate().filter(|(_, f)| f.is_id).collect();
+        let n = non_id.len() + id_fields.len();
         writeln!(&mut self.ir, "define i8** @{class_name}_toUpdateParams(i64* %entity) {{").unwrap();
         writeln!(&mut self.ir, "entry.tnx:").unwrap();
         let arr = self.temp();
@@ -8164,59 +8906,108 @@ tr_done_{idx}:"#).unwrap();
             };
             writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {param_idx}, i8* {pstr})").unwrap();
         }
-        if let Some((slot_idx, field)) = id_field {
+        for (key_idx, (slot_idx, field)) in id_fields.iter().enumerate() {
             let fptr = self.temp();
             let fval = self.temp();
             writeln!(&mut self.ir, "  {fptr} = getelementptr i64, i64* %entity, i64 {slot_idx}").unwrap();
             writeln!(&mut self.ir, "  {fval} = load i64, i64* {fptr}").unwrap();
-            let pstr = if let Some(enum_name) = field.enum_name.as_deref() {
-                let s = self.temp();
-                writeln!(&mut self.ir, "  {s} = call i8* @{}{enum_name}_name(i64 {fval})", tinox_parser::ENUM_HELPER_PREFIX).unwrap();
-                s
-            } else if field.field_llvm_type == "i8*" {
-                let s = self.temp();
-                writeln!(&mut self.ir, "  {s} = inttoptr i64 {fval} to i8*").unwrap();
-                s
-            } else {
-                let s = self.temp();
-                writeln!(&mut self.ir, "  {s} = call i8* @tinox_int_to_param(i64 {fval})").unwrap();
-                s
-            };
-            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {non_id_len}, i8* {pstr})", non_id_len = non_id.len()).unwrap();
+            let pstr = self.entity_param_string(field, &fval);
+            writeln!(&mut self.ir, "  call void @tinox_params_set(i8** {arr}, i64 {}, i8* {pstr})", non_id.len() + key_idx).unwrap();
         }
         writeln!(&mut self.ir, "  ret i8** {arr}").unwrap();
         writeln!(&mut self.ir, "}}").unwrap();
         writeln!(&mut self.ir).unwrap();
     }
 
-    /// Emit `tinox_main` for a single test method: allocate object, call method,
-    /// exit 0 on true/non-zero return, 1 on false/0.
+    /// Dispatch one selected test per process, sharing compilation across the file.
     fn emit_test_code(&mut self) {
-        let (class, method) = match self.test_entry.clone() {
-            Some(e) if !self.has_main => e,
-            _ => return,
-        };
-
-        let layout = self.struct_layouts.get(&class).cloned().unwrap_or_default();
-        let n_fields = layout.len();
-        let byte_size = (n_fields * 8).max(8);
-
+        if self.test_entries.is_empty() || self.has_main {
+            return;
+        }
+        let selector = self.make_string_const("--tinox-test-index");
         let mut b = String::new();
         writeln!(&mut b, "define i64 @tinox_main() {{").unwrap();
-        writeln!(&mut b, "  %raw = call i8* @tinox_alloc(i64 {byte_size})").unwrap();
-        writeln!(&mut b, "  %obj = bitcast i8* %raw to i64*").unwrap();
-        for fi in 0..n_fields {
-            writeln!(&mut b, "  %zi{fi} = getelementptr i64, i64* %obj, i64 {fi}").unwrap();
-            writeln!(&mut b, "  store i64 0, i64* %zi{fi}").unwrap();
+        writeln!(&mut b, "  %index_slot = alloca i64").unwrap();
+        writeln!(&mut b, "  %argument = call i8* @tinox_cli_get_string(i8* {selector}, i8* null)").unwrap();
+        writeln!(&mut b, "  %parsed = call i32 @tinox_parse_int_checked(i8* %argument, i64* %index_slot)").unwrap();
+        writeln!(&mut b, "  %valid = icmp ne i32 %parsed, 0").unwrap();
+        writeln!(&mut b, "  br i1 %valid, label %dispatch, label %invalid").unwrap();
+        writeln!(&mut b, "dispatch:").unwrap();
+        writeln!(&mut b, "  %index = load i64, i64* %index_slot").unwrap();
+        writeln!(&mut b, "  switch i64 %index, label %invalid [").unwrap();
+        for index in 0..self.test_entries.len() {
+            writeln!(&mut b, "    i64 {index}, label %test{index}").unwrap();
         }
-        // @Test methods return Bool (i1) — calling them as i64 reads garbage
-        // in the upper bits and turned failing tests into passes.
-        writeln!(&mut b, "  %result = call i1 @{class}_{method}(i64* %obj)").unwrap();
-        writeln!(&mut b, "  %code = select i1 %result, i64 0, i64 1").unwrap();
-        writeln!(&mut b, "  ret i64 %code").unwrap();
-        writeln!(&mut b, "}}").unwrap();
-        writeln!(&mut b).unwrap();
-
+        writeln!(&mut b, "  ]").unwrap();
+        writeln!(&mut b, "invalid:").unwrap();
+        writeln!(&mut b, "  ret i64 2").unwrap();
+        let entries = self.test_entries.clone();
+        for (index, entry) in entries.iter().enumerate() {
+            let (class, method) = (&entry.class, &entry.method);
+            let n_fields = self.struct_layouts.get(class).map_or(0, Vec::len);
+            let byte_size = (n_fields * 8).max(8);
+            writeln!(&mut b, "test{index}:").unwrap();
+            writeln!(&mut b, "  %raw{index} = call i8* @tinox_alloc(i64 {byte_size})").unwrap();
+            writeln!(&mut b, "  %obj{index} = bitcast i8* %raw{index} to i64*").unwrap();
+            for fi in 0..n_fields {
+                writeln!(&mut b, "  %zi{index}_{fi} = getelementptr i64, i64* %obj{index}, i64 {fi}").unwrap();
+                writeln!(&mut b, "  store i64 0, i64* %zi{index}_{fi}").unwrap();
+            }
+            writeln!(&mut b, "  %code{index} = alloca i64").unwrap();
+            writeln!(&mut b, "  store i64 1, i64* %code{index}").unwrap();
+            // Setup: a throwing @BeforeEach skips the test body but not teardown.
+            for (h, hook) in entry.before.iter().enumerate() {
+                writeln!(&mut b, "  call void @{class}_{hook}(i64* %obj{index})").unwrap();
+                writeln!(&mut b, "  %be{index}_{h} = load i64, i64* @__tinox_err").unwrap();
+                writeln!(&mut b, "  %bad{index}_{h} = icmp ne i64 %be{index}_{h}, 0").unwrap();
+                writeln!(&mut b, "  br i1 %bad{index}_{h}, label %after{index}, label %next{index}_{h}").unwrap();
+                writeln!(&mut b, "next{index}_{h}:").unwrap();
+            }
+            let mut call_args = format!("i64* %obj{index}");
+            for arg in &entry.args {
+                match arg {
+                    TestArg::Int(v) => call_args.push_str(&format!(", i64 {v}")),
+                    TestArg::Float(v) => call_args.push_str(&format!(", double {:e}", v)),
+                    TestArg::Bool(v) => call_args.push_str(&format!(", i1 {}", if *v { 1 } else { 0 })),
+                    TestArg::Str(v) => {
+                        let c = self.make_string_const(v);
+                        call_args.push_str(&format!(", i8* {c}"));
+                    }
+                }
+            }
+            // @Test returns Bool (i1); widening its call ABI would read garbage.
+            writeln!(&mut b, "  %result{index} = call i1 @{class}_{method}({call_args})").unwrap();
+            writeln!(&mut b, "  %rcode{index} = select i1 %result{index}, i64 0, i64 1").unwrap();
+            writeln!(&mut b, "  store i64 %rcode{index}, i64* %code{index}").unwrap();
+            writeln!(&mut b, "  br label %after{index}").unwrap();
+            // Teardown always runs; the test's pending error is parked so the hook's own
+            // post-call error checks do not return early, then restored.
+            writeln!(&mut b, "after{index}:").unwrap();
+            writeln!(&mut b, "  %saved{index} = load i64, i64* @__tinox_err").unwrap();
+            writeln!(&mut b, "  store i64 0, i64* @__tinox_err").unwrap();
+            writeln!(&mut b, "  %hookfail{index} = alloca i64").unwrap();
+            writeln!(&mut b, "  store i64 0, i64* %hookfail{index}").unwrap();
+            for (h, hook) in entry.after.iter().enumerate() {
+                writeln!(&mut b, "  call void @{class}_{hook}(i64* %obj{index})").unwrap();
+                writeln!(&mut b, "  %ae{index}_{h} = load i64, i64* @__tinox_err").unwrap();
+                writeln!(&mut b, "  %af{index}_{h} = icmp ne i64 %ae{index}_{h}, 0").unwrap();
+                writeln!(&mut b, "  %av{index}_{h} = zext i1 %af{index}_{h} to i64").unwrap();
+                writeln!(&mut b, "  %ao{index}_{h} = load i64, i64* %hookfail{index}").unwrap();
+                writeln!(&mut b, "  %an{index}_{h} = or i64 %ao{index}_{h}, %av{index}_{h}").unwrap();
+                writeln!(&mut b, "  store i64 %an{index}_{h}, i64* %hookfail{index}").unwrap();
+                writeln!(&mut b, "  store i64 0, i64* @__tinox_err").unwrap();
+            }
+            writeln!(&mut b, "  %sf{index} = icmp ne i64 %saved{index}, 0").unwrap();
+            writeln!(&mut b, "  %sv{index} = zext i1 %sf{index} to i64").unwrap();
+            writeln!(&mut b, "  %hf{index} = load i64, i64* %hookfail{index}").unwrap();
+            writeln!(&mut b, "  %cd{index} = load i64, i64* %code{index}").unwrap();
+            writeln!(&mut b, "  %m1{index} = or i64 %sv{index}, %hf{index}").unwrap();
+            writeln!(&mut b, "  %m2{index} = or i64 %m1{index}, %cd{index}").unwrap();
+            writeln!(&mut b, "  %fail{index} = icmp ne i64 %m2{index}, 0").unwrap();
+            writeln!(&mut b, "  %final{index} = select i1 %fail{index}, i64 1, i64 0").unwrap();
+            writeln!(&mut b, "  ret i64 %final{index}").unwrap();
+        }
+        writeln!(&mut b, "}}\n").unwrap();
         self.lambda_ir.push_str(&b);
         self.has_main = true;
     }
@@ -8511,6 +9302,7 @@ tr_done_{idx}:"#).unwrap();
                     name,
                     ty,
                     line: stmt.span.start.line,
+                    column: stmt.span.start.column.max(1),
                 });
             }
         }
@@ -8526,6 +9318,11 @@ tr_done_{idx}:"#).unwrap();
                 return Ok(());
             }
             StmtKind::Block(stmts) => {
+                // Lexical block for the debugger (issue #556): markers `attach_dbg` turns into a
+                // `DILexicalBlock` whose range is the instructions generated in between.
+                self.dbg_block_seq += 1;
+                let block_id = self.dbg_block_seq;
+                writeln!(&mut self.ir, "; @tnxscope begin {} {} {}", block_id, stmt.span.start.line, stmt.span.start.column.max(1)).unwrap();
                 if !ctx.in_defer_exec {
                     ctx.defer_stack.push(Vec::new());
                 }
@@ -8547,6 +9344,7 @@ tr_done_{idx}:"#).unwrap();
                     self.gen_defer_scope(ctx)?;
                     ctx.defer_stack.pop();
                 }
+                writeln!(&mut self.ir, "; @tnxscope end {}", block_id).unwrap();
                 return Ok(());
             }
             StmtKind::Return(Some(expr)) => {
@@ -9250,6 +10048,13 @@ tr_done_{idx}:"#).unwrap();
                 let update_bb = self.new_bb("forupdate");
                 let end_bb = self.new_bb("forend");
 
+                let old_break = ctx.break_target.take();
+                let old_continue = ctx.continue_target.take();
+                ctx.break_target = Some(end_bb.clone());
+                ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
+                ctx.continue_target = Some(update_bb.clone());
+                ctx.loop_finally_depth.insert(update_bb.clone(), ctx.finally_targets.len());
+
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", loop_bb).unwrap();
 
@@ -9281,6 +10086,9 @@ tr_done_{idx}:"#).unwrap();
                 writeln!(&mut self.ir, "br label %{}", loop_bb).unwrap();
 
                 writeln!(&mut self.ir, "{}:", end_bb).unwrap();
+
+                ctx.break_target = old_break;
+                ctx.continue_target = old_continue;
             }
             StmtKind::Break => {
                 if let Some(ref break_bb) = ctx.break_target.clone() {
@@ -9293,6 +10101,20 @@ tr_done_{idx}:"#).unwrap();
                 }
             }
             StmtKind::Throw(expr) => {
+                // Typed error (#524): throw the stage-1 text "CODE: message".
+                let typed = self
+                    .infer_struct_type(expr, ctx)
+                    .and_then(|c| self.error_class_codes.get(&c).cloned())
+                    .map(|code| {
+                        let synth = |node: ExprKind| tinox_parser::Expr { node, span: expr.span, id: 0, file: expr.file.clone() };
+                        let msg = synth(ExprKind::FieldAccess { obj: Box::new(expr.clone()), field: "message".to_string() });
+                        synth(ExprKind::Binary {
+                            op: BinaryOp::Add,
+                            lhs: Box::new(synth(ExprKind::Literal(Literal::String(format!("{code}: "))))),
+                            rhs: Box::new(msg),
+                        })
+                    });
+                let expr = typed.as_ref().unwrap_or(expr);
                 let (val, val_ty) = self.gen_expr(expr, ctx)?;
                 let store_val = if val_ty == "double" || val_ty == "float" {
                     let cast = self.temp();
@@ -9424,14 +10246,15 @@ tr_done_{idx}:"#).unwrap();
 
                 let cond_bb = self.new_bb("for_cond");
                 let body_bb = self.new_bb("for_body");
+                let advance_bb = self.new_bb("for_advance");
                 let end_bb = self.new_bb("for_end");
 
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
                 ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
-                ctx.continue_target = Some(cond_bb.clone());
-                ctx.loop_finally_depth.insert(cond_bb.clone(), ctx.finally_targets.len());
+                ctx.continue_target = Some(advance_bb.clone());
+                ctx.loop_finally_depth.insert(advance_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
@@ -9480,7 +10303,9 @@ tr_done_{idx}:"#).unwrap();
                     writeln!(&mut self.ir, "store i64 {}, i64* %{}", ext, var_slot).unwrap();
                 }
                 self.gen_stmt_body(body, ctx)?;
+                writeln!(&mut self.ir, "br label %{}", advance_bb).unwrap();
 
+                writeln!(&mut self.ir, "{}:", advance_bb).unwrap();
                 let next_idx = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* %{}", next_idx, idx_slot).unwrap();
                 let inc = self.temp();
@@ -9712,6 +10537,43 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
+    /// Shared lowering keeps the direct builtin and instance call identical.
+    fn gen_string_index_of(&mut self, obj_ptr: &str, args: &[tinox_parser::Expr], ctx: &mut GenCtx) -> Result<(String, String), ErrorBag> {
+        let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
+        let arg_str = if arg_ty == "i8*" { arg.clone() } else {
+            let c = self.temp();
+            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, arg).unwrap();
+            c
+        };
+        let result = self.temp();
+        if let Some(from) = args.get(1) {
+            let unsigned = self.semantic_type(from.id).is_some_and(|ty| ty.is_unsigned());
+            let (from, from_ty) = self.gen_expr(from, ctx)?;
+            let from = if unsigned && from_ty != "i64" {
+                let wide = self.temp();
+                writeln!(&mut self.ir, "{} = zext {} {} to i64", wide, from_ty, from).unwrap();
+                wide
+            } else {
+                self.coerce_to_i64(&from, &from_ty)
+            };
+            // The runtime accepts signed offsets. Saturate
+            // UInt64 values above INT64_MAX to an offset
+            // beyond any addressable string, never to zero.
+            let from = if unsigned && from_ty == "i64" {
+                let large = self.temp();
+                let bounded = self.temp();
+                writeln!(&mut self.ir, "{} = icmp ugt i64 {}, 9223372036854775807", large, from).unwrap();
+                writeln!(&mut self.ir, "{} = select i1 {}, i64 9223372036854775807, i64 {}", bounded, large, from).unwrap();
+                bounded
+            } else { from };
+            writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of_from(i8* {}, i8* {}, i64 {})", result, obj_ptr, arg_str, from).unwrap();
+        } else {
+            writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, obj_ptr, arg_str).unwrap();
+        }
+        Ok((result, "i64".to_string()))
+    }
+
+
     /// Issue 71 — sub-statement throw granularity: a compound expression like
     /// `a() + b()` used to run `b()` even after `a()` already threw, because the
     /// only unwind check ran at the NEXT STATEMENT boundary (`emit_post_stmt_
@@ -9854,6 +10716,28 @@ tr_done_{idx}:"#).unwrap();
                     let (r, rt) = self.convert_semantic_argument(r, rt, &expected, rhs)?;
                     (l, lt, r, rt)
                 } else { (l, lt, r, rt) };
+                // Differently sized integer scalars (a Bool `i1` against an
+                // `i64` list element, #580) are widened to the larger type
+                // so the instruction below sees one operand type.
+                let int_bits = |t: &str| -> Option<u32> {
+                    t.strip_prefix('i').filter(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())).and_then(|rest| rest.parse().ok())
+                };
+                let (l, lt, r, rt) = match (int_bits(&lt), int_bits(&rt)) {
+                    (Some(lb), Some(rb)) if lb != rb => {
+                        let wide = if lb > rb { lt.clone() } else { rt.clone() };
+                        let widen = |this: &mut Self, v: String, t: String, bits: u32| -> String {
+                            if t == wide { return v; }
+                            let c = this.temp();
+                            let op = if bits == 1 { "zext" } else { "sext" };
+                            writeln!(&mut this.ir, "{} = {} {} {} to {}", c, op, t, v, wide).unwrap();
+                            c
+                        };
+                        let l2 = widen(self, l, lt, lb);
+                        let r2 = widen(self, r, rt, rb);
+                        (l2, wide.clone(), r2, wide)
+                    }
+                    _ => (l, lt, r, rt),
+                };
                 match op {
                     tinox_parser::BinaryOp::Add => {
                         if lt == "i8*" || rt == "i8*" || lt == "i64*" || rt == "i64*" {
@@ -10136,6 +11020,10 @@ tr_done_{idx}:"#).unwrap();
                 // `scope { }`, issue #301): spawn, hand the task to the
                 // scope, and yield the task handle unchanged.
                 if let ExprKind::Ident(name) = &func.node {
+                    if name == "String_indexOf" && (2..=3).contains(&args.len()) {
+                        let (haystack, _) = self.gen_expr(&args[0], ctx)?;
+                        return self.gen_string_index_of(&haystack, &args[1..], ctx);
+                    }
                     if name == "__scope_register" && args.len() == 2 {
                         let (scope, scope_ty) = self.gen_expr(&args[0], ctx)?;
                         let scope = self.coerce_to_i64(&scope, &scope_ty);
@@ -10250,7 +11138,8 @@ tr_done_{idx}:"#).unwrap();
                             let fail_bb = self.new_bb("assert_fail");
                             writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", cond, ok_bb, fail_bb).unwrap();
                             writeln!(&mut self.ir, "{}:", fail_bb).unwrap();
-                            writeln!(&mut self.ir, "call void @tinox_panic(i64 1)").unwrap();
+                            let message = self.make_string_const("assertion failed");
+                            writeln!(&mut self.ir, "call void @tinox_panic(i8* {})", message).unwrap();
                             writeln!(&mut self.ir, "unreachable").unwrap();
                             writeln!(&mut self.ir, "{}:", ok_bb).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));
@@ -10419,6 +11308,11 @@ tr_done_{idx}:"#).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call double @{}()", result, name).unwrap();
                             return Ok((result, "double".to_string()));
+                        }
+                        "String_chars" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_string_chars(i8* {})", result, arg_vals[0]).unwrap();
+                            return Ok((result, "i64*".to_string()));
                         }
                         "charAt" => {
                             let (ptr, _) = self.gen_expr(&args[0], ctx)?;
@@ -10973,7 +11867,7 @@ tr_done_{idx}:"#).unwrap();
                     if let Some(chain) = try_extract_orm_chain(obj, method.as_str()) {
                         if self.entity_entries.iter().any(|e| e.class_name == chain.entity_class) {
                             let chain = chain.clone();
-                            return self.gen_orm_query(&chain, ctx);
+                            return self.gen_orm_query(&chain, expr.span, ctx);
                         }
                     }
                 }
@@ -11418,11 +12312,16 @@ tr_done_{idx}:"#).unwrap();
                 let str_methods = ["len","toUpper","toUpperCase","toLower","toLowerCase",
                     "trim","contains","startsWith","endsWith","split","substring","indexOf",
                     "replace","toString","toInt","toFloat","isInt","isFloat","toBool","repeat","padLeft","padRight",
-                    "count","charAt","toInt64","toFloat64","toBytes","fromBytes","format","encode",
+                    "count","charAt","chars","toInt64","toFloat64","toBytes","fromBytes","format","encode",
                     "decode","hash","md5","sha256","base64Encode","base64Decode","urlEncode",
                     "urlDecode","isNumeric","isEmpty","isBlank","lines","words","reverse",
                     "truncate","ellipsis","mask","redact","normalize"];
-                let is_str_method = str_methods.contains(&method.as_str());
+                // A method declared by the receiver's own class always wins over a
+                // builtin of the same name (user `contains` on a class, #576).
+                let user_class_method = declared_type.as_deref().is_some_and(|cn| {
+                    self.struct_layouts.contains_key(cn) && self.method_ret_types.contains_key(&format!("{}_{}", cn, method))
+                });
+                let is_str_method = str_methods.contains(&method.as_str()) && !user_class_method;
                 let (obj_ptr, obj_ty) = if obj_ty == "i64" && is_str_method {
                     let s = self.temp();
                     writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", s, obj_ptr).unwrap();
@@ -11430,7 +12329,7 @@ tr_done_{idx}:"#).unwrap();
                 } else {
                     (obj_ptr, obj_ty)
                 };
-                if obj_ty == "i8*" {
+                if obj_ty == "i8*" && !user_class_method {
                     match method.as_str() {
                         "len" => {
                             let result = self.temp();
@@ -11492,15 +12391,7 @@ tr_done_{idx}:"#).unwrap();
                             return Ok((result, "i1".to_string()));
                         }
                         "indexOf" => {
-                            let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
-                            let arg_str = if arg_ty == "i8*" { arg.clone() } else {
-                                let c = self.temp();
-                                writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", c, arg).unwrap();
-                                c
-                            };
-                            let result = self.temp();
-                            writeln!(&mut self.ir, "{} = call i64 @tinox_string_index_of(i8* {}, i8* {})", result, obj_ptr, arg_str).unwrap();
-                            return Ok((result, "i64".to_string()));
+                            return self.gen_string_index_of(&obj_ptr, args, ctx);
                         }
                         "lastIndexOf" => {
                             let (arg, arg_ty) = self.gen_expr(&args[0], ctx)?;
@@ -11517,6 +12408,11 @@ tr_done_{idx}:"#).unwrap();
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i8* @tinox_string_reverse(i8* {})", result, obj_ptr).unwrap();
                             return Ok((result, "i8*".to_string()));
+                        }
+                        "chars" => {
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i64* @tinox_string_chars(i8* {})", result, obj_ptr).unwrap();
+                            return Ok((result, "i64*".to_string()));
                         }
                         "charAt" => {
                             let (arg, _) = self.gen_expr(&args[0], ctx)?;
@@ -12363,6 +13259,22 @@ tr_done_{idx}:"#).unwrap();
                         writeln!(&mut self.ir,
                             "{} = getelementptr i64, ptr {}, i64 {}",
                             field_ptr, typed_ptr, field_idx).unwrap();
+                        // Absent key: keep the field's declared default, or fail startup visibly
+                        // when there is none (never a silent 0/""/false).
+                        let present = self.temp();
+                        writeln!(&mut self.ir, "{} = call i64 @tinox_config_present(i8* {})", present, key_ptr).unwrap();
+                        let has = self.temp();
+                        writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", has, present).unwrap();
+                        let set_bb = self.new_bb("cfg_set");
+                        let miss_bb = self.new_bb("cfg_missing");
+                        let done_bb = self.new_bb("cfg_done");
+                        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", has, set_bb, miss_bb).unwrap();
+                        writeln!(&mut self.ir, "{}:", miss_bb).unwrap();
+                        if !cf.has_default {
+                            writeln!(&mut self.ir, "call void @tinox_config_missing(i8* {})", key_ptr).unwrap();
+                        }
+                        writeln!(&mut self.ir, "br label %{}", done_bb).unwrap();
+                        writeln!(&mut self.ir, "{}:", set_bb).unwrap();
                         match cf.field_llvm_type.as_str() {
                             "i8*" => {
                                 let raw = self.temp();
@@ -12388,6 +13300,8 @@ tr_done_{idx}:"#).unwrap();
                                 writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
                             }
                         }
+                        writeln!(&mut self.ir, "br label %{}", done_bb).unwrap();
+                        writeln!(&mut self.ir, "{}:", done_bb).unwrap();
                     }
                 }
 
@@ -12457,6 +13371,12 @@ tr_done_{idx}:"#).unwrap();
                 type_args,
                 args,
             } => {
+                if enum_name == "String" && variant == "chars" {
+                    let (ptr, _) = self.gen_expr(&args[0], ctx)?;
+                    let result = self.temp();
+                    writeln!(&mut self.ir, "{} = call i64* @tinox_string_chars(i8* {})", result, ptr).unwrap();
+                    return Ok((result, "i64*".to_string()));
+                }
                 // `DB::raw(sql, params)` — raw-SQL escape hatch, hangs
                 // directly off `DB` (no `DB::of(...)` chain to unwind).
                 // It has real static types (String / List<String> ->
@@ -13348,14 +14268,15 @@ tr_done_{idx}:"#).unwrap();
 
                 let cond_bb = self.new_bb("for_cond");
                 let body_bb = self.new_bb("for_body");
+                let advance_bb = self.new_bb("for_advance");
                 let end_bb = self.new_bb("for_end");
 
                 let old_break = ctx.break_target.take();
                 let old_continue = ctx.continue_target.take();
                 ctx.break_target = Some(end_bb.clone());
                 ctx.loop_finally_depth.insert(end_bb.clone(), ctx.finally_targets.len());
-                ctx.continue_target = Some(cond_bb.clone());
-                ctx.loop_finally_depth.insert(cond_bb.clone(), ctx.finally_targets.len());
+                ctx.continue_target = Some(advance_bb.clone());
+                ctx.loop_finally_depth.insert(advance_bb.clone(), ctx.finally_targets.len());
 
                 writeln!(&mut self.ir, "br label %{}", cond_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", cond_bb).unwrap();
@@ -13373,7 +14294,9 @@ tr_done_{idx}:"#).unwrap();
 
                 writeln!(&mut self.ir, "{}:", body_bb).unwrap();
                 self.gen_expr(body, ctx)?;
+                writeln!(&mut self.ir, "br label %{}", advance_bb).unwrap();
 
+                writeln!(&mut self.ir, "{}:", advance_bb).unwrap();
                 let loaded_inc = self.temp();
                 writeln!(&mut self.ir, "{} = load i64, i64* %{}", loaded_inc, var).unwrap();
                 let next_val = self.temp();
@@ -13614,28 +14537,7 @@ tr_done_{idx}:"#).unwrap();
                 let (val, val_ty) = self.gen_expr(value, ctx)?;
                 let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val, val_ty, &expected, value)? } else { (val, val_ty) };
                 if let ExprKind::FieldAccess { obj, field } = &target.node {
-                    let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
-                    let obj_ptr = if obj_ty == "i64" {
-                        let cast = self.temp();
-                        writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", cast, obj_raw).unwrap();
-                        cast
-                    } else {
-                        obj_raw
-                    };
-                    let struct_name = self.infer_struct_type(obj, ctx)
-                        .or_else(|| if matches!(&obj.node, ExprKind::This) { ctx.current_struct.clone() } else { None });
-                    let offset = struct_name.as_deref()
-                        .and_then(|sn| self.struct_layouts.get(sn))
-                        .and_then(|fields| fields.iter().position(|f| f == field.as_str()))
-                        .unwrap_or(0) as i64;
-                    let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val.clone(), val_ty.clone(), &expected, value)? } else { (val.clone(), val_ty.clone()) };
-                    // B1 phase 3: typed field-assignment store for named-type classes.
-                    if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, target.span, &val, &val_ty)? {
-                        let store_val = self.coerce_to_i64(&val, &val_ty);
-                        let field_ptr = self.temp();
-                        writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, obj_ptr, offset).unwrap();
-                        writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
-                    }
+                    self.gen_field_store(target, obj, field, &val, &val_ty, value, ctx)?;
                 } else if let ExprKind::Ident(name) = &target.node {
                     let store_ty = ctx.locals.get(name).map(|(t, _)| t.clone()).unwrap_or_else(|| val_ty.clone());
                     let slot = ctx.local_slots.get(name.as_str()).cloned().unwrap_or_else(|| name.clone());
@@ -13791,6 +14693,52 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
+    /// Store `val` into `obj.field`. Evaluates `obj` itself, so a caller that
+    /// also loads the field (compound assignment) must only use pure receivers.
+    #[allow(clippy::too_many_arguments)]
+    fn gen_field_store(
+        &mut self,
+        target: &Expr,
+        obj: &Expr,
+        field: &str,
+        val: &str,
+        val_ty: &str,
+        value: &Expr,
+        ctx: &mut GenCtx,
+    ) -> Result<(), ErrorBag> {
+        let (obj_raw, obj_ty) = self.gen_expr(obj, ctx)?;
+        let obj_ptr = if obj_ty == "i64" {
+            let cast = self.temp();
+            writeln!(&mut self.ir, "{} = inttoptr i64 {} to i64*", cast, obj_raw).unwrap();
+            cast
+        } else {
+            obj_raw
+        };
+        let struct_name = self.infer_struct_type(obj, ctx)
+            .or_else(|| if matches!(&obj.node, ExprKind::This) { ctx.current_struct.clone() } else { None });
+        let offset = struct_name.as_deref()
+            .and_then(|sn| self.struct_layouts.get(sn))
+            .and_then(|fields| fields.iter().position(|f| f == field))
+            .unwrap_or(0) as i64;
+        let (val, val_ty) = if let Some(expected) = self.semantic_type(target.id) { self.convert_semantic_argument(val.to_string(), val_ty.to_string(), &expected, value)? } else { (val.to_string(), val_ty.to_string()) };
+        // B1 phase 3: typed field-assignment store for named-type classes.
+        if !self.try_typed_field_store(struct_name.as_deref(), &obj_ptr, field, target.span, &val, &val_ty)? {
+            let store_val = self.coerce_to_i64(&val, &val_ty);
+            let field_ptr = self.temp();
+            writeln!(&mut self.ir, "{} = getelementptr i64, ptr {}, i64 {}", field_ptr, obj_ptr, offset).unwrap();
+            writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
+        }
+        Ok(())
+    }
+
+    fn is_pure_receiver(e: &Expr) -> bool {
+        match &e.node {
+            ExprKind::This | ExprKind::Ident(_) => true,
+            ExprKind::FieldAccess { obj, .. } => Self::is_pure_receiver(obj),
+            _ => false,
+        }
+    }
+
     fn gen_compound_assign(
         &mut self,
         op: &tinox_parser::CompoundOp,
@@ -13802,6 +14750,7 @@ tr_done_{idx}:"#).unwrap();
         use tinox_typecheck::ValueType as VT;
         let semantic = self.semantic_type(target.id);
         let mut index_target = None;
+        let mut field_target: Option<&Expr> = None;
         let (loaded, actual, slot) = match &target.node {
             ExprKind::Ident(name) if ctx.locals.contains_key(name) => {
                 let ty = ctx.locals[name].0.clone();
@@ -13823,6 +14772,15 @@ tr_done_{idx}:"#).unwrap();
                 let (loaded, ty) = if let Some(semantic) = &semantic { self.decode_semantic_word(raw, semantic) } else { (raw, "i64".into()) };
                 (loaded, ty, None)
             }
+            // `this.count += 1`, `a.b.c *= 2`: load through the normal field read, store
+            // through the shared field-store path. The receiver is evaluated twice, which
+            // is only unobservable for side-effect-free receivers.
+            ExprKind::FieldAccess { obj, .. } if Self::is_pure_receiver(obj) => {
+                let (loaded, ty) = self.gen_expr(target, ctx)?;
+                field_target = Some(obj.as_ref());
+                (loaded, ty, None)
+            }
+            ExprKind::FieldAccess { .. } => return Err(ErrorBag { errors: vec![Error::new(target.span, "codegen: compound assignment to a field of a computed receiver is not supported; assign through a local variable first")] }),
             _ => return Err(ErrorBag { errors: vec![Error::new(target.span, "codegen: unsupported compound-assignment target")] }),
         };
         let (rhs, rhs_ty) = self.gen_expr(value, ctx)?;
@@ -13852,6 +14810,9 @@ tr_done_{idx}:"#).unwrap();
         }
         let (result, result_ty) = if let Some(expected) = &semantic { self.convert_semantic_value(result, ty, expected, unsigned) } else { (result, actual) };
         if let Some(target) = index_target { self.gen_index_store(&target, &result, &result_ty); }
+        if let (Some(obj), ExprKind::FieldAccess { field, .. }) = (field_target, &target.node) {
+            self.gen_field_store(target, obj, field, &result, &result_ty, value, ctx)?;
+        }
         if let Some((slot, slot_ty)) = slot { writeln!(&mut self.ir, "store {} {}, {}* {}", result_ty, result, slot_ty, slot).unwrap(); }
         Ok((result, result_ty))
     }
@@ -14976,7 +15937,12 @@ tr_done_{idx}:"#).unwrap();
         writeln!(&mut self.ir, "{} = alloca i64", error_var).unwrap();
         writeln!(&mut self.ir, "store i64 0, i64* {}", error_var).unwrap();
         let mut catch_rethrow: Option<(String, String)> = None;
-        let rethrow_var = if finally.is_some() && !catches.is_empty() {
+        // Typed `catch (e: SomeError)` clauses may not match: the error then has to
+        // propagate (after `finally`), so those tries need the rethrow slot too (#524).
+        let typed_catch = |c: &CatchClause| matches!(&c.ty, Type::Named(n) if self.error_class_codes.contains_key(n));
+        let any_typed = catches.iter().any(&typed_catch);
+        let last_typed = catches.last().is_some_and(typed_catch);
+        let rethrow_var = if (finally.is_some() || any_typed) && !catches.is_empty() {
             let v = format!("%__rethrow_{}__", self.temp_count);
             self.temp_count += 1;
             writeln!(&mut self.ir, "{} = alloca i64", v).unwrap();
@@ -15058,6 +16024,7 @@ tr_done_{idx}:"#).unwrap();
                 .map(|i| self.new_bb(&format!("catch_{}", i)))
                 .collect();
 
+            let unmatched_bb = self.new_bb("catch_unmatched");
             // Dispatch: jump to first clause.
             writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
             writeln!(&mut self.ir, "br label %{}", clause_bbs[0]).unwrap();
@@ -15080,6 +16047,34 @@ tr_done_{idx}:"#).unwrap();
                     .insert(catch.param.clone(), (llvm_ty.clone(), param_slot));
 
                 writeln!(&mut self.ir, "{}:", clause_bbs[i]).unwrap();
+                let typed_class = match &catch.ty {
+                    Type::Named(n) if self.error_class_codes.contains_key(n) => Some(n.clone()),
+                    _ => None,
+                };
+                if let Some(class) = &typed_class {
+                    // Only the first matching clause runs: test the thrown code against
+                    // the class and its subclasses, else try the next clause (#524).
+                    let raw = self.temp();
+                    writeln!(&mut self.ir, "{} = load i64, i64* {}", raw, error_var).unwrap();
+                    let raw_p = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", raw_p, raw).unwrap();
+                    let set = self.error_catch_sets.get(class).cloned().unwrap_or_default();
+                    let lit = tinox_parser::Expr {
+                        node: ExprKind::Literal(Literal::String(set)),
+                        span: catch.span,
+                        id: 0,
+                        file: None,
+                    };
+                    let (codes, _) = self.gen_expr(&lit, ctx)?;
+                    let m = self.temp();
+                    writeln!(&mut self.ir, "{} = call i64 @tinox_error_matches(i8* {}, i8* {})", m, raw_p, codes).unwrap();
+                    let hit = self.temp();
+                    writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", hit, m).unwrap();
+                    let body_bb = self.new_bb(&format!("catch_{}_body", i));
+                    let miss = if i + 1 < clause_bbs.len() { clause_bbs[i + 1].clone() } else { unmatched_bb.clone() };
+                    writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", hit, body_bb, miss).unwrap();
+                    writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+                }
                 // Unique slot name — the same catch-param name in a later
                 // try/catch of this function must not redefine %<param>.
                 let param_slot_name = format!("{}_{}", catch.param, self.temp_count);
@@ -15094,7 +16089,33 @@ tr_done_{idx}:"#).unwrap();
                 )
                 .unwrap();
                 // Cast the stored i64 back to the catch param's type
-                let store_val = if llvm_ty != "i64" {
+                let store_val = if let Some(class) = &typed_class {
+                    // Rebuild the error object from the thrown "CODE: message" text.
+                    let raw_p = self.temp();
+                    writeln!(&mut self.ir, "{} = inttoptr i64 {} to i8*", raw_p, err_val).unwrap();
+                    let msg = self.temp();
+                    writeln!(&mut self.ir, "{} = call i8* @tinox_error_message(i8* {})", msg, raw_p).unwrap();
+                    let hidden = format!("__errmsg_{}", self.temp_count);
+                    self.temp_count += 1;
+                    writeln!(&mut self.ir, "%{} = alloca i8*", hidden).unwrap();
+                    writeln!(&mut self.ir, "store i8* {}, i8** %{}", msg, hidden).unwrap();
+                    let hidden_slot = ctx.locals.len();
+                    ctx.locals.insert(hidden.clone(), ("i8*".to_string(), hidden_slot));
+                    ctx.local_slots.insert(hidden.clone(), hidden.clone());
+                    let mk = |node: ExprKind| tinox_parser::Expr { node, span: catch.span, id: 0, file: None };
+                    let obj = mk(ExprKind::StructLiteral {
+                        name: class.clone(),
+                        fields: vec![("message".to_string(), mk(ExprKind::Ident(hidden)))],
+                    });
+                    let (v, vt) = self.gen_expr(&obj, ctx)?;
+                    if vt != llvm_ty {
+                        let c = self.temp();
+                        writeln!(&mut self.ir, "{} = bitcast {} {} to {}", c, vt, v, llvm_ty).unwrap();
+                        c
+                    } else {
+                        v
+                    }
+                } else if llvm_ty != "i64" {
                     let cast_val = self.temp();
                     if Self::is_float(&llvm_ty) {
                         writeln!(&mut self.ir, "{} = bitcast i64 {} to {}", cast_val, err_val, llvm_ty).unwrap();
@@ -15115,17 +16136,23 @@ tr_done_{idx}:"#).unwrap();
                 .unwrap();
                 self.gen_stmt_body(&catch.body, ctx)?;
 
-                let next = if i + 1 < clause_bbs.len() {
-                    clause_bbs[i + 1].clone()
-                } else {
-                    merge_target.clone()
-                };
+                // Only the first matching clause runs (#524): a handled error goes straight on.
+                let next = merge_target.clone();
                 let guard_bb = self.new_bb(&format!("catch_{}_ok", i));
                 writeln!(&mut self.ir, "br label %{}", guard_bb).unwrap();
                 writeln!(&mut self.ir, "{}:", guard_bb).unwrap();
                 writeln!(&mut self.ir, "br label %{}", next).unwrap();
             }
             ctx.error_catch = saved_error_catch;
+            if last_typed {
+                // No clause matched: keep the error pending, run `finally`, then rethrow.
+                writeln!(&mut self.ir, "{}:", unmatched_bb).unwrap();
+                let pending = self.temp();
+                writeln!(&mut self.ir, "{} = load i64, i64* {}", pending, error_var).unwrap();
+                let slot = rethrow_var.as_ref().expect("typed catch has a rethrow slot");
+                writeln!(&mut self.ir, "store i64 {}, i64* {}", pending, slot).unwrap();
+                writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
+            }
             if let Some((_, bb)) = &catch_rethrow {
                 writeln!(&mut self.ir, "{}:", bb).unwrap();
                 writeln!(&mut self.ir, "br label %{}", merge_target).unwrap();
@@ -15312,17 +16339,28 @@ tr_done_{idx}:"#).unwrap();
     /// method's body, where ctx.transactional_commit is None. See the
     /// field's own doc comment on GenCtx for why this is needed at all.
     fn emit_transactional_commit_before_return(&mut self, ctx: &GenCtx) {
-        let Some(owned_slot) = ctx.transactional_commit.clone() else {
+        let Some((token_slot, catch_bb, error_var)) = ctx.transactional_commit.clone() else {
             return;
         };
-        let owned = self.temp();
-        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned, owned_slot).unwrap();
-        let commit_bb = self.new_bb("tx_early_commit");
+        let token = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", token, token_slot).unwrap();
+        let ok = self.temp();
+        writeln!(&mut self.ir, "{} = call i64 @tinox_db_tx_leave(i64 {}, i1 true)", ok, token).unwrap();
+        // Left: the catch path must not leave a second time.
+        writeln!(&mut self.ir, "store i64 -1, i64* {}", token_slot).unwrap();
+        let failed = self.temp();
+        writeln!(&mut self.ir, "{} = icmp eq i64 {}, 0", failed, ok).unwrap();
+        let fail_bb = self.new_bb("tx_early_refused");
         let cont_bb = self.new_bb("tx_early_commit_cont");
-        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned, commit_bb, cont_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", commit_bb).unwrap();
-        writeln!(&mut self.ir, "call void @tinox_db_tx_commit()").unwrap();
-        writeln!(&mut self.ir, "br label %{}", cont_bb).unwrap();
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", failed, fail_bb, cont_bb).unwrap();
+        // The transaction was rolled back although the body returned normally (rollback-only):
+        // surface the error instead of returning a value whose writes are gone.
+        writeln!(&mut self.ir, "{}:", fail_bb).unwrap();
+        let e = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", e).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* {}", e, error_var).unwrap();
+        writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
         writeln!(&mut self.ir, "{}:", cont_bb).unwrap();
     }
 
@@ -15347,22 +16385,17 @@ tr_done_{idx}:"#).unwrap();
     /// tinox_db_tx_commit/_rollback (which also releases the pooled
     /// connection) is gated on ownership, since only the outermost owner
     /// may safely do that.
-    fn gen_transactional_wrapper(&mut self, method: &Method, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
-        let already_active = self.temp();
-        writeln!(&mut self.ir, "{} = call i1 @tinox_db_tx_active()", already_active).unwrap();
-        let owned_slot = self.temp();
-        writeln!(&mut self.ir, "{} = alloca i1", owned_slot).unwrap();
-        let owned_val = self.temp();
-        writeln!(&mut self.ir, "{} = xor i1 {}, true", owned_val, already_active).unwrap();
-        writeln!(&mut self.ir, "store i1 {}, i1* {}", owned_val, owned_slot).unwrap();
-
-        let begin_bb = self.new_bb("tx_begin");
-        let body_bb = self.new_bb("tx_body");
-        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_val, begin_bb, body_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", begin_bb).unwrap();
-        writeln!(&mut self.ir, "call i8* @tinox_db_tx_begin()").unwrap();
-        writeln!(&mut self.ir, "br label %{}", body_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", body_bb).unwrap();
+    fn gen_transactional_wrapper(&mut self, method: &Method, mode: i64, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
+        // The token says what this call did (joined / began / savepoint / independent
+        // transaction); tinox_db_tx_leave undoes exactly that (issue #532).
+        let token_slot = self.temp();
+        writeln!(&mut self.ir, "{} = alloca i64", token_slot).unwrap();
+        let token = self.temp();
+        writeln!(&mut self.ir, "{} = call i64 @tinox_db_tx_enter(i64 {})", token, mode).unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* {}", token, token_slot).unwrap();
+        // No connection could be obtained (e.g. SQLite lock timeout): the runtime set the thrown
+        // error and returned -1; propagate it before the body runs.
+        self.emit_post_stmt_throw_check(ctx)?;
 
         let error_var = format!("%__tx_error_{}__", self.temp_count);
         self.temp_count += 1;
@@ -15375,7 +16408,7 @@ tr_done_{idx}:"#).unwrap();
         let old_error_catch = ctx.error_catch.take();
         let try_defer_depth = ctx.defer_stack.len();
         ctx.error_catch = Some((catch_bb.clone(), error_var.clone(), try_defer_depth));
-        let old_transactional_commit = ctx.transactional_commit.replace(owned_slot.clone());
+        let old_transactional_commit = ctx.transactional_commit.replace((token_slot.clone(), catch_bb.clone(), error_var.clone()));
 
         self.gen_stmt_body(&method.body, ctx)?;
         if !self.last_is_terminator() {
@@ -15384,34 +16417,31 @@ tr_done_{idx}:"#).unwrap();
         ctx.error_catch = old_error_catch;
         ctx.transactional_commit = old_transactional_commit;
 
-        // Normal completion: commit (and release the pooled connection) if
-        // this call owns the transaction, then fall through to gen_class_method's
-        // own implicit-return handling.
-        let commit_bb = self.new_bb("tx_commit");
-        writeln!(&mut self.ir, "br label %{}", commit_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", commit_bb).unwrap();
-        let owned_at_commit = self.temp();
-        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned_at_commit, owned_slot).unwrap();
-        let do_commit_bb = self.new_bb("tx_do_commit");
-        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_at_commit, do_commit_bb, end_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", do_commit_bb).unwrap();
-        writeln!(&mut self.ir, "call void @tinox_db_tx_commit()").unwrap();
-        writeln!(&mut self.ir, "br label %{}", end_bb).unwrap();
+        // Normal completion: leave successfully. A refused commit (rollback-only) throws.
+        let t_ok = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", t_ok, token_slot).unwrap();
+        let ok = self.temp();
+        writeln!(&mut self.ir, "{} = call i64 @tinox_db_tx_leave(i64 {}, i1 true)", ok, t_ok).unwrap();
+        writeln!(&mut self.ir, "store i64 -1, i64* {}", token_slot).unwrap();
+        let refused = self.temp();
+        writeln!(&mut self.ir, "{} = icmp eq i64 {}, 0", refused, ok).unwrap();
+        let refused_bb = self.new_bb("tx_refused");
+        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", refused, refused_bb, end_bb).unwrap();
+        writeln!(&mut self.ir, "{}:", refused_bb).unwrap();
+        let refused_err = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", refused_err).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* {}", refused_err, error_var).unwrap();
+        writeln!(&mut self.ir, "br label %{}", catch_bb).unwrap();
 
-        // Error path: rollback (and release) if we own the transaction, then
-        // ALWAYS re-throw -- @Transactional never swallows an error, it only
-        // reacts to one, exactly like gen_try_stmt's catches.is_empty() path.
+        // Error path: leave with failure (rollback / rollback to savepoint / mark the shared
+        // transaction rollback-only), then ALWAYS re-throw -- @Transactional never swallows an
+        // error. A token already left (-1) makes the call a no-op.
         writeln!(&mut self.ir, "{}:", catch_bb).unwrap();
-        let owned_at_catch = self.temp();
-        writeln!(&mut self.ir, "{} = load i1, i1* {}", owned_at_catch, owned_slot).unwrap();
-        let do_rollback_bb = self.new_bb("tx_do_rollback");
-        let after_rollback_bb = self.new_bb("tx_after_rollback");
-        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", owned_at_catch, do_rollback_bb, after_rollback_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", do_rollback_bb).unwrap();
-        writeln!(&mut self.ir, "call void @tinox_db_tx_rollback()").unwrap();
-        writeln!(&mut self.ir, "br label %{}", after_rollback_bb).unwrap();
-        writeln!(&mut self.ir, "{}:", after_rollback_bb).unwrap();
-
+        let t_err = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* {}", t_err, token_slot).unwrap();
+        writeln!(&mut self.ir, "call i64 @tinox_db_tx_leave(i64 {}, i1 false)", t_err).unwrap();
+        writeln!(&mut self.ir, "store i64 -1, i64* {}", token_slot).unwrap();
         let ev = self.temp();
         writeln!(&mut self.ir, "{} = load i64, i64* {}", ev, error_var).unwrap();
         if let Some((outer_catch, outer_error_var, outer_depth)) = ctx.error_catch.clone() {
@@ -15454,6 +16484,13 @@ tr_done_{idx}:"#).unwrap();
         if scopes.iter().all(|s| s.is_empty()) {
             return Ok(());
         }
+        // The error that is propagating out of this frame is still pending in @__tinox_err. A deferred
+        // call must not see it: a try/catch inside the deferred function (or its callees) would take it
+        // for its own and swallow it, turning a failed request into a success. Park it, run the defers,
+        // and put it back unless a defer raised a new error of its own (that one then wins, as in Java).
+        let parked = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", parked).unwrap();
+        writeln!(&mut self.ir, "store i64 0, i64* @__tinox_err").unwrap();
         ctx.in_defer_exec = true;
         for scope in scopes {
             for stmt in scope.into_iter().rev() {
@@ -15461,6 +16498,13 @@ tr_done_{idx}:"#).unwrap();
             }
         }
         ctx.in_defer_exec = false;
+        let after = self.temp();
+        let clean = self.temp();
+        let restored = self.temp();
+        writeln!(&mut self.ir, "{} = load i64, i64* @__tinox_err", after).unwrap();
+        writeln!(&mut self.ir, "{} = icmp eq i64 {}, 0", clean, after).unwrap();
+        writeln!(&mut self.ir, "{} = select i1 {}, i64 {}, i64 {}", restored, clean, parked, after).unwrap();
+        writeln!(&mut self.ir, "store i64 {}, i64* @__tinox_err", restored).unwrap();
         Ok(())
     }
 
@@ -17244,7 +18288,8 @@ pub struct GenCtx {
     /// commit-if-owned branch gen_transactional_wrapper's own fall-through
     /// path emits, right before every `ret` it produces, regardless of
     /// nesting depth inside the method body.
-    transactional_commit: Option<String>,
+    /// (token slot, catch label, error slot) of the enclosing @Transactional wrapper.
+    transactional_commit: Option<(String, String, String)>,
     /// Stack of enclosing `try { ... } finally { ... }` blocks a `return`
     /// statement (StmtKind::Return) must route through before actually
     /// returning (issue #193) — innermost last, mirroring `error_catch`'s
@@ -17288,6 +18333,9 @@ struct FinallyTarget {
 
 // ─── ORM: compile-time lambda→SQL translation ────────────────────────────────
 
+/// Largest page a compile-time `limit(n)` may request.
+const ORM_MAX_PAGE_SIZE: i64 = 10_000;
+
 /// Describes an ORM query chain unwound from `DB.of(T).filter(...).orderBy(...).limit(n).list()`
 #[derive(Debug, Clone)]
 struct OrmChain {
@@ -17300,6 +18348,9 @@ struct OrmChain {
     offset_val: Option<i64>,
     /// terminal operation: "list" | "first" | "count"
     terminal: String,
+    /// Parts of the chain that cannot be lowered to SQL; reported as a compile error instead of
+    /// being dropped (a dropped filter would return rows the caller excluded).
+    problems: Vec<String>,
 }
 
 /// Try to unwind a `DB.of(T).filter(...).orderBy(...).limit(n).list()` chain
@@ -17312,6 +18363,7 @@ fn try_extract_orm_chain(expr: &Expr, terminal: &str) -> Option<OrmChain> {
         limit: None,
         offset_val: None,
         terminal: terminal.to_string(),
+        problems: Vec::new(),
     };
     unwind_orm_chain(expr, &mut chain)?;
     if chain.entity_class.is_empty() { None } else { Some(chain) }
@@ -17325,38 +18377,39 @@ fn unwind_orm_chain(expr: &Expr, chain: &mut OrmChain) -> Option<()> {
                     if let Some(ExprKind::Lambda { params, body, .. }) = args.first().map(|a| &a.node) {
                         let param_name = params.first().map(|p| p.name.clone()).unwrap_or_default();
                         chain.filters.push((param_name, *body.clone()));
+                    } else {
+                        chain.problems.push("filter(...) needs a lambda such as `p => p.name == \"x\"`".to_string());
                     }
                     unwind_orm_chain(obj, chain)
                 }
-                "orderBy" => {
-                    if let Some(lambda) = args.first() {
-                        if let ExprKind::Lambda { body, .. } = &lambda.node {
-                            if let ExprKind::FieldAccess { field, .. } = &body.node {
-                                chain.order_by.push((field.clone(), false));
+                "orderBy" | "orderByDesc" => {
+                    let desc = method == "orderByDesc";
+                    let mut field = None;
+                    if let Some(ExprKind::Lambda { params, body, .. }) = args.first().map(|a| &a.node) {
+                        if let ExprKind::FieldAccess { obj: o, field: f } = &body.node {
+                            if matches!(&o.node, ExprKind::Ident(n) if params.first().is_some_and(|p| p.name == *n)) {
+                                field = Some(f.clone());
                             }
                         }
                     }
-                    unwind_orm_chain(obj, chain)
-                }
-                "orderByDesc" => {
-                    if let Some(lambda) = args.first() {
-                        if let ExprKind::Lambda { body, .. } = &lambda.node {
-                            if let ExprKind::FieldAccess { field, .. } = &body.node {
-                                chain.order_by.push((field.clone(), true));
-                            }
-                        }
+                    match field {
+                        Some(f) => chain.order_by.push((f, desc)),
+                        None => chain.problems.push(format!("{method}(...) needs a lambda that returns one entity field, such as `p => p.name`")),
                     }
                     unwind_orm_chain(obj, chain)
                 }
                 "limit" => {
-                    if let Some(ExprKind::Literal(Literal::Integer(n))) = args.first().map(|a| &a.node) {
-                        chain.limit = Some(*n);
+                    match args.first().map(|a| &a.node) {
+                        Some(ExprKind::Literal(Literal::Integer(n))) if (1..=ORM_MAX_PAGE_SIZE).contains(n) => chain.limit = Some(*n),
+                        Some(ExprKind::Literal(Literal::Integer(n))) => chain.problems.push(format!("limit({n}) is outside the allowed page size 1..={ORM_MAX_PAGE_SIZE}")),
+                        _ => chain.problems.push("limit(...) must be an integer literal (the SQL text is fixed at compile time)".to_string()),
                     }
                     unwind_orm_chain(obj, chain)
                 }
                 "offset" => {
-                    if let Some(ExprKind::Literal(Literal::Integer(n))) = args.first().map(|a| &a.node) {
-                        chain.offset_val = Some(*n);
+                    match args.first().map(|a| &a.node) {
+                        Some(ExprKind::Literal(Literal::Integer(n))) if *n >= 0 => chain.offset_val = Some(*n),
+                        _ => chain.problems.push("offset(...) must be a non-negative integer literal (the SQL text is fixed at compile time)".to_string()),
                     }
                     unwind_orm_chain(obj, chain)
                 }
@@ -18523,6 +19576,12 @@ return 0 }"#);
     // ================================================================
     // String method calls
     // ================================================================
+
+    #[test]
+    fn test_string_chars_method_ir() {
+        let ir = compile_to_ir("fn main() -> Int64 { let cs = \"hé😀\".chars()\nfor c in cs { println(c) }\nreturn 0 }");
+        assert!(ir.contains("call i64* @tinox_string_chars(i8*"));
+    }
 
     #[test]
     fn test_string_length_method_ir() {

@@ -38,6 +38,7 @@ namespace tinox.core.oidc
             return OidcClient { issuer: issuer, jwksUri: jwksUri, clientId: clientId, oauth: oauth }
         }
 
+        @Throws(OidcError)
         fn buildAuthorizeUrl(scope: String) -> OAuth2AuthorizeRequest
         {
             const parts: List<String> = scope.split(" ")
@@ -53,11 +54,12 @@ namespace tinox.core.oidc
             }
             if (!hasOpenid)
             {
-                throw "OidcClient::buildAuthorizeUrl: scope must include \"openid\" (no id_token will be issued otherwise)"
+                throw OidcError { message: "OidcClient::buildAuthorizeUrl: scope must include \"openid\" (no id_token will be issued otherwise)" }
             }
             return this.oauth.buildAuthorizeUrl(scope)
         }
 
+        @Throws(OidcError)
         fn exchangeCode(code: String, codeVerifier: String) -> OidcTokenResponse
         {
             const tr: OAuth2TokenResponse = this.oauth.exchangeCode(code, codeVerifier)
@@ -72,6 +74,7 @@ namespace tinox.core.oidc
             return this.verifyAndWrap(tr)
         }
 
+        @Throws(OidcError)
         /*
          * Providers are not required to reissue an id_token on a refresh
          * grant (unlike exchangeCode(), an empty idToken here is not an
@@ -91,6 +94,7 @@ namespace tinox.core.oidc
             return this.verifyAndWrap(tr)
         }
 
+        @Throws(OidcError)
         fn verifyAndWrap(tr: OAuth2TokenResponse) -> OidcTokenResponse
         {
             var claims: Map<String, JsonValue> = Map::new()
@@ -112,6 +116,7 @@ namespace tinox.core.oidc
             return OidcTokenResponse { accessToken: tr.accessToken, refreshToken: tr.refreshToken, tokenType: tr.tokenType, expiresIn: tr.expiresIn, idToken: tr.idToken, claims: claims, ok: true, errorMessage: "" }
         }
 
+        @Throws(OidcError)
         /*
          * Signature (RS256 via the issuer's JWKS) + iss/aud verification
          * (OIDC Core §3.1.3.7 steps 2/3; exp/nbf are already enforced by
@@ -123,7 +128,7 @@ namespace tinox.core.oidc
             const header: Map<String, JsonValue> = Jwt::extractHeader(idToken)
             if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
-                throw "unsupported id_token alg (expected RS256)"
+                throw OidcError { message: "unsupported id_token alg (expected RS256)" }
             }
             var kid: String = ""
             if (header.contains("kid"))
@@ -136,12 +141,12 @@ namespace tinox.core.oidc
 
             if (!claims.contains("iss") || claims["iss"].getString() != this.issuer)
             {
-                throw "id_token iss claim does not match expected issuer \"" + this.issuer + "\""
+                throw OidcError { message: "id_token iss claim does not match expected issuer \"" + this.issuer + "\"" }
             }
 
             if (!claims.contains("aud"))
             {
-                throw "id_token missing aud claim"
+                throw OidcError { message: "id_token missing aud claim" }
             }
             var audMatches: Bool = false
             if (claims["aud"].isString())
@@ -163,7 +168,7 @@ namespace tinox.core.oidc
             }
             if (!audMatches)
             {
-                throw "id_token aud claim does not include this client_id"
+                throw OidcError { message: "id_token aud claim does not include this client_id" }
             }
 
             return claims

@@ -1,0 +1,11 @@
+import tinox.core.websocket
+import State
+@ApplicationComponent
+@WebsocketEndpoint("/counter", 0)
+class Endpoint {
+ @Inject var state: State
+ @OnMessage fn message(connection: Int64, message: String) -> Nothing {
+  Ws::sendText(connection, this.state.add().toString())
+ }
+ @OnClose fn close(connection: Int64) -> Nothing { println("websocket-closed") }
+}

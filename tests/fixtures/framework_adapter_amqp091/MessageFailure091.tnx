@@ -1,0 +1,5 @@
+import AmqpChannel091
+import AmqpMessage091
+class MessageFailure091 {
+    fnc onFailure(chan: AmqpChannel091, msg: AmqpMessage091, attempt: Int64, maxAttempts: Int64, backoffMs: Int64, deadLetterQueue: String) -> Int64 { return 1 }
+}

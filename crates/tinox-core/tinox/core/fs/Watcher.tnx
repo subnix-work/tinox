@@ -30,6 +30,7 @@ namespace tinox.core.fs
         var handle: Int64
         var debounceMs: Int64
 
+        @Throws(IoError)
         /**
          * debounceMs > 0 makes poll() keep collecting after the first event
          * until the stream has been quiet for that long (at most one extra
@@ -41,18 +42,19 @@ namespace tinox.core.fs
             const handle: Int64 = watchCreate()
             if (handle == 0)
             {
-                throw watchLastError()
+                throw IoError { message: watchLastError() }
             }
             return Watcher { handle: handle, debounceMs: debounceMs }
         }
 
+        @Throws(IoError)
         /** Watches path (a file or a directory); recursive also covers every sub-directory. Throws a String if path cannot be watched. */
         fn watch(w: Watcher, path: String, recursive: Bool) -> Nothing
         {
             const err: String = watchAdd(w.handle, path, recursive)
             if (err != "")
             {
-                throw err
+                throw IoError { message: err }
             }
         }
 

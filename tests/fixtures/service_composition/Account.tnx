@@ -1,0 +1,5 @@
+@Entity @Table("accounts")
+class Account {
+ @Id @GeneratedValue var id: Int64
+ @Column("balance") var balance: Int64
+}

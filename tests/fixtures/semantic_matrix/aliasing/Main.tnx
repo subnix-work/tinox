@@ -1,0 +1,18 @@
+import Cell
+class Main {
+    fnc append(values: List<Int64>) -> Nothing { values.push(9) }
+    fnc main() -> Int32 {
+        var values: List<Int64> = [1, 2]
+        const alias = values
+        Main::append(values)
+        alias[0] = 7
+        println(values.len())
+        println(values[0])
+        println(alias[2])
+        const cell = Cell { value: 4 }
+        const same = cell
+        same.value = 6
+        println(cell.value)
+        return 0
+    }
+}

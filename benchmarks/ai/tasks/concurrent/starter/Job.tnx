@@ -1,0 +1,9 @@
+class Job
+{
+    fnc run(value: Int64) -> Int64
+    {
+        if (value < 0) { throw "invalid job" }
+        sleep_ms(20)
+        return value * value
+    }
+}

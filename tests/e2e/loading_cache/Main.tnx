@@ -1,0 +1,85 @@
+// LoadingCache: single-flight loads, TTL, bounded LRU, failing loaders, eviction racing a load.
+// expect: sixteen callers, one load: loads=1 misses=1 hits=15 value=v
+// expect: ttl: reloaded after expiry loads=2
+// expect: lru: size=2 loads=4 hits=1
+// expect: failed loader: boom, failures=1 size=0, retried value=ok
+// expect: racing eviction: caller got old, next get got new
+import tinox.core.cache
+
+class Main
+{
+    fnc slow(key: String) -> String
+    {
+        sleep(200)
+        return "v"
+    }
+
+    fnc worker(c: LoadingCache) -> String
+    {
+        return c.get("k", key => Main::slow(key))
+    }
+
+    fnc slowOld(key: String) -> String
+    {
+        sleep(300)
+        return "old"
+    }
+
+    fnc racer(c: LoadingCache) -> String
+    {
+        return c.get("r", key => Main::slowOld(key))
+    }
+
+    fnc fail(key: String) -> String
+    {
+        throw "boom"
+    }
+
+    fnc main() -> Int32
+    {
+        const c = LoadingCache::create(10, 60000)
+        var last = ""
+        scope {
+            var i = 0
+            while (i < 16) {
+                spawn Main::worker(c)
+                i = i + 1
+            }
+        }
+        last = c.get("k", key => "never loaded")
+        println("sixteen callers, one load: loads=" + c.loads().toString() + " misses=" + c.misses().toString() + " hits=" + (c.hits() - 1).toString() + " value=" + last)
+
+        const t = LoadingCache::create(10, 100)
+        t.get("a", key => "1")
+        sleep(180)
+        t.get("a", key => "2")
+        println("ttl: reloaded after expiry loads=" + t.loads().toString())
+
+        const l = LoadingCache::create(2, 60000)
+        l.get("a", key => "1")
+        l.get("b", key => "2")
+        l.get("c", key => "3")
+        l.get("b", key => "x")
+        l.get("a", key => "1")
+        println("lru: size=" + l.size().toString() + " loads=" + l.loads().toString() + " hits=" + l.hits().toString())
+
+        const f = LoadingCache::create(10, 60000)
+        var msg = ""
+        try {
+            f.get("bad", key => Main::fail(key))
+        } catch (e: String) {
+            msg = e
+        }
+        const ok = f.get("bad", key => "ok")
+        println("failed loader: " + msg + ", failures=" + f.failures().toString() + " size=" + (f.size() - 1).toString() + ", retried value=" + ok)
+
+        const r = LoadingCache::create(10, 60000)
+        const task = spawn Main::racer(r)
+        sleep(100)
+        r.evictAll()
+        const old = await task
+        const fresh = r.get("r", key => "new")
+        println("racing eviction: caller got " + old + ", next get got " + fresh)
+        return 0
+    }
+}

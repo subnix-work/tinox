@@ -57,6 +57,8 @@ pub enum RouteParamKind {
     PathParam,
     QueryParam,
     PostParam,
+    /// multipart/form-data body parsed into a `MultipartResult` (issue #542)
+    MultipartParam,
     HttpContext,
 }
 
@@ -114,6 +116,9 @@ pub enum DiScope {
 pub struct DiInjectField {
     pub field_name: String,
     pub field_type: String,
+    /// Concrete scoped provider selected at compile time.
+    pub provider_class: String,
+    pub qualifier: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +135,8 @@ pub struct ConfigFieldInfo {
     pub config_key: String,
     /// LLVM type of the field: "i8*" for String, "i64" for Int*, "i1" for Bool
     pub field_llvm_type: String,
+    /// The field declares a `= literal` default, so an absent key is not an error.
+    pub has_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +153,18 @@ pub struct TestInfo {
     /// One-based source position of the test method.
     pub line: u32,
     pub column: u32,
+    /// Zero-based index of the `@Case` this entry runs, `None` for a plain @Test.
+    pub case_index: Option<usize>,
+    /// Literal arguments of that `@Case`, passed to the test method's parameters.
+    pub case_args: Vec<Literal>,
+}
+
+/// `@BeforeEach` / `@AfterEach` method of a test class (#547).
+#[derive(Debug, Clone)]
+pub struct TestHookInfo {
+    pub class_name: String,
+    pub method_name: String,
+    pub after: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -223,6 +242,29 @@ pub struct Amqp10ConsumerInfo {
     pub pass: String,
     pub address: String,
     pub on_message: Option<String>,
+    /// @MessageFailure(maxAttempts, backoffMs) on the handler (issue #537); dead-lettering is the queue's own DLX
+    pub failure: Option<(i64, i64)>,
+}
+
+/// A class annotated `@OutboxDispatcher(host, port, vhost, user, pass, maxAttempts, backoffMs)` (issue #538).
+#[derive(Debug, Clone)]
+pub struct OutboxDispatcherInfo {
+    pub class_name: String,
+    pub host: String,
+    pub port: i64,
+    pub vhost: String,
+    pub user: String,
+    pub pass: String,
+    pub max_attempts: i64,
+    pub backoff_ms: i64,
+}
+
+/// A method annotated `@Scheduled("<cron>")` (issue #536).
+#[derive(Debug, Clone)]
+pub struct ScheduledJobInfo {
+    pub class_name: String,
+    pub method_name: String,
+    pub cron: String,
 }
 
 #[derive(Debug, Clone)]
@@ -235,6 +277,8 @@ pub struct Amqp091ConsumerInfo {
     pub pass: String,
     pub queue: String,
     pub on_message: Option<String>,
+    /// @MessageFailure(maxAttempts, backoffMs[, deadLetterQueue]) on the handler (issue #537)
+    pub failure: Option<(i64, i64, String)>,
 }
 
 /// @Http3RestController(port, certPath, keyPath) on a class -- routes
@@ -327,13 +371,11 @@ pub struct AnnotationProcessingResult {
     pub route_entries: Vec<RouteInfo>,
     pub inline_functions: HashSet<String>,
     pub inline_methods: HashSet<(String, String)>,
-    /// (class, method) pairs that should run inside a DB transaction --
-    /// either the method itself carries @Transactional, or its class does
-    /// (class-level applies to every method, same precedence pattern as
-    /// @Auth; a method-level annotation on top of a class-level one is
-    /// simply redundant, not an override, since there's no argument to
-    /// override — unlike @Auth's "bearer"/"basic" choice).
-    pub transactional_methods: HashSet<(String, String)>,
+    /// (class, method) -> propagation mode (0 REQUIRED, 1 NESTED, 2 REQUIRES_NEW)
+    /// for methods that run inside a DB transaction -- either the method itself
+    /// carries @Transactional, or its class does (class-level applies to every
+    /// method; a method-level annotation overrides the class-level mode).
+    pub transactional_methods: HashMap<(String, String), i64>,
     pub deprecated_warnings: Vec<String>,
     pub shared_state_warnings: Vec<String>,
     pub custom_annotation_names: Vec<String>,
@@ -346,11 +388,22 @@ pub struct AnnotationProcessingResult {
     pub json_serializable_classes: Vec<String>,
     pub cli_commands: Vec<CliCommandInfo>,
     pub test_entries: Vec<TestInfo>,
+    pub test_hooks: Vec<TestHookInfo>,
+    /// `@ErrorMap("CODE", status)` entries from every class (#524).
+    pub error_maps: Vec<(String, i64)>,
+    /// Browser-security policy lines from `@Cors` / `@Csrf` (#529), emitted as the runtime's policy table.
+    pub security_policy: Vec<String>,
     pub metric_entries: Vec<MetricInfo>,
     pub entity_entries: Vec<EntityInfo>,
     pub ws_endpoints: Vec<WsEndpointInfo>,
     pub amqp10_consumers: Vec<Amqp10ConsumerInfo>,
     pub amqp091_consumers: Vec<Amqp091ConsumerInfo>,
+    pub scheduled_jobs: Vec<ScheduledJobInfo>,
+    pub outbox_dispatchers: Vec<OutboxDispatcherInfo>,
+    /// (class, method) -> (ttl seconds, max entries) for @Cacheable methods (issue #543)
+    pub cached_methods: HashMap<(String, String), (i64, i64)>,
+    /// (class, method) -> cache names ("Class.method") evicted after the method completes normally
+    pub evict_methods: HashMap<(String, String), Vec<String>>,
     pub http3_rest_controllers: Vec<Http3RestControllerInfo>,
     pub tinoxui_apps: Vec<TinoxUIAppInfo>,
 }
@@ -371,6 +424,14 @@ impl AnnotationProcessor {
         let mut registry: HashMap<String, AnnotationInfo> = HashMap::new();
 
         // HTTP method annotations
+        for (name, arity, description) in [
+            ("Required", 0, "Request field must be present and non-null"),
+            ("Optional", 0, "Request field may be absent or null"),
+            ("Length", 2, "Inclusive string code-point or collection length bounds"),
+            ("Range", 2, "Inclusive numeric request field bounds"),
+        ] {
+            registry.insert(name.into(), AnnotationInfo { name: name.into(), valid_targets: vec![AnnotationTarget::Field], min_args: arity, max_args: arity, description: description.into() });
+        }
         registry.insert(
             "GET".to_string(),
             AnnotationInfo {
@@ -489,8 +550,8 @@ impl AnnotationProcessor {
                 name: "Transactional".to_string(),
                 valid_targets: vec![AnnotationTarget::Method, AnnotationTarget::Class],
                 min_args: 0,
-                max_args: 0,
-                description: "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Postgres only in v1 (issue #191) -- a hard compile error on any other [database] driver".to_string(),
+                max_args: 1,
+                description: "Wraps the method (or every method of the class) in a database transaction: BEGIN before, COMMIT on normal return, ROLLBACK on any thrown exception. Optional propagation: \"REQUIRED\" (default, joins an open transaction), \"NESTED\" (savepoint inside an open transaction), \"REQUIRES_NEW\" (independent transaction on a second connection). PostgreSQL, MySQL and SQLite (issues #191, #531, #532; REQUIRES_NEW not on SQLite) -- a hard compile error without one of these [database] drivers".to_string(),
             },
         );
         // REST parameter binding annotations -- exactly one required on
@@ -526,6 +587,16 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Binds the deserialized JSON request body to this parameter — type must be @JsonSerializable".to_string(),
+            },
+        );
+        registry.insert(
+            "MultipartParam".to_string(),
+            AnnotationInfo {
+                name: "MultipartParam".to_string(),
+                valid_targets: vec![AnnotationTarget::Param],
+                min_args: 0,
+                max_args: 0,
+                description: "Binds the multipart/form-data request body, parsed with MultipartLimits::defaults(), to a MultipartResult parameter -- a missing/invalid boundary or an over-budget body is answered with 400 before the handler runs.".to_string(),
             },
         );
         registry.insert(
@@ -673,6 +744,87 @@ impl AnnotationProcessor {
             },
         );
 
+        registry.insert(
+            "Retry".to_string(),
+            AnnotationInfo {
+                name: "Retry".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 3,
+                max_args: 6,
+                description: "@Retry(maxAttempts, backoffMs, [\"ERROR_PREFIX\", ...][, maxBackoffMs, jitterPercent, budgetMs]) -- bounded retry with exponential backoff for the listed failures; requires @Idempotent (#527)".to_string(),
+            },
+        );
+        registry.insert(
+            "CircuitBreaker".to_string(),
+            AnnotationInfo {
+                name: "CircuitBreaker".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 2,
+                max_args: 4,
+                description: "@CircuitBreaker(failureThreshold, openMs[, [\"ERROR_PREFIX\", ...][, probes]]) -- opens after consecutive eligible failures, half-open probes after openMs; rejected calls throw \"CIRCUIT_OPEN: ...\" (#527)".to_string(),
+            },
+        );
+        registry.insert(
+            "Idempotent".to_string(),
+            AnnotationInfo {
+                name: "Idempotent".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 0,
+                max_args: 0,
+                description: "Declares that repeating the method is safe; required for @Retry (#527)".to_string(),
+            },
+        );
+        registry.insert(
+            "Cors".to_string(),
+            AnnotationInfo {
+                name: "Cors".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 3,
+                max_args: 4,
+                description: "@Cors([\"https://app.example\"], credentials, maxAgeSeconds[, [\"Allowed-Header\", ...]]) -- program-wide CORS policy: preflight answers, origin rejection, response headers (#529)".to_string(),
+            },
+        );
+        registry.insert(
+            "Csrf".to_string(),
+            AnnotationInfo {
+                name: "Csrf".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 0,
+                max_args: 1,
+                description: "@Csrf([\"https://extra-trusted.example\"]) -- rejects cookie-carrying unsafe requests (POST/PUT/PATCH/DELETE) whose Origin/Referer is not same-origin or trusted (#529)".to_string(),
+            },
+        );
+        registry.insert(
+            "Error".to_string(),
+            AnnotationInfo {
+                name: "Error".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 1,
+                max_args: 2,
+                description: "@Error(\"CODE\"[, status]) — declares a checked error class (must have `var message: String`); with a status it also maps to that HTTP status".to_string(),
+            },
+        );
+        registry.insert(
+            "Throws".to_string(),
+            AnnotationInfo {
+                name: "Throws".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 16,
+                description: "@Throws(ErrorClass, ...) — lists the @Error classes this method may throw".to_string(),
+            },
+        );
+        registry.insert(
+            "ErrorMap".to_string(),
+            AnnotationInfo {
+                name: "ErrorMap".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 2,
+                max_args: 2,
+                description: "@ErrorMap(\"CODE\", status) — maps handler errors thrown as \"CODE: message\" to an HTTP status and the structured error envelope; repeatable, program-wide".to_string(),
+            },
+        );
+
         // Logging annotation
         registry.insert(
             "Log".to_string(),
@@ -747,6 +899,17 @@ impl AnnotationProcessor {
             },
         );
 
+        registry.insert("Provider".into(), AnnotationInfo {
+            name: "Provider".into(), valid_targets: vec![AnnotationTarget::Class],
+            min_args: 1, max_args: 1,
+            description: "Names a scoped concrete provider for explicit qualifier selection".into(),
+        });
+        registry.insert("Qualifier".into(), AnnotationInfo {
+            name: "Qualifier".into(), valid_targets: vec![AnnotationTarget::Field],
+            min_args: 1, max_args: 1,
+            description: "Selects the named provider of an @Inject field".into(),
+        });
+
         // Test framework annotations
         registry.insert(
             "Test".to_string(),
@@ -758,6 +921,29 @@ impl AnnotationProcessor {
                 description: "@Test[(\"description\")] — marks a method as a test case".to_string(),
             },
         );
+
+        registry.insert(
+            "Case".to_string(),
+            AnnotationInfo {
+                name: "Case".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 8,
+                description: "@Case(literal, ...) — one parameterized run of a @Test method; repeat for more cases".to_string(),
+            },
+        );
+        for (name, text) in [("BeforeEach", "runs before every @Test of its class"), ("AfterEach", "runs after every @Test of its class, even when it fails or throws")] {
+            registry.insert(
+                name.to_string(),
+                AnnotationInfo {
+                    name: name.to_string(),
+                    valid_targets: vec![AnnotationTarget::Method],
+                    min_args: 0,
+                    max_args: 0,
+                    description: format!("@{name} — {text}"),
+                },
+            );
+        }
 
         // CLI framework annotations (@Command / @Option / @Argument)
         registry.insert(
@@ -886,6 +1072,66 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Marks field as primary key".to_string(),
+            },
+        );
+        registry.insert(
+            "OutboxDispatcher".to_string(),
+            AnnotationInfo {
+                name: "OutboxDispatcher".to_string(),
+                valid_targets: vec![AnnotationTarget::Class],
+                min_args: 7,
+                max_args: 7,
+                description: "@OutboxDispatcher(host, port, vhost, user, pass, maxAttempts, backoffMs) -- runs a transactional-outbox dispatcher (tinox.core.outbox) on its own thread: publishes pending outbox records with publisher confirms, retries with backoff, parks after maxAttempts, reports backlog gauges, and drains/stops with a @Service. At-least-once delivery".to_string(),
+            },
+        );
+        registry.insert(
+            "Cacheable".to_string(),
+            AnnotationInfo {
+                name: "Cacheable".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 2,
+                max_args: 2,
+                description: "@Cacheable(ttlSeconds, maxEntries) -- caches the result per argument values in a bounded in-process cache (LRU, TTL, single-flight: concurrent identical misses run the method once). Parameters and result must be String/Int64/Int32/Bool; a method that throws caches nothing. The cache is shared by all instances of the class".to_string(),
+            },
+        );
+        registry.insert(
+            "CacheEvict".to_string(),
+            AnnotationInfo {
+                name: "CacheEvict".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 8,
+                description: "@CacheEvict(\"Class.method\", ...) -- empties the named @Cacheable caches after the method completed normally (after its own @Transactional commit) and invalidates loads in flight".to_string(),
+            },
+        );
+        registry.insert(
+            "MessageFailure".to_string(),
+            AnnotationInfo {
+                name: "MessageFailure".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 2,
+                max_args: 3,
+                description: "@MessageFailure(maxAttempts, backoffMs[, \"dead-letter-queue\"]) on an @Amqp091Consumer's (or, without the queue name, @Amqp10Consumer's) @OnMessage method -- a failing handler is retried with exponential backoff up to maxAttempts, then published to the dead-letter queue (or rejected without requeue); the delivery is never acknowledged as handled. At-least-once, never exactly-once".to_string(),
+            },
+        );
+        registry.insert(
+            "Scheduled".to_string(),
+            AnnotationInfo {
+                name: "Scheduled".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 1,
+                max_args: 1,
+                description: "@Scheduled(\"m h dom mon dow\") -- runs the zero-argument instance method on a background thread whenever the five-field cron expression matches (UTC, minute resolution). One run at a time per job, missed minutes are skipped, a failing run is logged and counted without stopping the job, runs stop with the service. In memory only: no persistence across restarts".to_string(),
+            },
+        );
+        registry.insert(
+            "ForeignKey".to_string(),
+            AnnotationInfo {
+                name: "ForeignKey".to_string(),
+                valid_targets: vec![AnnotationTarget::Field],
+                min_args: 2,
+                max_args: 2,
+                description: "@ForeignKey(\"table\", \"column\") -- the field references the primary key of another entity's table; checked at compile time, emitted as a REFERENCES constraint by `tinox db generate`, enforced by the database. No implicit loading".to_string(),
             },
         );
         registry.insert(
@@ -1055,6 +1301,16 @@ impl AnnotationProcessor {
                     // silently falling back to the default port would be
                     // exactly the "mostly works somehow" behaviour this
                     // project refuses. Both positions are ports.
+                    if ann.name == "Transactional" {
+                        if let Some(arg) = ann.args.first() {
+                            if !matches!(arg, tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(m)) if transactional_mode_value(m).is_some()) {
+                                errors.push(Error::new(
+                                    ann.span,
+                                    "@Transactional's propagation must be the string literal \"REQUIRED\", \"NESTED\" or \"REQUIRES_NEW\"",
+                                ));
+                            }
+                        }
+                    }
                     if ann.name == "TinoxUIApp" {
                         for (idx, arg) in ann.args.iter().enumerate() {
                             if tinoxui_port_arg(Some(arg)).is_none() {
@@ -1102,6 +1358,8 @@ impl AnnotationProcessor {
             }
         }
 
+        resolve_di_providers(source, &mut result);
+
         for component in &result.di_components {
             if !matches!(component.scope, DiScope::Application | DiScope::Startup) { continue; }
             fn request_path(name: &str, components: &[DiComponentInfo], seen: &mut HashSet<String>) -> Option<String> {
@@ -1109,7 +1367,7 @@ impl AnnotationProcessor {
                 let component = components.iter().find(|c| c.class_name == name)?;
                 if component.scope == DiScope::HttpRequest { return Some(name.into()); }
                 for field in &component.inject_fields {
-                    if let Some(path) = request_path(&field.field_type, components, seen) {
+                    if let Some(path) = request_path(&field.provider_class, components, seen) {
                         return Some(format!("{name}.{} -> {path}", field.field_name));
                     }
                 }
@@ -1130,7 +1388,7 @@ impl AnnotationProcessor {
     ) {
         let mut class_base_path: Option<String> = None;
         let mut class_auth: Option<String> = None;
-        let mut class_transactional = false;
+        let mut class_transactional: Option<i64> = None;
         let mut di_scope: Option<DiScope> = None;
         let singleton = class.annotations.iter().any(|a| matches!(a.name.as_str(), "ApplicationComponent" | "Startup"));
         let synchronized = class.annotations.iter().any(|a| a.name == "Synchronized");
@@ -1187,6 +1445,21 @@ impl AnnotationProcessor {
                         amqp091_consumer_args = Some((host, port, vhost, user, pass, queue));
                     }
                 }
+                "OutboxDispatcher" => {
+                    let text = |i: usize| match ann.args.get(i) {
+                        Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(v))) => Some(v.clone()),
+                        _ => None,
+                    };
+                    let int = |i: usize| match ann.args.get(i) {
+                        Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(v))) => Some(*v),
+                        _ => None,
+                    };
+                    if let (Some(host), Some(port), Some(vhost), Some(user), Some(pass), Some(max_attempts), Some(backoff_ms)) =
+                        (text(0), int(1), text(2), text(3), text(4), int(5), int(6))
+                    {
+                        result.outbox_dispatchers.push(OutboxDispatcherInfo { class_name: class.name.clone(), host, port, vhost, user, pass, max_attempts, backoff_ms });
+                    }
+                }
                 "Http3RestController" => {
                     let port = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(p))) = ann.args.first() { Some(*p) } else { None };
                     let cert_path = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.get(1) { Some(s.clone()) } else { None };
@@ -1216,7 +1489,7 @@ impl AnnotationProcessor {
                     }
                 }
                 "Transactional" => {
-                    class_transactional = true;
+                    class_transactional = Some(transactional_mode(ann));
                 }
                 "deprecated" => {
                     let msg = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
@@ -1234,6 +1507,42 @@ impl AnnotationProcessor {
                 "HttpRequestScoped" => di_scope = Some(DiScope::HttpRequest),
                 "Log" => {
                     result.log_classes.insert(class.name.clone());
+                }
+                "Error" => {
+                    if let (Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(status)))) = (ann.args.first(), ann.args.get(1)) {
+                        result.error_maps.push((code.clone(), *status));
+                    }
+                }
+                "ErrorMap" => {
+                    if let (Some(tinox_parser::AnnotationArg::Literal(Literal::String(code))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(status)))) = (ann.args.first(), ann.args.get(1)) {
+                        result.error_maps.push((code.clone(), *status));
+                    }
+                }
+                "Cors" => {
+                    if let (Some(tinox_parser::AnnotationArg::Array(origins)), Some(tinox_parser::AnnotationArg::Literal(Literal::Bool(credentials))), Some(tinox_parser::AnnotationArg::Literal(Literal::Integer(max_age)))) = (ann.args.first(), ann.args.get(1), ann.args.get(2)) {
+                        for o in origins {
+                            if let tinox_parser::AnnotationArg::Literal(Literal::String(o)) = o {
+                                result.security_policy.push(format!("cors-origin\t{o}"));
+                            }
+                        }
+                        result.security_policy.push(format!("cors-credentials\t{}", if *credentials { 1 } else { 0 }));
+                        result.security_policy.push(format!("cors-maxage\t{max_age}"));
+                        let headers = match ann.args.get(3) {
+                            Some(tinox_parser::AnnotationArg::Array(h)) => h.iter().filter_map(|a| if let tinox_parser::AnnotationArg::Literal(Literal::String(s)) = a { Some(s.clone()) } else { None }).collect::<Vec<_>>(),
+                            _ => vec!["Content-Type".to_string(), "Authorization".to_string(), "X-Request-Id".to_string()],
+                        };
+                        result.security_policy.push(format!("cors-headers\t{}", headers.join(",")));
+                    }
+                }
+                "Csrf" => {
+                    result.security_policy.push("csrf\t1".to_string());
+                    if let Some(tinox_parser::AnnotationArg::Array(origins)) = ann.args.first() {
+                        for o in origins {
+                            if let tinox_parser::AnnotationArg::Literal(Literal::String(o)) = o {
+                                result.security_policy.push(format!("csrf-origin\t{o}"));
+                            }
+                        }
+                    }
                 }
                 "Command" => {
                     let cmd_name = if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
@@ -1367,8 +1676,32 @@ impl AnnotationProcessor {
                 result.route_entries.push(route);
             }
 
-            if class_transactional || method.annotations.iter().any(|a| a.name == "Transactional") {
-                result.transactional_methods.insert((class.name.clone(), method.name.clone()));
+            if let Some(ann) = method.annotations.iter().find(|a| a.name == "Cacheable") {
+                if let (Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(ttl))), Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(cap)))) = (ann.args.first(), ann.args.get(1)) {
+                    result.cached_methods.insert((class.name.clone(), method.name.clone()), (*ttl, *cap));
+                }
+            }
+            let evicts: Vec<String> = method.annotations.iter().filter(|a| a.name == "CacheEvict")
+                .flat_map(|a| a.args.iter())
+                .filter_map(|a| if let tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(n)) = a { Some(n.clone()) } else { None })
+                .collect();
+            if !evicts.is_empty() {
+                result.evict_methods.insert((class.name.clone(), method.name.clone()), evicts);
+            }
+            for ann in method.annotations.iter().filter(|a| a.name == "Scheduled") {
+                if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(cron))) = ann.args.first() {
+                    result.scheduled_jobs.push(ScheduledJobInfo {
+                        class_name: class.name.clone(),
+                        method_name: method.name.clone(),
+                        cron: cron.clone(),
+                    });
+                }
+            }
+            let tx_mode = method.annotations.iter().find(|a| a.name == "Transactional")
+                .map(transactional_mode)
+                .or(class_transactional);
+            if let Some(mode) = tx_mode {
+                result.transactional_methods.insert((class.name.clone(), method.name.clone()), mode);
             }
 
             for ann in &method.annotations {
@@ -1392,12 +1725,39 @@ impl AnnotationProcessor {
                         } else {
                             method.name.clone()
                         };
-                        result.test_entries.push(TestInfo {
+                        let cases: Vec<&tinox_parser::Annotation> = method.annotations.iter().filter(|a| a.name == "Case").collect();
+                        let mut push = |case_index: Option<usize>, case_args: Vec<Literal>| {
+                            let description = match case_index {
+                                Some(i) => format!("{description} [case {i}]"),
+                                None => description.clone(),
+                            };
+                            result.test_entries.push(TestInfo {
+                                class_name: class.name.clone(),
+                                method_name: method.name.clone(),
+                                description,
+                                line: method.span.start.line,
+                                column: method.span.start.column,
+                                case_index,
+                                case_args,
+                            });
+                        };
+                        if cases.is_empty() {
+                            push(None, Vec::new());
+                        } else {
+                            for (i, case) in cases.iter().enumerate() {
+                                let literals = case.args.iter().filter_map(|a| match a {
+                                    tinox_parser::AnnotationArg::Literal(l) => Some(l.clone()),
+                                    _ => None,
+                                }).collect();
+                                push(Some(i), literals);
+                            }
+                        }
+                    }
+                    "BeforeEach" | "AfterEach" => {
+                        result.test_hooks.push(TestHookInfo {
                             class_name: class.name.clone(),
                             method_name: method.name.clone(),
-                            description,
-                            line: method.span.start.line,
-                            column: method.span.start.column,
+                            after: ann.name == "AfterEach",
                         });
                     }
                     "Timed" | "Counted" => {
@@ -1446,10 +1806,20 @@ impl AnnotationProcessor {
 
         if let Some((host, port, user, pass, address)) = amqp10_consumer_args {
             let mut on_message: Option<String> = None;
+            let mut failure: Option<(i64, i64)> = None;
             for method in &class.methods {
                 for ann in &method.annotations {
                     if ann.name == "OnMessage" {
                         on_message = Some(method.name.clone());
+                        if let Some(policy) = method.annotations.iter().find(|a| a.name == "MessageFailure") {
+                            let int = |i: usize| match policy.args.get(i) {
+                                Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(n))) => Some(*n),
+                                _ => None,
+                            };
+                            if let (Some(max), Some(backoff)) = (int(0), int(1)) {
+                                failure = Some((max, backoff));
+                            }
+                        }
                     }
                 }
             }
@@ -1461,15 +1831,30 @@ impl AnnotationProcessor {
                 pass,
                 address,
                 on_message,
+                failure,
             });
         }
 
         if let Some((host, port, vhost, user, pass, queue)) = amqp091_consumer_args {
             let mut on_message: Option<String> = None;
+            let mut failure: Option<(i64, i64, String)> = None;
             for method in &class.methods {
                 for ann in &method.annotations {
                     if ann.name == "OnMessage" {
                         on_message = Some(method.name.clone());
+                        if let Some(policy) = method.annotations.iter().find(|a| a.name == "MessageFailure") {
+                            let int = |i: usize| match policy.args.get(i) {
+                                Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(n))) => Some(*n),
+                                _ => None,
+                            };
+                            let dlq = match policy.args.get(2) {
+                                Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(q))) => q.clone(),
+                                _ => String::new(),
+                            };
+                            if let (Some(max), Some(backoff)) = (int(0), int(1)) {
+                                failure = Some((max, backoff, dlq));
+                            }
+                        }
                     }
                 }
             }
@@ -1482,6 +1867,7 @@ impl AnnotationProcessor {
                 pass,
                 queue,
                 on_message,
+                failure,
             });
         }
 
@@ -1661,6 +2047,7 @@ impl AnnotationProcessor {
                 "PathParam" => Some(RouteParamKind::PathParam),
                 "QueryParam" => Some(RouteParamKind::QueryParam),
                 "PostParam" => Some(RouteParamKind::PostParam),
+                "MultipartParam" => Some(RouteParamKind::MultipartParam),
                 "HttpContext" => Some(RouteParamKind::HttpContext),
                 _ => None,
             })?;
@@ -1743,9 +2130,314 @@ fn collect_config_fields(class_name: &str, fields: &[FieldDef]) -> Vec<ConfigFie
                 field_name: f.name.clone(),
                 config_key: key,
                 field_llvm_type: field_type_to_llvm(&f.field_type),
+                has_default: f.default.is_some(),
             })
         })
         .collect()
+}
+
+/// Resolve the entire static provider graph before backend emission. The result
+/// preserves the declared field type for interface dispatch and exposes the
+/// concrete provider for code generation, scope checks and bootstrap inspection.
+fn resolve_di_providers(source: &tinox_parser::SourceFile, result: &mut AnnotationProcessingResult) -> Vec<Error> {
+    fn classes<'a>(decls: &'a [tinox_parser::Decl], out: &mut std::collections::BTreeMap<String, &'a Class>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Class(class) => { out.entry(class.name.clone()).or_insert(class); }
+                DeclKind::Namespace(ns) => classes(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    fn name(annotations: &[tinox_parser::Annotation], annotation: &str) -> Option<String> {
+        annotations.iter().find(|a| a.name == annotation).and_then(|a| a.args.first())
+            .and_then(|a| if let AnnotationArg::Literal(Literal::String(value)) = a { Some(value.clone()) } else { None })
+    }
+    let mut all = std::collections::BTreeMap::new();
+    classes(&source.decls, &mut all);
+    let mut errors = vec![];
+    let mut named = HashMap::new();
+    for class in all.values() {
+        let providers: Vec<_> = class.annotations.iter().filter(|a| a.name == "Provider").collect();
+        if !providers.is_empty() && !result.di_components.iter().any(|c| c.class_name == class.name) {
+            errors.push(Error::new(class.span, "@Provider requires a component scope annotation"));
+        }
+        if !providers.is_empty() && (!class.type_params.is_empty() || class.extends.is_some()) {
+            errors.push(Error::new(class.span, "@Provider requires a non-generic concrete class without inheritance; implement interfaces directly"));
+        }
+        for ann in providers.iter() {
+            let valid = ann.args.len() == 1 && matches!(&ann.args[0], AnnotationArg::Literal(Literal::String(value)) if !value.trim().is_empty());
+            if !valid { errors.push(Error::new(ann.span, "@Provider requires one non-empty string literal")); }
+        }
+        if providers.len() > 1 { errors.push(Error::new(class.span, "Duplicate @Provider annotation")); }
+        for ann in class.annotations.iter().filter(|a| a.name == "OutboxDispatcher") {
+            let shape_ok = matches!(ann.args.as_slice(), [
+                AnnotationArg::Literal(Literal::String(_)), AnnotationArg::Literal(Literal::Integer(_)),
+                AnnotationArg::Literal(Literal::String(_)), AnnotationArg::Literal(Literal::String(_)),
+                AnnotationArg::Literal(Literal::String(_)), AnnotationArg::Literal(Literal::Integer(_)),
+                AnnotationArg::Literal(Literal::Integer(_)),
+            ]);
+            if !shape_ok {
+                errors.push(Error::new(ann.span, "@OutboxDispatcher(host: String, port: Int, vhost: String, user: String, pass: String, maxAttempts: Int, backoffMs: Int) takes literals"));
+                continue;
+            }
+            if let (AnnotationArg::Literal(Literal::Integer(max)), AnnotationArg::Literal(Literal::Integer(backoff))) = (&ann.args[5], &ann.args[6]) {
+                if !(1..=100).contains(max) {
+                    errors.push(Error::new(ann.span, format!("@OutboxDispatcher maxAttempts must be 1..=100, found {max}")));
+                }
+                if !(0..=60000).contains(backoff) {
+                    errors.push(Error::new(ann.span, format!("@OutboxDispatcher backoffMs must be 0..=60000, found {backoff}")));
+                }
+            }
+        }
+        for method in &class.methods {
+            for ann in method.annotations.iter().filter(|a| a.name == "Cacheable") {
+                let int = |i: usize| match ann.args.get(i) {
+                    Some(AnnotationArg::Literal(Literal::Integer(n))) => Some(*n),
+                    _ => None,
+                };
+                match (int(0), int(1)) {
+                    (Some(ttl), Some(cap)) => {
+                        if !(1..=2_592_000).contains(&ttl) {
+                            errors.push(Error::new(ann.span, format!("@Cacheable ttlSeconds must be 1..=2592000, found {ttl}")));
+                        }
+                        if !(1..=100_000).contains(&cap) {
+                            errors.push(Error::new(ann.span, format!("@Cacheable maxEntries must be 1..=100000, found {cap}")));
+                        }
+                    }
+                    _ => errors.push(Error::new(ann.span, "@Cacheable needs integer literals ttlSeconds and maxEntries")),
+                }
+                let simple = |t: &Type| matches!(t, Type::String | Type::Int64 | Type::Int32 | Type::Bool);
+                if method.annotations.iter().any(|a| a.name == "CacheEvict") {
+                    errors.push(Error::new(ann.span, "a method cannot be both @Cacheable and @CacheEvict"));
+                }
+                if !simple(&method.ret_type) || method.params.iter().any(|p| !simple(&p.param_type)) {
+                    errors.push(Error::new(method.span, format!("@Cacheable method '{}.{}': parameters and result must be String, Int64, Int32 or Bool (the cache key and value are text; other types are not converted implicitly)", class.name, method.name)));
+                }
+            }
+            for ann in method.annotations.iter().filter(|a| a.name == "CacheEvict") {
+                if ann.args.iter().any(|a| !matches!(a, AnnotationArg::Literal(Literal::String(n)) if n.contains('.'))) {
+                    errors.push(Error::new(ann.span, "@CacheEvict takes string literals naming @Cacheable methods as \"Class.method\""));
+                }
+            }
+            for ann in method.annotations.iter().filter(|a| a.name == "MessageFailure") {
+                let is_091 = class.annotations.iter().any(|a| a.name == "Amqp091Consumer");
+                let is_10 = class.annotations.iter().any(|a| a.name == "Amqp10Consumer");
+                let is_handler = method.annotations.iter().any(|a| a.name == "OnMessage");
+                if !(is_091 || is_10) || !is_handler {
+                    errors.push(Error::new(ann.span, "@MessageFailure belongs on the @OnMessage method of an @Amqp091Consumer or @Amqp10Consumer class"));
+                }
+                if is_10 && ann.args.len() > 2 {
+                    errors.push(Error::new(ann.span, "@MessageFailure on an @Amqp10Consumer takes (maxAttempts, backoffMs) only: a rejected message is dead-lettered by the queue's own x-dead-letter-exchange (publishing to a named queue over a second AMQP 1.0 link is not offered)"));
+                }
+                let int = |i: usize| match ann.args.get(i) {
+                    Some(AnnotationArg::Literal(Literal::Integer(n))) => Some(*n),
+                    _ => None,
+                };
+                match (int(0), int(1)) {
+                    (Some(max), Some(backoff)) => {
+                        if !(1..=20).contains(&max) {
+                            errors.push(Error::new(ann.span, format!("@MessageFailure maxAttempts must be 1..=20, found {max}")));
+                        }
+                        if !(0..=60000).contains(&backoff) {
+                            errors.push(Error::new(ann.span, format!("@MessageFailure backoffMs must be 0..=60000, found {backoff}")));
+                        }
+                    }
+                    _ => errors.push(Error::new(ann.span, "@MessageFailure needs integer literals maxAttempts and backoffMs")),
+                }
+                if let Some(arg) = ann.args.get(2) {
+                    if !matches!(arg, AnnotationArg::Literal(Literal::String(q)) if !q.trim().is_empty()) {
+                        errors.push(Error::new(ann.span, "@MessageFailure's dead-letter queue must be a non-empty string literal"));
+                    }
+                }
+            }
+            for ann in method.annotations.iter().filter(|a| a.name == "Scheduled") {
+                let cron = match ann.args.first() {
+                    Some(AnnotationArg::Literal(Literal::String(c))) => c.as_str(),
+                    _ => { errors.push(Error::new(ann.span, "@Scheduled requires a cron string literal such as \"*/5 * * * *\"")); continue; }
+                };
+                if cron.split_whitespace().count() != 5 {
+                    errors.push(Error::new(ann.span, format!("@Scheduled(\"{cron}\") needs five fields: minute hour day-of-month month day-of-week")));
+                }
+                if method.static_ || !method.params.is_empty() || !matches!(method.ret_type, Type::Nothing) {
+                    errors.push(Error::new(method.span, format!("@Scheduled method '{}.{}' must be an instance method with no parameters and return Nothing", class.name, method.name)));
+                }
+                if method.annotations.iter().filter(|a| a.name == "Scheduled").count() > 1 {
+                    errors.push(Error::new(ann.span, "@Scheduled may appear once per method"));
+                }
+            }
+        }
+        if class.annotations.iter().any(|a| a.name == "Entity" || a.name == "Table") {
+            let ids = class.fields.iter().filter(|f| f.annotations.iter().any(|a| a.name == "Id")).count();
+            let generated = class.fields.iter().any(|f| f.annotations.iter().any(|a| a.name == "GeneratedValue"));
+            if ids > 1 && generated {
+                errors.push(Error::new(class.span, format!(
+                    "entity '{}': @GeneratedValue cannot be combined with a composite @Id (the caller supplies every key component)", class.name)));
+            }
+            if ids > 1 && (class.extends.is_some() || !class.type_params.is_empty()) {
+                errors.push(Error::new(class.span, format!(
+                    "entity '{}': composite @Id is not supported on inherited or generic entities", class.name)));
+            }
+        }
+        if let Some(value) = name(&class.annotations, "Provider") {
+            if let Some(previous) = named.insert(value.clone(), class.name.clone()) {
+                errors.push(Error::new(class.span, format!("Duplicate provider name '{value}' on '{previous}' and '{}'", class.name)));
+            }
+        }
+        for field in &class.fields {
+            let qualifiers: Vec<_> = field.annotations.iter().filter(|a| a.name == "Qualifier").collect();
+            if !qualifiers.is_empty() && !result.di_components.iter().any(|c| c.class_name == class.name) {
+                errors.push(Error::new(class.span, "@Qualifier requires a component scope annotation on its owning class"));
+            }
+            for ann in qualifiers.iter() {
+                if !field.annotations.iter().any(|a| a.name == "Inject") {
+                    errors.push(Error::new(ann.span, "@Qualifier requires @Inject on the same field"));
+                }
+                if ann.args.len() != 1 || !matches!(&ann.args[0], AnnotationArg::Literal(Literal::String(value)) if !value.trim().is_empty()) {
+                    errors.push(Error::new(ann.span, "@Qualifier requires one non-empty string literal"));
+                }
+            }
+            if qualifiers.len() > 1 { errors.push(Error::new(class.span, "Duplicate @Qualifier annotation")); }
+        }
+    }
+    let provider_names: HashSet<_> = result.di_components.iter().map(|c| c.class_name.clone()).collect();
+    for component in &mut result.di_components {
+        let Some(owner) = all.get(&component.class_name) else { continue };
+        for field in &owner.fields {
+            if field.annotations.iter().any(|a| a.name == "Inject") && !matches!(field.field_type, Type::Named(_)) {
+                errors.push(Error::new(owner.span, "@Inject requires a non-generic named class or interface type"));
+            }
+        }
+        for field in &mut component.inject_fields {
+            let mut candidates: Vec<_> = provider_names.iter().filter(|candidate| {
+                let Some(class) = all.get(candidate.as_str()) else { return false };
+                let compatible = class.name == field.field_type || class.implements.contains(&field.field_type);
+                compatible && field.qualifier.as_ref().is_none_or(|qualifier| name(&class.annotations, "Provider").as_ref() == Some(qualifier))
+            }).cloned().collect();
+            candidates.sort();
+            match candidates.as_slice() {
+                [provider] => field.provider_class = provider.clone(),
+                [] => errors.push(Error::new(owner.span, format!("Missing provider for @Inject '{}.{}': type '{}' qualifier {:?} has no component scope annotation/provider matching the selection", component.class_name, field.field_name, field.field_type, field.qualifier))),
+                _ => errors.push(Error::new(owner.span, format!("Ambiguous providers for @Inject '{}.{}': {}; select @Qualifier(\"name\")", component.class_name, field.field_name, candidates.join(", ")))),
+            }
+        }
+    }
+    fn visit(index: usize, components: &[DiComponentInfo], state: &mut [u8], stack: &mut Vec<String>) -> Option<String> {
+        if state[index] == 2 { return None; }
+        if state[index] == 1 { stack.push(components[index].class_name.clone()); return Some(stack.join(" -> ")); }
+        state[index] = 1;
+        stack.push(components[index].class_name.clone());
+        for field in &components[index].inject_fields {
+            if let Some(target) = components.iter().position(|c| c.class_name == field.provider_class) {
+                if let Some(cycle) = visit(target, components, state, stack) { return Some(cycle); }
+            }
+        }
+        stack.pop(); state[index] = 2; None
+    }
+    let mut state = vec![0; result.di_components.len()];
+    for index in 0..result.di_components.len() {
+        if let Some(cycle) = visit(index, &result.di_components, &mut state, &mut vec![]) {
+            let class = all[&result.di_components[index].class_name];
+            errors.push(Error::new(class.span, format!("Cyclic @Inject dependency: {cycle}")));
+            break;
+        }
+    }
+    // Singleton ownership cannot be repaired by reinjecting a request object
+    // into a process-wide instance: that races across simultaneous requests.
+    fn request_path(name: &str, components: &[DiComponentInfo], seen: &mut HashSet<String>) -> Option<String> {
+        if !seen.insert(name.into()) { return None; }
+        let component = components.iter().find(|c| c.class_name == name)?;
+        if component.scope == DiScope::HttpRequest { return Some(name.into()); }
+        for field in &component.inject_fields {
+            if let Some(path) = request_path(&field.provider_class, components, seen) {
+                return Some(format!("{name}.{} -> {path}", field.field_name));
+            }
+        }
+        None
+    }
+    // Reject declared retaining paths even when fields are assigned manually
+    // rather than injected (nullable/container wrappers do not shorten lifetime).
+    fn retaining_type(ty: &Type, all: &std::collections::BTreeMap<String, &Class>, request: &HashSet<String>, seen: &mut HashSet<String>) -> Option<String> {
+        match ty {
+            Type::Named(name) | Type::Generic { name, .. } => {
+                if request.contains(name) { return Some(name.clone()); }
+                if let Type::Generic { args, .. } = ty {
+                    for arg in args {
+                        if let Some(path) = retaining_type(arg, all, request, seen) { return Some(format!("{name}<{path}>")); }
+                    }
+                }
+                if !seen.insert(name.clone()) { return None; }
+                if let Some(class) = all.get(name) {
+                    for field in &class.fields {
+                        if let Some(path) = retaining_type(&field.field_type, all, request, seen) {
+                            return Some(format!("{name}.{} -> {path}", field.name));
+                        }
+                    }
+                    if let Some(parent) = &class.extends {
+                        return retaining_type(&Type::Named(parent.clone()), all, request, seen)
+                            .map(|path| format!("{name} extends {path}"));
+                    }
+                }
+                None
+            }
+            Type::Array(t) | Type::Nullable(t) | Type::Mutable(t) | Type::Ref(t) => retaining_type(t, all, request, seen),
+            Type::Map(k, v) => retaining_type(k, all, request, seen).or_else(|| retaining_type(v, all, request, seen)),
+            Type::Tuple(items) => items.iter().find_map(|t| retaining_type(t, all, request, seen)),
+            Type::Fn { params, ret } => params.iter().chain(std::iter::once(ret.as_ref())).find_map(|t| retaining_type(t, all, request, seen)),
+            _ => None,
+        }
+    }
+    let mut request: HashSet<_> = result.di_components.iter().filter(|c| c.scope == DiScope::HttpRequest).map(|c| c.class_name.clone()).collect();
+    // An interface capable of holding a request provider is a retaining type too.
+    for component in &result.di_components {
+        if component.scope == DiScope::HttpRequest {
+            request.extend(all[&component.class_name].implements.iter().cloned());
+        }
+    }
+    fn interface_parents(decls: &[tinox_parser::Decl], parents: &mut HashMap<String, Vec<String>>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Interface(interface) => { parents.insert(interface.name.clone(), interface.extends.clone()); }
+                DeclKind::Namespace(ns) => interface_parents(&ns.decls, parents),
+                _ => {}
+            }
+        }
+    }
+    let mut parents = HashMap::new();
+    interface_parents(&source.decls, &mut parents);
+    loop {
+        let before = request.len();
+        for name in request.clone() {
+            if let Some(inherited) = parents.get(&name) { request.extend(inherited.iter().cloned()); }
+        }
+        if before == request.len() { break; }
+    }
+    for component in &result.di_components {
+        if matches!(component.scope, DiScope::Application | DiScope::Startup) {
+            if let Some(parent) = &all[&component.class_name].extends {
+                if let Some(path) = retaining_type(&Type::Named(parent.clone()), &all, &request, &mut HashSet::new()) {
+                    errors.push(Error::new(all[&component.class_name].span,
+                        format!("Singleton '{}' inherits fields retaining request-scoped state: {path}", component.class_name)));
+                }
+            }
+            for field in &all[&component.class_name].fields {
+                // A qualified injection's concrete provider is authoritative;
+                // another request implementation of its interface must not
+                // reject a safe application provider selected by @Qualifier.
+                let selected = component.inject_fields.iter().find(|f| f.field_name == field.name)
+                    .map(|f| Type::Named(f.provider_class.clone()));
+                let retaining = selected.as_ref().unwrap_or(&field.field_type);
+                if let Some(path) = retaining_type(retaining, &all, &request, &mut HashSet::new()) {
+                    errors.push(Error::new(field.span, format!("Singleton field '{}.{}' can retain request-scoped state: {path}", component.class_name, field.name)));
+                }
+            }
+            if let Some(path) = request_path(&component.class_name, &result.di_components, &mut HashSet::new()) {
+                errors.push(Error::new(all[&component.class_name].span,
+                    format!("Singleton cannot capture request-scoped state: {path}; make the request owner @HttpRequestScoped")));
+            }
+        }
+    }
+    errors
 }
 
 fn collect_inject_fields(fields: &[FieldDef]) -> Vec<DiInjectField> {
@@ -1757,6 +2449,8 @@ fn collect_inject_fields(fields: &[FieldDef]) -> Vec<DiInjectField> {
                 Some(DiInjectField {
                     field_name: f.name.clone(),
                     field_type: type_name.clone(),
+                    provider_class: type_name.clone(),
+                    qualifier: f.annotations.iter().find(|a| a.name == "Qualifier").and_then(|a| a.args.first()).and_then(|a| if let AnnotationArg::Literal(Literal::String(value)) = a { Some(value.clone()) } else { None }),
                 })
             } else {
                 None
@@ -1820,6 +2514,20 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
                     }
                 }
             }
+            for map in c.annotations.iter().filter(|a| a.name == "ErrorMap") {
+                if let (Some(AnnotationArg::Literal(Literal::String(code))), Some(AnnotationArg::Literal(Literal::Integer(status)))) = (map.args.first(), map.args.get(1)) {
+                    let valid_code = code.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                        && code.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+                    if !valid_code {
+                        errors.push(Error::new(map.span, format!("@ErrorMap code '{code}' must be UPPER_SNAKE_CASE")));
+                    }
+                    if !(400..=599).contains(status) {
+                        errors.push(Error::new(map.span, "@ErrorMap status must be an HTTP error status (400-599)"));
+                    }
+                } else {
+                    errors.push(Error::new(map.span, "@ErrorMap expects (\"CODE\", status)"));
+                }
+            }
             for method in &c.methods {
                 // Issue #475: a @Test method reports its result as a Bool.
                 if let Some(test) = method.annotations.iter().find(|a| a.name == "Test") {
@@ -1828,6 +2536,44 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
                             test.span,
                             format!("@Test method '{}' must return Bool (true = pass), but returns a different type", method.name),
                         ));
+                    }
+                }
+                // #547: fixtures and parameterized cases.
+                for hook in method.annotations.iter().filter(|a| matches!(a.name.as_str(), "BeforeEach" | "AfterEach")) {
+                    if method.static_ || !method.params.is_empty() || !matches!(method.ret_type, Type::Nothing) {
+                        errors.push(Error::new(
+                            hook.span,
+                            format!("@{} method '{}' must be an instance method (`fn`) without parameters returning Nothing", hook.name, method.name),
+                        ));
+                    }
+                    if method.annotations.iter().any(|a| a.name == "Test") {
+                        errors.push(Error::new(hook.span, format!("method '{}' cannot be both @Test and @{}", method.name, hook.name)));
+                    }
+                }
+                let cases: Vec<&tinox_parser::Annotation> = method.annotations.iter().filter(|a| a.name == "Case").collect();
+                let is_test = method.annotations.iter().any(|a| a.name == "Test");
+                if !cases.is_empty() && !is_test {
+                    errors.push(Error::new(cases[0].span, format!("@Case on '{}' requires @Test", method.name)));
+                }
+                if is_test && cases.is_empty() && !method.params.is_empty() {
+                    errors.push(Error::new(method.span, format!("@Test method '{}' has parameters; supply them with @Case(...)", method.name)));
+                }
+                for case in &cases {
+                    if case.args.len() != method.params.len() {
+                        errors.push(Error::new(case.span, format!("@Case has {} argument(s) but '{}' takes {} parameter(s)", case.args.len(), method.name, method.params.len())));
+                        continue;
+                    }
+                    for (arg, param) in case.args.iter().zip(&method.params) {
+                        let ok = matches!(
+                            (arg, &param.param_type),
+                            (AnnotationArg::Literal(Literal::Integer(_)), Type::Int64)
+                                | (AnnotationArg::Literal(Literal::Float(_)), Type::Float64)
+                                | (AnnotationArg::Literal(Literal::String(_)), Type::String)
+                                | (AnnotationArg::Literal(Literal::Bool(_)), Type::Bool)
+                        );
+                        if !ok {
+                            errors.push(Error::new(case.span, format!("@Case argument for parameter '{}' must be a literal matching its type (Int64, Float64, String or Bool)", param.name)));
+                        }
                     }
                 }
                 for hook in method.annotations.iter().filter(|a| {
@@ -1873,6 +2619,10 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
 
             for field in &c.fields {
                 errors.extend(processor.validate(&field.annotations, AnnotationTarget::Field));
+                errors.extend(crate::dto_validation::validate_field(field));
+                if !c.annotations.iter().any(|a|a.name=="JsonSerializable") && field.annotations.iter().any(|a|matches!(a.name.as_str(),"Required"|"Optional"|"Length"|"Range")) {
+                    errors.push(Error::new(field.span,"request validation annotations require a @JsonSerializable class"));
+                }
             }
             for method in &c.methods {
                 errors.extend(processor.validate(&method.annotations, AnnotationTarget::Method));
@@ -1968,12 +2718,12 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
 
     for param in &method.params {
         let bindings: Vec<&Annotation> = param.annotations.iter()
-            .filter(|a| matches!(a.name.as_str(), "PathParam" | "QueryParam" | "PostParam" | "HttpContext"))
+            .filter(|a| matches!(a.name.as_str(), "PathParam" | "QueryParam" | "PostParam" | "MultipartParam" | "HttpContext"))
             .collect();
         match bindings.len() {
             0 => {
                 errors.push(Error::new(param.span, format!(
-                    "REST handler parameter '{}' needs exactly one of @PathParam/@QueryParam/@PostParam/@HttpContext",
+                    "REST handler parameter '{}' needs exactly one of @PathParam/@QueryParam/@PostParam/@MultipartParam/@HttpContext",
                     param.name
                 )));
                 continue;
@@ -2002,6 +2752,14 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
                 if !is_json_serializable_class_type(&param.param_type, json_serializable) {
                     errors.push(Error::new(param.span, format!(
                         "@PostParam on '{}' must be a class marked @JsonSerializable, found {:?}",
+                        param.name, param.param_type
+                    )));
+                }
+            }
+            "MultipartParam" => {
+                if !matches!(&param.param_type, Type::Named(n) if n == "MultipartResult") {
+                    errors.push(Error::new(param.span, format!(
+                        "@MultipartParam on '{}' must be of type MultipartResult (import tinox.core.bytes), found {:?}",
                         param.name, param.param_type
                     )));
                 }
@@ -2099,7 +2857,255 @@ pub fn validate_annotations(
     for decl in &source.decls {
         validate_decl(&processor, decl, &json_serializable, &mut errors);
     }
+    // The compiler's single merged call passes the very same declarations as `extra_decls`
+    // again (prelude_decls accumulates them); counting a class twice would trip every
+    // "at most one"/"unique" check below, so skip extras the source already declares.
+    fn decl_key(d: &tinox_parser::Decl) -> Option<String> {
+        match &d.node {
+            DeclKind::Class(c) => Some(format!("class {}", c.name)),
+            DeclKind::Namespace(ns) => Some(format!("namespace {}", ns.name.join("."))),
+            _ => None,
+        }
+    }
+    let known: HashSet<String> = source.decls.iter().filter_map(decl_key).collect();
+    let mut merged = source.clone();
+    merged.decls.extend(extra_decls.iter().filter(|d| decl_key(d).is_none_or(|k| !known.contains(&k))).cloned());
+    let mut result = process_annotations(&merged);
+    errors.extend(resolve_di_providers(&merged, &mut result));
+    errors.extend(crate::dto_validation::validate_request_graphs(&source.decls,extra_decls));
+    errors.extend(validate_error_declarations(&merged.decls));
+    errors.extend(validate_resilience_declarations(&merged.decls));
+    errors.extend(validate_security_declarations(&merged.decls));
     for error in &mut errors { error.code = Some("TINOX-ANNOTATION".into()); }
+    errors
+}
+
+/// `@Cors` / `@Csrf` (#529): one policy per program, well-formed origins, no wildcard with credentials.
+fn validate_security_declarations(decls: &[tinox_parser::Decl]) -> Vec<Error> {
+    fn origin_ok(o: &str) -> bool {
+        let rest = o.strip_prefix("https://").or_else(|| o.strip_prefix("http://"));
+        match rest {
+            Some(host) => !host.is_empty() && !host.contains('/') && !host.contains('*') && !host.contains(char::is_whitespace),
+            None => false,
+        }
+    }
+    fn strings(arg: &AnnotationArg) -> Option<Vec<&str>> {
+        match arg {
+            AnnotationArg::Array(items) => items
+                .iter()
+                .map(|i| if let AnnotationArg::Literal(Literal::String(s)) = i { Some(s.as_str()) } else { None })
+                .collect(),
+            _ => None,
+        }
+    }
+    fn walk<'a>(decls: &'a [tinox_parser::Decl], cors: &mut Vec<&'a Annotation>, csrf: &mut Vec<&'a Annotation>) {
+        for d in decls {
+            match &d.node {
+                DeclKind::Class(c) => {
+                    cors.extend(c.annotations.iter().filter(|a| a.name == "Cors"));
+                    csrf.extend(c.annotations.iter().filter(|a| a.name == "Csrf"));
+                }
+                DeclKind::Namespace(ns) => walk(&ns.decls, cors, csrf),
+                _ => {}
+            }
+        }
+    }
+    let (mut cors, mut csrf) = (Vec::new(), Vec::new());
+    walk(decls, &mut cors, &mut csrf);
+    let mut errors = Vec::new();
+    if cors.len() > 1 {
+        errors.push(Error::new(cors[1].span, "only one @Cors policy is allowed per program"));
+    }
+    if csrf.len() > 1 {
+        errors.push(Error::new(csrf[1].span, "only one @Csrf policy is allowed per program"));
+    }
+    for a in &cors {
+        let credentials = matches!(a.args.get(1), Some(AnnotationArg::Literal(Literal::Bool(true))));
+        match a.args.first().and_then(strings) {
+            Some(origins) if !origins.is_empty() => {
+                for o in origins {
+                    if o == "*" {
+                        if credentials {
+                            errors.push(Error::new(a.span, "@Cors: the wildcard origin \"*\" cannot be combined with credentials=true"));
+                        }
+                    } else if !origin_ok(o) {
+                        errors.push(Error::new(a.span, format!("@Cors origin '{o}' must be an exact http(s)://host[:port] origin without path or wildcard")));
+                    }
+                }
+            }
+            _ => errors.push(Error::new(a.span, "@Cors expects a non-empty list of origin strings first")),
+        }
+        if !matches!(a.args.get(1), Some(AnnotationArg::Literal(Literal::Bool(_)))) {
+            errors.push(Error::new(a.span, "@Cors: second argument (credentials) must be true or false"));
+        }
+        if !matches!(a.args.get(2), Some(AnnotationArg::Literal(Literal::Integer(n))) if (0..=86400).contains(n)) {
+            errors.push(Error::new(a.span, "@Cors: third argument (maxAgeSeconds) must be an integer in 0..=86400"));
+        }
+        if let Some(h) = a.args.get(3) {
+            match strings(h) {
+                Some(names) if names.iter().all(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) => {}
+                _ => errors.push(Error::new(a.span, "@Cors: allowed headers must be a list of header-name strings")),
+            }
+        }
+    }
+    for a in &csrf {
+        if let Some(arg) = a.args.first() {
+            match strings(arg) {
+                Some(origins) if origins.iter().all(|o| origin_ok(o)) => {}
+                _ => errors.push(Error::new(a.span, "@Csrf: trusted origins must be exact http(s)://host[:port] strings")),
+            }
+        }
+    }
+    errors
+}
+
+/// `@Retry` replays the method, so it must be declared `@Idempotent` explicitly (#527).
+fn validate_resilience_declarations(decls: &[tinox_parser::Decl]) -> Vec<Error> {
+    fn walk(decls: &[tinox_parser::Decl], errors: &mut Vec<Error>) {
+        for d in decls {
+            match &d.node {
+                DeclKind::Class(c) => {
+                    for m in &c.methods {
+                        if let Some(r) = m.annotations.iter().find(|a| a.name == "Retry") {
+                            if !m.annotations.iter().any(|a| a.name == "Idempotent") {
+                                errors.push(Error::new(
+                                    r.span,
+                                    format!("@Retry on '{}.{}' requires @Idempotent: replaying a method is never implicit", c.name, m.name),
+                                ));
+                            }
+                        }
+                    }
+                }
+                DeclKind::Namespace(ns) => walk(&ns.decls, errors),
+                _ => {}
+            }
+        }
+    }
+    let mut errors = Vec::new();
+    walk(decls, &mut errors);
+    errors
+}
+
+/// `@Error` classes and `@Throws` lists (checked-exception surface, declaration level).
+/// Enforcement of the lists at call sites is a separate, designed-but-not-implemented step
+/// (docs/checked-exceptions.md).
+fn validate_error_declarations(decls: &[tinox_parser::Decl]) -> Vec<Error> {
+    fn classes<'a>(decls: &'a [tinox_parser::Decl], out: &mut Vec<&'a Class>) {
+        for d in decls {
+            match &d.node {
+                DeclKind::Class(c) => out.push(c),
+                DeclKind::Namespace(ns) => classes(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    let mut all = Vec::new();
+    classes(decls, &mut all);
+    let mut errors = Vec::new();
+    let mut error_classes: HashSet<&str> = HashSet::new();
+    let mut codes: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+    for c in &all {
+        let Some(ann) = c.annotations.iter().find(|a| a.name == "Error") else { continue };
+        error_classes.insert(c.name.as_str());
+        let code = match ann.args.first() {
+            Some(AnnotationArg::Literal(Literal::String(code))) => code.clone(),
+            _ => {
+                errors.push(Error::new(ann.span, "@Error expects (\"CODE\"[, status])"));
+                continue;
+            }
+        };
+        let valid = code.chars().next().is_some_and(|ch| ch.is_ascii_uppercase())
+            && code.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_');
+        if !valid {
+            errors.push(Error::new(ann.span, format!("@Error code '{code}' must be UPPER_SNAKE_CASE")));
+        }
+        // A namespaced class can appear twice in the merged list (namespace + flattened copy).
+        if let Some(other) = codes.insert(code.clone(), c.name.as_str()).filter(|o| *o != c.name) {
+            errors.push(Error::new(ann.span, format!("@Error code '{code}' is already used by class '{other}'")));
+        }
+        if let Some(status) = ann.args.get(1) {
+            if !matches!(status, AnnotationArg::Literal(Literal::Integer(s)) if (400..=599).contains(s)) {
+                errors.push(Error::new(ann.span, "@Error status must be an HTTP error status (400-599)"));
+            }
+        }
+        // `message` may be inherited from an @Error parent class.
+        let mut has_message = false;
+        let mut cur = Some(*c);
+        let mut hops = 0;
+        while let Some(k) = cur {
+            has_message |= k.fields.iter().any(|f| f.name == "message" && matches!(f.field_type, Type::String));
+            hops += 1;
+            cur = if hops > 64 { None } else { k.extends.as_deref().and_then(|p| all.iter().find(|x| x.name == p).copied()) };
+        }
+        if !has_message {
+            errors.push(Error::new(ann.span, format!("@Error class '{}' must declare `var message: String`", c.name)));
+        }
+        // A caught error is rebuilt from "CODE: message" alone, so extra fields would silently be lost.
+        if let Some(extra) = c.fields.iter().find(|f| f.name != "message") {
+            errors.push(Error::new(
+                ann.span,
+                format!("@Error class '{}' declares field '{}': error classes carry only `message` (it is all that travels with a thrown error)", c.name, extra.name),
+            ));
+        }
+    }
+    // A subclass of an error class is an error class too and needs its own code.
+    for c in &all {
+        if let Some(parent) = c.extends.as_deref() {
+            if error_classes.contains(parent) && !error_classes.contains(c.name.as_str()) {
+                errors.push(Error::new(
+                    c.span,
+                    format!("class '{}' extends the @Error class '{}' and must itself be annotated @Error(\"CODE\"[, status])", c.name, parent),
+                ));
+            }
+        }
+    }
+    for c in &all {
+        for m in &c.methods {
+            let Some(throws) = m.annotations.iter().find(|a| a.name == "Throws") else { continue };
+            let mut seen: HashSet<&str> = HashSet::new();
+            for arg in &throws.args {
+                match arg {
+                    AnnotationArg::TypeRef(name) if error_classes.contains(name.as_str()) => {
+                        if !seen.insert(name.as_str()) {
+                            errors.push(Error::new(throws.span, format!("@Throws on '{}.{}' lists '{name}' twice", c.name, m.name)));
+                        }
+                    }
+                    AnnotationArg::TypeRef(name) => errors.push(Error::new(
+                        throws.span,
+                        format!("@Throws on '{}.{}' names '{name}', which is not an @Error class", c.name, m.name),
+                    )),
+                    _ => errors.push(Error::new(throws.span, "@Throws expects error class names, e.g. @Throws(NotFound, Conflict)")),
+                }
+            }
+        }
+    }
+    // Interface methods may declare @Throws too (#524): same validation as class methods.
+    fn interfaces<'a>(decls: &'a [tinox_parser::Decl], out: &mut Vec<&'a tinox_parser::Interface>) {
+        for d in decls {
+            match &d.node {
+                DeclKind::Interface(i) => out.push(i),
+                DeclKind::Namespace(ns) => interfaces(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    let mut all_interfaces = Vec::new();
+    interfaces(decls, &mut all_interfaces);
+    for i in &all_interfaces {
+        for m in &i.methods {
+            let Some(throws) = m.annotations.iter().find(|a| a.name == "Throws") else { continue };
+            for arg in &throws.args {
+                match arg {
+                    AnnotationArg::TypeRef(name) if error_classes.contains(name.as_str()) => {}
+                    AnnotationArg::TypeRef(name) => errors.push(Error::new(
+                        throws.span,
+                        format!("@Throws on '{}.{}' names '{name}', which is not an @Error class", i.name, m.name),
+                    )),
+                    _ => errors.push(Error::new(throws.span, "@Throws expects error class names, e.g. @Throws(NotFound, Conflict)")),
+                }
+            }
+        }
+    }
     errors
 }
 
@@ -2114,6 +3120,145 @@ fn collect_json_serializable_classes(decls: &[tinox_parser::Decl], out: &mut Has
             DeclKind::Namespace(ns) => collect_json_serializable_classes(&ns.decls, out),
             _ => {}
         }
+    }
+}
+
+/// @ForeignKey(table, column): the target must be an entity table whose single @Id column is `column`
+/// and has the same type as the field; foreign keys between entities must not form a cycle (including a
+/// table referencing itself) so creation order and loading stay finite and explicit.
+///
+/// Needs the whole program (every entity), so the compiler calls it on the merged declarations; a
+/// per-file check could not tell "missing" from "declared in another file". Returns (class, message).
+pub fn foreign_key_errors(decls: &[tinox_parser::Decl]) -> Vec<(String, String)> {
+    fn collect<'a>(decls: &'a [tinox_parser::Decl], out: &mut std::collections::BTreeMap<String, &'a Class>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Class(class) => { out.entry(class.name.clone()).or_insert(class); }
+                DeclKind::Namespace(ns) => collect(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    let mut all = std::collections::BTreeMap::new();
+    collect(decls, &mut all);
+    let mut errors: Vec<(String, String)> = Vec::new();
+    let is_entity = |c: &Class| c.annotations.iter().any(|a| a.name == "Entity" || a.name == "Table");
+    let string_arg = |a: &Annotation, i: usize| match a.args.get(i) {
+        Some(AnnotationArg::Literal(Literal::String(v))) => Some(v.clone()),
+        _ => None,
+    };
+    let table_of = |c: &Class| {
+        c.annotations.iter().find(|a| a.name == "Table").and_then(|a| string_arg(a, 0)).unwrap_or_else(|| c.name.to_lowercase())
+    };
+    let column_of = |f: &FieldDef| {
+        f.annotations.iter().find(|a| a.name == "Column").and_then(|a| string_arg(a, 0)).unwrap_or_else(|| f.name.clone())
+    };
+    let tables: HashMap<String, &Class> = all.values().filter(|c| is_entity(c)).map(|c| (table_of(c), *c)).collect();
+    let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+    for class in all.values().filter(|c| is_entity(c)) {
+        for field in &class.fields {
+            for ann in field.annotations.iter().filter(|a| a.name == "ForeignKey") {
+                let at = format!("{}.{}", class.name, field.name);
+                let (Some(table), Some(column)) = (string_arg(ann, 0), string_arg(ann, 1)) else {
+                    errors.push((class.name.clone(), format!("{at}: @ForeignKey requires two string literals: table and column")));
+                    continue;
+                };
+                let Some(target) = tables.get(&table) else {
+                    errors.push((class.name.clone(), format!("{at}: @ForeignKey references table '{table}', which is not an @Entity table of this program")));
+                    continue;
+                };
+                let ids: Vec<&FieldDef> = target.fields.iter().filter(|f| f.annotations.iter().any(|a| a.name == "Id")).collect();
+                let target_key = match ids.as_slice() {
+                    [one] if column_of(one) == column => *one,
+                    [_] => {
+                        errors.push((class.name.clone(), format!("{at}: @ForeignKey must reference the primary key column of '{table}'")));
+                        continue;
+                    }
+                    _ => {
+                        errors.push((class.name.clone(), format!("{at}: @ForeignKey needs a target with exactly one @Id; '{table}' has {} (composite keys are not referenceable yet)", ids.len())));
+                        continue;
+                    }
+                };
+                if format!("{:?}", target_key.field_type) != format!("{:?}", field.field_type) {
+                    errors.push((class.name.clone(), format!("{at}: @ForeignKey type {:?} does not match {}.{} ({:?})", field.field_type, target.name, target_key.name, target_key.field_type)));
+                }
+                edges.entry(table_of(class)).or_default().push(table);
+            }
+        }
+    }
+    // A cycle (also a self reference) is rejected: report each table that can reach itself once.
+    let mut reported = HashSet::new();
+    for start in edges.keys() {
+        let mut stack: Vec<&String> = edges[start].iter().collect();
+        let mut seen = HashSet::new();
+        while let Some(t) = stack.pop() {
+            if t == start {
+                if reported.insert(start.clone()) {
+                    let class = tables[start];
+                    errors.push((class.name.clone(), format!("entity '{}': @ForeignKey references form a cycle through table '{start}'; break it (a self-referencing or mutually dependent schema needs a manual changeSet)", class.name)));
+                }
+                break;
+            }
+            if seen.insert(t) {
+                if let Some(next) = edges.get(t) { stack.extend(next.iter()); }
+            }
+        }
+    }
+    errors.sort();
+    errors
+}
+
+/// @CacheEvict targets must name an existing @Cacheable method; needs the whole program (like
+/// foreign_key_errors). Returns (class, message).
+pub fn cache_errors(decls: &[tinox_parser::Decl]) -> Vec<(String, String)> {
+    fn collect<'a>(decls: &'a [tinox_parser::Decl], out: &mut Vec<&'a Class>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Class(class) => out.push(class),
+                DeclKind::Namespace(ns) => collect(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    let mut classes = Vec::new();
+    collect(decls, &mut classes);
+    let cacheable: HashSet<String> = classes.iter()
+        .flat_map(|c| c.methods.iter().filter(|m| m.annotations.iter().any(|a| a.name == "Cacheable")).map(move |m| format!("{}.{}", c.name, m.name)))
+        .collect();
+    let mut errors = Vec::new();
+    for class in &classes {
+        for method in &class.methods {
+            for ann in method.annotations.iter().filter(|a| a.name == "CacheEvict") {
+                for arg in &ann.args {
+                    if let AnnotationArg::Literal(Literal::String(name)) = arg {
+                        if !cacheable.contains(name) {
+                            errors.push((class.name.clone(), format!("{}.{}: @CacheEvict(\"{name}\") names no @Cacheable method of this program", class.name, method.name)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    errors.sort();
+    errors
+}
+
+/// Propagation mode of a validated @Transactional annotation (0 REQUIRED, 1 NESTED,
+/// 2 REQUIRES_NEW); an unvalidated argument falls back to REQUIRED only because
+/// validate_annotations already rejected it.
+fn transactional_mode_value(name: &str) -> Option<i64> {
+    match name {
+        "REQUIRED" => Some(0),
+        "NESTED" => Some(1),
+        "REQUIRES_NEW" => Some(2),
+        _ => None,
+    }
+}
+
+fn transactional_mode(ann: &tinox_parser::Annotation) -> i64 {
+    match ann.args.first() {
+        Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(m))) => transactional_mode_value(m).unwrap_or(0),
+        _ => 0,
     }
 }
 
@@ -2134,6 +3279,62 @@ mod tests {
 
     fn valid(src: &str) -> Vec<Error> {
         validate_annotations(&parse(src), &[])
+    }
+
+    #[test]
+    fn error_class_inheritance_rules() {
+        let messages = |src: &str| valid(src).into_iter().map(|e| e.message).collect::<Vec<_>>().join(" | ");
+        let base = "@Error(\"BASE\")\nclass Base { var message: String }\n";
+        assert_eq!(messages(&format!("{base}@Error(\"SUB\")\nclass Sub extends Base {{ }}")), "");
+        assert!(messages(&format!("{base}class Sub extends Base {{ }}")).contains("must itself be annotated @Error"));
+        assert!(messages("@Error(\"X\")\nclass X { var message: String\nvar extra: Int64 }").contains("carry only `message`"));
+    }
+
+    #[test]
+    fn cors_and_csrf_policies_are_validated() {
+        let messages = |src: &str| valid(src).into_iter().map(|e| e.message).collect::<Vec<_>>().join(" | ");
+        assert!(messages("@Cors([\"https://a.example\"], true, 60)\n@Csrf([\"http://localhost:3000\"])\nclass P {}").is_empty());
+        assert!(messages("@Cors([\"*\"], true, 60)\nclass P {}").contains("wildcard"));
+        assert!(messages("@Cors([\"*\"], false, 60)\nclass P {}").is_empty());
+        assert!(messages("@Cors([\"https://a.example/path\"], false, 60)\nclass P {}").contains("exact"));
+        assert!(messages("@Cors([\"a.example\"], false, 60)\nclass P {}").contains("exact"));
+        assert!(messages("@Cors([], false, 60)\nclass P {}").contains("non-empty"));
+        assert!(messages("@Cors([\"https://a.example\"], false, 999999)\nclass P {}").contains("maxAgeSeconds"));
+        assert!(messages("@Cors([\"https://a.example\"], false, 60)\nclass P {}\n@Cors([\"https://b.example\"], false, 60)\nclass Q {}").contains("only one"));
+        assert!(messages("@Csrf([\"nonsense\"])\nclass P {}").contains("trusted origins"));
+        assert_eq!(proc("@Cors([\"https://a.example\"], true, 60)\nclass P {}").security_policy[0], "cors-origin\thttps://a.example");
+    }
+
+    #[test]
+    fn retry_requires_idempotent_and_valid_arguments() {
+        let messages = |src: &str| valid(src).into_iter().map(|e| e.message).collect::<Vec<_>>().join(" | ");
+        let ok = "class S { @Retry(3, 10, [\"UNAVAILABLE\"])\n@Idempotent\nfn f() -> Int64 { return 1 } }";
+        assert!(messages(ok).is_empty(), "{}", messages(ok));
+        assert!(messages("class S { @Retry(3, 10, [\"UNAVAILABLE\"])\nfn f() -> Int64 { return 1 } }").contains("requires @Idempotent"));
+        // arguments are checked while parsing
+        let bad = |src: &str| {
+            let tokens = Lexer::new(src).tokenize().unwrap();
+            Parser::new(tokens).parse().err().map(|e| format!("{e:?}")).unwrap_or_default()
+        };
+        assert!(bad("class S { @Retry(1, 10, [\"X\"])\n@Idempotent\nfn f() -> Int64 { return 1 } }").contains("maxAttempts"));
+        assert!(bad("class S { @Retry(3, 10, [])\n@Idempotent\nfn f() -> Int64 { return 1 } }").contains("must not be empty"));
+        assert!(bad("class S { @CircuitBreaker(0, 10)\nfn f() -> Int64 { return 1 } }").contains("failureThreshold"));
+        assert!(bad("class S<T> { @CircuitBreaker(2, 10)\nfn f() -> Int64 { return 1 } }").contains("generic"));
+    }
+
+    #[test]
+    fn error_classes_and_throws_lists_are_validated() {
+        let ok = "@Error(\"USER_NOT_FOUND\", 404)\nclass NotFound { var message: String }\nclass Svc { @Throws(NotFound)\nfn find() -> Nothing {} }";
+        assert!(valid(ok).is_empty(), "{:?}", valid(ok).iter().map(|e| &e.message).collect::<Vec<_>>());
+        let messages = |src: &str| valid(src).into_iter().map(|e| e.message).collect::<Vec<_>>().join(" | ");
+        assert!(messages("@Error(\"bad\")\nclass E { var message: String }").contains("UPPER_SNAKE_CASE"));
+        assert!(messages("@Error(\"E_ONE\", 200)\nclass E { var message: String }").contains("400-599"));
+        assert!(messages("@Error(\"E_ONE\")\nclass E { var text: String }").contains("var message: String"));
+        assert!(messages("@Error(\"E_ONE\")\nclass A { var message: String }\n@Error(\"E_ONE\")\nclass B { var message: String }").contains("already used"));
+        assert!(messages("class Plain { var message: String }\nclass S { @Throws(Plain)\nfn f() -> Nothing {} }").contains("not an @Error class"));
+        assert!(messages("@Error(\"E_ONE\")\nclass E { var message: String }\nclass S { @Throws(E, E)\nfn f() -> Nothing {} }").contains("twice"));
+        // A status also feeds the HTTP error table.
+        assert_eq!(proc("@Error(\"E_ONE\", 409)\nclass E { var message: String }").error_maps, vec![("E_ONE".to_string(), 409)]);
     }
 
     #[test]
@@ -2178,6 +3379,52 @@ mod tests {
         assert!(exposed.shared_state_warnings.iter().any(|w| w.contains("bypass method locks")));
         let captive = proc("@HttpRequestScoped class Request {} @ApplicationComponent class Middle { @Inject var request: Request } @Startup class Service { @Inject var middle: Middle }");
         assert!(captive.shared_state_warnings.iter().any(|w| w.contains("Service.middle -> Middle.request -> Request")));
+    }
+
+    #[test]
+    fn request_ownership_rejects_nested_manual_retaining_paths() {
+        for field in ["var state: State?", "var state: List<State>", "var state: Map<String, State>", "var state: Holder"] {
+            let source = format!("@HttpRequestScoped class State {{}} class Holder {{ var value: State? }} @ApplicationComponent class Owner {{ {field} }}");
+            assert!(valid(&source).iter().any(|e| e.message.contains("request-scoped state")), "{source}");
+        }
+        assert!(valid("interface Store {} @HttpRequestScoped class Request implements Store {} @ApplicationComponent @Provider(\"safe\") class Safe implements Store {} @Startup class Owner { @Inject @Qualifier(\"safe\") var store: Store }").is_empty());
+        assert!(valid("interface Store {} @HttpRequestScoped class Request implements Store {} @ApplicationComponent class Owner { var store: Store? }").iter().any(|e| e.message.contains("request-scoped state")));
+        for source in [
+            "@HttpRequestScoped class State {} class Base { var state: State? } class Holder extends Base {} @ApplicationComponent class Owner { var holder: Holder? }",
+            "@HttpRequestScoped class State {} class Base { var state: List<State> } @ApplicationComponent class Owner extends Base {}",
+            "interface Parent {} interface Child extends Parent {} @HttpRequestScoped class State implements Child {} @ApplicationComponent class Owner { var value: Parent? }",
+        ] {
+            assert!(valid(source).iter().any(|e| e.message.contains("request-scoped state")), "{source}");
+        }
+    }
+
+    #[test]
+    fn qualifier_resolution_selects_concrete_provider_and_preserves_interface() {
+        let source = "interface Store {} @ApplicationComponent @Provider(\"fast\") class Fast implements Store {} @ApplicationComponent @Provider(\"safe\") class Safe implements Store {} @Startup class App { @Inject @Qualifier(\"safe\") var store: Store }";
+        assert!(valid(source).is_empty(), "{:?}", valid(source));
+        let result = proc(source);
+        let field = &result.di_components[2].inject_fields[0];
+        assert_eq!(field.field_type, "Store");
+        assert_eq!(field.provider_class, "Safe");
+        assert_eq!(field.qualifier.as_deref(), Some("safe"));
+    }
+
+    #[test]
+    fn provider_graph_errors_are_frontend_diagnostics() {
+        for (source, expected) in [
+            ("interface Store {} @ApplicationComponent class Fast implements Store {} @ApplicationComponent class Safe implements Store {} @Startup class App { @Inject var store: Store }", "Ambiguous providers"),
+            ("interface Store {} @ApplicationComponent @Provider(\"fast\") class Fast implements Store {} @Startup class App { @Inject @Qualifier(\"absent\") var store: Store }", "Missing provider"),
+            ("@ApplicationComponent @Provider(\"same\") class A {} @Startup @Provider(\"same\") class B {}", "Duplicate provider name"),
+            ("@Provider(\"raw\") class Raw {}", "requires a component scope"),
+            ("@Startup class App { @Qualifier(\"raw\") var value: Int64 }", "requires @Inject"),
+            ("@Startup class App { @Inject @Qualifier(7) var other: App }", "non-empty string literal"),
+            ("@Startup @Provider(\"\") class App {}", "non-empty string literal"),
+            ("@Startup class App { @Inject var value: Array<Int64> }", "non-generic named"),
+            ("interface Store {} @ApplicationComponent @Provider(\"loop\") class Loop implements Store { @Inject var app: App } @Startup class App { @Inject @Qualifier(\"loop\") var store: Store }", "Cyclic @Inject"),
+        ] {
+            let errors = valid(source);
+            assert!(errors.iter().any(|e| e.message.contains(expected)), "expected {expected}: {errors:?}");
+        }
     }
 
     // --- validate: unknown annotation ---
@@ -3048,8 +4295,8 @@ class Svc {
     fn readOnly() -> Nothing {}
 }
 "#);
-        assert!(result.transactional_methods.contains(&("Svc".to_string(), "transfer".to_string())));
-        assert!(!result.transactional_methods.contains(&("Svc".to_string(), "readOnly".to_string())));
+        assert!(result.transactional_methods.contains_key(&("Svc".to_string(), "transfer".to_string())));
+        assert!(!result.transactional_methods.contains_key(&("Svc".to_string(), "readOnly".to_string())));
     }
 
     #[test]
@@ -3061,8 +4308,110 @@ class Svc {
     fn b() -> Nothing {}
 }
 "#);
-        assert!(result.transactional_methods.contains(&("Svc".to_string(), "a".to_string())));
-        assert!(result.transactional_methods.contains(&("Svc".to_string(), "b".to_string())));
+        assert!(result.transactional_methods.contains_key(&("Svc".to_string(), "a".to_string())));
+        assert!(result.transactional_methods.contains_key(&("Svc".to_string(), "b".to_string())));
+    }
+
+    #[test]
+    fn test_process_transactional_propagation_modes_and_method_override() {
+        let result = proc(r#"
+@Transactional("NESTED")
+class Svc {
+    fn a() -> Nothing {}
+    @Transactional("REQUIRES_NEW")
+    fn b() -> Nothing {}
+    @Transactional
+    fn c() -> Nothing {}
+}
+"#);
+        let mode = |m: &str| result.transactional_methods[&("Svc".to_string(), m.to_string())];
+        assert_eq!(mode("a"), 1);
+        assert_eq!(mode("b"), 2);
+        assert_eq!(mode("c"), 0);
+    }
+
+    #[test]
+    fn test_validate_transactional_rejects_unknown_propagation() {
+        let errors = valid("class Svc { @Transactional(\"SOMETIMES\")\n fn a() -> Nothing {} }");
+        assert!(errors.iter().any(|e| e.message.contains("propagation")), "{errors:?}");
+        let errors = valid("class Svc { @Transactional(\"NESTED\")\n fn a() -> Nothing {} }");
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_validate_composite_id_rejects_generated_value() {
+        let ok = valid("@Entity\n@Table(\"m\")\nclass M { @Id\nvar a: Int64\n@Id\nvar b: Int64 }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let bad = valid("@Entity\n@Table(\"m\")\nclass M { @Id\n@GeneratedValue\nvar a: Int64\n@Id\nvar b: Int64 }");
+        assert!(bad.iter().any(|e| e.message.contains("composite @Id")), "{bad:?}");
+    }
+
+    #[test]
+    fn test_validate_scheduled_requires_cron_and_plain_method() {
+        let ok = valid("class J { @Scheduled(\"*/5 * * * *\")\nfn run() -> Nothing {} }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let fields = valid("class J { @Scheduled(\"* * * *\")\nfn run() -> Nothing {} }");
+        assert!(fields.iter().any(|e| e.message.contains("five fields")), "{fields:?}");
+        let args = valid("class J { @Scheduled(\"* * * * *\")\nfn run(x: Int64) -> Nothing {} }");
+        assert!(args.iter().any(|e| e.message.contains("no parameters")), "{args:?}");
+        let ret = valid("class J { @Scheduled(\"* * * * *\")\nfn run() -> Int64 { return 1 } }");
+        assert!(ret.iter().any(|e| e.message.contains("return Nothing")), "{ret:?}");
+    }
+
+    #[test]
+    fn test_validate_message_failure_policy() {
+        let ok = valid("@Amqp091Consumer(\"h\", 5672, \"/\", \"u\", \"p\", \"q\")\nclass C { @OnMessage\n@MessageFailure(3, 100, \"q.dlq\")\nfn m(msg: Any) -> Nothing {} }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let elsewhere = valid("class C { @MessageFailure(3, 100)\nfn m() -> Nothing {} }");
+        assert!(elsewhere.iter().any(|e| e.message.contains("belongs on the @OnMessage")), "{elsewhere:?}");
+        let bounds = valid("@Amqp091Consumer(\"h\", 5672, \"/\", \"u\", \"p\", \"q\")\nclass C { @OnMessage\n@MessageFailure(0, 100)\nfn m(msg: Any) -> Nothing {} }");
+        assert!(bounds.iter().any(|e| e.message.contains("maxAttempts")), "{bounds:?}");
+        let backoff = valid("@Amqp091Consumer(\"h\", 5672, \"/\", \"u\", \"p\", \"q\")\nclass C { @OnMessage\n@MessageFailure(2, 70000)\nfn m(msg: Any) -> Nothing {} }");
+        assert!(backoff.iter().any(|e| e.message.contains("backoffMs")), "{backoff:?}");
+    }
+
+    #[test]
+    fn test_validate_cacheable_and_evict() {
+        let ok = valid("class C { @Cacheable(60, 10)\nfn a(x: String, n: Int64) -> Bool { return true } }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let ttl = valid("class C { @Cacheable(0, 10)\nfn a() -> Int64 { return 1 } }");
+        assert!(ttl.iter().any(|e| e.message.contains("ttlSeconds")), "{ttl:?}");
+        let cap = valid("class C { @Cacheable(5, 0)\nfn a() -> Int64 { return 1 } }");
+        assert!(cap.iter().any(|e| e.message.contains("maxEntries")), "{cap:?}");
+        let ty = valid("class C { @Cacheable(5, 5)\nfn a(x: List<Int64>) -> Int64 { return 1 } }");
+        assert!(ty.iter().any(|e| e.message.contains("String, Int64, Int32 or Bool")), "{ty:?}");
+        let both = valid("class C { @Cacheable(5, 5)\n@CacheEvict(\"C.a\")\nfn a() -> Int64 { return 1 } }");
+        assert!(both.iter().any(|e| e.message.contains("both @Cacheable and @CacheEvict")), "{both:?}");
+        let name = valid("class C { @CacheEvict(\"nodot\")\nfn a() -> Nothing {} }");
+        assert!(name.iter().any(|e| e.message.contains("Class.method")), "{name:?}");
+    }
+
+    #[test]
+    fn test_cache_errors_names_must_exist() {
+        let src = "class C { @Cacheable(5, 5)\nfn a() -> Int64 { return 1 }\n@CacheEvict(\"C.a\", \"C.zzz\")\nfn b() -> Nothing {} }";
+        let errors = cache_errors(&parse(src).decls);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].1.contains("C.zzz"), "{errors:?}");
+    }
+
+    #[test]
+    fn test_validate_outbox_dispatcher_args() {
+        let ok = valid("@OutboxDispatcher(\"h\", 5672, \"/\", \"u\", \"p\", 3, 100)\nclass R { }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let attempts = valid("@OutboxDispatcher(\"h\", 5672, \"/\", \"u\", \"p\", 0, 100)\nclass R { }");
+        assert!(attempts.iter().any(|e| e.message.contains("maxAttempts")), "{attempts:?}");
+        let backoff = valid("@OutboxDispatcher(\"h\", 5672, \"/\", \"u\", \"p\", 3, 99999)\nclass R { }");
+        assert!(backoff.iter().any(|e| e.message.contains("backoffMs")), "{backoff:?}");
+        let shape = valid("@OutboxDispatcher(\"h\", \"x\", \"/\", \"u\", \"p\", 3, 100)\nclass R { }");
+        assert!(shape.iter().any(|e| e.message.contains("takes literals")), "{shape:?}");
+    }
+
+    #[test]
+    fn test_validate_multipart_param_type() {
+        let ok = valid("class MultipartResult { var ok: Bool }\nclass Ctrl { @POST(\"/u\")\nfn up(@MultipartParam form: MultipartResult) -> String { return \"x\" } }");
+        assert!(ok.is_empty(), "{ok:?}");
+        let bad = valid("class Ctrl { @POST(\"/u\")\nfn up(@MultipartParam form: String) -> String { return \"x\" } }");
+        assert!(bad.iter().any(|e| e.message.contains("must be of type MultipartResult")), "{bad:?}");
     }
 
     #[test]

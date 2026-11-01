@@ -61,7 +61,18 @@ fn socket_readiness_and_deadline_release_the_real_descriptor() {
             let mut line = String::new();
             stdout.read_line(&mut line).unwrap();
             let port: u16 = line.trim().parse().expect("dynamic server port");
-            let client = connect.then(|| TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap());
+            // The task closes the readable listener without accepting. Linux can
+            // reset that queued handshake; exact child output and rebind below
+            // still prove readiness and descriptor cleanup independently (#575).
+            let client = if connect {
+                match TcpStream::connect((Ipv4Addr::LOCALHOST, port)) {
+                    Ok(client) => Some(client),
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => None,
+                    Err(error) => panic!("readiness client connect failed: {error}"),
+                }
+            } else {
+                None
+            };
             let status = common::wait_timeout(&mut child, Duration::from_secs(10))
                 .expect("task must terminate");
             let mut output = String::new();

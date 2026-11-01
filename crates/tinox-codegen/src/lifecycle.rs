@@ -72,7 +72,7 @@ impl CodeGen {
                 let mut dependencies: Vec<_> = component
                     .inject_fields
                     .iter()
-                    .map(|f| f.field_type.as_str())
+                    .map(|f| f.provider_class.as_str())
                     .collect();
                 dependencies.sort_unstable();
                 for dependency in dependencies {
@@ -95,7 +95,7 @@ impl CodeGen {
         });
     }
     pub(super) fn service_enabled(&self) -> bool {
-        self.service_options.is_some() && self.test_entry.is_none()
+        self.service_options.is_some() && self.test_entries.is_empty()
     }
     pub fn lifecycle_plan(&self) -> LifecyclePlan {
         LifecyclePlan {
@@ -132,6 +132,7 @@ impl CodeGen {
             ("tinox_service_close_connection", "void (i64)"),
             ("tinox_service_unavailable", "void (i64)"),
             ("tinox_service_request_done", "void (i64)"),
+            ("tinox_request_failed", "void (i64)"),
             ("tinox_service_health_response", "void (i64, i64)"),
             ("serviceIsReady", "i1 ()"),
             ("serviceIsLive", "i1 ()"),
@@ -240,11 +241,24 @@ impl CodeGen {
         }
     }
     pub(super) fn emit_managed_route_wrapper(&mut self, name: &str, closure: bool) {
-        if !self.service_enabled() {
-            return;
-        }
+        let request = self.has_request_scope();
         let extra = if closure { ", i64* %env" } else { "" };
-        writeln!(&mut self.lambda_ir, "define void @{name}(i64 %ctx_i64{extra}) {{\nentry.tnx:\n  %admitted = call i64 @tinox_service_work_enter()\n  %ok = icmp ne i64 %admitted, 0\n  br i1 %ok, label %run, label %unavailable\nrun:\n  call void @{name}__body(i64 %ctx_i64{extra})\n  call void @tinox_service_request_done(i64 %ctx_i64)\n  ret void\nunavailable:\n  call void @tinox_service_unavailable(i64 %ctx_i64)\n  ret void\n}}").unwrap();
+        writeln!(&mut self.lambda_ir, "define void @{name}(i64 %ctx_i64{extra}) {{\nentry.tnx:").unwrap();
+        if self.service_enabled() {
+            writeln!(&mut self.lambda_ir, "  %admitted = call i64 @tinox_service_work_enter()\n  %ok = icmp ne i64 %admitted, 0\n  br i1 %ok, label %run, label %unavailable\nrun:").unwrap();
+        }
+        if request { writeln!(&mut self.lambda_ir, "  call void @tinox_request_begin()").unwrap(); }
+        writeln!(&mut self.lambda_ir, "  call void @{name}__body(i64 %ctx_i64{extra})").unwrap();
+        // This outer boundary survives every early response and propagated
+        // exception/cancellation from the body, including DTO validation.
+        if request { writeln!(&mut self.lambda_ir, "  call void @tinox_request_end()").unwrap(); }
+        // Unmanaged routes still turn an uncaught handler exception into a 500
+        // and clear the pending error, so it cannot leak into the next request.
+        if self.service_enabled() { writeln!(&mut self.lambda_ir, "  call void @tinox_service_request_done(i64 %ctx_i64)").unwrap(); }
+        else { writeln!(&mut self.lambda_ir, "  call void @tinox_request_failed(i64 %ctx_i64)").unwrap(); }
+        writeln!(&mut self.lambda_ir, "  ret void").unwrap();
+        if self.service_enabled() { writeln!(&mut self.lambda_ir, "unavailable:\n  call void @tinox_service_unavailable(i64 %ctx_i64)\n  ret void").unwrap(); }
+        writeln!(&mut self.lambda_ir, "}}\n").unwrap();
     }
     pub(super) fn emit_service_bootstrap_start(&mut self, expected: usize) {
         if !self.service_enabled() {

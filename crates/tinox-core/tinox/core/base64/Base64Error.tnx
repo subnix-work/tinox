@@ -1,0 +1,13 @@
+module tinox.core.base64
+
+namespace tinox.core.base64
+{
+    /**
+     * Malformed Base64 input.
+     */
+    @Error("BASE64_ERROR", 400)
+    class Base64Error
+    {
+        var message: String
+    }
+}

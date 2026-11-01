@@ -1,0 +1,25 @@
+// expect: true
+// expect: true
+// expect: true
+
+import Point
+import Span
+import Holder
+class Main {
+    fnc find(h: Holder) -> Bool {
+        const p: Point = Point { x: 1 }
+        return h.span.contains(p) && h.get().contains(p)
+    }
+    fnc main() -> Int32 {
+        const span = Span {}
+        const position = Point { x: 1 }
+        println(span.contains(position))
+        const h: Holder = Holder { span: span }
+        println(Main::find(h))
+        const spans: List<Span> = [span]
+        for s in spans {
+            println(s.contains(position))
+        }
+        return 0
+    }
+}

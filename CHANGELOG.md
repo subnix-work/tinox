@@ -4,8 +4,45 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-01
+
+**Notable change:** `catch (e: String)` now sees typed stdlib errors as `CODE: message` (for example `IO_ERROR: ...`) instead of the bare text; catch the `@Error` class (`catch (e: IoError)`) or run `tinox migrate-exceptions`. Every package is republished for compiler 2.9.0 (patch version bump).
+
+### API contracts, binary streaming and measurement follow-ups
+
+- #306: additive checked filesystem outcomes retain operation/target/OS cause,
+  distinguish empty reads from errors, and preserve the source on copy/move failure.
+- #311: exclusive bounded TCP/TLS and Content-Length HTTP/1.1 streams, compact
+  bounded gzip, byte-exact workspace HTTP/2/3 bodies and framed AMQP compact publish.
+- #312: verified cgroup/container limits, repeated sustained/dependency/overload/
+  recovery/OOM evidence and allocation/copy/RSS profiles; GC defaults unchanged.
+- #315: transactional, broker and concurrent held-out tasks with independent
+  good/bad controls, pinned service-image preflight and explicit cache policies.
+  Measured model baselines still require an explicitly configured model and budget.
+- #589: failed assertions now pass a valid panic message through the correct ABI.
+- #591: HTTP/2 frame bytes no longer truncate at NUL; invalid peer frame maxima
+  cannot stall response chunking, and a failed connection does not abort the listener.
+- #592: benchmark limits are no longer inferred from wrapper metadata, and the
+  load client respects Connection: close instead of reporting spurious failures.
+
+
 ### Added
 
+- **Typed errors** (#524, stage 2): `throw X { message: ... }` for `@Error` classes and
+  `catch (e: X)` matching the class and its subclasses (error classes may extend each other). Only the
+  first matching `catch` clause runs; an unmatched error propagates after `finally`. `throw "text"` and
+  `catch (e: String)` keep working. The stdlib migration is still to come, see
+  `docs/checked-exceptions.md`.
+- **Stdlib typed errors and `tinox migrate-exceptions`** (#524, stage 4, in progress): core modules (`Stack`/`Queue`, `Fs`, `Option`/`Result.unwrap`, `Math`, `Heap`, `Hex`, `Base64`, `Uri`, `Cron`, `Unicode`, `Regex`, `Pool`, `Mathf`, queues, `Debug`) throw `@Error` classes declared with `@Throws`; `catch (e: String)` now sees `CODE: message`. `tinox migrate-exceptions` rewrites `throw "text"` to a typed error.
+- **Checked access variants** (#590): `Lists::get` (`IndexError`) and `Maps::getOrThrow` (`KeyError`) in `tinox.core.collections`; `Math::addChecked`/`subChecked`/`divChecked`/`remChecked` next to `mulChecked`, all throwing `ArithmeticError` (renamed from `MathError`).
+- **`@Throws` checker** (#524, stage 3): `[language] checked_exceptions = "warn" | "error"` makes
+  `tinox build`/`check` verify that every `@Error` a call or `throw` can raise is caught or declared
+  (superclasses count, overrides may not add errors, lambdas inherit nothing). Interface methods may
+  now carry annotations such as `@Throws`.
+- **`tinox.core.unicode`** (#561): opt-in code point API (`codePoints`, `codePointCount`, `fromCodePoints`,
+  `byteOffset`, `isValid`) and full default `toUpper`/`toLower` (Unicode 16.0, no locale, no final-sigma
+  rule). `String` stays byte based; malformed UTF-8 throws with the first bad byte offset. Verified against
+  Python for all 1,112,064 scalar values. No normalization or grapheme segmentation.
 - **`[native]` in `tinox.toml`** (#485): link third-party libraries, objects and extra
   C/C++ sources (`libs`, `lib_dirs`, `rpath`, `pkg_config`, `objects`, `sources`,
   `cflags`). Sources are compiled into `.tinox/native/` with header dependency

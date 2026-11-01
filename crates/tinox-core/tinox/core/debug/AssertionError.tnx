@@ -1,0 +1,13 @@
+module tinox.core.debug
+
+namespace tinox.core.debug
+{
+    /**
+     * A Debug assertion failed.
+     */
+    @Error("ASSERTION_FAILED", 500)
+    class AssertionError
+    {
+        var message: String
+    }
+}

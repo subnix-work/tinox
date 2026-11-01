@@ -62,7 +62,7 @@ class Main
     {
         const inbox: Channel<AmqpFrame091> = channel
         send inbox -> AmqpFrame091 { frameType: -1, chanId: 0, payload: [] }
-        return AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox }
+        return AmqpChannel091 { conn: -1, chanId: -1, frameMax: 4096, errorMessage: "", confirmsEnabled: false, lastDeliveryTag: 0, inbox: inbox, deliveries: channel, confirms: channel }
     }
 
 

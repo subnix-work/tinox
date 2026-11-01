@@ -1,0 +1,26 @@
+// expect: heap>0 true
+// expect: allocated grows true
+// expect: collections grow true
+// expect: used<=heap true
+
+import tinox.core.debug
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const before: Int64 = Debug::gcAllocatedBytes()
+        const gcBefore: Int64 = Debug::gcCollections()
+        var keep: List<String> = []
+        for i in 0..20000
+        {
+            keep.push("payload-" + i.toString())
+        }
+        println("heap>0 " + (Debug::gcHeapBytes() > 0).toString())
+        println("allocated grows " + (Debug::gcAllocatedBytes() > before).toString())
+        Debug::gcCollect()
+        println("collections grow " + (Debug::gcCollections() > gcBefore).toString())
+        println("used<=heap " + (Debug::gcUsedEstimateBytes() <= Debug::gcHeapBytes()).toString())
+        return 0
+    }
+}

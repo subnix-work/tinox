@@ -1,15 +1,47 @@
 # AI coding task evaluations (#315)
 
 Status: evaluation infrastructure, **no measured model baseline or efficiency
-improvement claimed**. Python 3.10+, standard library only. The initial suite
-covers a price calculation bug fix, HTTP validation/not-found handling, and
-annotation-driven in-memory CRUD. Transactional updates, real broker consumers,
-and concurrent work are follow-up tasks, not represented by these results.
+improvement claimed**. Python 3.10+, standard library only. Six tasks cover a
+price bug fix, HTTP validation, CRUD, bounded parallel work, a transactional
+update and a finite binary broker consumer.
 
-Issue history rechecked on 2026-10-22: #315 remains proposed, without comments.
-#293 was fixed on develop via #319, but this checkout predates that fix. Checks
-here build and execute code directly and compare behavior using Python; they do
-not accept a model's test report or rely on `tinox test` discovery/exit status.
+The three new held-out checks measure behavior independently:
+
+- `concurrent` replaces Job with native instrumentation, checks actual overlapping
+  worker execution, the concurrency limit, exact invocation count and completion
+  of started workers before return/throw. A sequential calculation is rejected.
+- `transactional` provisions PostgreSQL, exercises validation plus a second-save
+  database constraint failure, and checks balances independently with psql after
+  every case. The current ORM aborts on a database error; that case verifies
+  atomicity after disconnect, not in-process recovery.
+- `broker` provisions RabbitMQ, publishes binary messages through its independent
+  management HTTP API, checks delivered bytes and verifies that messages do not
+  reappear after connection closure. It uses a durable test queue because modern
+  RabbitMQ rejects transient nonexclusive queues by default.
+
+Docker, local `psql` and cached `postgres:17` / `rabbitmq:4-management` images are
+needed for those service checks. Submit provisions their disposable daemons;
+model-workspace build/run does not silently start a persistent shared service.
+Preload/pin the exact image IDs before measured comparisons. The runner records
+those IDs and stops before any provider call when an image is unavailable.
+Record cache warm/cold policies and machine conditions in `execution_conditions`;
+these fields and the relevant build/cache environment are part of comparison
+compatibility. Acceptance replaces
+only the smoke entry point and its held-out instrumentation; it never accepts
+model-written tests or claimed success as proof.
+
+`validate_controls.py --out /tmp/checker-controls` runs each new checker against
+15 known positive controls plus a deliberately wrong control. It invokes no
+model/provider. Checker regression results **are not model baseline results**.
+The native checker and good controls remain outside the model's tool workspace.
+
+The runner, expanded tasks and checker controls are implemented; #315's
+measured model baselines and efficiency comparisons remain outstanding. Execution
+needs an explicit provider/model revision and authorized total spending limit;
+no configured model workload is implied by validating the checkers. Entry-discovery fix
+#293/#319 is present in this checkout. Acceptance checks still build and execute
+code directly and compare behavior using Python; they do not accept a model's
+test report or rely on `tinox test` discovery/exit status.
 
 ## Configure and run
 
@@ -36,7 +68,7 @@ The adapter runs from that workspace. Provide documentation explicitly through
 `context`, e.g. `{"compact-guide": "/absolute/path/to/guide.txt"}`. The model can
 retrieve it with `read` on `docs/compact-guide`; retrieval results and all later
 requests remain in the transcript. Record compiler/package cache setup before
-measurement; HTTP starters pin `tinox.core:http_server` to 1.0.3 in their manifests.
+measurement; HTTP starters pin `tinox.core:http_server` to 1.1.0 in their manifests.
 The compiler may retrieve that package if it is missing; prewarm it consistently.
 No package is published by this suite.
 

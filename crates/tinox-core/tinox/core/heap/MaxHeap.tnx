@@ -17,11 +17,13 @@ namespace tinox.core.heap
             Heap::push(h.heap, item)
         }
 
+        @Throws(EmptyHeapError)
         fn pop(h: MaxHeap<T>) -> T
         {
             return Heap::pop(h.heap)
         }
 
+        @Throws(EmptyHeapError)
         fn peek(h: MaxHeap<T>) -> T
         {
             return Heap::peek(h.heap)

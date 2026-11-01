@@ -1,0 +1,29 @@
+class Main {
+    fnc value() -> Int64 {
+        try {
+            try { return 7 }
+            finally { println("return inner") }
+        } finally { println("return outer") }
+        return 0
+    }
+    fnc fail() -> Nothing {
+        try { throw "first" }
+        catch e: String { throw "second" }
+        finally { println("throw cleanup") }
+    }
+    fnc main() -> Int32 {
+        println(Main::value())
+        try { Main::fail() }
+        catch e: String { println(e) }
+        finally { println("catch cleanup") }
+        for n in [0, 1, 2] {
+            try {
+                if (n == 0) { continue }
+                if (n == 1) { break }
+                println("unreachable")
+            } finally { println(n) }
+        }
+        println("done")
+        return 0
+    }
+}

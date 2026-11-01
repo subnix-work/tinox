@@ -1,0 +1,31 @@
+class Main {
+    fnc main() -> Int32 {
+        var sum: Int64 = 0
+        for n in [0, 1, 2, 3, 4] {
+            if (n == 1) { continue }
+            if (n == 4) { break }
+            sum = sum + n
+        }
+        println(sum)
+        var visits: Int64 = 0
+        for (var outer: Int64 = 0;; outer = outer + 1) {
+            if (outer == 3) { break }
+            for (var inner: Int64 = 0; inner < 4; inner = inner + 1) {
+                if (inner == 1) { continue }
+                if (inner == 3) { break }
+                visits = visits + 1
+            }
+            if (outer == 1) { continue }
+            visits = visits + 10
+        }
+        println(visits)
+        var count: Int64 = 0
+        while (count < 3) {
+            count = count + 1
+            if (count == 2) { continue }
+            println(count)
+        }
+        for byte in "Aé" { println(byte) }
+        return 0
+    }
+}

@@ -1,0 +1,18 @@
+import Cell
+class Main {
+    fnc apply<T>(value: T, transform: fnc(T) -> T) -> T { return transform(value) }
+    fnc main() -> Int32 {
+        const unsigned: UInt8 = 255
+        const signed: Int8 = -1
+        println(unsigned as Int64)
+        println(signed as Int64)
+        const divisor: UInt8 = 2
+        println(unsigned / divisor)
+        println(unsigned > divisor)
+        const cell: Cell<Float64> = Cell { value: 1.5 }
+        const mapped = cell.map(x => x + 0.5)
+        println(mapped.value)
+        println(Main::apply(2.5, fnc(x: Float64) -> Float64 { return x + 0.5 }))
+        return 0
+    }
+}

@@ -1,0 +1,25 @@
+module tinox.core.bytes
+
+namespace tinox.core.bytes
+{
+    /**
+     * Budgets for Multipart::parse. Everything beyond a budget is rejected with a
+     * message; nothing is truncated. The whole request body is already bounded by
+     * the HTTP server (4 MB, 413 above that).
+     */
+    class MultipartLimits
+    {
+        var maxParts: Int64
+        /** Largest value of a plain form field (a part without filename) */
+        var maxFieldBytes: Int64
+        /** Largest file part */
+        var maxFileBytes: Int64
+        /** Largest header block of one part */
+        var maxHeaderBytes: Int64
+
+        fnc defaults() -> MultipartLimits
+        {
+            return MultipartLimits { maxParts: 100, maxFieldBytes: 1048576, maxFileBytes: 4194304, maxHeaderBytes: 8192 }
+        }
+    }
+}

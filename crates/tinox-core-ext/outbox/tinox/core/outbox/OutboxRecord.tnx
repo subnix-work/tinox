@@ -1,0 +1,40 @@
+module tinox.core.outbox
+import tinox.core.db
+
+namespace tinox.core.outbox
+{
+    /**
+     * One message waiting to be published. Written by Outbox::add inside the application's own
+     * transaction, published (and marked sent) later by the OutboxDispatcher.
+     *
+     * Table `tinox_outbox`; create it in your changelog, see docs/outbox.md.
+     * status: 0 pending, 1 sent (broker confirmed), 2 parked (maxAttempts failed -- needs an operator).
+     */
+    @Entity
+    @Table("tinox_outbox")
+    class OutboxRecord
+    {
+        @Id @GeneratedValue
+        var id: Int64
+        // Routing key on the default exchange, i.e. the target queue
+        @Column("destination")
+        var destination: String
+        // Stable key the consumer deduplicates on; also sent as the AMQP message-id
+        @Column("message_id")
+        var messageId: String
+        @Column("payload")
+        var payload: String
+        @Column("status")
+        var status: Int64
+        @Column("attempts")
+        var attempts: Int64
+        @Column("last_error")
+        var lastError: String
+        @Column("created_at")
+        var createdAt: Int64
+        @Column("next_attempt_at")
+        var nextAttemptAt: Int64
+        @Column("sent_at")
+        var sentAt: Int64
+    }
+}

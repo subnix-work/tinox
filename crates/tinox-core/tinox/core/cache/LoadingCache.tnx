@@ -1,0 +1,113 @@
+module tinox.core.cache
+
+namespace tinox.core.cache
+{
+    extern fn tinoxLcNew(cap: Int64, ttlMs: Int64) -> Int64
+    extern fn tinoxLcBegin(h: Int64, key: String) -> Int64
+    extern fn tinoxLcValue() -> String
+    extern fn tinoxLcStore(h: Int64, key: String, value: String, token: Int64)
+    extern fn tinoxLcAbort(h: Int64, key: String)
+    extern fn tinoxLcEvictAll(h: Int64)
+    extern fn tinoxLcEvict(h: Int64, key: String)
+    extern fn tinoxLcStat(h: Int64, which: Int64) -> Int64
+
+    /**
+     * A bounded, thread-safe, in-process cache from String keys to String values (encode other
+     * types yourself -- the serialization is explicit) with a time-to-live and single-flight loading:
+     *
+     *   const cache = LoadingCache::create(500, 30000)          // at most 500 entries, 30 s TTL
+     *   const price = cache.get("sku-7", key => loadPriceFromDb(key))
+     *
+     * Concurrent identical misses run the loader ONCE; the other callers wait for that result (at most
+     * TINOX_LC_WAIT_MS, default 60 s, after which a waiter loads on its own and `waitedOut()` counts it).
+     * A loader that throws caches nothing: the error reaches its own caller, the waiters retry (one of
+     * them becomes the next loader). The least recently used entry is dropped when full. evict()/
+     * evictAll() also invalidate loads in flight: such a load still returns its value to its caller but is
+     * not stored, so a value read before an update never outlives the eviction that followed it.
+     * Memory-only and per process: other instances keep their own copy, so use short TTLs for data
+     * that other writers change.
+     */
+    class LoadingCache
+    {
+        var handle: Int64
+
+        fnc create(capacity: Int64, ttlMs: Int64) -> LoadingCache
+        {
+            return LoadingCache { handle: tinoxLcNew(capacity, ttlMs) }
+        }
+
+        fn get(key: String, loader: fnc(String) -> String) -> String
+        {
+            const token: Int64 = tinoxLcBegin(this.handle, key)
+            if (token == 1)
+            {
+                return tinoxLcValue()
+            }
+            var value: String = ""
+            try
+            {
+                value = loader(key)
+            }
+            catch (e: String)
+            {
+                tinoxLcAbort(this.handle, key)
+                throw e
+            }
+            tinoxLcStore(this.handle, key, value, token)
+            return value
+        }
+
+        /** Drops one key (and invalidates a load of it in flight) */
+        fn evict(key: String) -> Nothing
+        {
+            tinoxLcEvict(this.handle, key)
+        }
+
+        /** Drops everything (and invalidates all loads in flight) */
+        fn evictAll() -> Nothing
+        {
+            tinoxLcEvictAll(this.handle)
+        }
+
+        fn hits() -> Int64
+        {
+            return tinoxLcStat(this.handle, 0)
+        }
+
+        /** Lookups that found nothing usable (each starts a load or joins one) */
+        fn misses() -> Int64
+        {
+            return tinoxLcStat(this.handle, 1)
+        }
+
+        /** Loader runs that completed and returned a value */
+        fn loads() -> Int64
+        {
+            return tinoxLcStat(this.handle, 2)
+        }
+
+        /** Entries dropped by expiry, LRU pressure or eviction */
+        fn evictions() -> Int64
+        {
+            return tinoxLcStat(this.handle, 3)
+        }
+
+        /** Loader runs that threw */
+        fn failures() -> Int64
+        {
+            return tinoxLcStat(this.handle, 4)
+        }
+
+        /** Waiters that gave up waiting for the in-flight loader and loaded themselves */
+        fn waitedOut() -> Int64
+        {
+            return tinoxLcStat(this.handle, 5)
+        }
+
+        /** Entries currently stored */
+        fn size() -> Int64
+        {
+            return tinoxLcStat(this.handle, 6)
+        }
+    }
+}

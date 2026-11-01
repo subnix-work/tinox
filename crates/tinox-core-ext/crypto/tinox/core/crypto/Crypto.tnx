@@ -9,6 +9,7 @@ namespace tinox.core.crypto
 
     class Crypto
     {
+        @Throws(CryptoError)
         /*
          * Cryptographically secure random bytes via OpenSSL RAND_bytes —
          * issue #131 (OAuth2 `state`/PKCE `code_verifier`). Deliberately
@@ -26,7 +27,7 @@ namespace tinox.core.crypto
             const result = secureRandomBytesRaw(n)
             if (result.len() != n)
             {
-                throw "Crypto::secureRandomBytes failed (runtime built without TLS/OpenSSL, or RAND_bytes failed)"
+                throw CryptoError { message: "Crypto::secureRandomBytes failed (runtime built without TLS/OpenSSL, or RAND_bytes failed)" }
             }
             return result
         }
@@ -59,12 +60,13 @@ namespace tinox.core.crypto
         // (nonce + ciphertext + auth tag) — can be passed directly to
         // aesDecrypt. Throws on any error (runtime built without
         // OpenSSL) instead of a silent empty/wrong result.
+        @Throws(CryptoError)
         fn aesEncrypt(data: String, key: String) -> String
         {
             const result: String = aesEncryptRaw(data, key)
             if (result.len() == 0)
             {
-                throw "Crypto::aesEncrypt failed (runtime built without TLS/OpenSSL?)"
+                throw CryptoError { message: "Crypto::aesEncrypt failed (runtime built without TLS/OpenSSL?)" }
             }
             return result
         }
@@ -77,12 +79,13 @@ namespace tinox.core.crypto
         // plaintext, e.g. aesDecrypt(aesEncrypt("", key), key)) —
         // otherwise a legitimately EMPTY plaintext would be
         // indistinguishable from "" as an error sentinel.
+        @Throws(CryptoError)
         fn aesDecrypt(data: String, key: String) -> String
         {
             const result: String = aesDecryptRaw(data, key)
             if (result.len() == 0)
             {
-                throw "Crypto::aesDecrypt failed (wrong key, tampered data, or runtime built without TLS/OpenSSL)"
+                throw CryptoError { message: "Crypto::aesDecrypt failed (wrong key, tampered data, or runtime built without TLS/OpenSSL)" }
             }
             return result.substring(1, result.len())
         }

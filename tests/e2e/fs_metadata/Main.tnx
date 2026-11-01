@@ -1,0 +1,34 @@
+// Issue #508: checked metadata and directory mutation APIs.
+// expect: true
+// expect: file
+// expect: 3
+// expect: true
+// expect: 1
+// expect: true
+// expect: true
+// expect: true
+import tinox.core.fs
+class Main
+{
+    fnc main() -> Int32
+    {
+        const root: String = "/tmp/tinox-fs-e2e-" + processId().toString()
+        Fs::createDirectories(root + "/tree/nested")
+        Fs::writeFile(root + "/tree/nested/file", "abc")
+        println(Fs::isDirectory(root + "/tree"))
+        const metadata: FileInfo = Fs::stat(root + "/tree/nested/file") as FileInfo
+        println(metadata.kind)
+        println(metadata.size)
+        println(Fs::stat(root + "/absent") == null)
+        println(Fs::listEntries(root + "/tree/nested").len())
+        Fs::rename(root + "/tree", root + "/moved")
+        println(Fs::isFile(root + "/moved/nested/file"))
+        var rejected: Bool = false
+        try { Fs::deleteDirectory(root + "/moved") }
+        catch error: String { rejected = error.contains("cannot remove directory") }
+        println(rejected)
+        Fs::deleteDirectoryRecursive(root)
+        println(Fs::stat(root) == null)
+        return 0
+    }
+}

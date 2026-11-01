@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+serde_json = "1"
 tinox-common = { path = "../tinox-common" }
 tinox-parser = { path = "../tinox-parser" }
 

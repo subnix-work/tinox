@@ -21,6 +21,7 @@ namespace tinox.core.pool
             return Pool<T> { available: [], inUse: [], maxSize: maxSize, factory: factory }
         }
 
+        @Throws(PoolExhaustedError)
         fn acquire(pool: Pool<T>) -> T
         {
             if (pool.available.len() > 0)
@@ -35,7 +36,7 @@ namespace tinox.core.pool
                 pool.inUse.push(obj)
                 return obj
             }
-            throw "Pool exhausted"
+            throw PoolExhaustedError { message: "Pool exhausted" }
         }
 
         fn release(pool: Pool<T>, obj: T) -> Nothing

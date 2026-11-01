@@ -118,11 +118,22 @@ class Ctrl
     std::fs::write(
         dir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.8.0\"\nname = \"budget_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n",
+            "[package]\ncompiler = \"2.9.0\"\nname = \"budget_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n",
             extended_module_version("http_server"),
         ),
     )
     .unwrap();
+    // The in-tree module may be ahead of the published package (version bump without a
+    // publish yet), so consume it from source instead of installing it from the registry.
+    std::fs::write(
+        dir.join("tinox.overrides.yaml"),
+        format!(
+            "overrides:\n  \"tinox.core:http_server:{}\": \"{}\"\n",
+            extended_module_version("http_server"),
+            repo_root().join("crates/tinox-core-ext/http_server").display()
+        ),
+    )
+    .expect("write overrides");
     let install = Command::new(env!("CARGO_BIN_EXE_tinox"))
         .arg("install")
         .current_dir(&dir)
@@ -223,7 +234,7 @@ fn limits_line_reports_overrides_affinity_and_cgroup_quota() {
 #[test]
 fn malformed_limit_override_is_a_hard_failure() {
     let (dir, exe, _port) = http_fixture("bad-override");
-    for (name, value) in [("TINOX_MAX_TASKS", "abc"), ("TINOX_MAX_CONNECTIONS", "0"), ("TINOX_HTTP_WORKERS", "-1"), ("TINOX_MAX_CONNECTIONS", "999999")] {
+    for (name, value) in [("TINOX_MAX_TASKS", "abc"), ("TINOX_MAX_CONNECTIONS", "0"), ("TINOX_HTTP_WORKERS", "-1"), ("TINOX_MAX_CONNECTIONS", "1000001")] {
         let out = Command::new(&exe)
             .current_dir(&dir)
             .env(name, value)
@@ -666,5 +677,59 @@ fn websocket_connections_over_budget_are_closed_and_budget_recovers() {
     let mut d = ws_handshake(port);
     assert_eq!(ws_ping_pong(&mut d), Some(0x81), "budget did not recover after a disconnect");
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #553: the connection table is no longer capped at 4096 slots. 4500 simultaneous connections
+/// are held open (so the server's fds exceed 4096 and would have collided in an `fd % 4096`
+/// table), then every one of them is used and must get its own answer.
+#[test]
+fn more_than_4096_simultaneous_connections_are_served_without_slot_mixups() {
+    use std::io::{Read, Write};
+    let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) };
+    let want = 12000.min(rl.rlim_max);
+    if want < 10000 {
+        eprintln!("SKIP: RLIMIT_NOFILE hard limit {} too low", rl.rlim_max);
+        return;
+    }
+    rl.rlim_cur = want;
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rl) }, 0);
+
+    let (dir, exe, port) = http_fixture("many-connections");
+    let child = Command::new(&exe)
+        .current_dir(&dir)
+        .env("TINOX_MAX_CONNECTIONS", "6000")
+        .env("TINOX_HTTP_WORKERS", "2")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn server");
+    let _guard = KillOnDrop(child);
+    std::thread::sleep(Duration::from_millis(800));
+    let (status, _) = curl_status(port, "/fast");
+    assert!(status.contains("200"), "baseline request failed: {status}");
+
+    let mut conns: Vec<TcpStream> = Vec::new();
+    for _ in 0..4500 {
+        let c = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        conns.push(c);
+    }
+    let mut bad = Vec::new();
+    for (i, c) in conns.iter_mut().enumerate() {
+        c.write_all(b"GET /fast HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+        let mut buf = Vec::new();
+        let _ = c.read_to_end(&mut buf);
+        if !String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 200") {
+            bad.push(i);
+        }
+    }
+    assert!(bad.is_empty(), "{} of 4500 connections got no 200 (first: {:?})", bad.len(), bad.iter().take(5).collect::<Vec<_>>());
+    drop(conns);
+    // Budget and slots recover after the burst.
+    std::thread::sleep(Duration::from_millis(700));
+    let (status, _) = curl_status(port, "/fast");
+    assert!(status.contains("200"), "server did not recover: {status}");
     let _ = std::fs::remove_dir_all(&dir);
 }
