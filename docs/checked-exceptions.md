@@ -1,6 +1,6 @@
 # Checked exceptions: `@Error`, `@Throws` (design proposal)
 
-Status: **decided; stages 1-3 implemented (the checker is opt-in), the stdlib migration (stage 4) is not.**
+Status: **implemented (the checker is opt-in); the stdlib throws typed errors. Implicit failures (index, overflow, division) are a follow-up, see below.**
 Decisions (owner, 2026-10-31): error classes **may extend each other**, and every failure class
 in the table of section 3 takes **Option B** (typed errors / `Result`-returning APIs); task
 cancellation, deadline and shutdown stay a separate non-catchable control signal.
@@ -33,6 +33,15 @@ Migration helper: `tinox migrate-exceptions [--check] [--class Name] <dir>...` r
 adds `@Throws(AppError)` to the enclosing method, creates the `@Error` class in the first directory and
 imports it in sibling files. Rethrows, other non-literal throws and `catch (e: String)` (still valid) are
 left alone and listed; callers of annotated methods are then reported by the checker.
+
+Stage 4 outcome: every explicit `throw` in the core stdlib and in the extended-tier sources is an `@Error`
+class declared with `@Throws`. The extended packages are source-migrated in the repository and are republished
+with the next compiler release, because typed errors need it (published packages declare `compiler = "2.8.0"`).
+`Socket` returns `Bool` instead of throwing, which already is the Result-style API of Option B.
+Deviation from the table in section 3, proposed by the implementer and accepted by the owner (2026-11-01):
+`a[i]`, `Map` strict get, integer overflow and `/` by zero stay hard aborts (as a catchable error they would
+force `@Throws` onto almost every function); explicit variants that throw an `@Error` (`list.get(i)`,
+`Math::divChecked`, ...) are the follow-up.
 
 ## Goal
 
