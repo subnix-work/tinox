@@ -41,8 +41,8 @@ fn http_absence_and_legacy_contracts() {
     for (module, files, tier) in [
         ("http_server", &["HttpRequest", "QueryString"][..], "tinox-core-ext/http_server"),
         ("json", &["Json", "JsonValue", "JsonField", "JsonSerializable"][..], "tinox-core-ext/json"),
-        ("option", &["Option"][..], "tinox-core"),
-        ("result", &["Result"][..], "tinox-core"),
+        ("option", &["Option", "NoneError"][..], "tinox-core"),
+        ("result", &["Result", "ResultError"][..], "tinox-core"),
     ] {
         let relative = PathBuf::from("tinox/core").join(module);
         fs::create_dir_all(work.0.join(&relative)).expect("create module directory");
