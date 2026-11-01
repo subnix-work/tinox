@@ -15,6 +15,7 @@ mod dockerfile;
 mod migrate;
 mod schema_diff;
 mod migrate_xml;
+mod exception_migration;
 mod semicolon_migration;
 mod db_new;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
@@ -70,6 +71,12 @@ fn run() {
             }
         }
         "graph" => gen_call_graph(&args[2..]),
+        "migrate-exceptions" => {
+            if let Err(e) = exception_migration::run(&args[2..]) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         "migrate-semicolons" => {
             if let Err(e) = semicolon_migration::run(&args[2..]) {
                 eprintln!("error: {e}");

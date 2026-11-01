@@ -11,6 +11,7 @@ All notable changes to Tinox are documented in this file.
   first matching `catch` clause runs; an unmatched error propagates after `finally`. `throw "text"` and
   `catch (e: String)` keep working. The stdlib migration is still to come, see
   `docs/checked-exceptions.md`.
+- **Stdlib typed errors and `tinox migrate-exceptions`** (#524, stage 4, in progress): core modules (`Stack`/`Queue`, `Fs`, `Option`/`Result.unwrap`, `Math`, `Heap`, `Hex`, `Base64`, `Uri`, `Cron`, `Unicode`, `Regex`, `Pool`, `Mathf`, queues, `Debug`) throw `@Error` classes declared with `@Throws`; `catch (e: String)` now sees `CODE: message`. `tinox migrate-exceptions` rewrites `throw "text"` to a typed error.
 - **`@Throws` checker** (#524, stage 3): `[language] checked_exceptions = "warn" | "error"` makes
   `tinox build`/`check` verify that every `@Error` a call or `throw` can raise is caught or declared
   (superclasses count, overrides may not add errors, lambdas inherit nothing). Interface methods may

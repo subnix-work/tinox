@@ -28,6 +28,12 @@ Constraints that follow from the representation: an `@Error` class carries only 
 the code stays program-unique. Nothing under "Proposed" about `@Throws` enforcement is in the
 compiler yet.
 
+Migration helper: `tinox migrate-exceptions [--check] [--class Name] <dir>...` rewrites
+`throw "text"` (string literal or a concatenation starting with one) to `throw AppError { message: ... }`,
+adds `@Throws(AppError)` to the enclosing method, creates the `@Error` class in the first directory and
+imports it in sibling files. Rethrows, other non-literal throws and `catch (e: String)` (still valid) are
+left alone and listed; callers of annotated methods are then reported by the checker.
+
 ## Goal
 
 Unlike Java there are **only checked exceptions**: every failure a function can cause must
