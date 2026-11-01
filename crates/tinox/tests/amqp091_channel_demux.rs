@@ -127,7 +127,7 @@ fn deliveries_and_confirms_share_one_channel() {
     std::fs::write(
         dir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.8.0\"\nname = \"demux\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\npath = \"{}\"\n",
+            "[package]\ncompiler = \"2.9.0\"\nname = \"demux\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\npath = \"{}\"\n",
             root.join("crates/tinox-core-ext/amqp091").display()
         ),
     )

@@ -10,7 +10,7 @@ fn project(name: &str, mode: &str, service: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("tinox.toml"),
-        format!("[package]\nname = \"ce\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[language]\nchecked_exceptions = \"{mode}\"\n", env!("CARGO_PKG_VERSION")),
+        format!("[package]\ncompiler = \"2.9.0\"\nname = \"ce\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[language]\nchecked_exceptions = \"{mode}\"\n", env!("CARGO_PKG_VERSION")),
     )
     .unwrap();
     let w = |f: &str, s: &str| std::fs::write(dir.join("src").join(f), s).unwrap();

@@ -4,6 +4,10 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-01
+
+**Notable change:** `catch (e: String)` now sees typed stdlib errors as `CODE: message` (for example `IO_ERROR: ...`) instead of the bare text; catch the `@Error` class (`catch (e: IoError)`) or run `tinox migrate-exceptions`. Every package is republished for compiler 2.9.0 (patch version bump).
+
 ### Added
 
 - **Typed errors** (#524, stage 2): `throw X { message: ... }` for `@Error` classes and

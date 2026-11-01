@@ -10,7 +10,7 @@ fn build(name: &str, properties: &str) -> (std::path::PathBuf, std::path::PathBu
     fs::create_dir_all(&root).unwrap();
     fs::write(
         root.join("tinox.toml"),
-        format!("[package]\nname = \"cfg\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION")),
+        format!("[package]\ncompiler = \"2.9.0\"\nname = \"cfg\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION")),
     )
     .unwrap();
     fs::write(
@@ -72,7 +72,7 @@ fn all_problems_are_reported_together_before_anything_runs() {
     let root = std::env::temp_dir().join(format!("tinox-config-agg-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("tinox.toml"), format!("[package]\nname = \"cfg\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION"))).unwrap();
+    fs::write(root.join("tinox.toml"), format!("[package]\ncompiler = \"2.9.0\"\nname = \"cfg\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION"))).unwrap();
     fs::write(
         root.join("Settings.tnx"),
         "class Settings {\n    @Config(\"app.port\") var port: Int64\n    @Config(\"app.limit\") var limit: Int64 = 5\n    @Config(\"app.debug\") var debug: Bool = false\n    @Config(\"app.secret\") var secret: String\n}\n",

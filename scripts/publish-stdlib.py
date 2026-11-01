@@ -40,7 +40,7 @@ def consumers(binary, inventory, extracted, work, compiler):
         name = package['name']
         project = work / name
         project.mkdir()
-        manifest = ('[package]\nname = "release-check"\nversion = "0.0.0"\n'
+        manifest = ('[package]\ncompiler = \"2.9.0\"\nname = "release-check"\nversion = "0.0.0"\n'
                     f'compiler = "{compiler}"\n\n[[dependencies]]\ngroup = "tinox.core"\n'
                     f'artifactId = "{name}"\nversion = "{package["version"]}"\n')
         by_name = {p['name']: p for p in inventory}
