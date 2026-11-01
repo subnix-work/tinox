@@ -1,7 +1,10 @@
 # AI coding task evaluations (#315)
 
-Status: evaluation infrastructure, **no measured model baseline or efficiency
-improvement claimed**. Python 3.10+, standard library only. Six tasks cover a
+Status: [measured Codex subscription baseline/context comparison](results/2026-11-01-codex/README.md),
+60 runs on pinned compiler 2.8.0: baseline 17/30 correct, added compact guide
+12/30 correct. **No efficiency improvement established.** The adapter is also
+verified on current develop (compiler 2.9.0); those measurements are not 2.9 results.
+Python 3.10+, standard library only. Six tasks cover a
 price bug fix, HTTP validation, CRUD, bounded parallel work, a transactional
 update and a finite binary broker consumer.
 
@@ -12,8 +15,8 @@ The three new held-out checks measure behavior independently:
   of started workers before return/throw. A sequential calculation is rejected.
 - `transactional` provisions PostgreSQL, exercises validation plus a second-save
   database constraint failure, and checks balances independently with psql after
-  every case. The current ORM aborts on a database error; that case verifies
-  atomicity after disconnect, not in-process recovery.
+  every case. The recorded protocol's database-error case verifies atomicity
+  after disconnect; it does not establish in-process recovery.
 - `broker` provisions RabbitMQ, publishes binary messages through its independent
   management HTTP API, checks delivered bytes and verifies that messages do not
   reappear after connection closure. It uses a durable test queue because modern
@@ -35,9 +38,8 @@ model-written tests or claimed success as proof.
 model/provider. Checker regression results **are not model baseline results**.
 The native checker and good controls remain outside the model's tool workspace.
 
-The runner, expanded tasks and checker controls are implemented; #315's
-measured model baselines and efficiency comparisons remain outstanding. Execution
-needs an explicit provider/model revision and authorized total spending limit;
+The runner, expanded tasks, checker controls and measured subscription comparison
+are implemented. New execution needs an explicit provider/model revision and authorized total spending limit;
 no configured model workload is implied by validating the checkers. Entry-discovery fix
 #293/#319 is present in this checkout. Acceptance checks still build and execute
 code directly and compare behavior using Python; they do not accept a model's
@@ -68,7 +70,7 @@ The adapter runs from that workspace. Provide documentation explicitly through
 `context`, e.g. `{"compact-guide": "/absolute/path/to/guide.txt"}`. The model can
 retrieve it with `read` on `docs/compact-guide`; retrieval results and all later
 requests remain in the transcript. Record compiler/package cache setup before
-measurement; HTTP starters pin `tinox.core:http_server` to 1.1.0 in their manifests.
+measurement; HTTP starters pin `tinox.core:http_server` versions in their manifests.
 The compiler may retrieve that package if it is missing; prewarm it consistently.
 No package is published by this suite.
 
@@ -76,7 +78,8 @@ For another provider, configure an absolute command argv implementing the
 single-call protocol below. Paid providers require `billing: "metered"`, `--execute`, explicit nonzero
 prices and a total `max_cost_usd`. The runner reserves one full context plus
 maximum output at the configured per-million prices **before each call**. The
-cost cap covers the whole task/run matrix. Zero prices are for local models;
+cost cap covers the whole task/run matrix. Zero prices are for local models
+and explicitly declared subscription execution;
 they must never be used to disguise a billed endpoint. Set rates conservatively,
 including reasoning, caching and provider-specific charges. Adapters must disable
 SDK retries and extra model calls and enforce the request limits; the runner
@@ -84,10 +87,64 @@ cannot enforce a remote provider's billing behavior. A timeout or missing usage
 marks accounting incomplete, reserves the possible cost, saves the failure, and
 halts further provider calls. Such runs cannot support an efficiency comparison.
 
+### Codex through a ChatGPT subscription
+
+`codex_adapter.py` uses the installed official Codex CLI and an existing ChatGPT
+login. Copy `config.codex.example.json` and replace its explicit placeholders.
+Set `provider: "codex-chatgpt"`, `billing: "subscription"`, and all three
+USD fields to zero: this records **zero additional API spending**, not free
+inference or a per-token subscription price. An explicit `--execute` is still
+required. Subscription quota is shared with ordinary Codex work.
+
+Use an absolute adapter argv as above, and configure:
+
+```json
+{
+  "model": "YOUR_EXPLICIT_AVAILABLE_MODEL",
+  "model_revision": "YOUR_EXPLICIT_AVAILABLE_MODEL@codex-cli YOUR_INSTALLED_VERSION;backend-snapshot-unavailable",
+  "adapter_version": "codex_adapter.py-v2",
+  "settings": {"cli_version": "codex-cli YOUR_INSTALLED_VERSION", "reasoning_effort": "low"}
+}
+```
+
+The adapter checks the CLI version and ChatGPT login before every generation,
+forces ChatGPT authentication, removes API keys/endpoint overrides from the
+child environment, and ignores user config and project instructions. Each turn
+starts in an empty temporary directory with native tools, plugins, MCP servers,
+web search, hooks, memory and agents disabled. The external runner remains the
+only tool executor. Native tool events, error/retry events, multiple completions
+or missing usage invalidate the turn and stop the matrix; a known startup notice
+about the deliberately disabled code-mode host is retained but allowed. CLI
+JSON events are preserved in each response's `provider_metadata`, including
+cached-input and reasoning counters. Input tokens include cached input; generated
+reasoning is not added a second time to the CLI's output total.
+The CLI's `--output-last-message` file selects the action. It must agree with the
+last completed message event. Additional commentary messages remain in the raw
+events and full-turn token totals; they do not execute extra runner actions.
+The complete runner conversation is serialized as the CLI's user input under
+the adapter's fixed instructions. CLI/server instructions add overhead, included
+in the reported token totals. This measures that specific restricted workflow,
+not a bare-model API or unrestricted interactive Codex session.
+
+Unlike the local adapter, the CLI cannot pin an immutable backend model snapshot
+or enforce the runner's output-token reservation before generation. Model aliases
+can change server-side. The runner checks actual usage against reservations
+afterward. For subscriptions, a fully reported over-budget turn is a failed
+`provider_token_limit` task with known usage, and its action is not executed;
+missing usage still stops the entire matrix. Metered-provider reservation
+violations remain an accounting failure that halts further calls. Built-in transport
+retries cannot be fully disabled; visible retry/error events stop the run. Record
+these limitations with results, retain failed pilots, and do not claim an exact
+backend reproduction, uncached inference cost, or universal model comparison.
+No API fallback, credit purchase, or quota-reset redemption is performed.
+
+Official interfaces: [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)
+and [subscription pricing/limits](https://learn.chatgpt.com/docs/pricing?codex-pricing-plans=individual).
+
 ## Provider adapter protocol (version 1)
 
-The runner sends one JSON object on stdin with `model`, immutable
-`model_revision`, `settings`, `context_tokens`, `max_output_tokens`, and
+The runner sends one JSON object on stdin with `model`, `model_revision`,
+`settings`, `context_tokens`, `max_output_tokens`, and
 `messages` (system/user/assistant). Adapter stdout must contain exactly:
 
 ```json
@@ -95,13 +152,19 @@ The runner sends one JSON object on stdin with `model`, immutable
 ```
 
 Usage comes from the provider, including cached input and generated reasoning,
-not estimates of source length. Exactly one generation is permitted per adapter
-invocation. All documentation/retrieval and repair history must be included;
+not estimates of source length. Each adapter invocation permits one provider
+turn (one API generation, or one complete tool-free Codex CLI turn with its
+full reported usage). All documentation/retrieval and repair history must be included;
 never silently truncate history. The runner also uses a conservative UTF-8 byte
 bound with a 256-token template allowance per message to stop before context
 exhaustion. Adapters with larger templates must apply a stricter check. Ollama
 reports `prompt_eval_count` and `eval_count`; verify the accounting semantics of
 your pinned server version before publishing results.
+
+Pin an immutable `model_revision` whenever the provider exposes one. The Codex
+subscription adapter instead records the selected alias, pinned CLI version and
+explicit `backend-snapshot-unavailable` marker; it must never masquerade as an
+immutable provider revision.
 
 The assistant content is one tool action: `list`, `read`, `write`, `build`, `run`,
 or `submit`. See `TOOLS` in runner.py for arguments. `build` compiles Main.tnx;

@@ -1,0 +1,190 @@
+Public declaration inventory from source at develop 13d7f020. Bodies omitted.
+
+# HttpContext.tnx
+module tinox.core.http_server
+namespace tinox.core.http_server
+class HttpContext
+var request: HttpRequest
+var response: HttpResponse
+fn new(request: HttpRequest, response: HttpResponse) -> HttpContext
+fn fromRequest(request: HttpRequest) -> HttpContext
+
+# HttpRequest.tnx
+module tinox.core.http_server
+import tinox.core.json
+import tinox.core.option
+namespace tinox.core.http_server
+class HttpRequest
+var method: String
+var path: String
+var body: String
+var headers: Map<String, String>
+var queryString: String
+var params: Map<String, String>
+var wasEarlyData: Bool
+fn new(method: String, path: String, queryString: String, headers: Map<String, String>, body: String) -> HttpRequest
+fn getHeader(name: String) -> String
+fn findHeader(name: String) -> Option<String>
+const lower: String = name.toLowerCase()
+var key: Int64 = 0
+const keys: List<String> = this.headers.keys()
+fn getParam(name: String) -> String
+fn findParam(name: String) -> Option<String>
+fn getQuery(name: String) -> String
+fn findQuery(name: String) -> Option<String>
+fn json() -> JsonValue
+fn bodyAs<T>() -> T
+fn text() -> String
+fn setParams(params: Map<String, String>) -> Nothing
+fn isContentType(contentType: String) -> Bool
+const ct: String = this.getHeader("Content-Type")
+
+# HttpResponse.tnx
+module tinox.core.http_server
+import tinox.core.json
+namespace tinox.core.http_server
+class HttpResponse
+var statusCode: Int64
+var headers: Map<String, String>
+var body: String
+fn new() -> HttpResponse
+fn status(code: Int64) -> HttpResponse
+fn header(name: String, value: String) -> HttpResponse
+fn text(text: String) -> HttpResponse
+fn json(json: String) -> HttpResponse
+fn jsonObject<T>(obj: T) -> HttpResponse
+fn html(html: String) -> HttpResponse
+fn content(content: String, contentType: String) -> HttpResponse
+fn notFound(message: String) -> HttpResponse
+fn badRequest(message: String) -> HttpResponse
+fn internalError(message: String) -> HttpResponse
+fn created(json: String) -> HttpResponse
+fn noContent() -> HttpResponse
+fn redirect(url: String) -> HttpResponse
+fn cors(origin: String) -> HttpResponse
+
+# HttpServer.tnx
+module tinox.core.http_server
+namespace tinox.core.http_server
+class HttpServer
+var port: Int64
+var routes: List<Route>
+var middleware: List<fnc(HttpContext) -> Bool>
+var socketHandle: Int64
+var running: Bool
+fn new(port: Int64) -> HttpServer
+fn get(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
+fn post(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
+fn put(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
+fn patch(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
+fn delete(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
+fn options(path: String, handler: fnc(HttpContext) -> Nothing) -> HttpServer
+fn use(mware: fnc(HttpContext) -> Bool) -> HttpServer
+fn listen() -> Nothing
+const conn: Int64 = httpServerAcceptConnHandle(this.socketHandle)
+const raw: String = httpConnReadRequest(conn)
+const ctx: HttpContext = this.parseRawRequest(raw)
+fn listenTls(certPath: String, keyPath: String) -> Nothing
+const conn: Int64 = httpServerAcceptTls(this.socketHandle)
+const raw: String = httpConnReadRequest(conn)
+const ctx: HttpContext = this.parseRawRequest(raw)
+fn parseRawRequest(raw: String) -> HttpContext
+const request: HttpRequest = HttpRequest::new("", "", "", Map::new(), "")
+const response: HttpResponse = HttpResponse::new()
+const lines: List<String> = raw.split("\r\n")
+const firstLine: String = lines[0]
+const parts: List<String> = firstLine.split(" ")
+const fullPath: String = parts[1]
+const qIdx: Int64 = fullPath.indexOf("?")
+var i: Int64 = 1
+const line: String = lines[i]
+const colonIdx: Int64 = line.indexOf(":")
+const key: String = line.substring(0, colonIdx).trim()
+const hdrVal: String = line.substring(colonIdx + 1, line.len()).trim()
+var body: String = ""
+fn formatResponse(response: HttpResponse) -> String
+const statusText: String = HttpServer::statusText(response.statusCode)
+var raw: String = "HTTP/1.1 " + response.statusCode.toString() + " " + statusText + "\r\n"
+const keys: List<String> = response.headers.keys()
+var hi: Int64 = 0
+fn statusText(code: Int64) -> String
+fn stop() -> Nothing
+fn handleRequest(ctx: HttpContext, conn: Int64) -> Nothing
+const middlewareContinue: Bool = this.runMiddleware(ctx)
+const matched: Bool = this.matchRoute(ctx)
+const raw: String = this.formatResponse(ctx.response)
+fn runMiddleware(ctx: HttpContext) -> Bool
+var i: Int64 = 0
+const result: Bool = this.middleware[i](ctx)
+fn matchRoute(ctx: HttpContext) -> Bool
+var i: Int64 = 0
+const route: Route = this.routes[i]
+const params: Map<String, String> = RouteMatcher::extractParams(route.path, ctx.request.path)
+
+# MediaType.tnx
+module tinox.core.http_server
+namespace tinox.core.http_server
+
+# QueryString.tnx
+module tinox.core.http_server
+import tinox.core.option
+namespace tinox.core.http_server
+class QueryString
+fn parse(qs: String) -> Map<String, String>
+const params: Map<String, String> = Map::new()
+var i: Int64 = 0
+var key: String = ""
+var value: String = ""
+var inKey: Bool = true
+const ch: String = qs.substring(i, i + 1)
+fn get(qs: String, name: String) -> String
+fn find(qs: String, name: String) -> Option<String>
+const params: Map<String, String> = QueryString::parse(qs)
+
+# Response.tnx
+module tinox.core.http_server
+namespace tinox.core.http_server
+class Response<T>
+var statusCode: Int64
+var headers: Map<String, String>
+var values: List<T>
+var errorMessage: String
+var kind: Int64
+fnc ok(value: T) -> Response<T>
+fnc error(code: Int64, message: String) -> Response<T>
+fnc noContent() -> Response<T>
+fn withStatus(code: Int64) -> Response<T>
+fn header(name: String, value: String) -> Response<T>
+
+# Route.tnx
+module tinox.core.http_server
+namespace tinox.core.http_server
+class Route
+var method: String
+var path: String
+var handler: fnc(HttpContext) -> Nothing
+
+# RouteMatcher.tnx
+module tinox.core.http_server
+namespace tinox.core.http_server
+class RouteMatcher
+fn matches(pattern: String, path: String) -> Bool
+const patternParts: List<String> = RouteMatcher::splitPath(pattern)
+const pathParts: List<String> = RouteMatcher::splitPath(path)
+var i: Int64 = 0
+const pPart: String = patternParts[i]
+const pathPart: String = pathParts[i]
+fn extractParams(pattern: String, path: String) -> Map<String, String>
+const params: Map<String, String> = Map::new()
+const patternParts: List<String> = RouteMatcher::splitPath(pattern)
+const pathParts: List<String> = RouteMatcher::splitPath(path)
+var i: Int64 = 0
+const pPart: String = patternParts[i]
+const paramName: String = pPart.substring(1, pPart.len())
+fn param(pattern: String, path: String, name: String) -> String
+const params: Map<String, String> = RouteMatcher::extractParams(pattern, path)
+fn splitPath(path: String) -> List<String>
+const parts: List<String> = []
+var current: String = ""
+var i: Int64 = 0
+const ch: String = path.substring(i, i + 1)

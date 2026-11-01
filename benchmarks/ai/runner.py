@@ -83,8 +83,11 @@ def validate(config):
     for key in ("max_cost_usd", "input_usd_per_million", "output_usd_per_million", "wall_seconds", "call_seconds"):
         if type(config.get(key)) not in (int, float) or not math.isfinite(config[key]) or config[key] < 0:
             raise ValueError(f"invalid {key}")
-    if config.get("billing") not in ("local", "metered"):
-        raise ValueError("billing must explicitly be local or metered")
+    if config.get("billing") not in ("local", "metered", "subscription"):
+        raise ValueError("billing must explicitly be local, metered or subscription")
+    if config["billing"] == "subscription" and (config["provider"] != "codex-chatgpt" or any(
+            config[key] != 0 for key in ("max_cost_usd", "input_usd_per_million", "output_usd_per_million"))):
+        raise ValueError("subscription requires codex-chatgpt and zero additional spending")
     if config["billing"] == "metered" and (config["max_cost_usd"] <= 0 or
             config["input_usd_per_million"] + config["output_usd_per_million"] <= 0):
         raise ValueError("metered providers require explicit rates and a positive cost cap")
@@ -153,6 +156,8 @@ def evaluate(config, task, tinox, output, run_index, remaining_cost, service_ima
                 if code:
                     raise ValueError("adapter failed")
                 response = json.loads(raw)
+                if "provider_metadata" in response:
+                    event["provider_metadata"] = response["provider_metadata"]
                 usage = response["usage"]
                 for key in ("input_tokens", "output_tokens"):
                     if type(usage[key]) is not int or usage[key] < 0:
@@ -164,12 +169,20 @@ def evaluate(config, task, tinox, output, run_index, remaining_cost, service_ima
                         usage["output_tokens"] * config["output_usd_per_million"]) / 1_000_000
                 record["cost_usd"] += cost
                 if usage["input_tokens"] > reserve_in or usage["output_tokens"] > reserve_out:
+                    if config["billing"] == "subscription":
+                        # CLI totals cover a full turn. Its limits are checked after generation;
+                        # known over-budget usage is a failed task, not missing accounting.
+                        record["status"] = "provider_token_limit"
+                        event["budget_exceeded"] = True
+                        event["response"] = response.get("content")
+                        break
                     raise ValueError("adapter violated reserved token limits")
                 content = response["content"]
                 if not isinstance(content, str):
                     raise ValueError("adapter content must be text")
                 event["response"] = content
-            except (ValueError, KeyError, TypeError, TimeoutError, OSError):
+            except (ValueError, KeyError, TypeError, TimeoutError, OSError) as error:
+                event["provider_error_kind"] = type(error).__name__
                 record["status"] = "provider_error"
                 record["accounting_complete"] = False
                 # A failed request might still be billed; charge its entire reservation.

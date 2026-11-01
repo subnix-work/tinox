@@ -120,6 +120,45 @@ print(json.dumps({"content": json.dumps({"tool":"submit", "args":{}}),
         self.assertEqual(len(result["events"]), 1)
         self.assertGreater(result["cost_usd"], 0)
 
+    def test_failed_provider_evidence_survives_missing_usage(self):
+        self.adapter.write_text('import json; print(json.dumps({"error":"quota exhausted", '
+                                '"provider_metadata":{"events":[{"type":"turn.failed"}]}}))')
+        result = self.evaluate()
+        self.assertFalse(result["accounting_complete"])
+        self.assertEqual(len(result["events"]), 1)
+        self.assertEqual(result["events"][0]["provider_metadata"]["events"], [{"type": "turn.failed"}])
+
+    def test_subscription_over_budget_usage_is_known_failure_without_tool_execution(self):
+        self.config.update(provider="codex-chatgpt", billing="subscription")
+        self.adapter.write_text('import json; print(json.dumps({"content":"{\\"tool\\":\\"submit\\"}", '
+                                '"usage":{"input_tokens":5000,"output_tokens":10}}))')
+        result = self.evaluate()
+        self.assertEqual(result["status"], "provider_token_limit")
+        self.assertTrue(result["accounting_complete"])
+        self.assertEqual(result["input_tokens"], 5000)
+        self.assertEqual(result["tool_calls"], 0)
+        self.assertFalse(result["correct"])
+        self.assertEqual(len(result["events"]), 1)
+
+    def test_metered_over_budget_usage_still_halts_accounting(self):
+        self.config.update(provider="test-metered", billing="metered", max_cost_usd=1,
+                           input_usd_per_million=1)
+        self.adapter.write_text('import json; print(json.dumps({"content":"{\\"tool\\":\\"submit\\"}", '
+                                '"usage":{"input_tokens":5000,"output_tokens":10}}))')
+        result = runner.evaluate(self.config, "bugfix", "/missing", self.root, 1, 1)
+        self.assertFalse(result["accounting_complete"])
+        self.assertEqual(result["status"], "provider_error")
+        self.assertEqual(result["input_tokens"], 5000)
+        self.assertEqual(result["tool_calls"], 0)
+
+    def test_provider_timeout_is_explicit_and_never_zero_usage_success(self):
+        with patch.object(runner, "process", side_effect=TimeoutError("deadline")):
+            result = self.evaluate()
+        self.assertEqual(result["status"], "provider_error")
+        self.assertFalse(result["accounting_complete"])
+        self.assertEqual(result["events"][0]["provider_error_kind"], "TimeoutError")
+        self.assertEqual(result["tool_calls"], 0)
+
     def test_context_overflow_does_not_evict_history(self):
         self.config["context_tokens"] = 8
         with patch.object(runner, "process") as call:

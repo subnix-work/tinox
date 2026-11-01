@@ -1,0 +1,24 @@
+Public declaration inventory from source at develop 13d7f020. Bodies omitted.
+
+# DB.tnx
+module tinox.core.db
+namespace tinox.core.db
+class DB
+fnc of(cls: Any) -> Any
+fnc raw(sql: String, params: List<String>) -> List<Map<String, String>>
+
+# EntityQuery.tnx
+module tinox.core.db
+namespace tinox.core.db
+class EntityQuery
+fn filter(predicate: fnc(Any) -> Bool) -> Any
+fn orderBy(field: fnc(Any) -> Any) -> Any
+fn orderByDesc(field: fnc(Any) -> Any) -> Any
+fn limit(n: Int64) -> Any
+fn offset(n: Int64) -> Any
+fn list() -> Any
+fn first() -> Any
+fn count() -> Int64
+fn save(entity: Any) -> Any
+fn delete(entity: Any) -> Nothing
+fn saveAll(entities: Any) -> Nothing
