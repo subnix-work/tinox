@@ -19,7 +19,9 @@ caller's `@Throws` (a superclass counts); that lambdas inherit nothing; that an 
 allow; that `throw "text"` is refused; and warns about a `@Throws` nothing in the body can raise.
 Known limits: calls are resolved syntactically (`this`, `new T()`, class names, locals with a declared
 or `new` type), an unresolved call is not checked; `spawn` errors are not checked at `await`; stdlib calls
-are unchecked until stage 4 declares their errors.
+are unchecked unless the stdlib method declares its errors; stage 4 has migrated `Stack`/`Queue`
+(`EmptyCollectionError`), `Fs` (`IoError`), `Option.unwrap` (`NoneError`), `Result.unwrap`
+(`ResultError`), `Math` (`MathError`) and `Heap` (`EmptyHeapError`) so far.
 
 Constraints that follow from the representation: an `@Error` class carries only `message`
 (extra fields would be lost), a subclass of an `@Error` class needs its own `@Error` code, and

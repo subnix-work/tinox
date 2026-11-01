@@ -12,10 +12,10 @@
 // expect: caught Hex: invalid digit 'z'
 // expect: caught Uri: invalid hex digit 'z' in percent-escape
 // expect: caught Uri: truncated percent-escape
-// expect: caught Math: Int64 overflow
-// expect: caught Math.pow: negative exponent
-// expect: caught Math: Int64 overflow
-// expect: caught Math.factorial: negative argument
+// expect: caught MATH_ERROR: Math: Int64 overflow
+// expect: caught MATH_ERROR: Math.pow: negative exponent
+// expect: caught MATH_ERROR: Math: Int64 overflow
+// expect: caught MATH_ERROR: Math.factorial: negative argument
 import tinox.core.base64
 import tinox.core.hex
 import tinox.core.uri

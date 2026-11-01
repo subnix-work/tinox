@@ -89,6 +89,7 @@ namespace tinox.core.math
             return x * x
         }
 
+        @Throws(MathError)
         /**
          * Returns base raised to the power of exp
          * @param base the base value
@@ -99,7 +100,7 @@ namespace tinox.core.math
         {
             if (exp < 0)
             {
-                throw "Math.pow: negative exponent"
+                throw MathError { message: "Math.pow: negative exponent" }
             }
             var result: Int64 = 1
             var i: Int64 = 0
@@ -111,6 +112,7 @@ namespace tinox.core.math
             return result
         }
 
+        @Throws(MathError)
         /**
          * Returns the factorial of n (n!)
          * Computes n * (n-1) * ... * 2 * 1.
@@ -121,7 +123,7 @@ namespace tinox.core.math
         {
             if (n < 0)
             {
-                throw "Math.factorial: negative argument"
+                throw MathError { message: "Math.factorial: negative argument" }
             }
             var result: Int64 = 1
             var i: Int64 = 2
@@ -133,6 +135,7 @@ namespace tinox.core.math
             return result
         }
 
+        @Throws(MathError)
         /**
          * a * b, throwing instead of silently wrapping on Int64 overflow.
          */
@@ -147,7 +150,7 @@ namespace tinox.core.math
             const absB: Int64 = b < 0 ? 0 - b : b
             if (absA < 0 || absB < 0 || absA > limit / absB)
             {
-                throw "Math: Int64 overflow"
+                throw MathError { message: "Math: Int64 overflow" }
             }
             return a * b
         }

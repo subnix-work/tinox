@@ -1,0 +1,13 @@
+module tinox.core.result
+
+namespace tinox.core.result
+{
+    /**
+     * Thrown by `Result.unwrap` on an Err; `message` is the stored error.
+     */
+    @Error("RESULT_ERR", 500)
+    class ResultError
+    {
+        var message: String
+    }
+}

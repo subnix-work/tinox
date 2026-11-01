@@ -2,9 +2,17 @@
 // expect: queue typed: Queue is empty
 // expect: io typed
 // expect: io text IO_ERROR
+// expect: none typed
+// expect: result Boom
+// expect: math Math.pow: negative exponent
+// expect: heap Heap is empty
 
 import tinox.core.collections
 import tinox.core.fs
+import tinox.core.option
+import tinox.core.result
+import tinox.core.math
+import tinox.core.heap
 
 class Main {
     fnc main() -> Int32 {
@@ -23,6 +31,13 @@ class Main {
         } catch (e: String) {
             println("io text " + e.split(":")[0])
         }
+        const o: Option<Int64> = Option<Int64> { values: [] }
+        try { o.unwrap() } catch (e: NoneError) { println("none typed") }
+        const r: Result<Int64> = Result<Int64> { values: [], error: "Boom" }
+        try { r.unwrap() } catch (e: ResultError) { println("result " + e.message) }
+        try { Math::pow(2, 0 - 1) } catch (e: MathError) { println("math " + e.message) }
+        const h: MinHeap<Int64> = MinHeap<Int64> { heap: Heap<Int64> { items: [] } }
+        try { h.pop(h) } catch (e: EmptyHeapError) { println("heap " + e.message) }
         return 0
     }
 }
