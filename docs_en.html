@@ -1359,10 +1359,22 @@ class Api {
       <code>Option&lt;String&gt;</code>. Headers are case-insensitive;
       path/query names are case-sensitive. Queries keep raw values, the last
       duplicate, and present-empty bare keys. Existing String getters keep
-      their empty fallback without deprecation warnings. These source APIs
-      require a future HTTP package release; existing published versions do
-      not contain them. See the <a href="docs/api-contracts.md">API inventory
+      their empty fallback without deprecation warnings. Use a package version
+      that provides the optional methods, or matching workspace sources. See the <a href="docs/api-contracts.md">API inventory
       and migration guide</a> for examples and legacy I/O limitations.</p>
+
+    <p>The current checkout also provides checked filesystem alternatives:
+      <code>Fs::tryReadFile</code>, <code>tryWriteFile</code>, <code>tryAppendFile</code>,
+      <code>tryCopyFile</code>, <code>tryMoveFile</code> and <code>tryDeleteFile</code>.
+      Their <code>IoResult&lt;T&gt;</code> keeps status and payload together;
+      <code>failure()</code> exposes operation, target, OS code and cause.
+      An empty read is success; partial reads and failed flushes are failures.
+      <a href="docs/api-contracts.md">Migration and compatibility contracts</a>.</p>
+    <p><code>ByteStream</code> and <code>Http1Stream</code> provide bounded,
+      deadline-aware TCP/TLS streaming with explicit ownership and cleanup.
+      HTTP/1.1 streaming supports one Content-Length exchange; HTTP/2/3 body
+      bridges preserve binary bytes but still buffer whole bodies.
+      <a href="docs/binary-streaming.md">Binary and streaming contracts</a>.</p>
 
     <h3>Keyword Overview</h3>
     <table>

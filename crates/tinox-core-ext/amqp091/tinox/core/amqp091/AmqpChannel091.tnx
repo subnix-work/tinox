@@ -1,6 +1,7 @@
 module tinox.core.amqp091
 
 import tinox.core.socket
+import tinox.core.bytes
 
 namespace tinox.core.amqp091
 {
@@ -351,6 +352,72 @@ namespace tinox.core.amqp091
                 for i in offset..end {
                     chunk.push(body[i])
                 }
+                Amqp091::writeFrame(this.conn, 3, this.chanId, chunk)
+                offset = end
+            }
+            return assignedTag
+        }
+
+        // Compact application payload; legacy framing copies at most one
+        // bounded frame at a time. Use confirms for broker acceptance, exactly
+        // as for publish(). Caller must not mutate body until this returns.
+        fn publishBytes(exchange: String, routingKey: String, body: Bytes, contentType: String) -> Int64
+        {
+            const w = AmqpWriter091::new()
+            w.short(0) // reserved-1
+            w.shortstr(exchange)
+            w.shortstr(routingKey)
+            w.octet(0) // mandatory=false, immediate=false
+            if (w.hasError()) {
+                this.errorMessage = "exchange/routing-key name too long (max 255 bytes, shortstr) -- basic.publish NOT sent"
+                return 0
+            }
+
+            var flags: Int64 = 0
+            const pw = AmqpWriter091::new()
+            if (contentType.len() > 0) {
+                flags = flags | 32768 // bit 15: content-type
+                pw.shortstr(contentType)
+            }
+            flags = flags | 4096 // bit 12: delivery-mode
+            pw.octet(2) // persistent
+            if (pw.hasError()) {
+                this.errorMessage = "content-type too long (max 255 bytes, shortstr) -- basic.publish NOT sent"
+                return 0
+            }
+
+            var assignedTag: Int64 = 0
+            if (this.confirmsEnabled) {
+                this.lastDeliveryTag = this.lastDeliveryTag + 1
+                assignedTag = this.lastDeliveryTag
+            }
+
+            const payload = Amqp091::encodeMethodPayload(60, 40, w.bytes)
+            Amqp091::writeFrame(this.conn, 1, this.chanId, payload)
+
+            const hw = AmqpWriter091::new()
+            hw.short(60) // class-id
+            hw.short(0)  // weight (unused)
+            hw.longlong(body.len())
+            hw.short(flags)
+            hw.rawBytes(pw.bytes)
+            Amqp091::writeFrame(this.conn, 2, this.chanId, hw.bytes)
+
+            var frameOverhead: Int64 = 8
+            var chunkSize: Int64 = this.frameMax - frameOverhead
+            if (chunkSize <= 0) {
+                chunkSize = 4096
+            }
+            if (chunkSize > 1048576) { chunkSize = 1048576 }
+            var offset: Int64 = 0
+            const n = body.len()
+            while offset < n {
+                var end: Int64 = offset + chunkSize
+                if (end > n) {
+                    end = n
+                }
+                // Copy/widen only this frame. No full-message List adapter.
+                const chunk: List<Int64> = body.slice(offset, end).toList()
                 Amqp091::writeFrame(this.conn, 3, this.chanId, chunk)
                 offset = end
             }

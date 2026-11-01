@@ -1,0 +1,9 @@
+[package]
+compiler = "2.8.0"
+name = "broker_eval"
+version = "0.0.0"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "amqp091"
+version = "1.1.0"

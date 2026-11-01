@@ -1,15 +1,19 @@
 module tinox.core.http2_server
 
+import tinox.core.bytes
 import tinox.core.hpack
 import tinox.core.http_server
 
 namespace tinox.core.http2_server
 {
     // Roh-Bytes von einem Socket-fd lesen (HTTP/2-Framing).
-    extern fn httpServerReadRawBytes(fd: Int64, count: Int64) -> String
     extern fn tinoxBytesToString(bytes: List<Int64>) -> String
     // @Cors/@Csrf policy (#529): 1 = the guard already filled the response.
     extern fn tinoxSecurityGuard(ctx: HttpContext, routeExists: Int64) -> Int64
+    extern fn tinoxHttpRequestBodyFromBytes(bytes: List<Int64>) -> String
+    extern fn tinoxHttpClearBodyBridge() -> Nothing
+    extern fn tinoxHttpBodyLength(body: String) -> Int64
+    extern fn tinoxHttpBodySlice(body: String, start: Int64, end: Int64) -> List<Int64>
 
     /**
      * HTTP/2 server with a fluent route-registration API identical to HttpServer.
@@ -97,7 +101,13 @@ namespace tinox.core.http2_server
                 const clientFd: Int64 = httpServerAcceptConn(this.socketHandle)
                 if (clientFd >= 0)
                 {
-                    this.handleConnection(clientFd)
+                    try { this.handleConnection(clientFd) }
+                    catch (error: String)
+                    {
+                        tinoxHttpClearBodyBridge()
+                        httpServerCloseConn(clientFd)
+                        println("HTTP/2 connection failed: " + error)
+                    }
                 }
             }
             httpServerClose(this.socketHandle)
@@ -494,7 +504,7 @@ namespace tinox.core.http2_server
             // tinoxBytesToString does the byte->char conversion in one
             // pass instead of `bodyStr = bodyStr + fromCharCode(...)` in a
             // loop, which is O(n^2) over the body length (issue #167).
-            request.body = tinoxBytesToString(stream.body)
+            request.body = tinoxHttpRequestBodyFromBytes(stream.body)
 
             const response: HttpResponse = HttpResponse::new()
             const ctx: HttpContext = HttpContext::new(request, response)
@@ -531,6 +541,15 @@ namespace tinox.core.http2_server
          */
         fn sendResponse(conn: Http2Conn, streamId: Int64, response: HttpResponse) -> Nothing
         {
+            // A peer-controlled zero/invalid maximum must never stall the
+            // bounded DATA-frame loop. Reject on the wire, without guessing.
+            if (conn.peerMaxFrameSize < 16384 || conn.peerMaxFrameSize > 16777215)
+            {
+                this.sendGoaway(conn, Http2Error::PROTOCOL_ERROR())
+                tinoxHttpClearBodyBridge()
+                return
+            }
+            const bodyLength: Int64 = tinoxHttpBodyLength(response.body)
             const responseHeaders: List<HpackHeader> = []
             responseHeaders.push(HpackHeader::new(":status", response.statusCode.toString()))
 
@@ -548,31 +567,37 @@ namespace tinox.core.http2_server
                 responseHeaders.push(HpackHeader::new(wireName.toLowerCase(), response.headers[headerKeys[i]]))
                 i = i + 1
             }
-            if (response.body.len() > 0)
+            if (bodyLength > 0)
             {
-                responseHeaders.push(HpackHeader::new("content-length", response.body.len().toString()))
+                responseHeaders.push(HpackHeader::new("content-length", bodyLength.toString()))
             }
 
             const encodedHeaders: List<Int64> = Hpack::encode(responseHeaders, conn.sendDynTable)
 
             var headersFlags: Int64 = Http2Flags::END_HEADERS()
-            if (response.body.len() == 0)
+            if (bodyLength == 0)
             {
                 headersFlags = headersFlags | Http2Flags::END_STREAM()
             }
             this.writeFrame(conn, Http2Frame::new(Http2FrameType::HEADERS(), headersFlags, streamId, encodedHeaders))
 
-            if (response.body.len() > 0)
+            if (bodyLength > 0)
             {
-                const bodyBytes: List<Int64> = []
-                var j: Int64 = 0
-                while j < response.body.len()
+                // Retain the legacy frame ABI, widening only one DATA frame
+                // at a time rather than the entire compact application body.
+                var offset: Int64 = 0
+                while (offset < bodyLength)
                 {
-                    bodyBytes.push(response.body.charCodeAt(j))
-                    j = j + 1
+                    var end: Int64 = offset + conn.peerMaxFrameSize
+                    if (end > bodyLength) { end = bodyLength }
+                    const bodyBytes: List<Int64> = tinoxHttpBodySlice(response.body, offset, end)
+                    var flags: Int64 = 0
+                    if (end == bodyLength) { flags = Http2Flags::END_STREAM() }
+                    this.writeFrame(conn, Http2Frame::new(Http2FrameType::DATA(), flags, streamId, bodyBytes))
+                    offset = end
                 }
-                this.writeFrame(conn, Http2Frame::new(Http2FrameType::DATA(), Http2Flags::END_STREAM(), streamId, bodyBytes))
             }
+            tinoxHttpClearBodyBridge()
         }
 
         // =====================================================================

@@ -8,8 +8,56 @@ namespace tinox.core.fs
     extern fn fsRealPathChecked(path: String) -> List<String>
     extern fn fsHomeDirectoryChecked() -> List<String>
 
+    extern fn fsReadTextOutcome(path: String) -> List<String>
+    extern fn fsWriteTextOutcome(path: String, text: String, append: Int64) -> List<String>
+    extern fn fsCopyOutcome(from: String, to: String) -> List<String>
+    extern fn fsMutateOutcome(from: String, to: String, move: Int64) -> List<String>
+
     class Fs
     {
+        // Additive checked alternatives. Empty text is success; absence is an
+        // operational error here, unlike stat(), whose null means no entry.
+        fn tryReadFile(path: String) -> IoResult<String>
+        {
+            const data: List<String> = fsReadTextOutcome(path)
+            if (data[0] != "0") { return IoResult<String>::fail(data) }
+            return IoResult<String>::ok(data[4])
+        }
+
+        fn mutationResult(data: List<String>) -> IoResult<Bool>
+        {
+            if (data[0] != "0") { return IoResult<Bool>::fail(data) }
+            return IoResult<Bool>::ok(true)
+        }
+
+        fn tryWriteFile(path: String, text: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsWriteTextOutcome(path, text, 0))
+        }
+
+        fn tryAppendFile(path: String, text: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsWriteTextOutcome(path, text, 1))
+        }
+
+        // Bounded binary copy. Failure can leave a partial destination; the
+        // source is never removed. A source/destination inode alias is rejected.
+        fn tryCopyFile(from: String, to: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsCopyOutcome(from, to))
+        }
+
+        // Atomic rename only; cross-device moves fail and preserve the source.
+        fn tryMoveFile(from: String, to: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsMutateOutcome(from, to, 1))
+        }
+
+        fn tryDeleteFile(path: String) -> IoResult<Bool>
+        {
+            return Fs::mutationResult(fsMutateOutcome(path, "", 0))
+        }
+
         fn readFile(path: String) -> String
         {
             return fileReadAllText(path)

@@ -1,0 +1,40 @@
+import tinox.core.bytes
+
+extern fn tinoxFileReadAllBytes(path: String) -> List<Int64>
+extern fn tinoxGzip(bytes: List<Int64>) -> List<Int64>
+extern fn GC_get_total_bytes() -> Int64
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const mode: String = envGet("TINOX_BYTES_MODE")
+        const path: String = envGet("TINOX_BYTES_INPUT")
+        const before: Int64 = GC_get_total_bytes()
+        var length: Int64 = 0
+        if (mode == "read-list")
+        {
+            const bytes: List<Int64> = tinoxFileReadAllBytes(path)
+            length = bytes.len()
+            println("allocated=" + (GC_get_total_bytes() - before).toString())
+            println("heap=" + memoryUsage().toString())
+            println("last=" + bytes[length - 1].toString())
+        }
+        else
+        {
+            const bytes = Bytes::readFile(path)
+            var result = bytes
+            if (mode == "gzip-list")
+            { result = Bytes::fromList(tinoxGzip(bytes.toList())) }
+            else if (mode == "gzip-buffer")
+            { result = bytes.gzip(67108864) }
+            length = bytes.len()
+            println("allocated=" + (GC_get_total_bytes() - before).toString())
+            println("heap=" + memoryUsage().toString())
+            println("last=" + bytes.get(length - 1).toString())
+            if (mode != "read-buffer") { result.writeFile(envGet("TINOX_BYTES_OUTPUT")) }
+        }
+        println("length=" + length.toString())
+        return 0
+    }
+}

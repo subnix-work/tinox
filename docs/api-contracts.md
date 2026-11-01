@@ -1,11 +1,69 @@
 # Absence and recoverable error contracts
 
-Issue #306, first additive slice. Source inspection is against the assigned
-worktree at `e4ea0cc` (compiler 2.4.0), rather than assuming the review's
-`044c773` baseline is still current. The locally available `origin/develop`
-history through `80b48b1` contains no later absence-contract implementation;
-its HTTP request source still has the sentinel getters. Live issue comments
-could not be checked because this environment cannot resolve GitHub.
+Issue #306. Optional HTTP lookups and the original migration inventory are
+preserved below. The checked filesystem additions build on #353 and #508.
+
+## Checked filesystem operations
+
+`Fs::tryReadFile`, `tryWriteFile`, `tryAppendFile`, `tryCopyFile`,
+`tryMoveFile` and `tryDeleteFile` return `IoResult<T>`. Check `isErr()` and
+inspect `failure().operation`, `.target`, `.code` and `.cause`. Error fields
+are captured per operation; errno numbers are OS-specific and messages are
+for diagnostics, not parsing. Keep the snapshot when returning an error.
+Mutation success carries `true`; reads carry text, including a successful
+empty string. A missing file is a failed read, whereas `Fs::stat` retains its
+existing nullable absence contract. Never pre-check existence before a read.
+
+```tinox
+import tinox.core.fs
+
+const result = Fs::tryReadFile("settings.txt")
+if (result.isErr())
+{
+    const failure = result.failure()
+    println(failure.message())
+}
+else
+{
+    println(result.unwrap())
+}
+```
+
+Reads reject embedded NUL with EILSEQ rather than silently truncating; use
+Bytes for binary content. A read/close error discards all partial text. Writes
+and appends capture write and final flush/close errors. They are not atomic:
+a failure can leave a partial destination. Copy streams binary input through
+a fixed 64 KiB scratch buffer, rejects source/destination inode aliases before
+truncating, and never removes the source, including after destination failure.
+Move uses atomic OS rename; EXDEV is an explicit failure, with no hidden
+copy/delete fallback. Rename failure identifies the source as the target;
+callers retain both supplied paths. These contracts do not promise fsync
+persistence, rollback, encoding validation beyond NUL, or concurrent mutation
+isolation. Resources close on every operational return path.
+
+Compatibility is additive: legacy APIs retain their signatures and behavior.
+Migrate `Fs::readFile(path)` to `Fs::tryReadFile(path)`, handle failure first,
+and only then unwrap. Do not replace an error with an empty string unless the
+application explicitly chooses that fallback. No legacy API is deprecated
+before a released replacement and an announced compatibility window exist.
+
+`IoResult<T>` is a domain outcome with its error snapshot in the same object;
+`Result<T>` remains the existing String-error type with one generic parameter.
+Do not introduce a second Result arity or a runtime Any for this migration.
+Typed exception work is tracked independently in #524 on `bugfix/issues`;
+IoFailure is intentionally not named IoError and requires no exception ABI
+change. `unwrap()` is the explicit conversion to the current exception
+mechanism. Expected filesystem failures can be handled without throwing.
+
+Verification: `cargo test --release -p tinox --test io_outcomes` compares
+binary copies and rename/delete effects against Rust/OS file operations,
+checks NUL input, missing/open/read errors and `/dev/full` flush failures,
+and repeats failed operations to exercise cleanup. The HTTP contract suite
+remains `cargo test --release -p tinox --test api_contracts`.
+
+The following inventory describes the original first slice, including legacy
+contracts. Its deferred filesystem operations now have the additive checked
+alternatives above; it does not claim all service APIs have migrated.
 
 ## Contract choice
 
@@ -63,8 +121,8 @@ I/O follow-up must capture the operation, path and OS cause at failure time,
 close handles on every path, distinguish empty success from failed/partial
 reads, and report write/flush/close failures. Copy/move must not delete a
 source after a failed destination write. Checking `exists` before reading is
-insufficient and introduces a race. No new I/O Result method is shipped in
-this slice because the current builtins cannot meet that contract.
+insufficient and introduces a race. The original first slice shipped no I/O Result methods; the new checked runtime
+operations above now capture those failures directly.
 
 ## HTTP migration
 
@@ -118,10 +176,11 @@ parser compatibility, legacy getter calls, detailed Result errors, exception
 propagation and `finally` cleanup. It does not start a server or add protocol,
 spawn/await or timing behavior; wire-parser behavior is outside this slice.
 
-Run `cargo test --release -p tinox --test api_contracts` and the background
-`make check` gate in a provisioned environment. Neither can execute here:
-`make`, Cargo and Rust are absent. A failed gate is not a green gate; do not
-commit or publish this slice until it passes.
+Run `cargo test --release -p tinox --test api_contracts --test io_outcomes`
+and the final background `make check` gate before committing. The checked I/O
+suite also injects partial-read and close failures through a test-only libc
+shim and verifies that the first error survives cleanup. No partial payload
+is exposed on failure.
 
 No package is published or version bumped here. Before publication, bump the
 HTTP package version and add its generated immutable

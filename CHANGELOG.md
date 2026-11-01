@@ -8,6 +8,24 @@ All notable changes to Tinox are documented in this file.
 
 **Notable change:** `catch (e: String)` now sees typed stdlib errors as `CODE: message` (for example `IO_ERROR: ...`) instead of the bare text; catch the `@Error` class (`catch (e: IoError)`) or run `tinox migrate-exceptions`. Every package is republished for compiler 2.9.0 (patch version bump).
 
+### API contracts, binary streaming and measurement follow-ups
+
+- #306: additive checked filesystem outcomes retain operation/target/OS cause,
+  distinguish empty reads from errors, and preserve the source on copy/move failure.
+- #311: exclusive bounded TCP/TLS and Content-Length HTTP/1.1 streams, compact
+  bounded gzip, byte-exact workspace HTTP/2/3 bodies and framed AMQP compact publish.
+- #312: verified cgroup/container limits, repeated sustained/dependency/overload/
+  recovery/OOM evidence and allocation/copy/RSS profiles; GC defaults unchanged.
+- #315: transactional, broker and concurrent held-out tasks with independent
+  good/bad controls, pinned service-image preflight and explicit cache policies.
+  Measured model baselines still require an explicitly configured model and budget.
+- #589: failed assertions now pass a valid panic message through the correct ABI.
+- #591: HTTP/2 frame bytes no longer truncate at NUL; invalid peer frame maxima
+  cannot stall response chunking, and a failed connection does not abort the listener.
+- #592: benchmark limits are no longer inferred from wrapper metadata, and the
+  load client respects Connection: close instead of reporting spurious failures.
+
+
 ### Added
 
 - **Typed errors** (#524, stage 2): `throw X { message: ... }` for `@Error` classes and

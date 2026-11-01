@@ -1,0 +1,13 @@
+// expect-exit: 1
+// expect-contains: true survived
+// expect-contains: PANIC: assertion failed
+class Main
+{
+    fnc main() -> Int32
+    {
+        assert(true)
+        println("true survived")
+        assert(false)
+        return 0
+    }
+}

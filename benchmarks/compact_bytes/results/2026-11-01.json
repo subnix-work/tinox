@@ -1,0 +1,313 @@
+{
+  "records": [
+    {
+      "mode": "read-list",
+      "repeat": 1,
+      "wall_seconds": 0.03246263600885868,
+      "allocated": 150995008,
+      "heap": 151330816,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 156556
+    },
+    {
+      "mode": "read-buffer",
+      "repeat": 1,
+      "wall_seconds": 0.01947758300229907,
+      "allocated": 16777248,
+      "heap": 16977920,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 25036
+    },
+    {
+      "mode": "gzip-list",
+      "repeat": 1,
+      "wall_seconds": 0.29399333597393706,
+      "allocated": 369145392,
+      "heap": 419823616,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 370912
+    },
+    {
+      "mode": "gzip-buffer",
+      "repeat": 1,
+      "wall_seconds": 0.2632060449977871,
+      "allocated": 83882336,
+      "heap": 81760256,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 71028
+    },
+    {
+      "mode": "read-buffer",
+      "repeat": 2,
+      "wall_seconds": 0.017943266982911155,
+      "allocated": 16777248,
+      "heap": 16977920,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 25672
+    },
+    {
+      "mode": "gzip-list",
+      "repeat": 2,
+      "wall_seconds": 0.29719506300170906,
+      "allocated": 369145392,
+      "heap": 419823616,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 371060
+    },
+    {
+      "mode": "gzip-buffer",
+      "repeat": 2,
+      "wall_seconds": 0.2635706260043662,
+      "allocated": 83882336,
+      "heap": 81760256,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 72108
+    },
+    {
+      "mode": "read-list",
+      "repeat": 2,
+      "wall_seconds": 0.029766608000500128,
+      "allocated": 150995008,
+      "heap": 151330816,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 155852
+    },
+    {
+      "mode": "gzip-list",
+      "repeat": 3,
+      "wall_seconds": 0.29535671998746693,
+      "allocated": 369145392,
+      "heap": 419823616,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 370928
+    },
+    {
+      "mode": "gzip-buffer",
+      "repeat": 3,
+      "wall_seconds": 0.26437460898887366,
+      "allocated": 83882336,
+      "heap": 81760256,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 72412
+    },
+    {
+      "mode": "read-list",
+      "repeat": 3,
+      "wall_seconds": 0.029731049988185987,
+      "allocated": 150995008,
+      "heap": 151330816,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 156776
+    },
+    {
+      "mode": "read-buffer",
+      "repeat": 3,
+      "wall_seconds": 0.019443499011686072,
+      "allocated": 16777248,
+      "heap": 16977920,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 25052
+    },
+    {
+      "mode": "gzip-buffer",
+      "repeat": 4,
+      "wall_seconds": 0.264837927010376,
+      "allocated": 83882336,
+      "heap": 81760256,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 71824
+    },
+    {
+      "mode": "read-list",
+      "repeat": 4,
+      "wall_seconds": 0.028813380980864167,
+      "allocated": 150995008,
+      "heap": 151330816,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 156388
+    },
+    {
+      "mode": "read-buffer",
+      "repeat": 4,
+      "wall_seconds": 0.01820706599391997,
+      "allocated": 16777248,
+      "heap": 16977920,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 25432
+    },
+    {
+      "mode": "gzip-list",
+      "repeat": 4,
+      "wall_seconds": 0.30342667002696544,
+      "allocated": 369145392,
+      "heap": 419823616,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 358496
+    },
+    {
+      "mode": "read-list",
+      "repeat": 5,
+      "wall_seconds": 0.02985215000808239,
+      "allocated": 150995008,
+      "heap": 151330816,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 156700
+    },
+    {
+      "mode": "read-buffer",
+      "repeat": 5,
+      "wall_seconds": 0.018764222011668608,
+      "allocated": 16777248,
+      "heap": 16977920,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 25252
+    },
+    {
+      "mode": "gzip-list",
+      "repeat": 5,
+      "wall_seconds": 0.29918333899695426,
+      "allocated": 369145392,
+      "heap": 419823616,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 354448
+    },
+    {
+      "mode": "gzip-buffer",
+      "repeat": 5,
+      "wall_seconds": 0.26669102799496613,
+      "allocated": 83882336,
+      "heap": 81760256,
+      "last": 85,
+      "length": 16777216,
+      "peak_rss_kib": 72044
+    }
+  ],
+  "summary": {
+    "read-list": {
+      "allocated": {
+        "mean": 150995008,
+        "stdev": 0.0,
+        "min": 150995008,
+        "max": 150995008
+      },
+      "peak_rss_kib": {
+        "mean": 156454.4,
+        "stdev": 367.88693915386557,
+        "min": 155852,
+        "max": 156776
+      },
+      "wall_seconds": {
+        "mean": 0.03012516499729827,
+        "stdev": 0.0013732238510485338,
+        "min": 0.028813380980864167,
+        "max": 0.03246263600885868
+      }
+    },
+    "read-buffer": {
+      "allocated": {
+        "mean": 16777248,
+        "stdev": 0.0,
+        "min": 16777248,
+        "max": 16777248
+      },
+      "peak_rss_kib": {
+        "mean": 25288.8,
+        "stdev": 268.64698025475735,
+        "min": 25036,
+        "max": 25672
+      },
+      "wall_seconds": {
+        "mean": 0.018767127400496974,
+        "stdev": 0.000699043798098598,
+        "min": 0.017943266982911155,
+        "max": 0.01947758300229907
+      }
+    },
+    "gzip-list": {
+      "allocated": {
+        "mean": 369145392,
+        "stdev": 0.0,
+        "min": 369145392,
+        "max": 369145392
+      },
+      "peak_rss_kib": {
+        "mean": 365168.8,
+        "stdev": 8067.229710377658,
+        "min": 354448,
+        "max": 371060
+      },
+      "wall_seconds": {
+        "mean": 0.29783102559740654,
+        "stdev": 0.003687630893718894,
+        "min": 0.29399333597393706,
+        "max": 0.30342667002696544
+      }
+    },
+    "gzip-buffer": {
+      "allocated": {
+        "mean": 83882336,
+        "stdev": 0.0,
+        "min": 83882336,
+        "max": 83882336
+      },
+      "peak_rss_kib": {
+        "mean": 71883.2,
+        "stdev": 522.2290685130424,
+        "min": 71028,
+        "max": 72412
+      },
+      "wall_seconds": {
+        "mean": 0.2645360469992738,
+        "stdev": 0.0013658403901506155,
+        "min": 0.2632060449977871,
+        "max": 0.26669102799496613
+      }
+    }
+  },
+  "args": {
+    "tinox": "/home/tg7c49/git/tinox_codex/tinox/target/release/tinox",
+    "out": "/tmp/tinox-311-bytes-measurements2",
+    "mib": 16,
+    "repeats": 5
+  },
+  "payload_sha256": "001aa62cd141d8c74e8b6b0473de6619853a5652cc174b48c5a3682b64c0c625",
+  "payload_seed": 311,
+  "binary_sha256": "7991b0b5c9a7af1e59d1fa678d4961d8a70e09675138568574d7f3816c52508b",
+  "platform": "Linux-7.2.11-arch1-1-x86_64-with-glibc2.44",
+  "compiler": "tinox 2.8.0",
+  "commit": "e314b6f68bb4c14e0c1048ed2be88c499c3e5b28",
+  "dirty": true,
+  "copy_contract": {
+    "read-list": "one GC-managed scratch payload plus widening to int64 slots",
+    "read-buffer": "fread directly into compact GC payload",
+    "gzip-list": "widen input, narrow into zlib scratch, widen output, narrow to Bytes",
+    "gzip-buffer": "zlib reads compact input directly and writes compact output; growth can copy"
+  },
+  "limitations": [
+    "shared machine",
+    "warm file cache",
+    "wall time includes process startup",
+    "GC allocation counter includes redirected runtime malloc but excludes allocations inside native libraries such as zlib",
+    "copy contracts are source-inspected, not hardware copy counters",
+    "no shared views or zero-copy claim"
+  ]
+}

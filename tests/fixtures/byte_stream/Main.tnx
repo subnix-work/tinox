@@ -1,0 +1,125 @@
+import tinox.core.bytes
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const mode: String = envGet("TINOX_STREAM_MODE")
+        if (mode == "codec")
+        {
+            const original = Bytes::readFile(envGet("TINOX_STREAM_INPUT"))
+            const compressed = original.gzip(1048576)
+            compressed.writeFile(envGet("TINOX_STREAM_OUTPUT"))
+            assert(compressed.gunzip(original.len()).equals(original))
+            var rejected: Bool = false
+            try { compressed.gunzip(8) } catch (e: String) { rejected = true }
+            assert(rejected)
+            rejected = false
+            try { compressed.slice(0, compressed.len() - 1).gunzip(1048576) }
+            catch (e: String) { rejected = true }
+            assert(rejected)
+            const corrupt = compressed.slice(0, compressed.len())
+            corrupt.set(corrupt.len() - 8, corrupt.get(corrupt.len() - 8) ^ 1)
+            rejected = false
+            try { corrupt.gunzip(1048576) } catch (e: String) { rejected = true }
+            assert(rejected)
+            rejected = false
+            try { compressed.concat(compressed).gunzip(1048576) } catch (e: String) { rejected = true }
+            assert(rejected)
+            assert(Bytes::new(0).gzip(64).gunzip(1).len() == 0)
+            println("codec ok")
+            return 0
+        }
+        var server: Int64 = 0
+        if (envGet("TINOX_STREAM_TLS") == "1")
+        {
+            server = httpServerCreateTls(0, envGet("TINOX_STREAM_CERT"), envGet("TINOX_STREAM_KEY"))
+        }
+        else { server = httpServerCreate(0) }
+        println(httpServerBoundPort(server))
+        var conn: Int64 = 0
+        if (envGet("TINOX_STREAM_TLS") == "1") { conn = httpServerAcceptTls(server) }
+        else { conn = httpServerAcceptConnHandle(server) }
+        if (mode == "http")
+        {
+            const request = Http1Stream::receive(conn, 2000)
+            try
+            {
+                request.beginResponse(request.remaining, 2000)
+                while (request.remaining > 0)
+                {
+                    const got = request.readBody(4096, 2000)
+                    if (!got.isOk()) { return 2 }
+                    const sent = request.writeBody(got.bytes, 2000)
+                    if (!sent.isOk()) { return 3 }
+                }
+                request.finish()
+            }
+            finally
+            {
+                request.close()
+                httpServerClose(server)
+            }
+            return 0
+        }
+        const stream = ByteStream::own(conn)
+        try
+        {
+            if (mode == "eof")
+            {
+                const result = stream.read(4096, 2000)
+                assert(result.isEof())
+                println("eof")
+            }
+            else if (mode == "invalid")
+            {
+                const result = stream.read(0, 100)
+                assert(!result.isOk() && stream.conn == 0)
+                println(result.code)
+            }
+            else if (mode == "timeout" || mode == "cancel")
+            {
+                if (mode == "cancel") { taskSetDeadline(30) }
+                const result = stream.read(4096, 80)
+                assert(!result.isOk())
+                assert(stream.conn == 0)
+                println(result.code)
+            }
+            else if (mode == "blocked-write")
+            {
+                const buffer = Bytes::new(1048576)
+                var stopped: Bool = false
+                var i: Int64 = 0
+                while (i < 64 && !stopped)
+                {
+                    const result = stream.write(buffer, 80)
+                    stopped = !result.isOk()
+                    i = i + 1
+                }
+                assert(stopped && stream.conn == 0)
+                println("backpressure timeout")
+            }
+            else
+            {
+                var total: Int64 = 0
+                const size: Int64 = envGet("TINOX_STREAM_SIZE").toInt()
+                while (total < size)
+                {
+                    const got = stream.read(4096, 2000)
+                    assert(got.isOk() && got.transferred > 0 && got.transferred <= 4096)
+                    const sent = stream.write(got.bytes, 2000)
+                    assert(sent.isOk() && sent.transferred == got.transferred)
+                    total = total + got.transferred
+                }
+                println(total)
+            }
+        }
+        finally
+        {
+            stream.close()
+            stream.close()
+            httpServerClose(server)
+        }
+        return 0
+    }
+}

@@ -1,0 +1,10 @@
+import BankService
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        println("Configure a disposable PostgreSQL database before running.")
+        return 0
+    }
+}

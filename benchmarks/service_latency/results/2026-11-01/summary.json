@@ -1,0 +1,108 @@
+{
+  "matrix/large-live-set": {
+    "runs": 3,
+    "p99": "2.94 [1.20, 4.64]",
+    "peak_rss_mib": 196.1015625,
+    "allocation_mib_s": 7.619042682264093,
+    "steady_offered": 90000,
+    "steady_failed": 0,
+    "recovery_ok": 3000,
+    "recovery_offered": 3000,
+    "limits_verified": true,
+    "failures": [],
+    "db_active_max": null
+  },
+  "matrix/serialization": {
+    "runs": 3,
+    "p99": "1.31 [1.29, 1.34]",
+    "peak_rss_mib": 9.42578125,
+    "allocation_mib_s": 361.77934443132006,
+    "steady_offered": 90000,
+    "steady_failed": 0,
+    "recovery_ok": 3000,
+    "recovery_offered": 3000,
+    "limits_verified": true,
+    "failures": [],
+    "db_active_max": null
+  },
+  "matrix/small": {
+    "runs": 3,
+    "p99": "1.16 [1.10, 1.27]",
+    "peak_rss_mib": 8.98046875,
+    "allocation_mib_s": 7.683469344402662,
+    "steady_offered": 90000,
+    "steady_failed": 0,
+    "recovery_ok": 3000,
+    "recovery_offered": 3000,
+    "limits_verified": true,
+    "failures": [],
+    "db_active_max": null
+  },
+  "sustained/large-live-set": {
+    "runs": 1,
+    "p99": "1.21 [1.21, 1.21]",
+    "peak_rss_mib": 195.9609375,
+    "allocation_mib_s": 1.204919913634372,
+    "steady_offered": 600000,
+    "steady_failed": 0,
+    "recovery_ok": 1000,
+    "recovery_offered": 1000,
+    "limits_verified": true,
+    "failures": [],
+    "db_active_max": null
+  },
+  "dependencies/db-pool": {
+    "runs": 3,
+    "p99": "101.56 [101.12, 102.25]",
+    "peak_rss_mib": 12.19140625,
+    "allocation_mib_s": 0.021257490157248652,
+    "steady_offered": 3600,
+    "steady_failed": 0,
+    "recovery_ok": 0,
+    "recovery_offered": 156,
+    "limits_verified": true,
+    "failures": [],
+    "db_active_max": 2
+  },
+  "dependencies/slow-upstream": {
+    "runs": 3,
+    "p99": "102.96 [102.69, 103.26]",
+    "peak_rss_mib": 9.30859375,
+    "allocation_mib_s": 0.23984029109895574,
+    "steady_offered": 3600,
+    "steady_failed": 0,
+    "recovery_ok": 0,
+    "recovery_offered": 156,
+    "limits_verified": true,
+    "failures": [],
+    "db_active_max": null
+  },
+  "dependencies/tls": {
+    "runs": 3,
+    "p99": "3.11 [2.87, 3.57]",
+    "peak_rss_mib": 13.31640625,
+    "allocation_mib_s": 1.0011426493537146,
+    "steady_offered": 3600,
+    "steady_failed": 0,
+    "recovery_ok": 3000,
+    "recovery_offered": 3000,
+    "limits_verified": true,
+    "failures": [],
+    "db_active_max": null
+  },
+  "oom/large-live-set": {
+    "runs": 1,
+    "p99": "n/a",
+    "peak_rss_mib": null,
+    "allocation_mib_s": null,
+    "steady_offered": 0,
+    "steady_failed": 0,
+    "recovery_ok": 0,
+    "recovery_offered": 0,
+    "limits_verified": true,
+    "failures": [
+      "Remote end closed connection without response"
+    ],
+    "db_active_max": null
+  }
+}

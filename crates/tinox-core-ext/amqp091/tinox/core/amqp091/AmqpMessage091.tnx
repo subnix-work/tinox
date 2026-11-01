@@ -1,6 +1,7 @@
 module tinox.core.amqp091
 
 import tinox.core.socket
+import tinox.core.bytes
 
 namespace tinox.core.amqp091
 {
@@ -11,6 +12,10 @@ namespace tinox.core.amqp091
      */
     class AmqpMessage091
     {
+        // Explicit copying adapter: no aliasing with the mutable legacy body.
+        fn bodyBytes() -> Bytes { return Bytes::fromList(this.body) }
+        fn setBodyBytes(bytes: Bytes) -> Nothing { this.body = bytes.toList() }
+
         var deliveryTag: Int64
         var exchange: String
         var routingKey: String

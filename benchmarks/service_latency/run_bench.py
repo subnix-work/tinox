@@ -49,7 +49,8 @@ def metadata(args, tinox):
         "service_cpus": args.cpus or "unpinned", "client_cpus": args.client_cpus or "unpinned",
         "wrapper": args.wrapper or None,
         "memory_limit_mib": args.mem_limit_mib,
-        "memory_limit_enforced": bool(args.wrapper) and args.mem_limit_mib is not None,
+        "memory_limit_enforced": False,
+        "limit_verification": "wrapper metadata alone is not evidence; use container_suite.py for inspected limits",
         "env_tuning": dict(kv.split("=", 1) for kv in args.env),
     }
 

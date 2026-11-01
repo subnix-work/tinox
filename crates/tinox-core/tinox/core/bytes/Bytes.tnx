@@ -2,6 +2,7 @@ module tinox.core.bytes
 
 namespace tinox.core.bytes
 {
+    extern fn tinoxBufGzip(handle: Int64, maximum: Int64, decode: Int64) -> List<Int64>
     extern fn tinoxBufNew(len: Int64) -> Int64
     extern fn tinoxBufLen(h: Int64) -> Int64
     extern fn tinoxBufGet(h: Int64, i: Int64) -> Int64
@@ -88,12 +89,28 @@ namespace tinox.core.bytes
 
         /**
          * A response body (assign to ctx.response.body) carrying exactly this
-         * buffer, embedded NUL bytes included. Supported by the plain HTTP/1.1
-         * server; the buffer must stay unmodified until the handler returns.
+         * buffer, embedded NUL bytes included. Supported by HTTP/1.1 and the workspace HTTP/2/3
+         * server adapters; the buffer must stay unmodified until the handler returns.
          */
         fn asResponseBody() -> String
         {
             return tinoxBufAsResponseBody(this.handle)
+        }
+
+        // Direct compact-buffer codec. Bounds apply to the output, including
+        // decoded data; malformed/truncated/trailing gzip input throws.
+        fn gzip(maximum: Int64) -> Bytes
+        {
+            const result: List<Int64> = tinoxBufGzip(this.handle, maximum, 0)
+            if (result[0] != 0) { throw "gzip failed: " + result[0].toString() }
+            return Bytes { handle: result[1] }
+        }
+
+        fn gunzip(maximum: Int64) -> Bytes
+        {
+            const result: List<Int64> = tinoxBufGzip(this.handle, maximum, 1)
+            if (result[0] != 0) { throw "gunzip failed: " + result[0].toString() }
+            return Bytes { handle: result[1] }
         }
 
         /** Number of bytes */

@@ -1,0 +1,55 @@
+import tinox.core.fs
+
+class Main
+{
+    fnc verify(ok: Bool, line: Int64) -> Nothing
+    {
+        if (!ok) { println("failed check " + line.toString())
+            exit(1) }
+    }
+
+    fnc main() -> Int32
+    {
+        const root: String = envGet("TINOX_IO_ROOT")
+        const partial = Fs::tryReadFile(root + "/partial")
+        verify(partial.isErr(), 100)
+        verify(partial.failure().code == 5, 101)
+        verify(partial.values.len() == 0, 102)
+        verify(Fs::tryReadFile(root + "/close-failure").isErr(), 103)
+        const empty = Fs::tryReadFile(root + "/empty")
+        verify(empty.isOk() && empty.unwrap() == "", 9)
+        const missing = Fs::tryReadFile(root + "/missing")
+        verify(missing.isErr(), 11)
+        verify(missing.failure().operation == "read", 12)
+        verify(missing.failure().target == root + "/missing", 13)
+        verify(missing.failure().code != 0 && missing.failure().cause != "", 14)
+        verify(Fs::stat(root + "/missing") == null, 15)
+        verify(Fs::tryReadFile(root + "/binary").isErr(), 16)
+        verify(Fs::tryReadFile(root).isErr(), 17)
+        verify(Fs::tryWriteFile(root + "/text", "abc").isOk(), 18)
+        verify(Fs::tryAppendFile(root + "/text", "def").isOk(), 19)
+        verify(Fs::tryReadFile(root + "/text").unwrap() == "abcdef", 20)
+        verify(Fs::tryWriteFile(root + "/missing/file", "x").isErr(), 21)
+        verify(Fs::tryWriteFile("/dev/full", "buffered").isErr(), 22)
+        verify(Fs::tryAppendFile("/dev/full", "buffered").isErr(), 23)
+        verify(Fs::tryCopyFile(root + "/binary", root + "/copied").isOk(), 24)
+        verify(Fs::tryCopyFile(root + "/binary", root + "/alias").isErr(), 25)
+        verify(Fs::tryCopyFile(root + "/binary", "/dev/full").isErr(), 26)
+        verify(Fs::tryMoveFile(root + "/binary", root + "/missing/file").isErr(), 27)
+        verify(Fs::stat(root + "/binary") != null, 28)
+        verify(Fs::tryMoveFile(root + "/text", root + "/moved").isOk(), 29)
+        verify(Fs::tryDeleteFile(root + "/moved").isOk(), 30)
+        verify(Fs::tryDeleteFile(root + "/moved").isErr(), 31)
+        // Repeated failures must close handles, including read errors after open.
+        var i: Int64 = 0
+        while (i < 2048)
+        {
+            verify(Fs::tryReadFile(root).isErr(), 36)
+            verify(Fs::tryWriteFile("/dev/full", "x").isErr(), 37)
+            i = i + 1
+        }
+        verify(Fs::tryReadFile(root + "/empty").isOk(), 40)
+        println("io outcomes ok")
+        return 0
+    }
+}
