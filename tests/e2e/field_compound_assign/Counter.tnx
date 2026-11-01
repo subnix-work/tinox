@@ -1,0 +1,11 @@
+class Counter {
+    var value: Int64
+    var ratio: Float64
+    var label: String
+    fn bump() -> Nothing {
+        this.value += 1
+        this.value *= 5
+        this.ratio *= 2.0
+        this.label += "!"
+    }
+}

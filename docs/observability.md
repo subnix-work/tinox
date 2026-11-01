@@ -75,11 +75,21 @@ bounded to 4096 bytes and logger names to 128 bytes, without splitting UTF-8
 characters at the truncation boundary. These limits also apply when only
 `TINOX_LOG_JSON` is enabled. Plain text logging is unchanged.
 
-Automatic server coverage currently targets the runtime HTTP/1.1 route
-server. Manual Tinox server loops, HTTP/2, HTTP/3, WebSocket message handlers
-and broker consumers can use the explicit API; automatic adapters for those
-boundaries are future increments. Log output to stdout retains the operating
-system's normal backpressure behavior.
+Automatic message boundaries (issue #548): every `@OnMessage` call of a
+`@WebsocketEndpoint` (`ws.message`), `@Amqp10Consumer` (`amqp10.consume`) and
+`@Amqp091Consumer` (`amqp091.consume`) runs inside its own span of kind
+consumer. Each message starts a FRESH root trace and sampling decision, never
+a child of whatever the reused connection/consumer thread was last doing, so
+no context bleeds from one message to the next. Spawned work and outbound
+HTTP calls made by the handler are children of that span. The span covers the
+handler call itself (per attempt, when a failure policy retries), not the
+acknowledgement. Remote context is NOT extracted from the message: neither
+WebSocket frames nor the AMQP message API expose headers/application
+properties to the adapter yet, so the explicit API below remains the way to
+continue an upstream trace. Manual Tinox server loops, HTTP/2 and HTTP/3
+still use the explicit API; automatic adapters for them are a future
+increment. Log output to stdout retains the operating system's normal
+backpressure behavior.
 
 ## Explicit API
 
@@ -144,8 +154,16 @@ request/task/outbound-call chains on a reused worker, validates span
 relationships and JSON escaping, and exercises invalid metadata, sampling,
 queue saturation, a stalled exporter (15 repetitions) and connection refusal. It prints
 baseline and instrumented nanoseconds per operation with telemetry disabled
-and enabled. The full gate includes a Tinox fixture for redaction and the
-explicit API. Numeric timing results must be collected on the target system;
-the implementation environment has no C/Rust compiler or make, so no timing
-results or green gate are claimed here. A real OpenTelemetry Collector has
-not been exercised here either.
+and enabled.
+
+`cargo test --release -p tinox --test observability_collector` (Docker
+required, skipped otherwise) repeats the verification against the official
+`otel/opentelemetry-collector` image (OTLP/HTTP receiver, `debug` exporter):
+the span graphs are rebuilt from what the Collector itself decoded. It
+covers the 23 HTTP request/task/outbound chains including remote parents,
+10 WebSocket messages on one reused connection and 6+6 AMQP 1.0 / 0-9-1
+messages from a real RabbitMQ 4, each in its own trace with the handler's
+outbound call as child. The Collector accepts the exporter's OTLP JSON
+without warnings (empty `parentSpanId` for roots, nanosecond timestamps as
+strings). Partial-success bodies are still not interpreted by the exporter;
+queue drops and failed exports remain visible through their counters.

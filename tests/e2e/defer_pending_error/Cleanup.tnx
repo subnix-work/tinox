@@ -1,0 +1,21 @@
+class Cleanup
+{
+    // Cleanup code that itself uses try/catch internally.
+    fnc tidy() -> Nothing
+    {
+        try {
+            Cleanup::fine()
+        } catch (e: String) {
+            println("swallowed " + e)
+        }
+    }
+
+    fnc fine() -> Nothing
+    {
+    }
+
+    fnc failing() -> Nothing
+    {
+        throw "cleanup failed"
+    }
+}

@@ -19,11 +19,12 @@ namespace tinox.core.kubernetes
             return Json::parse(this.body)
         }
 
+        @Throws(KubernetesError)
         fn throwIfError(context: String) -> Nothing
         {
             if (!this.isSuccess())
             {
-                throw "Kubernetes API error (" + context + "): HTTP " + this.statusCode.toString() + " - " + this.body
+                throw KubernetesError { message: "Kubernetes API error (" + context + "): HTTP " + this.statusCode.toString() + " - " + this.body }
             }
         }
     }

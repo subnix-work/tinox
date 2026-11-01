@@ -1,0 +1,13 @@
+@Entity
+@Table("memberships")
+class Membership
+{
+    @Id
+    @Column("org")
+    var org: String
+    @Id
+    @Column("member")
+    var member: Int64
+    @Column("role")
+    var role: String
+}

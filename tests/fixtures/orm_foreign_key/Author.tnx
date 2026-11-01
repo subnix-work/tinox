@@ -1,0 +1,9 @@
+@Entity
+@Table("authors")
+class Author
+{
+    @Id @GeneratedValue
+    var id: Int64
+    @Column("name")
+    var name: String
+}

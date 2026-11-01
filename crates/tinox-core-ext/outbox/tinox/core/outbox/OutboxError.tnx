@@ -1,0 +1,13 @@
+module tinox.core.outbox
+
+namespace tinox.core.outbox
+{
+    /**
+     * Invalid outbox configuration or message.
+     */
+    @Error("OUTBOX_ERROR", 400)
+    class OutboxError
+    {
+        var message: String
+    }
+}

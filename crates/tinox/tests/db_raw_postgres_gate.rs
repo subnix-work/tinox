@@ -42,14 +42,14 @@ fn build_fixture(fixture_dir: &str, workdir_name: &str, database_toml: &str) -> 
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.8.0"
+compiler = "2.9.0"
 name = "{workdir_name}"
 version = "0.1.0"
 {database_toml}
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.1.0"
+version = "1.2.3"
 
 [[overrides]]
 group = "tinox.core"
@@ -103,5 +103,5 @@ fn transactional_without_postgres_driver_is_a_compile_error() {
     assert!(!out.status.success(), "expected build to fail with no [database] configured");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("@Transactional"), "stderr: {stderr}");
-    assert!(stderr.contains("only supported for driver"), "stderr: {stderr}");
+    assert!(stderr.contains("@Transactional supports driver"), "stderr: {stderr}");
 }

@@ -512,6 +512,8 @@ pub struct Namespace {
 pub enum AnnotationArg {
     Literal(Literal),
     EnumValue(String, String), // TypeName, VariantName — e.g. MediaType.APPLICATION_JSON
+    /// A bare type name, e.g. the error classes in `@Throws(NotFound, Conflict)`.
+    TypeRef(String),
     Array(Vec<AnnotationArg>),
 }
 

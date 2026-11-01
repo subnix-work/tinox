@@ -1,0 +1,4 @@
+import AppError
+
+@Error("NOT_FOUND", 404)
+class NotFound extends AppError { }

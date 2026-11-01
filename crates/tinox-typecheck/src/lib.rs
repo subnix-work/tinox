@@ -1,6 +1,7 @@
 pub mod dto_validation;
 pub mod semantic;
 pub mod cache;
+pub mod throws;
 
 pub mod annotations;
 
@@ -458,6 +459,8 @@ pub struct TypeChecker {
     interface_extends: HashMap<String, (Vec<String>, tinox_common::Span)>, // interface_name -> (parent_names, span)
     interface_implementations: HashMap<String, Vec<String>>, // class_name -> [interface_names]
     class_parents: HashMap<String, String>, // child_class_name -> parent_class_name
+    /// Classes annotated `@Error`: throwable and catchable by class (#524).
+    error_classes: HashSet<String>,
     injected_fields: HashSet<String>,
     request_scoped_classes: HashSet<String>,
     current_class: Option<String>, // class currently being type-checked
@@ -874,6 +877,7 @@ impl TypeChecker {
         symbols.functions.insert("__scope_join".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         symbols.functions.insert("__scope_abort".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         symbols.functions.insert("__scope_register".to_string(), FunctionSignature { params: vec![("scope".to_string(), ValueType::Int), ("task".to_string(), ValueType::Any)], return_type: ValueType::Any });
+        symbols.functions.insert("gcStat".to_string(), FunctionSignature { params: vec![("kind".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerBoundPort".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerAcceptConn".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerReadRequest".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::String });
@@ -892,6 +896,12 @@ impl TypeChecker {
         symbols.functions.insert("httpConnReadN".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("n".to_string(), ValueType::Int)], return_type: ValueType::Array(Box::new(ValueType::Int)) });
         symbols.functions.insert("httpConnWriteBytes".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("bytes".to_string(), ValueType::Array(Box::new(ValueType::Int)))], return_type: ValueType::Int });
         symbols.functions.insert("httpConnClose".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
+        symbols.functions.insert("httpConnWaitReadable".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("ms".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        // Resilience runtime (@Retry / @CircuitBreaker desugaring, #527)
+        symbols.functions.insert("resilienceNow".to_string(), FunctionSignature { params: vec![], return_type: ValueType::Int });
+        symbols.functions.insert("resilienceAllow".to_string(), FunctionSignature { params: vec![("site".to_string(), ValueType::String), ("threshold".to_string(), ValueType::Int), ("openMs".to_string(), ValueType::Int), ("probes".to_string(), ValueType::Int), ("eligible".to_string(), ValueType::String)], return_type: ValueType::Int });
+        symbols.functions.insert("resilienceRecord".to_string(), FunctionSignature { params: vec![("site".to_string(), ValueType::String), ("ticket".to_string(), ValueType::Int), ("failed".to_string(), ValueType::Int), ("err".to_string(), ValueType::String), ("threshold".to_string(), ValueType::Int), ("eligible".to_string(), ValueType::String)], return_type: ValueType::Nothing });
+        symbols.functions.insert("resilienceRetry".to_string(), FunctionSignature { params: vec![("site".to_string(), ValueType::String), ("attempt".to_string(), ValueType::Int), ("err".to_string(), ValueType::String), ("eligible".to_string(), ValueType::String), ("maxAttempts".to_string(), ValueType::Int), ("backoffMs".to_string(), ValueType::Int), ("maxBackoffMs".to_string(), ValueType::Int), ("jitterPct".to_string(), ValueType::Int), ("budgetMs".to_string(), ValueType::Int), ("startMs".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpConnClearRecvTimeout".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::Nothing });
         // File I/O builtins
         symbols.functions.insert("open".to_string(), FunctionSignature {
@@ -1381,6 +1391,7 @@ impl TypeChecker {
             interface_extends: HashMap::new(),
             interface_implementations: HashMap::new(),
             class_parents: HashMap::new(),
+            error_classes: HashSet::new(),
             injected_fields: HashSet::new(),
             request_scoped_classes: HashSet::new(),
             current_class: None,
@@ -1811,6 +1822,9 @@ impl TypeChecker {
                     }
                     if let Some(parent) = &c.extends {
                         self.class_parents.insert(c.name.clone(), parent.clone());
+                    }
+                    if c.annotations.iter().any(|a| a.name == "Error") {
+                        self.error_classes.insert(c.name.clone());
                     }
                     // Register class->interface(s) up front, not lazily at the
                     // end of check_class(): a class-to-interface assignment
@@ -2849,7 +2863,7 @@ impl TypeChecker {
             StmtKind::Throw(expr) => {
                 let ty = self.infer_type(expr);
                 let ty_str = ty.to_string();
-                if ty_str != "String" && ty != ValueType::Any {
+                if ty_str != "String" && ty != ValueType::Any && !self.error_classes.contains(&ty_str) {
                     self.errors
                         .push(TypeError::ThrowTypeMismatch(ty_str, expr.span).to_error());
                 }
@@ -2867,11 +2881,14 @@ impl TypeChecker {
                     // any other type could never match yet used to catch
                     // everything and re-type the value.
                     let catch_ty = Self::type_to_value(&catch.ty);
-                    if catch_ty != ValueType::String && catch_ty != ValueType::Any {
+                    if catch_ty != ValueType::String
+                        && catch_ty != ValueType::Any
+                        && !self.error_classes.contains(&catch_ty.to_string())
+                    {
                         self.errors.push(Error::new(
                             catch.span,
                             format!(
-                                "catch clause type must be String (the only throwable type), found {}",
+                                "catch clause type must be String or an @Error class, found {}",
                                 catch_ty.display()
                             ),
                         ));
@@ -3136,7 +3153,7 @@ impl TypeChecker {
                 if obj_ty == ValueType::Any {
                     // ORM `filter(x => ...)`: type the lambda param as the
                     // entity so field comparisons (e.g. enum vs String) are checked.
-                    let orm_entity = if method == "filter" {
+                    let orm_entity = if matches!(method.as_str(), "filter" | "orderBy" | "orderByDesc") {
                         self.orm_query_entity(obj).map(|e| e.to_string())
                     } else {
                         None
@@ -3149,10 +3166,40 @@ impl TypeChecker {
                             );
                         }
                     }
-                    for arg in args { self.infer_type(arg); }
-                    if method == "first" && args.is_empty() {
-                        if let Some(entity) = self.orm_query_entity(obj) {
-                            return ValueType::Named(entity.to_string(), vec![]);
+                    let arg_types: Vec<ValueType> = args.iter().map(|arg| self.infer_type(arg)).collect();
+                    // Typed contract of `DB::of(Entity)` chains (the stub class only knows `Any`; the
+                    // codegen interceptor lowers them by shape, so these types are checks and tooling data).
+                    if let Some(entity) = self.orm_query_entity(obj).map(|e| e.to_string()) {
+                        let entity_ty = ValueType::Named(entity.clone(), vec![]);
+                        let mismatch = |found: &ValueType, expected: &ValueType| {
+                            *found != ValueType::Any && found != expected
+                        };
+                        match (method.as_str(), arg_types.first()) {
+                            ("first", None) => return entity_ty,
+                            ("list", None) => return ValueType::Array(Box::new(entity_ty)),
+                            ("save", Some(found)) => {
+                                if mismatch(found, &entity_ty) {
+                                    self.errors.push(Error::new(expr.span, format!(
+                                        "DB::of({entity}).save expects {entity}, found {found}")));
+                                }
+                                return entity_ty;
+                            }
+                            ("delete", Some(found)) if mismatch(found, &entity_ty) => {
+                                self.errors.push(Error::new(expr.span, format!(
+                                    "DB::of({entity}).delete expects {entity}, found {found}")));
+                            }
+                            ("saveAll", Some(found)) => {
+                                let expected = ValueType::Array(Box::new(entity_ty));
+                                if mismatch(found, &expected) {
+                                    self.errors.push(Error::new(expr.span, format!(
+                                        "DB::of({entity}).saveAll expects List<{entity}>, found {found}")));
+                                }
+                            }
+                            ("limit" | "offset", Some(found)) if !found.is_integer() && *found != ValueType::Any => {
+                                self.errors.push(Error::new(expr.span, format!(
+                                    "DB::of({entity}).{method} expects an Int, found {found}")));
+                            }
+                            _ => {}
                         }
                     }
                     return ValueType::Any;
@@ -4262,7 +4309,7 @@ impl TypeChecker {
                         | "sha256Hash" | "md5Hash" | "sha1Hash" | "wsAcceptKey" | "hmacSha256Hash"
                         | "aesEncryptRaw" | "aesDecryptRaw"
                         | "base64Encode" | "base64Decode" | "base64EncodeChar"
-                        | "gcCollect" | "memoryUsage" | "printStackTrace" | "processExit"
+                        | "gcCollect" | "gcStat" | "memoryUsage" | "printStackTrace" | "processExit"
                         | "sinf" | "cosf" | "tanf" | "logf" | "log10f" | "sqrtf" | "expf" | "powf"
                         | "fabsf" | "floorf" | "ceilf"
                     );
@@ -5169,6 +5216,22 @@ pub fn typecheck(source: &SourceFile) -> Result<SourceFile, ErrorBag> {
 
 /// Like `typecheck`, but first registers declarations from `preludes` (e.g. resolved stdlib
 /// imports) so that extern functions and types declared there are known to the checker.
+/// The checker's resolved calls and fields for `source` with `preludes` declared (issue #554).
+/// Type errors do not matter here: whatever the checker could resolve before and after them is
+/// returned, so editor navigation keeps working in a file that is mid-edit. Node ids must have been
+/// assigned (`tinox_parser::assign_node_ids`); without them nothing is recorded.
+pub fn semantic_facts_with_prelude(source: &SourceFile, preludes: &[&SourceFile]) -> semantic::SemanticFacts {
+    let mut checker = TypeChecker::new();
+    for prelude in preludes {
+        checker.register_declarations(prelude);
+        checker.errors.clear();
+    }
+    checker.expand_prelude_class_inheritance();
+    checker.errors.clear();
+    let _ = checker.check(source);
+    checker.semantic_facts()
+}
+
 pub fn typecheck_with_prelude(source: &SourceFile, preludes: &[&SourceFile]) -> Result<SourceFile, ErrorBag> {
     let mut checker = TypeChecker::new();
     for prelude in preludes {
@@ -5198,6 +5261,32 @@ mod tests {
     fn ok(code: &str) {
         let result = typecheck_code(code);
         assert!(result.is_ok(), "expected ok but got errors: {:?}", result.unwrap_err().errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn orm_chain_terminals_have_a_typed_contract() {
+        let base = r#"
+            class DB { fnc of(cls: Any) -> Any { return 0 } }
+            @Entity class Account { var id: Int64
+            var name: String
+            var balance: Int64 }
+            class Other { var id: Int64 }
+            fn run(other: Other, list: List<Account>) -> Nothing {
+                BODY
+            }
+        "#;
+        let with = |body: &str| base.replace("BODY", body);
+        // elements of list() are Accounts: fields are checked, assignment to List<Account> is fine
+        ok(&with("const rows: List<Account> = DB::of(Account).orderBy(a => a.name).limit(5).list()\n for r in rows { println(r.balance) }"));
+        err_contains(&with("for r in DB::of(Account).list() { println(r.missing) }"), "missing");
+        err_contains(&with("const rows: List<String> = DB::of(Account).list()"), "List<Account>");
+        // save/delete/saveAll take the entity, limit/offset take integers, orderBy sees the entity's fields
+        ok(&with("DB::of(Account).save(DB::of(Account).first())\n DB::of(Account).saveAll(list)"));
+        err_contains(&with("DB::of(Account).save(other)"), "save expects Account");
+        err_contains(&with("DB::of(Account).delete(other)"), "delete expects Account");
+        err_contains(&with("DB::of(Account).saveAll(other)"), "saveAll expects List<Account>");
+        err_contains(&with("DB::of(Account).orderBy(a => a.nope).list()"), "nope");
+        err_contains(&with("DB::of(Account).limit(\"3\").list()"), "expects an Int");
     }
 
     #[test]
@@ -7583,6 +7672,14 @@ return 0 }");
             "  }\n",
             "}"
         ));
+    }
+
+    #[test]
+    fn test_typed_throw_and_catch_of_error_classes() {
+        let decl = "@Error(\"E_ONE\", 409)\nclass EOne { var message: String }\nclass Plain { var message: String }\n";
+        ok(&format!("{decl}fn f() {{ try {{ throw EOne {{ message: \"x\" }} }} catch e: EOne {{ }} }}"));
+        err_contains(&format!("{decl}fn f() {{ throw Plain {{ message: \"x\" }} }}"), "throw requires");
+        err_contains(&format!("{decl}fn f() {{ try {{ throw \"a\" }} catch e: Plain {{ }} }}"), "String or an @Error class");
     }
 
     #[test]

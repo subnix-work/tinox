@@ -1,0 +1,21 @@
+import tinox.core.db
+import Flows
+
+class Main
+{
+    fnc holder(f: Flows) -> Nothing
+    {
+        f.hold("held", 3000)
+    }
+
+    fnc main() -> Int32
+    {
+        const f = new Flows()
+        spawn Main::holder(f)
+        sleep(300)
+        // A plain statement while another thread's transaction holds the only connection:
+        // bounded wait (TINOX_DB_LOCK_TIMEOUT_MS), then a visible hard failure.
+        println("count: " + f.countTag("held").toString())
+        return 0
+    }
+}

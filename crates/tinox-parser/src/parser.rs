@@ -418,18 +418,20 @@ impl Parser {
                 || self.consume_keyword(Keyword::Mut);
             let is_async = self.consume_keyword(Keyword::Async);
 
-            if self.check_keyword(Keyword::Fn) {
-                let mut m = self.parse_method(vis, false)?;
+            if self.check_keyword(Keyword::Fn) || self.check_keyword(Keyword::Fnc) {
+                let static_ = self.check_keyword(Keyword::Fnc);
+                let mut m = self.parse_method(vis, static_)?;
                 m.is_async = is_async;
                 m.doc = doc;
                 m.annotations = member_annotations;
-                methods.push(m);
-            } else if self.check_keyword(Keyword::Fnc) {
-                let mut m = self.parse_method(vis, true)?;
-                m.is_async = is_async;
-                m.doc = doc;
-                m.annotations = member_annotations;
-                methods.push(m);
+                match crate::resilience::expand(&name, !type_params.is_empty(), &m) {
+                    Ok(Some(expanded)) => methods.extend(expanded),
+                    Ok(None) => methods.push(m),
+                    Err(message) => {
+                        self.errors.push(Error::new(m.span, message));
+                        methods.push(m);
+                    }
+                }
             } else {
                 let mut f = self.parse_field(vis, mutable)?;
                 f.doc = doc;
@@ -599,8 +601,11 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) {
             let doc = self.take_doc();
+            // Interface methods may carry annotations (`@Throws(...)`, #524).
+            let annotations = self.parse_annotations();
             let mut m = self.parse_fn()?;
             m.doc = doc;
+            m.annotations = annotations;
             methods.push(m);
         }
 
@@ -935,6 +940,15 @@ impl Parser {
                 }
             }
         }
+    }
+
+    /// Entry for generated method bodies (see `resilience::expand`).
+    pub(crate) fn parse_wrapper_block(&mut self) -> Result<Stmt, Error> {
+        let block = self.parse_block()?;
+        if let Some(e) = self.errors.first() {
+            return Err(e.clone());
+        }
+        Ok(block)
     }
 
     fn parse_block(&mut self) -> Result<Stmt, Error> {
@@ -3439,7 +3453,8 @@ impl Parser {
                         return Ok(AnnotationArg::EnumValue(type_name, variant));
                     }
                 }
-                Err(Error::new(token.span, "expected TypeName.VariantName for enum annotation argument"))
+                // No `.Variant`: a bare type reference (@Throws(NotFound)).
+                Ok(AnnotationArg::TypeRef(type_name))
             }
             _ => Err(Error::new(token.span, "expected annotation argument (string, int, float, bool, EnumType.Variant, or [...])")),
         }

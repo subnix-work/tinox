@@ -1,0 +1,13 @@
+module tinox.core.collections
+
+namespace tinox.core.collections
+{
+    /**
+     * Thrown by `Stack.pop/peek` and `Queue.dequeue/peek` on an empty collection.
+     */
+    @Error("COLLECTION_EMPTY", 409)
+    class EmptyCollectionError
+    {
+        var message: String
+    }
+}

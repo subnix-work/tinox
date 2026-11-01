@@ -7,9 +7,9 @@ import tinox.core.http_server
 namespace tinox.core.http2_server
 {
     // Roh-Bytes von einem Socket-fd lesen (HTTP/2-Framing).
-    extern fn httpFdReadBuf(fd: Int64, count: Int64) -> Int64
-    extern fn httpFdWriteBuf(fd: Int64, buffer: Int64) -> Int64
     extern fn tinoxBytesToString(bytes: List<Int64>) -> String
+    // @Cors/@Csrf policy (#529): 1 = the guard already filled the response.
+    extern fn tinoxSecurityGuard(ctx: HttpContext, routeExists: Int64) -> Int64
     extern fn tinoxHttpRequestBodyFromBytes(bytes: List<Int64>) -> String
     extern fn tinoxHttpClearBodyBridge() -> Nothing
     extern fn tinoxHttpBodyLength(body: String) -> Int64
@@ -83,6 +83,7 @@ namespace tinox.core.http2_server
             this.running = false
         }
 
+        @Throws(Http2ServerError)
         /**
          * Starts listening and enters the connection accept loop.
          * Each accepted connection is handled synchronously (blocking per connection).
@@ -92,7 +93,7 @@ namespace tinox.core.http2_server
             this.socketHandle = httpServerCreate(this.port)
             if (this.socketHandle < 0)
             {
-                throw "Failed to create HTTP/2 server on port " + this.port.toString()
+                throw Http2ServerError { message: "Failed to create HTTP/2 server on port " + this.port.toString() }
             }
             this.running = true
             while this.running
@@ -116,19 +117,17 @@ namespace tinox.core.http2_server
         // Low-level byte I/O helpers
         // =====================================================================
 
-        fn readBytes(fd: Int64, count: Int64) -> List<Int64>
+        // Binary-safe I/O on a connection handle (httpConnFromFd): frame headers start with
+        // NUL bytes, which a C-string based read would silently truncate -- real clients
+        // (curl, browsers) always send such frames.
+        fn readBytes(wire: Int64, count: Int64) -> List<Int64>
         {
-            const bytes = Bytes { handle: httpFdReadBuf(fd, count) }
-            return bytes.toList()
+            return httpConnReadN(wire, count)
         }
 
-        fn sendBytes(fd: Int64, bytes: List<Int64>) -> Nothing
+        fn sendBytes(wire: Int64, bytes: List<Int64>) -> Nothing
         {
-            const buffer = Bytes::fromList(bytes)
-            if (httpFdWriteBuf(fd, buffer.handle) != buffer.len())
-            {
-                throw "HTTP/2 frame write failed"
-            }
+            httpConnWriteBytes(wire, bytes)
         }
 
         fn appendBytes(dest: List<Int64>, src: List<Int64>) -> Nothing
@@ -490,6 +489,11 @@ namespace tinox.core.http2_server
                         request.path = h.value
                     }
                 }
+                else if (h.name == ":authority")
+                {
+                    // HTTP/2 carries the host here; expose it as Host like HTTP/1 (same-origin checks need it).
+                    request.headers["host"] = h.value
+                }
                 else if (h.name.startsWith(":") == false)
                 {
                     request.headers[h.name] = h.value
@@ -505,8 +509,13 @@ namespace tinox.core.http2_server
             const response: HttpResponse = HttpResponse::new()
             const ctx: HttpContext = HttpContext::new(request, response)
 
-            const middlewareContinue: Bool = this.runMiddleware(ctx)
-            if (middlewareContinue == false)
+            const guarded: Int64 = tinoxSecurityGuard(ctx, this.routeExistsFor(ctx))
+            const middlewareContinue: Bool = guarded != 0 || this.runMiddleware(ctx)
+            if (guarded != 0)
+            {
+                // answered by the browser-security guard (preflight, rejection)
+            }
+            else if (middlewareContinue == false)
             {
                 ctx.response.statusCode = 403
                 ctx.response.text("Forbidden")
@@ -548,7 +557,14 @@ namespace tinox.core.http2_server
             var i: Int64 = 0
             while i < headerKeys.len()
             {
-                responseHeaders.push(HpackHeader::new(headerKeys[i].toLowerCase(), response.headers[headerKeys[i]]))
+                // Repeated fields are stored as "<Name> <n>" (HttpResponse.addHeader, #528);
+                // the wire name is the part before the first space.
+                var wireName: String = headerKeys[i]
+                const space = wireName.indexOf(" ")
+                if (space > 0) {
+                    wireName = wireName.substring(0, space)
+                }
+                responseHeaders.push(HpackHeader::new(wireName.toLowerCase(), response.headers[headerKeys[i]]))
                 i = i + 1
             }
             if (bodyLength > 0)
@@ -608,10 +624,11 @@ namespace tinox.core.http2_server
         fn handleConnection(fd: Int64) -> Nothing
         {
             // RFC 7540 §3.5: client connection preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-            const prefaceBytes: List<Int64> = this.readBytes(fd, 24)
+            const wire: Int64 = httpConnFromFd(fd)
+            const prefaceBytes: List<Int64> = this.readBytes(wire, 24)
             if (prefaceBytes.len() < 24)
             {
-                httpServerCloseConn(fd)
+                httpConnClose(wire)
                 return
             }
             // tinoxBytesToString does the byte->char conversion in one
@@ -621,11 +638,11 @@ namespace tinox.core.http2_server
             const prefaceStr: String = tinoxBytesToString(prefaceBytes)
             if (prefaceStr != "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
             {
-                httpServerCloseConn(fd)
+                httpConnClose(wire)
                 return
             }
 
-            const conn: Http2Conn = Http2Conn::new(fd)
+            const conn: Http2Conn = Http2Conn::new(wire)
             this.sendServerSettings(conn)
 
             var active: Bool = true
@@ -673,7 +690,7 @@ namespace tinox.core.http2_server
             }
 
             this.sendGoaway(conn, Http2Error::NO_ERROR())
-            httpServerCloseConn(fd)
+            httpConnClose(wire)
         }
 
         // =====================================================================
@@ -693,6 +710,27 @@ namespace tinox.core.http2_server
                 i = i + 1
             }
             return true
+        }
+
+        // For a CORS preflight: is a route registered for the method it asks about on this path?
+        fn routeExistsFor(ctx: HttpContext) -> Int64
+        {
+            const wanted: String = ctx.request.getHeader("access-control-request-method")
+            if (wanted == "")
+            {
+                return 1
+            }
+            var i: Int64 = 0
+            while i < this.routes.len()
+            {
+                const route: Route = this.routes[i]
+                if (route.method == wanted && RouteMatcher::matches(route.path, ctx.request.path))
+                {
+                    return 1
+                }
+                i = i + 1
+            }
+            return 0
         }
 
         fn matchRoute(ctx: HttpContext) -> Bool

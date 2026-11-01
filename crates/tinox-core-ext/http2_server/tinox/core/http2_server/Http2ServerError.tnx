@@ -1,0 +1,13 @@
+module tinox.core.http2_server
+
+namespace tinox.core.http2_server
+{
+    /**
+     * The HTTP/2 server could not start.
+     */
+    @Error("HTTP2_SERVER_ERROR", 500)
+    class Http2ServerError
+    {
+        var message: String
+    }
+}

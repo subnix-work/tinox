@@ -1,0 +1,17 @@
+import tinox.core.db
+import tinox.core.outbox
+import Shop
+
+class Orders
+{
+    // The business row and the outbox record commit or roll back together.
+    @Transactional
+    fn place(code: String, fail: Bool) -> Nothing
+    {
+        DB::of(Shop).save(Shop { id: 0, code: code })
+        Outbox::add("outbox.q", "order-" + code, "payload-" + code)
+        if (fail) {
+            throw "payment declined"
+        }
+    }
+}

@@ -15,6 +15,7 @@ mod dockerfile;
 mod migrate;
 mod schema_diff;
 mod migrate_xml;
+mod exception_migration;
 mod semicolon_migration;
 mod db_new;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
@@ -70,6 +71,12 @@ fn run() {
             }
         }
         "graph" => gen_call_graph(&args[2..]),
+        "migrate-exceptions" => {
+            if let Err(e) = exception_migration::run(&args[2..]) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         "migrate-semicolons" => {
             if let Err(e) = semicolon_migration::run(&args[2..]) {
                 eprintln!("error: {e}");
@@ -170,7 +177,7 @@ fn print_help() {
 /// declaration (#159).
 fn new_project_files(name: &str) -> (String, String, String, String) {
     let toml = format!(
-        "[package]\ncompiler = \"2.8.0\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n",
+        "[package]\ncompiler = \"2.9.0\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n",
         pm::COMPILER_VERSION
     );
     let main_tnx = format!(
@@ -516,6 +523,68 @@ fn read_startup_banner_config() -> bool {
         if !dir.pop() { break; }
     }
     true
+}
+
+/// `[language] checked_exceptions` in the nearest `tinox.toml` (#524): `"warn"` / `true` report
+/// uncaught, undeclared `@Error` classes as warnings, `"error"` fails the build. Returns the
+/// project root together with `true` when violations are errors.
+fn read_checked_exceptions_config() -> Option<(PathBuf, bool)> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let toml_path = dir.join("tinox.toml");
+        if toml_path.exists() {
+            let content = build_cache::read_to_string(&toml_path).ok()?;
+            let mut in_language = false;
+            let mut mode = None;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with('[') {
+                    in_language = line == "[language]";
+                    continue;
+                }
+                if !in_language { continue; }
+                if let Some(rest) = line.strip_prefix("checked_exceptions") {
+                    let value = rest.trim().strip_prefix('=').map(|v| v.trim().trim_matches('"')).unwrap_or("");
+                    mode = match value {
+                        "warn" | "true" => Some(false),
+                        "error" => Some(true),
+                        _ => None,
+                    };
+                }
+            }
+            return mode.map(|errors| (dir, errors));
+        }
+        if !dir.pop() { return None; }
+    }
+}
+
+/// Runs the `@Throws` checker on the project's own sources when the project enables it.
+fn check_declared_exceptions(ast: &tinox_parser::SourceFile) -> Result<(), Failure> {
+    let Some((root, as_error)) = read_checked_exceptions_config() else { return Ok(()) };
+    let root = root.canonicalize().unwrap_or(root);
+    let report = tinox_typecheck::throws::check(&ast.decls, &|file: &str| {
+        let path = Path::new(file);
+        path.starts_with(&root) && !path.components().any(|c| c.as_os_str() == ".tinox")
+    });
+    for w in &report.warnings {
+        eprintln!("warning: {}:{}:{}: {}", w.file, w.span.start.line, w.span.start.column, w.message);
+    }
+    if as_error {
+        if let Some(first) = report.violations.first() {
+            let mut failure = Failure::new("checked-exceptions", Some(first.file.as_str()), Some(first.span), first.message.clone());
+            for v in report.violations.iter().skip(1) {
+                failure.0[0].related.push(tinox_common::diagnostic::RelatedLocation {
+                    file: v.file.clone(), range: v.span, message: v.message.clone(),
+                });
+            }
+            return Err(failure);
+        }
+    } else {
+        for v in &report.violations {
+            eprintln!("warning: {}:{}:{}: {}", v.file, v.span.start.line, v.span.start.column, v.message);
+        }
+    }
+    Ok(())
 }
 
 struct DbConfig {
@@ -906,6 +975,7 @@ fn convert_route_params(
             tinox_typecheck::annotations::RouteParamKind::PathParam => tinox_codegen::RouteParamKind::PathParam,
             tinox_typecheck::annotations::RouteParamKind::QueryParam => tinox_codegen::RouteParamKind::QueryParam,
             tinox_typecheck::annotations::RouteParamKind::PostParam => tinox_codegen::RouteParamKind::PostParam,
+            tinox_typecheck::annotations::RouteParamKind::MultipartParam => tinox_codegen::RouteParamKind::MultipartParam,
             tinox_typecheck::annotations::RouteParamKind::HttpContext => tinox_codegen::RouteParamKind::HttpContext,
         },
         name: p.name.clone(),
@@ -2036,6 +2106,7 @@ fn check(args: &[String]) {
         prepare_program(input).and_then(|(ast, _)| {
             let ann = tinox_typecheck::annotations::process_annotations(&ast);
             validate_program_annotations(&ast, &ann, input)?;
+            check_declared_exceptions(&ast)?;
             for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
             Ok(())
         })
@@ -2131,7 +2202,7 @@ fn run_tests_watch(args: &[String]) {
     use notify::{RecursiveMode, Watcher};
     use std::sync::mpsc;
 
-    let watch_dir = if let Some(file) = args.first().filter(|a| !a.starts_with('-')) {
+    let watch_dir = if let Some(file) = parse_test_args(args).ok().and_then(|a| a.file) {
         Path::new(file).canonicalize().ok().and_then(|p| p.parent().map(Path::to_path_buf))
     } else {
         find_project_root()
@@ -2199,8 +2270,54 @@ fn collect_test_dir(dir: &Path, files: &mut Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Parsed `tinox test` arguments: the single positional test file wherever it
+/// sits among the flags, plus exact `--filter Class::method` selectors. Unknown
+/// flags and extra positionals are errors, never a silent widening of the
+/// selected scope (#585, #582).
+struct TestArgs<'a> {
+    file: Option<&'a str>,
+    filters: Vec<&'a str>,
+}
+
+fn parse_test_args(args: &[String]) -> Result<TestArgs<'_>, String> {
+    let mut parsed = TestArgs { file: None, filters: Vec::new() };
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--list" | "--watch" | "-w" => {}
+            "--format" | "--message-format" => {
+                i += 1;
+                if i >= args.len() { return Err(format!("{a} needs a value")); }
+            }
+            "--filter" => {
+                i += 1;
+                let value = args.get(i).ok_or("--filter needs a Class::method value")?;
+                parsed.filters.push(value);
+            }
+            _ if a.starts_with("--format=") || a.starts_with("--message-format=") => {}
+            _ if a.starts_with("--filter=") => parsed.filters.push(&a["--filter=".len()..]),
+            _ if a.starts_with('-') && a.len() > 1 => return Err(format!("unknown option for `tinox test`: {a}")),
+            _ => {
+                if let Some(prev) = parsed.file {
+                    return Err(format!("only one test file may be given, got `{prev}` and `{a}`"));
+                }
+                parsed.file = Some(a);
+            }
+        }
+        i += 1;
+    }
+    for f in &parsed.filters {
+        match f.split_once("::") {
+            Some((class, method)) if !class.is_empty() && !method.is_empty() && !method.contains("::") => {}
+            _ => return Err(format!("--filter expects an exact Class::method selector, got `{f}`")),
+        }
+    }
+    Ok(parsed)
+}
+
 fn collect_test_files(args: &[String]) -> Result<Vec<String>, String> {
-    if let Some(f) = args.first().filter(|a| !a.starts_with('-')) {
+    if let Some(f) = parse_test_args(args)?.file {
         let path = Path::new(f).canonicalize().map_err(|e| format!("{}: {}", f, e))?;
         return Ok(vec![path.to_string_lossy().into_owned()]);
     }
@@ -2260,6 +2377,8 @@ fn run_tests_once(args: &[String]) -> bool {
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut collection_errors = 0usize;
+    let filters: Vec<String> = parse_test_args(args).map(|a| a.filters.iter().map(|f| f.to_string()).collect()).unwrap_or_default();
+    let mut matched_filters: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for source_path in &source_files {
         let test_entries = match collect_tests(source_path) {
@@ -2274,11 +2393,23 @@ fn run_tests_once(args: &[String]) -> bool {
                 continue;
             }
         };
+        // Exact selectors drop everything else before anything is compiled or run.
+        let test_entries: Vec<_> = if filters.is_empty() {
+            test_entries
+        } else {
+            test_entries.into_iter().filter(|t| {
+                let id = format!("{}::{}", t.class_name, t.method_name);
+                let hit = filters.contains(&id);
+                if hit { matched_filters.insert(id); }
+                hit
+            }).collect()
+        };
         if test_entries.is_empty() { continue; }
 
         let describe = |t: &tinox_typecheck::annotations::TestInfo| serde_json::json!({
             "file": source_path, "class": t.class_name, "method": t.method_name,
             "description": t.description, "line": t.line, "column": t.column,
+            "case": t.case_index,
         });
 
         // Discovery mode: report what exists without compiling or running anything.
@@ -2376,10 +2507,22 @@ fn run_tests_once(args: &[String]) -> bool {
         let _ = fs::remove_file(format!("{exe}.ll"));
     }
 
+    for unmatched in filters.iter().filter(|f| !matched_filters.contains(*f)) {
+        let message = format!("--filter `{unmatched}` matched no @Test method (expected Class::method)");
+        if json {
+            diagnostics::emit("test-collection-error", serde_json::json!({ "file": null, "message": message }));
+        } else {
+            eprintln!("error: {message}");
+        }
+        collection_errors += 1;
+    }
+
     if json {
         diagnostics::emit("test-run-finished", serde_json::json!({
             "total": total, "passed": passed, "failed": failed, "collection_errors": collection_errors,
             "listed_only": list_only,
+            // Lets an IDE refuse a selected run on an older compiler instead of running the whole file.
+            "capabilities": ["filter", "fixtures", "cases"],
             "success": collection_errors == 0 && failed == 0 && (list_only || total > 0),
         }));
     } else if list_only {
@@ -2426,6 +2569,11 @@ fn gen_docs(args: &[String]) {
     let open = args.iter().any(|a| a == "--open");
     let out_override: Option<&String> = args.iter()
         .position(|a| a == "--out")
+        .and_then(|i| args.get(i + 1));
+    // `--deps-base <dir-or-url>`: where dependency documentation lives, as
+    // `<base>/<artifactId>/<version-with-dashes>/docs.html` (#586).
+    let deps_base: Option<&String> = args.iter()
+        .position(|a| a == "--deps-base")
         .and_then(|i| args.get(i + 1));
 
     // Collect source files from project or explicit arg, and remember the
@@ -2506,12 +2654,23 @@ fn gen_docs(args: &[String]) {
         })
         .unwrap_or_default();
 
-    let html = render_docs_html(&project_name, description.as_deref(), &dependencies, &examples, &doc_items);
-
     let out_path = match out_override {
         Some(p) => PathBuf::from(p),
         None => PathBuf::from("docs").join("index.html"),
     };
+    // A dependency link is only emitted when it resolves: either the user named
+    // the documentation base explicitly, or the published-site layout
+    // (`../../<artifact>/<version>/docs.html`) really exists next to the output.
+    let out_dir = out_path.parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let dep_link = |d: &pm::Dependency| -> Option<String> {
+        let tail = format!("{}/{}/docs.html", d.artifact_id, version_path_slug(&d.version));
+        match deps_base {
+            Some(base) => Some(format!("{}/{}", base.trim_end_matches('/'), tail)),
+            None => out_dir.join("../..").join(&tail).is_file().then(|| format!("../../{tail}")),
+        }
+    };
+    let html = render_docs_html(&project_name, description.as_deref(), &dependencies, &examples, &doc_items, &dep_link);
+
     if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         if let Err(e) = fs::create_dir_all(parent) {
             eprintln!("error: cannot create {}: {}", parent.display(), e);
@@ -2792,6 +2951,7 @@ fn render_docs_html(
     dependencies: &[pm::Dependency],
     examples: &[(String, String)],
     items: &[DocItem],
+    dep_link: &dyn Fn(&pm::Dependency) -> Option<String>,
 ) -> String {
     let mut nav = String::new();
     let mut body = String::new();
@@ -2810,13 +2970,14 @@ fn render_docs_html(
     if !dependencies.is_empty() {
         nav.push_str("<li class=\"nav-section\">Dependencies</li><li><a href=\"#dependencies\">Dependencies</a></li>");
         let rows: String = dependencies.iter().map(|d| {
-            // Sibling docs.html, one directory per artifactId THEN version
-            // — matches how these pages are actually laid out
-            // (docs/tinox-core/<mod>/<version-with-dashes>/docs.html).
-            let version_slug = version_path_slug(&d.version);
+            // Unavailable documentation is labelled, not linked to a path that does not exist.
+            let name = match dep_link(d) {
+                Some(href) => format!("<a href=\"{}\"><code>{}</code></a>", html_escape(&href), html_escape(&d.artifact_id)),
+                None => format!("<code>{}</code> <span title=\"documentation not available locally; pass --deps-base to link it\">(no local docs)</span>", html_escape(&d.artifact_id)),
+            };
             format!(
-                "<tr><td class=\"member-name\"><a href=\"../../{}/{}/docs.html\"><code>{}</code></a></td><td class=\"member-type\"><code>{}</code></td><td>{}</td></tr>",
-                html_escape(&d.artifact_id), version_slug, html_escape(&d.artifact_id), html_escape(&d.version), html_escape(&d.group)
+                "<tr><td class=\"member-name\">{}</td><td class=\"member-type\"><code>{}</code></td><td>{}</td></tr>",
+                name, html_escape(&d.version), html_escape(&d.group)
             )
         }).collect();
         body.push_str(&format!(
@@ -3210,6 +3371,7 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
     let config_fields = ann.config_fields.iter().map(|f| tinox_codegen::ConfigFieldInfo {
         class_name: f.class_name.clone(), field_name: f.field_name.clone(),
         config_key: f.config_key.clone(), field_llvm_type: f.field_llvm_type.clone(),
+        has_default: f.has_default,
     }).collect();
     let cli_commands = ann.cli_commands.iter().map(|c| tinox_codegen::CliCommandInfo {
         class_name: c.class_name.clone(), cmd_name: c.cmd_name.clone(),
@@ -3244,6 +3406,8 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
             field_name: f.field_name.clone(),
         })
         .collect();
+    cg.set_error_map(ann.error_maps.clone());
+    cg.set_security_policy(ann.security_policy.clone());
     cg.set_annotation_info(tinox_codegen::AnnotationInfo {
         inline_fns: ann.inline_functions,
         inline_meths: ann.inline_methods,
@@ -3280,7 +3444,20 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
     cg.set_db_url(db_cfg_test.as_ref().map(|c| c.url.clone()));
     cg.set_db_pool_size(db_cfg_test.as_ref().map(|c| c.pool as i64).unwrap_or(5));
     cg.set_migration_payload(test_migration_payload(db_cfg_test.as_ref()).map_err(|e| format!("changelog: {e}"))?);
-    cg.set_test_entries(tests.iter().map(|t| (t.class_name.clone(), t.method_name.clone())).collect());
+    let hooks = tinox_typecheck::annotations::process_annotations(&ast).test_hooks;
+    cg.set_test_entries(tests.iter().map(|t| tinox_codegen::TestEntry {
+        class: t.class_name.clone(),
+        method: t.method_name.clone(),
+        args: t.case_args.iter().map(|l| match l {
+            tinox_parser::Literal::Integer(v) => tinox_codegen::TestArg::Int(*v),
+            tinox_parser::Literal::Float(v) => tinox_codegen::TestArg::Float(*v),
+            tinox_parser::Literal::Bool(v) => tinox_codegen::TestArg::Bool(*v),
+            tinox_parser::Literal::String(v) => tinox_codegen::TestArg::Str(v.clone()),
+            other => unreachable!("@Case literal {other:?} rejected by annotation validation"),
+        }).collect(),
+        before: hooks.iter().filter(|h| h.class_name == t.class_name && !h.after).map(|h| h.method_name.clone()).collect(),
+        after: hooks.iter().filter(|h| h.class_name == t.class_name && h.after).map(|h| h.method_name.clone()).collect(),
+    }).collect());
     cg.gen(&ast).map_err(|e| format!("codegen: {e:?}"))?;
     cg.check_undefined_callees()
         .map_err(|e| format!("codegen: {}", e.errors.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")))?;
@@ -3327,29 +3504,46 @@ const CORE_MODULES: &[&str] = &[
     "array", "collections", "set", "queue", "heap", "trie", "graph", "iter",
     "sort", "option", "result", "cache", "pool",
     "math", "mathf", "mathx", "complex", "decimal",
-    "string", "fmt", "format", "encoding",
+    "string", "fmt", "format", "encoding", "unicode",
     "io", "fs", "env", "process", "debug", "socket",
     "semaphore", "time", "cron", "events",
     "logger", "validation", "regex", "random", "hash", "uuid",
     "base64", "hex", "uri", "bytes",
 ];
 
-/// Returns the path to runtime.c: the dev-checkout path relative to this
-/// binary's compiled-in source location (works for `cargo run` during
-/// development), then the fixed system install path used by distro
-/// packages. Unlike `stdlib_dir`, there is no env var override — runtime.c
-/// is an implementation detail, not something a user is expected to point
-/// at directly.
-fn runtime_c_path() -> Option<PathBuf> {
+/// Locates runtime.c. Order: `TINOX_RUNTIME_PATH` (the file, or a directory
+/// containing it; an invalid value is a hard error, never ignored), the
+/// relocatable layout next to the compiler (`<bin>/../share/tinox/runtime.c`),
+/// the dev-checkout path baked in at compile time, then the fixed system path.
+fn runtime_c_path_result() -> Result<PathBuf, String> {
+    if let Some(raw) = std::env::var_os("TINOX_RUNTIME_PATH").filter(|v| !v.is_empty()) {
+        let given = PathBuf::from(&raw);
+        let file = if given.is_dir() { given.join("runtime.c") } else { given.clone() };
+        return if file.is_file() {
+            Ok(file)
+        } else {
+            Err(format!("TINOX_RUNTIME_PATH={} does not point to runtime.c or a directory containing it", given.display()))
+        };
+    }
+    if let Some(prefix) = std::env::current_exe().ok().and_then(|exe| exe.parent().and_then(Path::parent).map(Path::to_path_buf)) {
+        let relocatable = prefix.join("share/tinox/runtime.c");
+        if relocatable.is_file() {
+            return Ok(relocatable);
+        }
+    }
     let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/runtime.c");
     if dev.is_file() {
-        return Some(dev);
+        return Ok(dev);
     }
     let system = PathBuf::from("/usr/share/tinox/runtime.c");
     if system.is_file() {
-        return Some(system);
+        return Ok(system);
     }
-    None
+    Err("Cannot find runtime.c (set TINOX_RUNTIME_PATH, or install it at <prefix>/share/tinox/runtime.c next to the compiler, or /usr/share/tinox/runtime.c)".to_string())
+}
+
+fn runtime_c_path() -> Option<PathBuf> {
+    runtime_c_path_result().ok()
 }
 
 /// Returns installed dependency directories plus any coordinate-resolved
@@ -4760,6 +4954,12 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
         }
         failure
     };
+    if let Some((class_name, message)) = tinox_typecheck::annotations::cache_errors(&ast.decls).into_iter().next() {
+        return Err(annotation_error(&[class_name.as_str()], message));
+    }
+    if let Some((class_name, message)) = tinox_typecheck::annotations::foreign_key_errors(&ast.decls).into_iter().next() {
+        return Err(annotation_error(&[class_name.as_str()], message));
+    }
     for endpoint in &ann_result.ws_endpoints {
         if ann_result.di_components.iter().any(|component|
             component.class_name == endpoint.class_name
@@ -4835,25 +5035,27 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
             return Err(annotation_error(&[&class], message));
         }
     }
-    // @Transactional is postgres-only in v1 (issue #191): the connection
-    // pool + BEGIN/COMMIT/ROLLBACK primitives it compiles down to only
-    // exist for that driver (runtime.c's sqlite/mysql tinox_db_tx_* stubs
-    // hard-abort if ever actually called, as a second line of defense, but
-    // that's meant to catch a bug in THIS check, not substitute for it).
-    // A hard compile error here, not a silent no-op or a runtime surprise
-    // the first time a transactional method actually runs. Checked here,
-    // before ann_result.transactional_methods is moved into the
-    // set_annotation_info() call further down.
+    // @Transactional needs a driver with the transaction ABI (postgres, mysql, sqlite; issues
+    // #191, #531). A hard compile error otherwise, not a silent no-op. REQUIRES_NEW needs a
+    // second connection, which SQLite's single serialized connection cannot provide.
     if !ann_result.transactional_methods.is_empty() {
         let driver_cfg = read_database_config();
         let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
-        if driver != "postgres" {
-            let (class_name, method_name) = ann_result.transactional_methods.iter().next().unwrap();
+        if !matches!(driver, "postgres" | "mysql" | "sqlite") {
+            let (class_name, method_name) = ann_result.transactional_methods.keys().next().unwrap();
             return Err(annotation_error(&[class_name.as_str()], format!(
                 "'{class_name}.{method_name}' is @Transactional, but [database] driver is {} -- \
-                 @Transactional is only supported for driver = \"postgres\" in this version",
+                 @Transactional supports driver = \"postgres\", \"mysql\" or \"sqlite\"",
                 if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
             )));
+        }
+        if driver == "sqlite" {
+            if let Some(((class_name, method_name), _)) = ann_result.transactional_methods.iter().find(|(_, mode)| **mode == 2) {
+                return Err(annotation_error(&[class_name.as_str()], format!(
+                    "'{class_name}.{method_name}' uses @Transactional(\"REQUIRES_NEW\"), which SQLite cannot provide \
+                     (one serialized connection); use \"REQUIRED\" or \"NESTED\""
+                )));
+            }
         }
     }
     // DB::raw(...) is postgres-only in v1, same reasoning and same check shape
@@ -4999,6 +5201,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     let ann_result = tinox_typecheck::annotations::process_annotations(&ast);
     drop(annotation_stage);
     validate_program_annotations(&ast, &ann_result, input_path)?;
+    check_declared_exceptions(&ast)?;
     if progress {
         for warning in ann_result.deprecated_warnings.iter().chain(&ann_result.shared_state_warnings) {
             eprintln!("warning: {}", warning);
@@ -5066,6 +5269,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             pass: e.pass.clone(),
             address: e.address.clone(),
             on_message: e.on_message.clone(),
+            failure: e.failure,
         })
         .collect();
 
@@ -5084,6 +5288,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             pass: e.pass.clone(),
             queue: e.queue.clone(),
             on_message: e.on_message.clone(),
+            failure: e.failure.clone(),
         })
         .collect();
 
@@ -5143,6 +5348,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             field_name: f.field_name.clone(),
             config_key: f.config_key.clone(),
             field_llvm_type: f.field_llvm_type.clone(),
+            has_default: f.has_default,
         })
         .collect();
     let cli_commands: Vec<tinox_codegen::CliCommandInfo> = ann_result.cli_commands
@@ -5202,6 +5408,8 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             fn_name:     m.fn_name.clone(),
         })
         .collect();
+    codegen.set_error_map(ann_result.error_maps.clone());
+    codegen.set_security_policy(ann_result.security_policy.clone());
     codegen.set_annotation_info(tinox_codegen::AnnotationInfo {
         inline_fns: ann_result.inline_functions,
         inline_meths: ann_result.inline_methods,
@@ -5237,6 +5445,15 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     codegen.set_entity_entries(entity_entries);
     codegen.set_ws_endpoints(ws_endpoints);
     codegen.set_amqp10_consumers(amqp10_consumers);
+    codegen.set_cache_methods(ann_result.cached_methods.clone(), ann_result.evict_methods.clone());
+    codegen.set_outbox_dispatchers(ann_result.outbox_dispatchers.iter().map(|d| tinox_codegen::OutboxDispatcherEntry {
+        class_name: d.class_name.clone(), host: d.host.clone(), port: d.port, vhost: d.vhost.clone(), user: d.user.clone(), pass: d.pass.clone(), max_attempts: d.max_attempts, backoff_ms: d.backoff_ms,
+    }).collect());
+    codegen.set_scheduled_jobs(ann_result.scheduled_jobs.iter().map(|j| tinox_codegen::ScheduledJobEntry {
+        class_name: j.class_name.clone(),
+        method_name: j.method_name.clone(),
+        cron: j.cron.clone(),
+    }).collect());
     codegen.set_amqp091_consumers(amqp091_consumers);
     codegen.set_http3_rest_controller(http3_rest_controller);
     codegen.set_tinoxui_apps(tinoxui_app.into_iter().collect());
@@ -5357,9 +5574,7 @@ struct RuntimeOptions {
 fn runtime_options() -> Result<RuntimeOptions, String> {
     // Reject unknown/non-native targets before any artifact is produced (#310).
     let target = tinox_codegen::target::Target::resolve()?;
-    let runtime_src = runtime_c_path().ok_or_else(|| {
-        "Cannot find runtime.c (checked the dev checkout path and /usr/share/tinox/runtime.c)".to_string()
-    })?;
+    let runtime_src = runtime_c_path_result()?;
     let runtime_src = runtime_src.to_string_lossy().into_owned();
 
     let db_cfg = read_database_config();
@@ -5671,7 +5886,7 @@ mod namespace_path_matches_tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.8.0\"\nname = \"t\"\n").unwrap();
+        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.0\"\nname = \"t\"\n").unwrap();
         if with_src {
             fs::create_dir_all(dir.join("src")).unwrap();
         }
@@ -5848,25 +6063,25 @@ mod read_project_entry_tests {
 
     #[test]
     fn entry_field_found() {
-        let toml = "[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.9.0\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
     #[test]
     fn no_entry_field_returns_none() {
-        let toml = "[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.9.0\"\nname = \"foo\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_outside_package_section_ignored() {
-        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\n";
+        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.9.0\"\nname = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_field_whitespace_tolerant() {
-        let toml = "[package]\ncompiler = \"2.8.0\"\nentry=\"src/Main.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.9.0\"\nentry=\"src/Main.tnx\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
@@ -5877,7 +6092,7 @@ mod read_project_entry_tests {
     // of them (issue #257).
     #[test]
     fn undeclared_entry_prefers_capital_main_then_lowercase() {
-        let toml = "[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
+        let toml = "[package]\ncompiler = \"2.9.0\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
         assert_eq!(
             entry_candidates(toml),
             vec!["src/Main.tnx".to_string(), "src/main.tnx".to_string()]
@@ -5887,7 +6102,7 @@ mod read_project_entry_tests {
     #[test]
     fn declared_entry_is_the_only_candidate() {
         // No silent fallback to a default when an explicit entry is wrong.
-        let toml = "[package]\ncompiler = \"2.8.0\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.9.0\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
         assert_eq!(entry_candidates(toml), vec!["src/Cli.tnx".to_string()]);
     }
 }

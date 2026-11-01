@@ -1,0 +1,13 @@
+module tinox.core.collections
+
+namespace tinox.core.collections
+{
+    /**
+     * Thrown by `Maps::getOrThrow` when the key is not present.
+     */
+    @Error("KEY_ERROR", 404)
+    class KeyError
+    {
+        var message: String
+    }
+}

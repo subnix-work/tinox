@@ -15,7 +15,7 @@ impl Project {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("tools")).unwrap();
         fs::write(root.join("tinox.toml"), format!(
-            "[package]\nname = \"suite\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native.test]\nsources = [\"state.c\"]\n", env!("CARGO_PKG_VERSION")
+            "[package]\ncompiler = \"2.9.0\"\nname = \"suite\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native.test]\nsources = [\"state.c\"]\n", env!("CARGO_PKG_VERSION")
         )).unwrap();
         fs::write(root.join("state.c"), "#include <stdint.h>\n#include <unistd.h>\nstatic int64_t calls;\nint64_t next_call(void) { return ++calls; }\nint64_t process_id(void) { return getpid(); }\n").unwrap();
         for tool in ["llc", "cc"] {

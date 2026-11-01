@@ -29,11 +29,13 @@ namespace tinox.core.cron
             scheduler.running = false
         }
 
+        @Throws(CronError)
         fn tick(scheduler: CronScheduler) -> Nothing
         {
             CronScheduler::tickAt(scheduler, Time::now())
         }
 
+        @Throws(CronError)
         /** Caller-driven, single-threaded tick; missed minutes are not replayed.
          * Repeated or backward ticks never re-run an already executed minute. */
         fn tickAt(scheduler: CronScheduler, now: Int64) -> Nothing

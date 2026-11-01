@@ -44,13 +44,14 @@ namespace tinox.core.uri
             return "%" + Uri::hexDigit(hi) + Uri::hexDigit(lo)
         }
 
+        @Throws(UriError)
         fn hexValue(c: String) -> Int64
         {
             const code: Int64 = c.charCodeAt(0)
             if (code >= 48 && code <= 57) { return code - 48 }
             if (code >= 65 && code <= 70) { return code - 55 }
             if (code >= 97 && code <= 102) { return code - 87 }
-            throw "Uri: invalid hex digit '" + c + "' in percent-escape"
+            throw UriError { message: "Uri: invalid hex digit '" + c + "' in percent-escape" }
         }
 
         fn encodeComponent(s: String) -> String
@@ -95,6 +96,7 @@ namespace tinox.core.uri
             return result
         }
 
+        @Throws(UriError)
         fn decodeComponent(s: String) -> String
         {
             // Collects bytes into a List<Int64> and converts in one pass
@@ -110,7 +112,7 @@ namespace tinox.core.uri
                 {
                     if (i + 2 >= len)
                     {
-                        throw "Uri: truncated percent-escape"
+                        throw UriError { message: "Uri: truncated percent-escape" }
                     }
                     const hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2))
                     const lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3))
@@ -126,6 +128,7 @@ namespace tinox.core.uri
             return tinoxBytesToString(bytes)
         }
 
+        @Throws(UriError)
         fn decode(s: String) -> String
         {
             // Collects bytes into a List<Int64> and converts in one pass
@@ -141,7 +144,7 @@ namespace tinox.core.uri
                 {
                     if (i + 2 >= len)
                     {
-                        throw "Uri: truncated percent-escape"
+                        throw UriError { message: "Uri: truncated percent-escape" }
                     }
                     const hi: Int64 = Uri::hexValue(s.substring(i + 1, i + 2))
                     const lo: Int64 = Uri::hexValue(s.substring(i + 2, i + 3))

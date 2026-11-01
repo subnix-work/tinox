@@ -112,6 +112,7 @@ namespace tinox.core.kubernetes
         // (Server-Side Apply's `application/apply-patch+yaml`/`+json`,
         // strategic-merge-patch, ...), use requestWithContentType
         // directly instead of this convenience wrapper.
+        @Throws(KubernetesError)
         fn request(method: String, path: String, body: String) -> KubeResponse
         {
             const contentType: String = method == "PATCH" ? "application/merge-patch+json" : "application/json"
@@ -128,6 +129,7 @@ namespace tinox.core.kubernetes
         // as an ordinary JSON Merge Patch instead -- silent garbage, not
         // a loud rejection, so getting this right matters more than a
         // typical "wrong header" mistake would).
+        @Throws(KubernetesError)
         fn requestWithContentType(method: String, path: String, body: String, contentType: String) -> KubeResponse
         {
             this.applyTlsConfig()
@@ -174,7 +176,7 @@ namespace tinox.core.kubernetes
             }
             else
             {
-                throw "KubernetesClient: unsupported HTTP method: " + method
+                throw KubernetesError { message: "KubernetesClient: unsupported HTTP method: " + method }
             }
 
             Http::clearHeaders()

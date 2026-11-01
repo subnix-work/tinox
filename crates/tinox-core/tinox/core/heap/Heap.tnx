@@ -23,11 +23,12 @@ namespace tinox.core.heap
             Heap::siftUp(heap, heap.items.len() - 1)
         }
 
+        @Throws(EmptyHeapError)
         fn pop(heap: Heap<T>) -> T
         {
             if (heap.items.len() == 0)
             {
-                throw "Heap is empty"
+                throw EmptyHeapError { message: "Heap is empty" }
             }
             const result: T = heap.items[0]
             const last: T = heap.items[heap.items.len() - 1]
@@ -40,11 +41,12 @@ namespace tinox.core.heap
             return result
         }
 
+        @Throws(EmptyHeapError)
         fn peek(heap: Heap<T>) -> T
         {
             if (heap.items.len() == 0)
             {
-                throw "Heap is empty"
+                throw EmptyHeapError { message: "Heap is empty" }
             }
             return heap.items[0]
         }

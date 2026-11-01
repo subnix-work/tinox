@@ -23,7 +23,7 @@ const CORE_MODULES: &[&str] = &[
     "array", "collections", "set", "queue", "heap", "trie", "graph", "iter",
     "sort", "option", "result", "cache", "pool",
     "math", "mathf", "mathx", "complex", "decimal",
-    "string", "fmt", "format", "encoding",
+    "string", "fmt", "format", "encoding", "unicode",
     "io", "fs", "env", "process", "debug", "socket",
     "semaphore", "time", "cron", "events",
     "logger", "validation", "regex", "random", "hash", "uuid",
@@ -337,7 +337,7 @@ pub fn run_case(case: &Case) -> Result<(), String> {
             toml.push_str("[database]\ndriver = \"sqlite\"\nurl = \"test.db\"\n");
         }
         if !extended_deps.is_empty() {
-            toml.push_str("[package]\ncompiler = \"2.8.0\"\nname = \"");
+            toml.push_str("[package]\ncompiler = \"2.9.0\"\nname = \"");
             toml.push_str(&case.name);
             toml.push_str("\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
             // Skip a module that's already a transitive dependency of

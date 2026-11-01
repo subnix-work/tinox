@@ -1,0 +1,82 @@
+// expect: fetch=42 calls=3
+// expect: exhausted calls=4 err=UNAVAILABLE: try later
+// expect: nothing calls=3 err=UNAVAILABLE: still down
+// expect: ineligible calls=1 err=NOT_FOUND: no such thing
+// expect: static=6
+// expect: call 1 failed UNAVAILABLE: backend down
+// expect: call 2 failed UNAVAILABLE: backend down
+// expect: call 3 failed UNAVAILABLE: backend down
+// expect: open rejected CIRCUIT_OPEN: Guarded.call rejected the call calls=3
+// expect: domain errors do not trip: calls=4
+// expect: probe failed -> open again calls=8
+// expect: still open calls=8
+// expect: probe ok=7 closed calls=9
+// expect: after close ok=7 calls=10
+// expect: cancelled calls=1
+// expect: retries fetch=5
+// expect: rejections guarded=2
+// expect: opened guarded=3
+// expect: state guarded=0
+
+import Flaky
+import Guarded
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const a = Flaky { calls: 0, failUntil: 2 }
+        println("fetch=" + a.fetch(21).toString() + " calls=" + a.calls.toString())
+
+        const b = Flaky { calls: 0, failUntil: 100 }
+        try { b.fetch(1) } catch (e: String) { println("exhausted calls=" + b.calls.toString() + " err=" + e) }
+
+        const c = Flaky { calls: 0, failUntil: 0 }
+        try { c.touch() } catch (e: String) { println("nothing calls=" + c.calls.toString() + " err=" + e) }
+
+        const d = Flaky { calls: 0, failUntil: 0 }
+        try { d.missing() } catch (e: String) { println("ineligible calls=" + d.calls.toString() + " err=" + e) }
+
+        println("static=" + Flaky::plain(5).toString())
+
+        const g = Guarded { calls: 0 }
+        for i in 1..4
+        {
+            try { g.call(true, false) } catch (e: String) { println("call " + i.toString() + " failed " + e) }
+        }
+        try { g.call(false, false) } catch (e: String) { println("open rejected " + e + " calls=" + g.calls.toString()) }
+        sleep_ms(350)
+        // Half-open: the domain error is not an eligible failure, so the probe counts as a success.
+        try { g.call(false, true) } catch (e: String) { }
+        println("domain errors do not trip: calls=" + g.calls.toString())
+        // Closed again; trip it a second time via three failures, then probe failure re-opens.
+        for i in 1..4
+        {
+            try { g.call(true, false) } catch (e: String) { }
+        }
+        sleep_ms(350)
+        try { g.call(true, false) } catch (e: String) { }
+        println("probe failed -> open again calls=" + g.calls.toString())
+        try { g.call(false, false) } catch (e: String) { }
+        println("still open calls=" + g.calls.toString())
+        sleep_ms(350)
+        println("probe ok=" + g.call(false, false).toString() + " closed calls=" + g.calls.toString())
+        println("after close ok=" + g.call(false, false).toString() + " calls=" + g.calls.toString())
+
+        // Cancellation: a task deadline stops the backoff wait; no further attempts are made.
+        const s = Flaky { calls: 0, failUntil: 0 }
+        taskSetDeadline(200)
+        try { s.slow() } catch (e: String) { }
+        println("cancelled calls=" + s.calls.toString())
+
+        const metrics: String = tinox_metrics_prometheus()
+        for line in metrics.split("\n")
+        {
+            if (line.startsWith("tinox_resilience_retries_total{site=\"Flaky.fetch\"}")) { println("retries fetch=" + line.split(" ")[1]) }
+            if (line.startsWith("tinox_resilience_rejections_total{site=\"Guarded.call\"}")) { println("rejections guarded=" + line.split(" ")[1]) }
+            if (line.startsWith("tinox_resilience_breaker_opened_total{site=\"Guarded.call\"}")) { println("opened guarded=" + line.split(" ")[1]) }
+            if (line.startsWith("tinox_resilience_breaker_state{site=\"Guarded.call\"}")) { println("state guarded=" + line.split(" ")[1]) }
+        }
+        return 0
+    }
+}

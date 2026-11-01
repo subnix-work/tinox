@@ -1,0 +1,13 @@
+module tinox.core.option
+
+namespace tinox.core.option
+{
+    /**
+     * Thrown by `Option.unwrap` on a None value.
+     */
+    @Error("OPTION_NONE", 404)
+    class NoneError
+    {
+        var message: String
+    }
+}

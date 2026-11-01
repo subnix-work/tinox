@@ -20,7 +20,12 @@ pub struct Lsp {
 
 impl Lsp {
     pub fn start(root: &Path, rename_files: bool) -> Lsp {
+        Lsp::start_with_env(root, rename_files, &[])
+    }
+
+    pub fn start_with_env(root: &Path, rename_files: bool, env: &[(&str, &str)]) -> Lsp {
         let mut child = Command::new(env!("CARGO_BIN_EXE_tinox-lsp"))
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

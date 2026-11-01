@@ -43,12 +43,13 @@ namespace tinox.core.jwt
             return message + "." + signature
         }
 
+        @Throws(JwtError)
         fn decode(token: String, secret: String) -> Map<String, JsonValue>
         {
             const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                throw "Invalid JWT format"
+                throw JwtError { message: "Invalid JWT format" }
             }
             // Alg-confusion hardening: now that Jwt also supports RS256
             // (issue #138), decode() must reject anything but the alg it
@@ -58,14 +59,14 @@ namespace tinox.core.jwt
             const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0])
             if (!header.contains("alg") || header["alg"].getString() != "HS256")
             {
-                throw "Unexpected alg header (expected HS256)"
+                throw JwtError { message: "Unexpected alg header (expected HS256)" }
             }
             const message: String = parts[0] + "." + parts[1]
             const expectedSigBytes: List<Int64> = hmacSha256Bytes(Jwt::stringToBytes(message), Jwt::stringToBytes(secret))
             const expectedSig: String = Base64::encodeUrlBytes(expectedSigBytes)
             if (expectedSig != parts[2])
             {
-                throw "Invalid signature"
+                throw JwtError { message: "Invalid signature" }
             }
             const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1])
             // Bug 105: a correctly-signed token was accepted regardless of
@@ -77,6 +78,7 @@ namespace tinox.core.jwt
 
         // verify() never throws: a malformed token (bad base64url segment,
         // invalid JSON, ...) simply does not verify (issue #467).
+        @Throws(JwtError)
         fn verify(token: String, secret: String) -> Bool
         {
             try
@@ -89,6 +91,7 @@ namespace tinox.core.jwt
             }
         }
 
+        @Throws(JwtError)
         fn verifyUnchecked(token: String, secret: String) -> Bool
         {
             const parts: List<String> = token.split(".")
@@ -121,6 +124,7 @@ namespace tinox.core.jwt
             return true
         }
 
+        @Throws(JwtError)
         /*
          * RS256 counterpart of decode()/verify() (issue #138, OIDC ID-token
          * verification) -- `n`/`e` are a JWK's RSA modulus/exponent fields,
@@ -134,12 +138,12 @@ namespace tinox.core.jwt
             const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                throw "Invalid JWT format"
+                throw JwtError { message: "Invalid JWT format" }
             }
             const header: Map<String, JsonValue> = Jwt::decodeSegment(parts[0])
             if (!header.contains("alg") || header["alg"].getString() != "RS256")
             {
-                throw "Unexpected alg header (expected RS256)"
+                throw JwtError { message: "Unexpected alg header (expected RS256)" }
             }
             const message: String = parts[0] + "." + parts[1]
             const sigBytes: List<Int64> = Base64::decodeUrlBytes(parts[2])
@@ -147,13 +151,14 @@ namespace tinox.core.jwt
             const eBytes: List<Int64> = Base64::decodeUrlBytes(e)
             if (!rsaVerifySha256(Jwt::stringToBytes(message), sigBytes, nBytes, eBytes))
             {
-                throw "Invalid signature"
+                throw JwtError { message: "Invalid signature" }
             }
             const payload: Map<String, JsonValue> = Jwt::decodeSegment(parts[1])
             Jwt::checkTemporalClaims(payload)
             return payload
         }
 
+        @Throws(JwtError)
         fn verifyRs256(token: String, n: String, e: String) -> Bool
         {
             try
@@ -166,6 +171,7 @@ namespace tinox.core.jwt
             }
         }
 
+        @Throws(JwtError)
         fn verifyRs256Unchecked(token: String, n: String, e: String) -> Bool
         {
             const parts: List<String> = token.split(".")
@@ -199,6 +205,7 @@ namespace tinox.core.jwt
             return true
         }
 
+        @Throws(JwtError)
         /*
          * Bug 105: shared exp/nbf check for decode() (throws, since decode()
          * already throws on format/signature errors). verify() inlines the
@@ -209,16 +216,17 @@ namespace tinox.core.jwt
             const now: Int64 = Time::now() / 1000
             if (payload.contains("exp") && now > payload["exp"].asInt())
             {
-                throw "Token expired"
+                throw JwtError { message: "Token expired" }
             }
             if (payload.contains("nbf") && now < payload["nbf"].asInt())
             {
-                throw "Token not yet valid (nbf)"
+                throw JwtError { message: "Token not yet valid (nbf)" }
             }
         }
 
         // Shared base64url-segment-to-JSON-object decode for header/payload
         // (both are JSON objects per RFC 7515 §3).
+        @Throws(JwtError)
         fn decodeSegment(part: String) -> Map<String, JsonValue>
         {
             const json: String = Jwt::bytesToString(Base64::decodeUrlBytes(part))
@@ -230,26 +238,29 @@ namespace tinox.core.jwt
         // exposed independently of extractPayload()/decode() and MUST NOT
         // itself verify the signature (there is nothing to verify against
         // yet at this point in the OIDC flow).
+        @Throws(JwtError)
         fn extractHeader(token: String) -> Map<String, JsonValue>
         {
             const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                throw "Invalid JWT format"
+                throw JwtError { message: "Invalid JWT format" }
             }
             return Jwt::decodeSegment(parts[0])
         }
 
+        @Throws(JwtError)
         fn extractPayload(token: String) -> Map<String, JsonValue>
         {
             const parts: List<String> = token.split(".")
             if (parts.len() != 3)
             {
-                throw "Invalid JWT format"
+                throw JwtError { message: "Invalid JWT format" }
             }
             return Jwt::decodeSegment(parts[1])
         }
 
+        @Throws(JwtError)
         fn isExpired(token: String) -> Bool
         {
             const payload: Map<String, JsonValue> = Jwt::extractPayload(token)

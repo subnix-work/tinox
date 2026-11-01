@@ -1,0 +1,13 @@
+module tinox.core.jwt
+
+namespace tinox.core.jwt
+{
+    /**
+     * A JWT or JWKS operation failed.
+     */
+    @Error("JWT_ERROR", 401)
+    class JwtError
+    {
+        var message: String
+    }
+}

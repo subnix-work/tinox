@@ -557,6 +557,43 @@ struct Target<'a> {
     file: usize,
     tok: usize,
     files: &'a [FileIndex],
+    /// Checked receiver identities for a member target (issue #554), computed on first use.
+    checked: std::cell::OnceCell<crate::checked::Checked>,
+}
+
+/// What the checker established about a member name declared by several types.
+struct MemberScope {
+    /// the declaring class the target belongs to
+    owner: String,
+}
+
+impl Target<'_> {
+    fn checked(&self) -> &crate::checked::Checked {
+        self.checked.get_or_init(|| match &self.sym {
+            Sym::Member(name) => crate::checked::Checked::analyze(self.files, name),
+            _ => crate::checked::Checked::analyze(self.files, ""),
+        })
+    }
+
+    /// The declaring class the cursor's member belongs to: the container of a declaration site,
+    /// or, for an access, the nearest class of the checked receiver's chain that declares the name.
+    /// `None` when the checker could not resolve the receiver.
+    fn member_scope(&self) -> Option<MemberScope> {
+        let Sym::Member(name) = &self.sym else { return None };
+        let f = &self.files[self.file];
+        if let Some(d) = f.decls.iter().find(|d| d.tok == self.tok && matches!(d.kind, DeclType::Method | DeclType::Field)) {
+            return d.container.clone().map(|owner| MemberScope { owner });
+        }
+        let receiver = self.checked().owner_of(&f.uri, f.toks[self.tok].start)?;
+        let declaring: HashSet<&str> = self
+            .files
+            .iter()
+            .flat_map(|x| x.decls.iter())
+            .filter(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && &d.name == name)
+            .filter_map(|d| d.container.as_deref())
+            .collect();
+        self.checked().chain(receiver).into_iter().find(|c| declaring.contains(c.as_str())).map(|owner| MemberScope { owner })
+    }
 }
 
 fn resolve<'a>(files: &'a [FileIndex], at: &Url, offset: usize) -> Result<Target<'a>, String> {
@@ -573,29 +610,29 @@ fn resolve<'a>(files: &'a [FileIndex], at: &Url, offset: usize) -> Result<Target
     let after_access = prev.is_some_and(|p| p.is(&TokenKind::Dot) || p.is(&TokenKind::ColonColon));
     // import path segments naming a project type
     if f.is_import(tok) && !declared_types.is_empty() {
-        return Ok(Target { sym: Sym::Type(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Type(name), file: fi, tok, files, checked: Default::default() });
     }
     if !after_access && !declared_types.is_empty() {
-        return Ok(Target { sym: Sym::Type(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Type(name), file: fi, tok, files, checked: Default::default() });
     }
     // declaration sites of members on this very token
     if f.decls.iter().any(|d| d.tok == tok && matches!(d.kind, DeclType::Method | DeclType::Field)) {
-        return Ok(Target { sym: Sym::Member(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Member(name), file: fi, tok, files, checked: Default::default() });
     }
     if f.decls.iter().any(|d| d.tok == tok && d.kind == DeclType::Function) {
-        return Ok(Target { sym: Sym::Function(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Function(name), file: fi, tok, files, checked: Default::default() });
     }
     if after_access || f.struct_literal_key_of(tok).is_some() {
-        return Ok(Target { sym: Sym::Member(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Member(name), file: fi, tok, files, checked: Default::default() });
     }
     // bare identifier: local/parameter of the enclosing function, or a top-level function
     if let Some(func) = f.innermost_fn(tok) {
         if local_decl_count(f, func, &name) > 0 {
-            return Ok(Target { sym: Sym::Local { name, fn_start: func.start, file: fi }, file: fi, tok, files });
+            return Ok(Target { sym: Sym::Local { name, fn_start: func.start, file: fi }, file: fi, tok, files, checked: Default::default() });
         }
     }
     if files.iter().flat_map(|x| x.decls.iter()).any(|d| d.kind == DeclType::Function && d.name == name) {
-        return Ok(Target { sym: Sym::Function(name), file: fi, tok, files });
+        return Ok(Target { sym: Sym::Function(name), file: fi, tok, files, checked: Default::default() });
     }
     Err(format!("`{name}` is not declared in this project (standard library, builtin or unresolved)"))
 }
@@ -634,6 +671,9 @@ struct Occurrence {
     file: usize,
     tok: usize,
     is_decl: bool,
+    /// a member access whose receiver the checker could not resolve (issue #554); only set when the
+    /// member name is declared by several types and the target's declaring class is known
+    unresolved: bool,
 }
 
 fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
@@ -655,7 +695,7 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                         continue;
                     }
                     let is_decl = f.decls.iter().any(|d| d.tok == i && d.kind == DeclType::Type);
-                    out.push(Occurrence { file: fi, tok: i, is_decl });
+                    out.push(Occurrence { file: fi, tok: i, is_decl, unresolved: false });
                 }
             }
         }
@@ -672,7 +712,7 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                         continue;
                     }
                     let is_decl = f.decls.iter().any(|d| d.tok == i && d.kind == DeclType::Function);
-                    out.push(Occurrence { file: fi, tok: i, is_decl });
+                    out.push(Occurrence { file: fi, tok: i, is_decl, unresolved: false });
                 }
             }
         }
@@ -688,6 +728,8 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                 v.dedup();
                 v
             };
+            // Several declaring types: narrow to the target's class group with checked receivers.
+            let scope = if owners.len() > 1 { t.member_scope() } else { None };
             notes = owners;
             let _ = ctx;
             for (fi, f) in files.iter().enumerate() {
@@ -696,14 +738,33 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                         continue;
                     }
                     let access = f.prev(i).is_some_and(|p| p.is(&TokenKind::Dot) || p.is(&TokenKind::ColonColon));
-                    let is_decl = f
-                        .decls
-                        .iter()
-                        .any(|d| d.tok == i && matches!(d.kind, DeclType::Method | DeclType::Field));
-                    let key = f.struct_literal_key_of(i).is_some_and(|lit| notes.contains(&lit));
-                    if access || is_decl || key {
-                        out.push(Occurrence { file: fi, tok: i, is_decl });
+                    let decl = f.decls.iter().find(|d| d.tok == i && matches!(d.kind, DeclType::Method | DeclType::Field));
+                    let is_decl = decl.is_some();
+                    let lit = f.struct_literal_key_of(i);
+                    let key = lit.as_ref().is_some_and(|lit| notes.contains(lit));
+                    if !(access || is_decl || key) {
+                        continue;
                     }
+                    let mut unresolved = false;
+                    if let Some(scope) = &scope {
+                        let checked = t.checked();
+                        if let Some(d) = decl {
+                            if !d.container.as_deref().is_some_and(|c| checked.related(c, &scope.owner)) {
+                                continue;
+                            }
+                        } else if key && !access {
+                            if !lit.as_deref().is_some_and(|c| checked.related(c, &scope.owner)) {
+                                continue;
+                            }
+                        } else {
+                            match checked.owner_of(&f.uri, tok.start) {
+                                Some(receiver) if !checked.related(receiver, &scope.owner) => continue,
+                                Some(_) => {}
+                                None => unresolved = true,
+                            }
+                        }
+                    }
+                    out.push(Occurrence { file: fi, tok: i, is_decl, unresolved });
                 }
             }
         }
@@ -725,7 +786,7 @@ fn collect(t: &Target, ctx: &Ctx) -> (Vec<Occurrence>, Vec<String>) {
                         matches!(p.kind, TokenKind::Keyword(Keyword::Var | Keyword::Val | Keyword::Let | Keyword::Const))
                     }) || f.next(i).is_some_and(|n| n.is(&TokenKind::Colon))
                         && prev.is_some_and(|p| p.is(&TokenKind::LParen) || p.is(&TokenKind::Comma));
-                    out.push(Occurrence { file: *file, tok: i, is_decl });
+                    out.push(Occurrence { file: *file, tok: i, is_decl, unresolved: false });
                 }
             }
         }
@@ -745,6 +806,46 @@ pub fn references(files: &[(Url, String)], at: &Url, offset: usize, include_decl
             Location { uri: f.uri.clone(), range: f.range(&f.toks[o.tok]) }
         })
         .collect())
+}
+
+/// Declarations the identifier at `offset` may refer to, across the whole
+/// project (#578). A member reached through `Type::name` / `Type.name` /
+/// `this.name` is narrowed to that type when it declares the member; otherwise
+/// every candidate is returned so the client can offer a chooser instead of
+/// the server guessing.
+pub fn definitions(files: &[(Url, String)], at: &Url, offset: usize, ctx: &Ctx) -> Vec<Location> {
+    let idx = build_all(files);
+    let Ok(target) = resolve(&idx, at, offset) else { return Vec::new() };
+    let (occ, _) = collect(&target, ctx);
+    let mut decls: Vec<&Occurrence> = occ.iter().filter(|o| o.is_decl).collect();
+    if matches!(target.sym, Sym::Member(_)) {
+        let f = &idx[target.file];
+        let qualifier = f.prev(target.tok).filter(|p| p.is(&TokenKind::Dot) || p.is(&TokenKind::ColonColon)).and_then(|_| {
+            let q = f.toks.get(target.tok.checked_sub(2)?)?;
+            if q.kind == TokenKind::Keyword(Keyword::This) {
+                f.innermost_class(target.tok)
+            } else {
+                q.ident().map(String::from)
+            }
+        });
+        if let Some(owner) = qualifier {
+            let narrowed: Vec<&Occurrence> = decls
+                .iter()
+                .copied()
+                .filter(|o| idx[o.file].decls.iter().any(|d| d.tok == o.tok && d.container.as_deref() == Some(owner.as_str())))
+                .collect();
+            if !narrowed.is_empty() {
+                decls = narrowed;
+            }
+        }
+    }
+    decls
+        .into_iter()
+        .map(|o| {
+            let f = &idx[o.file];
+            Location { uri: f.uri.clone(), range: f.range(&f.toks[o.tok]) }
+        })
+        .collect()
 }
 
 pub struct PreparedRename {
@@ -792,11 +893,40 @@ fn check_renamable(t: &Target, ctx: &Ctx) -> Result<(), String> {
                 return Err(format!("member `{name}` is not declared in this project (standard library or unresolved)"));
             }
             if owners.len() > 1 {
-                return Err(format!(
-                    "member `{name}` is declared by {} types ({}); without receiver types a rename could touch the wrong one",
-                    owners.len(),
-                    owners.join(", ")
-                ));
+                let refuse = |why: &str| {
+                    format!("member `{name}` is declared by {} types ({}); {why}", owners.len(), owners.join(", "))
+                };
+                // The checker may still pin the target to one class group (overrides included).
+                let Some(scope) = t.member_scope() else {
+                    return Err(refuse("the checker could not resolve the receiver type at this position, so a rename could touch the wrong one"));
+                };
+                let (occ, _) = collect(t, ctx);
+                if let Some(u) = occ.iter().find(|o| o.unresolved) {
+                    let f = &files[u.file];
+                    let line = f.position(f.toks[u.tok].start).line + 1;
+                    let count = occ.iter().filter(|o| o.unresolved).count();
+                    return Err(refuse(&format!(
+                        "{count} access(es) have no resolved receiver type (first at {}:{line}), so they cannot be proven to belong to `{}`",
+                        f.uri.path().rsplit('/').next().unwrap_or(""),
+                        scope.owner
+                    )));
+                }
+                let group: Vec<&&DeclSite> = sites.iter().filter(|d| d.container.as_deref().is_some_and(|c| t.checked().related(c, &scope.owner))).collect();
+                let mut containers: Vec<&str> = group.iter().filter_map(|d| d.container.as_deref()).collect();
+                let distinct = containers.len();
+                containers.sort();
+                containers.dedup();
+                if containers.len() != distinct {
+                    return Err(format!("member `{name}` is declared more than once in one type of `{}`'s group (overloads); rename would be ambiguous", scope.owner));
+                }
+                if ctx.stdlib_member_names.contains(name.as_str()) || BUILTIN_MEMBERS.contains(&name.as_str()) {
+                    return Err(format!("`{name}` is also a standard-library or builtin member name; uses of it cannot be told apart without type information"));
+                }
+                if let Some(d) = group.iter().find(|d| d.kind == DeclType::Field && d.class_annotations.iter().any(|a| GENERATING_ANNOTATIONS.contains(&a.as_str()))) {
+                    let a = d.class_annotations.iter().find(|a| GENERATING_ANNOTATIONS.contains(&a.as_str())).unwrap();
+                    return Err(format!("`{name}` belongs to a class annotated @{a}, which generates members from field names; rename it by hand"));
+                }
+                return Ok(());
             }
             if sites.len() > 1 {
                 return Err(format!("member `{name}` is declared {} times in `{}` (overloads); rename would be ambiguous", sites.len(), owners[0]));
@@ -857,13 +987,29 @@ pub fn rename(files: &[(Url, String)], at: &Url, offset: usize, new_name: &str, 
             }
         }
         Sym::Member(_) => {
-            let owner = idx
+            let scope = target.member_scope();
+            let group_owners: Vec<String> = match &scope {
+                Some(sc) => idx
+                    .iter()
+                    .flat_map(|f| f.decls.iter())
+                    .filter(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == old)
+                    .filter_map(|d| d.container.clone())
+                    .filter(|c| target.checked().related(c, &sc.owner))
+                    .collect(),
+                None => idx
+                    .iter()
+                    .flat_map(|f| f.decls.iter())
+                    .find(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == old)
+                    .and_then(|d| d.container.clone())
+                    .into_iter()
+                    .collect(),
+            };
+            if let Some(clash) = idx
                 .iter()
                 .flat_map(|f| f.decls.iter())
-                .find(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == old)
-                .and_then(|d| d.container.clone());
-            if idx.iter().flat_map(|f| f.decls.iter()).any(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == new_name && d.container == owner) {
-                return Err(format!("`{}` already has a member named `{new_name}`", owner.unwrap_or_default()));
+                .find(|d| matches!(d.kind, DeclType::Method | DeclType::Field) && d.name == new_name && d.container.as_ref().is_some_and(|c| group_owners.contains(c)))
+            {
+                return Err(format!("`{}` already has a member named `{new_name}`", clash.container.clone().unwrap_or_default()));
             }
         }
         Sym::Local { fn_start, file, .. } => {
@@ -958,6 +1104,18 @@ mod tests {
 
     fn offset_of(text: &str, needle: &str, nth: usize) -> usize {
         text.match_indices(needle).nth(nth).unwrap().0 + 1
+    }
+
+    #[test]
+    fn definition_crosses_files_and_narrows_by_qualifier() {
+        let widget = "class Widget { fnc readNumber() -> Int64 { return 42 } }\n".to_string();
+        let other = "class Other { fnc readNumber() -> Int64 { return 1 } }\n".to_string();
+        let caller = "class Caller { fnc run() -> Int64 { return Widget::readNumber() } }\n".to_string();
+        let files = vec![(url("Widget.tnx"), widget), (url("Other.tnx"), other), (url("Caller.tnx"), caller.clone())];
+        let found = definitions(&files, &url("Caller.tnx"), offset_of(&caller, "readNumber", 0), &ctx());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].uri, url("Widget.tnx"));
+        assert_eq!(found[0].range.start.character, 19);
     }
 
     fn apply(files: &[(Url, String)], res: &RenameResult) -> HashMap<Url, String> {
@@ -1056,10 +1214,17 @@ mod tests {
         let b = "namespace x\n{\n    class B\n    {\n        fn run() -> Int64\n        {\n            return 3\n        }\n    }\n}\n";
         let files = vec![(url("x/A.tnx"), a.to_string()), (url("x/B.tnx"), b.to_string())];
         let at = url("x/A.tnx");
-        let err = rename(&files, &at, offset_of(a, "run", 0), "go", &ctx()).err().unwrap();
-        assert!(err.contains("declared by 2 types"), "{err}");
-        // references still list every candidate
-        assert_eq!(references(&files, &at, offset_of(a, "run", 0), true, &ctx()).unwrap().len(), 2);
+        // Issue #554: the two `run` members belong to unrelated types, so the declaration the
+        // cursor is on is renamed on its own and B.run is left alone.
+        let res = rename(&files, &at, offset_of(a, "run", 0), "go", &ctx()).unwrap();
+        assert_eq!(res.edits.len(), 1);
+        assert!(res.edits.contains_key(&at));
+        assert_eq!(references(&files, &at, offset_of(a, "run", 0), true, &ctx()).unwrap().len(), 1);
+        // an access whose receiver type is unknown cannot be attributed: refused again
+        let c = "namespace x\n{\n    class C\n    {\n        fn use() -> Int64\n        {\n            const f = (v) => v.run()\n            return 0\n        }\n    }\n}\n";
+        let with_unknown = vec![(url("x/A.tnx"), a.to_string()), (url("x/B.tnx"), b.to_string()), (url("x/C.tnx"), c.to_string())];
+        let err = rename(&with_unknown, &at, offset_of(a, "run", 0), "go", &ctx()).err().unwrap();
+        assert!(err.contains("declared by 2 types") && err.contains("no resolved receiver type"), "{err}");
         let err = rename(&files, &at, offset_of(a, "size", 0), "count", &ctx()).err().unwrap();
         assert!(err.contains("builtin member name"), "{err}");
 
@@ -1104,5 +1269,106 @@ mod tests {
         assert_eq!(refs.len(), 2);
         let ret = refs.iter().find(|l| l.range.start.line == 7).unwrap();
         assert_eq!(ret.range.start.character, 19);
+    }
+}
+
+/// Replace the AST's zero-width symbol ranges with real extents (#577): `range`
+/// covers the declaration from its keyword through the closing brace (or the
+/// end of its line when it has no body), `selectionRange` the identifier.
+/// Symbols the token scan cannot match keep their original ranges.
+pub fn refine_document_symbols(syms: &mut [tower_lsp::lsp_types::DocumentSymbol], uri: &Url, text: &str) {
+    let Some(idx) = FileIndex::build(uri.clone(), text.to_string()) else { return };
+    let mut used = HashSet::new();
+    refine_level(syms, None, &idx, &mut used);
+}
+
+fn kind_of_symbol(kind: SymbolKind) -> Option<DeclType> {
+    if kind == SymbolKind::CLASS || kind == SymbolKind::ENUM || kind == SymbolKind::INTERFACE || kind == SymbolKind::STRUCT {
+        Some(DeclType::Type)
+    } else if kind == SymbolKind::FUNCTION {
+        Some(DeclType::Function)
+    } else if kind == SymbolKind::METHOD {
+        Some(DeclType::Method)
+    } else if kind == SymbolKind::FIELD {
+        Some(DeclType::Field)
+    } else {
+        None
+    }
+}
+
+fn refine_level(
+    syms: &mut [tower_lsp::lsp_types::DocumentSymbol],
+    parent: Option<&str>,
+    idx: &FileIndex,
+    used: &mut HashSet<usize>,
+) {
+    for sym in syms.iter_mut() {
+        let owner = parent.map(String::from);
+        if let Some(kind) = kind_of_symbol(sym.kind) {
+            let found = idx.decls.iter().enumerate().find(|(i, d)| {
+                !used.contains(i) && d.name == sym.name && d.kind == kind && d.container == owner
+            });
+            if let Some((i, d)) = found {
+                used.insert(i);
+                let name_tok = d.tok;
+                let first = name_tok.saturating_sub(1);
+                let last = match kind {
+                    DeclType::Type => idx
+                        .class_ranges
+                        .iter()
+                        .find(|(n, o, _)| *n == sym.name && *o > name_tok)
+                        .map(|(_, _, c)| *c)
+                        .unwrap_or(name_tok),
+                    DeclType::Function | DeclType::Method => idx
+                        .fns
+                        .iter()
+                        .find(|f| f.name_tok == name_tok)
+                        .map(|f| f.end)
+                        .unwrap_or(name_tok),
+                    DeclType::Field => {
+                        let mut e = name_tok;
+                        while e + 1 < idx.toks.len() && !idx.toks[e + 1].nl_before && !idx.toks[e + 1].is(&TokenKind::RBrace) {
+                            e += 1;
+                        }
+                        e
+                    }
+                };
+                sym.selection_range = idx.range(&idx.toks[name_tok]);
+                sym.range = Range { start: idx.position(idx.toks[first].start), end: idx.position(idx.toks[last].end) };
+            }
+        } else if sym.kind == SymbolKind::ENUM_MEMBER {
+            if let Some(tok) = parent.and_then(|p| {
+                let (_, o, c) = idx.class_ranges.iter().find(|(n, _, _)| n == p)?;
+                (*o + 1..*c).find(|&t| idx.toks[t].ident() == Some(sym.name.as_str()))
+            }) {
+                sym.selection_range = idx.range(&idx.toks[tok]);
+                sym.range = sym.selection_range;
+            }
+        }
+        let name = sym.name.clone();
+        if let Some(children) = sym.children.as_mut() {
+            refine_level(children, Some(&name), idx, used);
+        }
+    }
+}
+
+#[cfg(test)]
+mod symbol_range_tests {
+    use super::*;
+
+    #[test]
+    fn symbols_get_full_extents_and_identifier_selections() {
+        let text = "class Caller\n{\n    fnc run() -> Int64\n    {\n        return 1\n    }\n}\n";
+        let tokens = tinox_lexer::Lexer::new(text).tokenize().unwrap();
+        let ast = tinox_parser::Parser::new(tokens).parse().unwrap();
+        let mut syms = crate::analysis::document_symbols(&ast);
+        let uri = Url::parse("file:///tmp/Caller.tnx").unwrap();
+        refine_document_symbols(&mut syms, &uri, text);
+        let class = &syms[0];
+        assert_eq!((class.range.start.line, class.range.end.line, class.range.end.character), (0, 6, 1));
+        assert_eq!((class.selection_range.start.character, class.selection_range.end.character), (6, 12));
+        let run = &class.children.as_ref().unwrap()[0];
+        assert_eq!((run.range.start.line, run.range.end.line), (2, 5));
+        assert_eq!((run.selection_range.start.line, run.selection_range.start.character, run.selection_range.end.character), (2, 8, 11));
     }
 }

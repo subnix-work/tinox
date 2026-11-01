@@ -1,0 +1,13 @@
+module tinox.core.fs
+
+namespace tinox.core.fs
+{
+    /**
+     * A file-system operation failed; `message` carries the operating system's reason.
+     */
+    @Error("IO_ERROR", 500)
+    class IoError
+    {
+        var message: String
+    }
+}

@@ -16,6 +16,7 @@ namespace tinox.core.yaml
     // to load ~/.kube/config), not a standalone cleanup.
     class YamlParser
     {
+        @Throws(YamlError)
         fn parse(content: String) -> YamlValue
         {
             const lines: List<YamlLine> = YamlParser::tokenize(content)
@@ -102,6 +103,7 @@ namespace tinox.core.yaml
 
         // ---- recursive-descent block parser ----
 
+        @Throws(YamlError)
         fn parseBlock(lines: List<YamlLine>, idxRef: List<Int64>, minIndent: Int64) -> YamlValue
         {
             const idx: Int64 = idxRef[0]
@@ -130,6 +132,7 @@ namespace tinox.core.yaml
         // mapping/scalar strictly indented further. Returns null (no
         // nested value; caller has already advanced past the key line)
         // if neither applies.
+        @Throws(YamlError)
         fn parseNestedValue(lines: List<YamlLine>, idxRef: List<Int64>, parentIndent: Int64) -> YamlValue
         {
             const nextIdx: Int64 = idxRef[0]
@@ -151,6 +154,7 @@ namespace tinox.core.yaml
             return YamlValue::ofNull()
         }
 
+        @Throws(YamlError)
         fn parseMapping(lines: List<YamlLine>, idxRef: List<Int64>, mapIndent: Int64) -> YamlValue
         {
             const result: Map<String, YamlValue> = Map::new()
@@ -161,7 +165,7 @@ namespace tinox.core.yaml
                 const split: Int64 = YamlParser::findColon(line.content)
                 if (split == -1)
                 {
-                    throw "Yaml::parse: expected 'key: value' at indent " + mapIndent.toString() + ": " + line.content
+                    throw YamlError { message: "Yaml::parse: expected 'key: value' at indent " + mapIndent.toString() + ": " + line.content }
                 }
                 var key: String = line.content.substring(0, split).trim()
                 key = YamlParser::stripQuotes(key)
@@ -182,6 +186,7 @@ namespace tinox.core.yaml
             return YamlValue::ofMap(result)
         }
 
+        @Throws(YamlError)
         fn parseSequence(lines: List<YamlLine>, idxRef: List<Int64>, indent: Int64) -> YamlValue
         {
             const items: List<YamlValue> = []
@@ -271,6 +276,7 @@ namespace tinox.core.yaml
 
         // ---- flow collections: [a, b] / {k: v} ----
 
+        @Throws(YamlError)
         fn parseScalarOrFlow(s: String) -> YamlValue
         {
             const t: String = s.trim()
@@ -281,6 +287,7 @@ namespace tinox.core.yaml
             return YamlParser::parseScalar(t)
         }
 
+        @Throws(YamlError)
         fn parseFlow(s: String) -> YamlValue
         {
             if (s == "{}")
@@ -305,7 +312,7 @@ namespace tinox.core.yaml
                         const split: Int64 = YamlParser::findColon(p)
                         if (split == -1)
                         {
-                            throw "Yaml::parse: expected 'key: value' inside flow mapping: " + p
+                            throw YamlError { message: "Yaml::parse: expected 'key: value' inside flow mapping: " + p }
                         }
                         const key: String = YamlParser::stripQuotes(p.substring(0, split).trim())
                         const valueStr: String = p.substring(split + 1, p.len()).trim()

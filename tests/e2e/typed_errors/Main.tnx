@@ -1,0 +1,66 @@
+// expect: super:user 5
+// expect: super:generic
+// expect: finally 0
+// expect: ok
+// expect: finally 1
+// expect: NotFound:user 5
+// expect: finally 2
+// expect: outer Conflict:dup
+// expect: finally 3
+// expect: AppError:generic
+// expect: finally 4
+// expect: outer String:plain
+
+import AppError
+import NotFound
+import Conflict
+
+class Main {
+    fnc fail(kind: Int64) -> Int64 {
+        if (kind == 1) { throw NotFound { message: "user 5" } }
+        if (kind == 2) { throw Conflict { message: "dup" } }
+        if (kind == 3) { throw AppError { message: "generic" } }
+        if (kind == 4) { throw "plain" }
+        return kind
+    }
+    fnc probe(kind: Int64) -> String {
+        try {
+            Main::fail(kind)
+        } catch (e: NotFound) {
+            return "NotFound:" + e.message
+        } catch (e: AppError) {
+            return "AppError:" + e.message
+        } finally {
+            println("finally " + kind.toString())
+        }
+        return "ok"
+    }
+    fnc outer(kind: Int64) -> String {
+        try {
+            return Main::probe(kind)
+        } catch (e: Conflict) {
+            return "outer Conflict:" + e.message
+        } catch (e: String) {
+            return "outer String:" + e
+        }
+        return "unreachable"
+    }
+    fnc supertypeOnly(kind: Int64) -> String {
+        try {
+            Main::fail(kind)
+        } catch (e: AppError) {
+            return "super:" + e.message
+        }
+        return "ok"
+    }
+    fnc main() -> Int32 {
+        println(Main::supertypeOnly(1))
+        println(Main::supertypeOnly(3))
+        var i = 0
+        while (i <= 4) {
+            println(Main::outer(i))
+            i = i + 1
+        }
+        return 0
+    }
+}

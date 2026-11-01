@@ -1,0 +1,32 @@
+import tinox.core.db
+import Item
+
+class Catalog
+{
+    @Cacheable(60, 100)
+    fn price(id: Int64) -> Int64
+    {
+        sleep(5)
+        return DB::of(Item).filter(i => i.id == id).first().price
+    }
+
+    // Evicts only after the transaction committed.
+    @Transactional
+    @CacheEvict("Catalog.price")
+    fn setPrice(id: Int64, price: Int64) -> Nothing
+    {
+        const item: Item = DB::of(Item).filter(i => i.id == id).first()
+        item.price = price
+        DB::of(Item).save(item)
+    }
+
+    @Transactional
+    @CacheEvict("Catalog.price")
+    fn setPriceAndFail(id: Int64, price: Int64) -> Nothing
+    {
+        const item: Item = DB::of(Item).filter(i => i.id == id).first()
+        item.price = price
+        DB::of(Item).save(item)
+        throw "rolled back"
+    }
+}

@@ -1,0 +1,13 @@
+module tinox.core.ui
+
+namespace tinox.core.ui
+{
+    /**
+     * Invalid UI component content.
+     */
+    @Error("UI_ERROR", 400)
+    class UiError
+    {
+        var message: String
+    }
+}

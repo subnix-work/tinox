@@ -135,6 +135,40 @@ class Ctrl
         ctx.response.status(404).json("{\"found\":false}")
         return ctx
     }
+
+    // Uncaught exceptions without @Service (#573): every return shape must
+    // become a 500, and the pending error must not leak into later requests.
+    @GET
+    @Path("/boom/int")
+    fn boomInt() -> Int64
+    {
+        throw "request failed"
+        return 0
+    }
+
+    @GET
+    @Path("/boom/string")
+    fn boomString() -> String
+    {
+        throw "request failed"
+        return "x"
+    }
+
+    @GET
+    @Path("/boom/object")
+    fn boomObject() -> Item
+    {
+        throw "request failed"
+        return Item { id: 0, name: "x" }
+    }
+
+    @GET
+    @Path("/boom/manual")
+    fn boomManual(@HttpContext ctx: HttpContext) -> HttpContext
+    {
+        throw "request failed"
+        return ctx
+    }
 }
 "#,
     )
@@ -158,7 +192,7 @@ class Main
     std::fs::write(
         workdir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.8.0\"\nname = \"param_binding_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n\
+            "[package]\ncompiler = \"2.9.0\"\nname = \"param_binding_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n\
              [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n\n\
              [[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"{}\"\n",
             extended_module_version("http_server"),
@@ -166,6 +200,17 @@ class Main
         ),
     )
     .expect("write tinox.toml");
+    // The in-tree module may be ahead of the published package (version bump without a
+    // publish yet), so consume it from source instead of installing it from the registry.
+    std::fs::write(
+        workdir.join("tinox.overrides.yaml"),
+        format!(
+            "overrides:\n  \"tinox.core:http_server:{}\": \"{}\"\n",
+            extended_module_version("http_server"),
+            repo_root().join("crates/tinox-core-ext/http_server").display()
+        ),
+    )
+    .expect("write overrides");
     let install = Command::new(tinox)
         .arg("install")
         .current_dir(&workdir)
@@ -305,6 +350,14 @@ class Main
     // Non-numeric Int64 @PathParam -> 400, handler never called (would
     // otherwise silently parse as 0 via the old tinox_string_to_int).
     assert_eq!(curl_status(&[&format!("{base}/check/not-a-number")]), "400");
+
+    // Uncaught handler exceptions are failed requests (#573), with later
+    // requests unaffected.
+    for route in ["int", "string", "object", "manual"] {
+        assert_eq!(curl_status(&[&format!("{base}/boom/{route}")]), "500", "/boom/{route}");
+        assert_eq!(curl_body(&format!("{base}/check/42")), r#"{"found":true}"#, "after /boom/{route}");
+        assert_eq!(curl_status(&[&format!("{base}/check/42")]), "200", "after /boom/{route}");
+    }
 
     let _ = std::fs::remove_dir_all(&workdir);
 }

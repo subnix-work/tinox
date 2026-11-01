@@ -344,6 +344,7 @@ impl CodeGen {
                                 super::RouteParamKind::PathParam => "path",
                                 super::RouteParamKind::QueryParam => "query",
                                 super::RouteParamKind::PostParam => "body",
+                                super::RouteParamKind::MultipartParam => "multipart",
                                 super::RouteParamKind::HttpContext => "context",
                             }
                             .into(),
@@ -487,6 +488,7 @@ mod tests {
             pass: "secret_pass".into(),
             address: "/jobs".into(),
             on_message: None,
+            failure: None,
         }]);
         codegen.set_amqp091_consumers(vec![Amqp091ConsumerEntry {
             class_name: "Legacy".into(),
@@ -497,6 +499,7 @@ mod tests {
             pass: "secret_pass".into(),
             queue: "jobs".into(),
             on_message: None,
+            failure: None,
         }]);
         codegen.gen(&ast).unwrap();
         let plan = codegen.bootstrap_plan();
@@ -562,7 +565,11 @@ mod tests {
             }],
             ..Default::default()
         });
-        codegen.set_test_entries(vec![("Suite".into(), "first".into()), ("Suite".into(), "second".into())]);
+        codegen.set_test_entries(
+            ["first", "second"]
+                .map(|m| crate::codegen::TestEntry { class: "Suite".into(), method: m.into(), args: vec![], before: vec![], after: vec![] })
+                .to_vec(),
+        );
         codegen.gen(&ast).unwrap();
         assert_eq!(codegen.bootstrap_plan().mode, "test");
         let ir = codegen.into_ir();

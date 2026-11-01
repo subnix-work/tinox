@@ -17,22 +17,24 @@ namespace tinox.core.queue
             PriorityQueue::sort(q)
         }
 
+        @Throws(EmptyQueueError)
         fn dequeue(q: PriorityQueue<T>) -> T
         {
             if (q.items.len() == 0)
             {
-                throw "Priority queue is empty"
+                throw EmptyQueueError { message: "Priority queue is empty" }
             }
             const item: T = q.items[0].item
             q.items.removeAt(0)
             return item
         }
 
+        @Throws(EmptyQueueError)
         fn peek(q: PriorityQueue<T>) -> T
         {
             if (q.items.len() == 0)
             {
-                throw "Priority queue is empty"
+                throw EmptyQueueError { message: "Priority queue is empty" }
             }
             return q.items[0].item
         }

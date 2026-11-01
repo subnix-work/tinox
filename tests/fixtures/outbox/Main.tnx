@@ -1,0 +1,36 @@
+import tinox.core.db
+import tinox.core.env
+import tinox.core.outbox
+import Orders
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const mode = Env::getVar("MODE")
+        if (mode == "write") {
+            const orders = new Orders()
+            const refs = Env::getVar("REFS").split(",")
+            for r in refs {
+                try {
+                    orders.place(r, r == "3")
+                } catch (e: String) {
+                    println("rolled back " + r + ": " + e)
+                }
+            }
+            println("backlog=" + Outbox::backlog().toString())
+        }
+        if (mode == "dispatch") {
+            const d = OutboxDispatcher::create("127.0.0.1", Env::getVar("AMQP_PORT").toInt(), "/", "tinox", "tinox", 3, 100)
+            var rounds = 0
+            while (Outbox::backlog() > 0 && rounds < 20) {
+                println("confirmed " + d.runOnce().toString())
+                rounds = rounds + 1
+                sleep(100)
+            }
+            d.close()
+            println("backlog=" + Outbox::backlog().toString() + " parked=" + Outbox::parked().toString())
+        }
+        return 0
+    }
+}

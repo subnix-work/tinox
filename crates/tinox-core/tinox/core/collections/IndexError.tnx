@@ -1,0 +1,13 @@
+module tinox.core.collections
+
+namespace tinox.core.collections
+{
+    /**
+     * Thrown by `Lists::get` when the index is outside the list.
+     */
+    @Error("INDEX_ERROR", 404)
+    class IndexError
+    {
+        var message: String
+    }
+}

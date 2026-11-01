@@ -600,6 +600,7 @@
     <li><a href="#mod-base64">base64</a></li>
     <li><a href="#mod-hex">hex</a></li>
     <li><a href="#mod-encoding">encoding</a></li>
+    <li><a href="#mod-unicode">unicode</a></li>
 
     <li class="section-label">Collections &amp; Algorithms</li>
     <li><a href="#mod-array">array</a></li>
@@ -2342,6 +2343,21 @@ epoll_fd = epoll_create1(0)
   <h2>encoding</h2>
   <p class="mod-ref-note">Full reference (description, dependencies, examples, classes &amp; methods) is loaded directly from the published tinox-central package documentation, so it does not have to be maintained in two places: <a href="docs/tinox-core/encoding/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/encoding/1-0-0/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/encoding/1-0-0/docs.html" loading="lazy" title="tinox.core:encoding documentation"></iframe>
+  </div>
+
+    <div class="mod-section" id="mod-unicode">
+
+  <h2>unicode</h2>
+  <p>A <code>String</code> stays a byte sequence (<code>len()</code>, <code>s[i]</code>, <code>substring()</code> count bytes). <code>tinox.core.unicode</code> adds the <em>code point</em> unit explicitly and optionally; grapheme clusters and normalization (NFC/NFD) are not provided. Malformed UTF-8 is never replaced: it raises a catchable error naming the first invalid byte offset.</p>
+  <table>
+    <tr><th>Call</th><th>Meaning</th></tr>
+    <tr><td><code>Unicode::isValid(s)</code></td><td>well-formed UTF-8 (no overlong forms, surrogates, values above U+10FFFF)</td></tr>
+    <tr><td><code>Unicode::codePointCount(s)</code></td><td>number of code points; <code>"e"</code> + U+0301 is two</td></tr>
+    <tr><td><code>Unicode::codePoints(s)</code> / <code>fromCodePoints(list)</code></td><td>the scalar values as <code>List&lt;Int64&gt;</code> and back; NUL, surrogates and out-of-range values throw</td></tr>
+    <tr><td><code>Unicode::byteOffset(s, index)</code></td><td>byte offset of code point <code>index</code> (to cut with <code>substring</code> on code point boundaries)</td></tr>
+    <tr><td><code>Unicode::toUpper(s)</code> / <code>toLower(s)</code></td><td>full default mapping (<code>&szlig;</code> &rarr; <code>SS</code>), no locale; capital sigma always becomes <code>&sigma;</code> (no final-sigma rule)</td></tr>
+  </table>
+  <p>Costs: every call is O(bytes) and validates first; <code>codePoints</code> allocates 8 bytes per code point, <code>toUpper</code>/<code>toLower</code> up to 3x the input. The tables match <code>Unicode::version()</code> (16.0.0) and are regenerated with <code>scripts/gen-unicode-case.py</code>.</p>
   </div>
 
     <div class="mod-section" id="mod-array">

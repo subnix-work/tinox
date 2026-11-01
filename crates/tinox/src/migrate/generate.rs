@@ -54,7 +54,8 @@ fn flatten<'a>(decls: &'a [Decl], out: &mut Vec<&'a Decl>) {
     }
 }
 
-fn entity_schema(root: &Path) -> Result<Schema, String> {
+/// Entity columns per table, plus the declared order of each table's @Id fields.
+fn entity_schema(root: &Path) -> Result<(Schema, BTreeMap<String, Vec<String>>), String> {
     let mut files = Vec::new();
     collect_files(&root.join("src"), &mut files)?;
     files.sort();
@@ -84,6 +85,7 @@ fn entity_schema(root: &Path) -> Result<Schema, String> {
         })
         .collect();
     let mut schema = Schema::new();
+    let mut key_order: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for decl in &decls {
         let DeclKind::Class(class) = &decl.node else {
             continue;
@@ -128,31 +130,40 @@ fn entity_schema(root: &Path) -> Result<Schema, String> {
                     class.name, field.name
                 ));
             }
+            let mut constraints = vec![
+                ("primaryKey", Value::Bool(has("Id"))),
+                ("nullable", Value::Bool(!has("NotNull"))),
+            ];
+            if let Some(fk) = field.annotations.iter().find(|a| a.name == "ForeignKey") {
+                if let [AnnotationArg::Literal(Literal::String(t)), AnnotationArg::Literal(Literal::String(c))] = fk.args.as_slice() {
+                    constraints.push(("references", string(&format!("{t}({c})"))));
+                }
+            }
             let col = object(&[
                 ("name", string(&name)),
                 ("type", string(ty)),
                 ("autoIncrement", Value::Bool(has("GeneratedValue"))),
-                (
-                    "constraints",
-                    object(&[
-                        ("primaryKey", Value::Bool(has("Id"))),
-                        ("nullable", Value::Bool(!has("NotNull"))),
-                    ]),
-                ),
+                ("constraints", object(&constraints)),
             ]);
             if columns.insert(name.clone(), col).is_some() {
                 return Err(format!("duplicate entity column {table}.{name}"));
             }
         }
-        if columns
-            .values()
-            .filter(|c| get_bool(&c["constraints"], "primaryKey", "entity").unwrap_or(false))
-            .count()
-            > 1
-        {
-            return Err(format!(
-                "entity {table}: composite primary keys are unsupported"
-            ));
+        let mut order = Vec::new();
+        for field in &class.fields {
+            if field.annotations.iter().any(|a| a.name == "Id") {
+                order.push(annotation_name(&field.annotations, "Column", &field.name)?);
+            }
+        }
+        if order.len() > 1 {
+            for field in &class.fields {
+                if field.annotations.iter().any(|a| a.name == "GeneratedValue") {
+                    return Err(format!(
+                        "entity {table}: @GeneratedValue cannot be combined with a composite @Id"
+                    ));
+                }
+            }
+            key_order.insert(table.clone(), order);
         }
         if schema.insert(table.clone(), columns).is_some() {
             return Err(format!("duplicate entity table {table}"));
@@ -161,7 +172,7 @@ fn entity_schema(root: &Path) -> Result<Schema, String> {
     if schema.is_empty() {
         return Err("no @Entity/@Table classes found under src/".into());
     }
-    Ok(schema)
+    Ok((schema, key_order))
 }
 
 fn columns(spec: &Value) -> impl Iterator<Item = &Value> {
@@ -230,7 +241,7 @@ fn equivalent(d: Dialect, table: &str, old: &Value, new: &Value) -> Result<bool,
 }
 
 pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> {
-    let model = entity_schema(root)?;
+    let (model, key_order) = entity_schema(root)?;
     ENUMS.with(|e| *e.borrow_mut() = crate::project_enums(root));
     let original = match fs::read_to_string(path) {
         Ok(text) => Some(text),
@@ -255,7 +266,31 @@ pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> 
     }
     let existing = replay(&sets)?;
     let mut changes = Vec::new();
-    for (table, cols) in &model {
+    // Parents before children: a foreign key may only reference a table that already exists
+    // (cycles are rejected by the compiler, so this terminates; alphabetical otherwise).
+    let references_of = |cols: &BTreeMap<String, Value>| -> Vec<String> {
+        cols.values()
+            .filter_map(|c| c["constraints"]["references"].as_str())
+            .filter_map(|r| r.split('(').next().map(|t| t.trim().to_string()))
+            .collect()
+    };
+    let mut ordered: Vec<(&String, &BTreeMap<String, Value>)> = Vec::new();
+    let mut pending: Vec<(&String, &BTreeMap<String, Value>)> = model.iter().collect();
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut rest = Vec::new();
+        for (table, cols) in pending {
+            let ready = references_of(cols).iter().all(|t| {
+                t == table || !model.contains_key(t) || ordered.iter().any(|(done, _)| *done == t)
+            });
+            if ready { ordered.push((table, cols)); } else { rest.push((table, cols)); }
+        }
+        if rest.len() == before {
+            return Err("entity foreign keys form a cycle; break it or write the changeSet by hand".into());
+        }
+        pending = rest;
+    }
+    for (table, cols) in ordered {
         quote_ident(d, table, "entity")?;
         if let Some(old) = existing.get(table) {
             for (name, col) in cols {
@@ -263,6 +298,14 @@ pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> 
                     if !equivalent(d, table, previous, col)? {
                         return Err(format!(
                             "{table}.{name}: type or constraint changed; add a manual changeSet"
+                        ));
+                    }
+                    // Adding, dropping or retargeting a foreign key on an existing column is never guessed.
+                    let refs = |c: &Value| c["constraints"]["references"].as_str().map(|r| r.replace(' ', ""));
+                    if refs(previous) != refs(col) {
+                        return Err(format!(
+                            "{table}.{name}: foreign key changed ({:?} -> {:?}); add a manual changeSet",
+                            refs(previous), refs(col)
                         ));
                     }
                 } else {
@@ -286,20 +329,21 @@ pub fn generate(root: &Path, path: &Path, d: Dialect) -> Result<String, String> 
                 }
             }
         } else {
-            changes.push(object(&[(
-                "createTable",
-                object(&[
-                    ("tableName", string(table)),
-                    (
-                        "columns",
-                        Value::Sequence(
-                            cols.values()
-                                .map(|c| object(&[("column", c.clone())]))
-                                .collect(),
-                        ),
+            let mut spec = vec![
+                ("tableName", string(table)),
+                (
+                    "columns",
+                    Value::Sequence(
+                        cols.values()
+                            .map(|c| object(&[("column", c.clone())]))
+                            .collect(),
                     ),
-                ]),
-            )]));
+                ),
+            ];
+            if let Some(order) = key_order.get(table) {
+                spec.push(("primaryKey", Value::Sequence(order.iter().map(|n| string(n)).collect())));
+            }
+            changes.push(object(&[("createTable", object(&spec))]));
         }
     }
     // Tables unrelated to entities may coexist in the changelog.

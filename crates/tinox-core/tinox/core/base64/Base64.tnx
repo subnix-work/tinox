@@ -48,6 +48,7 @@ namespace tinox.core.base64
             return result
         }
 
+        @Throws(Base64Error)
         fn decode(encoded: String) -> String
         {
             // Delegates to decodeBytes() + tinoxBytesToString (one-pass
@@ -58,6 +59,7 @@ namespace tinox.core.base64
             return tinoxBytesToString(Base64::decodeBytes(encoded))
         }
 
+        @Throws(Base64Error)
         fn charToValue(c: String) -> Int64
         {
             const code: Int64 = c.charCodeAt(0)
@@ -81,7 +83,7 @@ namespace tinox.core.base64
             {
                 return 63
             }
-            throw "Base64: invalid character '" + c + "'"
+            throw Base64Error { message: "Base64: invalid character '" + c + "'" }
         }
 
         // A standalone byte-array variant of encode() instead of an
@@ -145,6 +147,7 @@ namespace tinox.core.base64
         // redundant anyway for a fixed input length (here: a SHA-256
         // digest, always 32 bytes) and per spec is to be removed, not
         // just optional.
+        @Throws(Base64Error)
         fn encodeUrlBytes(data: List<Int64>) -> String
         {
             const alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -191,6 +194,7 @@ namespace tinox.core.base64
         // or padding that does not complete the last group. Unpadded input
         // (len % 4 == 2 or 3) is accepted — the length of the last group is
         // the signal for how many trailing bytes it holds.
+        @Throws(Base64Error)
         fn decodeBytes(encoded: String) -> List<Int64>
         {
             var len: Int64 = encoded.len()
@@ -202,11 +206,11 @@ namespace tinox.core.base64
             }
             if (pad > 0 && (len + pad) % 4 != 0)
             {
-                throw "Base64: invalid padding"
+                throw Base64Error { message: "Base64: invalid padding" }
             }
             if (len % 4 == 1)
             {
-                throw "Base64: invalid length"
+                throw Base64Error { message: "Base64: invalid length" }
             }
             var result: List<Int64> = []
             var i: Int64 = 0
@@ -241,6 +245,7 @@ namespace tinox.core.base64
             return result
         }
 
+        @Throws(Base64Error)
         fn urlCharToValue(c: String) -> Int64
         {
             const code: Int64 = c.charCodeAt(0)
@@ -264,7 +269,7 @@ namespace tinox.core.base64
             {
                 return 63
             }
-            throw "Base64: invalid character '" + c + "'"
+            throw Base64Error { message: "Base64: invalid character '" + c + "'" }
         }
 
         // base64url decode (RFC 4648 §5, NO padding expected) — issue #138
@@ -274,6 +279,7 @@ namespace tinox.core.base64
         // truncation, an unpadded input's last group's length (0, 2 or 3
         // extra characters beyond full 4-char quads) IS the only signal for
         // how many trailing bytes that group holds.
+        @Throws(Base64Error)
         fn decodeUrlBytes(encoded: String) -> List<Int64>
         {
             var result: List<Int64> = []
@@ -281,7 +287,7 @@ namespace tinox.core.base64
             const len: Int64 = encoded.len()
             if (len % 4 == 1)
             {
-                throw "Base64: invalid length"
+                throw Base64Error { message: "Base64: invalid length" }
             }
             while i + 4 <= len
             {

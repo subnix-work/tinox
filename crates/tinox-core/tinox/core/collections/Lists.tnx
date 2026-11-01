@@ -1,0 +1,21 @@
+module tinox.core.collections
+
+namespace tinox.core.collections
+{
+    /**
+     * Checked list access: `list[i]` aborts on a bad index, `Lists::get` throws a typed
+     * `IndexError` the caller can catch or declare.
+     */
+    class Lists<T>
+    {
+        @Throws(IndexError)
+        fn get(list: List<T>, index: Int64) -> T
+        {
+            if (index < 0 || index >= list.len())
+            {
+                throw IndexError { message: "index " + index.toString() + " out of range for length " + list.len().toString() }
+            }
+            return list[index]
+        }
+    }
+}

@@ -134,3 +134,67 @@ fn classes_lists_and_maps_print_readably_with_the_pretty_printers() {
     let raw = gdb(&d, &exe, &["break Main.tnx:16", "run", "print *xs", "print *p"]);
     assert!(raw.contains("{len = 3, cap = 4, data = 0x") && raw.contains("{id = 7, label = 0x"), "{raw}");
 }
+
+const SCOPES_MAIN: &str = "class Main\n{\n    fnc main() -> Int32\n    {\n        var outer: Int64 = 10\n        if (outer > 0)\n        {\n            var t: Int64 = 2\n            var inner: Int64 = 20\n            println(t.toString() + inner.toString())\n        }\n        if (outer > 0)\n        {\n            var t: String = \"second\"\n            println(t)\n        }\n        var after: Int64 = 30\n        println(after.toString())\n        return 0\n    }\n}\n";
+
+/// Issue #556: a local is visible from its declaration to the end of its block; a name reused in a
+/// sibling block is a different variable, and a breakpoint on a block's line resolves once.
+#[test]
+fn locals_follow_lexical_blocks_and_declaration_order() {
+    if !gdb_available() {
+        eprintln!("SKIP: gdb not installed");
+        return;
+    }
+    let (d, exe) = build_debug("scopes", &[("Main.tnx", SCOPES_MAIN)]);
+    let out = gdb(&d, &exe, &["break Main.tnx:8", "break Main.tnx:10", "break Main.tnx:14", "break Main.tnx:18", "run", "info locals", "c", "info locals", "c", "info locals", "c", "info locals"]);
+    assert!(!out.contains("locations)"), "each line resolves to one location: {out}");
+    let sections: Vec<&str> = out.split("hit Breakpoint").collect();
+    let at = |line: &str| sections.iter().find(|s| s.contains(&format!("Main.tnx:{}\n", line.trim()))).copied().unwrap_or_else(|| panic!("no stop at line {line}: {out}"));
+    // before `var t` is declared only `outer` exists
+    let s8 = at("8");
+    assert!(s8.contains("outer = 10") && !s8.contains("t =") && !s8.contains("inner") && !s8.contains("after"), "{s8}");
+    // inside the first block: its own `t` (an integer) and `inner`, not the other block's or `after`
+    let s10 = at("10");
+    assert!(s10.contains("t = 2") && s10.contains("inner = 20") && s10.contains("outer = 10") && !s10.contains("after"), "{s10}");
+    // the sibling block's `t` is a String and the first block's names are gone
+    let s14 = at("14");
+    assert!(s14.contains("outer = 10") && !s14.contains("inner") && !s14.contains("t = 2") && !s14.contains("after"), "{s14}");
+    let s18 = at("18");
+    assert!(s18.contains("after = 30") && s18.contains("outer = 10") && !s18.contains("inner") && !s18.contains("t ="), "{s18}");
+}
+
+const GENERIC_MAIN: &str = "import Box\nimport Color\nimport Shape\n\nclass Main\n{\n    fnc main() -> Int32\n    {\n        const a: Box<Int64> = Box<Int64> { value: 5, count: 1 }\n        const b: Box<String> = Box<String> { value: \"hi\", count: 2 }\n        const c: Color = Color::Green\n        const s: Shape = Shape::Square(3, 4)\n        const t: Shape = Shape::Named(\"ann\", 2.5)\n        const e: Shape = Shape::Empty\n        const ch: Char = 'x'\n        println(a.count.toString() + b.value)\n        return 0\n    }\n}\n";
+
+/// Issue #556: concrete generic instantiations, enums and `Char` print accurately, and the raw
+/// values stay reachable.
+#[test]
+fn generic_instantiations_enums_and_chars_print_accurately() {
+    if !gdb_available() {
+        eprintln!("SKIP: gdb not installed");
+        return;
+    }
+    let (d, exe) = build_debug(
+        "generic",
+        &[
+            ("Main.tnx", GENERIC_MAIN),
+            ("Box.tnx", "class Box<T>\n{\n    var value: T\n    var count: Int64\n}\n"),
+            ("Color.tnx", "enum Color\n{\n    Red\n    Green\n    Blue\n}\n"),
+            ("Shape.tnx", "enum Shape\n{\n    Circle(Int64)\n    Square(Int64, Int64)\n    Named(String, Float64)\n    Empty\n}\n"),
+        ],
+    );
+    let src = printers();
+    let out = gdb(&d, &exe, &[&src, "break Main.tnx:17", "run", "info locals", "print/d c", "ptype b"]);
+    assert!(out.contains("a = {value = 5, count = 1}"), "Box<Int64>: {out}");
+    assert!(out.contains("b = {value = \"hi\", count = 2}"), "Box<String>: {out}");
+    assert!(out.contains("c = Color::Green"), "{out}");
+    assert!(out.contains("s = Shape::Square(3, 4)"), "{out}");
+    assert!(out.contains("t = Shape::Named(\"ann\", 2.5)"), "{out}");
+    assert!(out.contains("e = Shape::Empty"), "{out}");
+    assert!(out.contains("ch = 'x' (120)"), "{out}");
+    assert!(out.contains("$1 = ") && !out.contains("$1 = Color"), "raw value stays reachable with /d: {out}");
+    // the type is described under its Tinox name, not as a mangled specialization
+    assert!(out.contains("Box<String>"), "{out}");
+    // without the printers the enumerators are still named
+    let raw = gdb(&d, &exe, &["break Main.tnx:17", "run", "print c", "print e"]);
+    assert!(raw.contains("$1 = Green") && raw.contains("$2 = Empty"), "{raw}");
+}

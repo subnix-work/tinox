@@ -600,6 +600,7 @@
     <li><a href="#mod-base64">base64</a></li>
     <li><a href="#mod-hex">hex</a></li>
     <li><a href="#mod-encoding">encoding</a></li>
+    <li><a href="#mod-unicode">unicode</a></li>
 
     <li class="section-label">Collections &amp; Algorithmen</li>
     <li><a href="#mod-array">array</a></li>
@@ -2359,6 +2360,21 @@ epoll_fd = epoll_create1(0)
   <h2>encoding</h2>
   <p class="mod-ref-note">Vollständige Referenz (Beschreibung, Dependencies, Beispiele, Klassen &amp; Methoden) wird direkt aus der veröffentlichten tinox-central-Paketdokumentation geladen, damit sie nicht an zwei Stellen gepflegt werden muss: <a href="docs/tinox-core/encoding/1-0-0/docs.html" target="_blank" rel="noopener">docs/tinox-core/encoding/1-0-0/docs.html</a></p>
   <iframe class="mod-iframe" src="docs/tinox-core/encoding/1-0-0/docs.html" loading="lazy" title="tinox.core:encoding Dokumentation"></iframe>
+  </div>
+
+    <div class="mod-section" id="mod-unicode">
+
+  <h2>unicode</h2>
+  <p>Ein <code>String</code> bleibt eine Bytefolge (<code>len()</code>, <code>s[i]</code>, <code>substring()</code> z&auml;hlen Bytes). <code>tinox.core.unicode</code> erg&auml;nzt ausdr&uuml;cklich und optional die Einheit <em>Codepoint</em>; Grapheme-Cluster und Normalisierung (NFC/NFD) gibt es nicht. Fehlerhaftes UTF-8 wird nie ersetzt, sondern l&ouml;st einen f&auml;ngbaren Fehler mit dem ersten ung&uuml;ltigen Byte-Offset aus.</p>
+  <table>
+    <tr><th>Aufruf</th><th>Bedeutung</th></tr>
+    <tr><td><code>Unicode::isValid(s)</code></td><td>wohlgeformtes UTF-8 (keine Overlongs, Surrogate, Werte &gt; U+10FFFF)</td></tr>
+    <tr><td><code>Unicode::codePointCount(s)</code></td><td>Anzahl Codepoints; <code>"e"</code> + U+0301 sind zwei</td></tr>
+    <tr><td><code>Unicode::codePoints(s)</code> / <code>fromCodePoints(list)</code></td><td><code>List&lt;Int64&gt;</code> der Skalarwerte und zur&uuml;ck; NUL, Surrogate und Werte au&szlig;erhalb des Bereichs werfen</td></tr>
+    <tr><td><code>Unicode::byteOffset(s, index)</code></td><td>Byte-Offset des Codepoints <code>index</code> (f&uuml;r <code>substring</code> an Codepoint-Grenzen)</td></tr>
+    <tr><td><code>Unicode::toUpper(s)</code> / <code>toLower(s)</code></td><td>volle Standardabbildung (<code>&szlig;</code> &rarr; <code>SS</code>), ohne Locale; Gro&szlig;-Sigma wird immer <code>&sigma;</code> (keine Final-Sigma-Regel)</td></tr>
+  </table>
+  <p>Kosten: jeder Aufruf ist O(Bytes) und validiert zuerst; <code>codePoints</code> belegt 8 Byte je Codepoint, <code>toUpper</code>/<code>toLower</code> bis zum 3-Fachen der Eingabe. Die Tabellen entsprechen <code>Unicode::version()</code> (16.0.0) und werden mit <code>scripts/gen-unicode-case.py</code> neu erzeugt.</p>
   </div>
 
     <div class="mod-section" id="mod-array">

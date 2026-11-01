@@ -14,11 +14,12 @@ namespace tinox.core.mathf
             return 2.71828182845904
         }
 
+        @Throws(MathfError)
         fn sqrt(x: Float64) -> Float64
         {
             if (x < 0.0)
             {
-                throw "Cannot compute square root of negative number"
+                throw MathfError { message: "Cannot compute square root of negative number" }
             }
             var guess: Float64 = x / 2.0
             var i: Int64 = 0

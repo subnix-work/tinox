@@ -1,0 +1,34 @@
+// expect: histogram
+// expect: le0.0005=1
+// expect: le0.01=2
+// expect: le0.25=3
+// expect: le10=4
+// expect: inf=5
+// expect: count=5
+// expect: sum_ok=true
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        // 0.3 ms, 8 ms, 200 ms, 3 s, 42 s (beyond the last bound)
+        tinox_histogram_record("synthetic", 300000)
+        tinox_histogram_record("synthetic", 8000000)
+        tinox_histogram_record("synthetic", 200000000)
+        tinox_histogram_record("synthetic", 3000000000)
+        tinox_histogram_record("synthetic", 42000000000)
+        const text: String = tinox_metrics_prometheus()
+        for line in text.split("\n")
+        {
+            if (line == "# TYPE synthetic_duration_seconds histogram") { println("histogram") }
+            if (line.startsWith("synthetic_duration_seconds_bucket{le=\"0.0005\"}")) { println("le0.0005=" + line.split(" ")[1]) }
+            if (line.startsWith("synthetic_duration_seconds_bucket{le=\"0.01\"}")) { println("le0.01=" + line.split(" ")[1]) }
+            if (line.startsWith("synthetic_duration_seconds_bucket{le=\"0.25\"}")) { println("le0.25=" + line.split(" ")[1]) }
+            if (line.startsWith("synthetic_duration_seconds_bucket{le=\"10\"}")) { println("le10=" + line.split(" ")[1]) }
+            if (line.startsWith("synthetic_duration_seconds_bucket{le=\"+Inf\"}")) { println("inf=" + line.split(" ")[1]) }
+            if (line.startsWith("synthetic_duration_seconds_count")) { println("count=" + line.split(" ")[1]) }
+            if (line.startsWith("synthetic_duration_seconds_sum")) { println("sum_ok=" + (line.split(" ")[1] == "45.208300000").toString()) }
+        }
+        return 0
+    }
+}

@@ -30,11 +30,12 @@ namespace tinox.core.option
             return this.values.len() == 0
         }
 
+        @Throws(NoneError)
         fn unwrap() -> T
         {
             if (this.values.len() == 0)
             {
-                throw "Option is None"
+                throw NoneError { message: "Option is None" }
             }
             return this.values[0]
         }

@@ -19,23 +19,25 @@ namespace tinox.core.collections
             this.data.push(value)
         }
 
+        @Throws(EmptyCollectionError)
         fn dequeue() -> T
         {
             const len: Int64 = this.data.len()
             if (len == 0)
             {
-                throw "Queue is empty"
+                throw EmptyCollectionError { message: "Queue is empty" }
             }
             const value: T = this.data[0]
             this.data.removeAt(0)
             return value
         }
 
+        @Throws(EmptyCollectionError)
         fn peek() -> T
         {
             if (this.data.len() == 0)
             {
-                throw "Queue is empty"
+                throw EmptyCollectionError { message: "Queue is empty" }
             }
             return this.data[0]
         }

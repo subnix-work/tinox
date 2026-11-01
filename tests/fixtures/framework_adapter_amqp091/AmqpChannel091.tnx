@@ -12,4 +12,5 @@ class AmqpChannel091 {
     fn consume(queue: String) -> String { return "" }
     fn nextMessage() -> AmqpMessage091 { return AmqpMessage091 { deliveryTag: 0, exchange: "", routingKey: "", contentType: "", body: [], ok: false } }
     fn ack(deliveryTag: Int64) -> Nothing {}
+    fn reject(deliveryTag: Int64, requeue: Bool) -> Nothing {}
 }

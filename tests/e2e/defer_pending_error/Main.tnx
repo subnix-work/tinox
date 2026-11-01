@@ -1,0 +1,43 @@
+// A deferred call that runs while an error propagates must not swallow it (try/catch inside the cleanup used
+// to take the pending error for its own); an error raised by the cleanup itself replaces the original.
+// expect: caught original
+// expect: caught cleanup failed
+// expect: no error, cleanup ran
+// expect: caught nested
+import Cleanup
+
+class Main
+{
+    fnc work() -> Nothing
+    {
+        defer Cleanup::tidy()
+        throw "original"
+    }
+
+    fnc workWithBadCleanup() -> Nothing
+    {
+        defer Cleanup::failing()
+        throw "original"
+    }
+
+    fnc quiet() -> Nothing
+    {
+        defer Cleanup::tidy()
+        println("no error, cleanup ran")
+    }
+
+    fnc nested() -> Nothing
+    {
+        defer Cleanup::tidy()
+        Main::work()
+    }
+
+    fnc main() -> Int32
+    {
+        try { Main::work() } catch (e: String) { println("caught " + e) }
+        try { Main::workWithBadCleanup() } catch (e: String) { println("caught " + e) }
+        Main::quiet()
+        try { Main::nested() } catch (e: String) { println("caught " + (e == "original" ? "nested" : e)) }
+        return 0
+    }
+}

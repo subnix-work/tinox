@@ -44,17 +44,18 @@ namespace tinox.core.http_server
             return this
         }
 
+        @Throws(HttpServerError)
         /** JSON content type and transport framing are owned by the server. */
         fn header(name: String, value: String) -> Response<T>
         {
             let lower: String = name.toLowerCase()
             if (lower == "content-type" || lower == "content-length" || lower == "transfer-encoding" || lower == "connection")
             {
-                throw "Response.header: content type and framing headers are reserved"
+                throw HttpServerError { message: "Response.header: content type and framing headers are reserved" }
             }
             if (name.contains("\r") || name.contains("\n") || value.contains("\r") || value.contains("\n"))
             {
-                throw "Response.header: header names and values must not contain newlines"
+                throw HttpServerError { message: "Response.header: header names and values must not contain newlines" }
             }
             this.headers[name] = value
             return this

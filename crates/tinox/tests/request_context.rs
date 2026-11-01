@@ -33,7 +33,7 @@ fn requests_share_one_graph_and_release_it_after_success_error_and_binding_failu
     let directory = std::env::temp_dir().join(format!("tinox-request-http-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core-ext");
-    let mut manifest = "[package]\ncompiler=\"2.8.0\"\nname=\"request_context\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
+    let mut manifest = "[package]\ncompiler = \"2.9.0\"\nname=\"request_context\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
     for module in ["http_server", "json"] {
         manifest.push_str(&format!("\n[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"{module}\"\nversion=\"9.9.9\"\n"));
         copy_tree(
@@ -231,7 +231,7 @@ int64_t tinox_main(void) {
         __route_Api_identity((int64_t)context);
         if (strcmp((char*)response[2], "3") || check_closed()) return 1;
         __route_Api_failure((int64_t)context);
-        __tinox_err = 0; // status/error conversion is the separate #573 bug.
+        __tinox_err = 0;
         if (check_closed()) return 2;
         __route_Api_bound((int64_t)context);
         if (response[0] != 400 || check_closed()) return 3;

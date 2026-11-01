@@ -3,7 +3,7 @@ pub mod diagnostic;
 
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub start: Pos,
     pub end: Pos,

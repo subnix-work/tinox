@@ -1,0 +1,13 @@
+module tinox.core.http
+
+namespace tinox.core.http
+{
+    /**
+     * Invalid HTTP client input or configuration.
+     */
+    @Error("HTTP_CLIENT_ERROR", 400)
+    class HttpClientError
+    {
+        var message: String
+    }
+}

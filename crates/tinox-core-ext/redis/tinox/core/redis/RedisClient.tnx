@@ -14,11 +14,20 @@
  *   if !client.lastGetFound() { throw "cache miss"; }
  *   client.close();
  *
+ * A client is NOT safe for concurrent use: one request/reply exchange
+ * at a time on one connection. Share connections through RedisPool
+ * (exclusive borrow), not by handing one client to several threads.
+ *
+ * command()/getReply() report absent, present-empty, Redis error and
+ * transport failure as distinct RedisReply kinds without any shared
+ * status flag. Any transport/protocol failure marks the client
+ * unhealthy (healthy == false) so a pool discards it instead of handing
+ * out a connection with unread bytes.
+ *
  * v1 scope, deliberately not covered (see issue #135):
- *   - No connection pooling (tinox.core.pool is the generic building
- *     block for this, not reinvented here).
- *   - No Redis Cluster/Sentinel, no pub/sub (SUBSCRIBE/PUBLISH) --
- *     single-node, request/response commands only.
+ *   - Pooling lives in RedisPool (#544), Pub/Sub in RedisSubscriber
+ *     (#546, its own connection); Sentinel/Cluster discovery live in RedisSentinel/RedisCluster --
+ *     single-node, request/response commands only here.
  *   - No Memcached client in this pass -- different wire protocol, no
  *     shared code with RESP2 beyond the raw socket layer, an explicit
  *     separately-scoped follow-up if needed.
@@ -38,6 +47,11 @@ namespace tinox.core.redis
         var errorMessage: String
         var getFound: Bool
         var incrOk: Bool
+        // false after any transport/protocol failure: the stream position
+        // is unknown, so the connection must be discarded, never reused.
+        var healthy: Bool
+        // true while a RedisPool has lent this client out.
+        var pooled: Bool
 
         /*
          * Dials and sends PING to fail fast on a bad host/port (RESP2
@@ -49,24 +63,60 @@ namespace tinox.core.redis
          */
         fn connect(host: String, port: Int64) -> RedisClient
         {
+            return RedisClient::open(host, port, false, false)
+        }
+
+        /*
+         * TLS connection (rediss://). `verify` checks the certificate chain AND that it matches
+         * `host` against the system trust store (or the CA set with Http::setTlsCaCertFile);
+         * verify=false is the explicit opt-out for self-signed test certificates. conn is -1 and
+         * errorMessage says "TLS handshake failed" when the handshake or verification fails.
+         */
+        fn connectTls(host: String, port: Int64, verify: Bool) -> RedisClient
+        {
+            return RedisClient::open(host, port, true, verify)
+        }
+
+        fnc open(host: String, port: Int64, tls: Bool, verify: Bool) -> RedisClient
+        {
             const fd = socketCreateTcp()
             if (!socketConnect(fd, host, port)) {
                 socketClose(fd)
-                return RedisClient { conn: -1, errorMessage: "connect failed", getFound: false, incrOk: false }
+                return RedisClient { conn: -1, errorMessage: "connect failed", getFound: false, incrOk: false, healthy: true, pooled: false }
             }
-            var client: RedisClient = RedisClient { conn: httpConnFromFd(fd), errorMessage: "", getFound: false, incrOk: false }
-            if (!client.ping()) {
+            var handle: Int64 = 0
+            if (tls) {
+                handle = httpConnFromFdTls(fd, host, verify)
+                if (handle <= 0) {
+                    socketClose(fd)
+                    return RedisClient { conn: -1, errorMessage: "TLS handshake failed", getFound: false, incrOk: false, healthy: true, pooled: false }
+                }
+            } else {
+                handle = httpConnFromFd(fd)
+            }
+            var client: RedisClient = RedisClient { conn: handle, errorMessage: "", getFound: false, incrOk: false, healthy: true, pooled: false }
+            // A server that requires AUTH answers PING with "-NOAUTH ..." -- that still proves it
+            // speaks the protocol; the caller authenticates next (auth() / RedisPool.authenticate).
+            const pong = RedisClient::pingReply(client)
+            if (!(pong == "+PONG" || pong.startsWith("-NOAUTH"))) {
                 httpConnClose(client.conn)
                 client.conn = -1
+                client.healthy = false
                 client.errorMessage = "PING failed"
             }
             return client
         }
 
+        fnc pingReply(client: RedisClient) -> String
+        {
+            client.sendCommand(["PING"])
+            return client.readLine()
+        }
+
         fn ping() -> Bool
         {
             this.sendCommand(["PING"])
-            return httpConnReadLine(this.conn) == "+PONG"
+            return this.readLine() == "+PONG"
         }
 
         /*
@@ -79,7 +129,7 @@ namespace tinox.core.redis
         fn get(key: String) -> String
         {
             this.sendCommand(["GET", key])
-            const header = httpConnReadLine(this.conn)
+            const header = this.readLine()
             if (!header.startsWith("$") || header == "$-1") {
                 this.getFound = false
                 return ""
@@ -109,13 +159,13 @@ namespace tinox.core.redis
         fn set(key: String, value: String) -> Bool
         {
             this.sendCommand(["SET", key, value])
-            return httpConnReadLine(this.conn) == "+OK"
+            return this.readLine() == "+OK"
         }
 
         fn setEx(key: String, value: String, ttlSeconds: Int64) -> Bool
         {
             this.sendCommand(["SETEX", key, ttlSeconds.toString(), value])
-            return httpConnReadLine(this.conn) == "+OK"
+            return this.readLine() == "+OK"
         }
 
         // Returns whether a key was actually removed (RESP2 integer
@@ -123,7 +173,7 @@ namespace tinox.core.redis
         fn del(key: String) -> Bool
         {
             this.sendCommand(["DEL", key])
-            const line = httpConnReadLine(this.conn)
+            const line = this.readLine()
             if (!line.startsWith(":")) {
                 return false
             }
@@ -133,7 +183,7 @@ namespace tinox.core.redis
         fn expire(key: String, ttlSeconds: Int64) -> Bool
         {
             this.sendCommand(["EXPIRE", key, ttlSeconds.toString()])
-            const line = httpConnReadLine(this.conn)
+            const line = this.readLine()
             if (!line.startsWith(":")) {
                 return false
             }
@@ -149,7 +199,7 @@ namespace tinox.core.redis
         fn incr(key: String) -> Int64
         {
             this.sendCommand(["INCR", key])
-            const line = httpConnReadLine(this.conn)
+            const line = this.readLine()
             if (!line.startsWith(":")) {
                 this.incrOk = false
                 return 0
@@ -166,6 +216,140 @@ namespace tinox.core.redis
         fn close() -> Nothing
         {
             httpConnClose(this.conn)
+            this.healthy = false
+        }
+
+        // One line of a reply. An empty result means the connection closed or
+        // timed out: the client becomes unhealthy.
+        fn readLine() -> String
+        {
+            const line = httpConnReadLine(this.conn)
+            if (line == "") {
+                this.healthy = false
+            }
+            return line
+        }
+
+        /*
+         * Sends any command and returns its reply with an explicit kind
+         * (see RedisReply): value (including the empty string), nil, Redis
+         * error, or transport/protocol failure. Array replies are not
+         * supported by this client; receiving one marks the client
+         * unhealthy because its elements would remain unread.
+         */
+        fn command(args: List<String>) -> RedisReply
+        {
+            if (this.conn <= 0 || !this.healthy) {
+                return RedisReply { kind: 3, text: "connection is not usable" }
+            }
+            this.sendCommand(args)
+            const line = this.readLine()
+            if (line == "") {
+                return RedisReply { kind: 3, text: "connection closed or timed out" }
+            }
+            if (line.startsWith("+") || line.startsWith(":")) {
+                return RedisReply { kind: 1, text: line.substring(1, line.len()) }
+            }
+            if (line.startsWith("-")) {
+                return RedisReply { kind: 2, text: line.substring(1, line.len()) }
+            }
+            if (line.startsWith("$")) {
+                if (line == "$-1") {
+                    return RedisReply { kind: 0, text: "" }
+                }
+                const len = line.substring(1, line.len()).toInt()
+                if (len < 0) {
+                    this.healthy = false
+                    return RedisReply { kind: 3, text: "invalid bulk length" }
+                }
+                const bytes = httpConnReadN(this.conn, len + 2)
+                if (bytes.len() < len + 2) {
+                    this.healthy = false
+                    return RedisReply { kind: 3, text: "truncated bulk reply" }
+                }
+                var value: List<Int64> = []
+                var i: Int64 = 0
+                while i < len {
+                    value.push(bytes[i])
+                    i = i + 1
+                }
+                return RedisReply { kind: 1, text: tinoxBytesToString(value) }
+            }
+            this.healthy = false
+            return RedisReply { kind: 3, text: "unsupported or malformed reply" }
+        }
+
+        /*
+         * Command whose reply is a flat array of bulk strings / integers
+         * (e.g. SENTINEL get-master-addr-by-name). Returns [] for an empty
+         * or nil array, a Redis error reply (the client stays healthy) or a
+         * failure (the client becomes unhealthy); nested arrays are a
+         * protocol failure because their remainder would stay unread.
+         */
+        // AUTH [username] password (an empty username sends the single-argument form). Returns false
+        // and sets errorMessage when the server rejects it; the connection stays usable.
+        fn auth(username: String, password: String) -> Bool
+        {
+            var args: List<String> = ["AUTH"]
+            if (username != "") {
+                args.push(username)
+            }
+            args.push(password)
+            const r = this.command(args)
+            if (r.isValue()) {
+                return true
+            }
+            this.errorMessage = "AUTH failed: " + r.text
+            return false
+        }
+
+        fn commandList(args: List<String>) -> List<String>
+        {
+            var out: List<String> = []
+            if (this.conn <= 0 || !this.healthy) {
+                return out
+            }
+            this.sendCommand(args)
+            const header = this.readLine()
+            if (!header.startsWith("*")) {
+                if (header != "" && !header.startsWith("-")) {
+                    this.healthy = false
+                }
+                return out
+            }
+            const n = header.substring(1, header.len()).toInt()
+            var i: Int64 = 0
+            while i < n {
+                const line = this.readLine()
+                if (line.startsWith(":")) {
+                    out.push(line.substring(1, line.len()))
+                } else if (line.startsWith("$") && line != "$-1") {
+                    const len = line.substring(1, line.len()).toInt()
+                    const bytes = httpConnReadN(this.conn, len + 2)
+                    if (len < 0 || bytes.len() < len + 2) {
+                        this.healthy = false
+                        return []
+                    }
+                    var value: List<Int64> = []
+                    var k: Int64 = 0
+                    while k < len {
+                        value.push(bytes[k])
+                        k = k + 1
+                    }
+                    out.push(tinoxBytesToString(value))
+                } else {
+                    this.healthy = false
+                    return []
+                }
+                i = i + 1
+            }
+            return out
+        }
+
+        // GET without a shared status flag: nil, empty value, value and error are distinct.
+        fn getReply(key: String) -> RedisReply
+        {
+            return this.command(["GET", key])
         }
 
         // RESP2 request encoding (a "multi bulk" array of bulk strings):

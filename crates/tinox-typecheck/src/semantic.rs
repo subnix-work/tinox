@@ -30,6 +30,9 @@ pub struct ResolvedField {
     pub owner: ValueType,
     pub name: String,
     pub result: ValueType,
+    /// Source span the parser gave the access node (the receiver expression, not the member name).
+    #[serde(default)]
+    pub span: tinox_common::Span,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Conversion {
@@ -474,6 +477,7 @@ impl TypeChecker {
                         owner: node_type(obj),
                         name: field.clone(),
                         result: result.clone(),
+                        span: expr.span,
                     },
                 );
                 return;

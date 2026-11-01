@@ -21,6 +21,7 @@ namespace tinox.core.hex
             return result
         }
 
+        @Throws(HexError)
         fn decode(hex: String) -> String
         {
             // Delegates to decodeBytes() + tinoxBytesToString (one-pass
@@ -39,13 +40,14 @@ namespace tinox.core.hex
         // bytes, see Base64::encodeBytes' comment about the exact same
         // finding) would be silently truncated at the first 0 byte via
         // decode()+fromCharCode.
+        @Throws(HexError)
         fn decodeBytes(hex: String) -> List<Int64>
         {
             var result: List<Int64> = []
             var i: Int64 = 0
             if (hex.len() % 2 != 0)
             {
-                throw "Hex: odd number of digits"
+                throw HexError { message: "Hex: odd number of digits" }
             }
             while i < hex.len()
             {
@@ -66,6 +68,7 @@ namespace tinox.core.hex
             return fromCharCode(n + 87)
         }
 
+        @Throws(HexError)
         fn charToNibble(c: String) -> Int64
         {
             const code: Int64 = c.charCodeAt(0)
@@ -81,7 +84,7 @@ namespace tinox.core.hex
             {
                 return code - 55
             }
-            throw "Hex: invalid digit '" + c + "'"
+            throw HexError { message: "Hex: invalid digit '" + c + "'" }
         }
 
         fn dump(data: String) -> String

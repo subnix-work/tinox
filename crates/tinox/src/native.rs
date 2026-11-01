@@ -403,6 +403,7 @@ mod tests {
     fn parses_all_keys_and_multiline_arrays() {
         let toml = r#"
 [package]
+compiler = "2.9.0"
 name = "x"
 
 [native]
@@ -456,7 +457,7 @@ driver = "sqlite"
 
     #[test]
     fn missing_section_is_none() {
-        assert!(parse("[package]\nname = \"x\"\n", Path::new("/p"), false).unwrap().is_none());
+        assert!(parse("[package]\ncompiler = \"2.9.0\"\nname = \"x\"\n", Path::new("/p"), false).unwrap().is_none());
     }
 
     #[test]

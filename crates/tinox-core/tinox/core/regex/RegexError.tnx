@@ -1,0 +1,13 @@
+module tinox.core.regex
+
+namespace tinox.core.regex
+{
+    /**
+     * Invalid regular expression.
+     */
+    @Error("REGEX_ERROR", 400)
+    class RegexError
+    {
+        var message: String
+    }
+}

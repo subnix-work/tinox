@@ -1,0 +1,13 @@
+module tinox.core.redis
+
+namespace tinox.core.redis
+{
+    /**
+     * Invalid Redis configuration.
+     */
+    @Error("REDIS_ERROR", 400)
+    class RedisError
+    {
+        var message: String
+    }
+}

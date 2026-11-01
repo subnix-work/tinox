@@ -202,6 +202,9 @@ pub fn generate(decls: &[Decl], annotations: &AnnotationProcessingResult) -> Res
                     ]));
                     responses.insert("400".to_string(), response("Missing or invalid bound parameter", Some(error_schema())));
                 }
+                RouteParamKind::MultipartParam => {
+                    responses.insert("400".to_string(), response("Not multipart/form-data, malformed, or over the upload budget", None));
+                }
                 RouteParamKind::PostParam | RouteParamKind::HttpContext => {}
             }
         }
