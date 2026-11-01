@@ -16,6 +16,7 @@ namespace tinox.core.cron
      */
     class Cron
     {
+        @Throws(CronError)
         fn parse(expr: String) -> CronExpr
         {
             var parts: List<String> = []
@@ -31,7 +32,7 @@ namespace tinox.core.cron
             }
             if (parts.len() != 5)
             {
-                throw "Cron: expected five numeric fields"
+                throw CronError { message: "Cron: expected five numeric fields" }
             }
             const result: CronExpr = CronExpr {
                 minute: parts[0], hour: parts[1], dayOfMonth: parts[2],
@@ -46,11 +47,12 @@ namespace tinox.core.cron
         }
 
         // Parse digits explicitly: numeric casts alone accept malformed text.
+        @Throws(CronError)
         fn number(text: String) -> Int64
         {
             if (text.len() == 0)
             {
-                throw "Cron: missing number"
+                throw CronError { message: "Cron: missing number" }
             }
             var n: Int64 = 0
             var i: Int64 = 0
@@ -59,18 +61,19 @@ namespace tinox.core.cron
                 const digit: Int64 = text.charCodeAt(i) - 48
                 if (digit < 0 || digit > 9)
                 {
-                    throw "Cron: unsupported field syntax"
+                    throw CronError { message: "Cron: unsupported field syntax" }
                 }
                 n = n * 10 + digit
                 if (n > 9999)
                 {
-                    throw "Cron: number out of range"
+                    throw CronError { message: "Cron: number out of range" }
                 }
                 i = i + 1
             }
             return n
         }
 
+        @Throws(CronError)
         fn values(field: String, minimum: Int64, maximum: Int64) -> List<Int64>
         {
             var mask: List<Int64> = []
@@ -87,7 +90,7 @@ namespace tinox.core.cron
                 const steps: List<String> = items[item].split("/")
                 if (steps.len() > 2)
                 {
-                    throw "Cron: invalid step"
+                    throw CronError { message: "Cron: invalid step" }
                 }
                 var step: Int64 = 1
                 if (steps.len() == 2)
@@ -96,7 +99,7 @@ namespace tinox.core.cron
                 }
                 if (step == 0)
                 {
-                    throw "Cron: step must be positive"
+                    throw CronError { message: "Cron: step must be positive" }
                 }
                 var first: Int64 = minimum
                 var last: Int64 = maximum
@@ -105,7 +108,7 @@ namespace tinox.core.cron
                     const bounds: List<String> = steps[0].split("-")
                     if (bounds.len() > 2)
                     {
-                        throw "Cron: invalid range"
+                        throw CronError { message: "Cron: invalid range" }
                     }
                     first = Cron::number(bounds[0])
                     last = first
@@ -115,12 +118,12 @@ namespace tinox.core.cron
                     }
                     if (bounds.len() == 1 && steps.len() == 2)
                     {
-                        throw "Cron: steps require * or a range"
+                        throw CronError { message: "Cron: steps require * or a range" }
                     }
                 }
                 if (first < minimum || last > maximum || first > last)
                 {
-                    throw "Cron: field out of range"
+                    throw CronError { message: "Cron: field out of range" }
                 }
                 i = first
                 while i <= last
@@ -133,11 +136,12 @@ namespace tinox.core.cron
             return mask
         }
 
+        @Throws(CronError)
         fn validateTimestamp(timestamp: Int64) -> Nothing
         {
             if (timestamp < 0 || timestamp > 253402300799999)
             {
-                throw "Cron: timestamp must be in UTC years 1970 through 9999"
+                throw CronError { message: "Cron: timestamp must be in UTC years 1970 through 9999" }
             }
         }
 
@@ -207,6 +211,7 @@ namespace tinox.core.cron
             return monthDay || weekDay
         }
 
+        @Throws(CronError)
         fn matches(expr: CronExpr, timestamp: Int64) -> Bool
         {
             Cron::validateTimestamp(timestamp)
@@ -220,12 +225,14 @@ namespace tinox.core.cron
             return minute[(timestamp / 60000) % 60] == 1 && hour[(timestamp / 3600000) % 24] == 1 && month[date[1]] == 1 && Cron::dayMatches(expr, dom, dow, date[2], (days + 4) % 7)
         }
 
+        @Throws(CronError)
         /** Return the first matching minute boundary strictly after now. */
         fn nextRun(expr: CronExpr) -> Int64
         {
             return Cron::nextRunAfter(expr, Time::now())
         }
 
+        @Throws(CronError)
         /**
          * Deterministic nextRun variant. Search at most one Gregorian
          * 400-year cycle; impossible dates and exhausted years throw.
@@ -278,16 +285,17 @@ namespace tinox.core.cron
                     }
                 }
             }
-            throw "Cron: no future matching date in supported timestamp range"
+            throw CronError { message: "Cron: no future matching date in supported timestamp range" }
         }
 
         // Legacy helper: wildcard keeps current; explicit fields advance strictly.
+        @Throws(CronError)
         fn nextMinute(current: Int64, field: String) -> Int64
         {
             const mask: List<Int64> = Cron::values(field, 0, 59)
             if (current < 0 || current > 59)
             {
-                throw "Cron: minute out of range"
+                throw CronError { message: "Cron: minute out of range" }
             }
             var candidate: Int64 = current + 1
             if (field == "*")
@@ -302,14 +310,15 @@ namespace tinox.core.cron
                 }
                 candidate = candidate + 1
             }
-            throw "Cron: no matching minute"
+            throw CronError { message: "Cron: no matching minute" }
         }
 
+        @Throws(CronError)
         fn getCurrentMinute(sec: Int64) -> Int64
         {
             if (sec < 0)
             {
-                throw "Cron: negative timestamp"
+                throw CronError { message: "Cron: negative timestamp" }
             }
             return (sec / 60) % 60
         }

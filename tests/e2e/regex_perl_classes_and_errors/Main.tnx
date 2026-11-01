@@ -6,7 +6,7 @@
 // expect: 3.14
 // expect: true
 // expect: true
-// expect: Uncaught error: invalid regular expression "(": Unmatched ( or \(
+// expect: Uncaught error: REGEX_ERROR: invalid regular expression "(": Unmatched ( or \(
 // expect-exit: 1
 import tinox.core.regex
 

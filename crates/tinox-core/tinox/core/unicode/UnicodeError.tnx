@@ -1,0 +1,13 @@
+module tinox.core.unicode
+
+namespace tinox.core.unicode
+{
+    /**
+     * Invalid UTF-8 or code point.
+     */
+    @Error("UNICODE_ERROR", 400)
+    class UnicodeError
+    {
+        var message: String
+    }
+}

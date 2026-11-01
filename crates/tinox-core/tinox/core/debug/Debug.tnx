@@ -4,6 +4,7 @@ namespace tinox.core.debug
 {
     class Debug
     {
+        @Throws(AssertionError)
         fn assert(condition: Bool, message: String) -> Nothing
         {
             if (condition == false)
@@ -12,9 +13,10 @@ namespace tinox.core.debug
             }
         }
 
+        @Throws(AssertionError)
         fn panic(message: String) -> Nothing
         {
-            throw "Assertion failed: " + message
+            throw AssertionError { message: "Assertion failed: " + message }
         }
 
         fn printStackTrace() -> Nothing

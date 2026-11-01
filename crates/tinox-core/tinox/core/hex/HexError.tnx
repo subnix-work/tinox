@@ -1,0 +1,13 @@
+module tinox.core.hex
+
+namespace tinox.core.hex
+{
+    /**
+     * Malformed hex input.
+     */
+    @Error("HEX_ERROR", 400)
+    class HexError
+    {
+        var message: String
+    }
+}

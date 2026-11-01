@@ -45,15 +45,17 @@ namespace tinox.core.unicode
         }
 
         // Throws "invalid UTF-8 at byte N" for malformed input.
+        @Throws(UnicodeError)
         fnc require(s: String) -> Nothing
         {
             const bad = tinoxUtf8Invalid(s)
             if (bad >= 0)
             {
-                throw "invalid UTF-8 at byte " + bad.toString()
+                throw UnicodeError { message: "invalid UTF-8 at byte " + bad.toString() }
             }
         }
 
+        @Throws(UnicodeError)
         fnc codePointCount(s: String) -> Int64
         {
             Unicode::require(s)
@@ -61,6 +63,7 @@ namespace tinox.core.unicode
         }
 
         // The Unicode scalar values of `s` in order ("é" is one value, "e" + U+0301 is two).
+        @Throws(UnicodeError)
         fnc codePoints(s: String) -> List<Int64>
         {
             Unicode::require(s)
@@ -69,31 +72,34 @@ namespace tinox.core.unicode
 
         // Inverse of codePoints. Throws for an element that is not a scalar value: NUL (strings are
         // NUL-terminated), a surrogate (U+D800..U+DFFF), negative, or above U+10FFFF.
+        @Throws(UnicodeError)
         fnc fromCodePoints(codes: List<Int64>) -> String
         {
             const bad = tinoxUnicodeInvalidScalar(codes)
             if (bad >= 0)
             {
-                throw "element " + bad.toString() + " is not a Unicode scalar value"
+                throw UnicodeError { message: "element " + bad.toString() + " is not a Unicode scalar value" }
             }
             return tinoxUtf8FromCodePoints(codes)
         }
 
         // Byte offset at which code point number `index` starts; `index == codePointCount(s)`
         // returns s.len(). Use it with substring() to cut on code point boundaries.
+        @Throws(UnicodeError)
         fnc byteOffset(s: String, index: Int64) -> Int64
         {
             Unicode::require(s)
             const offset = tinoxUtf8ByteOffset(s, index)
             if (offset < 0)
             {
-                throw "code point index " + index.toString() + " is out of range"
+                throw UnicodeError { message: "code point index " + index.toString() + " is out of range" }
             }
             return offset
         }
 
         // Full default mapping, e.g. "ß" -> "SS", "ŉ" -> "ʼN". No locale (Turkish dotless i) and no
         // context rules.
+        @Throws(UnicodeError)
         fnc toUpper(s: String) -> String
         {
             Unicode::require(s)
@@ -102,6 +108,7 @@ namespace tinox.core.unicode
 
         // Full default mapping, e.g. "İ" -> "i" + U+0307. A capital sigma always becomes "σ"
         // (the final-sigma context rule is not applied).
+        @Throws(UnicodeError)
         fnc toLower(s: String) -> String
         {
             Unicode::require(s)

@@ -1,0 +1,13 @@
+module tinox.core.mathf
+
+namespace tinox.core.mathf
+{
+    /**
+     * Invalid argument to a Mathf function.
+     */
+    @Error("MATHF_ERROR", 422)
+    class MathfError
+    {
+        var message: String
+    }
+}

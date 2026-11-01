@@ -1,0 +1,13 @@
+module tinox.core.cron
+
+namespace tinox.core.cron
+{
+    /**
+     * Invalid cron expression or timestamp.
+     */
+    @Error("CRON_ERROR", 400)
+    class CronError
+    {
+        var message: String
+    }
+}

@@ -87,10 +87,10 @@ for raw in ([97, 255, 98], [195], [237, 160, 128], [192, 128], [244, 144, 128, 1
         bytes(raw).decode("utf-8")
         out.append("unexpectedly valid")
     except UnicodeDecodeError as e:
-        out.append("bad %svalid=false invalid UTF-8 at byte %d" % ("".join("%d " % b for b in raw), e.start))
-out.append("surrogate=element 1 is not a Unicode scalar value")
-out.append("nul=element 0 is not a Unicode scalar value")
-out.append("range=code point index 3 is out of range")
+        out.append("bad %svalid=false UNICODE_ERROR: invalid UTF-8 at byte %d" % ("".join("%d " % b for b in raw), e.start))
+out.append("surrogate=UNICODE_ERROR: element 1 is not a Unicode scalar value")
+out.append("nul=UNICODE_ERROR: element 0 is not a Unicode scalar value")
+out.append("range=UNICODE_ERROR: code point index 3 is out of range")
 sys.stdout.write("\n".join(out) + "\n")
 "#;
 

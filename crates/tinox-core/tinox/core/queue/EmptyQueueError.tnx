@@ -1,0 +1,13 @@
+module tinox.core.queue
+
+namespace tinox.core.queue
+{
+    /**
+     * Pop/peek on an empty buffer or priority queue.
+     */
+    @Error("QUEUE_EMPTY", 409)
+    class EmptyQueueError
+    {
+        var message: String
+    }
+}

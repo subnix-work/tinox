@@ -1,0 +1,13 @@
+module tinox.core.pool
+
+namespace tinox.core.pool
+{
+    /**
+     * The pool has no free resource.
+     */
+    @Error("POOL_EXHAUSTED", 503)
+    class PoolExhaustedError
+    {
+        var message: String
+    }
+}
