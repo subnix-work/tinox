@@ -1,0 +1,13 @@
+module tinox.core.oidc
+
+namespace tinox.core.oidc
+{
+    /**
+     * Invalid OIDC configuration, token or session.
+     */
+    @Error("OIDC_ERROR", 401)
+    class OidcError
+    {
+        var message: String
+    }
+}

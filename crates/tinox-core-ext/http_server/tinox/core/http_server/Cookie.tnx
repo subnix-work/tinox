@@ -45,31 +45,32 @@ namespace tinox.core.http_server
             return false
         }
 
+        @Throws(HttpServerError)
         fn toHeaderValue() -> String
         {
             if (this.name.len() == 0 || Cookie::forbidden(this.name, "()<>@,;:\\\"/[]?={}"))
             {
-                throw "invalid cookie name"
+                throw HttpServerError { message: "invalid cookie name" }
             }
             if (Cookie::forbidden(this.value, ",;\\\""))
             {
-                throw "invalid cookie value for " + this.name
+                throw HttpServerError { message: "invalid cookie value for " + this.name }
             }
             if (Cookie::forbidden(this.path, ";"))
             {
-                throw "invalid cookie Path"
+                throw HttpServerError { message: "invalid cookie Path" }
             }
             if (Cookie::forbidden(this.domain, ";"))
             {
-                throw "invalid cookie Domain"
+                throw HttpServerError { message: "invalid cookie Domain" }
             }
             if (this.sameSite != "" && this.sameSite != "Strict" && this.sameSite != "Lax" && this.sameSite != "None")
             {
-                throw "SameSite must be Strict, Lax or None"
+                throw HttpServerError { message: "SameSite must be Strict, Lax or None" }
             }
             if (this.sameSite == "None" && !this.secure)
             {
-                throw "SameSite=None requires Secure"
+                throw HttpServerError { message: "SameSite=None requires Secure" }
             }
             var out: String = this.name + "=" + this.value
             if (this.path != "")

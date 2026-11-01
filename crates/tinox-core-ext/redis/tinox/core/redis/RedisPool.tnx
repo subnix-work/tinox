@@ -32,10 +32,11 @@ namespace tinox.core.redis
         var tls: Bool
         var tlsVerify: Bool
 
+        @Throws(RedisError)
         fn create(host: String, port: Int64, max: Int64) -> RedisPool
         {
             if (max < 1) {
-                throw "RedisPool max must be at least 1"
+                throw RedisError { message: "RedisPool max must be at least 1" }
             }
             return RedisPool { host: host, port: port, max: max, idle: [], lock: Mutex::new(), permits: Semaphore::new(max), closed: false, authUser: "", authPassword: "", tls: false, tlsVerify: true }
         }

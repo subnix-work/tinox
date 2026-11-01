@@ -72,6 +72,7 @@ namespace tinox.core.http
             return httpPatch(url, body)
         }
 
+        @Throws(HttpClientError)
         fn setHeader(name: String, value: String) -> Nothing
         {
             // Bug 106: name/value are frequently built from concatenated
@@ -84,7 +85,7 @@ namespace tinox.core.http
             // header-setting APIs go through, so validating here covers them.
             if (name.contains("\r") || name.contains("\n") || value.contains("\r") || value.contains("\n"))
             {
-                throw "invalid HTTP header: name/value must not contain CR or LF"
+                throw HttpClientError { message: "invalid HTTP header: name/value must not contain CR or LF" }
             }
             httpSetHeader(name, value)
         }

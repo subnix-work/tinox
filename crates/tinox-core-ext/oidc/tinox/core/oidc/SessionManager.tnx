@@ -59,18 +59,19 @@ namespace tinox.core.oidc
         var dropped: Int64
         var lock: Mutex
 
+        @Throws(OidcError)
         fn create(secrets: List<String>) -> SessionManager
         {
             if (secrets.len() == 0)
             {
-                throw "SessionManager needs at least one secret"
+                throw OidcError { message: "SessionManager needs at least one secret" }
             }
             var i: Int64 = 0
             while (i < secrets.len())
             {
                 if (secrets[i].len() < 16)
                 {
-                    throw "SessionManager secrets must be at least 16 characters (an empty or short secret is a guessable key)"
+                    throw OidcError { message: "SessionManager secrets must be at least 16 characters (an empty or short secret is a guessable key)" }
                 }
                 i = i + 1
             }
@@ -108,47 +109,52 @@ namespace tinox.core.oidc
             return this
         }
 
+        @Throws(OidcError)
         fn lifetime(seconds: Int64) -> SessionManager
         {
             if (seconds < 1)
             {
-                throw "SessionManager.lifetime must be positive"
+                throw OidcError { message: "SessionManager.lifetime must be positive" }
             }
             this.lifetimeSec = seconds
             return this
         }
 
+        @Throws(OidcError)
         fn idle(seconds: Int64) -> SessionManager
         {
             if (seconds < 1)
             {
-                throw "SessionManager.idle must be positive"
+                throw OidcError { message: "SessionManager.idle must be positive" }
             }
             this.idleSec = seconds
             return this
         }
 
+        @Throws(OidcError)
         fn renewAfter(seconds: Int64) -> SessionManager
         {
             if (seconds < 0)
             {
-                throw "SessionManager.renewAfter must not be negative"
+                throw OidcError { message: "SessionManager.renewAfter must not be negative" }
             }
             this.renewAfterSec = seconds
             return this
         }
 
+        @Throws(OidcError)
         fn maxRevocations(count: Int64) -> SessionManager
         {
             if (count < 1)
             {
-                throw "SessionManager.maxRevocations must be positive"
+                throw OidcError { message: "SessionManager.maxRevocations must be positive" }
             }
             this.maxRevoked = count
             return this
         }
 
         // Starts a new session (new random id) and sets the cookie on ctx.response.
+        @Throws(OidcError)
         fn start(ctx: HttpContext, claims: Map<String, JsonValue>) -> Session
         {
             const now: Int64 = Time::now()
@@ -158,6 +164,7 @@ namespace tinox.core.oidc
         }
 
         // Reads and validates the request's session without touching the response.
+        @Throws(OidcError)
         fn load(ctx: HttpContext) -> Session
         {
             return this.inspect(ctx, false)
@@ -165,6 +172,7 @@ namespace tinox.core.oidc
 
         // Validates the session and re-issues the cookie when it is due for sliding renewal or was
         // sealed with an older key. An invalid session is returned as such (nothing is set).
+        @Throws(OidcError)
         fn touch(ctx: HttpContext) -> Session
         {
             return this.inspect(ctx, true)
@@ -172,6 +180,7 @@ namespace tinox.core.oidc
 
         // New session id, same claims, same absolute expiry; the old id is revoked. Call after a
         // privilege change (login, role change) to defeat session fixation.
+        @Throws(OidcError)
         fn rotate(ctx: HttpContext) -> Session
         {
             const old: Session = this.inspect(ctx, false)
@@ -187,6 +196,7 @@ namespace tinox.core.oidc
         }
 
         // Logout: clears the cookie and revokes the session id (see the class comment for the limits).
+        @Throws(OidcError)
         fn end(ctx: HttpContext) -> Nothing
         {
             const s: Session = this.inspect(ctx, false)
@@ -211,6 +221,7 @@ namespace tinox.core.oidc
             return this.dropped
         }
 
+        @Throws(OidcError)
         fn inspect(ctx: HttpContext, renew: Bool) -> Session
         {
             const sealed: String = SessionManager::readCookie(ctx, this.cookieName)
@@ -324,6 +335,7 @@ namespace tinox.core.oidc
         }
 
         // Seals the session with the FIRST secret and sets the cookie (Max-Age = remaining lifetime).
+        @Throws(OidcError)
         fn issue(ctx: HttpContext, s: Session) -> Nothing
         {
             const json: String = "{\"sid\":\"" + s.id + "\",\"iat\":" + s.issuedAt.toString() + ",\"exp\":" + s.expiresAt.toString() + ",\"seen\":" + s.seenAt.toString() + ",\"claims\":" + Json::stringify(Json::fromMap(s.claims)) + "}"

@@ -1,0 +1,13 @@
+module tinox.core.hpack
+
+namespace tinox.core.hpack
+{
+    /**
+     * Malformed HPACK data.
+     */
+    @Error("HPACK_ERROR", 400)
+    class HpackError
+    {
+        var message: String
+    }
+}

@@ -1,0 +1,13 @@
+module tinox.core.http_server
+
+namespace tinox.core.http_server
+{
+    /**
+     * Invalid HTTP server input or the server could not start.
+     */
+    @Error("HTTP_SERVER_ERROR", 500)
+    class HttpServerError
+    {
+        var message: String
+    }
+}

@@ -158,6 +158,7 @@ namespace tinox.core.http_server
             return this
         }
 
+        @Throws(HttpServerError)
         /**
          * Starts the server and begins listening for connections
          *
@@ -169,7 +170,7 @@ namespace tinox.core.http_server
             this.socketHandle = httpServerCreate(this.port)
             if (this.socketHandle < 0)
             {
-                throw "Failed to create HTTP server on port " + this.port.toString()
+                throw HttpServerError { message: "Failed to create HTTP server on port " + this.port.toString() }
             }
             this.running = true
             while this.running
@@ -192,6 +193,7 @@ namespace tinox.core.http_server
             httpServerClose(this.socketHandle)
         }
 
+        @Throws(HttpServerError)
         /**
          * Starts the server with TLS/HTTPS enabled.
          *
@@ -213,7 +215,7 @@ namespace tinox.core.http_server
             this.socketHandle = httpServerCreateTls(this.port, certPath, keyPath)
             if (this.socketHandle < 0)
             {
-                throw "Failed to create HTTPS server on port " + this.port.toString() + " (TLS setup failed — runtime built with TINOX_TLS=0, or cert/key invalid)"
+                throw HttpServerError { message: "Failed to create HTTPS server on port " + this.port.toString() + " (TLS setup failed — runtime built with TINOX_TLS=0, or cert/key invalid)" }
             }
             this.running = true
             while this.running

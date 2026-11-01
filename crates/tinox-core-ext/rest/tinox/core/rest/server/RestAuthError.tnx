@@ -1,0 +1,13 @@
+module tinox.core.rest.server
+
+namespace tinox.core.rest.server
+{
+    /**
+     * A bearer token was rejected by the OIDC guard.
+     */
+    @Error("REST_AUTH_ERROR", 401)
+    class RestAuthError
+    {
+        var message: String
+    }
+}

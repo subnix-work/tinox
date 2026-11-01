@@ -33,6 +33,7 @@ namespace tinox.core.xml
             return this.children
         }
 
+        @Throws(XmlError)
         fn firstChild(tag: String) -> XmlNode
         {
             const children: List<XmlNode> = XmlNode::children(this)
@@ -45,7 +46,7 @@ namespace tinox.core.xml
                 }
                 i = i + 1
             }
-            throw "Child not found"
+            throw XmlError { message: "Child not found" }
         }
     }
 }

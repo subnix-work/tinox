@@ -1,0 +1,13 @@
+module tinox.core.yaml
+
+namespace tinox.core.yaml
+{
+    /**
+     * Malformed YAML.
+     */
+    @Error("YAML_ERROR", 400)
+    class YamlError
+    {
+        var message: String
+    }
+}

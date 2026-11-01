@@ -36,11 +36,12 @@ namespace tinox.core.outbox
         var confirmed: Int64
         var failures: Int64
 
+        @Throws(OutboxError)
         fnc create(host: String, port: Int64, vhost: String, user: String, pass: String, maxAttempts: Int64, backoffMs: Int64) -> OutboxDispatcher
         {
             if (maxAttempts < 1 || maxAttempts > 100 || backoffMs < 0)
             {
-                throw "OutboxDispatcher: maxAttempts must be 1..100 and backoffMs >= 0"
+                throw OutboxError { message: "OutboxDispatcher: maxAttempts must be 1..100 and backoffMs >= 0" }
             }
             return OutboxDispatcher { host: host, port: port, vhost: vhost, user: user, pass: pass, maxAttempts: maxAttempts, backoffMs: backoffMs, confirmTimeoutMs: 10000, conns: [], chans: [], connected: false, stopRequested: false, confirmed: 0, failures: 0 }
         }

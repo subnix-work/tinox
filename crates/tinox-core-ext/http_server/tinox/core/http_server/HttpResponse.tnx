@@ -63,6 +63,7 @@ namespace tinox.core.http_server
             return this
         }
 
+        @Throws(HttpServerError)
         /**
          * APPENDS a value to a header that may legally repeat (e.g. Set-Cookie).
          * The first value lives under the plain name, later ones under
@@ -89,18 +90,19 @@ namespace tinox.core.http_server
                 n = n + 1
                 if (n > 64)
                 {
-                    throw "too many values for header " + name
+                    throw HttpServerError { message: "too many values for header " + name }
                 }
             }
             this.headers[name + " " + n.toString()] = value
             return this
         }
 
+        @Throws(HttpServerError)
         fn checkHeader(name: String, value: String) -> Nothing
         {
             if (name.len() == 0)
             {
-                throw "empty header name"
+                throw HttpServerError { message: "empty header name" }
             }
             const bad = " \t\r\n:()<>@,;\\\"/[]?={}"
             var i: Int64 = 0
@@ -108,16 +110,17 @@ namespace tinox.core.http_server
             {
                 if (bad.contains(name.substring(i, i + 1)))
                 {
-                    throw "invalid character in header name " + name
+                    throw HttpServerError { message: "invalid character in header name " + name }
                 }
                 i = i + 1
             }
             if (value.contains("\r") || value.contains("\n"))
             {
-                throw "CR/LF in value of header " + name
+                throw HttpServerError { message: "CR/LF in value of header " + name }
             }
         }
 
+        @Throws(HttpServerError)
         /**
          * Appends a Set-Cookie header built from a Cookie (see Cookie.toHeaderValue
          * for the validation it applies). Several cookies produce several
@@ -128,6 +131,7 @@ namespace tinox.core.http_server
             return this.addHeader("Set-Cookie", cookie.toHeaderValue())
         }
 
+        @Throws(HttpServerError)
         /**
          * Expires a cookie in the client: empty value, Max-Age=0 and a past Expires.
          * path/domain must match the attributes the cookie was set with.

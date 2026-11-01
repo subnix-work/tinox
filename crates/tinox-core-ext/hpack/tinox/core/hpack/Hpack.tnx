@@ -165,6 +165,7 @@ namespace tinox.core.hpack
             return HpackIntResult { value: value, nextOffset: pos }
         }
 
+        @Throws(HpackError)
         /**
          * Decodes an HPACK string literal (RFC 7541 §5.2)
          * Huffman-coded strings (flag bit 0x80) are decoded; see huffmanDecode.
@@ -202,6 +203,7 @@ namespace tinox.core.hpack
             return HpackStrResult { value: tinoxBytesToString(bytes), nextOffset: pos + i }
         }
 
+        @Throws(HpackError)
         /*
          * Huffman decoding (RFC 7541 §5.2 / Appendix B). Real clients (curl, browsers) Huffman-code
          * almost every header string. The tables are the RFC's code/length pairs for symbols 0-255;
@@ -240,7 +242,7 @@ namespace tinox.core.hpack
                     }
                     else if (accLen > 30)
                     {
-                        throw "HPACK: invalid Huffman code"
+                        throw HpackError { message: "HPACK: invalid Huffman code" }
                     }
                     bit = bit - 1
                 }
@@ -249,11 +251,12 @@ namespace tinox.core.hpack
             // Leftover bits must be a prefix of EOS (all ones) and shorter than a byte.
             if (accLen > 7 || acc != (1 << accLen) - 1)
             {
-                throw "HPACK: invalid Huffman padding"
+                throw HpackError { message: "HPACK: invalid Huffman padding" }
             }
             return out
         }
 
+        @Throws(HpackError)
         /**
          * Decodes a complete HPACK header block into a list of headers
          *

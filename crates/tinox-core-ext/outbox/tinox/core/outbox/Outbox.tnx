@@ -11,6 +11,7 @@ namespace tinox.core.outbox
      */
     class Outbox
     {
+        @Throws(OutboxError)
         /**
          * @param destination queue name (routing key on the default exchange)
          * @param messageId   stable key of this logical message (the consumer deduplicates on it); must be
@@ -21,7 +22,7 @@ namespace tinox.core.outbox
         {
             if (destination == "" || messageId == "" || messageId.len() > 255)
             {
-                throw "Outbox.add: destination and messageId are required (messageId at most 255 bytes)"
+                throw OutboxError { message: "Outbox.add: destination and messageId are required (messageId at most 255 bytes)" }
             }
             DB::of(OutboxRecord).save(OutboxRecord { id: 0, destination: destination, messageId: messageId, payload: payload, status: 0, attempts: 0, lastError: "", createdAt: Time::now(), nextAttemptAt: 0, sentAt: 0 })
         }

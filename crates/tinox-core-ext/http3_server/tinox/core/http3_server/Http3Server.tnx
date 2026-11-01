@@ -140,6 +140,7 @@ namespace tinox.core.http3_server
             this.running = false
         }
 
+        @Throws(Http3ServerError)
         /**
          * Binds the UDP socket, completes TLS/QUIC setup, and enters the
          * pump loop. Each http3ServerPumpOnce() call performs one unit of
@@ -154,7 +155,7 @@ namespace tinox.core.http3_server
             this.serverHandle = http3ServerCreate(this.port, this.certPath, this.keyPath, this.requireRetry, this.earlyDataEnabled, this.maxEarlyDataSize)
             if (this.serverHandle < 0)
             {
-                throw "Failed to create HTTP/3 (QUIC) server on port " + this.port.toString() + " (runtime built without TINOX_HTTP3, or TLS cert/key invalid)"
+                throw Http3ServerError { message: "Failed to create HTTP/3 (QUIC) server on port " + this.port.toString() + " (runtime built without TINOX_HTTP3, or TLS cert/key invalid)" }
             }
             this.running = true
             while this.running

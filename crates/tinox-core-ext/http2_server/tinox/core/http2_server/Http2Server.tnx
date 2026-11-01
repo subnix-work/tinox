@@ -79,6 +79,7 @@ namespace tinox.core.http2_server
             this.running = false
         }
 
+        @Throws(Http2ServerError)
         /**
          * Starts listening and enters the connection accept loop.
          * Each accepted connection is handled synchronously (blocking per connection).
@@ -88,7 +89,7 @@ namespace tinox.core.http2_server
             this.socketHandle = httpServerCreate(this.port)
             if (this.socketHandle < 0)
             {
-                throw "Failed to create HTTP/2 server on port " + this.port.toString()
+                throw Http2ServerError { message: "Failed to create HTTP/2 server on port " + this.port.toString() }
             }
             this.running = true
             while this.running

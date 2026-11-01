@@ -1,0 +1,13 @@
+module tinox.core.http3_server
+
+namespace tinox.core.http3_server
+{
+    /**
+     * The HTTP/3 server could not start.
+     */
+    @Error("HTTP3_SERVER_ERROR", 500)
+    class Http3ServerError
+    {
+        var message: String
+    }
+}

@@ -42,12 +42,13 @@ namespace tinox.core.http
         }
 
         // Adds a request header (sent in the order added). Throws on CR/LF/NUL or a non-token name.
+        @Throws(HttpClientError)
         fn header(name: String, value: String) -> HttpClient
         {
             if (name.len() == 0 || name.contains(":") || name.contains(" ") || name.contains("\r") || name.contains("\n")
                 || value.contains("\r") || value.contains("\n"))
             {
-                throw "invalid HTTP header: name/value must not contain CR, LF, ':' or spaces in the name"
+                throw HttpClientError { message: "invalid HTTP header: name/value must not contain CR, LF, ':' or spaces in the name" }
             }
             this.headerBlock = this.headerBlock + name + ": " + value + "\r\n"
             return this
@@ -72,11 +73,12 @@ namespace tinox.core.http
             return this
         }
 
+        @Throws(HttpClientError)
         fn timeouts(connectMs: Int64, readMs: Int64, totalMs: Int64) -> HttpClient
         {
             if (connectMs < 0 || readMs < 0 || totalMs < 0)
             {
-                throw "HttpClient timeouts must not be negative"
+                throw HttpClientError { message: "HttpClient timeouts must not be negative" }
             }
             this.connectMs = connectMs
             this.readMs = readMs
@@ -84,6 +86,7 @@ namespace tinox.core.http
             return this
         }
 
+        @Throws(HttpClientError)
         /*
          * Reuses connections (HTTP/1.1 keep-alive, plain and TLS). At most maxPerOrigin
          * connections (idle + in use) exist per scheme/host/port; further requests wait for a
@@ -100,7 +103,7 @@ namespace tinox.core.http
         {
             if (maxPerOrigin < 1 || idleMs < 0 || lifetimeMs < 0)
             {
-                throw "HttpClient.keepAlive: maxPerOrigin must be >= 1 and times must not be negative"
+                throw HttpClientError { message: "HttpClient.keepAlive: maxPerOrigin must be >= 1 and times must not be negative" }
             }
             if (this.pool != 0)
             {
@@ -109,7 +112,7 @@ namespace tinox.core.http
             this.pool = httpPoolCreate(maxPerOrigin, idleMs, lifetimeMs)
             if (this.pool == 0)
             {
-                throw "HttpClient.keepAlive: too many connection pools"
+                throw HttpClientError { message: "HttpClient.keepAlive: too many connection pools" }
             }
             return this
         }

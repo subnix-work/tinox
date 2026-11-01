@@ -50,6 +50,7 @@ namespace tinox.core.oidc
         var sessionCookieName: String
         var pendingCookieName: String
 
+        @Throws(OidcError)
         /*
          * `cookieSecret` seals both cookies (AES-256-GCM, arbitrary
          * length -- SHA-256-derived to a real key internally, same as
@@ -62,7 +63,7 @@ namespace tinox.core.oidc
         {
             if (cookieSecret == "")
             {
-                throw "OidcWebApp::new: cookieSecret must not be empty"
+                throw OidcError { message: "OidcWebApp::new: cookieSecret must not be empty" }
             }
             return OidcWebApp {
                 client: client,
@@ -76,6 +77,7 @@ namespace tinox.core.oidc
 
         // Registers /login and /callback on `server`. Call once at startup,
         // before server.listen().
+        @Throws(OidcError)
         fn install(server: HttpServer) -> Nothing
         {
             // Captured by value into the closures below rather than
@@ -148,6 +150,7 @@ namespace tinox.core.oidc
             })
         }
 
+        @Throws(OidcError)
         /*
          * Like install(), but the session is a managed one (SessionManager, #530): absolute and
          * idle expiry, sliding renewal, rotation, revocation and key rotation. The pending-login
@@ -243,6 +246,7 @@ namespace tinox.core.oidc
             ctx.response.redirect(this.loginPath)
         }
 
+        @Throws(OidcError)
         /*
          * Gate a route on a valid session. On success returns true and
          * leaves ctx.response untouched. On failure (no session cookie,

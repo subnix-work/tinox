@@ -46,10 +46,11 @@ namespace tinox.core.redis
         var refreshes: Int64
         var redirects: Int64
 
+        @Throws(RedisError)
         fn create(seeds: List<String>) -> RedisCluster
         {
             if (seeds.len() < 1) {
-                throw "RedisCluster needs at least one seed node"
+                throw RedisError { message: "RedisCluster needs at least one seed node" }
             }
             var table: List<String> = []
             var i: Int64 = 0
