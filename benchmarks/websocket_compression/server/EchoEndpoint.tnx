@@ -1,0 +1,21 @@
+import tinox.core.websocket
+
+@WebsocketEndpoint("/echo", 8794)
+class EchoEndpoint
+{
+    @OnOpen
+    fn onOpen(conn: Int64) -> Nothing
+    {
+    }
+
+    @OnMessage
+    fn onMessage(conn: Int64, msg: String) -> Nothing
+    {
+        Ws::sendText(conn, msg)
+    }
+
+    @OnClose
+    fn onClose(conn: Int64) -> Nothing
+    {
+    }
+}
