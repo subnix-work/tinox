@@ -1,0 +1,31 @@
+[package]
+compiler = "2.9.0"
+name = "notes"
+version = "0.1.0"
+description = "source-build acceptance fixture"
+
+[database]
+driver = "sqlite"
+url = "data/notes.db"
+changelog = "migrations/changelog.yaml"
+migrate_on_startup = true
+
+[docker]
+ports = [8080]
+image = "tinox-docker-e2e"
+include = ["migrations"]
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "db"
+version = "1.2.4"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "http_server"
+version = "1.2.2"
+
+[[dependencies]]
+group = "tinox.core"
+artifactId = "json"
+version = "1.1.2"

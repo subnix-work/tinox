@@ -1080,9 +1080,10 @@ fn docker_runtime_packages(extra: &[String]) -> Vec<String> {
     if http3_enabled {
         eprintln!(
             "warning: TINOX_HTTP3 is set, but ngtcp2/nghttp3 runtime package names vary by distro \
-             and aren't auto-provisioned here -- add them via [docker] extra_packages in tinox.toml, \
-             or the post-build library check below will fail with a clear error instead of shipping \
-             a broken image."
+             and aren't auto-provisioned here -- add them via [docker] extra_packages in tinox.toml. \
+             With --source-build the stock builder image has no ngtcp2/nghttp3 headers, so the build \
+             fails (missing ngtcp2/ngtcp2.h) instead of shipping a broken image; use a custom \
+             [docker] builder for HTTP/3, or the host build."
         );
     }
     let db_driver = read_database_config();
@@ -1395,10 +1396,10 @@ fn docker_build(args: &[String]) {
     println!("Built {image_ref}");
     println!("Run it with:");
     if cfg.ports.is_empty() {
-        println!("  docker run --rm {image_ref}");
+        println!("  docker run --rm --init {image_ref}");
     } else {
         let publish_flags: String = cfg.ports.iter().map(|p| format!("-p {p}:{p}")).collect::<Vec<_>>().join(" ");
-        println!("  docker run --rm {publish_flags} {image_ref}");
+        println!("  docker run --rm --init {publish_flags} {image_ref}");
     }
 }
 

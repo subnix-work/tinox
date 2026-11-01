@@ -1,0 +1,24 @@
+import tinox.core.http_server
+import tinox.core.json
+import tinox.core.db
+import Note
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const server: HttpServer = HttpServer::new(8080)
+        server.get("/notes", ctx => {
+            const notes: List<Note> = DB::of(Note).list()
+            ctx.response.json(Json::serialize(notes))
+        })
+        server.post("/notes", ctx => {
+            const note: Note = Json::deserialize<Note>(ctx.request.body)
+            DB::of(Note).save(note)
+            ctx.response.status(201).json(Json::serialize(note))
+        })
+        println("notes listening")
+        server.listen()
+        return 0
+    }
+}

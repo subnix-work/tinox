@@ -1,0 +1,15 @@
+import tinox.core.json
+
+@Entity
+@Table("notes")
+@JsonSerializable
+class Note
+{
+    @Id
+    @GeneratedValue
+    var id: Int64
+
+    @Column("text")
+    @NotNull
+    var text: String
+}

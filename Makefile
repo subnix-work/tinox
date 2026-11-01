@@ -229,6 +229,12 @@ docs-stage:
 docs-release-check:
 	python3 scripts/reference.py verify-release
 
+# Real-daemon acceptance of `tinox docker --source-build` (#309): needs docker and network, builds the
+# builder image when missing. Not part of `check`.
+.PHONY: docker-e2e
+docker-e2e:
+	TINOX_DOCKER_E2E=1 cargo test --release -p tinox --test docker_source_build -- --nocapture
+
 # Exercise unpublished extended modules separately from registry/archive tests.
 .PHONY: workspace-stdlib
 workspace-stdlib:
