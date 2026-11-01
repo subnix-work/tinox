@@ -1,0 +1,11 @@
+import tinox.core.amqp091
+import tinox.core.bytes
+
+class Processor
+{
+    fnc drain(ch: AmqpChannel091, queue: String, count: Int64) -> List<Bytes>
+    {
+        // TODO: finite binary consumer with acknowledgements.
+        return []
+    }
+}

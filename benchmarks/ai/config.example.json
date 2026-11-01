@@ -23,5 +23,10 @@
   "output_usd_per_million": 0,
   "wall_seconds": 900,
   "call_seconds": 120,
-  "billing": "local"
+  "billing": "local",
+  "execution_conditions": {
+    "package_cache": "Record exact prewarmed package versions before both conditions",
+    "runtime_cache": "Record and keep the same cold/warm cache policy",
+    "machine_isolation": "Record shared versus isolated machine and concurrent workloads"
+  }
 }

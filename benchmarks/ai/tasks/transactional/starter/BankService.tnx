@@ -1,0 +1,10 @@
+import tinox.core.db
+import Account
+
+class BankService
+{
+    fn transfer(fromId: Int64, toId: Int64, amount: Int64) -> Nothing
+    {
+        // TODO: validation, atomic updates and failure rollback.
+    }
+}

@@ -1801,7 +1801,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_print_bool(i1)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_print_newline()").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_alloc(i64)").unwrap();
-        writeln!(&mut self.ir, "declare void @tinox_panic(i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @tinox_panic(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_task_spawn(i8* (i8*)*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_task_spawn_detached(i8* (i8*)*, i8*)").unwrap();
         // WebSocket connection budget (#302): the accept loops ask before
@@ -10217,7 +10217,8 @@ tr_done_{idx}:"#).unwrap();
                             let fail_bb = self.new_bb("assert_fail");
                             writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", cond, ok_bb, fail_bb).unwrap();
                             writeln!(&mut self.ir, "{}:", fail_bb).unwrap();
-                            writeln!(&mut self.ir, "call void @tinox_panic(i64 1)").unwrap();
+                            let message = self.make_string_const("assertion failed");
+                            writeln!(&mut self.ir, "call void @tinox_panic(i8* {})", message).unwrap();
                             writeln!(&mut self.ir, "unreachable").unwrap();
                             writeln!(&mut self.ir, "{}:", ok_bb).unwrap();
                             return Ok(("0".to_string(), "void".to_string()));

@@ -94,16 +94,19 @@ def validate(config):
         raise ValueError("timeouts must be positive")
     if not isinstance(config.get("settings"), dict):
         raise ValueError("settings must explicitly specify model sampling options")
+    if not isinstance(config.get("execution_conditions"), dict) or not config["execution_conditions"] or not all(
+            isinstance(k, str) and isinstance(v, str) and v for k, v in config["execution_conditions"].items()):
+        raise ValueError("execution_conditions must record cache and machine policies")
     # Configuration and transcripts are public artifacts. Credentials belong only in adapter env.
     for key in config:
         if key not in {"provider", "model", "model_revision", "adapter_version", "condition", "command",
                        "runs", "max_turns", "context_tokens", "max_output_tokens", "token_budget",
                        "max_cost_usd", "input_usd_per_million", "output_usd_per_million", "wall_seconds",
-                       "call_seconds", "settings", "context", "billing"}:
+                       "call_seconds", "settings", "context", "billing", "execution_conditions"}:
             raise ValueError(f"unknown configuration field: {key}")
 
 
-def evaluate(config, task, tinox, output, run_index, remaining_cost):
+def evaluate(config, task, tinox, output, run_index, remaining_cost, service_image_ids=None):
     spec = json.loads((HERE / "tasks" / task / "task.json").read_text())
     start = time.monotonic()
     deadline = start + config["wall_seconds"]
@@ -213,8 +216,12 @@ def evaluate(config, task, tinox, output, run_index, remaining_cost):
                     record["acceptance_attempts"] += 1
                     with tempfile.TemporaryDirectory(prefix="tinox-heldout-") as snapshot:
                         shutil.copytree(workspace, Path(snapshot) / "work")
+                        checker_env = dict(os.environ)
+                        for image, identity in (service_image_ids or {}).items():
+                            key = "TINOX_EVAL_POSTGRES_IMAGE" if image == "postgres:17" else "TINOX_EVAL_RABBITMQ_IMAGE"
+                            checker_env[key] = identity
                         code, _, _ = process([sys.executable, str(HERE / "checks" / "accept.py"), task,
-                                              str(Path(snapshot) / "work"), tinox], HERE, timeout)
+                                              str(Path(snapshot) / "work"), tinox], HERE, timeout, env=checker_env)
                     record["correct"] = code == 0
                     result = "acceptance passed" if code == 0 else "acceptance failed"
                     if code == 0:
@@ -253,12 +260,25 @@ def summary(records):
     return result
 
 
+def service_images(tasks):
+    """Pin service dependencies before the first potentially billed call."""
+    images = (["postgres:17"] if "transactional" in tasks else []) + (["rabbitmq:4-management"] if "broker" in tasks else [])
+    result = {}
+    for image in images:
+        code, identity, _ = process(["docker", "image", "inspect", image, "--format", "{{.Id}}"], REPO, 15)
+        if code or not identity.strip().startswith("sha256:"):
+            raise ValueError(f"preload and pin required service image before provider calls: {image}")
+        result[image] = identity.strip()
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--tinox", type=Path, default=REPO / "target/release/tinox")
-    parser.add_argument("--tasks", nargs="+", choices=["bugfix", "validation", "crud"], default=["bugfix", "validation", "crud"])
+    parser.add_argument("--tasks", nargs="+", choices=sorted(p.name for p in (HERE / "tasks").iterdir() if (p / "task.json").is_file()),
+                        default=sorted(p.name for p in (HERE / "tasks").iterdir() if (p / "task.json").is_file()))
     parser.add_argument("--execute", action="store_true", help="explicitly authorize provider calls")
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
@@ -275,6 +295,7 @@ def main():
     _, dirty, _ = process(["git", "status", "--porcelain"], REPO, 15)
     metadata = {"protocol": 1, "config": config, "tasks": args.tasks,
                 "system_instructions": SYSTEM,
+                "service_images": service_images(args.tasks),
                 "adapter_files_sha256": {str(Path(arg).resolve()): digest(Path(arg).read_bytes())
                                          for arg in config["command"] if Path(arg).is_file()},
                 "compiler_version": version.strip(),
@@ -284,7 +305,7 @@ def main():
                 "context_sha256": {k: digest(Path(v).read_bytes()) for k, v in config.get("context", {}).items()},
                 "package_manifests": {task: {str(p.relative_to(HERE / "tasks" / task)): p.read_text()
                                       for p in (HERE / "tasks" / task).rglob("tinox.toml")} for task in args.tasks},
-                "build_environment": {key: os.environ.get(key) for key in ("CC", "TINOX_CFLAGS", "TINOX_PORT")},
+                "build_environment": {key: os.environ.get(key) for key in ("CC", "TINOX_CFLAGS", "TINOX_PORT", "TINOX_TLS", "TINOX_HTTP3", "TINOX_HOME", "TINOX_RUNTIME_CACHE", "TINOX_RUNTIME_CACHE_DIR")},
                 "platform": platform.platform(), "python": platform.python_version(),
                 "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     (args.out / "protocol.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -292,7 +313,7 @@ def main():
     remaining = config["max_cost_usd"]
     for index in range(1, config["runs"] + 1):
         for task in args.tasks:
-            record = evaluate(config, task, tinox, args.out, index, remaining)
+            record = evaluate(config, task, tinox, args.out, index, remaining, metadata["service_images"])
             records.append(record)
             remaining -= record["cost_usd"]
             (args.out / "summary.json").write_text(json.dumps(summary(records), indent=2) + "\n")

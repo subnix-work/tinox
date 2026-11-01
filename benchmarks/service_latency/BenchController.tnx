@@ -3,6 +3,10 @@ import tinox.core.json
 import tinox.core.debug
 import Item
 import Report
+import Stats
+
+extern fn tinox_limits_json() -> String
+extern fn GC_get_total_bytes() -> Int64
 
 // Four workload profiles behind one annotation-driven controller:
 //   W1 stateless small JSON      GET  /small
@@ -56,6 +60,7 @@ class BenchController
 
     @POST
     @Path("/cache/fill/:n")
+    @Synchronized
     fn fill(@PathParam n: Int64) -> Item
     {
         var c: List<Item> = []
@@ -71,6 +76,7 @@ class BenchController
 
     @GET
     @Path("/cache/:id")
+    @Synchronized
     fn read(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
         if (this.cache == null || id < 0 || id >= this.cache.len())
@@ -84,6 +90,7 @@ class BenchController
 
     @POST
     @Path("/cache/:id/churn")
+    @Synchronized
     fn churn(@PathParam id: Int64, @HttpContext ctx: HttpContext) -> HttpContext
     {
         if (this.cache == null || id < 0 || id >= this.cache.len())
@@ -98,8 +105,8 @@ class BenchController
 
     @GET
     @Path("/stats")
-    fn stats() -> Item
+    fn stats() -> Stats
     {
-        return Item { id: Debug::memoryUsage(), name: "boehm_heap_bytes", tags: "", score: 0.0 }
+        return Stats { id: Debug::memoryUsage(), allocatedBytes: GC_get_total_bytes(), limits: tinox_limits_json() }
     }
 }

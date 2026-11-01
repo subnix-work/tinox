@@ -64,3 +64,40 @@ sets it from `--port`).
 `latencies_ms` (re-derive any percentile). `cold[]` is the first seconds after
 readiness (JIT-less, but caches, heap growth and thread start are cold).
 `samples[]` is the RSS/threads/Boehm-heap time series of the steady phase.
+
+## Current-version enforced-limit follow-up (#312)
+
+Use the dedicated container runners for actual enforced-limit evidence. The
+older `--wrapper --mem-limit-mib` path records requested metadata and now
+explicitly leaves `memory_limit_enforced=false`; a wrapper string is not proof.
+
+```sh
+python3 benchmarks/service_latency/container_suite.py --out /tmp/service-current --repeats 3 --duration 120
+python3 benchmarks/service_latency/container_suite.py --out /tmp/service-sustained --profiles large-live-set --duration 600 --repeats 1
+python3 benchmarks/service_latency/dependency_suite.py --out /tmp/service-dependencies --repeats 3 --duration 60
+python3 benchmarks/service_latency/container_suite.py --out /tmp/service-oom --profiles large-live-set --memory-mib 64 --repeats 1
+python3 -m unittest discover -s benchmarks/service_latency -p '*_test.py'
+```
+
+The OOM command is expected to exit nonzero: inspect its retained state, not
+just the command status. The normal image is a local scratch image containing
+the measured executable and its exact linked libraries; it is never published.
+CPU/memory limits are read from the service PID's cgroup and its ancestors, with
+Docker settings retained independently. The dependency suite uses an actual
+Python HTTP upstream and a PostgreSQL daemon, and adds a TLS service using the
+native fluent API (the current annotation server does not expose TLS startup).
+PostgreSQL uses tmpfs and is removed after the suite. Service images must already
+be cached; record exact image IDs. No provider/model calls are made.
+
+Every frozen suite saves the load client source, workload sources, binary/runtime/
+compiler hashes and full raw latency distributions. A normal Connection: close
+response causes a new connection instead of a false error; an independent
+HTTP server regression verifies that lifecycle. Slow-upstream/DB recovery is
+measured at a reduced offered load (5/s), rather than continuing to overload the
+same dependency. DB pool capacity is two with eight HTTP workers; external
+pg_stat_activity samples show actual active queries. Admission queue counters,
+fd/thread counts and sample failures remain visible. No sampler can infer that
+an unobserved maximum was zero.
+
+See [current_results.md](current_results.md) for the reviewed current evidence
+and its limitations. Historical compiler-2.4.0 tuning results stay unchanged.

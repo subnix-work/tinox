@@ -1,0 +1,114 @@
+module tinox.core.bytes
+
+namespace tinox.core.bytes
+{
+    // One Content-Length-framed HTTP/1.1 exchange over owned TCP or TLS.
+    // No pipelining, chunked transfer, upgrades, trailers or automatic routing.
+    class Http1Stream
+    {
+        var transport: ByteStream
+        var method: String
+        var target: String
+        var headers: String
+        var remaining: Int64
+        var responseRemaining: Int64
+        var responded: Bool
+
+        fn receive(conn: Int64, timeout: Int64) -> Http1Stream
+        {
+            const transport = ByteStream::own(conn)
+            try
+            {
+                const head = transport.readHead(timeout)
+                if (!head.isOk()) { throw "HTTP header read failed: " + head.code.toString() }
+                const text: String = head.bytes.toText()
+                const lines: List<String> = text.split("\r\n")
+                const first: List<String> = lines[0].split(" ")
+                if (first.len() != 3 || first[2] != "HTTP/1.1") { throw "invalid HTTP/1.1 request line" }
+                var size: Int64 = 0
+                var found: Bool = false
+                var i: Int64 = 1
+                while (i < lines.len() && lines[i] != "")
+                {
+                    const colon: Int64 = lines[i].indexOf(":")
+                    if (colon <= 0) { throw "invalid HTTP header" }
+                    const name: String = lines[i].substring(0, colon).toLowerCase()
+                    const value: String = lines[i].substring(colon + 1, lines[i].len()).trim()
+                    if (name == "transfer-encoding") { throw "streaming Transfer-Encoding is unsupported" }
+                    if (name == "content-length")
+                    {
+                        if (found || value == "") { throw "invalid duplicate/empty Content-Length" }
+                        found = true
+                        var j: Int64 = 0
+                        while (j < value.len())
+                        {
+                            const digit: Int64 = value.charCodeAt(j) - 48
+                            if (digit < 0 || digit > 9 || size > 922337203685477580 || (size == 922337203685477580 && digit > 7))
+                            { throw "invalid Content-Length" }
+                            size = size * 10 + digit
+                            j = j + 1
+                        }
+                    }
+                    i = i + 1
+                }
+                return Http1Stream { transport: transport, method: first[0], target: first[1],
+                    headers: text, remaining: size, responseRemaining: 0, responded: false }
+            }
+            catch (error: String)
+            {
+                transport.close()
+                throw error
+            }
+        }
+
+        fn readBody(maximum: Int64, timeout: Int64) -> StreamResult
+        {
+            if (maximum <= 0 || maximum > 1048576) { this.close()
+                throw "invalid HTTP body chunk size" }
+            if (this.remaining == 0)
+            { return StreamResult { code: 0, bytes: Bytes::new(0), transferred: 0,
+                operation: "read body", target: "connection " + this.transport.conn.toString(), cause: "" } }
+            var count: Int64 = maximum
+            if (count > this.remaining) { count = this.remaining }
+            const result = this.transport.read(count, timeout)
+            if (result.isEof())
+            {
+                result.code = 5
+                result.cause = "unexpected EOF before Content-Length"
+                this.close()
+            }
+            if (result.isOk()) { this.remaining = this.remaining - result.transferred }
+            return result
+        }
+
+        fn beginResponse(length: Int64, timeout: Int64) -> Nothing
+        {
+            if (length < 0 || this.responded) { this.close()
+                throw "invalid HTTP response state" }
+            const head: String = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: " + length.toString() + "\r\nConnection: close\r\n\r\n"
+            const result = this.transport.write(Bytes::fromText(head), timeout)
+            if (!result.isOk()) { throw "HTTP response header write failed" }
+            this.responseRemaining = length
+            this.responded = true
+        }
+
+        fn writeBody(bytes: Bytes, timeout: Int64) -> StreamResult
+        {
+            if (!this.responded || bytes.len() > this.responseRemaining)
+            { this.close()
+                throw "HTTP response length exceeded" }
+            const result = this.transport.write(bytes, timeout)
+            this.responseRemaining = this.responseRemaining - result.transferred
+            return result
+        }
+
+        fn finish() -> Nothing
+        {
+            this.close()
+            if (!this.responded || this.remaining != 0 || this.responseRemaining != 0)
+            { throw "incomplete HTTP streaming exchange" }
+        }
+
+        fn close() -> Nothing { this.transport.close() }
+    }
+}

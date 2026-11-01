@@ -2976,6 +2976,99 @@ void fileClose(void* handle) {
     if (handle) fclose((FILE*)handle);
 }
 
+char* tinoxIoCause(int64_t code) { return GC_strdup(code ? strerror((int)code) : ""); }
+
+// Additive recoverable I/O ABI (#306). Each call owns its error snapshot:
+// [errno, operation, target, cause, optional value]. No global last-error state.
+static int64_t* tinox_io_outcome(int code, const char* operation,
+                                 const char* target, const char* value) {
+    int64_t* out = tinox_array_new(0, 5);
+    char number[32];
+    snprintf(number, sizeof(number), "%d", code);
+    tinox_array_push(out, (int64_t)GC_strdup(number));
+    tinox_array_push(out, (int64_t)GC_strdup(operation));
+    tinox_array_push(out, (int64_t)GC_strdup(target));
+    tinox_array_push(out, (int64_t)GC_strdup(code ? strerror(code) : ""));
+    if (!code && value) tinox_array_push(out, (int64_t)value);
+    return out;
+}
+
+int64_t* fsReadTextOutcome(const char* path) {
+    FILE* file = fopen(path, "rb");
+    if (!file) return tinox_io_outcome(errno, "read", path, NULL);
+    size_t capacity = 4096, used = 0;
+    char* text = GC_malloc_atomic(capacity);
+    int error = 0;
+    for (;;) {
+        errno = 0;
+        size_t got = fread(text + used, 1, capacity - used - 1, file);
+        if (memchr(text + used, 0, got)) error = EILSEQ;
+        used += got;
+        if (ferror(file)) error = errno ? errno : EIO;
+        if (error || feof(file)) break;
+        if (used == capacity - 1) {
+            if (capacity > SIZE_MAX / 2) { error = EOVERFLOW; break; }
+            capacity *= 2;
+            text = GC_realloc(text, capacity);
+        }
+    }
+    if (fclose(file) != 0 && !error) error = errno ? errno : EIO;
+    text[used] = 0;
+    // A partial read never exposes a success payload.
+    return tinox_io_outcome(error, "read", path, error ? NULL : text);
+}
+
+int64_t* fsWriteTextOutcome(const char* path, const char* text, int64_t append) {
+    const char* operation = append ? "append" : "write";
+    FILE* file = fopen(path, append ? "ab" : "wb");
+    if (!file) return tinox_io_outcome(errno, operation, path, NULL);
+    size_t size = strlen(text);
+    int error = 0;
+    if (fwrite(text, 1, size, file) != size) error = errno ? errno : EIO;
+    if (fclose(file) != 0 && !error) error = errno ? errno : EIO;
+    return tinox_io_outcome(error, operation, path, NULL);
+}
+
+int64_t* fsCopyOutcome(const char* from, const char* to) {
+    FILE* source = fopen(from, "rb");
+    if (!source) return tinox_io_outcome(errno, "copy.read", from, NULL);
+    // Open without truncation first: aliases/hard links must not destroy input.
+    int fd = open(to, O_WRONLY | O_CREAT | O_CLOEXEC, 0666);
+    int error = fd < 0 ? errno : 0;
+    const char* target = to;
+    const char* operation = "copy.write";
+    struct stat input, output;
+    if (!error && (fstat(fileno(source), &input) || fstat(fd, &output))) error = errno;
+    if (!error && input.st_dev == output.st_dev && input.st_ino == output.st_ino) error = EINVAL;
+    if (!error && S_ISREG(output.st_mode) && ftruncate(fd, 0)) error = errno;
+    FILE* destination = NULL;
+    if (!error) {
+        destination = fdopen(fd, "wb");
+        if (!destination) error = errno;
+    }
+    if (!destination && fd >= 0) close(fd);
+    unsigned char buffer[65536];
+    while (!error) {
+        errno = 0;
+        size_t got = fread(buffer, 1, sizeof(buffer), source);
+        if (ferror(source)) {
+            error = errno ? errno : EIO; target = from; operation = "copy.read"; break;
+        }
+        if (got && fwrite(buffer, 1, got, destination) != got) { error = errno ? errno : EIO; break; }
+        if (feof(source)) break;
+    }
+    if (destination && fclose(destination) && !error) error = errno ? errno : EIO;
+    if (fclose(source) && !error) {
+        error = errno ? errno : EIO; target = from; operation = "copy.read";
+    }
+    return tinox_io_outcome(error, operation, target, NULL);
+}
+
+int64_t* fsMutateOutcome(const char* from, const char* to, int64_t move) {
+    int status = move ? rename(from, to) : unlink(from);
+    return tinox_io_outcome(status ? errno : 0, move ? "move" : "delete", from, NULL);
+}
+
 // ---- Byte-exact file/stdin I/O ----
 // fileReadAllText/fileWriteAllText above are strlen/fputs-based char* --
 // silently truncate at an embedded 0x00 byte (same reason tinox.core.zip
@@ -3320,6 +3413,34 @@ char* tinoxBufAsResponseBody(int64_t h) {
     g_resp_bytes_ptr = (const char*)b->data;
     g_resp_bytes_len = b->len;
     return (char*)b->data;
+}
+
+// Length-aware protocol bridges. Legacy frame parsers retain their lists;
+// these adapters copy once at the application boundary, preserving all bytes.
+char* tinoxHttpRequestBodyFromBytes(int64_t* list) {
+    TinoxArray* bytes = (TinoxArray*)list;
+    char* body = GC_malloc_atomic((size_t)bytes->len + 1);
+    for (int64_t i = 0; i < bytes->len; i++) body[i] = (char)bytes->data[i];
+    body[bytes->len] = 0;
+    g_req_body_ptr = body; g_req_body_len = bytes->len;
+    return body;
+}
+void tinoxHttpClearBodyBridge(void) {
+    g_req_body_ptr = NULL; g_req_body_len = 0;
+    g_resp_bytes_ptr = NULL; g_resp_bytes_len = 0;
+}
+int64_t tinoxHttpBodyLength(const char* body) {
+    if (body && body == g_resp_bytes_ptr) return g_resp_bytes_len;
+    return body ? (int64_t)strlen(body) : 0;
+}
+int64_t* tinoxHttpBodySlice(const char* body, int64_t start, int64_t end) {
+    int64_t size = tinoxHttpBodyLength(body);
+    if (start < 0 || end < start || end > size) {
+        fprintf(stderr, "runtime error: invalid HTTP body slice\n"); exit(1);
+    }
+    int64_t* out = tinox_array_new(0, end - start);
+    for (int64_t i = start; i < end; i++) tinox_array_push(out, (unsigned char)body[i]);
+    return out;
 }
 
 // Explicit adapters to/from the legacy List<Int64> (one element per byte).
@@ -3967,6 +4088,38 @@ char* socketReceive(int64_t fd, int64_t size) {
 // connections from arbitrary untrusted clients. Grow in the same bounded-
 // chunk + amortized-doubling shape as httpConnReadN instead of trusting
 // `count` upfront.
+// Binary frame I/O for the cleartext HTTP/2 parser. Declared lengths are
+// clamped and allocation grows only as bytes arrive, never from peer claims.
+int64_t httpFdReadBuf(int64_t fd, int64_t count) {
+    if (fd < 0 || count <= 0) return tinoxBufNew(0);
+    if (count > TINOX_HTTP2_MAX_RAW_READ) count = TINOX_HTTP2_MAX_RAW_READ;
+    size_t capacity = count < 4096 ? (size_t)count : 4096, used = 0;
+    TinoxBuf* buffer = tinox_buf_alloc((int64_t)capacity);
+    while (used < (size_t)count) {
+        if (used == capacity) {
+            capacity = capacity * 2 > (size_t)count ? (size_t)count : capacity * 2;
+            buffer = GC_realloc(buffer, sizeof(TinoxBuf) + capacity);
+        }
+        ssize_t n = recv((int)fd, buffer->data + used, capacity - used, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        used += (size_t)n;
+    }
+    buffer->len = (int64_t)used;
+    return (int64_t)(intptr_t)buffer;
+}
+int64_t httpFdWriteBuf(int64_t fd, int64_t handle) {
+    TinoxBuf* buffer = tinox_buf_of(handle, "HTTP/2 write");
+    size_t used = 0;
+    while (used < (size_t)buffer->len) {
+        ssize_t n = send((int)fd, buffer->data + used, (size_t)buffer->len - used, MSG_NOSIGNAL);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return -1;
+        used += (size_t)n;
+    }
+    return (int64_t)used;
+}
+
 char* httpServerReadRawBytes(int64_t fd, int64_t count) {
     if (fd < 0 || count <= 0) return GC_strdup("");
     if (count > TINOX_HTTP2_MAX_RAW_READ) count = TINOX_HTTP2_MAX_RAW_READ;
@@ -5905,6 +6058,64 @@ int64_t* tinoxGzip(int64_t* bytes) {
     return nh;
 }
 
+// Compact gzip boundary: input goes straight to zlib, output never widens
+// to List<Int64>. A caller-supplied ceiling bounds decompression bombs.
+int64_t* tinoxBufGzip(int64_t handle, int64_t maximum, int64_t decode) {
+    TinoxBuf* input = tinox_buf_of(handle, "gzip");
+    int64_t* result = tinox_array_new(0, 2);
+    int error = 0;
+    TinoxBuf* output = NULL;
+    if (maximum <= 0 || maximum > 67108864 || input->len > UINT_MAX) error = EINVAL;
+    z_stream stream = {0};
+    bool initialized = false;
+    if (!error) {
+        int status = decode ? inflateInit2(&stream, 31)
+                            : deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 31, 8, Z_DEFAULT_STRATEGY);
+        if (status != Z_OK) error = ENOMEM;
+        else initialized = true;
+    }
+    if (!error) {
+        size_t capacity = maximum < 4096 ? (size_t)maximum : 4096;
+        output = tinox_buf_alloc((int64_t)capacity);
+        stream.next_in = input->data;
+        stream.avail_in = (uInt)input->len;
+        for (;;) {
+            if (task_cancellation(task_scope)) { error = ECANCELED; break; }
+            size_t used = stream.total_out;
+            if (used == capacity) {
+                if (capacity == (size_t)maximum) {
+                    // Distinguish an exactly full output from overflow: let
+                    // zlib consume only a trailer using one scratch byte.
+                    unsigned char extra;
+                    stream.next_out = &extra; stream.avail_out = 1;
+                    int status = decode ? inflate(&stream, Z_FINISH) : deflate(&stream, Z_FINISH);
+                    if (stream.total_out > used || status != Z_STREAM_END) error = EFBIG;
+                    if (!error && stream.avail_in != 0) error = EILSEQ;
+                    break;
+                }
+                capacity = capacity * 2 > (size_t)maximum ? (size_t)maximum : capacity * 2;
+                output = GC_realloc(output, sizeof(TinoxBuf) + capacity);
+            }
+            stream.next_out = output->data + stream.total_out;
+            stream.avail_out = (uInt)(capacity - stream.total_out);
+            uLong before_in = stream.total_in, before_out = stream.total_out;
+            int status = decode ? inflate(&stream, Z_NO_FLUSH) : deflate(&stream, Z_FINISH);
+            if (status == Z_STREAM_END) {
+                if (stream.avail_in != 0) error = EILSEQ; // no hidden trailing members
+                break;
+            }
+            if (status != Z_OK || (stream.total_in == before_in && stream.total_out == before_out)) {
+                error = EILSEQ; break;
+            }
+        }
+        output->len = error ? 0 : (int64_t)stream.total_out;
+    }
+    if (initialized) { if (decode) inflateEnd(&stream); else deflateEnd(&stream); }
+    tinox_array_push(result, error);
+    tinox_array_push(result, error ? tinoxBufNew(0) : (int64_t)(intptr_t)output);
+    return result;
+}
+
 // Thread-local companion to tinoxGunzip, same rationale/pattern as
 // wsLastInflateOk() above (kein Silent-Garbage: a truncated/malformed
 // stream or a CRC32/ISIZE trailer mismatch must not silently look like a
@@ -7418,6 +7629,155 @@ int64_t httpConnWriteBuf(int64_t conn, int64_t h) {
     return b->len;
 }
 
+// Exclusive bounded stream over an already connected TinoxConn (TCP/TLS).
+// The owner must not mix these calls with legacy I/O or concurrent close.
+// All results carry status, compact payload and actual transferred byte count.
+static int64_t* tinox_stream_result(int error, int64_t buffer, int64_t count) {
+    int64_t* out = tinox_array_new(0, 3);
+    tinox_array_push(out, error);
+    tinox_array_push(out, buffer);
+    tinox_array_push(out, count);
+    return out;
+}
+int64_t httpStreamPrepare(int64_t conn) {
+    if (conn <= 0) return EBADF;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    if (atomic_load(&c->closing) || c->fd < 0) return EBADF;
+    int flags = fcntl(c->fd, F_GETFL);
+    if (flags < 0 || fcntl(c->fd, F_SETFL, flags | O_NONBLOCK)) return errno;
+    return 0;
+}
+static int tinox_stream_wait(TinoxConn* c, short events, int64_t deadline) {
+    for (;;) {
+        if (task_cancellation(task_scope)) return ECANCELED;
+        if (atomic_load(&c->closing)) return EBADF;
+        int64_t remaining = deadline - task_clock_ms();
+        if (remaining <= 0) return ETIMEDOUT;
+        struct pollfd fd = { .fd = c->fd, .events = events };
+        int ready = poll(&fd, 1, remaining < 10 ? (int)remaining : 10);
+        if (ready < 0 && errno != EINTR) return errno;
+        if (ready > 0) return (fd.revents & POLLNVAL) ? EBADF : 0;
+    }
+}
+static ssize_t tinox_stream_io(TinoxConn* c, unsigned char* bytes, size_t size,
+                               bool writing, short* wanted) {
+#ifdef TINOX_TLS
+    if (c->ssl) {
+        int n = writing ? SSL_write((SSL*)c->ssl, bytes, (int)size)
+                        : SSL_read((SSL*)c->ssl, bytes, (int)size);
+        if (n > 0) return n;
+        int status = SSL_get_error((SSL*)c->ssl, n);
+        if (status == SSL_ERROR_ZERO_RETURN) return 0;
+        if (status == SSL_ERROR_WANT_READ || status == SSL_ERROR_WANT_WRITE) {
+            *wanted = status == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT;
+            errno = EAGAIN; return -1;
+        }
+        if (status != SSL_ERROR_SYSCALL || !errno) errno = EIO;
+        return -1;
+    }
+#endif
+    *wanted = writing ? POLLOUT : POLLIN;
+    return writing ? send(c->fd, bytes, size, MSG_NOSIGNAL | MSG_DONTWAIT)
+                   : recv(c->fd, bytes, size, MSG_DONTWAIT);
+}
+int64_t* httpStreamRead(int64_t conn, int64_t maximum, int64_t timeout) {
+    if (conn <= 0 || maximum <= 0 || maximum > 1048576 || timeout <= 0 ||
+        timeout > 86400000) return tinox_stream_result(EINVAL, tinoxBufNew(0), 0);
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    TinoxBuf* buffer = tinox_buf_alloc(maximum);
+    int64_t deadline = task_clock_ms() + timeout;
+    short wanted = POLLIN;
+    int error = 0;
+    ssize_t got = -1;
+    for (;;) {
+        if (task_cancellation(task_scope)) { error = ECANCELED; break; }
+        errno = 0;
+        got = tinox_stream_io(c, buffer->data, (size_t)maximum, false, &wanted);
+        if (got >= 0) break;
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) { error = errno ? errno : EIO; break; }
+        error = tinox_stream_wait(c, wanted, deadline);
+        if (error) break;
+    }
+    buffer->len = error ? 0 : got;
+    return tinox_stream_result(error, (int64_t)(intptr_t)buffer, buffer->len);
+}
+// Read one bounded HTTP/1 header block without consuming any body bytes.
+// A total deadline covers the entire header, including continuously arriving
+// input. Framing is deliberately Content-Length only at the public API.
+int64_t* httpStreamReadHead(int64_t conn, int64_t maximum, int64_t timeout) {
+    if (conn <= 0 || maximum < 4 || maximum > 16384 || timeout <= 0 ||
+        timeout > 86400000) return tinox_stream_result(EINVAL, tinoxBufNew(0), 0);
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    TinoxBuf* buffer = tinox_buf_alloc(maximum);
+    size_t used = 0;
+    int error = 0;
+    int64_t deadline = task_clock_ms() + timeout;
+    short wanted = POLLIN;
+    while (used < (size_t)maximum) {
+        if (task_cancellation(task_scope)) { error = ECANCELED; break; }
+        if (task_clock_ms() >= deadline) { error = ETIMEDOUT; break; }
+        errno = 0;
+        ssize_t got = tinox_stream_io(c, buffer->data + used, 1, false, &wanted);
+        if (got > 0) {
+            if (!buffer->data[used++]) { error = EILSEQ; break; }
+            if (used >= 4 && !memcmp(buffer->data + used - 4, "\r\n\r\n", 4)) break;
+            if (used == (size_t)maximum) error = EFBIG;
+            continue;
+        }
+        if (!got) { error = EIO; break; }
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) { error = errno ? errno : EIO; break; }
+        error = tinox_stream_wait(c, wanted, deadline);
+        if (error) break;
+    }
+    buffer->len = error ? 0 : (int64_t)used;
+    return tinox_stream_result(error, (int64_t)(intptr_t)buffer, buffer->len);
+}
+
+int64_t* httpStreamWrite(int64_t conn, int64_t handle, int64_t timeout) {
+    TinoxBuf* buffer = tinox_buf_of(handle, "stream.write");
+    if (conn <= 0 || buffer->len > 1048576 || timeout <= 0 ||
+        timeout > 86400000) return tinox_stream_result(EINVAL, tinoxBufNew(0), 0);
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    int64_t used = 0, deadline = task_clock_ms() + timeout;
+    int error = 0;
+    short wanted = POLLOUT;
+    while (used < buffer->len) {
+        if (task_cancellation(task_scope)) { error = ECANCELED; break; }
+        errno = 0;
+        ssize_t sent = tinox_stream_io(c, buffer->data + used, (size_t)(buffer->len - used), true, &wanted);
+        if (sent > 0) { used += sent; continue; }
+        if (!sent) { error = EPIPE; break; }
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) { error = errno ? errno : EIO; break; }
+        error = tinox_stream_wait(c, wanted, deadline);
+        if (error) break;
+    }
+    return tinox_stream_result(error, tinoxBufNew(0), used);
+}
+
+// Exclusive streams can send TLS close_notify before the legacy concurrent
+// teardown shuts down the socket. Cleanup never waits indefinitely for a peer.
+void httpStreamClose(int64_t conn) {
+    if (conn <= 0) return;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+#ifdef TINOX_TLS
+    if (c->ssl && !atomic_load(&c->closing)) {
+        int64_t deadline = task_clock_ms() + 100;
+        for (;;) {
+            int status = SSL_shutdown((SSL*)c->ssl);
+            if (status >= 0) break; // close_notify sent; peer reply is optional
+            int error = SSL_get_error((SSL*)c->ssl, status);
+            if (error != SSL_ERROR_WANT_WRITE || task_clock_ms() >= deadline) break;
+            struct pollfd fd = { .fd = c->fd, .events = POLLOUT };
+            if (poll(&fd, 1, 10) < 0 && errno != EINTR) break;
+        }
+    }
+#endif
+    conn_close(c);
+}
+
 // Closes a connection (TLS shutdown + free + close).
 void httpConnClose(int64_t conn) {
     if (conn <= 0) return;
@@ -8218,6 +8578,7 @@ static void http3_reject_early_data(Http3ReqSlot* slot) {
     // for a body-less/dr=NULL response), so the actual free happens
     // there, not here.
     http3_req_unregister(slot->conn->server, slot);
+    tinoxHttpClearBodyBridge();
 }
 
 // Drives the nghttp3<->ngtcp2 write pump for every active connection --
@@ -8471,6 +8832,7 @@ char* http3RequestBody(int64_t requestId) {
     if (slot->bodyLen) memcpy(body,slot->body,slot->bodyLen);
     body[slot->bodyLen]=0;
     g_json_body_ptr=body;g_json_body_len=slot->bodyLen;
+    g_req_body_ptr=body;g_req_body_len=(int64_t)slot->bodyLen;
     return body;
 }
 
@@ -8508,8 +8870,11 @@ void http3SubmitResponse(int64_t requestId, int64_t statusCode, void* headersMap
         nva[i + 1].flags = NGHTTP3_NV_FLAG_NONE;
     }
 
-    size_t bodyLen = body ? strlen(body) : 0;
-    slot->respBody = bodyLen > 0 ? strdup(body) : NULL;
+    size_t bodyLen = (size_t)tinoxHttpBodyLength(body);
+    slot->respBody = bodyLen > 0 ? malloc(bodyLen) : NULL;
+    if (bodyLen) memcpy(slot->respBody, body, bodyLen);
+    g_resp_bytes_ptr = NULL;
+    g_resp_bytes_len = 0;
     slot->respBodyLen = bodyLen;
     slot->respBodySent = 0;
 
@@ -12357,6 +12722,8 @@ extern __thread int64_t __tinox_err;
     X(g_request) \
     X(g_ctx) \
     X(g_json_body_ptr) \
+    X(g_req_body_ptr) \
+    X(g_resp_bytes_ptr) \
     X(g_req_headers_map) \
     X(g_resp_headers_map) \
     X(g_path_params_map) \

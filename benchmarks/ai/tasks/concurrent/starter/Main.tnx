@@ -1,0 +1,16 @@
+import Job
+
+class Main
+{
+    fnc parallelChecksum(values: List<Int64>, limit: Int64) -> Int64
+    {
+        // TODO: bounded parallel execution and failure cleanup.
+        return 0
+    }
+
+    fnc main() -> Int32
+    {
+        println(Main::parallelChecksum([2, 3], 2))
+        return 0
+    }
+}

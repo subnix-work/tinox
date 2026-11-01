@@ -1,0 +1,3 @@
+{
+  "prompt": "Implement Main.parallelChecksum(values: List<Int64>, limit: Int64) -> Int64. For each input invoke Job::run(value) exactly once, with at most limit jobs running concurrently. Return the sum of results. Independent checks require real overlap when limit >= 2 and at least two jobs exist, so sequential execution is insufficient. Reject limit <= 0 before starting work. Job::run can throw; propagate failure and join all started jobs before returning or throwing. Empty input returns zero. Do not change Job's public signature. Main.main is only a smoke example; acceptance replaces it and instruments Job independently. Inputs/results fit Int64. Use Tinox structured tasks (scope, spawn, await) and bounded batches or equivalent."
+}

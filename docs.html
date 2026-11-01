@@ -1372,10 +1372,24 @@ class Api {
       Pfad- und Query-Namen unterscheiden sie. Query-Werte bleiben roh;
       der letzte doppelte Parameter gewinnt, ein Schlüssel ohne Wert ist
       vorhanden und leer. Bestehende String-Getter behalten ihren leeren
-      Ersatzwert ohne Deprecation-Warnungen. Die neuen Quellcode-APIs benötigen
-      eine zukünftige HTTP-Paketversion; veröffentlichte Versionen enthalten
-      sie noch nicht. Beispiele und bestehende I/O-Grenzen stehen im
+      Ersatzwert ohne Deprecation-Warnungen. Eine Paketversion mit den optionalen
+      Methoden oder zusammenpassende Workspace-Quellen verwenden. Beispiele und
+      bestehende I/O-Grenzen stehen im
       <a href="docs/api-contracts.md">API-Inventar und Migrationsleitfaden</a>.</p>
+
+    <p>Der aktuelle Quellstand bietet außerdem geprüfte Dateisystem-Alternativen:
+      <code>Fs::tryReadFile</code>, <code>tryWriteFile</code>, <code>tryAppendFile</code>,
+      <code>tryCopyFile</code>, <code>tryMoveFile</code> und <code>tryDeleteFile</code>.
+      Ihr <code>IoResult&lt;T&gt;</code> enthält Status und Nutzwert zusammen;
+      <code>failure()</code> liefert Operation, Ziel, Betriebssystemcode und Ursache.
+      Eine leere Datei ist ein Erfolg; Teil-Lesefehler und fehlgeschlagenes
+      abschließendes Schreiben sind Fehler.
+      <a href="docs/api-contracts.md">Migration und Kompatibilität</a>.</p>
+    <p><code>ByteStream</code> und <code>Http1Stream</code> bieten begrenztes
+      TCP-/TLS-Streaming mit Zeitlimits, expliziter Ressourcenübernahme und Bereinigung.
+      HTTP/1.1-Streaming unterstützt einen Austausch mit Content-Length;
+      die HTTP/2-/HTTP/3-Brücken erhalten Binärdaten, puffern aber weiterhin ganze Bodies.
+      <a href="docs/binary-streaming.md">Binärdaten- und Streaming-Verträge</a>.</p>
 
     <h3>Schlüsselwort-Übersicht</h3>
     <table>

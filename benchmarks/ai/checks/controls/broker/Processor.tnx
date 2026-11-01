@@ -1,0 +1,24 @@
+import tinox.core.amqp091
+import tinox.core.bytes
+
+class Processor
+{
+    fnc drain(ch: AmqpChannel091, queue: String, count: Int64) -> List<Bytes>
+    {
+        if (count < 0) { throw "invalid message count" }
+        var result: List<Bytes> = []
+        if (count == 0) { return result }
+        if (!ch.qos(1)) { throw "qos failed" }
+        if (ch.consume(queue) == "") { throw "consume failed" }
+        var i: Int64 = 0
+        while (i < count)
+        {
+            const message = ch.nextMessage()
+            if (!message.ok) { throw message.errorMessage }
+            result.push(Bytes::fromList(message.body))
+            ch.ack(message.deliveryTag)
+            i = i + 1
+        }
+        return result
+    }
+}
