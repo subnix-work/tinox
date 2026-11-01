@@ -5058,17 +5058,16 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
             }
         }
     }
-    // DB::raw(...) is postgres-only in v1, same reasoning and same check shape
-    // as @Transactional above (its connection-pool/PQexecParams machinery only
-    // exists for that driver). `DB::raw` is a plain call expression, not an
-    // annotation, so it is found with a dedicated AST walk.
+    // DB::raw(...) needs a configured driver: postgres, mysql or sqlite (#562).
+    // `DB::raw` is a plain call expression, not an annotation, so it is found
+    // with a dedicated AST walk.
     if let Some((class_name, method_name)) = find_db_raw_usage(&ast.decls) {
         let driver_cfg = read_database_config();
         let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
-        if driver != "postgres" {
+        if !matches!(driver, "postgres" | "mysql" | "sqlite") {
             return Err(annotation_error(&[class_name.as_str()], format!(
                 "'{class_name}.{method_name}' calls DB::raw(...), but [database] driver is {} -- \
-                 DB::raw(...) is only supported for driver = \"postgres\" in this version",
+                 DB::raw(...) supports driver = \"postgres\", \"mysql\" or \"sqlite\"",
                 if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
             )));
         }

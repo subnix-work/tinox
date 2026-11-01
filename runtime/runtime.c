@@ -14438,6 +14438,7 @@ typedef struct {
     int n_cols;
     int n_rows;
     char** data;  // row-major: data[row * n_cols + col]
+    char** names; // column names (GC copies), n_cols entries; used by DB::raw
 } TinoxSqliteResult;
 
 void tinox_db_pool_init(const char* url, int64_t pool_size) {
@@ -14640,6 +14641,14 @@ void* tinox_db_exec(void* conn, const char* sql_in, const char** params, int64_t
     TinoxSqliteResult* res = (TinoxSqliteResult*)GC_malloc(sizeof(TinoxSqliteResult));
     res->n_cols = n_cols;
     res->n_rows = n_rows;
+    res->names = NULL;
+    if (n_cols > 0) {
+        res->names = (char**)GC_malloc(sizeof(char*) * (size_t)n_cols);
+        for (int c = 0; c < n_cols; c++) {
+            const char* nm = sqlite3_column_name(stmt, c);
+            res->names[c] = GC_strdup(nm ? nm : "");
+        }
+    }
     if (n_rows > 0 && n_cols > 0) {
         res->data = (char**)GC_malloc(sizeof(char*) * (size_t)(n_rows * n_cols));
         for (int r = 0; r < n_rows; r++) {
@@ -14679,6 +14688,26 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
 void    tinox_db_free(void* r) { (void)r; }
 bool    tinox_db_result_failed(void* r) { return r == NULL; }
 char*   tinox_db_error(void* c) { return GC_strdup(sqlite3_errmsg((sqlite3*)c)); }
+
+// DB.raw() row marshaling for SQLite: same contract as the PostgreSQL helper (a
+// NULL column is absent from its row's Map; a statement without a result set,
+// e.g. INSERT/UPDATE, gives an empty list).
+void* tinox_db_result_to_row_maps(void* result) {
+    TinoxSqliteResult* res = (TinoxSqliteResult*)result;
+    int64_t nrows = tinox_db_nrows(result);
+    int64_t ncols = tinox_db_ncols(result);
+    int64_t* rows = tinox_array_new(nrows, 0);
+    int64_t* data = ((TinoxArray*)rows)->data;
+    for (int64_t r = 0; r < nrows; r++) {
+        void* row_map = tinox_map_create();
+        for (int64_t c = 0; c < ncols; c++) {
+            if (tinox_db_is_null(result, r, c)) continue;
+            tinox_map_set(row_map, res->names[c], (int64_t)(intptr_t)GC_strdup(res->data[r * ncols + c]));
+        }
+        data[r] = (int64_t)(intptr_t)row_map;
+    }
+    return (void*)rows;
+}
 
 #elif defined(TINOX_DB_MYSQL)
 
@@ -14788,7 +14817,8 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
 typedef struct {
     int n_cols;
     int n_rows;
-    char** data;   // row-major: data[row * n_cols + col]
+    char** data;   // row-major: data[row * n_cols + col]; NULL for an SQL NULL
+    char** names;  // column names (GC copies), n_cols entries; used by DB::raw
 } TinoxMysqlResult;
 
 static MYSQL* _tinox_mysql_pool_acquire(void) {
@@ -14932,6 +14962,7 @@ static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const cha
         TinoxMysqlResult* idres = (TinoxMysqlResult*)GC_malloc(sizeof(TinoxMysqlResult));
         idres->n_cols = 1;
         idres->n_rows = 1;
+        idres->names = NULL;
         idres->data = (char**)GC_malloc(sizeof(char*));
         char buf[32];
         snprintf(buf, sizeof buf, "%llu", (unsigned long long)mysql_stmt_insert_id(stmt));
@@ -14949,32 +14980,78 @@ static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const cha
     TinoxMysqlResult* res = (TinoxMysqlResult*)GC_malloc(sizeof(TinoxMysqlResult));
     res->n_cols = n_cols;
     res->n_rows = n_rows;
+    res->names  = NULL;
+    if (n_cols > 0) {
+        MYSQL_FIELD* fields = mysql_fetch_fields(meta);
+        res->names = (char**)GC_malloc(sizeof(char*) * (size_t)n_cols);
+        for (int c = 0; c < n_cols; c++) res->names[c] = GC_strdup(fields[c].name ? fields[c].name : "");
+    }
     res->data   = n_cols * n_rows > 0
         ? (char**)GC_malloc(sizeof(char*) * (size_t)(n_cols * n_rows))
         : NULL;
 
     if (n_cols > 0 && n_rows > 0) {
+        // MySQL 8 declares MYSQL_BIND.is_null as bool*, MariaDB as my_bool*: take the type from the header.
+        typedef __typeof__(*((MYSQL_BIND*)0)->is_null) TinoxMysqlNull;
         MYSQL_BIND* out_bind = (MYSQL_BIND*)calloc((size_t)n_cols, sizeof(MYSQL_BIND));
         char** bufs    = (char**)calloc((size_t)n_cols, sizeof(char*));
         unsigned long* out_len = (unsigned long*)calloc((size_t)n_cols, sizeof(unsigned long));
+        TinoxMysqlNull* out_null = (TinoxMysqlNull*)calloc((size_t)n_cols, sizeof(TinoxMysqlNull));
         for (int c = 0; c < n_cols; c++) {
             bufs[c] = (char*)GC_malloc(512);
             out_bind[c].buffer_type   = MYSQL_TYPE_STRING;
             out_bind[c].buffer        = bufs[c];
             out_bind[c].buffer_length = 511;
             out_bind[c].length        = &out_len[c];
+            out_bind[c].is_null       = &out_null[c];
         }
         mysql_stmt_bind_result(stmt, out_bind);
         for (int r = 0; r < n_rows; r++) {
-            mysql_stmt_fetch(stmt);
+            int frc = mysql_stmt_fetch(stmt);
+            if (frc != 0 && frc != MYSQL_DATA_TRUNCATED) {
+                fprintf(stderr, "MySQL fetch error: %s\n", mysql_stmt_error(stmt));
+                free(out_bind); free(bufs); free(out_len); free(out_null);
+                if (meta)    mysql_free_result(meta);
+                if (bind)    free(bind);
+                if (lengths) free(lengths);
+                mysql_stmt_close(stmt);
+                return NULL;
+            }
             for (int c = 0; c < n_cols; c++) {
-                bufs[c][out_len[c]] = '\0';
-                res->data[r * n_cols + c] = GC_strdup(bufs[c]);
+                if (out_null[c]) { res->data[r * n_cols + c] = NULL; continue; }
+                if (out_len[c] > 511) {
+                    // The value did not fit the 512-byte column buffer: fetch the whole column instead of
+                    // silently cutting it off.
+                    unsigned long full = out_len[c];
+                    char* big = (char*)GC_malloc(full + 1);
+                    unsigned long got = 0;
+                    MYSQL_BIND one;
+                    memset(&one, 0, sizeof one);
+                    one.buffer_type   = MYSQL_TYPE_STRING;
+                    one.buffer        = big;
+                    one.buffer_length = full;
+                    one.length        = &got;
+                    if (mysql_stmt_fetch_column(stmt, &one, (unsigned int)c, 0) != 0) {
+                        fprintf(stderr, "MySQL fetch error: %s\n", mysql_stmt_error(stmt));
+                        free(out_bind); free(bufs); free(out_len); free(out_null);
+                        if (meta)    mysql_free_result(meta);
+                        if (bind)    free(bind);
+                        if (lengths) free(lengths);
+                        mysql_stmt_close(stmt);
+                        return NULL;
+                    }
+                    big[full] = '\0';
+                    res->data[r * n_cols + c] = big;
+                } else {
+                    bufs[c][out_len[c]] = '\0';
+                    res->data[r * n_cols + c] = GC_strdup(bufs[c]);
+                }
             }
         }
         free(out_bind);
         free(bufs);
         free(out_len);
+        free(out_null);
     }
 
     if (meta)    mysql_free_result(meta);
@@ -14989,7 +15066,8 @@ int64_t tinox_db_ncols(void* r)              { return r ? ((TinoxMysqlResult*)r)
 char*   tinox_db_getval(void* r, int64_t row, int64_t col) {
     TinoxMysqlResult* res = (TinoxMysqlResult*)r;
     if (!res || !res->data) return "";
-    return res->data[(int)row * res->n_cols + (int)col];
+    char* v = res->data[(int)row * res->n_cols + (int)col];
+    return v ? v : "";
 }
 int64_t tinox_db_getval_int(void* r, int64_t row, int64_t col) {
     TinoxMysqlResult* res = (TinoxMysqlResult*)r;
@@ -15006,6 +15084,26 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
 void    tinox_db_free(void* r) { (void)r; /* GC managed */ }
 bool    tinox_db_result_failed(void* r) { return r == NULL; }
 char*   tinox_db_error(void* c) { return GC_strdup(mysql_error((MYSQL*)c)); }
+
+// DB.raw() row marshaling for MySQL: same contract as the PostgreSQL helper (a
+// NULL column is absent from its row's Map; a statement without a result set,
+// e.g. INSERT/UPDATE, gives an empty list).
+void* tinox_db_result_to_row_maps(void* result) {
+    TinoxMysqlResult* res = (TinoxMysqlResult*)result;
+    int64_t nrows = tinox_db_nrows(result);
+    int64_t ncols = tinox_db_ncols(result);
+    int64_t* rows = tinox_array_new(nrows, 0);
+    int64_t* data = ((TinoxArray*)rows)->data;
+    for (int64_t r = 0; r < nrows; r++) {
+        void* row_map = tinox_map_create();
+        for (int64_t c = 0; c < ncols; c++) {
+            if (tinox_db_is_null(result, r, c)) continue;
+            tinox_map_set(row_map, res->names[c], (int64_t)(intptr_t)GC_strdup(res->data[r * ncols + c]));
+        }
+        data[r] = (int64_t)(intptr_t)row_map;
+    }
+    return (void*)rows;
+}
 
 #else
 // Stub implementations when no DB driver is selected — prevent link errors.

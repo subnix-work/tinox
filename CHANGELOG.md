@@ -6,6 +6,7 @@ All notable changes to Tinox are documented in this file.
 
 ### Added
 
+- **`DB::raw` on SQLite and MySQL** (#562): the parameterized raw-SQL escape hatch now works for `driver = "sqlite"` and `"mysql"` with the same contract as PostgreSQL (column-name keys, NULL columns absent, empty list for no result set, visible failures). MySQL result values are no longer cut at 511 bytes and SQL NULL is reported as NULL instead of an empty string. Verified with the `sqlite3` CLI and a real MySQL container (`crates/tinox/tests/db_raw_portable.rs`).
 - **WebSocket context takeover** (#560, opt-in): `tinox.websocket.compression = context` (application.properties or `TINOX_WEBSOCKET_COMPRESSION`) keeps one DEFLATE and one INFLATE context per connection and honours the client's `*_no_context_takeover` / `server_max_window_bits` parameters. About 4x less wire data for repeated small messages at ~99 KiB per connection; the default stays stateless. Measurements: `benchmarks/websocket_compression/results.md`. `tinox.core.websocket` 1.1.3, `tinox.core.ui` 1.1.3.
 
 ## [2.9.0] - 2026-11-01

@@ -948,7 +948,16 @@ for row in rows
   the database error, like a failed ORM query.
 - Inside `@Transactional` it runs on the transaction's connection; otherwise it
   uses a pooled connection per call.
-- Postgres only: with any other `[database] driver` (or none) the build fails.
+- Drivers: `postgres`, `mysql` and `sqlite` (#562). With no `[database] driver`
+  the build fails. The `$n` placeholders are the same everywhere (rewritten to
+  `?` for MySQL/SQLite; a placeholder may repeat or appear out of order). SQL
+  dialect differences (types, functions, `RETURNING`) are the caller's concern.
+- A statement without a result set (`INSERT`/`UPDATE`/`DELETE`/DDL) returns an
+  empty list; the affected-row count is not exposed. Values arrive as text and
+  are never truncated (MySQL no longer cuts values at 511 bytes). A rejected
+  statement aborts the program with the driver's error on every driver.
+- MySQL: a `NULL` column is now reported as NULL by the driver layer (it used to
+  read as an empty string), which `DB::raw` and the ORM both see.
 
 ---
 
