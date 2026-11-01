@@ -27,6 +27,8 @@
 import tinox.core.http2_server
 import tinox.core.socket
 
+extern fn httpServerReadRawBytes(fd: Int64, count: Int64) -> String
+
 class Main
 {
     fnc main() -> Int32 {

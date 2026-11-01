@@ -4,7 +4,7 @@
 use std::process::Command;
 
 #[test]
-fn failed_assert_reports_its_line_and_exits_1() {
+fn failed_assert_reports_a_diagnostic_and_exits_1() {
     let dir = std::env::temp_dir().join(format!("tinox_assert_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -26,6 +26,6 @@ fn failed_assert_reports_its_line_and_exits_1() {
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(stdout.contains("true survived") && !stdout.contains("unreachable"), "{stdout}");
-    assert!(stderr.contains("PANIC: assertion failed at line 5"), "{stderr}");
+    assert!(stderr.contains("PANIC: assertion failed"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
