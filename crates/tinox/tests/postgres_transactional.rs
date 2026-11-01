@@ -67,7 +67,7 @@ pool = 3
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.1.0"
+version = "1.2.3"
 "#,
             pg.url()
         ),
