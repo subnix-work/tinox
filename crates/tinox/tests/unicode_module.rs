@@ -100,6 +100,16 @@ fn case_mapping_code_points_and_malformed_input_agree_with_python() {
         eprintln!("SKIP: python3 not installed");
         return;
     }
+    // The case tables are generated from one Unicode version; an older/newer Python knows
+    // different code points, so a comparison would only report that version skew.
+    let runtime = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../runtime/runtime.c")).unwrap();
+    let table = runtime.lines().find_map(|l| l.strip_prefix("#define TINOX_UNICODE_VERSION \"")).and_then(|v| v.split('"').next()).unwrap().to_string();
+    let python = Command::new("python3").args(["-I", "-c", "import unicodedata;print(unicodedata.unidata_version)"]).output().unwrap();
+    let python = String::from_utf8_lossy(&python.stdout).trim().to_string();
+    if python != table {
+        eprintln!("SKIP: python3 knows Unicode {python}, the runtime tables are Unicode {table}");
+        return;
+    }
     let expected = Command::new("python3").args(["-I", "-c", EXPECTED]).output().unwrap();
     assert!(expected.status.success(), "{}", String::from_utf8_lossy(&expected.stderr));
     let expected = String::from_utf8(expected.stdout).unwrap();
