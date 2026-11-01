@@ -52,7 +52,7 @@ fn independent_clients_verify_composed_service_recovery_and_draining() {
             } else {
                 // published versions for compiler 2.9.0
                 match module {
-                    "db" => "1.2.3",
+                    "db" => "1.2.4",
                     "http_server" => "1.2.2",
                     "http" => "1.3.1",
                     _ => "1.1.2",

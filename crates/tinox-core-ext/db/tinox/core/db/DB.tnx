@@ -9,15 +9,17 @@ namespace tinox.core.db
             return EntityQuery {}
         }
 
-        // Raw-SQL escape hatch (issue: ai-vault vector search prerequisite).
+        // Raw-SQL escape hatch (issue: ai-vault vector search prerequisite;
+        // PostgreSQL, MySQL and SQLite since #562).
         // Intercepted at the call site by the codegen (gen_orm_raw), exactly
         // like `of(...)`'s chain is -- this body never actually runs. Kept
         // String-only (no Any/dynamic value) deliberately: Tinox has no real
         // runtime `Any`, so a genuinely heterogeneous row/param type can't be
-        // marshaled safely. Postgres sends/receives everything as text
-        // anyway (PQexecParams resultFormat=0), so String is a natural fit,
-        // not a workaround -- a NULL column is simply absent from its row's
-        // Map (check with .contains(col)) rather than a sentinel value.
+        // marshaled safely. All three drivers exchange values as text, so
+        // String is a natural fit, not a workaround -- a NULL column is simply
+        // absent from its row's Map (check with .contains(col)) rather than a
+        // sentinel value, and a statement without a result set returns an
+        // empty list.
         fnc raw(sql: String, params: List<String>) -> List<Map<String, String>>
         {
             return []
