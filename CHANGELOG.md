@@ -6,6 +6,11 @@ All notable changes to Tinox are documented in this file.
 
 ### Added
 
+- #315: official Codex CLI subscription adapter with ChatGPT-only authentication,
+  raw turn/usage evidence and explicit budget-failure accounting. A repeated
+  compiler-2.8.0 context comparison retains all 60 final runs plus interrupted
+  pilots; the added compact guide did not establish an efficiency improvement.
+
 - **WebSocket context takeover** (#560, opt-in): `tinox.websocket.compression = context` (application.properties or `TINOX_WEBSOCKET_COMPRESSION`) keeps one DEFLATE and one INFLATE context per connection and honours the client's `*_no_context_takeover` / `server_max_window_bits` parameters. About 4x less wire data for repeated small messages at ~99 KiB per connection; the default stays stateless. Measurements: `benchmarks/websocket_compression/results.md`. `tinox.core.websocket` 1.1.3, `tinox.core.ui` 1.1.3.
 
 ## [2.9.0] - 2026-11-01

@@ -1,0 +1,36 @@
+{
+  "provider": "codex-chatgpt",
+  "model": "REPLACE_WITH_AVAILABLE_MODEL",
+  "model_revision": "REPLACE_WITH_AVAILABLE_MODEL@codex-cli REPLACE_WITH_INSTALLED_VERSION;backend-snapshot-unavailable",
+  "adapter_version": "codex_adapter.py-v2",
+  "condition": "baseline",
+  "command": [
+    "python3",
+    "/ABSOLUTE/PATH/TO/benchmarks/ai/codex_adapter.py"
+  ],
+  "settings": {
+    "cli_version": "codex-cli REPLACE_WITH_INSTALLED_VERSION",
+    "reasoning_effort": "medium"
+  },
+  "context": {
+    "compact-guide": "/ABSOLUTE/PATH/TO/docs/AI_GUIDE.md"
+  },
+  "runs": 5,
+  "max_turns": 35,
+  "context_tokens": 65536,
+  "max_output_tokens": 8192,
+  "token_budget": 2000000,
+  "max_cost_usd": 0,
+  "input_usd_per_million": 0,
+  "output_usd_per_million": 0,
+  "wall_seconds": 1800,
+  "call_seconds": 900,
+  "billing": "subscription",
+  "execution_conditions": {
+    "package_cache": "Record exact prewarmed package versions before both conditions",
+    "runtime_cache": "Record and keep the same cold/warm cache policy",
+    "machine_isolation": "Record shared versus isolated machine and concurrent workloads",
+    "subscription_policy": "Use an existing ChatGPT login; no API fallback, credit purchase or reset-credit redemption; record quota/reset conditions.",
+    "provider_limits": "CLI exposes a model alias, not an immutable backend snapshot. Output reservation is checked after generation. Visible retry/error events stop the matrix."
+  }
+}

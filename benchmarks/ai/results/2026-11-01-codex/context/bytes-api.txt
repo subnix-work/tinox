@@ -1,0 +1,120 @@
+Public declaration inventory from source at develop 13d7f020. Bodies omitted.
+
+# ByteReader.tnx
+module tinox.core.bytes
+namespace tinox.core.bytes
+class ByteReader
+var fd: Int64
+fn open(path: String) -> ByteReader
+const fd: Int64 = tinoxFileOpenBytes(path, "rb")
+fn read(max: Int64) -> Bytes
+fn copyToConn(conn: Int64, chunk: Int64) -> Int64
+var total: Int64 = 0
+var more: Bool = true
+const h: Int64 = tinoxBufReadChunk(this.fd, chunk)
+const n: Int64 = tinoxBufLen(h)
+fn close() -> Nothing
+
+# ByteStream.tnx
+module tinox.core.bytes
+namespace tinox.core.bytes
+class ByteStream
+var conn: Int64
+fn own(conn: Int64) -> ByteStream
+const stream = ByteStream
+const error: Int64 = httpStreamPrepare(conn)
+fn read(maximum: Int64, timeout: Int64) -> StreamResult
+const result = StreamResult::decode(httpStreamRead(this.conn, maximum, timeout), "read", "connection " + this.conn.toString())
+fn readHead(timeout: Int64) -> StreamResult
+const result = StreamResult::decode(httpStreamReadHead(this.conn, 16384, timeout), "read headers", "connection " + this.conn.toString())
+fn write(bytes: Bytes, timeout: Int64) -> StreamResult
+const result = StreamResult::decode(httpStreamWrite(this.conn, bytes.handle, timeout), "write", "connection " + this.conn.toString())
+fn close() -> Nothing
+
+# ByteWriter.tnx
+module tinox.core.bytes
+namespace tinox.core.bytes
+class ByteWriter
+var fd: Int64
+fn open(path: String) -> ByteWriter
+const fd: Int64 = tinoxFileOpenBytes(path, "wb")
+fn write(b: Bytes) -> Nothing
+fn close() -> Nothing
+
+# Bytes.tnx
+module tinox.core.bytes
+namespace tinox.core.bytes
+class Bytes
+var handle: Int64
+fn new(len: Int64) -> Bytes
+fn fromText(s: String) -> Bytes
+fn fromList(l: List<Int64>) -> Bytes
+fn readFile(path: String) -> Bytes
+fn readStdin() -> Bytes
+fn readFromConn(conn: Int64, n: Int64) -> Bytes
+fn fromRequestBody(body: String) -> Bytes
+fn asResponseBody() -> String
+fn gzip(maximum: Int64) -> Bytes
+const result: List<Int64> = tinoxBufGzip(this.handle, maximum, 0)
+fn gunzip(maximum: Int64) -> Bytes
+const result: List<Int64> = tinoxBufGzip(this.handle, maximum, 1)
+fn len() -> Int64
+fn get(i: Int64) -> Int64
+fn set(i: Int64, v: Int64) -> Nothing
+fn slice(start: Int64, end: Int64) -> Bytes
+fn concat(other: Bytes) -> Bytes
+fn equals(other: Bytes) -> Bool
+fn toText() -> String
+fn toList() -> List<Int64>
+fn writeFile(path: String) -> Nothing
+fn writeToConn(conn: Int64) -> Int64
+
+# Http1Stream.tnx
+module tinox.core.bytes
+namespace tinox.core.bytes
+class Http1Stream
+var transport: ByteStream
+var method: String
+var target: String
+var headers: String
+var remaining: Int64
+var responseRemaining: Int64
+var responded: Bool
+fn receive(conn: Int64, timeout: Int64) -> Http1Stream
+const transport = ByteStream::own(conn)
+const head = transport.readHead(timeout)
+const text: String = head.bytes.toText()
+const lines: List<String> = text.split("\r\n")
+const first: List<String> = lines[0].split(" ")
+var size: Int64 = 0
+var found: Bool = false
+var i: Int64 = 1
+const colon: Int64 = lines[i].indexOf(":")
+const name: String = lines[i].substring(0, colon).toLowerCase()
+const value: String = lines[i].substring(colon + 1, lines[i].len()).trim()
+var j: Int64 = 0
+const digit: Int64 = value.charCodeAt(j) - 48
+fn readBody(maximum: Int64, timeout: Int64) -> StreamResult
+var count: Int64 = maximum
+const result = this.transport.read(count, timeout)
+fn beginResponse(length: Int64, timeout: Int64) -> Nothing
+const head: String = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: " + length.toString() + "\r\nConnection: close\r\n\r\n"
+const result = this.transport.write(Bytes::fromText(head), timeout)
+fn writeBody(bytes: Bytes, timeout: Int64) -> StreamResult
+const result = this.transport.write(bytes, timeout)
+fn finish() -> Nothing
+fn close() -> Nothing
+
+# StreamResult.tnx
+module tinox.core.bytes
+namespace tinox.core.bytes
+class StreamResult
+var operation: String
+var target: String
+var cause: String
+var code: Int64
+var bytes: Bytes
+var transferred: Int64
+fn isOk() -> Bool
+fn isEof() -> Bool
+fn decode(data: List<Int64>, operation: String, target: String) -> StreamResult

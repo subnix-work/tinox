@@ -1,0 +1,38 @@
+{
+  "luna-v4-baseline": {
+    "runs": 30,
+    "correct": 17,
+    "input_tokens": 9304921,
+    "output_tokens": 129304,
+    "cached_input_tokens": 6279168,
+    "reasoning_output_tokens": 73955,
+    "tool_calls": 416,
+    "wall_seconds": 3089.0910345579614,
+    "first_acceptance_successes": 15,
+    "build_failures": 34,
+    "stop_reasons": {
+      "context_limit": 12,
+      "passed": 17,
+      "provider_token_limit": 1
+    },
+    "manual_interventions": 0
+  },
+  "luna-v4-changed": {
+    "runs": 30,
+    "correct": 12,
+    "input_tokens": 10713345,
+    "output_tokens": 160708,
+    "cached_input_tokens": 7425280,
+    "reasoning_output_tokens": 100013,
+    "tool_calls": 455,
+    "wall_seconds": 3522.9684270560683,
+    "first_acceptance_successes": 12,
+    "build_failures": 32,
+    "stop_reasons": {
+      "context_limit": 17,
+      "passed": 12,
+      "provider_token_limit": 1
+    },
+    "manual_interventions": 0
+  }
+}

@@ -1,0 +1,328 @@
+Public declaration inventory from source at develop 13d7f020. Bodies omitted.
+
+# Amqp091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+namespace tinox.core.amqp091
+class Amqp091
+fn dial(host: String, port: Int64) -> Int64
+const fd = socketCreateTcp()
+fn dialTls(host: String, port: Int64, verify: Bool) -> Int64
+const fd = socketCreateTcp()
+fn sendProtocolHeader(conn: Int64) -> Nothing
+const header: List<Int64> = [65, 77, 81, 80, 0, 0, 9, 1]
+fn checkHandshakeResponse(conn: Int64) -> Bool
+const resp = httpConnReadN(conn, 1)
+fn readFrame(conn: Int64) -> AmqpFrame091
+const bad = AmqpFrame091
+const hdr = httpConnReadN(conn, 7)
+const frameType = hdr[0]
+const chanId = (hdr[1] << 8) | hdr[2]
+const size = (hdr[3] << 24) | (hdr[4] << 16) | (hdr[5] << 8) | hdr[6]
+var payload: List<Int64> = []
+const raw = httpConnReadN(conn, size)
+const end = httpConnReadN(conn, 1)
+fn writeFrame(conn: Int64, frameType: Int64, chanId: Int64, payload: List<Int64>) -> Nothing
+const w = AmqpWriter091::new()
+fn encodeMethodPayload(classId: Int64, methodId: Int64, args: List<Int64>) -> List<Int64>
+const w = AmqpWriter091::new()
+fn decodeMethodPayload(payload: List<Int64>) -> AmqpMethodFrame091
+const r = AmqpReader091::new(payload)
+const classId = r.short()
+const methodId = r.short()
+var args: List<Int64> = []
+fn saslPlainResponse(user: String, pass: String) -> List<Int64>
+var bytes: List<Int64> = []
+fn describeAndAckClose(conn: Int64, chanId: Int64, mf: AmqpMethodFrame091, closeOkMethodId: Int64) -> String
+const r = AmqpReader091::new(mf.args)
+const replyCode = r.short()
+const replyText = r.shortstr()
+const closeOkPayload = Amqp091::encodeMethodPayload(mf.classId, closeOkMethodId, [])
+
+# AmqpChannel091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+import tinox.core.bytes
+namespace tinox.core.amqp091
+class AmqpChannel091
+var conn: Int64
+var chanId: Int64
+var frameMax: Int64
+var errorMessage: String
+var confirmsEnabled: Bool
+var lastDeliveryTag: Int64
+var inbox: Channel<AmqpFrame091>
+fn open(connection: AmqpConnection091) -> AmqpChannel091
+const chanId = connection.allocateChanId()
+const inbox: Channel<AmqpFrame091> = channel
+const w = AmqpWriter091::new()
+const openPayload = Amqp091::encodeMethodPayload(20, 10, w.bytes)
+const f = recv inbox
+const mf = Amqp091::decodeMethodPayload(f.payload)
+const msg = Amqp091::describeAndAckClose(connection.conn, chanId, mf, 41)
+fn declareQueue(name: String, durable: Bool, exclusive: Bool, autoDelete: Bool) -> String
+const w = AmqpWriter091::new()
+var flags: Int64 = 0 // bit 0 (passive) always 0 in v1
+var emptyArgs: Map<String, AmqpFieldValue091> = Map::new()
+const payload = Amqp091::encodeMethodPayload(50, 10, w.bytes)
+const f = recv this.inbox
+const mf = Amqp091::decodeMethodPayload(f.payload)
+const r = AmqpReader091::new(mf.args)
+fn declareExchange(name: String, exchangeType: String, durable: Bool, autoDelete: Bool) -> Bool
+const w = AmqpWriter091::new()
+var flags: Int64 = 0 // bit 0 (passive) always 0 in v1
+var emptyArgs: Map<String, AmqpFieldValue091> = Map::new()
+const payload = Amqp091::encodeMethodPayload(40, 10, w.bytes)
+const f = recv this.inbox
+const mf = Amqp091::decodeMethodPayload(f.payload)
+fn bindQueue(queue: String, exchange: String, routingKey: String) -> Bool
+const w = AmqpWriter091::new()
+var emptyArgs: Map<String, AmqpFieldValue091> = Map::new()
+const payload = Amqp091::encodeMethodPayload(50, 20, w.bytes)
+const f = recv this.inbox
+const mf = Amqp091::decodeMethodPayload(f.payload)
+fn qos(prefetchCount: Int64) -> Bool
+const w = AmqpWriter091::new()
+const payload = Amqp091::encodeMethodPayload(60, 10, w.bytes)
+const f = recv this.inbox
+const mf = Amqp091::decodeMethodPayload(f.payload)
+fn confirmSelect() -> Bool
+const w = AmqpWriter091::new()
+const payload = Amqp091::encodeMethodPayload(85, 10, w.bytes)
+const f = recv this.inbox
+const mf = Amqp091::decodeMethodPayload(f.payload)
+fn publish(exchange: String, routingKey: String, body: List<Int64>, contentType: String) -> Int64
+const w = AmqpWriter091::new()
+var flags: Int64 = 0
+const pw = AmqpWriter091::new()
+var assignedTag: Int64 = 0
+const payload = Amqp091::encodeMethodPayload(60, 40, w.bytes)
+const hw = AmqpWriter091::new()
+var frameOverhead: Int64 = 8
+var chunkSize: Int64 = this.frameMax - frameOverhead
+var offset: Int64 = 0
+const n = body.len()
+var end: Int64 = offset + chunkSize
+var chunk: List<Int64> = []
+fn publishBytes(exchange: String, routingKey: String, body: Bytes, contentType: String) -> Int64
+const w = AmqpWriter091::new()
+var flags: Int64 = 0
+const pw = AmqpWriter091::new()
+var assignedTag: Int64 = 0
+const payload = Amqp091::encodeMethodPayload(60, 40, w.bytes)
+const hw = AmqpWriter091::new()
+var frameOverhead: Int64 = 8
+var chunkSize: Int64 = this.frameMax - frameOverhead
+var offset: Int64 = 0
+const n = body.len()
+var end: Int64 = offset + chunkSize
+const chunk: List<Int64> = body.slice(offset, end).toList()
+fn consume(queue: String) -> String
+const w = AmqpWriter091::new()
+var emptyArgs: Map<String, AmqpFieldValue091> = Map::new()
+const payload = Amqp091::encodeMethodPayload(60, 20, w.bytes)
+const f = recv this.inbox
+const mf = Amqp091::decodeMethodPayload(f.payload)
+const r = AmqpReader091::new(mf.args)
+fn nextMessage() -> AmqpMessage091
+const f1 = recv this.inbox
+const mf = Amqp091::decodeMethodPayload(f1.payload)
+const msg = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+const r = AmqpReader091::new(mf.args)
+const deliveryTag = r.longlong()
+const exchange = r.shortstr()
+const routingKey = r.shortstr()
+const f2 = recv this.inbox
+const hr = AmqpReader091::new(f2.payload)
+const bodySize = hr.longlong()
+const flags = hr.short()
+var contentType: String = ""
+var body: List<Int64> = []
+const f3 = recv this.inbox
+fn ack(deliveryTag: Int64) -> Nothing
+const w = AmqpWriter091::new()
+const payload = Amqp091::encodeMethodPayload(60, 80, w.bytes)
+fn waitForConfirm() -> AmqpConfirmResult091
+const f = recv this.inbox
+const mf = Amqp091::decodeMethodPayload(f.payload)
+const msg = Amqp091::describeAndAckClose(this.conn, this.chanId, mf, 41)
+const r = AmqpReader091::new(mf.args)
+const deliveryTag = r.longlong()
+const bits = r.octet()
+const multiple = (bits & 1) != 0
+const ack = mf.methodId == 80
+
+# AmqpConfirmResult091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+namespace tinox.core.amqp091
+class AmqpConfirmResult091
+var deliveryTag: Int64
+var multiple: Bool
+var ack: Bool
+var ok: Bool
+var errorMessage: String
+
+# AmqpConnection091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+namespace tinox.core.amqp091
+class AmqpConnection091
+var conn: Int64
+var frameMax: Int64
+var channelMax: Int64
+var heartbeat: Int64
+var errorMessage: String
+var heartbeatRunning: Bool
+var heartbeatHandle: Int64
+var channelIds: List<Int64>
+var channelInboxes: List<Channel<AmqpFrame091>>
+var connectionInbox: Channel<AmqpFrame091>
+var dispatcherRunning: Bool
+var dispatcherHandle: Int64
+var nextChanId: Int64
+fn connect(host: String, port: Int64, vhost: String, user: String, pass: String) -> AmqpConnection091
+const conn = Amqp091::dial(host, port)
+fn connectTls(host: String, port: Int64, vhost: String, user: String, pass: String, verify: Bool) -> AmqpConnection091
+const conn = Amqp091::dialTls(host, port, verify)
+fn finishHandshake(conn: Int64, vhost: String, user: String, pass: String) -> AmqpConnection091
+const f1 = Amqp091::readFrame(conn)
+const startMethod = Amqp091::decodeMethodPayload(f1.payload)
+const startArgs = AmqpReader091::new(startMethod.args)
+const mechanisms = startArgs.longstr()
+const w1 = AmqpWriter091::new()
+var clientProps: Map<String, AmqpFieldValue091> = Map::new()
+const startOkPayload = Amqp091::encodeMethodPayload(10, 11, w1.bytes)
+const f2 = Amqp091::readFrame(conn)
+const tuneMethod = Amqp091::decodeMethodPayload(f2.payload)
+const msg = Amqp091::describeAndAckClose(conn, 0, tuneMethod, 51)
+const tuneArgs = AmqpReader091::new(tuneMethod.args)
+const serverChannelMax = tuneArgs.short()
+const serverFrameMax = tuneArgs.long()
+const serverHeartbeat = tuneArgs.short()
+var negotiatedFrameMax: Int64 = 131072
+const w2 = AmqpWriter091::new()
+const tuneOkPayload = Amqp091::encodeMethodPayload(10, 31, w2.bytes)
+const w3 = AmqpWriter091::new()
+const openPayload = Amqp091::encodeMethodPayload(10, 40, w3.bytes)
+const f3 = Amqp091::readFrame(conn)
+const openMethod = Amqp091::decodeMethodPayload(f3.payload)
+const msg = Amqp091::describeAndAckClose(conn, 0, openMethod, 51)
+var result = AmqpConnection091
+fn allocateChanId() -> Int64
+fn registerChannelInbox(chanId: Int64, inbox: Channel<AmqpFrame091>) -> Nothing
+fn sendHeartbeat() -> Nothing
+fn startHeartbeat(intervalMs: Int64) -> Nothing
+fn stopHeartbeat() -> Nothing
+fn close() -> Nothing
+const w = AmqpWriter091::new()
+const closePayload = Amqp091::encodeMethodPayload(10, 50, w.bytes)
+const f = Amqp091::readFrame(connection.conn)
+
+# AmqpFieldValue091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+namespace tinox.core.amqp091
+
+# AmqpFrame091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+namespace tinox.core.amqp091
+class AmqpFrame091
+var frameType: Int64
+var chanId: Int64
+var payload: List<Int64>
+
+# AmqpMessage091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+import tinox.core.bytes
+namespace tinox.core.amqp091
+class AmqpMessage091
+fn bodyBytes() -> Bytes
+fn setBodyBytes(bytes: Bytes) -> Nothing
+var deliveryTag: Int64
+var exchange: String
+var routingKey: String
+var contentType: String
+var body: List<Int64>
+var ok: Bool
+var errorMessage: String
+
+# AmqpMethodFrame091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+namespace tinox.core.amqp091
+class AmqpMethodFrame091
+var classId: Int64
+var methodId: Int64
+var args: List<Int64>
+
+# AmqpReader091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+namespace tinox.core.amqp091
+class AmqpReader091
+var bytes: List<Int64>
+var pos: Int64
+var truncated: Bool
+fn new(bytes: List<Int64>) -> AmqpReader091
+fn remaining() -> Int64
+fn octet() -> Int64
+const v = this.bytes[this.pos]
+fn short() -> Int64
+const hi = this.octet()
+const lo = this.octet()
+fn long() -> Int64
+var v: Int64 = 0
+fn longSigned() -> Int64
+const v = this.long()
+fn longlong() -> Int64
+var v: Int64 = 0
+fn rawStr(n: Int64) -> String
+var bytes: List<Int64> = []
+const b = this.octet()
+fn shortstr() -> String
+const n = this.octet()
+fn longstr() -> String
+const n = this.long()
+fn fieldValue() -> AmqpFieldValue091
+const tag = this.octet()
+const b = this.octet()
+fn fieldTable() -> Map<String, AmqpFieldValue091>
+const tableLen = this.long()
+const endPos = this.pos + tableLen
+var result: Map<String, AmqpFieldValue091> = Map::new()
+const key = this.shortstr()
+const value = this.fieldValue()
+fn fieldArray() -> List<AmqpFieldValue091>
+const arrLen = this.long()
+const endPos = this.pos + arrLen
+var result: List<AmqpFieldValue091> = []
+
+# AmqpWriter091.tnx
+module tinox.core.amqp091
+import tinox.core.socket
+namespace tinox.core.amqp091
+class AmqpWriter091
+var bytes: List<Int64>
+var tooLong: Bool
+fn new() -> AmqpWriter091
+fn hasError() -> Bool
+fn octet(v: Int64) -> Nothing
+fn short(v: Int64) -> Nothing
+fn long(v: Int64) -> Nothing
+fn longlong(v: Int64) -> Nothing
+var shift: Int64 = 56
+fn rawStr(s: String) -> Nothing
+fn rawBytes(data: List<Int64>) -> Nothing
+fn shortstr(s: String) -> Nothing
+fn longstr(s: String) -> Nothing
+fn longstrBytes(data: List<Int64>) -> Nothing
+fn fieldValue(v: AmqpFieldValue091) -> Nothing
+fn fieldTable(t: Map<String, AmqpFieldValue091>) -> Nothing
+const inner = AmqpWriter091::new()
+const keys = t.keys()
+const k = keys[i]
+fn fieldArray(a: List<AmqpFieldValue091>) -> Nothing
+const inner = AmqpWriter091::new()

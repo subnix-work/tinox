@@ -1,0 +1,728 @@
+{
+  "variable": "context",
+  "baseline": {
+    "broker": {
+      "runs": 5,
+      "successes": 4,
+      "first_attempt_successes": 3,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 338604.2,
+        "stdev": 301537.7516575661,
+        "min": 163223,
+        "max": 875019
+      },
+      "output_tokens": {
+        "mean": 4069.6,
+        "stdev": 4836.637034138494,
+        "min": 1317,
+        "max": 12596
+      },
+      "wall_seconds": {
+        "mean": 112.0548986477952,
+        "stdev": 90.06106269323735,
+        "min": 50.69217898399802,
+        "max": 270.7530720899813
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 1,
+        "stdev": 1.224744871391589,
+        "min": 0,
+        "max": 3
+      },
+      "tool_calls": {
+        "mean": 13.4,
+        "stdev": 9.423375191511797,
+        "min": 8,
+        "max": 30
+      }
+    },
+    "bugfix": {
+      "runs": 5,
+      "successes": 5,
+      "first_attempt_successes": 5,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 81391.8,
+        "stdev": 16859.851562217267,
+        "min": 58129,
+        "max": 101098
+      },
+      "output_tokens": {
+        "mean": 1034.8,
+        "stdev": 285.27740884970194,
+        "min": 699,
+        "max": 1264
+      },
+      "wall_seconds": {
+        "mean": 39.078703398397195,
+        "stdev": 9.911596200331859,
+        "min": 27.98568196600536,
+        "max": 55.15637708999566
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 0.2,
+        "stdev": 0.4472135954999579,
+        "min": 0,
+        "max": 1
+      },
+      "tool_calls": {
+        "mean": 6.6,
+        "stdev": 0.8944271909999159,
+        "min": 5,
+        "max": 7
+      }
+    },
+    "concurrent": {
+      "runs": 5,
+      "successes": 5,
+      "first_attempt_successes": 5,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 190366.8,
+        "stdev": 20705.07910393003,
+        "min": 166200,
+        "max": 220358
+      },
+      "output_tokens": {
+        "mean": 1623.2,
+        "stdev": 138.01521655237875,
+        "min": 1487,
+        "max": 1848
+      },
+      "wall_seconds": {
+        "mean": 63.27317592999316,
+        "stdev": 12.20283154376743,
+        "min": 50.46356673899572,
+        "max": 77.0860629589879
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 0,
+        "stdev": 0.0,
+        "min": 0,
+        "max": 0
+      },
+      "tool_calls": {
+        "mean": 9.8,
+        "stdev": 0.8366600265340756,
+        "min": 9,
+        "max": 11
+      }
+    },
+    "crud": {
+      "runs": 5,
+      "successes": 0,
+      "first_attempt_successes": 0,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 355431,
+        "stdev": 96007.02370399782,
+        "min": 232363,
+        "max": 431053
+      },
+      "output_tokens": {
+        "mean": 6499,
+        "stdev": 2463.2079692953253,
+        "min": 3745,
+        "max": 9562
+      },
+      "wall_seconds": {
+        "mean": 127.76616867060656,
+        "stdev": 38.958642251059246,
+        "min": 83.08489769100561,
+        "max": 163.18080770102097
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 2.2,
+        "stdev": 1.3038404810405297,
+        "min": 1,
+        "max": 4
+      },
+      "tool_calls": {
+        "mean": 16,
+        "stdev": 3.1622776601683795,
+        "min": 12,
+        "max": 20
+      }
+    },
+    "transactional": {
+      "runs": 5,
+      "successes": 2,
+      "first_attempt_successes": 2,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 528024.8,
+        "stdev": 257625.21453790195,
+        "min": 190511,
+        "max": 808560
+      },
+      "output_tokens": {
+        "mean": 8002.4,
+        "stdev": 4932.6051230561725,
+        "min": 1866,
+        "max": 14248
+      },
+      "wall_seconds": {
+        "mean": 169.131492006802,
+        "stdev": 76.85041709634986,
+        "min": 70.1758555950073,
+        "max": 253.8023616639839
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 2.6,
+        "stdev": 2.4083189157584592,
+        "min": 0,
+        "max": 6
+      },
+      "tool_calls": {
+        "mean": 21.8,
+        "stdev": 8.228000972289685,
+        "min": 11,
+        "max": 29
+      }
+    },
+    "validation": {
+      "runs": 5,
+      "successes": 1,
+      "first_attempt_successes": 0,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 367165.6,
+        "stdev": 80276.47560649384,
+        "min": 243899,
+        "max": 435872
+      },
+      "output_tokens": {
+        "mean": 4631.8,
+        "stdev": 1061.6005369252598,
+        "min": 2937,
+        "max": 5824
+      },
+      "wall_seconds": {
+        "mean": 106.51376825799817,
+        "stdev": 18.309266739988008,
+        "min": 75.80930350298877,
+        "max": 122.7669031250116
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 0.8,
+        "stdev": 0.8366600265340756,
+        "min": 0,
+        "max": 2
+      },
+      "tool_calls": {
+        "mean": 15.6,
+        "stdev": 2.3021728866442674,
+        "min": 12,
+        "max": 18
+      }
+    }
+  },
+  "changed": {
+    "broker": {
+      "runs": 5,
+      "successes": 2,
+      "first_attempt_successes": 2,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 456265.2,
+        "stdev": 339154.83498647047,
+        "min": 151628,
+        "max": 930044
+      },
+      "output_tokens": {
+        "mean": 5932.8,
+        "stdev": 6369.338442884002,
+        "min": 1261,
+        "max": 16391
+      },
+      "wall_seconds": {
+        "mean": 144.73450984840164,
+        "stdev": 121.06911386981515,
+        "min": 46.891085581999505,
+        "max": 340.79499070098973
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 1.8,
+        "stdev": 0.8366600265340756,
+        "min": 1,
+        "max": 3
+      },
+      "tool_calls": {
+        "mean": 17.6,
+        "stdev": 9.60728889958036,
+        "min": 8,
+        "max": 31
+      }
+    },
+    "bugfix": {
+      "runs": 5,
+      "successes": 5,
+      "first_attempt_successes": 5,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 56671.6,
+        "stdev": 20113.191698484854,
+        "min": 36184,
+        "max": 86962
+      },
+      "output_tokens": {
+        "mean": 778.8,
+        "stdev": 268.2754181806451,
+        "min": 585,
+        "max": 1238
+      },
+      "wall_seconds": {
+        "mean": 26.349331088399047,
+        "stdev": 8.405783005396996,
+        "min": 17.23171115698642,
+        "max": 38.540550798992626
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 0,
+        "stdev": 0.0,
+        "min": 0,
+        "max": 0
+      },
+      "tool_calls": {
+        "mean": 4.6,
+        "stdev": 1.51657508881031,
+        "min": 3,
+        "max": 7
+      }
+    },
+    "concurrent": {
+      "runs": 5,
+      "successes": 4,
+      "first_attempt_successes": 4,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 182706.6,
+        "stdev": 63099.21961324086,
+        "min": 94609,
+        "max": 240766
+      },
+      "output_tokens": {
+        "mean": 1741.2,
+        "stdev": 633.0447851455693,
+        "min": 1013,
+        "max": 2646
+      },
+      "wall_seconds": {
+        "mean": 62.121605559805175,
+        "stdev": 16.266845540119945,
+        "min": 34.463235872011865,
+        "max": 73.51317755199852
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 0,
+        "stdev": 0.0,
+        "min": 0,
+        "max": 0
+      },
+      "tool_calls": {
+        "mean": 9.4,
+        "stdev": 2.073644135332772,
+        "min": 6,
+        "max": 11
+      }
+    },
+    "crud": {
+      "runs": 5,
+      "successes": 0,
+      "first_attempt_successes": 0,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 311101,
+        "stdev": 108889.75001119252,
+        "min": 226503,
+        "max": 500570
+      },
+      "output_tokens": {
+        "mean": 5242,
+        "stdev": 2419.418111860784,
+        "min": 2446,
+        "max": 7674
+      },
+      "wall_seconds": {
+        "mean": 100.70947655220516,
+        "stdev": 26.445389456399056,
+        "min": 69.42247242500889,
+        "max": 137.42523395101307
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 1.4,
+        "stdev": 0.8944271909999159,
+        "min": 0,
+        "max": 2
+      },
+      "tool_calls": {
+        "mean": 13.8,
+        "stdev": 2.7748873851023217,
+        "min": 11,
+        "max": 18
+      }
+    },
+    "transactional": {
+      "runs": 5,
+      "successes": 1,
+      "first_attempt_successes": 1,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 468642.6,
+        "stdev": 172258.8434748707,
+        "min": 197517,
+        "max": 636260
+      },
+      "output_tokens": {
+        "mean": 7023,
+        "stdev": 3270.669809075811,
+        "min": 1924,
+        "max": 9974
+      },
+      "wall_seconds": {
+        "mean": 160.87343123359605,
+        "stdev": 56.355892593451735,
+        "min": 69.88670162198832,
+        "max": 203.29427951999241
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 1.6,
+        "stdev": 1.140175425099138,
+        "min": 0,
+        "max": 3
+      },
+      "tool_calls": {
+        "mean": 21,
+        "stdev": 6.2048368229954285,
+        "min": 11,
+        "max": 26
+      }
+    },
+    "validation": {
+      "runs": 5,
+      "successes": 0,
+      "first_attempt_successes": 0,
+      "incomplete_accounting": 0,
+      "input_tokens": {
+        "mean": 667282,
+        "stdev": 186049.3537747444,
+        "min": 392328,
+        "max": 856501
+      },
+      "output_tokens": {
+        "mean": 11423.8,
+        "stdev": 5438.155358207413,
+        "min": 4930,
+        "max": 19719
+      },
+      "wall_seconds": {
+        "mean": 209.80533112880659,
+        "stdev": 74.67640512796706,
+        "min": 118.53120781201869,
+        "max": 321.1167001379945
+      },
+      "cost_usd": {
+        "mean": 0.0,
+        "stdev": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "build_failures": {
+        "mean": 1.6,
+        "stdev": 0.5477225575051661,
+        "min": 1,
+        "max": 2
+      },
+      "tool_calls": {
+        "mean": 24.6,
+        "stdev": 5.856620185738529,
+        "min": 17,
+        "max": 33
+      }
+    }
+  },
+  "protocols": [
+    {
+      "protocol": 1,
+      "config": {
+        "provider": "codex-chatgpt",
+        "model": "gpt-6-luna",
+        "model_revision": "gpt-6-luna@codex-cli 0.164.0;backend-snapshot-unavailable",
+        "adapter_version": "codex_adapter.py-v2",
+        "condition": "reference-only",
+        "command": [
+          "python3",
+          "/home/tg7c49/git/tinox_codex/tinox/benchmarks/ai/codex_adapter.py"
+        ],
+        "settings": {
+          "cli_version": "codex-cli 0.164.0",
+          "reasoning_effort": "medium"
+        },
+        "context": {
+          "language-spec": "/home/tg7c49/git/tinox_codex/tinox/docs/SPEC.md",
+          "http_server-api": "/tmp/tinox-315-codex/context/http_server-api.txt",
+          "db-api": "/tmp/tinox-315-codex/context/db-api.txt",
+          "amqp091-api": "/tmp/tinox-315-codex/context/amqp091-api.txt",
+          "bytes-api": "/tmp/tinox-315-codex/context/bytes-api.txt"
+        },
+        "runs": 5,
+        "max_turns": 35,
+        "context_tokens": 65536,
+        "max_output_tokens": 8192,
+        "token_budget": 2000000,
+        "max_cost_usd": 0,
+        "input_usd_per_million": 0,
+        "output_usd_per_million": 0,
+        "wall_seconds": 1800,
+        "call_seconds": 900,
+        "billing": "subscription",
+        "execution_conditions": {
+          "package_cache": "prewarmed session cache; same TINOX_HOME for both conditions",
+          "runtime_cache": "prewarmed session runtime cache; same directory for both conditions",
+          "machine_isolation": "shared Linux host; sequential model calls and disposable independent service checks",
+          "subscription_policy": "ChatGPT Plus login only; zero additional spending; resumed after 18:27 reset. Luna chosen before this full matrix to conserve the remaining weekly quota. Prior Sol partial matrix is retained separately.",
+          "provider_limits": "CLI exposes model alias, not immutable backend snapshot; output limit is checked after generation, no CLI hard cap; native transport may retry; retry/error events invalidate accounting",
+          "order": "Reference-only condition first, compact-guide-added condition second; five repetitions per task; sequential calls. Temporal/provider-cache confounding cannot be eliminated.",
+          "cli_budget_accounting": "CLI full-turn usage above reservation is a known-accounting failed task; do not execute its action. Stop the matrix for missing usage or provider/native-tool errors."
+        }
+      },
+      "tasks": [
+        "broker",
+        "bugfix",
+        "concurrent",
+        "crud",
+        "transactional",
+        "validation"
+      ],
+      "system_instructions": "Complete the Tinox task. Reply with one JSON object containing tool and args. Use only these tools: {\"read\": \"{path, offset?, limit?}: read text from a workspace file or docs/<configured-context-name>; offsets in characters, limit <= 12000\", \"list\": \"{}: list workspace files\", \"write\": \"{path, content}: write a workspace file\", \"build\": \"{}: compile Main.tnx\", \"run\": \"{}: execute the last build (10 second timeout)\", \"submit\": \"{}: independently check a snapshot; only pass/fail is returned\"}. Acceptance checks are held out. Submit when ready. Do not request human help.",
+      "service_images": {
+        "postgres:17": "sha256:82903352d6faf8f8a318bc4353d1cb1db67d4a5ff968d2799b2718e2cb00afa2",
+        "rabbitmq:4-management": "sha256:1190aeb118e349c99f6e5fe20b3e56499662cf908b67ba28fc6458edd6ee99fb"
+      },
+      "adapter_files_sha256": {
+        "/home/tg7c49/git/tinox_codex/tinox/benchmarks/ai/codex_adapter.py": "67993a248eb73ff9f244e4cfe613f9c99a9db549bba98ce2dd50fdb33b4144ae"
+      },
+      "compiler_version": "tinox 2.8.0",
+      "compiler_sha256": "38bcd30d0e4107c4aa1e1fb854905d98944f5410210d505bb15f0e8971481674",
+      "repository_commit": "13d7f020683f2c3b5126ca6407004d3783734d19",
+      "dirty_tree": true,
+      "suite_sha256": "92556330b8bf7ef11b9098c729877f639b262a72fd29e0ac7a3d0fc2756b6f7c",
+      "checker_sha256": "785173478940eee236da032e7b111b6be05d1eb9175f3560bb49ce06636a5bc3",
+      "runner_sha256": "b2b0ad9ca75ea218ba3f092ecd22f2ae4821a9b20283edb0a62e18ec8441e852",
+      "context_sha256": {
+        "language-spec": "e7735ba514c4ad09b894b5d2e7f965d368294b44c7b2ac94b5666eb2a6967de4",
+        "http_server-api": "f34b0f4a09942a8b3a15b8b2e1b18ee004fa50c2ed90391f57d7eaf0db8e9bf0",
+        "db-api": "cc79bb003a612bac4d511e13ec1978008dea127fdbb4a078cec50cbb37a3e04e",
+        "amqp091-api": "512390fe578b2852825d3d71b8ece287e54224ed53dc9bf54d8eff913d732edf",
+        "bytes-api": "03d9fc4408d2400bbcb6e44be159bcdfcbc9a370c5bc663817f34e9856ebbf46"
+      },
+      "package_manifests": {
+        "broker": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"broker_eval\"\nversion = \"0.0.0\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\nversion = \"1.1.0\"\n"
+        },
+        "bugfix": {},
+        "concurrent": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"concurrent_eval\"\nversion = \"0.0.0\"\n"
+        },
+        "crud": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"rest_auto\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n"
+        },
+        "transactional": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"transaction_eval\"\nversion = \"0.0.0\"\n\n[database]\ndriver = \"postgres\"\nurl = \"postgres://postgres@127.0.0.1:5432/postgres\"\npool = 2\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n"
+        },
+        "validation": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"rest_auto\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n"
+        }
+      },
+      "build_environment": {
+        "CC": null,
+        "TINOX_CFLAGS": null,
+        "TINOX_PORT": null,
+        "TINOX_TLS": null,
+        "TINOX_HTTP3": null,
+        "TINOX_HOME": "/tmp/tinox-session-packages-cache",
+        "TINOX_RUNTIME_CACHE": null,
+        "TINOX_RUNTIME_CACHE_DIR": "/tmp/tinox-session-runtime-cache"
+      },
+      "platform": "Linux-7.2.11-arch1-1-x86_64-with-glibc2.44",
+      "python": "3.14.8",
+      "started_utc": "2026-11-01T18:39:06Z"
+    },
+    {
+      "protocol": 1,
+      "config": {
+        "provider": "codex-chatgpt",
+        "model": "gpt-6-luna",
+        "model_revision": "gpt-6-luna@codex-cli 0.164.0;backend-snapshot-unavailable",
+        "adapter_version": "codex_adapter.py-v2",
+        "condition": "compact-guide-added",
+        "command": [
+          "python3",
+          "/home/tg7c49/git/tinox_codex/tinox/benchmarks/ai/codex_adapter.py"
+        ],
+        "settings": {
+          "cli_version": "codex-cli 0.164.0",
+          "reasoning_effort": "medium"
+        },
+        "context": {
+          "language-spec": "/home/tg7c49/git/tinox_codex/tinox/docs/SPEC.md",
+          "http_server-api": "/tmp/tinox-315-codex/context/http_server-api.txt",
+          "db-api": "/tmp/tinox-315-codex/context/db-api.txt",
+          "amqp091-api": "/tmp/tinox-315-codex/context/amqp091-api.txt",
+          "bytes-api": "/tmp/tinox-315-codex/context/bytes-api.txt",
+          "compact-guide": "/home/tg7c49/git/tinox_codex/tinox/docs/AI_GUIDE.md"
+        },
+        "runs": 5,
+        "max_turns": 35,
+        "context_tokens": 65536,
+        "max_output_tokens": 8192,
+        "token_budget": 2000000,
+        "max_cost_usd": 0,
+        "input_usd_per_million": 0,
+        "output_usd_per_million": 0,
+        "wall_seconds": 1800,
+        "call_seconds": 900,
+        "billing": "subscription",
+        "execution_conditions": {
+          "package_cache": "prewarmed session cache; same TINOX_HOME for both conditions",
+          "runtime_cache": "prewarmed session runtime cache; same directory for both conditions",
+          "machine_isolation": "shared Linux host; sequential model calls and disposable independent service checks",
+          "subscription_policy": "ChatGPT Plus login only; zero additional spending; resumed after 18:27 reset. Luna chosen before this full matrix to conserve the remaining weekly quota. Prior Sol partial matrix is retained separately.",
+          "provider_limits": "CLI exposes model alias, not immutable backend snapshot; output limit is checked after generation, no CLI hard cap; native transport may retry; retry/error events invalidate accounting",
+          "order": "Reference-only condition first, compact-guide-added condition second; five repetitions per task; sequential calls. Temporal/provider-cache confounding cannot be eliminated.",
+          "cli_budget_accounting": "CLI full-turn usage above reservation is a known-accounting failed task; do not execute its action. Stop the matrix for missing usage or provider/native-tool errors."
+        }
+      },
+      "tasks": [
+        "broker",
+        "bugfix",
+        "concurrent",
+        "crud",
+        "transactional",
+        "validation"
+      ],
+      "system_instructions": "Complete the Tinox task. Reply with one JSON object containing tool and args. Use only these tools: {\"read\": \"{path, offset?, limit?}: read text from a workspace file or docs/<configured-context-name>; offsets in characters, limit <= 12000\", \"list\": \"{}: list workspace files\", \"write\": \"{path, content}: write a workspace file\", \"build\": \"{}: compile Main.tnx\", \"run\": \"{}: execute the last build (10 second timeout)\", \"submit\": \"{}: independently check a snapshot; only pass/fail is returned\"}. Acceptance checks are held out. Submit when ready. Do not request human help.",
+      "service_images": {
+        "postgres:17": "sha256:82903352d6faf8f8a318bc4353d1cb1db67d4a5ff968d2799b2718e2cb00afa2",
+        "rabbitmq:4-management": "sha256:1190aeb118e349c99f6e5fe20b3e56499662cf908b67ba28fc6458edd6ee99fb"
+      },
+      "adapter_files_sha256": {
+        "/home/tg7c49/git/tinox_codex/tinox/benchmarks/ai/codex_adapter.py": "67993a248eb73ff9f244e4cfe613f9c99a9db549bba98ce2dd50fdb33b4144ae"
+      },
+      "compiler_version": "tinox 2.8.0",
+      "compiler_sha256": "38bcd30d0e4107c4aa1e1fb854905d98944f5410210d505bb15f0e8971481674",
+      "repository_commit": "13d7f020683f2c3b5126ca6407004d3783734d19",
+      "dirty_tree": true,
+      "suite_sha256": "92556330b8bf7ef11b9098c729877f639b262a72fd29e0ac7a3d0fc2756b6f7c",
+      "checker_sha256": "785173478940eee236da032e7b111b6be05d1eb9175f3560bb49ce06636a5bc3",
+      "runner_sha256": "b2b0ad9ca75ea218ba3f092ecd22f2ae4821a9b20283edb0a62e18ec8441e852",
+      "context_sha256": {
+        "language-spec": "e7735ba514c4ad09b894b5d2e7f965d368294b44c7b2ac94b5666eb2a6967de4",
+        "http_server-api": "f34b0f4a09942a8b3a15b8b2e1b18ee004fa50c2ed90391f57d7eaf0db8e9bf0",
+        "db-api": "cc79bb003a612bac4d511e13ec1978008dea127fdbb4a078cec50cbb37a3e04e",
+        "amqp091-api": "512390fe578b2852825d3d71b8ece287e54224ed53dc9bf54d8eff913d732edf",
+        "bytes-api": "03d9fc4408d2400bbcb6e44be159bcdfcbc9a370c5bc663817f34e9856ebbf46",
+        "compact-guide": "142348e50731cc1c3d0ad75207ddc3159b4c69d982891bbf5340ab90992b8a95"
+      },
+      "package_manifests": {
+        "broker": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"broker_eval\"\nversion = \"0.0.0\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\nversion = \"1.1.0\"\n"
+        },
+        "bugfix": {},
+        "concurrent": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"concurrent_eval\"\nversion = \"0.0.0\"\n"
+        },
+        "crud": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"rest_auto\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n"
+        },
+        "transactional": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"transaction_eval\"\nversion = \"0.0.0\"\n\n[database]\ndriver = \"postgres\"\nurl = \"postgres://postgres@127.0.0.1:5432/postgres\"\npool = 2\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n"
+        },
+        "validation": {
+          "starter/tinox.toml": "[package]\ncompiler = \"2.8.0\"\nname = \"rest_auto\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.1.0\"\n"
+        }
+      },
+      "build_environment": {
+        "CC": null,
+        "TINOX_CFLAGS": null,
+        "TINOX_PORT": null,
+        "TINOX_TLS": null,
+        "TINOX_HTTP3": null,
+        "TINOX_HOME": "/tmp/tinox-session-packages-cache",
+        "TINOX_RUNTIME_CACHE": null,
+        "TINOX_RUNTIME_CACHE_DIR": "/tmp/tinox-session-runtime-cache"
+      },
+      "platform": "Linux-7.2.11-arch1-1-x86_64-with-glibc2.44",
+      "python": "3.14.8",
+      "started_utc": "2026-11-01T19:30:44Z"
+    }
+  ],
+  "note": "Failures remain in denominators. No automatic efficiency claim."
+}
