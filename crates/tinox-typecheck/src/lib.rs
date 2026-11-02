@@ -985,6 +985,20 @@ impl TypeChecker {
         for name in ["taskCheckCancellation", "taskRequestShutdown"] {
             symbols.functions.insert(name.into(), FunctionSignature { params: vec![], return_type: ValueType::Nothing });
         }
+        // Bounded executors (#551). `__executor_spawn(executor, task)` is the parser's desugaring of
+        // `spawn f(x) on executor` and is the identity on `task` (see check_call).
+        symbols.functions.insert("executorCreate".into(), FunctionSignature {
+            params: vec![("workers".into(), ValueType::Int), ("queue".into(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("executorShutdown".into(), FunctionSignature {
+            params: vec![("executor".into(), ValueType::Int), ("drain".into(), ValueType::Bool)], return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("executorStat".into(), FunctionSignature {
+            params: vec![("executor".into(), ValueType::Int), ("counter".into(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("__executor_spawn".into(), FunctionSignature {
+            params: vec![("executor".into(), ValueType::Int), ("task".into(), ValueType::Any)], return_type: ValueType::Any,
+        });
         symbols.functions.insert("taskWaitReadable".into(), FunctionSignature {
             params: vec![("fd".into(), ValueType::Int)], return_type: ValueType::Nothing,
         });
@@ -4202,8 +4216,11 @@ impl TypeChecker {
         // `__scope_register(scope, task)` is the identity on `task`: the
         // spawn it wraps keeps its Task<T> type.
         if let ExprKind::Ident(name) = &func.node {
-            if name == "__scope_register" && args.len() == 2 {
-                self.infer_type(&args[0]);
+            if (name == "__scope_register" || name == "__executor_spawn") && args.len() == 2 {
+                let first = self.infer_type(&args[0]);
+                if name == "__executor_spawn" && !matches!(first, ValueType::Int | ValueType::Any) {
+                    self.errors.push(Error::new(args[0].span, format!("`spawn ... on` needs an executor handle (Int64 from executorCreate), found {first:?}")));
+                }
                 return self.infer_type(&args[1]);
             }
         }
@@ -5403,6 +5420,9 @@ mod tests {
     #[test]
     fn task_control_requires_a_typed_task() {
         ok("class C { fnc f() -> String { return \"x\" } fnc g() -> Nothing { const t = spawn C::f()\ntaskCancel(t)\ntaskDetach(t) } }");
+        // Bounded executors (#551): the task keeps its Task<T> type; the handle must be an Int64.
+        ok("class C { fnc f() -> Int64 { return 1 } fnc g() -> Nothing { const ex = executorCreate(2, 8)\nconst t: Task<Int64> = spawn C::f() on ex\nconst r: Int64 = await t\nexecutorShutdown(ex, true)\nconst n: Int64 = executorStat(ex, 3) } }");
+        err_contains("class C { fnc f() -> Int64 { return 1 } fnc g() -> Nothing { const t = spawn C::f() on \"pool\" } }", "executor handle");
         err_contains("class C { fnc f() -> Nothing { taskCancel(42) } }", "Task");
         err_contains("class C { fnc f() -> Nothing { taskDetach(42) } }", "Task");
         err_contains("class C { fnc f() -> Nothing { taskSetDeadline(\"soon\") } }", "Int");

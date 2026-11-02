@@ -1282,6 +1282,7 @@ struct TinoxTask {
     pthread_cond_t cond;
     int done, joined, observed, detached;
     int budgeted; // holds a slot of the TINOX_MAX_TASKS budget (#302)
+    int64_t executor; // id of the bounded executor running this job (#551), 0 for a thread-per-task spawn
     void* retval;
     int64_t error;
     TinoxTaskScope* scope;
@@ -1294,6 +1295,7 @@ struct TinoxTask {
 static __thread TinoxTaskScope* task_scope;
 static __thread TinoxTaskScope* task_frame_scope;
 static __thread TinoxTask* current_task;
+static __thread int64_t current_executor_id; // set on executor worker threads (#551)
 static pthread_mutex_t task_registry_mu = PTHREAD_MUTEX_INITIALIZER;
 // Bucket heads are also conservative GC roots for all active tasks.
 #define TINOX_TASK_BUCKETS 1024
@@ -1517,6 +1519,8 @@ void __scope_add(int64_t handle, int64_t task_handle) {
     TinoxTask* task = task_lookup((uintptr_t)task_handle);
     if (scope != task_scope || scope->closed || task->owner != task_frame_scope)
         task_fatal("invalid task scope registration");
+    if (task->executor && task->executor == current_executor_id)
+        task_fatal("a scope inside an executor job cannot own jobs of the same executor (joining them would deadlock)");
     // Registration stays lexical: spawns in called methods or closures remain
     // owned by the thread frame, exactly as the parser's scope stack specifies.
     task_remove_owner(task);
@@ -1931,7 +1935,237 @@ static void* tinox_spawn_trampoline(void* raw) {
     if (task->budgeted) tinox_budget_release(&g_active_tasks);
     return ret;
 }
-static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
+
+
+// ---- Bounded executor for many small jobs (#551) ----
+// `spawn f(x)` creates a pthread per task. An executor is a separate, explicit abstraction: a fixed number of
+// reusable worker threads behind a bounded FIFO queue. `spawn f(x) on ex` hands the same typed task to it. Jobs keep
+// Task<T> results, error propagation, cancellation (through the job's scope) and the submitter's telemetry/service
+// context. A full queue or a shut-down executor rejects the job (the handle comes back finished and failed); there
+// is no caller-runs fallback and no unbounded growth. Awaiting a job of the worker's own executor is refused.
+#define TINOX_EXECUTOR_MAX 64
+#define TINOX_EXECUTOR_MAX_WORKERS 256
+#define TINOX_EXECUTOR_MAX_QUEUE 1000000
+typedef struct {
+    void* (*fn)(void*);
+    void* args;
+    TinoxTask* task;
+    TinoxTelemetryContext telemetry;
+    int64_t queued_at;
+    int service_id;
+    int cleanup_mode;
+} TinoxExecJob;
+enum { EXEC_RUNNING, EXEC_DRAINING, EXEC_STOPPED };
+typedef struct {
+    int64_t id;
+    pthread_mutex_t mu;
+    pthread_cond_t work, idle;
+    TinoxExecJob* queue; // GC_malloc_uncollectable: the GC scans queued job arguments
+    int64_t cap, head, count;
+    int64_t n_workers;
+    pthread_t* threads;
+    TinoxTask** running; // per worker: the job it is executing (for cancellation on shutdown)
+    int state;
+    int64_t active, submitted, completed, rejected, peak_queued;
+} TinoxExecutor;
+static pthread_mutex_t executors_mu = PTHREAD_MUTEX_INITIALIZER;
+static TinoxExecutor* executors[TINOX_EXECUTOR_MAX];
+static int64_t executor_next_id = 1;
+
+static TinoxExecutor* executor_find(int64_t id) {
+    TinoxExecutor* found = NULL;
+    pthread_mutex_lock(&executors_mu);
+    for (int i = 0; i < TINOX_EXECUTOR_MAX; i++)
+        if (executors[i] && executors[i]->id == id) found = executors[i];
+    pthread_mutex_unlock(&executors_mu);
+    return found;
+}
+static TinoxExecutor* executor_lookup(int64_t id) {
+    TinoxExecutor* ex = executor_find(id);
+    if (!ex) task_fatal("invalid or expired executor handle");
+    return ex;
+}
+// Finishes `task` as failed without running it (no thread ever existed for it).
+static void task_fail_unstarted(TinoxTask* task, const char* message) {
+    pthread_mutex_lock(&task->mu);
+    task->error = (int64_t)(intptr_t)message;
+    task->done = 1;
+    task->joined = 1;
+    pthread_cond_broadcast(&task->cond);
+    pthread_mutex_unlock(&task->mu);
+}
+static void executor_run_job(TinoxExecutor* ex, TinoxExecJob* job) {
+    TinoxTask* task = job->task;
+    if (telemetry_enabled) telemetry_context = job->telemetry;
+    int64_t span_token = telemetry_enter("task", NULL, NULL, 1);
+    if (span_token) tinox_histogram_record("tinox_task_queue_duration_ns", telemetry_clock(CLOCK_MONOTONIC) - job->queued_at);
+    service_task_id = job->service_id;
+    service_cleanup_mode = job->cleanup_mode;
+    current_task = task;
+    task_frame_scope = task_scope = task->scope;
+    __tinox_err = 0;
+    void* ret = NULL;
+    // A job cancelled while it waited in the queue never starts.
+    const char* before = task_cancellation(task->scope);
+    if (before) __tinox_err = (int64_t)(intptr_t)before;
+    else ret = job->fn(job->args);
+    task_close_scope(task_frame_scope, 0, 0);
+    telemetry_leave(span_token);
+    pthread_mutex_lock(&task->mu);
+    task->retval = ret;
+    task->error = __tinox_err;
+    task->done = 1;
+    pthread_cond_broadcast(&task->cond);
+    pthread_mutex_unlock(&task->mu);
+    // Worker reset: nothing of this job's context may leak into the next one.
+    task_frame_scope = task_scope = NULL;
+    current_task = NULL;
+    __tinox_err = 0;
+    service_task_id = -1;
+    service_cleanup_mode = 0;
+    if (telemetry_enabled) memset(&telemetry_context, 0, sizeof telemetry_context);
+}
+typedef struct { TinoxExecutor* ex; int64_t index; } TinoxExecWorkerArgs;
+static void* executor_worker(void* raw) {
+    TinoxExecWorkerArgs* wa = raw;
+    TinoxExecutor* ex = wa->ex;
+    int64_t index = wa->index;
+    free(wa);
+    tinox_gc_register_thread_roots();
+    current_executor_id = ex->id;
+    for (;;) {
+        pthread_mutex_lock(&ex->mu);
+        while (!ex->count && ex->state == EXEC_RUNNING) task_pthread_check(pthread_cond_wait(&ex->work, &ex->mu));
+        if (!ex->count) { pthread_mutex_unlock(&ex->mu); break; }
+        TinoxExecJob job = ex->queue[ex->head];
+        memset(&ex->queue[ex->head], 0, sizeof(TinoxExecJob));
+        ex->head = (ex->head + 1) % ex->cap;
+        ex->count--;
+        ex->active++;
+        ex->running[index] = job.task;
+        pthread_mutex_unlock(&ex->mu);
+        executor_run_job(ex, &job);
+        pthread_mutex_lock(&ex->mu);
+        ex->running[index] = NULL;
+        ex->active--;
+        ex->completed++;
+        if (!ex->count && !ex->active) pthread_cond_broadcast(&ex->idle);
+        pthread_mutex_unlock(&ex->mu);
+    }
+    tinox_gc_unregister_thread_roots();
+    return NULL;
+}
+// Creates an executor with `workers` reusable threads and room for `queue` waiting jobs; returns its handle.
+int64_t executorCreate(int64_t workers, int64_t queue) {
+    if (workers < 1 || workers > TINOX_EXECUTOR_MAX_WORKERS)
+        task_fatal("executorCreate requires 1..256 workers");
+    if (queue < 1 || queue > TINOX_EXECUTOR_MAX_QUEUE)
+        task_fatal("executorCreate requires a queue capacity of 1..1000000");
+    TinoxExecutor* ex = calloc(1, sizeof(*ex));
+    task_pthread_check(pthread_mutex_init(&ex->mu, NULL));
+    task_cond_init(&ex->work);
+    task_cond_init(&ex->idle);
+    ex->cap = queue;
+    ex->queue = (TinoxExecJob*)GC_malloc_uncollectable(sizeof(TinoxExecJob) * (size_t)queue);
+    ex->n_workers = workers;
+    ex->threads = calloc((size_t)workers, sizeof(pthread_t));
+    ex->running = calloc((size_t)workers, sizeof(TinoxTask*));
+    pthread_mutex_lock(&executors_mu);
+    int slot = -1;
+    for (int i = 0; i < TINOX_EXECUTOR_MAX && slot < 0; i++) {
+        if (!executors[i]) slot = i;
+        else if (executors[i]->state == EXEC_STOPPED) {
+            // Reclaim a finished executor; its handle is expired from now on.
+            TinoxExecutor* old = executors[i];
+            GC_free(old->queue);
+            free(old->threads); free(old->running); free(old);
+            slot = i;
+        }
+    }
+    if (slot < 0) { pthread_mutex_unlock(&executors_mu); task_fatal("too many live executors (max 64)"); }
+    ex->id = executor_next_id++;
+    executors[slot] = ex;
+    pthread_mutex_unlock(&executors_mu);
+    for (int64_t i = 0; i < workers; i++) {
+        TinoxExecWorkerArgs* wa = malloc(sizeof(*wa));
+        wa->ex = ex; wa->index = i;
+        task_pthread_check(pthread_create(&ex->threads[i], NULL, executor_worker, wa));
+    }
+    return ex->id;
+}
+static void executor_submit(int64_t id, TinoxTask* task, void* (*fn)(void*), void* args, TinoxSpawnTrampolineArgs* t) {
+    TinoxExecutor* ex = executor_lookup(id);
+    TinoxExecJob job;
+    memset(&job, 0, sizeof job);
+    job.fn = fn; job.args = args; job.task = task;
+    job.telemetry = t->telemetry;
+    job.queued_at = t->queued_at;
+    job.service_id = t->service_id;
+    job.cleanup_mode = t->cleanup_mode;
+    free(t);
+    const char* reject = NULL;
+    pthread_mutex_lock(&ex->mu);
+    if (ex->state != EXEC_RUNNING) reject = "executor is shut down";
+    else if (ex->count >= ex->cap) reject = "executor queue full: too many waiting jobs";
+    else {
+        ex->queue[(ex->head + ex->count) % ex->cap] = job;
+        ex->count++;
+        ex->submitted++;
+        if (ex->count > ex->peak_queued) ex->peak_queued = ex->count;
+        pthread_cond_signal(&ex->work);
+    }
+    if (reject) ex->rejected++;
+    pthread_mutex_unlock(&ex->mu);
+    if (reject) task_fail_unstarted(task, reject);
+}
+// Stops accepting jobs. With drain != 0 queued jobs still run; otherwise they are rejected and running jobs are
+// cancelled (cooperatively). Returns after every worker has exited.
+void executorShutdown(int64_t id, int64_t drain) {
+    TinoxExecutor* ex = executor_lookup(id);
+    if (current_executor_id == ex->id) task_fatal("an executor job cannot shut down its own executor");
+    pthread_mutex_lock(&ex->mu);
+    if (ex->state == EXEC_STOPPED) { pthread_mutex_unlock(&ex->mu); return; }
+    ex->state = EXEC_DRAINING;
+    if (!drain) {
+        while (ex->count) {
+            TinoxExecJob job = ex->queue[ex->head];
+            memset(&ex->queue[ex->head], 0, sizeof(TinoxExecJob));
+            ex->head = (ex->head + 1) % ex->cap;
+            ex->count--;
+            ex->rejected++;
+            task_fail_unstarted(job.task, "executor shut down before the job started");
+        }
+        for (int64_t i = 0; i < ex->n_workers; i++)
+            if (ex->running[i]) atomic_store(&ex->running[i]->scope->cancelled, true);
+    }
+    pthread_cond_broadcast(&ex->work);
+    pthread_mutex_unlock(&ex->mu);
+    for (int64_t i = 0; i < ex->n_workers; i++) task_pthread_check(pthread_join(ex->threads[i], NULL));
+    pthread_mutex_lock(&ex->mu);
+    ex->state = EXEC_STOPPED;
+    pthread_mutex_unlock(&ex->mu);
+}
+// Counters: 0 workers, 1 queued, 2 active, 3 completed, 4 rejected, 5 peak queue length, 6 submitted.
+int64_t executorStat(int64_t id, int64_t which) {
+    TinoxExecutor* ex = executor_lookup(id);
+    pthread_mutex_lock(&ex->mu);
+    int64_t v = 0;
+    switch (which) {
+        case 0: v = ex->n_workers; break;
+        case 1: v = ex->count; break;
+        case 2: v = ex->active; break;
+        case 3: v = ex->completed; break;
+        case 4: v = ex->rejected; break;
+        case 5: v = ex->peak_queued; break;
+        case 6: v = ex->submitted; break;
+        default: pthread_mutex_unlock(&ex->mu); task_fatal("executorStat: unknown counter");
+    }
+    pthread_mutex_unlock(&ex->mu);
+    return v;
+}
+
+static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted, int64_t executor);
+static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted, int64_t executor) {
     if (request_active && request_instances)
         request_scope_fail("spawn cannot escape an active request provider graph; copy immutable data before scheduling outside the request");
     task_ensure_scope();
@@ -1958,6 +2192,20 @@ static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
     }
     t->service_id = service_task_id;
     t->cleanup_mode = service_cleanup_mode;
+    if (executor) {
+        task->budgeted = 0;
+        task->joined = 1; // no thread of its own to join
+        task->executor = executor;
+        if (executor == current_executor_id) {
+            // The job's own scope joins its children when the job ends. Children waiting in the queue
+            // behind the workers that are busy joining them would never run.
+            free(t);
+            task_fail_unstarted(task, "executor job cannot submit to its own executor (joining the child would deadlock)");
+            return (void*)task->id;
+        }
+        executor_submit(executor, task, fn, args, t);
+        return (void*)task->id;
+    }
     task->budgeted = budgeted;
     // Admission control (#302): over the task budget no thread is created.
     // The handle comes back already finished and failed, so `await` / the
@@ -1980,9 +2228,16 @@ static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
 }
 // Joinable tasks count against TINOX_MAX_TASKS; the detached per-connection
 // workers are governed by their own (WebSocket) budget instead.
-void* tinox_task_spawn(void* (*fn)(void*), void* args) { return task_spawn_impl(fn, args, 1); }
+void* tinox_task_spawn(void* (*fn)(void*), void* args) { return task_spawn_impl(fn, args, 1, 0); }
+void* tinox_task_spawn_on(int64_t executor, void* (*fn)(void*), void* args) { return task_spawn_impl(fn, args, 1, executor); }
 int64_t tinox_task_await(void* handle) {
     TinoxTask* task = task_lookup((uintptr_t)handle);
+    // A job waiting for a job of its own executor can occupy every worker while the awaited job sits in the
+    // queue: refuse instead of deadlocking.
+    if (task->executor && task->executor == current_executor_id) {
+        if (!__tinox_err) __tinox_err = (int64_t)(intptr_t)"executor job cannot await a job of its own executor (nested wait would deadlock)";
+        return 0;
+    }
     for (TinoxTaskScope* scope = task_scope; scope; scope = atomic_load(&scope->parent))
         if (scope == task->scope) task_fatal("cyclic task await of self or ancestor");
     pthread_mutex_lock(&task_registry_mu);
@@ -2017,6 +2272,7 @@ int64_t tinox_task_await(void* handle) {
 }
 void taskDetach(int64_t handle) {
     TinoxTask* task = task_lookup((uintptr_t)handle);
+    if (task->executor) task_fatal("an executor job cannot be detached; shut the executor down instead");
     if (!pthread_equal(task->creator_thread, pthread_self()))
         task_fatal("only a task's owning thread may detach it");
     if (task->owner != task_scope && task->owner != task_frame_scope) task_fatal("only a task's owning scope may detach it");
@@ -2036,7 +2292,7 @@ void taskDetach(int64_t handle) {
     pthread_mutex_unlock(&task->mu);
 }
 void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
-    taskDetach((int64_t)(uintptr_t)task_spawn_impl(fn, args, 0));
+    taskDetach((int64_t)(uintptr_t)task_spawn_impl(fn, args, 0, 0));
 }
 
 // ---- Coordinated services (#304); activated explicitly by @Service ----

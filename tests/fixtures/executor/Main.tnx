@@ -1,0 +1,250 @@
+import tinox.core.env
+import tinox.core.process
+
+class Main
+{
+    fnc double(n: Int64) -> Int64
+    {
+        return n * 2
+    }
+
+    fnc label(n: Int64) -> String
+    {
+        return "job-" + n.toString()
+    }
+
+    fnc fail(n: Int64) -> Int64
+    {
+        throw "boom " + n.toString()
+    }
+
+    fnc slow(ms: Int64) -> Int64
+    {
+        Process::sleep(ms)
+        return ms
+    }
+
+    fnc spin() -> Int64
+    {
+        var n = 0
+        while (n < 100000)
+        {
+            taskCheckCancellation()
+            Process::sleep(10)
+            n = n + 1
+        }
+        return n
+    }
+
+    fnc nested(ex: Int64) -> Int64
+    {
+        const inner: Task<Int64> = spawn Main::double(21) on ex
+        return await inner
+    }
+
+    fnc typed() -> Nothing
+    {
+        const ex: Int64 = executorCreate(3, 64)
+        var numbers: List<Task<Int64>> = []
+        var labels: List<Task<String>> = []
+        var i = 0
+        while (i < 1000)
+        {
+            numbers.push(spawn Main::double(i) on ex)
+            if (i < 5) { labels.push(spawn Main::label(i) on ex) }
+            i = i + 1
+        }
+        var sum = 0
+        for h in numbers
+        {
+            sum = sum + await h
+        }
+        var text = ""
+        for h in labels
+        {
+            text = text + (await h) + ","
+        }
+        println("sum=" + sum.toString())
+        println("labels=" + text)
+        println("workers=" + executorStat(ex, 0).toString() + " completed=" + executorStat(ex, 3).toString() + " rejected=" + executorStat(ex, 4).toString())
+        executorShutdown(ex, true)
+    }
+
+    fnc threads() -> Nothing
+    {
+        const ex: Int64 = executorCreate(4, 4096)
+        var handles: List<Task<Int64>> = []
+        var i = 0
+        while (i < 3000)
+        {
+            handles.push(spawn Main::double(i) on ex)
+            i = i + 1
+        }
+        for h in handles
+        {
+            await h
+        }
+        println("ready")
+        Process::sleep(2500)
+        executorShutdown(ex, true)
+    }
+
+    fnc errors() -> Nothing
+    {
+        const ex: Int64 = executorCreate(2, 8)
+        const bad: Task<Int64> = spawn Main::fail(7) on ex
+        try {
+            await bad
+            println("no error")
+        } catch (e: String) {
+            println("caught: " + e)
+        }
+        // The worker survives a failed job.
+        const good: Task<Int64> = spawn Main::double(4) on ex
+        println("after failure: " + (await good).toString())
+        executorShutdown(ex, true)
+    }
+
+    fnc overload() -> Nothing
+    {
+        const ex: Int64 = executorCreate(1, 2)
+        const running: Task<Int64> = spawn Main::slow(600) on ex
+        Process::sleep(100)
+        var jobs: List<Task<Int64>> = []
+        var i = 0
+        while (i < 6)
+        {
+            jobs.push(spawn Main::double(i) on ex)
+            i = i + 1
+        }
+        var ok = 0
+        var rejected = 0
+        for h in jobs
+        {
+            try {
+                await h
+                ok = ok + 1
+            } catch (e: String) {
+                rejected = rejected + 1
+                if (rejected == 1) { println("rejection: " + e) }
+            }
+        }
+        await running
+        println("ok=" + ok.toString() + " rejected=" + rejected.toString())
+        println("stat rejected=" + executorStat(ex, 4).toString() + " peak=" + executorStat(ex, 5).toString())
+        executorShutdown(ex, true)
+    }
+
+    fnc cancel() -> Nothing
+    {
+        const ex: Int64 = executorCreate(1, 4)
+        const job: Task<Int64> = spawn Main::spin() on ex
+        Process::sleep(100)
+        taskCancel(job)
+        try {
+            await job
+            println("not cancelled")
+        } catch (e: String) {
+            println("cancelled: " + e)
+        }
+        // Cancelled before it starts: the single worker is busy with the first job.
+        const blocker: Task<Int64> = spawn Main::slow(300) on ex
+        const queued: Task<Int64> = spawn Main::double(1) on ex
+        taskCancel(queued)
+        try {
+            await queued
+            println("queued job ran")
+        } catch (e: String) {
+            println("queued: " + e)
+        }
+        await blocker
+        executorShutdown(ex, true)
+    }
+
+    fnc shutdown() -> Nothing
+    {
+        const ex: Int64 = executorCreate(1, 8)
+        const running: Task<Int64> = spawn Main::spin() on ex
+        Process::sleep(100)
+        const waiting: Task<Int64> = spawn Main::double(5) on ex
+        executorShutdown(ex, false)
+        try {
+            await waiting
+            println("waiting job ran")
+        } catch (e: String) {
+            println("waiting: " + e)
+        }
+        try {
+            await running
+            println("running job finished")
+        } catch (e: String) {
+            println("running: " + e)
+        }
+        const late: Task<Int64> = spawn Main::double(1) on ex
+        try {
+            await late
+        } catch (e: String) {
+            println("late: " + e)
+        }
+    }
+
+    fnc drain() -> Nothing
+    {
+        const ex: Int64 = executorCreate(1, 8)
+        var jobs: List<Task<Int64>> = []
+        var i = 0
+        while (i < 4)
+        {
+            jobs.push(spawn Main::slow(100) on ex)
+            i = i + 1
+        }
+        executorShutdown(ex, true)
+        var done = 0
+        for h in jobs
+        {
+            done = done + 1
+            await h
+        }
+        println("drained " + done.toString())
+    }
+
+    fnc nestedWait() -> Nothing
+    {
+        const ex: Int64 = executorCreate(1, 4)
+        const outer: Task<Int64> = spawn Main::nested(ex) on ex
+        try {
+            println("nested=" + (await outer).toString())
+        } catch (e: String) {
+            println("nested: " + e)
+        }
+        executorShutdown(ex, true)
+    }
+
+    fnc scoped() -> Nothing
+    {
+        const ex: Int64 = executorCreate(2, 8)
+        var total = 0
+        scope {
+            const a: Task<Int64> = spawn Main::double(10) on ex
+            const b: Task<Int64> = spawn Main::double(20) on ex
+            total = (await a) + (await b)
+        }
+        println("scoped=" + total.toString())
+        executorShutdown(ex, true)
+    }
+
+    fnc main() -> Int32
+    {
+        const mode = Env::getVar("MODE")
+        if (mode == "typed") { Main::typed() }
+        if (mode == "threads") { Main::threads() }
+        if (mode == "errors") { Main::errors() }
+        if (mode == "overload") { Main::overload() }
+        if (mode == "cancel") { Main::cancel() }
+        if (mode == "shutdown") { Main::shutdown() }
+        if (mode == "drain") { Main::drain() }
+        if (mode == "nested") { Main::nestedWait() }
+        if (mode == "scoped") { Main::scoped() }
+        return 0
+    }
+}
