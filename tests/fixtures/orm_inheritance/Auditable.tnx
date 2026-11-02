@@ -1,0 +1,9 @@
+class Auditable
+{
+    @Id
+    @GeneratedValue
+    var id: Int64
+    @Column("created_by")
+    @NotNull
+    var createdBy: String
+}

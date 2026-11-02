@@ -1,0 +1,8 @@
+# The supported service stack (#558): the combination a release manifest (docs/releases/<compiler>.json) pins
+# and the integration matrix exercises. See docs/supported-stack.md for the compatibility policy.
+[stack]
+name = "service"
+compiler = "2.9.0"
+database = "postgres"
+# Direct members; dependencies are added automatically.
+packages = ["http_server", "json", "db", "jwt", "oauth2", "oidc", "websocket"]

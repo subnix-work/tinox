@@ -66,6 +66,15 @@
       ]
     },
     {
+      "description": "REST route whose handler blocks (slow database, upstream call, ...): @Blocking(workers, queue) gives it its own bounded worker pool (1..256 workers, queue 1..1000000), so it cannot occupy the HTTP epoll workers that serve other routes. A full queue answers 503 with Retry-After; the connection is closed after the response. HTTP/1 plain server only (#552)",
+      "max_args": 2,
+      "min_args": 2,
+      "name": "Blocking",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "@CacheEvict(\"Class.method\", ...) -- empties the named @Cacheable caches after the method completed normally (after its own @Transactional commit) and invalidates loads in flight",
       "max_args": 8,
       "min_args": 1,
@@ -840,6 +849,8 @@
     "Map_set": "(m: Map, k: Any, v: Any) -> Nothing",
     "Map_values": "(m: Map) -> Array",
     "Pool_factory": "(p: Any) -> Any",
+    "String_arg": "(s: String, value: String) -> String",
+    "String_argInt": "(s: String, value: Int64) -> String",
     "String_charAt": "(s: String, i: Int64) -> String",
     "String_charCodeAt": "(s: String, i: Int64) -> Int64",
     "String_chars": "(s: String) -> List<String>",
@@ -871,6 +882,7 @@
     "Time_now": "() -> Int64",
     "Time_parse": "(s: String) -> Int64",
     "Time_toString": "(t: Any) -> String",
+    "__executor_spawn": "(executor: Int64, task: Any) -> Any",
     "__scope_abort": "(scope: Int64) -> Nothing",
     "__scope_join": "(scope: Int64) -> Nothing",
     "__scope_new": "() -> Int64",
@@ -904,6 +916,9 @@
     "envRemove": "(k: String) -> Nothing",
     "envSet": "(k: String) -> Nothing",
     "envSetCurrentDir": "(k: String) -> Nothing",
+    "executorCreate": "(workers: Int64, queue: Int64) -> Int64",
+    "executorShutdown": "(executor: Int64, drain: Bool) -> Nothing",
+    "executorStat": "(executor: Int64, counter: Int64) -> Int64",
     "exit": "(code: Int64) -> Nothing",
     "exp": "(x: Float64) -> Float64",
     "expf": "(x: Float64) -> Float64",
@@ -1092,7 +1107,10 @@
     "toLower": "(s: String) -> String",
     "toString": "(value: Any) -> String",
     "toUpper": "(s: String) -> String",
+    "tr": "(text: String) -> String",
+    "trc": "(context: String, text: String) -> String",
     "trim": "(s: String) -> String",
+    "trn": "(singular: String, plural: String, n: Int64) -> String",
     "uriDecode": "(s: String) -> String",
     "uriDecodeComponent": "(s: String) -> String",
     "uriEncode": "(s: String) -> String",

@@ -442,6 +442,7 @@ mod tests {
         let mut codegen = CodeGen::new();
         codegen.set_annotation_info(AnnotationInfo {
             routes: vec![RouteEntry {
+                blocking: None,
                 http_method: "GET".into(),
                 path: "/hello".into(),
                 class_name: "Api".into(),
@@ -558,6 +559,7 @@ mod tests {
         let mut codegen = CodeGen::new();
         codegen.set_annotation_info(AnnotationInfo {
             routes: vec![RouteEntry {
+                blocking: None,
                 http_method: "GET".into(), path: "/hello".into(),
                 class_name: "Api".into(), method_name: "hello".into(),
                 status_code: None, produces: None, consumes: None, auth_type: None,

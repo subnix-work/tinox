@@ -59,6 +59,7 @@
 #include <string.h>
 #define GC_malloc(s)     calloc(1, (s))
 #define GC_malloc_atomic(s) calloc(1, (s))
+#define GC_malloc_uncollectable(s) calloc(1, (s))
 #define GC_realloc(p, s) realloc((p), (s))
 #define GC_free(p)       ((void)(p))
 #define GC_strdup(s)     strdup(s)
@@ -1282,6 +1283,7 @@ struct TinoxTask {
     pthread_cond_t cond;
     int done, joined, observed, detached;
     int budgeted; // holds a slot of the TINOX_MAX_TASKS budget (#302)
+    int64_t executor; // id of the bounded executor running this job (#551), 0 for a thread-per-task spawn
     void* retval;
     int64_t error;
     TinoxTaskScope* scope;
@@ -1294,6 +1296,7 @@ struct TinoxTask {
 static __thread TinoxTaskScope* task_scope;
 static __thread TinoxTaskScope* task_frame_scope;
 static __thread TinoxTask* current_task;
+static __thread int64_t current_executor_id; // set on executor worker threads (#551)
 static pthread_mutex_t task_registry_mu = PTHREAD_MUTEX_INITIALIZER;
 // Bucket heads are also conservative GC roots for all active tasks.
 #define TINOX_TASK_BUCKETS 1024
@@ -1517,6 +1520,8 @@ void __scope_add(int64_t handle, int64_t task_handle) {
     TinoxTask* task = task_lookup((uintptr_t)task_handle);
     if (scope != task_scope || scope->closed || task->owner != task_frame_scope)
         task_fatal("invalid task scope registration");
+    if (task->executor && task->executor == current_executor_id)
+        task_fatal("a scope inside an executor job cannot own jobs of the same executor (joining them would deadlock)");
     // Registration stays lexical: spawns in called methods or closures remain
     // owned by the thread frame, exactly as the parser's scope stack specifies.
     task_remove_owner(task);
@@ -1590,6 +1595,7 @@ static TinoxLimits g_limits;
 static pthread_once_t g_limits_once = PTHREAD_ONCE_INIT;
 static atomic_llong g_active_tasks, g_peak_tasks, g_rejected_tasks;
 static atomic_llong g_open_conns, g_peak_conns, g_rejected_conns;
+static atomic_llong g_offload_accepted, g_offload_rejected; // @Blocking routes (#552)
 static atomic_llong g_active_ws, g_peak_ws, g_rejected_ws;
 // Queue (wait-for-slot) accounting shared by the task and WebSocket budgets.
 static atomic_llong g_waiting, g_wait_total_ms, g_wait_max_ms, g_wait_timeouts;
@@ -1857,6 +1863,8 @@ static int tinox_limits_metrics_text(char* buf, size_t cap) {
         "# TYPE tinox_queue_wait_ms_total counter\ntinox_queue_wait_ms_total %lld\n"
         "# TYPE tinox_queue_wait_ms_max gauge\ntinox_queue_wait_ms_max %lld\n"
         "# TYPE tinox_queue_timeouts_total counter\ntinox_queue_timeouts_total %lld\n"
+        "# TYPE tinox_blocking_route_jobs_total counter\ntinox_blocking_route_jobs_total %lld\n"
+        "# TYPE tinox_blocking_route_rejected_total counter\ntinox_blocking_route_rejected_total %lld\n"
         "# TYPE tinox_gc_heap_bytes gauge\ntinox_gc_heap_bytes %lld\n"
         "# TYPE tinox_gc_free_bytes gauge\ntinox_gc_free_bytes %lld\n"
         "# TYPE tinox_gc_used_estimate_bytes gauge\ntinox_gc_used_estimate_bytes %lld\n"
@@ -1872,6 +1880,7 @@ static int tinox_limits_metrics_text(char* buf, size_t cap) {
         (long long)l->queue_wait_ms, (long long)atomic_load(&g_waiting),
         (long long)atomic_load(&g_wait_total_ms), (long long)atomic_load(&g_wait_max_ms),
         (long long)atomic_load(&g_wait_timeouts),
+        (long long)atomic_load(&g_offload_accepted), (long long)atomic_load(&g_offload_rejected),
         (long long)gcStat(0), (long long)gcStat(1), (long long)gcStat(5),
         (long long)gcStat(3), (long long)gcStat(4));
 }
@@ -1931,7 +1940,266 @@ static void* tinox_spawn_trampoline(void* raw) {
     if (task->budgeted) tinox_budget_release(&g_active_tasks);
     return ret;
 }
-static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
+
+
+// ---- Bounded executor for many small jobs (#551) ----
+// `spawn f(x)` creates a pthread per task. An executor is a separate, explicit abstraction: a fixed number of
+// reusable worker threads behind a bounded FIFO queue. `spawn f(x) on ex` hands the same typed task to it. Jobs keep
+// Task<T> results, error propagation, cancellation (through the job's scope) and the submitter's telemetry/service
+// context. A full queue or a shut-down executor rejects the job (the handle comes back finished and failed); there
+// is no caller-runs fallback and no unbounded growth. Awaiting a job of the worker's own executor is refused.
+#define TINOX_EXECUTOR_MAX 64
+#define TINOX_EXECUTOR_MAX_WORKERS 256
+#define TINOX_EXECUTOR_MAX_QUEUE 1000000
+typedef struct {
+    void* (*fn)(void*);
+    void* args;
+    TinoxTask* task;
+    TinoxTelemetryContext telemetry;
+    int64_t queued_at;
+    int service_id;
+    int cleanup_mode;
+} TinoxExecJob;
+enum { EXEC_RUNNING, EXEC_DRAINING, EXEC_STOPPED };
+typedef struct {
+    int64_t id;
+    pthread_mutex_t mu;
+    pthread_cond_t work, idle;
+    TinoxExecJob* queue; // GC_malloc_uncollectable: the GC scans queued job arguments
+    int64_t cap, head, count;
+    int64_t n_workers;
+    pthread_t* threads;
+    TinoxTask** running; // per worker: the job it is executing (for cancellation on shutdown)
+    int state;
+    int64_t active, submitted, completed, rejected, peak_queued;
+} TinoxExecutor;
+static pthread_mutex_t executors_mu = PTHREAD_MUTEX_INITIALIZER;
+static TinoxExecutor* executors[TINOX_EXECUTOR_MAX];
+static int64_t executor_next_id = 1;
+
+static TinoxExecutor* executor_find(int64_t id) {
+    TinoxExecutor* found = NULL;
+    pthread_mutex_lock(&executors_mu);
+    for (int i = 0; i < TINOX_EXECUTOR_MAX; i++)
+        if (executors[i] && executors[i]->id == id) found = executors[i];
+    pthread_mutex_unlock(&executors_mu);
+    return found;
+}
+static TinoxExecutor* executor_lookup(int64_t id) {
+    TinoxExecutor* ex = executor_find(id);
+    if (!ex) task_fatal("invalid or expired executor handle");
+    return ex;
+}
+// Finishes `task` as failed without running it (no thread ever existed for it).
+static void task_fail_unstarted(TinoxTask* task, const char* message) {
+    pthread_mutex_lock(&task->mu);
+    task->error = (int64_t)(intptr_t)message;
+    task->done = 1;
+    task->joined = 1;
+    pthread_cond_broadcast(&task->cond);
+    pthread_mutex_unlock(&task->mu);
+}
+static void executor_run_job(TinoxExecutor* ex, TinoxExecJob* job) {
+    TinoxTask* task = job->task;
+    if (!task) {
+        // A runtime-internal job (no Task<T>, e.g. an offloaded HTTP request): it owns its whole context.
+        job->fn(job->args);
+        __tinox_err = 0;
+        return;
+    }
+    if (telemetry_enabled) telemetry_context = job->telemetry;
+    int64_t span_token = telemetry_enter("task", NULL, NULL, 1);
+    if (span_token) tinox_histogram_record("tinox_task_queue_duration_ns", telemetry_clock(CLOCK_MONOTONIC) - job->queued_at);
+    service_task_id = job->service_id;
+    service_cleanup_mode = job->cleanup_mode;
+    current_task = task;
+    task_frame_scope = task_scope = task->scope;
+    __tinox_err = 0;
+    void* ret = NULL;
+    // A job cancelled while it waited in the queue never starts.
+    const char* before = task_cancellation(task->scope);
+    if (before) __tinox_err = (int64_t)(intptr_t)before;
+    else ret = job->fn(job->args);
+    task_close_scope(task_frame_scope, 0, 0);
+    telemetry_leave(span_token);
+    pthread_mutex_lock(&task->mu);
+    task->retval = ret;
+    task->error = __tinox_err;
+    task->done = 1;
+    pthread_cond_broadcast(&task->cond);
+    pthread_mutex_unlock(&task->mu);
+    // Worker reset: nothing of this job's context may leak into the next one.
+    task_frame_scope = task_scope = NULL;
+    current_task = NULL;
+    __tinox_err = 0;
+    service_task_id = -1;
+    service_cleanup_mode = 0;
+    if (telemetry_enabled) memset(&telemetry_context, 0, sizeof telemetry_context);
+}
+typedef struct { TinoxExecutor* ex; int64_t index; } TinoxExecWorkerArgs;
+static void* executor_worker(void* raw) {
+    TinoxExecWorkerArgs* wa = raw;
+    TinoxExecutor* ex = wa->ex;
+    int64_t index = wa->index;
+    free(wa);
+    tinox_gc_register_thread_roots();
+    current_executor_id = ex->id;
+    for (;;) {
+        pthread_mutex_lock(&ex->mu);
+        while (!ex->count && ex->state == EXEC_RUNNING) task_pthread_check(pthread_cond_wait(&ex->work, &ex->mu));
+        if (!ex->count) { pthread_mutex_unlock(&ex->mu); break; }
+        TinoxExecJob job = ex->queue[ex->head];
+        memset(&ex->queue[ex->head], 0, sizeof(TinoxExecJob));
+        ex->head = (ex->head + 1) % ex->cap;
+        ex->count--;
+        ex->active++;
+        ex->running[index] = job.task;
+        pthread_mutex_unlock(&ex->mu);
+        executor_run_job(ex, &job);
+        pthread_mutex_lock(&ex->mu);
+        ex->running[index] = NULL;
+        ex->active--;
+        ex->completed++;
+        if (!ex->count && !ex->active) pthread_cond_broadcast(&ex->idle);
+        pthread_mutex_unlock(&ex->mu);
+    }
+    tinox_gc_unregister_thread_roots();
+    return NULL;
+}
+// Creates an executor with `workers` reusable threads and room for `queue` waiting jobs; returns its handle.
+int64_t executorCreate(int64_t workers, int64_t queue) {
+    if (workers < 1 || workers > TINOX_EXECUTOR_MAX_WORKERS)
+        task_fatal("executorCreate requires 1..256 workers");
+    if (queue < 1 || queue > TINOX_EXECUTOR_MAX_QUEUE)
+        task_fatal("executorCreate requires a queue capacity of 1..1000000");
+    TinoxExecutor* ex = calloc(1, sizeof(*ex));
+    task_pthread_check(pthread_mutex_init(&ex->mu, NULL));
+    task_cond_init(&ex->work);
+    task_cond_init(&ex->idle);
+    ex->cap = queue;
+    ex->queue = (TinoxExecJob*)GC_malloc_uncollectable(sizeof(TinoxExecJob) * (size_t)queue);
+    ex->n_workers = workers;
+    ex->threads = calloc((size_t)workers, sizeof(pthread_t));
+    ex->running = calloc((size_t)workers, sizeof(TinoxTask*));
+    pthread_mutex_lock(&executors_mu);
+    int slot = -1;
+    for (int i = 0; i < TINOX_EXECUTOR_MAX && slot < 0; i++) {
+        if (!executors[i]) slot = i;
+        else if (executors[i]->state == EXEC_STOPPED) {
+            // Reclaim a finished executor; its handle is expired from now on.
+            TinoxExecutor* old = executors[i];
+            GC_free(old->queue);
+            free(old->threads); free(old->running); free(old);
+            slot = i;
+        }
+    }
+    if (slot < 0) { pthread_mutex_unlock(&executors_mu); task_fatal("too many live executors (max 64)"); }
+    ex->id = executor_next_id++;
+    executors[slot] = ex;
+    pthread_mutex_unlock(&executors_mu);
+    for (int64_t i = 0; i < workers; i++) {
+        TinoxExecWorkerArgs* wa = malloc(sizeof(*wa));
+        wa->ex = ex; wa->index = i;
+        task_pthread_check(pthread_create(&ex->threads[i], NULL, executor_worker, wa));
+    }
+    return ex->id;
+}
+static void executor_submit(int64_t id, TinoxTask* task, void* (*fn)(void*), void* args, TinoxSpawnTrampolineArgs* t) {
+    TinoxExecutor* ex = executor_lookup(id);
+    TinoxExecJob job;
+    memset(&job, 0, sizeof job);
+    job.fn = fn; job.args = args; job.task = task;
+    job.telemetry = t->telemetry;
+    job.queued_at = t->queued_at;
+    job.service_id = t->service_id;
+    job.cleanup_mode = t->cleanup_mode;
+    free(t);
+    const char* reject = NULL;
+    pthread_mutex_lock(&ex->mu);
+    if (ex->state != EXEC_RUNNING) reject = "executor is shut down";
+    else if (ex->count >= ex->cap) reject = "executor queue full: too many waiting jobs";
+    else {
+        ex->queue[(ex->head + ex->count) % ex->cap] = job;
+        ex->count++;
+        ex->submitted++;
+        if (ex->count > ex->peak_queued) ex->peak_queued = ex->count;
+        pthread_cond_signal(&ex->work);
+    }
+    if (reject) ex->rejected++;
+    pthread_mutex_unlock(&ex->mu);
+    if (reject) task_fail_unstarted(task, reject);
+}
+// Queues a runtime-internal job (no Task<T> handle). Returns 0 when the queue is full or the executor is shut down;
+// the caller then owns `args` again.
+static int executor_submit_raw(int64_t id, void* (*fn)(void*), void* args) {
+    TinoxExecutor* ex = executor_find(id);
+    if (!ex) return 0;
+    TinoxExecJob job;
+    memset(&job, 0, sizeof job);
+    job.fn = fn; job.args = args;
+    int accepted = 0;
+    pthread_mutex_lock(&ex->mu);
+    if (ex->state == EXEC_RUNNING && ex->count < ex->cap) {
+        ex->queue[(ex->head + ex->count) % ex->cap] = job;
+        ex->count++;
+        ex->submitted++;
+        if (ex->count > ex->peak_queued) ex->peak_queued = ex->count;
+        pthread_cond_signal(&ex->work);
+        accepted = 1;
+    } else {
+        ex->rejected++;
+    }
+    pthread_mutex_unlock(&ex->mu);
+    return accepted;
+}
+// Stops accepting jobs. With drain != 0 queued jobs still run; otherwise they are rejected and running jobs are
+// cancelled (cooperatively). Returns after every worker has exited.
+void executorShutdown(int64_t id, int64_t drain) {
+    TinoxExecutor* ex = executor_lookup(id);
+    if (current_executor_id == ex->id) task_fatal("an executor job cannot shut down its own executor");
+    pthread_mutex_lock(&ex->mu);
+    if (ex->state == EXEC_STOPPED) { pthread_mutex_unlock(&ex->mu); return; }
+    ex->state = EXEC_DRAINING;
+    if (!drain) {
+        while (ex->count) {
+            TinoxExecJob job = ex->queue[ex->head];
+            memset(&ex->queue[ex->head], 0, sizeof(TinoxExecJob));
+            ex->head = (ex->head + 1) % ex->cap;
+            ex->count--;
+            ex->rejected++;
+            task_fail_unstarted(job.task, "executor shut down before the job started");
+        }
+        for (int64_t i = 0; i < ex->n_workers; i++)
+            if (ex->running[i]) atomic_store(&ex->running[i]->scope->cancelled, true);
+    }
+    pthread_cond_broadcast(&ex->work);
+    pthread_mutex_unlock(&ex->mu);
+    for (int64_t i = 0; i < ex->n_workers; i++) task_pthread_check(pthread_join(ex->threads[i], NULL));
+    pthread_mutex_lock(&ex->mu);
+    ex->state = EXEC_STOPPED;
+    pthread_mutex_unlock(&ex->mu);
+}
+// Counters: 0 workers, 1 queued, 2 active, 3 completed, 4 rejected, 5 peak queue length, 6 submitted.
+int64_t executorStat(int64_t id, int64_t which) {
+    TinoxExecutor* ex = executor_lookup(id);
+    pthread_mutex_lock(&ex->mu);
+    int64_t v = 0;
+    switch (which) {
+        case 0: v = ex->n_workers; break;
+        case 1: v = ex->count; break;
+        case 2: v = ex->active; break;
+        case 3: v = ex->completed; break;
+        case 4: v = ex->rejected; break;
+        case 5: v = ex->peak_queued; break;
+        case 6: v = ex->submitted; break;
+        default: pthread_mutex_unlock(&ex->mu); task_fatal("executorStat: unknown counter");
+    }
+    pthread_mutex_unlock(&ex->mu);
+    return v;
+}
+
+static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted, int64_t executor);
+static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted, int64_t executor) {
     if (request_active && request_instances)
         request_scope_fail("spawn cannot escape an active request provider graph; copy immutable data before scheduling outside the request");
     task_ensure_scope();
@@ -1958,6 +2226,20 @@ static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
     }
     t->service_id = service_task_id;
     t->cleanup_mode = service_cleanup_mode;
+    if (executor) {
+        task->budgeted = 0;
+        task->joined = 1; // no thread of its own to join
+        task->executor = executor;
+        if (executor == current_executor_id) {
+            // The job's own scope joins its children when the job ends. Children waiting in the queue
+            // behind the workers that are busy joining them would never run.
+            free(t);
+            task_fail_unstarted(task, "executor job cannot submit to its own executor (joining the child would deadlock)");
+            return (void*)task->id;
+        }
+        executor_submit(executor, task, fn, args, t);
+        return (void*)task->id;
+    }
     task->budgeted = budgeted;
     // Admission control (#302): over the task budget no thread is created.
     // The handle comes back already finished and failed, so `await` / the
@@ -1980,9 +2262,16 @@ static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted) {
 }
 // Joinable tasks count against TINOX_MAX_TASKS; the detached per-connection
 // workers are governed by their own (WebSocket) budget instead.
-void* tinox_task_spawn(void* (*fn)(void*), void* args) { return task_spawn_impl(fn, args, 1); }
+void* tinox_task_spawn(void* (*fn)(void*), void* args) { return task_spawn_impl(fn, args, 1, 0); }
+void* tinox_task_spawn_on(int64_t executor, void* (*fn)(void*), void* args) { return task_spawn_impl(fn, args, 1, executor); }
 int64_t tinox_task_await(void* handle) {
     TinoxTask* task = task_lookup((uintptr_t)handle);
+    // A job waiting for a job of its own executor can occupy every worker while the awaited job sits in the
+    // queue: refuse instead of deadlocking.
+    if (task->executor && task->executor == current_executor_id) {
+        if (!__tinox_err) __tinox_err = (int64_t)(intptr_t)"executor job cannot await a job of its own executor (nested wait would deadlock)";
+        return 0;
+    }
     for (TinoxTaskScope* scope = task_scope; scope; scope = atomic_load(&scope->parent))
         if (scope == task->scope) task_fatal("cyclic task await of self or ancestor");
     pthread_mutex_lock(&task_registry_mu);
@@ -2017,6 +2306,7 @@ int64_t tinox_task_await(void* handle) {
 }
 void taskDetach(int64_t handle) {
     TinoxTask* task = task_lookup((uintptr_t)handle);
+    if (task->executor) task_fatal("an executor job cannot be detached; shut the executor down instead");
     if (!pthread_equal(task->creator_thread, pthread_self()))
         task_fatal("only a task's owning thread may detach it");
     if (task->owner != task_scope && task->owner != task_frame_scope) task_fatal("only a task's owning scope may detach it");
@@ -2036,7 +2326,7 @@ void taskDetach(int64_t handle) {
     pthread_mutex_unlock(&task->mu);
 }
 void tinox_task_spawn_detached(void* (*fn)(void*), void* args) {
-    taskDetach((int64_t)(uintptr_t)task_spawn_impl(fn, args, 0));
+    taskDetach((int64_t)(uintptr_t)task_spawn_impl(fn, args, 0, 0));
 }
 
 // ---- Coordinated services (#304); activated explicitly by @Service ----
@@ -2318,6 +2608,18 @@ void tinox_service_existing_work_enter(void) {
 }
 void tinox_service_work_exit(void) {
     if (service_enabled() && service_work_depth > 0 && !--service_work_depth) atomic_fetch_sub(&service_work, 1);
+}
+// Admission for work that another thread will perform (an offloaded request, #552): counts as in-flight work
+// from now until the performing thread calls service_work_release_token(), including the time spent queued, so a
+// graceful stop waits for it. Returns 0 when the service is stopping.
+static int service_work_take_token(void) {
+    if (!service_enabled()) return 1;
+    if (!tinox_service_work_enter()) return 0;
+    service_work_depth = 0; // the count stays; this thread no longer owns it
+    return 1;
+}
+static void service_work_release_token(void) {
+    if (service_enabled()) atomic_fetch_sub(&service_work, 1);
 }
 int64_t tinox_service_worker_start(void) {
     pthread_mutex_lock(&service_mu);
@@ -3716,6 +4018,297 @@ char* tinox_string_pad(const char* s, int64_t width, const char* pad, int64_t le
     }
     result[total] = '\0';
     return result;
+}
+
+// ---- Message translation (#588): gettext catalogs ----
+// tr(msgid), trc(context, msgid), trn(singular, plural, n) look the text up in a GNU gettext binary catalog
+// (.mo, produced by msgfmt) and return the msgid / the English plural rule when there is none.
+//
+// Catalog search: the language comes from LANGUAGE (colon separated list), else LC_ALL, LC_MESSAGES, LANG
+// (encoding and @modifier are dropped; "de_DE" also tries "de"; C/POSIX mean no translation). The first
+// candidate with a catalog is used. A catalog is <dir>/<language>/LC_MESSAGES/<domain>.mo for dir in
+// TINOX_LOCALE_DIR, <directory of the executable>/locale, ./locale, /usr/share/locale. The domain is
+// TINOX_TEXTDOMAIN, default "messages". The catalog is read once per process and never freed (returned
+// strings point into it).
+typedef struct {
+    const unsigned char* data;
+    size_t size;
+    int swap;
+    uint32_t count, orig, trans;
+    char plural[256]; // the expression after "plural=" in the header's Plural-Forms
+} TinoxCatalog;
+static TinoxCatalog* tr_catalog;
+static pthread_once_t tr_once = PTHREAD_ONCE_INIT;
+
+static uint32_t tr_u32(const TinoxCatalog* c, size_t off) {
+    uint32_t v;
+    memcpy(&v, c->data + off, 4);
+    return c->swap ? __builtin_bswap32(v) : v;
+}
+// i-th string of the original (table = c->orig) or translation (c->trans) table, or NULL if malformed.
+static const char* tr_entry(const TinoxCatalog* c, uint32_t table, uint32_t i, uint32_t* len) {
+    size_t at = (size_t)table + (size_t)i * 8;
+    if (at + 8 > c->size) return NULL;
+    uint32_t l = tr_u32(c, at), off = tr_u32(c, at + 4);
+    if ((size_t)off + l + 1 > c->size || c->data[(size_t)off + l] != 0) return NULL;
+    *len = l;
+    return (const char*)c->data + off;
+}
+static TinoxCatalog* tr_load(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 28 || size > (64L << 20)) { fclose(f); return NULL; }
+    unsigned char* data = malloc((size_t)size);
+    if (!data || fread(data, 1, (size_t)size, f) != (size_t)size) { free(data); fclose(f); return NULL; }
+    fclose(f);
+    TinoxCatalog* c = calloc(1, sizeof(*c));
+    c->data = data;
+    c->size = (size_t)size;
+    uint32_t magic;
+    memcpy(&magic, data, 4);
+    if (magic == 0x950412deu) c->swap = 0;
+    else if (magic == 0xde120495u) c->swap = 1;
+    else { free(data); free(c); return NULL; }
+    c->count = tr_u32(c, 8);
+    c->orig = tr_u32(c, 12);
+    c->trans = tr_u32(c, 16);
+    if (c->count > (c->size / 16) || (size_t)c->orig + (size_t)c->count * 8 > c->size || (size_t)c->trans + (size_t)c->count * 8 > c->size) {
+        free(data); free(c); return NULL;
+    }
+    // The header entry (empty msgid) carries "Plural-Forms: nplurals=N; plural=EXPR;".
+    uint32_t len;
+    const char* key = tr_entry(c, c->orig, 0, &len);
+    const char* header = key && len == 0 ? tr_entry(c, c->trans, 0, &len) : NULL;
+    const char* p = header ? strstr(header, "plural=") : NULL;
+    if (p) {
+        p += 7;
+        size_t n = 0;
+        while (p[n] && p[n] != ';' && p[n] != '\n' && n < sizeof(c->plural) - 1) n++;
+        memcpy(c->plural, p, n);
+        c->plural[n] = 0;
+    }
+    return c;
+}
+static void tr_candidates(char out[8][64], int* count) {
+    *count = 0;
+    const char* sources[] = { getenv("LANGUAGE"), getenv("LC_ALL"), getenv("LC_MESSAGES"), getenv("LANG") };
+    const char* list = NULL;
+    for (int i = 0; i < 4 && !list; i++)
+        if (sources[i] && *sources[i]) list = sources[i];
+    if (!list) return;
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s", list);
+    for (char* tok = strtok(buf, ":"); tok && *count < 6; tok = strtok(NULL, ":")) {
+        char* cut = strpbrk(tok, ".@");
+        if (cut) *cut = 0;
+        if (!*tok || !strcmp(tok, "C") || !strcmp(tok, "POSIX")) continue;
+        snprintf(out[(*count)++], 64, "%s", tok);
+        char* us = strchr(tok, '_');
+        if (us && *count < 8) { *us = 0; snprintf(out[(*count)++], 64, "%s", tok); }
+    }
+}
+static void tr_init(void) {
+    char langs[8][64];
+    int n;
+    tr_candidates(langs, &n);
+    if (!n) return;
+    const char* domain = getenv("TINOX_TEXTDOMAIN");
+    if (!domain || !*domain) domain = "messages";
+    char exe[PATH_MAX], exedir[PATH_MAX + 8] = "";
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (len > 0) {
+        exe[len] = 0;
+        char* slash = strrchr(exe, '/');
+        if (slash) { *slash = 0; snprintf(exedir, sizeof exedir, "%s/locale", exe); }
+    }
+    const char* dirs[] = { getenv("TINOX_LOCALE_DIR"), exedir[0] ? exedir : NULL, "locale", "/usr/share/locale" };
+    for (int i = 0; i < n; i++) {
+        for (int d = 0; d < 4; d++) {
+            if (!dirs[d] || !*dirs[d]) continue;
+            char path[PATH_MAX + 256];
+            snprintf(path, sizeof path, "%s/%s/LC_MESSAGES/%s.mo", dirs[d], langs[i], domain);
+            if ((tr_catalog = tr_load(path))) return;
+        }
+    }
+}
+// Binary search of the sorted original table; returns the translation or NULL.
+static const char* tr_find(const char* key, size_t key_len, uint32_t* out_len) {
+    pthread_once(&tr_once, tr_init);
+    const TinoxCatalog* c = tr_catalog;
+    if (!c) return NULL;
+    uint32_t lo = 0, hi = c->count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2, l;
+        const char* orig = tr_entry(c, c->orig, mid, &l);
+        if (!orig) return NULL;
+        size_t m = l < key_len ? l : key_len;
+        int cmp = memcmp(orig, key, m);
+        if (!cmp) cmp = l < key_len ? -1 : (l > key_len ? 1 : 0);
+        if (!cmp) {
+            const char* t = tr_entry(c, c->trans, mid, out_len);
+            return t && *out_len ? t : NULL;
+        }
+        if (cmp < 0) lo = mid + 1; else hi = mid;
+    }
+    return NULL;
+}
+
+// GNU plural expression: n, integers, ! ( ) * / % + - < <= > >= == != && || ?:
+typedef struct { const char* p; unsigned long n; int bad; } TrExpr;
+static unsigned long tr_ternary(TrExpr* e);
+static void tr_ws(TrExpr* e) { while (*e->p == ' ' || *e->p == '\t') e->p++; }
+static unsigned long tr_primary(TrExpr* e) {
+    tr_ws(e);
+    if (*e->p == '(') { e->p++; unsigned long v = tr_ternary(e); tr_ws(e); if (*e->p == ')') e->p++; else e->bad = 1; return v; }
+    if (*e->p == '!') { e->p++; return !tr_primary(e); }
+    if (*e->p == 'n') { e->p++; return e->n; }
+    if (*e->p >= '0' && *e->p <= '9') { unsigned long v = 0; while (*e->p >= '0' && *e->p <= '9') v = v * 10 + (unsigned long)(*e->p++ - '0'); return v; }
+    e->bad = 1;
+    return 0;
+}
+static unsigned long tr_mul(TrExpr* e) {
+    unsigned long v = tr_primary(e);
+    for (;;) {
+        tr_ws(e);
+        char op = *e->p;
+        if (op != '*' && op != '/' && op != '%') return v;
+        e->p++;
+        unsigned long r = tr_primary(e);
+        if (op == '*') v *= r; else if (!r) { e->bad = 1; return 0; } else v = op == '/' ? v / r : v % r;
+    }
+}
+static unsigned long tr_add(TrExpr* e) {
+    unsigned long v = tr_mul(e);
+    for (;;) {
+        tr_ws(e);
+        if (*e->p != '+' && *e->p != '-') return v;
+        char op = *e->p++;
+        unsigned long r = tr_mul(e);
+        v = op == '+' ? v + r : v - r;
+    }
+}
+static unsigned long tr_rel(TrExpr* e) {
+    unsigned long v = tr_add(e);
+    for (;;) {
+        tr_ws(e);
+        if (e->p[0] == '<' && e->p[1] == '=') { e->p += 2; v = v <= tr_add(e); }
+        else if (e->p[0] == '>' && e->p[1] == '=') { e->p += 2; v = v >= tr_add(e); }
+        else if (e->p[0] == '<') { e->p++; v = v < tr_add(e); }
+        else if (e->p[0] == '>') { e->p++; v = v > tr_add(e); }
+        else return v;
+    }
+}
+static unsigned long tr_eq(TrExpr* e) {
+    unsigned long v = tr_rel(e);
+    for (;;) {
+        tr_ws(e);
+        if (e->p[0] == '=' && e->p[1] == '=') { e->p += 2; v = v == tr_rel(e); }
+        else if (e->p[0] == '!' && e->p[1] == '=') { e->p += 2; v = v != tr_rel(e); }
+        else return v;
+    }
+}
+static unsigned long tr_and(TrExpr* e) {
+    unsigned long v = tr_eq(e);
+    for (;;) { tr_ws(e); if (e->p[0] == '&' && e->p[1] == '&') { e->p += 2; unsigned long r = tr_eq(e); v = v && r; } else return v; }
+}
+static unsigned long tr_or(TrExpr* e) {
+    unsigned long v = tr_and(e);
+    for (;;) { tr_ws(e); if (e->p[0] == '|' && e->p[1] == '|') { e->p += 2; unsigned long r = tr_and(e); v = v || r; } else return v; }
+}
+static unsigned long tr_ternary(TrExpr* e) {
+    unsigned long c = tr_or(e);
+    tr_ws(e);
+    if (*e->p != '?') return c;
+    e->p++;
+    unsigned long a = tr_ternary(e);
+    tr_ws(e);
+    if (*e->p == ':') e->p++; else e->bad = 1;
+    unsigned long b = tr_ternary(e);
+    return c ? a : b;
+}
+// Plural form index for n; falls back to the English rule (n != 1) when the header has no usable expression.
+static unsigned long tr_plural_index(const TinoxCatalog* c, unsigned long n) {
+    if (c && c->plural[0]) {
+        TrExpr e = { c->plural, n, 0 };
+        unsigned long v = tr_ternary(&e);
+        if (!e.bad) return v;
+    }
+    return n != 1;
+}
+
+char* tr(const char* msgid) {
+    uint32_t len;
+    const char* t = tr_find(msgid, strlen(msgid), &len);
+    return (char*)(t ? t : msgid);
+}
+char* trc(const char* context, const char* msgid) {
+    size_t cl = strlen(context), ml = strlen(msgid);
+    char* key = malloc(cl + 1 + ml + 1);
+    memcpy(key, context, cl);
+    key[cl] = '\004';
+    memcpy(key + cl + 1, msgid, ml + 1);
+    uint32_t len;
+    const char* t = tr_find(key, cl + 1 + ml, &len);
+    free(key);
+    return (char*)(t ? t : msgid);
+}
+char* trn(const char* singular, const char* plural, int64_t n) {
+    size_t sl = strlen(singular), pl = strlen(plural);
+    char* key = malloc(sl + 1 + pl + 1);
+    memcpy(key, singular, sl);
+    key[sl] = 0;
+    memcpy(key + sl + 1, plural, pl + 1);
+    uint32_t len;
+    const char* t = tr_find(key, sl + 1 + pl, &len);
+    free(key);
+    unsigned long un = n < 0 ? (unsigned long)(-n) : (unsigned long)n;
+    if (t) {
+        unsigned long want = tr_plural_index(tr_catalog, un);
+        const char* form = t;
+        const char* end = t + len;
+        for (unsigned long i = 0; i < want; i++) {
+            const char* next = memchr(form, 0, (size_t)(end - form));
+            if (!next || next + 1 >= end) { form = NULL; break; }
+            form = next + 1;
+        }
+        if (form && *form) return (char*)form;
+    }
+    return (char*)(n == 1 ? singular : plural);
+}
+
+// "text %1 and %2".arg(a): replaces every occurrence of the lowest-numbered placeholder %N (N = 1..99).
+// Placeholders keep their number, so a translation may reorder them.
+char* tinox_string_arg(const char* s, const char* value) {
+    int lowest = 0;
+    for (const char* p = s; *p; p++) {
+        if (*p != '%' || *(p + 1) < '0' || *(p + 1) > '9') continue;
+        int n = p[1] - '0', digits = 1;
+        if (p[2] >= '0' && p[2] <= '9') { n = n * 10 + (p[2] - '0'); digits = 2; }
+        if (n > 0 && (!lowest || n < lowest)) lowest = n;
+        p += digits;
+    }
+    if (!lowest) return (char*)s;
+    size_t vl = strlen(value), cap = strlen(s) + 1, used = 0;
+    for (const char* p = s; *p; p++) cap += vl;
+    char* out = (char*)GC_malloc_atomic(cap);
+    for (const char* p = s; *p;) {
+        if (*p == '%' && p[1] >= '0' && p[1] <= '9') {
+            int n = p[1] - '0', digits = 1;
+            if (p[2] >= '0' && p[2] <= '9') { n = n * 10 + (p[2] - '0'); digits = 2; }
+            if (n == lowest) { memcpy(out + used, value, vl); used += vl; p += 1 + digits; continue; }
+        }
+        out[used++] = *p++;
+    }
+    out[used] = 0;
+    return out;
+}
+char* tinox_string_arg_int(const char* s, int64_t value) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%lld", (long long)value);
+    return tinox_string_arg(s, buf);
 }
 
 char* tinox_string_replace(const char* s, const char* from, const char* to) {
@@ -7868,7 +8461,30 @@ static size_t fast_i64_write(int64_t val, char* buf);
 // on the same fd. conn_close() then waits for `inflight` to drop to 0
 // (every in-flight recv/send has actually returned and is no longer
 // touching `ssl`/`fd`) before it's safe to SSL_free()/close().
-typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; atomic_int inflight; atomic_bool closing; } TinoxConn;   // ssl==NULL => plaintext
+// permessage-deflate context takeover (issue #560, opt-in): wsCtx marks a connection that keeps one
+// DEFLATE and one INFLATE context for its whole life instead of a fresh one per message. wsDef/wsInf
+// are lazily created z_streams (about 99 KiB per connection together), released by conn_close.
+// defLock serialises compress+write so frames leave in the order they were compressed (the peer's
+// window follows that order); infLock guards the inflate context against a concurrent close.
+typedef struct { int fd; void* ssl; pthread_mutex_t writeLock; bool wsCompressed; atomic_int inflight; atomic_bool closing;
+                 bool wsCtx; bool wsDefReset; bool wsInfReset; int wsDefBits; void* wsDef; void* wsInf;
+                 pthread_mutex_t defLock; pthread_mutex_t infLock; } TinoxConn;   // ssl==NULL => plaintext
+static void conn_ws_init(TinoxConn* c) {
+    c->wsCtx = false; c->wsDefReset = false; c->wsInfReset = false; c->wsDefBits = 15;
+    c->wsDef = NULL; c->wsInf = NULL;
+    pthread_mutex_init(&c->defLock, NULL);
+    pthread_mutex_init(&c->infLock, NULL);
+}
+static void conn_ws_release(TinoxConn* c) {
+    pthread_mutex_lock(&c->defLock);
+    if (c->wsDef) { deflateEnd((z_stream*)c->wsDef); free(c->wsDef); c->wsDef = NULL; }
+    pthread_mutex_unlock(&c->defLock);
+    pthread_mutex_lock(&c->infLock);
+    if (c->wsInf) { inflateEnd((z_stream*)c->wsInf); free(c->wsInf); c->wsInf = NULL; }
+    pthread_mutex_unlock(&c->infLock);
+    pthread_mutex_destroy(&c->defLock);
+    pthread_mutex_destroy(&c->infLock);
+}
 static void conn_send_all(TinoxConn* c, const char* data, size_t len);
 
 #ifdef TINOX_TLS
@@ -7957,6 +8573,7 @@ static void conn_close(TinoxConn* c) {
     if (c->ssl) { SSL_shutdown((SSL*)c->ssl); SSL_free((SSL*)c->ssl); c->ssl = NULL; }
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
     pthread_mutex_destroy(&c->writeLock);
+    conn_ws_release(c);
 }
 #else
 // Plaintext-only fallback — identical semantics without OpenSSL. For the
@@ -7989,6 +8606,7 @@ static void conn_close(TinoxConn* c) {
     }
     if (c->fd >= 0) { close(c->fd); c->fd = -1; }
     pthread_mutex_destroy(&c->writeLock);
+    conn_ws_release(c);
 }
 #endif
 
@@ -8273,6 +8891,7 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
     c->wsCompressed = false;
     c->inflight = 0;
     c->closing = false;
+    conn_ws_init(c);
     return (int64_t)(intptr_t)c;
 #else
     (void)server_fd;
@@ -8297,6 +8916,7 @@ int64_t httpServerAcceptConnHandle(int64_t server_fd) {
     c->wsCompressed = false;
     c->inflight = 0;
     c->closing = false;
+    conn_ws_init(c);
     return (int64_t)(intptr_t)c;
 }
 
@@ -8329,6 +8949,7 @@ int64_t httpConnFromFd(int64_t fd) {
     c->wsCompressed = false;
     c->inflight = 0;
     c->closing = false;
+    conn_ws_init(c);
     return (int64_t)(intptr_t)c;
 }
 
@@ -8343,6 +8964,151 @@ void wsSetCompressed(int64_t conn, bool val) {
 bool wsIsCompressed(int64_t conn) {
     if (conn <= 0) return false;
     return ((TinoxConn*)(intptr_t)conn)->wsCompressed;
+}
+
+// ---- permessage-deflate context takeover (issue #560) ----
+//
+// Opt-in: `tinox.websocket.compression = context` in application.properties (or the environment
+// variable TINOX_WEBSOCKET_COMPRESSION) makes Ws::handshake keep one DEFLATE and one INFLATE
+// context per connection instead of negotiating no_context_takeover. The default ("stateless")
+// is unchanged. Anything else is a hard startup error (no silent fallback).
+static const char* tinox_config_resolve(const char* key);
+bool wsContextTakeoverConfigured(void) {
+    static int cached = -1;
+    if (cached >= 0) return cached == 1;
+    const char* v = tinox_config_resolve("tinox.websocket.compression");
+    if (!v || !*v || strcmp(v, "stateless") == 0) cached = 0;
+    else if (strcmp(v, "context") == 0) cached = 1;
+    else {
+        fprintf(stderr, "tinox.websocket.compression must be 'stateless' or 'context', got '%s'\n", v);
+        exit(1);
+    }
+    return cached == 1;
+}
+
+// Called by Ws::handshake after it accepted the offer: the connection then uses persistent contexts.
+// serverNoCtx/clientNoCtx are the no_context_takeover parameters the client asked for (and the
+// response echoes): the matching context is reset after every message. bits is the negotiated
+// server_max_window_bits (9..15).
+void wsSetContext(int64_t conn, bool serverNoCtx, bool clientNoCtx, int64_t bits) {
+    if (conn <= 0) return;
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    c->wsCtx = true;
+    c->wsDefReset = serverNoCtx;
+    c->wsInfReset = clientNoCtx;
+    c->wsDefBits = (bits >= 9 && bits <= 15) ? (int)bits : 15;
+}
+bool wsHasContext(int64_t conn) {
+    return conn > 0 && ((TinoxConn*)(intptr_t)conn)->wsCtx;
+}
+void wsDefLock(int64_t conn) {
+    if (conn > 0) pthread_mutex_lock(&((TinoxConn*)(intptr_t)conn)->defLock);
+}
+void wsDefUnlock(int64_t conn) {
+    if (conn > 0) pthread_mutex_unlock(&((TinoxConn*)(intptr_t)conn)->defLock);
+}
+
+// Compresses one outgoing message. Without context takeover this is tinoxDeflateRaw. With it, the
+// caller holds wsDefLock across this call AND the write of the frame.
+int64_t* wsDeflateMsg(int64_t conn, int64_t* bytes) {
+    if (conn <= 0 || !((TinoxConn*)(intptr_t)conn)->wsCtx) return tinoxDeflateRaw(bytes);
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    if (!c->wsDef) {
+        z_stream* z = (z_stream*)calloc(1, sizeof(z_stream));
+        if (!z || deflateInit2(z, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -c->wsDefBits, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+            free(z);
+            fprintf(stderr, "websocket: cannot allocate a DEFLATE context\n");
+            exit(1);
+        }
+        c->wsDef = z;
+    } else if (c->wsDefReset) {
+        deflateReset((z_stream*)c->wsDef);
+    }
+    z_stream* z = (z_stream*)c->wsDef;
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t n = a ? a->len : 0;
+    unsigned char* in = (unsigned char*)malloc(n > 0 ? (size_t)n : 1);
+    for (int64_t i = 0; i < n; i++) in[i] = (unsigned char)(a->data[i] & 0xff);
+    z->next_in = in;
+    z->avail_in = (uInt)n;
+    size_t cap = (size_t)(n > 0 ? n : 1) + 64;
+    unsigned char* out = (unsigned char*)malloc(cap);
+    size_t total = 0;
+    for (;;) {
+        z->next_out = out + total;
+        z->avail_out = (uInt)(cap - total);
+        deflate(z, Z_SYNC_FLUSH);
+        total = cap - z->avail_out;
+        if (z->avail_out > 0) break;
+        cap *= 2;
+        out = (unsigned char*)realloc(out, cap);
+    }
+    free(in);
+    if (total >= 4 && out[total-4] == 0x00 && out[total-3] == 0x00 && out[total-2] == 0xFF && out[total-1] == 0xFF) total -= 4;
+    int64_t* nh = tinox_array_new(0, total > 0 ? (int64_t)total : 4);
+    for (size_t i = 0; i < total; i++) tinox_array_push(nh, out[i]);
+    free(out);
+    return nh;
+}
+
+// Decompresses one fully reassembled incoming message; failure is signalled through
+// wsLastInflateOk() exactly like tinoxInflateRaw. After a failure the context is discarded: the
+// caller closes the connection.
+int64_t* wsInflateMsg(int64_t conn, int64_t* bytes) {
+    if (conn <= 0 || !((TinoxConn*)(intptr_t)conn)->wsCtx) return tinoxInflateRaw(bytes);
+    TinoxConn* c = (TinoxConn*)(intptr_t)conn;
+    _tinox_inflate_ok = true;
+    pthread_mutex_lock(&c->infLock);
+    if (!c->wsInf) {
+        z_stream* z = (z_stream*)calloc(1, sizeof(z_stream));
+        if (!z || inflateInit2(z, -15) != Z_OK) {
+            free(z);
+            pthread_mutex_unlock(&c->infLock);
+            _tinox_inflate_ok = false;
+            return tinox_array_new(0, 4);
+        }
+        c->wsInf = z;
+    } else if (c->wsInfReset) {
+        inflateReset((z_stream*)c->wsInf);
+    }
+    z_stream* z = (z_stream*)c->wsInf;
+    TinoxArray* a = (TinoxArray*)bytes;
+    int64_t n = a ? a->len : 0;
+    unsigned char* in = (unsigned char*)malloc((size_t)n + 4);
+    for (int64_t i = 0; i < n; i++) in[i] = (unsigned char)(a->data[i] & 0xff);
+    in[n] = 0x00; in[n+1] = 0x00; in[n+2] = 0xFF; in[n+3] = 0xFF;
+    z->next_in = in;
+    z->avail_in = (uInt)(n + 4);
+    size_t cap = 4096;
+    unsigned char* out = (unsigned char*)malloc(cap);
+    size_t total = 0;
+    bool failed = false;
+    for (;;) {
+        z->next_out = out + total;
+        z->avail_out = (uInt)(cap - total);
+        int ret = inflate(z, Z_SYNC_FLUSH);
+        total = cap - z->avail_out;
+        if (total > 16777216) { failed = true; break; }
+        if (ret == Z_STREAM_END) { inflateReset(z); break; }
+        if (ret != Z_OK && ret != Z_BUF_ERROR) { failed = true; break; }
+        if (z->avail_out == 0) { cap *= 2; out = (unsigned char*)realloc(out, cap); continue; }
+        if (z->avail_in == 0) break;
+        failed = true; // input left but no progress: truncated or corrupt stream
+        break;
+    }
+    free(in);
+    if (failed) {
+        inflateEnd(z); free(z); c->wsInf = NULL;
+        pthread_mutex_unlock(&c->infLock);
+        free(out);
+        _tinox_inflate_ok = false;
+        return tinox_array_new(0, 4);
+    }
+    pthread_mutex_unlock(&c->infLock);
+    int64_t* nh = tinox_array_new(0, total > 0 ? (int64_t)total : 4);
+    for (size_t i = 0; i < total; i++) tinox_array_push(nh, out[i]);
+    free(out);
+    return nh;
 }
 
 // Wraps an already-connected socket fd (client side, e.g. via
@@ -8437,6 +9203,7 @@ int64_t httpConnFromFdTls(int64_t fd, const char* host, bool verify) {
     c->wsCompressed = false;
     c->inflight = 0;
     c->closing = false;
+    conn_ws_init(c);
     return (int64_t)(intptr_t)c;
 #else
     // Bug 90: the TLS-enabled branch above closes `fd` on every error path;
@@ -11116,6 +11883,7 @@ typedef struct {
     char method[8];
     char path[256];
     TinoxRouteHandler handler;
+    int64_t offload; // executor id of the @Blocking pool (#552), 0 = handled on the epoll worker
 } TinoxRoute;
 
 typedef struct {
@@ -11161,6 +11929,12 @@ static void http_server_add_route(int64_t* server, const char* method, char* pat
         srv->routes[srv->route_count].handler = (TinoxRouteHandler)(intptr_t)handler;
         srv->route_count++;
     }
+}
+
+// Gives the route registered last its own bounded handler pool (@Blocking(workers, queue), #552).
+void tinox_HttpServer_offload_last(int64_t* server, int64_t workers, int64_t queue) {
+    TinoxHttpServer* srv = (TinoxHttpServer*)server;
+    if (srv->route_count > 0) srv->routes[srv->route_count - 1].offload = executorCreate(workers, queue);
 }
 
 void tinox_HttpServer_get(int64_t* server, char* path, int64_t handler) {
@@ -11636,11 +12410,52 @@ char* tinox_security_json(void) {
     return GC_strdup(buf);
 }
 
-static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_alive_out) {
+// @Blocking routes (#552): the epoll worker that read the request hands the connection to the route's own bounded
+// pool and goes back to its other connections. The pool thread parses and answers the request exactly like an epoll
+// worker would (all per-request state is thread-local), then closes the connection: an offloaded response is always
+// `Connection: close`, so the epoll worker never has to take a connection back.
+typedef struct {
+    TinoxHttpServer* srv;
+    int fd;
+    char* raw;
+    size_t len;
+} TinoxOffloadJob;
+
+static void tinox_process_request(TinoxHttpServer* srv, int64_t client_fd, char* raw_req, int can_offload, int force_close,
+                                  int* keep_alive_out, int* offloaded_out);
+
+static void* tinox_offload_run(void* arg) {
+    TinoxOffloadJob* job = arg;
+    thread_local_init();
+    if (!g_recv_buf || g_recv_cap < job->len + 1) {
+        free(g_recv_buf);
+        g_recv_cap = job->len + 4096;
+        g_recv_buf = (char*)malloc(g_recv_cap);
+    }
+    memcpy(g_recv_buf, job->raw, job->len + 1);
+    g_recv_used = job->len;
+    int keep_alive = 0, offloaded = 0;
+    tinox_process_request(job->srv, job->fd, g_recv_buf, 0, 1, &keep_alive, &offloaded);
+    close(job->fd);
+    atomic_fetch_sub(&g_open_conns, 1);
+    service_work_release_token();
+    free(job->raw);
+    free(job);
+    return NULL;
+}
+
+static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_alive_out, int* offloaded_out) {
     *keep_alive_out = 0;
+    *offloaded_out = 0;
     char* raw_req = httpServerReadRequest(client_fd);
     if (!raw_req || !raw_req[0]) return;
+    tinox_process_request(srv, client_fd, raw_req, 1, 0, keep_alive_out, offloaded_out);
+}
 
+static void tinox_process_request(TinoxHttpServer* srv, int64_t client_fd, char* raw_req, int can_offload, int force_close,
+                                  int* keep_alive_out, int* offloaded_out) {
+    *keep_alive_out = 0;
+    *offloaded_out = 0;
     char method[8];
     char path[256];
     char* query = (char*)"";
@@ -11663,19 +12478,50 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
 
     tinox_map_reset(&g_path_params_map);
     TinoxRouteHandler handler = NULL;
+    int64_t route_offload = 0;
     for (int i = 0; i < srv->route_count; i++) {
         if (strcmp(srv->routes[i].method, method) != 0) continue;
         if (route_matches(srv->routes[i].path, path, &g_path_params_map)) {
             handler = srv->routes[i].handler;
+            route_offload = srv->routes[i].offload;
             break;
         }
         tinox_map_reset(&g_path_params_map);
     }
 
+    // The header pass below rewrites the buffer in place, so an offloaded request is copied before it.
+    if (can_offload && route_offload && service_work_take_token()) {
+        size_t raw_len = (raw_req == g_recv_buf) ? g_recv_used : strlen(raw_req);
+        TinoxOffloadJob* job = (TinoxOffloadJob*)malloc(sizeof(*job));
+        job->srv = srv;
+        job->fd = (int)client_fd;
+        job->len = raw_len;
+        job->raw = (char*)malloc(raw_len + 1);
+        memcpy(job->raw, raw_req, raw_len);
+        job->raw[raw_len] = '\0';
+        if (executor_submit_raw(route_offload, tinox_offload_run, job)) {
+            atomic_fetch_add(&g_offload_accepted, 1);
+            *offloaded_out = 1;
+            return;
+        }
+        // Queue full (or pool shut down): say so at once instead of queueing without bound.
+        service_work_release_token();
+        free(job->raw);
+        free(job);
+        atomic_fetch_add(&g_offload_rejected, 1);
+        static const char body[] = "{\"error\":\"overloaded: the blocking route's queue is full\"}";
+        char reply[256];
+        int n = snprintf(reply, sizeof reply,
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nRetry-After: 1\r\n"
+            "Connection: close\r\nContent-Length: %zu\r\n\r\n%s", sizeof(body) - 1, body);
+        (void)!send((int)client_fd, reply, (size_t)n, MSG_NOSIGNAL | MSG_DONTWAIT);
+        return;
+    }
+
     // Parse HTTP headers — normalize keys to Title-Case, track Connection header
     tinox_map_reset(&g_req_headers_map);
     int trace_headers = 0, request_headers = 0;
-    int req_close = 0; // HTTP/1.1 default: keep-alive
+    int req_close = force_close; // HTTP/1.1 default: keep-alive; offloaded requests always close
     char* hdr_line = strchr(raw_req, '\n');
     while (hdr_line) {
         hdr_line++;
@@ -12029,9 +12875,16 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
                 }
             } else {
                 // Handle one request on this client connection
-                int keep_alive = 0;
-                tinox_handle_one(srv, (int64_t)fd, &keep_alive);
-                if (keep_alive) {
+                int keep_alive = 0, offloaded = 0;
+                tinox_handle_one(srv, (int64_t)fd, &keep_alive, &offloaded);
+                if (offloaded) {
+                    // The pool thread owns the connection now (it closes it and releases the connection budget).
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                    if (fd >= 0 && fd < g_epoll_cap && g_epoll_slots[fd].fd >= 0) {
+                        g_epoll_slots[fd].fd = -1;
+                        g_epoll_nconns--;
+                    }
+                } else if (keep_alive) {
                     int idx = fd;
                     g_epoll_slots[idx].last_ms = now_ms;
                     g_epoll_slots[idx].served = 1;
@@ -14264,6 +15117,7 @@ typedef struct {
     int n_cols;
     int n_rows;
     char** data;  // row-major: data[row * n_cols + col]
+    char** names; // column names (GC copies), n_cols entries; used by DB::raw
 } TinoxSqliteResult;
 
 void tinox_db_pool_init(const char* url, int64_t pool_size) {
@@ -14466,6 +15320,14 @@ void* tinox_db_exec(void* conn, const char* sql_in, const char** params, int64_t
     TinoxSqliteResult* res = (TinoxSqliteResult*)GC_malloc(sizeof(TinoxSqliteResult));
     res->n_cols = n_cols;
     res->n_rows = n_rows;
+    res->names = NULL;
+    if (n_cols > 0) {
+        res->names = (char**)GC_malloc(sizeof(char*) * (size_t)n_cols);
+        for (int c = 0; c < n_cols; c++) {
+            const char* nm = sqlite3_column_name(stmt, c);
+            res->names[c] = GC_strdup(nm ? nm : "");
+        }
+    }
     if (n_rows > 0 && n_cols > 0) {
         res->data = (char**)GC_malloc(sizeof(char*) * (size_t)(n_rows * n_cols));
         for (int r = 0; r < n_rows; r++) {
@@ -14505,6 +15367,26 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
 void    tinox_db_free(void* r) { (void)r; }
 bool    tinox_db_result_failed(void* r) { return r == NULL; }
 char*   tinox_db_error(void* c) { return GC_strdup(sqlite3_errmsg((sqlite3*)c)); }
+
+// DB.raw() row marshaling for SQLite: same contract as the PostgreSQL helper (a
+// NULL column is absent from its row's Map; a statement without a result set,
+// e.g. INSERT/UPDATE, gives an empty list).
+void* tinox_db_result_to_row_maps(void* result) {
+    TinoxSqliteResult* res = (TinoxSqliteResult*)result;
+    int64_t nrows = tinox_db_nrows(result);
+    int64_t ncols = tinox_db_ncols(result);
+    int64_t* rows = tinox_array_new(nrows, 0);
+    int64_t* data = ((TinoxArray*)rows)->data;
+    for (int64_t r = 0; r < nrows; r++) {
+        void* row_map = tinox_map_create();
+        for (int64_t c = 0; c < ncols; c++) {
+            if (tinox_db_is_null(result, r, c)) continue;
+            tinox_map_set(row_map, res->names[c], (int64_t)(intptr_t)GC_strdup(res->data[r * ncols + c]));
+        }
+        data[r] = (int64_t)(intptr_t)row_map;
+    }
+    return (void*)rows;
+}
 
 #elif defined(TINOX_DB_MYSQL)
 
@@ -14614,7 +15496,8 @@ void tinox_db_pool_init(const char* url, int64_t pool_size) {
 typedef struct {
     int n_cols;
     int n_rows;
-    char** data;   // row-major: data[row * n_cols + col]
+    char** data;   // row-major: data[row * n_cols + col]; NULL for an SQL NULL
+    char** names;  // column names (GC copies), n_cols entries; used by DB::raw
 } TinoxMysqlResult;
 
 static MYSQL* _tinox_mysql_pool_acquire(void) {
@@ -14758,6 +15641,7 @@ static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const cha
         TinoxMysqlResult* idres = (TinoxMysqlResult*)GC_malloc(sizeof(TinoxMysqlResult));
         idres->n_cols = 1;
         idres->n_rows = 1;
+        idres->names = NULL;
         idres->data = (char**)GC_malloc(sizeof(char*));
         char buf[32];
         snprintf(buf, sizeof buf, "%llu", (unsigned long long)mysql_stmt_insert_id(stmt));
@@ -14775,32 +15659,78 @@ static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const cha
     TinoxMysqlResult* res = (TinoxMysqlResult*)GC_malloc(sizeof(TinoxMysqlResult));
     res->n_cols = n_cols;
     res->n_rows = n_rows;
+    res->names  = NULL;
+    if (n_cols > 0) {
+        MYSQL_FIELD* fields = mysql_fetch_fields(meta);
+        res->names = (char**)GC_malloc(sizeof(char*) * (size_t)n_cols);
+        for (int c = 0; c < n_cols; c++) res->names[c] = GC_strdup(fields[c].name ? fields[c].name : "");
+    }
     res->data   = n_cols * n_rows > 0
         ? (char**)GC_malloc(sizeof(char*) * (size_t)(n_cols * n_rows))
         : NULL;
 
     if (n_cols > 0 && n_rows > 0) {
+        // MySQL 8 declares MYSQL_BIND.is_null as bool*, MariaDB as my_bool*: take the type from the header.
+        typedef __typeof__(*((MYSQL_BIND*)0)->is_null) TinoxMysqlNull;
         MYSQL_BIND* out_bind = (MYSQL_BIND*)calloc((size_t)n_cols, sizeof(MYSQL_BIND));
         char** bufs    = (char**)calloc((size_t)n_cols, sizeof(char*));
         unsigned long* out_len = (unsigned long*)calloc((size_t)n_cols, sizeof(unsigned long));
+        TinoxMysqlNull* out_null = (TinoxMysqlNull*)calloc((size_t)n_cols, sizeof(TinoxMysqlNull));
         for (int c = 0; c < n_cols; c++) {
             bufs[c] = (char*)GC_malloc(512);
             out_bind[c].buffer_type   = MYSQL_TYPE_STRING;
             out_bind[c].buffer        = bufs[c];
             out_bind[c].buffer_length = 511;
             out_bind[c].length        = &out_len[c];
+            out_bind[c].is_null       = &out_null[c];
         }
         mysql_stmt_bind_result(stmt, out_bind);
         for (int r = 0; r < n_rows; r++) {
-            mysql_stmt_fetch(stmt);
+            int frc = mysql_stmt_fetch(stmt);
+            if (frc != 0 && frc != MYSQL_DATA_TRUNCATED) {
+                fprintf(stderr, "MySQL fetch error: %s\n", mysql_stmt_error(stmt));
+                free(out_bind); free(bufs); free(out_len); free(out_null);
+                if (meta)    mysql_free_result(meta);
+                if (bind)    free(bind);
+                if (lengths) free(lengths);
+                mysql_stmt_close(stmt);
+                return NULL;
+            }
             for (int c = 0; c < n_cols; c++) {
-                bufs[c][out_len[c]] = '\0';
-                res->data[r * n_cols + c] = GC_strdup(bufs[c]);
+                if (out_null[c]) { res->data[r * n_cols + c] = NULL; continue; }
+                if (out_len[c] > 511) {
+                    // The value did not fit the 512-byte column buffer: fetch the whole column instead of
+                    // silently cutting it off.
+                    unsigned long full = out_len[c];
+                    char* big = (char*)GC_malloc(full + 1);
+                    unsigned long got = 0;
+                    MYSQL_BIND one;
+                    memset(&one, 0, sizeof one);
+                    one.buffer_type   = MYSQL_TYPE_STRING;
+                    one.buffer        = big;
+                    one.buffer_length = full;
+                    one.length        = &got;
+                    if (mysql_stmt_fetch_column(stmt, &one, (unsigned int)c, 0) != 0) {
+                        fprintf(stderr, "MySQL fetch error: %s\n", mysql_stmt_error(stmt));
+                        free(out_bind); free(bufs); free(out_len); free(out_null);
+                        if (meta)    mysql_free_result(meta);
+                        if (bind)    free(bind);
+                        if (lengths) free(lengths);
+                        mysql_stmt_close(stmt);
+                        return NULL;
+                    }
+                    big[full] = '\0';
+                    res->data[r * n_cols + c] = big;
+                } else {
+                    bufs[c][out_len[c]] = '\0';
+                    res->data[r * n_cols + c] = GC_strdup(bufs[c]);
+                }
             }
         }
         free(out_bind);
         free(bufs);
         free(out_len);
+        free(out_null);
     }
 
     if (meta)    mysql_free_result(meta);
@@ -14815,7 +15745,8 @@ int64_t tinox_db_ncols(void* r)              { return r ? ((TinoxMysqlResult*)r)
 char*   tinox_db_getval(void* r, int64_t row, int64_t col) {
     TinoxMysqlResult* res = (TinoxMysqlResult*)r;
     if (!res || !res->data) return "";
-    return res->data[(int)row * res->n_cols + (int)col];
+    char* v = res->data[(int)row * res->n_cols + (int)col];
+    return v ? v : "";
 }
 int64_t tinox_db_getval_int(void* r, int64_t row, int64_t col) {
     TinoxMysqlResult* res = (TinoxMysqlResult*)r;
@@ -14832,6 +15763,26 @@ bool    tinox_db_is_null(void* r, int64_t row, int64_t col) {
 void    tinox_db_free(void* r) { (void)r; /* GC managed */ }
 bool    tinox_db_result_failed(void* r) { return r == NULL; }
 char*   tinox_db_error(void* c) { return GC_strdup(mysql_error((MYSQL*)c)); }
+
+// DB.raw() row marshaling for MySQL: same contract as the PostgreSQL helper (a
+// NULL column is absent from its row's Map; a statement without a result set,
+// e.g. INSERT/UPDATE, gives an empty list).
+void* tinox_db_result_to_row_maps(void* result) {
+    TinoxMysqlResult* res = (TinoxMysqlResult*)result;
+    int64_t nrows = tinox_db_nrows(result);
+    int64_t ncols = tinox_db_ncols(result);
+    int64_t* rows = tinox_array_new(nrows, 0);
+    int64_t* data = ((TinoxArray*)rows)->data;
+    for (int64_t r = 0; r < nrows; r++) {
+        void* row_map = tinox_map_create();
+        for (int64_t c = 0; c < ncols; c++) {
+            if (tinox_db_is_null(result, r, c)) continue;
+            tinox_map_set(row_map, res->names[c], (int64_t)(intptr_t)GC_strdup(res->data[r * ncols + c]));
+        }
+        data[r] = (int64_t)(intptr_t)row_map;
+    }
+    return (void*)rows;
+}
 
 #else
 // Stub implementations when no DB driver is selected — prevent link errors.

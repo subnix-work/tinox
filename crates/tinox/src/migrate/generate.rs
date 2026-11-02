@@ -1,6 +1,6 @@
 //! Offline, additive schema generation. Existing YAML bytes are never serialized again.
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use tinox_parser::{Annotation, AnnotationArg, Decl, DeclKind, Literal, Type};
 
@@ -84,6 +84,12 @@ fn entity_schema(root: &Path) -> Result<(Schema, BTreeMap<String, Vec<String>>),
             _ => None,
         })
         .collect();
+    let mut classes = HashMap::new();
+    for decl in &decls {
+        if let DeclKind::Class(class) = &decl.node {
+            classes.insert(class.name.as_str(), class);
+        }
+    }
     let mut schema = Schema::new();
     let mut key_order: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for decl in &decls {
@@ -97,15 +103,12 @@ fn entity_schema(root: &Path) -> Result<(Schema, BTreeMap<String, Vec<String>>),
         {
             continue;
         }
-        if class.extends.is_some() || !class.type_params.is_empty() {
-            return Err(format!(
-                "entity {}: inheritance and generic entities are unsupported",
-                class.name
-            ));
-        }
+        // Inherited columns of non-entity base classes come first (the ORM's slot order); every shape the
+        // ORM cannot map is an explicit error (#563).
+        let entity_fields = tinox_typecheck::annotations::entity_class_fields(class, &classes)?;
         let table = annotation_name(&class.annotations, "Table", &class.name.to_lowercase())?;
         let mut columns = BTreeMap::new();
-        for field in &class.fields {
+        for field in entity_fields.iter().copied() {
             let name = annotation_name(&field.annotations, "Column", &field.name)?;
             let has = |ann: &str| field.annotations.iter().any(|a| a.name == ann);
             let ty = match &field.field_type {
@@ -150,13 +153,13 @@ fn entity_schema(root: &Path) -> Result<(Schema, BTreeMap<String, Vec<String>>),
             }
         }
         let mut order = Vec::new();
-        for field in &class.fields {
+        for field in entity_fields.iter().copied() {
             if field.annotations.iter().any(|a| a.name == "Id") {
                 order.push(annotation_name(&field.annotations, "Column", &field.name)?);
             }
         }
         if order.len() > 1 {
-            for field in &class.fields {
+            for field in entity_fields.iter().copied() {
                 if field.annotations.iter().any(|a| a.name == "GeneratedValue") {
                     return Err(format!(
                         "entity {table}: @GeneratedValue cannot be combined with a composite @Id"

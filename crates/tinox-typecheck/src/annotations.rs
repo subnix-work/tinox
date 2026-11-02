@@ -94,6 +94,8 @@ pub struct RouteInfo {
     /// itself); anything else = auto-serialize mode (the shim serializes
     /// the returned value as the JSON response body).
     pub return_type: Type,
+    /// `@Blocking(workers, queue)`: run the handler on a dedicated bounded pool (#552).
+    pub blocking: Option<(i64, i64)>,
 }
 
 /// The payload type remains in route metadata even though the transport
@@ -542,6 +544,16 @@ impl AnnotationProcessor {
                 min_args: 1,
                 max_args: 1,
                 description: "Requires a verified OIDC access token (RS256/JWKS, IdP config via OIDC_ISSUER/OIDC_JWKS_URI/OIDC_AUDIENCE env vars) carrying at least one of the listed realm roles".to_string(),
+            },
+        );
+        registry.insert(
+            "Blocking".to_string(),
+            AnnotationInfo {
+                name: "Blocking".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 2,
+                max_args: 2,
+                description: "REST route whose handler blocks (slow database, upstream call, ...): @Blocking(workers, queue) gives it its own bounded worker pool (1..256 workers, queue 1..1000000), so it cannot occupy the HTTP epoll workers that serve other routes. A full queue answers 503 with Retry-After; the connection is closed after the response. HTTP/1 plain server only (#552)".to_string(),
             },
         );
         registry.insert(
@@ -1358,6 +1370,20 @@ impl AnnotationProcessor {
             }
         }
 
+        // Entities inherit the columns of their (non-entity) base classes: ancestor fields first, own last,
+        // which is also the object's slot order the ORM reads and writes (#563). Invalid shapes keep their
+        // own fields here and are reported by `entity_inheritance_errors`.
+        let mut classes = HashMap::new();
+        collect_classes(&source.decls, &mut classes);
+        let enums = result.name_enums.clone();
+        for entry in &mut result.entity_entries {
+            if let Some(class) = classes.get(entry.class_name.as_str()) {
+                if let Ok(fields) = entity_class_fields(class, &classes) {
+                    entry.fields = fields.iter().map(|f| entity_field_info(f, &enums)).collect();
+                }
+            }
+        }
+
         resolve_di_providers(source, &mut result);
 
         for component in &result.di_components {
@@ -1636,27 +1662,7 @@ impl AnnotationProcessor {
                 .and_then(|arg| if let tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s)) = arg { Some(s.clone()) } else { None })
                 .unwrap_or_else(|| class.name.to_lowercase());
 
-            let fields = class.fields.iter().map(|f| {
-                let col_name = f.annotations.iter()
-                    .find(|a| a.name == "Column")
-                    .and_then(|a| a.args.first())
-                    .and_then(|arg| if let tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s)) = arg { Some(s.clone()) } else { None })
-                    .unwrap_or_else(|| f.name.clone());
-                let enum_name = match &f.field_type {
-                    Type::Named(n) if result.name_enums.contains(n) => Some(n.clone()),
-                    _ => None,
-                };
-                EntityFieldInfo {
-                    field_name: f.name.clone(),
-                    column_name: col_name,
-                    is_id: f.annotations.iter().any(|a| a.name == "Id"),
-                    is_generated: f.annotations.iter().any(|a| a.name == "GeneratedValue"),
-                    not_null: f.annotations.iter().any(|a| a.name == "NotNull"),
-                    // an enum column is text
-                    field_llvm_type: if enum_name.is_some() { "i8*".to_string() } else { field_type_to_llvm(&f.field_type) },
-                    enum_name,
-                }
-            }).collect();
+            let fields = class.fields.iter().map(|f| entity_field_info(f, &result.name_enums)).collect();
 
             result.entity_entries.push(EntityInfo {
                 class_name: class.name.clone(),
@@ -1971,6 +1977,7 @@ impl AnnotationProcessor {
         let mut consumes: Option<String> = None;
         let mut auth: Option<String> = class_auth.map(|s| s.to_string());
         let mut oidc_roles: Vec<String> = Vec::new();
+        let mut blocking: Option<(i64, i64)> = None;
 
         for ann in &method.annotations {
             match ann.name.as_str() {
@@ -1999,6 +2006,11 @@ impl AnnotationProcessor {
                 "Auth" => {
                     if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         auth = Some(s.clone());
+                    }
+                }
+                "Blocking" => {
+                    if let (Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(w))), Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(q)))) = (ann.args.first(), ann.args.get(1)) {
+                        blocking = Some((*w, *q));
                     }
                 }
                 "OIDCRolesAllowed" => {
@@ -2067,6 +2079,7 @@ impl AnnotationProcessor {
             is_static: method.static_,
             params,
             return_type: method.ret_type.clone(),
+            blocking,
         })
     }
 }
@@ -2075,6 +2088,114 @@ impl Default for AnnotationProcessor {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Column description of one entity field.
+fn entity_field_info(f: &FieldDef, name_enums: &HashSet<String>) -> EntityFieldInfo {
+    let col_name = f.annotations.iter()
+        .find(|a| a.name == "Column")
+        .and_then(|a| a.args.first())
+        .and_then(|arg| if let tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s)) = arg { Some(s.clone()) } else { None })
+        .unwrap_or_else(|| f.name.clone());
+    let enum_name = match &f.field_type {
+        Type::Named(n) if name_enums.contains(n) => Some(n.clone()),
+        _ => None,
+    };
+    EntityFieldInfo {
+        field_name: f.name.clone(),
+        column_name: col_name,
+        is_id: f.annotations.iter().any(|a| a.name == "Id"),
+        is_generated: f.annotations.iter().any(|a| a.name == "GeneratedValue"),
+        not_null: f.annotations.iter().any(|a| a.name == "NotNull"),
+        // an enum column is text
+        field_llvm_type: if enum_name.is_some() { "i8*".to_string() } else { field_type_to_llvm(&f.field_type) },
+        enum_name,
+    }
+}
+
+/// Every class by name, namespaces flattened.
+pub fn collect_classes<'a>(decls: &'a [tinox_parser::Decl], out: &mut HashMap<&'a str, &'a Class>) {
+    for decl in decls {
+        match &decl.node {
+            DeclKind::Class(c) => { out.insert(c.name.as_str(), c); }
+            DeclKind::Namespace(ns) => collect_classes(&ns.decls, out),
+            _ => {}
+        }
+    }
+}
+
+fn is_entity(class: &Class) -> bool {
+    class.annotations.iter().any(|a| a.name == "Entity" || a.name == "Table")
+}
+
+/// The fields that become columns of `class`'s table (#563): inherited fields of its base classes (nearest base last,
+/// i.e. ancestors first) followed by its own, which is also the order of the object's slots.
+///
+/// The supported slice is a *mapped superclass*: every base class is a plain, non-generic class that is not itself an
+/// entity, and no field name is declared twice along the chain. Everything else is an explicit error, so changing a
+/// hierarchy can never silently move, rename or drop columns:
+/// * entity extending an entity (single-table or joined inheritance) is unsupported;
+/// * a generic entity or a generic base class is unsupported (a type parameter has no column type, and `extends`
+///   takes a bare class name, so a concrete specialization such as `Base<Int64>` cannot be written);
+/// * a field that redeclares an inherited one is ambiguous (override vs. second column) and is rejected.
+pub fn entity_class_fields<'a>(class: &'a Class, classes: &HashMap<&str, &'a Class>) -> Result<Vec<&'a FieldDef>, String> {
+    if !class.type_params.is_empty() {
+        return Err(format!(
+            "entity {}: generic entities are unsupported (a type parameter has no column type, and `extends` cannot name a concrete specialization such as Base<Int64>)",
+            class.name
+        ));
+    }
+    let mut ancestors: Vec<&'a Class> = Vec::new();
+    let mut current = class.extends.as_deref();
+    while let Some(name) = current {
+        if name == class.name || ancestors.iter().any(|a| a.name == name) {
+            return Err(format!("entity {}: inheritance cycle through {name}", class.name));
+        }
+        let Some(parent) = classes.get(name).copied() else {
+            return Err(format!("entity {}: base class {name} is not defined", class.name));
+        };
+        if is_entity(parent) {
+            return Err(format!(
+                "entity {} extends entity {name}: inheritance between entities (single-table or joined) is unsupported; move the shared fields into a base class without @Entity/@Table",
+                class.name
+            ));
+        }
+        if !parent.type_params.is_empty() {
+            return Err(format!("entity {}: base class {name} is generic, which is unsupported for entities", class.name));
+        }
+        ancestors.push(parent);
+        current = parent.extends.as_deref();
+    }
+    let mut fields: Vec<&'a FieldDef> = Vec::new();
+    let mut origin: HashMap<&str, &str> = HashMap::new();
+    for owner in ancestors.iter().rev().copied().chain(std::iter::once(class)) {
+        for field in &owner.fields {
+            if let Some(first) = origin.insert(field.name.as_str(), owner.name.as_str()) {
+                return Err(format!(
+                    "entity {}: field '{}' is declared in both {first} and {}; redeclaring an inherited field is unsupported",
+                    class.name, field.name, owner.name
+                ));
+            }
+            fields.push(field);
+        }
+    }
+    Ok(fields)
+}
+
+/// Entity shapes the ORM and schema generator cannot map, as (class, message) for the compiler to report.
+pub fn entity_inheritance_errors(decls: &[tinox_parser::Decl]) -> Vec<(String, String)> {
+    let mut classes = HashMap::new();
+    collect_classes(decls, &mut classes);
+    let mut names: Vec<&&str> = classes.keys().collect();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let class = classes[*name];
+            if !is_entity(class) { return None; }
+            entity_class_fields(class, &classes).err().map(|message| (class.name.clone(), message))
+        })
+        .collect()
 }
 
 pub fn process_annotations(
@@ -2630,6 +2751,7 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
                     errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
                 }
                 validate_route_params(method, json_serializable, errors);
+                validate_blocking(method, errors);
             }
         }
         DeclKind::Interface(i) => {
@@ -2709,6 +2831,25 @@ fn is_http_context_type(ty: &Type) -> bool {
 /// since `@HttpContext`'s `valid_targets` is `[Param]` either way -- this
 /// function only adds the REST-specific cardinality/compatibility rules
 /// on top).
+/// `@Blocking(workers, queue)` (#552): integer literals within the executor limits, on a REST route.
+fn validate_blocking(method: &Method, errors: &mut Vec<Error>) {
+    let Some(ann) = method.annotations.iter().find(|a| a.name == "Blocking") else { return };
+    let has_verb = method.annotations.iter().any(|a| matches!(a.name.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE"));
+    if !has_verb {
+        errors.push(Error::new(method.span, format!("@Blocking on '{}' has no effect without @GET/@POST/@PUT/@PATCH/@DELETE", method.name)));
+        return;
+    }
+    let int = |i: usize| match ann.args.get(i) {
+        Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(v))) => Some(*v),
+        _ => None,
+    };
+    match (int(0), int(1)) {
+        (Some(w), Some(q)) if (1..=256).contains(&w) && (1..=1_000_000).contains(&q) => {}
+        (Some(_), Some(_)) => errors.push(Error::new(method.span, format!("@Blocking on '{}': workers must be 1..256 and queue 1..1000000", method.name))),
+        _ => errors.push(Error::new(method.span, format!("@Blocking on '{}' takes two integer literals: @Blocking(workers, queue)", method.name))),
+    }
+}
+
 fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
     let has_verb = method.annotations.iter()
         .any(|a| matches!(a.name.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE"));

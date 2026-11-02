@@ -49,7 +49,7 @@ version = "0.1.0"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.3"
+version = "1.2.4"
 
 [[overrides]]
 group = "tinox.core"
@@ -86,12 +86,13 @@ path = "{db_dir}"
 }
 
 #[test]
-fn db_raw_without_postgres_driver_is_a_compile_error() {
+fn db_raw_without_a_database_driver_is_a_compile_error() {
     let out = build_fixture("db_raw_gate", "db-raw-gate", "");
     assert!(!out.status.success(), "expected build to fail with no [database] configured");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("DB::raw"), "stderr: {stderr}");
     assert!(stderr.contains("Thing.doit"), "error should name the offending class.method:\n{stderr}");
+    assert!(stderr.contains("supports driver"), "stderr: {stderr}");
 }
 
 #[test]

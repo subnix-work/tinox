@@ -1,0 +1,12 @@
+class Main
+{
+    fnc main() -> Int32
+    {
+        println(tr("Hello"))
+        println(tr("Saved %1 files to %2").argInt(3).arg("disk"))
+        println(trc("menu", "Open"))
+        println(trn("%1 file", "%1 files", 1).argInt(1))
+        println(trn("%1 file", "%1 files", 5).argInt(5))
+        return 0
+    }
+}

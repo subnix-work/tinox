@@ -1,0 +1,47 @@
+import tinox.core.http_server
+import tinox.core.process
+
+class Api
+{
+    @GET
+    @Path("/fast")
+    @Produces("application/json")
+    fn fast(@HttpContext ctx: HttpContext) -> HttpContext
+    {
+        ctx.response.body = "{\"fast\":true}"
+        return ctx
+    }
+
+    // Blocks for a second, like a slow database or upstream call.
+    @GET
+    @Path("/slow")
+    @Produces("application/json")
+    @Blocking(2, 4)
+    fn slow(@HttpContext ctx: HttpContext) -> HttpContext
+    {
+        Process::sleep(1000)
+        ctx.response.body = "{\"slow\":true}"
+        return ctx
+    }
+
+    // The same handler without @Blocking: it occupies the HTTP worker for its whole duration.
+    @GET
+    @Path("/slow-inline")
+    @Produces("application/json")
+    fn slowInline(@HttpContext ctx: HttpContext) -> HttpContext
+    {
+        Process::sleep(1000)
+        ctx.response.body = "{\"slow\":true}"
+        return ctx
+    }
+
+    @POST
+    @Path("/echo")
+    @Produces("application/json")
+    @Blocking(1, 2)
+    fn echo(@HttpContext ctx: HttpContext) -> HttpContext
+    {
+        ctx.response.body = ctx.request.body
+        return ctx
+    }
+}

@@ -16,6 +16,7 @@ mod migrate;
 mod schema_diff;
 mod migrate_xml;
 mod exception_migration;
+mod i18n;
 mod semicolon_migration;
 mod db_new;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
@@ -83,6 +84,12 @@ fn run() {
                 std::process::exit(1);
             }
         }
+        "i18n" => {
+            if let Err(e) = i18n::run(&args[2..]) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         "db" => db_command(&args[2..]),
         "contract" => gen_api_contract(&args[2..]),
         "check"   => check(&args[2..]),
@@ -133,6 +140,7 @@ fn print_help() {
     println!("  tinox docker               Build a minimal Docker image (needs [docker] in tinox.toml)");
     println!("  tinox docker --tag n:t     Build the image under an explicit name:tag");
     println!("  tinox docker --source-build  Compile inside the pinned builder image (multi-stage, no host libc dependency)");
+    println!("  tinox i18n extract [--out f] [path...]  Collect tr()/trc()/trn() texts into a gettext .pot template");
     println!("  tinox run   [file]         Compile and run (uses tinox.toml if no file)");
     println!("  tinox dev   [file]         Dev mode: hot-reload on file changes");
     println!("  tinox test  [file]         Run all @Test-annotated methods");
@@ -1080,9 +1088,10 @@ fn docker_runtime_packages(extra: &[String]) -> Vec<String> {
     if http3_enabled {
         eprintln!(
             "warning: TINOX_HTTP3 is set, but ngtcp2/nghttp3 runtime package names vary by distro \
-             and aren't auto-provisioned here -- add them via [docker] extra_packages in tinox.toml, \
-             or the post-build library check below will fail with a clear error instead of shipping \
-             a broken image."
+             and aren't auto-provisioned here -- add them via [docker] extra_packages in tinox.toml. \
+             With --source-build the stock builder image has no ngtcp2/nghttp3 headers, so the build \
+             fails (missing ngtcp2/ngtcp2.h) instead of shipping a broken image; use a custom \
+             [docker] builder for HTTP/3, or the host build."
         );
     }
     let db_driver = read_database_config();
@@ -1395,10 +1404,10 @@ fn docker_build(args: &[String]) {
     println!("Built {image_ref}");
     println!("Run it with:");
     if cfg.ports.is_empty() {
-        println!("  docker run --rm {image_ref}");
+        println!("  docker run --rm --init {image_ref}");
     } else {
         let publish_flags: String = cfg.ports.iter().map(|p| format!("-p {p}:{p}")).collect::<Vec<_>>().join(" ");
-        println!("  docker run --rm {publish_flags} {image_ref}");
+        println!("  docker run --rm --init {publish_flags} {image_ref}");
     }
 }
 
@@ -3353,6 +3362,7 @@ fn compile_test_exe(source: &str, tests: &[tinox_typecheck::annotations::TestInf
         status_code: r.status_code, produces: r.produces.clone(),
         consumes: r.consumes.clone(), auth_type: r.auth_type.clone(),
         oidc_roles: r.oidc_roles.clone(),
+        blocking: r.blocking,
         is_static: r.is_static,
         params: convert_route_params(&r.params),
         return_type: r.return_type.clone(),
@@ -4821,6 +4831,7 @@ fn check_explicit_imports(
     let mut queue: Vec<PathBuf> = vec![entry_canon];
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut diagnostics = Vec::new();
+    let mut digests: std::collections::HashMap<PathBuf, [u8; 32]> = std::collections::HashMap::new();
 
     while let Some(path) = queue.pop() {
         if !seen.insert(path.clone()) {
@@ -4851,7 +4862,27 @@ fn check_explicit_imports(
             .filter_map(|p| cache.get(p))
             .collect();
 
-        if let Err(bag) = tinox_typecheck::cache::check_with_prelude_cached(&cache[&path], &preludes, &path.to_string_lossy()) {
+        // Each parsed file is encoded once for the whole pass; the per-file query keys are built from digests.
+        // (Encoding every prelude again for every file is quadratic in densely connected projects, #559.)
+        let mut file_digest = |p: &PathBuf, file: &tinox_parser::SourceFile| -> Option<[u8; 32]> {
+            if let Some(d) = digests.get(p) { return Some(*d); }
+            let d = tinox_typecheck::cache::ast_digest(file)?;
+            digests.insert(p.clone(), d);
+            Some(d)
+        };
+        let prelude_digests: Option<Vec<[u8; 32]>> = prelude_paths
+            .iter()
+            .filter(|p| *p != &path)
+            .filter_map(|p| cache.get(p).map(|file| (p, file)))
+            .map(|(p, file)| file_digest(p, file))
+            .collect();
+        let source_digest = file_digest(&path, &cache[&path]);
+        let checked = match (source_digest, prelude_digests) {
+            (Some(source_digest), Some(prelude_digests)) => tinox_typecheck::cache::check_with_prelude_digests(
+                &cache[&path], &source_digest, &preludes, &prelude_digests, &path.to_string_lossy()),
+            _ => tinox_typecheck::cache::check_with_prelude_cached(&cache[&path], &preludes, &path.to_string_lossy()),
+        };
+        if let Err(bag) = checked {
             for err in bag.errors {
                 let needs_import = is_unresolved_name_error(&err.message);
                 let mut diagnostic = tinox_common::diagnostic::Diagnostic::from_error(err, "type", path.to_str());
@@ -4960,6 +4991,9 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
     if let Some((class_name, message)) = tinox_typecheck::annotations::foreign_key_errors(&ast.decls).into_iter().next() {
         return Err(annotation_error(&[class_name.as_str()], message));
     }
+    if let Some((class_name, message)) = tinox_typecheck::annotations::entity_inheritance_errors(&ast.decls).into_iter().next() {
+        return Err(annotation_error(&[class_name.as_str()], message));
+    }
     for endpoint in &ann_result.ws_endpoints {
         if ann_result.di_components.iter().any(|component|
             component.class_name == endpoint.class_name
@@ -5058,17 +5092,16 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
             }
         }
     }
-    // DB::raw(...) is postgres-only in v1, same reasoning and same check shape
-    // as @Transactional above (its connection-pool/PQexecParams machinery only
-    // exists for that driver). `DB::raw` is a plain call expression, not an
-    // annotation, so it is found with a dedicated AST walk.
+    // DB::raw(...) needs a configured driver: postgres, mysql or sqlite (#562).
+    // `DB::raw` is a plain call expression, not an annotation, so it is found
+    // with a dedicated AST walk.
     if let Some((class_name, method_name)) = find_db_raw_usage(&ast.decls) {
         let driver_cfg = read_database_config();
         let driver = driver_cfg.as_ref().map(|c| c.driver.as_str()).unwrap_or("");
-        if driver != "postgres" {
+        if !matches!(driver, "postgres" | "mysql" | "sqlite") {
             return Err(annotation_error(&[class_name.as_str()], format!(
                 "'{class_name}.{method_name}' calls DB::raw(...), but [database] driver is {} -- \
-                 DB::raw(...) is only supported for driver = \"postgres\" in this version",
+                 DB::raw(...) supports driver = \"postgres\", \"mysql\" or \"sqlite\"",
                 if driver.is_empty() { "not configured".to_string() } else { format!("\"{driver}\"") }
             )));
         }
@@ -5235,6 +5268,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
             consumes: r.consumes.clone(),
             auth_type: r.auth_type.clone(),
             oidc_roles: r.oidc_roles.clone(),
+            blocking: r.blocking,
             is_static: r.is_static,
             params: convert_route_params(&r.params),
             return_type: r.return_type.clone(),
