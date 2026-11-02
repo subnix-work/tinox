@@ -42,9 +42,20 @@ class Main
         return await inner
     }
 
+    // Waits until `count` jobs are executing, so scenarios depend on the executor's state, not on timing.
+    fnc waitActive(ex: Int64, count: Int64) -> Nothing
+    {
+        var guard = 0
+        while (executorStat(ex, 2) < count && guard < 2000)
+        {
+            Process::sleep(5)
+            guard = guard + 1
+        }
+    }
+
     fnc typed() -> Nothing
     {
-        const ex: Int64 = executorCreate(3, 64)
+        const ex: Int64 = executorCreate(3, 2048)
         var numbers: List<Task<Int64>> = []
         var labels: List<Task<String>> = []
         var i = 0
@@ -108,8 +119,8 @@ class Main
     fnc overload() -> Nothing
     {
         const ex: Int64 = executorCreate(1, 2)
-        const running: Task<Int64> = spawn Main::slow(600) on ex
-        Process::sleep(100)
+        const running: Task<Int64> = spawn Main::slow(1500) on ex
+        Main::waitActive(ex, 1)
         var jobs: List<Task<Int64>> = []
         var i = 0
         while (i < 6)
@@ -139,7 +150,7 @@ class Main
     {
         const ex: Int64 = executorCreate(1, 4)
         const job: Task<Int64> = spawn Main::spin() on ex
-        Process::sleep(100)
+        Main::waitActive(ex, 1)
         taskCancel(job)
         try {
             await job
@@ -149,6 +160,7 @@ class Main
         }
         // Cancelled before it starts: the single worker is busy with the first job.
         const blocker: Task<Int64> = spawn Main::slow(300) on ex
+        Main::waitActive(ex, 1)
         const queued: Task<Int64> = spawn Main::double(1) on ex
         taskCancel(queued)
         try {
@@ -165,7 +177,7 @@ class Main
     {
         const ex: Int64 = executorCreate(1, 8)
         const running: Task<Int64> = spawn Main::spin() on ex
-        Process::sleep(100)
+        Main::waitActive(ex, 1)
         const waiting: Task<Int64> = spawn Main::double(5) on ex
         executorShutdown(ex, false)
         try {
