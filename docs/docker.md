@@ -113,7 +113,7 @@ Contract for features the builder does not provision:
 
 * **HTTP/3 (`TINOX_HTTP3=1`) is unsupported with the stock builder**: the build fails visibly in the builder with
   `'ngtcp2/ngtcp2.h' file not found`. Use a custom `[docker] builder` that provides ngtcp2/nghttp3, or the host build.
-* **Offline builds are not supported**: the builder and base pulls and `tinox install` need the network.
+* **Offline builds are not supported** for projects with dependencies: the builder and base pulls and `tinox install` need the network. Verified: `docker build --network none` of the staged context fails in `tinox install` ("Download failed ... 0 installed") even though the host has every package cached, because the context carries none; no image is produced.
 
 All of these run in `make docker-e2e` (`crates/tinox/tests/docker_source_build.rs`).
 

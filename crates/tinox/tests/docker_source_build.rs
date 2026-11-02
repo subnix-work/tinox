@@ -296,3 +296,49 @@ fn source_build_tls_image_serves_https() {
     assert_eq!(String::from_utf8_lossy(&id_out.stdout).trim(), "10001");
     assert!(!docker(&["exec", &app, "sh", "-c", "ls /app/data/certs/*.pem >/dev/null 2>&1 && test -w /app/data/certs"]).status.success(), "the certificate mount is read-only");
 }
+
+#[test]
+fn source_build_without_network_fails_visibly_when_dependencies_are_needed() {
+    if !opt_in() {
+        return;
+    }
+    ensure_builder();
+    let (dir, image) = build_variant("offline", "driver = \"sqlite\"\nurl = \"data/offline.db\"");
+    let _cleanup = Cleanup { containers: vec![], image: image.clone(), volume: String::new(), dir: dir.clone() };
+    // The staged context does not carry the host's package cache, so the same Dockerfile cannot build offline:
+    // `tinox install` inside the builder fails with a clear message instead of reusing anything from the host.
+    let context = dir.join(".tinox/docker/ctx");
+    let offline = Command::new("docker")
+        .args(["build", "--network", "none", "--no-cache", "-f"])
+        .arg(context.join("Dockerfile"))
+        .arg(&context)
+        .args(["-t", &format!("{image}-offline")])
+        .output()
+        .unwrap();
+    let t = text(&offline);
+    assert!(!offline.status.success(), "an offline build of a project with dependencies must fail:\n{t}");
+    assert!(t.contains("Download failed") && t.contains("0 installed"), "{t}");
+    assert!(!docker(&["image", "inspect", &format!("{image}-offline")]).status.success(), "no half-built image may exist");
+}
+
+#[test]
+fn source_build_http3_is_an_explicit_unsupported_contract() {
+    if !opt_in() {
+        return;
+    }
+    ensure_builder();
+    let id = std::process::id();
+    let dir = std::env::temp_dir().join(format!("tinox-docker-e2e-h3-{id}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(Command::new("cp").arg("-r").arg(repo_root().join("tests/fixtures/docker_source_build")).arg(&dir).status().unwrap().success());
+    let image = format!("tinox-docker-e2e-h3-{id}:test");
+    let _cleanup = Cleanup { containers: vec![], image: image.clone(), volume: String::new(), dir: dir.clone() };
+    let out = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["docker", "--source-build", "--tag", &image]).env("TINOX_HTTP3", "1").current_dir(&dir).output().unwrap();
+    let t = text(&out);
+    // The stock builder has no ngtcp2/nghttp3: the build fails in the builder, naming the missing header, and the
+    // tool says so up front. No image is produced.
+    assert!(!out.status.success(), "TINOX_HTTP3=1 must not produce an image with the stock builder:\n{t}");
+    assert!(t.contains("ngtcp2/ngtcp2.h"), "{t}");
+    assert!(t.contains("stock builder image has no ngtcp2/nghttp3"), "{t}");
+    assert!(!docker(&["image", "inspect", &image]).status.success());
+}
