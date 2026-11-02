@@ -1,0 +1,9 @@
+class Meta<T>
+{
+    @Id
+    @GeneratedValue
+    var id: Int64
+    @Column("tag")
+    @NotNull
+    var tag: T
+}

@@ -447,6 +447,9 @@ pub struct Class {
     pub name: Ident,
     pub type_params: Vec<String>,
     pub extends: Option<Ident>,
+    /// Type arguments of a generic base class (`extends Base<Int64>`); empty for a plain base class.
+    #[serde(default)]
+    pub extends_args: Vec<Type>,
     pub implements: Vec<Ident>,
     pub fields: Vec<FieldDef>,
     pub methods: Vec<Method>,

@@ -1,0 +1,17 @@
+import tinox.core.db
+import Invoice
+import Counter
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        DB::of(Invoice).save(Invoice { id: 0, tag: "paid", amount: 120 })
+        DB::of(Counter).save(Counter { id: 0, tag: 7, hits: 3 })
+        const inv: Invoice = DB::of(Invoice).first()
+        const cnt: Counter = DB::of(Counter).first()
+        println("invoice " + inv.tag + " " + inv.amount.toString())
+        println("counter " + (cnt.tag + 1).toString() + " " + cnt.hits.toString())
+        return 0
+    }
+}

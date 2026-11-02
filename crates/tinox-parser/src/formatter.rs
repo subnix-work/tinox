@@ -138,6 +138,10 @@ fn fmt_annotations(&self, annotations: &[Annotation]) -> String {
         let mut header = format!("class {}{}", c.name, type_params);
         if let Some(ext) = &c.extends {
             header.push_str(&format!(" extends {}", ext));
+            if !c.extends_args.is_empty() {
+                let args: Vec<String> = c.extends_args.iter().map(|a| self.fmt_type(a)).collect();
+                header.push_str(&format!("<{}>", args.join(", ")));
+            }
         }
         if !c.implements.is_empty() {
             header.push_str(&format!(" implements {}", c.implements.join(", ")));
@@ -971,6 +975,12 @@ mod tests {
         assert!(out.contains("class Dog"));
         assert!(out.contains("var name: String"));
         assert!(out.contains("fn bark() -> Nothing"));
+    }
+
+    #[test]
+    fn test_fmt_class_extends_type_arguments() {
+        let out = fmt("class Order extends Base<Int64, String> { }");
+        assert!(out.contains("extends Base<Int64, String>"), "{out}");
     }
 
     #[test]

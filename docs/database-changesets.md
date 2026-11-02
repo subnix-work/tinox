@@ -345,7 +345,7 @@ other columns are nullable. Field initializers are application defaults, not dat
 
 Enum names are stored as text, matching the ORM; changing enum variants does not require a schema change.
 Unsupported types (including UInt64, nullable wrappers, collections, references to other entities and payload enums),
-generic entities, inheritance, duplicate table/column names and composite keys are errors.
+generic entities, inheritance between entities, duplicate table/column names and composite keys are errors.
 
 The comparison replays existing declarative changes, following includes and filtering for the configured driver.
 Generated changeSets use author `tinox`, IDs `entity-<driver>-<number>` and a `dbms` filter for that driver. Generate
@@ -436,14 +436,41 @@ class Invoice extends Auditable {
   `@ForeignKey` work on inherited fields too). `tinox db generate`, the ORM's SELECT/INSERT/UPDATE and the object
   layout use the same field list: ancestors' fields first (nearest base last), the entity's own last. Chains
   of several base classes work.
-- **Supported:** non-generic base classes without `@Entity`/`@Table`. **Explicit errors** (at `tinox db generate`
-  and at compile time, naming the class): an entity extending another entity (single-table or joined inheritance),
-  a generic entity or a generic base class (a type parameter has no column type, and `extends` takes a bare class
-  name, so a concrete specialization such as `Base<Int64>` cannot be written), a subclass redeclaring an inherited
-  field (override and second column are ambiguous), a missing base class and an inheritance cycle.
+- **Supported:** non-generic base classes without `@Entity`/`@Table`, and concrete specializations of generic
+  field-only base classes (next section). **Explicit errors** (at `tinox db generate` and at compile time, naming
+  the class): an entity extending another entity (single-table or joined inheritance), a generic entity, a generic
+  base class named without type arguments (a type parameter has no column type), a subclass redeclaring an
+  inherited field (override and second column are ambiguous), a missing base class and an inheritance cycle.
 - Because nothing is renamed implicitly, moving a field between the base class and the entity does not change the
   schema, and changing a hierarchy cannot drop or rename unrelated columns: `generate` only adds, and reports
   changes to existing columns ("add a manual changeSet").
 - Verified with an independent `sqlite3` (`crates/tinox/tests/orm_inheritance.rs`): schema columns, ORM
   save/list/update round trip, the inherited `@NotNull` as a real constraint, and each unsupported shape.
   Single-table/joined hierarchies, polymorphic queries and generic entities remain out of scope.
+
+### Generic mapped superclasses
+
+`extends` accepts type arguments, so a generic base class can be specialized per entity:
+
+```tinox
+class Meta<T>
+{
+    @Id @GeneratedValue var id: Int64
+    @Column("tag") @NotNull var tag: T
+}
+
+@Entity @Table("invoices") class Invoice extends Meta<String> { @Column("amount") var amount: Int64 }
+@Entity @Table("counters") class Counter extends Meta<Int64>  { @Column("hits") var hits: Int64 }
+```
+
+- Before annotation processing, the type check and `tinox db generate`, `extends Meta<String>` is replaced by a
+  synthesized non-generic copy `Meta__String` (type parameters substituted in the field types, field annotations
+  kept; one copy per distinct argument list). `invoices.tag` is `TEXT`, `counters.tag` is `INTEGER`, and the ORM,
+  the object layout and the schema use that one concrete field list. The copy has no table of its own.
+- **Supported:** a generic base class that declares fields only (no methods, no `@Entity`/`@Table`), specialized
+  with scalar or named types, on an `@Entity`/`@Table` class. **Explicit errors:** type arguments on a class that is
+  not an entity, a base class that is not generic, a wrong number of arguments, a base with methods, an entity
+  base class and a compound argument such as `List<String>`.
+- Nothing is renamed implicitly: changing `Meta<String>` to `Meta<Int64>` changes the type of the existing column,
+  which `tinox db generate` reports for a manual changeSet (it never rewrites or drops the column).
+- Verified with an independent `sqlite3` (`crates/tinox/tests/orm_generic_base.rs`).

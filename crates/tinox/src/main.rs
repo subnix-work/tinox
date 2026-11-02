@@ -4536,6 +4536,23 @@ fn resolve_imports(
     dep_dirs: &[PathBuf],
     missing_deps: &[pm::MissingDep],
 ) -> Result<(), Failure> {
+    resolve_imports_into(ast, base_dir, source_path, visited, dep_dirs, missing_deps)?;
+    // `extends Base<Int64>` on an entity: replaced by a concrete copy of the generic base (#563). This needs the whole
+    // merged program (a file imported twice is merged only once), so it runs for the entry file, not per import.
+    tinox_typecheck::annotations::expand_generic_entity_bases(&mut ast.decls).map_err(|(_class, span, message)| {
+        let file = ast.decls.iter().find(|d| d.span == span).and_then(|d| d.file.as_deref().map(str::to_string));
+        Failure::new("annotation", file.as_deref().or(source_path.to_str()), Some(span), message)
+    })
+}
+
+fn resolve_imports_into(
+    ast: &mut tinox_parser::SourceFile,
+    base_dir: &Path,
+    source_path: &Path,
+    visited: &mut HashSet<PathBuf>,
+    dep_dirs: &[PathBuf],
+    missing_deps: &[pm::MissingDep],
+) -> Result<(), Failure> {
     let _stage = tinox_common::frontend::Stage::new("imports");
     let imports: Vec<_> = ast
         .decls
@@ -4658,7 +4675,7 @@ fn resolve_and_merge_file(
     stamp_file_identity(&mut imported.decls, full_path);
 
     let imported_dir = full_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    resolve_imports(&mut imported, &imported_dir, full_path, visited, dep_dirs, missing_deps)?;
+    resolve_imports_into(&mut imported, &imported_dir, full_path, visited, dep_dirs, missing_deps)?;
 
     Ok(Some(imported.decls))
 }
