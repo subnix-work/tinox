@@ -64,6 +64,7 @@ async def conn_worker(args, req, t_start, t_end, interval, lat, counters):
     reader = writer = None
     context = ssl.create_default_context(cafile=args.ca_cert) if args.tls else None
     next_t = t_start
+    sent = 0
     while True:
         now = time.monotonic()
         if interval:
@@ -72,7 +73,10 @@ async def conn_worker(args, req, t_start, t_end, interval, lat, counters):
             if now < next_t:
                 await asyncio.sleep(next_t - now)
             intended = next_t
-            next_t += interval
+            # Index-based, not accumulated: summing 0.1 twenty times drifts by an ulp or two, and which side of
+            # t_end that lands on depends on the monotonic clock's magnitude (an extra 41st request).
+            sent += 1
+            next_t = t_start + sent * interval
             if time.monotonic() - intended > args.timeout:
                 # Client-side deadline: this request is already older than the
                 # per-request timeout before it could even be sent (the service
