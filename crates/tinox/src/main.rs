@@ -16,6 +16,7 @@ mod migrate;
 mod schema_diff;
 mod migrate_xml;
 mod exception_migration;
+mod i18n;
 mod semicolon_migration;
 mod db_new;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
@@ -83,6 +84,12 @@ fn run() {
                 std::process::exit(1);
             }
         }
+        "i18n" => {
+            if let Err(e) = i18n::run(&args[2..]) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         "db" => db_command(&args[2..]),
         "contract" => gen_api_contract(&args[2..]),
         "check"   => check(&args[2..]),
@@ -133,6 +140,7 @@ fn print_help() {
     println!("  tinox docker               Build a minimal Docker image (needs [docker] in tinox.toml)");
     println!("  tinox docker --tag n:t     Build the image under an explicit name:tag");
     println!("  tinox docker --source-build  Compile inside the pinned builder image (multi-stage, no host libc dependency)");
+    println!("  tinox i18n extract [--out f] [path...]  Collect tr()/trc()/trn() texts into a gettext .pot template");
     println!("  tinox run   [file]         Compile and run (uses tinox.toml if no file)");
     println!("  tinox dev   [file]         Dev mode: hot-reload on file changes");
     println!("  tinox test  [file]         Run all @Test-annotated methods");

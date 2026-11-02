@@ -2003,6 +2003,12 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_string_substring(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_char_code_at(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_replace(i8*, i8*, i8*)").unwrap();
+        // Message translation (#588).
+        writeln!(&mut self.ir, "declare i8* @tr(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @trc(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @trn(i8*, i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_arg(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_arg_int(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_string_split(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_string_chars(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_join(i64*, i8*)").unwrap();
@@ -12450,6 +12456,19 @@ tr_done_{idx}:"#).unwrap();
                             let (to, _) = self.gen_expr(&args[1], ctx)?;
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i8* @tinox_string_substring(i8* {}, i64 {}, i64 {})", result, obj_ptr, from, to).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "arg" => {
+                            let (value, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_arg(i8* {}, i8* {})", result, obj_ptr, value).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "argInt" => {
+                            let (value, value_ty) = self.gen_expr(&args[0], ctx)?;
+                            let value = self.coerce_to_i64(&value, &value_ty);
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_arg_int(i8* {}, i64 {})", result, obj_ptr, value).unwrap();
                             return Ok((result, "i8*".to_string()));
                         }
                         "replace" => {

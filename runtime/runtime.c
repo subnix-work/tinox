@@ -3975,6 +3975,297 @@ char* tinox_string_pad(const char* s, int64_t width, const char* pad, int64_t le
     return result;
 }
 
+// ---- Message translation (#588): gettext catalogs ----
+// tr(msgid), trc(context, msgid), trn(singular, plural, n) look the text up in a GNU gettext binary catalog
+// (.mo, produced by msgfmt) and return the msgid / the English plural rule when there is none.
+//
+// Catalog search: the language comes from LANGUAGE (colon separated list), else LC_ALL, LC_MESSAGES, LANG
+// (encoding and @modifier are dropped; "de_DE" also tries "de"; C/POSIX mean no translation). The first
+// candidate with a catalog is used. A catalog is <dir>/<language>/LC_MESSAGES/<domain>.mo for dir in
+// TINOX_LOCALE_DIR, <directory of the executable>/locale, ./locale, /usr/share/locale. The domain is
+// TINOX_TEXTDOMAIN, default "messages". The catalog is read once per process and never freed (returned
+// strings point into it).
+typedef struct {
+    const unsigned char* data;
+    size_t size;
+    int swap;
+    uint32_t count, orig, trans;
+    char plural[256]; // the expression after "plural=" in the header's Plural-Forms
+} TinoxCatalog;
+static TinoxCatalog* tr_catalog;
+static pthread_once_t tr_once = PTHREAD_ONCE_INIT;
+
+static uint32_t tr_u32(const TinoxCatalog* c, size_t off) {
+    uint32_t v;
+    memcpy(&v, c->data + off, 4);
+    return c->swap ? __builtin_bswap32(v) : v;
+}
+// i-th string of the original (table = c->orig) or translation (c->trans) table, or NULL if malformed.
+static const char* tr_entry(const TinoxCatalog* c, uint32_t table, uint32_t i, uint32_t* len) {
+    size_t at = (size_t)table + (size_t)i * 8;
+    if (at + 8 > c->size) return NULL;
+    uint32_t l = tr_u32(c, at), off = tr_u32(c, at + 4);
+    if ((size_t)off + l + 1 > c->size || c->data[(size_t)off + l] != 0) return NULL;
+    *len = l;
+    return (const char*)c->data + off;
+}
+static TinoxCatalog* tr_load(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 28 || size > (64L << 20)) { fclose(f); return NULL; }
+    unsigned char* data = malloc((size_t)size);
+    if (!data || fread(data, 1, (size_t)size, f) != (size_t)size) { free(data); fclose(f); return NULL; }
+    fclose(f);
+    TinoxCatalog* c = calloc(1, sizeof(*c));
+    c->data = data;
+    c->size = (size_t)size;
+    uint32_t magic;
+    memcpy(&magic, data, 4);
+    if (magic == 0x950412deu) c->swap = 0;
+    else if (magic == 0xde120495u) c->swap = 1;
+    else { free(data); free(c); return NULL; }
+    c->count = tr_u32(c, 8);
+    c->orig = tr_u32(c, 12);
+    c->trans = tr_u32(c, 16);
+    if (c->count > (c->size / 16) || (size_t)c->orig + (size_t)c->count * 8 > c->size || (size_t)c->trans + (size_t)c->count * 8 > c->size) {
+        free(data); free(c); return NULL;
+    }
+    // The header entry (empty msgid) carries "Plural-Forms: nplurals=N; plural=EXPR;".
+    uint32_t len;
+    const char* key = tr_entry(c, c->orig, 0, &len);
+    const char* header = key && len == 0 ? tr_entry(c, c->trans, 0, &len) : NULL;
+    const char* p = header ? strstr(header, "plural=") : NULL;
+    if (p) {
+        p += 7;
+        size_t n = 0;
+        while (p[n] && p[n] != ';' && p[n] != '\n' && n < sizeof(c->plural) - 1) n++;
+        memcpy(c->plural, p, n);
+        c->plural[n] = 0;
+    }
+    return c;
+}
+static void tr_candidates(char out[8][64], int* count) {
+    *count = 0;
+    const char* sources[] = { getenv("LANGUAGE"), getenv("LC_ALL"), getenv("LC_MESSAGES"), getenv("LANG") };
+    const char* list = NULL;
+    for (int i = 0; i < 4 && !list; i++)
+        if (sources[i] && *sources[i]) list = sources[i];
+    if (!list) return;
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s", list);
+    for (char* tok = strtok(buf, ":"); tok && *count < 6; tok = strtok(NULL, ":")) {
+        char* cut = strpbrk(tok, ".@");
+        if (cut) *cut = 0;
+        if (!*tok || !strcmp(tok, "C") || !strcmp(tok, "POSIX")) continue;
+        snprintf(out[(*count)++], 64, "%s", tok);
+        char* us = strchr(tok, '_');
+        if (us && *count < 8) { *us = 0; snprintf(out[(*count)++], 64, "%s", tok); }
+    }
+}
+static void tr_init(void) {
+    char langs[8][64];
+    int n;
+    tr_candidates(langs, &n);
+    if (!n) return;
+    const char* domain = getenv("TINOX_TEXTDOMAIN");
+    if (!domain || !*domain) domain = "messages";
+    char exe[PATH_MAX], exedir[PATH_MAX + 8] = "";
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (len > 0) {
+        exe[len] = 0;
+        char* slash = strrchr(exe, '/');
+        if (slash) { *slash = 0; snprintf(exedir, sizeof exedir, "%s/locale", exe); }
+    }
+    const char* dirs[] = { getenv("TINOX_LOCALE_DIR"), exedir[0] ? exedir : NULL, "locale", "/usr/share/locale" };
+    for (int i = 0; i < n; i++) {
+        for (int d = 0; d < 4; d++) {
+            if (!dirs[d] || !*dirs[d]) continue;
+            char path[PATH_MAX + 256];
+            snprintf(path, sizeof path, "%s/%s/LC_MESSAGES/%s.mo", dirs[d], langs[i], domain);
+            if ((tr_catalog = tr_load(path))) return;
+        }
+    }
+}
+// Binary search of the sorted original table; returns the translation or NULL.
+static const char* tr_find(const char* key, size_t key_len, uint32_t* out_len) {
+    pthread_once(&tr_once, tr_init);
+    const TinoxCatalog* c = tr_catalog;
+    if (!c) return NULL;
+    uint32_t lo = 0, hi = c->count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2, l;
+        const char* orig = tr_entry(c, c->orig, mid, &l);
+        if (!orig) return NULL;
+        size_t m = l < key_len ? l : key_len;
+        int cmp = memcmp(orig, key, m);
+        if (!cmp) cmp = l < key_len ? -1 : (l > key_len ? 1 : 0);
+        if (!cmp) {
+            const char* t = tr_entry(c, c->trans, mid, out_len);
+            return t && *out_len ? t : NULL;
+        }
+        if (cmp < 0) lo = mid + 1; else hi = mid;
+    }
+    return NULL;
+}
+
+// GNU plural expression: n, integers, ! ( ) * / % + - < <= > >= == != && || ?:
+typedef struct { const char* p; unsigned long n; int bad; } TrExpr;
+static unsigned long tr_ternary(TrExpr* e);
+static void tr_ws(TrExpr* e) { while (*e->p == ' ' || *e->p == '\t') e->p++; }
+static unsigned long tr_primary(TrExpr* e) {
+    tr_ws(e);
+    if (*e->p == '(') { e->p++; unsigned long v = tr_ternary(e); tr_ws(e); if (*e->p == ')') e->p++; else e->bad = 1; return v; }
+    if (*e->p == '!') { e->p++; return !tr_primary(e); }
+    if (*e->p == 'n') { e->p++; return e->n; }
+    if (*e->p >= '0' && *e->p <= '9') { unsigned long v = 0; while (*e->p >= '0' && *e->p <= '9') v = v * 10 + (unsigned long)(*e->p++ - '0'); return v; }
+    e->bad = 1;
+    return 0;
+}
+static unsigned long tr_mul(TrExpr* e) {
+    unsigned long v = tr_primary(e);
+    for (;;) {
+        tr_ws(e);
+        char op = *e->p;
+        if (op != '*' && op != '/' && op != '%') return v;
+        e->p++;
+        unsigned long r = tr_primary(e);
+        if (op == '*') v *= r; else if (!r) { e->bad = 1; return 0; } else v = op == '/' ? v / r : v % r;
+    }
+}
+static unsigned long tr_add(TrExpr* e) {
+    unsigned long v = tr_mul(e);
+    for (;;) {
+        tr_ws(e);
+        if (*e->p != '+' && *e->p != '-') return v;
+        char op = *e->p++;
+        unsigned long r = tr_mul(e);
+        v = op == '+' ? v + r : v - r;
+    }
+}
+static unsigned long tr_rel(TrExpr* e) {
+    unsigned long v = tr_add(e);
+    for (;;) {
+        tr_ws(e);
+        if (e->p[0] == '<' && e->p[1] == '=') { e->p += 2; v = v <= tr_add(e); }
+        else if (e->p[0] == '>' && e->p[1] == '=') { e->p += 2; v = v >= tr_add(e); }
+        else if (e->p[0] == '<') { e->p++; v = v < tr_add(e); }
+        else if (e->p[0] == '>') { e->p++; v = v > tr_add(e); }
+        else return v;
+    }
+}
+static unsigned long tr_eq(TrExpr* e) {
+    unsigned long v = tr_rel(e);
+    for (;;) {
+        tr_ws(e);
+        if (e->p[0] == '=' && e->p[1] == '=') { e->p += 2; v = v == tr_rel(e); }
+        else if (e->p[0] == '!' && e->p[1] == '=') { e->p += 2; v = v != tr_rel(e); }
+        else return v;
+    }
+}
+static unsigned long tr_and(TrExpr* e) {
+    unsigned long v = tr_eq(e);
+    for (;;) { tr_ws(e); if (e->p[0] == '&' && e->p[1] == '&') { e->p += 2; unsigned long r = tr_eq(e); v = v && r; } else return v; }
+}
+static unsigned long tr_or(TrExpr* e) {
+    unsigned long v = tr_and(e);
+    for (;;) { tr_ws(e); if (e->p[0] == '|' && e->p[1] == '|') { e->p += 2; unsigned long r = tr_and(e); v = v || r; } else return v; }
+}
+static unsigned long tr_ternary(TrExpr* e) {
+    unsigned long c = tr_or(e);
+    tr_ws(e);
+    if (*e->p != '?') return c;
+    e->p++;
+    unsigned long a = tr_ternary(e);
+    tr_ws(e);
+    if (*e->p == ':') e->p++; else e->bad = 1;
+    unsigned long b = tr_ternary(e);
+    return c ? a : b;
+}
+// Plural form index for n; falls back to the English rule (n != 1) when the header has no usable expression.
+static unsigned long tr_plural_index(const TinoxCatalog* c, unsigned long n) {
+    if (c && c->plural[0]) {
+        TrExpr e = { c->plural, n, 0 };
+        unsigned long v = tr_ternary(&e);
+        if (!e.bad) return v;
+    }
+    return n != 1;
+}
+
+char* tr(const char* msgid) {
+    uint32_t len;
+    const char* t = tr_find(msgid, strlen(msgid), &len);
+    return (char*)(t ? t : msgid);
+}
+char* trc(const char* context, const char* msgid) {
+    size_t cl = strlen(context), ml = strlen(msgid);
+    char* key = malloc(cl + 1 + ml + 1);
+    memcpy(key, context, cl);
+    key[cl] = '\004';
+    memcpy(key + cl + 1, msgid, ml + 1);
+    uint32_t len;
+    const char* t = tr_find(key, cl + 1 + ml, &len);
+    free(key);
+    return (char*)(t ? t : msgid);
+}
+char* trn(const char* singular, const char* plural, int64_t n) {
+    size_t sl = strlen(singular), pl = strlen(plural);
+    char* key = malloc(sl + 1 + pl + 1);
+    memcpy(key, singular, sl);
+    key[sl] = 0;
+    memcpy(key + sl + 1, plural, pl + 1);
+    uint32_t len;
+    const char* t = tr_find(key, sl + 1 + pl, &len);
+    free(key);
+    unsigned long un = n < 0 ? (unsigned long)(-n) : (unsigned long)n;
+    if (t) {
+        unsigned long want = tr_plural_index(tr_catalog, un);
+        const char* form = t;
+        const char* end = t + len;
+        for (unsigned long i = 0; i < want; i++) {
+            const char* next = memchr(form, 0, (size_t)(end - form));
+            if (!next || next + 1 >= end) { form = NULL; break; }
+            form = next + 1;
+        }
+        if (form && *form) return (char*)form;
+    }
+    return (char*)(n == 1 ? singular : plural);
+}
+
+// "text %1 and %2".arg(a): replaces every occurrence of the lowest-numbered placeholder %N (N = 1..99).
+// Placeholders keep their number, so a translation may reorder them.
+char* tinox_string_arg(const char* s, const char* value) {
+    int lowest = 0;
+    for (const char* p = s; *p; p++) {
+        if (*p != '%' || *(p + 1) < '0' || *(p + 1) > '9') continue;
+        int n = p[1] - '0', digits = 1;
+        if (p[2] >= '0' && p[2] <= '9') { n = n * 10 + (p[2] - '0'); digits = 2; }
+        if (n > 0 && (!lowest || n < lowest)) lowest = n;
+        p += digits;
+    }
+    if (!lowest) return (char*)s;
+    size_t vl = strlen(value), cap = strlen(s) + 1, used = 0;
+    for (const char* p = s; *p; p++) cap += vl;
+    char* out = (char*)GC_malloc_atomic(cap);
+    for (const char* p = s; *p;) {
+        if (*p == '%' && p[1] >= '0' && p[1] <= '9') {
+            int n = p[1] - '0', digits = 1;
+            if (p[2] >= '0' && p[2] <= '9') { n = n * 10 + (p[2] - '0'); digits = 2; }
+            if (n == lowest) { memcpy(out + used, value, vl); used += vl; p += 1 + digits; continue; }
+        }
+        out[used++] = *p++;
+    }
+    out[used] = 0;
+    return out;
+}
+char* tinox_string_arg_int(const char* s, int64_t value) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%lld", (long long)value);
+    return tinox_string_arg(s, buf);
+}
+
 char* tinox_string_replace(const char* s, const char* from, const char* to) {
     if (!from || !*from) { size_t l = strlen(s); char* r = malloc(l+1); memcpy(r,s,l+1); return r; }
     size_t flen = strlen(from), tlen = strlen(to), slen = strlen(s);
