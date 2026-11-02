@@ -1,0 +1,72 @@
+import tinox.core.env
+import tinox.core.db
+
+class Main
+{
+    fnc show(rows: List<Map<String, String>>) -> Nothing
+    {
+        for row in rows
+        {
+            println("row id=" + row.get("id") + " name=" + row.get("name") + " hasNote=" + row.contains("note").toString())
+        }
+    }
+
+    fnc main() -> Int32
+    {
+        const mode = Env::getVar("MODE")
+        if (mode == "fail")
+        {
+            // A statement the database rejects must abort visibly, never look like an empty result.
+            const bad = DB::raw("SELECT * FROM no_such_table WHERE id = $1", ["1"])
+            println("unexpected: " + bad.len().toString())
+            return 0
+        }
+
+        // Parameter filters, rows come back in ORDER BY order, column names are the keys.
+        const rows: List<Map<String, String>> = DB::raw(
+            "SELECT id, name, note FROM items WHERE price > $1 ORDER BY id",
+            ["5"]
+        )
+        println("rows: " + rows.len().toString())
+        Main::show(rows)
+
+        // No match: an empty list.
+        const none: List<Map<String, String>> = DB::raw("SELECT id FROM items WHERE price > $1", ["999999"])
+        println("none: " + none.len().toString())
+
+        // A write goes through parameters, has no result set (empty list), and is visible afterwards.
+        // The value is hostile on purpose: it must stay data.
+        const written = DB::raw("INSERT INTO items (name, price, note) VALUES ($1, $2, $3)", ["x'); DROP TABLE items; --", "50", "w"])
+        println("write: " + written.len().toString())
+        const after = DB::raw("SELECT id, name, note FROM items WHERE price = $1", ["50"])
+        var afterName = ""
+        for row in after
+        {
+            afterName = row.get("name")
+        }
+        println("after: " + after.len().toString() + " name=" + afterName)
+
+        // Out-of-order and repeated placeholders bind by number.
+        const swapped = DB::raw("SELECT name FROM items WHERE name = $2 AND price < $1", ["10", "widget"])
+        println("swapped: " + swapped.len().toString())
+
+        // A value longer than any fixed driver buffer arrives complete.
+        var long = ""
+        var i = 0
+        while (i < 3000)
+        {
+            long = long + "ab"
+            i = i + 1
+        }
+        DB::raw("INSERT INTO items (name, price, note) VALUES ($1, $2, $3)", ["long", "60", long])
+        const big = DB::raw("SELECT note FROM items WHERE name = $1", ["long"])
+        var longLen = 0
+        for row in big
+        {
+            longLen = row.get("note").len()
+        }
+        println("long: " + longLen.toString())
+
+        return 0
+    }
+}

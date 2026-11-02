@@ -785,6 +785,39 @@ participate in cancellation checks, and an unresponsive child can trigger a
 visible watchdog failure. See the [scope tests](../crates/tinox/tests/task_scopes.rs)
 and [deadline tests](../crates/tinox/tests/task_cancellation.rs).
 
+### Bounded executor for many small jobs
+
+`spawn` creates one pthread per task. For many short jobs an explicit, bounded executor is cheaper: a fixed number
+of reusable worker threads behind a bounded FIFO queue (#551). `spawn` itself is unchanged.
+
+```tinox
+const pool: Int64 = executorCreate(8, 1024)        // 8 workers, up to 1024 waiting jobs
+const t: Task<Int64> = spawn Main::work(21) on pool // same Task<T> as a plain spawn
+const result: Int64 = await t
+executorShutdown(pool, true)                        // true: run accepted jobs first; false: reject + cancel
+```
+
+- `spawn f(x) on pool` takes the executor handle after `on` (contextual: `on` stays a valid identifier) and yields the
+  same typed `Task<T>`. Results, `await`, thrown errors, `taskCancel`, deadlines, `scope { }` and the submitter's
+  telemetry/service context behave as for a plain spawn.
+- **Admission is bounded:** a full queue or a shut-down executor rejects the job. The handle comes back finished and
+  failed (`executor queue full: too many waiting jobs`, `executor is shut down`), so `await` re-throws. There is no
+  caller-runs fallback. Executor jobs do not count against `TINOX_MAX_TASKS`; the pool's workers and queue are the limit.
+- **No nested waits:** a job cannot submit to, or `await` a job of, its own executor (it would occupy workers while the
+  awaited job waits in the queue). Both fail with an error. Waiting on a different executor or on a plain `spawn` is fine.
+  An executor job cannot be `taskDetach`ed.
+- **Cancellation:** a job cancelled while it waits in the queue never starts (`Task cancelled`). `executorShutdown(pool,
+  false)` rejects waiting jobs (`executor shut down before the job started`) and cancels running ones cooperatively;
+  `executorShutdown(pool, true)` drains the queue first. Both return after every worker has exited. A running job that
+  never reaches a cancellation checkpoint keeps `executorShutdown(pool, false)` waiting, as for scopes.
+- **Worker reset:** after each job the worker clears the task scope, pending error, telemetry context and service
+  state; queued job arguments are GC-rooted while they wait.
+- `executorStat(pool, n)`: 0 workers, 1 queued, 2 active, 3 completed, 4 rejected, 5 peak queue length, 6 submitted.
+- Up to 256 workers, queue 1 to 1,000,000, 64 live executors (finished ones are reclaimed).
+
+Measured against thread-per-task `spawn` (60,000 trivial jobs in batches of 256, 8 workers, same checksum, RSS about
+28 MB for both): about 1,100 ms with `spawn` versus 60-130 ms with the executor; see `benchmarks/executor/results.md`.
+
 `channel`, `send` and `recv` are implemented message-passing primitives:
 
 ```tinox
@@ -855,7 +888,9 @@ fn createUser(@PostParam user: User) -> User
 A missing/invalid `@PathParam`/`@QueryParam` short-circuits with HTTP 400
 + a JSON error body before the handler ever runs. Also available on
 routes: `@Produces("...")`, `@Consumes("...")`, `@Auth("bearer"|"basic")`,
-`@OIDCRolesAllowed("role", ...)`.
+`@OIDCRolesAllowed("role", ...)`, and `@Blocking(workers, queue)` for a handler
+that waits on slow I/O (its own bounded pool, so other routes keep answering;
+see [docs/blocking-routes.md](blocking-routes.md)).
 
 `@Http3RestController(port, cert, key)` routes the exact same
 `@GET`/`@PathParam`/etc. machinery over HTTP/3 (QUIC) instead of plain
@@ -924,7 +959,7 @@ go stale here.
 
 ### Raw SQL: `DB::raw`
 
-`DB::raw(sql, params)` (package `tinox.core.db` 1.2.1) runs one parameterized
+`DB::raw(sql, params)` (package `tinox.core.db` 1.2.1, all three drivers since 1.2.4) runs one parameterized
 statement for queries the ORM DSL cannot express (for example a pgvector
 `ORDER BY embedding <-> $1`):
 
@@ -948,7 +983,16 @@ for row in rows
   the database error, like a failed ORM query.
 - Inside `@Transactional` it runs on the transaction's connection; otherwise it
   uses a pooled connection per call.
-- Postgres only: with any other `[database] driver` (or none) the build fails.
+- Drivers: `postgres`, `mysql` and `sqlite` (#562). With no `[database] driver`
+  the build fails. The `$n` placeholders are the same everywhere (rewritten to
+  `?` for MySQL/SQLite; a placeholder may repeat or appear out of order). SQL
+  dialect differences (types, functions, `RETURNING`) are the caller's concern.
+- A statement without a result set (`INSERT`/`UPDATE`/`DELETE`/DDL) returns an
+  empty list; the affected-row count is not exposed. Values arrive as text and
+  are never truncated (MySQL no longer cuts values at 511 bytes). A rejected
+  statement aborts the program with the driver's error on every driver.
+- MySQL: a `NULL` column is now reported as NULL by the driver layer (it used to
+  read as an empty string), which `DB::raw` and the ORM both see.
 
 ---
 

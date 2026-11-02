@@ -84,6 +84,8 @@ pub struct CliCommandInfo {
 /// Route entry produced by REST annotation processing.
 #[derive(Debug, Clone)]
 pub struct RouteEntry {
+    /// `@Blocking(workers, queue)`: dedicated bounded handler pool for this route (#552).
+    pub blocking: Option<(i64, i64)>,
     pub http_method: String,
     pub path: String,
     pub class_name: String,
@@ -479,6 +481,8 @@ pub struct CodeGen {
     /// fn_name -> (ret_llvm_ty, param_llvm_tys) for spawn codegen
     fn_sigs: HashMap<String, (String, Vec<String>)>,
     spawn_counter: usize,
+    /// Executor handle (an i64 value) for the `spawn` expression about to be generated (#551).
+    pending_spawn_executor: Option<String>,
     /// Generic function AST nodes (not directly compiled, monomorphized on demand)
     generic_fns: HashMap<String, tinox_parser::Function>,
     /// Generic methods of non-generic classes, key "Class_method" —
@@ -774,6 +778,7 @@ impl CodeGen {
             throwing_method_basenames: HashSet::new(),
             fn_sigs: HashMap::new(),
             spawn_counter: 0,
+            pending_spawn_executor: None,
             generic_fns: HashMap::new(),
             generic_methods: HashMap::new(),
             generic_instance_methods: HashMap::new(),
@@ -2000,6 +2005,12 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i8* @tinox_string_substring(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_string_char_code_at(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_replace(i8*, i8*, i8*)").unwrap();
+        // Message translation (#588).
+        writeln!(&mut self.ir, "declare i8* @tr(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @trc(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @trn(i8*, i8*, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_arg(i8*, i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_string_arg_int(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_string_split(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_string_chars(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_string_join(i64*, i8*)").unwrap();
@@ -2224,6 +2235,11 @@ impl CodeGen {
         for name in ["taskCheckCancellation", "taskRequestShutdown"] {
             writeln!(&mut self.ir, "declare void @{name}()").unwrap();
         }
+        // Bounded executors (#551); the drain flag travels as an i64.
+        writeln!(&mut self.ir, "declare i64 @executorCreate(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare void @executorShutdown(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @executorStat(i64, i64)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_task_spawn_on(i64, i8* (i8*)*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @sleep_ms(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @randomInt(i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare double @randomFloat()").unwrap();
@@ -2803,6 +2819,7 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_put(i64*, i8*, i64)").unwrap();
         writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_patch(i64*, i8*, i64)").unwrap();
         writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_delete(i64*, i8*, i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_offload_last(i64*, i64, i64)").unwrap();
         writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_listen(i64*)").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
@@ -2904,6 +2921,11 @@ impl CodeGen {
                 "  %path_{idx} = getelementptr [{path_len} x i8], [{path_len} x i8]* @__route_path_{idx}, i64 0, i64 0").unwrap();
             writeln!(&mut self.lambda_ir,
                 "  call void @{server_method}(i64* %server, i8* %path_{idx}, i64 %fn_{idx})").unwrap();
+            if let Some((workers, queue)) = route.blocking {
+                // Flags the route just registered; the pool is created here, before the server listens.
+                writeln!(&mut self.lambda_ir,
+                    "  call void @tinox_HttpServer_offload_last(i64* %server, i64 {workers}, i64 {queue})").unwrap();
+            }
         }
 
         // Register the /metrics route if enabled
@@ -11024,6 +11046,15 @@ tr_done_{idx}:"#).unwrap();
                         let (haystack, _) = self.gen_expr(&args[0], ctx)?;
                         return self.gen_string_index_of(&haystack, &args[1..], ctx);
                     }
+                    if name == "__executor_spawn" && args.len() == 2 {
+                        let (executor, executor_ty) = self.gen_expr(&args[0], ctx)?;
+                        let executor = self.coerce_to_i64(&executor, &executor_ty);
+                        self.pending_spawn_executor = Some(executor);
+                        let (task, task_ty) = self.gen_expr(&args[1], ctx)?;
+                        self.pending_spawn_executor = None;
+                        let task_i64 = self.coerce_to_i64(&task, &task_ty);
+                        return Ok((task_i64, "i64".to_string()));
+                    }
                     if name == "__scope_register" && args.len() == 2 {
                         let (scope, scope_ty) = self.gen_expr(&args[0], ctx)?;
                         let scope = self.coerce_to_i64(&scope, &scope_ty);
@@ -12433,6 +12464,19 @@ tr_done_{idx}:"#).unwrap();
                             let (to, _) = self.gen_expr(&args[1], ctx)?;
                             let result = self.temp();
                             writeln!(&mut self.ir, "{} = call i8* @tinox_string_substring(i8* {}, i64 {}, i64 {})", result, obj_ptr, from, to).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "arg" => {
+                            let (value, _) = self.gen_expr(&args[0], ctx)?;
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_arg(i8* {}, i8* {})", result, obj_ptr, value).unwrap();
+                            return Ok((result, "i8*".to_string()));
+                        }
+                        "argInt" => {
+                            let (value, value_ty) = self.gen_expr(&args[0], ctx)?;
+                            let value = self.coerce_to_i64(&value, &value_ty);
+                            let result = self.temp();
+                            writeln!(&mut self.ir, "{} = call i8* @tinox_string_arg_int(i8* {}, i64 {})", result, obj_ptr, value).unwrap();
                             return Ok((result, "i8*".to_string()));
                         }
                         "replace" => {
@@ -14332,6 +14376,9 @@ tr_done_{idx}:"#).unwrap();
                 Ok(("0".to_string(), "i64".to_string()))
             }
             ExprKind::Spawn(inner) => {
+                // Taken before the arguments are generated: a nested spawn in an argument must not
+                // pick up this spawn's executor.
+                let spawn_executor = self.pending_spawn_executor.take();
                 let (fn_name, args) = match &inner.node {
                     ExprKind::Call { func, args } => {
                         let name = match &func.node {
@@ -14486,7 +14533,11 @@ tr_done_{idx}:"#).unwrap();
 
                 // Call runtime spawn
                 let task_ptr = self.temp();
-                writeln!(&mut self.ir, "  {} = call i8* @tinox_task_spawn(i8* (i8*)* @{}, i8* {})", task_ptr, wrapper_name, raw_ptr).unwrap();
+                if let Some(executor) = &spawn_executor {
+                    writeln!(&mut self.ir, "  {} = call i8* @tinox_task_spawn_on(i64 {}, i8* (i8*)* @{}, i8* {})", task_ptr, executor, wrapper_name, raw_ptr).unwrap();
+                } else {
+                    writeln!(&mut self.ir, "  {} = call i8* @tinox_task_spawn(i8* (i8*)* @{}, i8* {})", task_ptr, wrapper_name, raw_ptr).unwrap();
+                }
                 let task_i64 = self.temp();
                 writeln!(&mut self.ir, "  {} = ptrtoint i8* {} to i64", task_i64, task_ptr).unwrap();
 

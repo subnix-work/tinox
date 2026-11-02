@@ -84,8 +84,8 @@ int main(int argc, char** argv) {
         thread_local_init();
         for (int i = 0; i < atoi(argv[3]); i++) {
             int64_t fd = httpServerAcceptConn(listener); assert(fd >= 0);
-            int keep_alive;
-            tinox_handle_one(&srv, fd, &keep_alive);
+            int keep_alive, offloaded;
+            tinox_handle_one(&srv, fd, &keep_alive, &offloaded);
             assert(!*telemetryTraceparent());
             close((int)fd);
         }

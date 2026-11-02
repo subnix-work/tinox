@@ -776,6 +776,25 @@ impl TypeChecker {
             params: vec![("s".to_string(), ValueType::String), ("from".to_string(), ValueType::String), ("to".to_string(), ValueType::String)],
             return_type: ValueType::String,
         });
+        // Message translation (#588): tr/trc/trn look text up in a gettext catalog; "%1" placeholders are filled
+        // with .arg(String) / .argInt(Int64) so a translation can reorder them. The texts must be string
+        // literals (checked in check_call) so `tinox i18n extract` finds all of them.
+        symbols.functions.insert("tr".to_string(), FunctionSignature {
+            params: vec![("text".to_string(), ValueType::String)], return_type: ValueType::String,
+        });
+        symbols.functions.insert("trc".to_string(), FunctionSignature {
+            params: vec![("context".to_string(), ValueType::String), ("text".to_string(), ValueType::String)], return_type: ValueType::String,
+        });
+        symbols.functions.insert("trn".to_string(), FunctionSignature {
+            params: vec![("singular".to_string(), ValueType::String), ("plural".to_string(), ValueType::String), ("n".to_string(), ValueType::Int)],
+            return_type: ValueType::String,
+        });
+        symbols.functions.insert("String_arg".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("value".to_string(), ValueType::String)], return_type: ValueType::String,
+        });
+        symbols.functions.insert("String_argInt".to_string(), FunctionSignature {
+            params: vec![("s".to_string(), ValueType::String), ("value".to_string(), ValueType::Int)], return_type: ValueType::String,
+        });
         // Float64 math methods
         for name in &["Float64_sqrt", "Float64_abs", "Float64_floor", "Float64_ceil", "Float64_round",
                        "Int64_toFloat", "Float64_toInt", "Float64_toString"] {
@@ -985,6 +1004,20 @@ impl TypeChecker {
         for name in ["taskCheckCancellation", "taskRequestShutdown"] {
             symbols.functions.insert(name.into(), FunctionSignature { params: vec![], return_type: ValueType::Nothing });
         }
+        // Bounded executors (#551). `__executor_spawn(executor, task)` is the parser's desugaring of
+        // `spawn f(x) on executor` and is the identity on `task` (see check_call).
+        symbols.functions.insert("executorCreate".into(), FunctionSignature {
+            params: vec![("workers".into(), ValueType::Int), ("queue".into(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("executorShutdown".into(), FunctionSignature {
+            params: vec![("executor".into(), ValueType::Int), ("drain".into(), ValueType::Bool)], return_type: ValueType::Nothing,
+        });
+        symbols.functions.insert("executorStat".into(), FunctionSignature {
+            params: vec![("executor".into(), ValueType::Int), ("counter".into(), ValueType::Int)], return_type: ValueType::Int,
+        });
+        symbols.functions.insert("__executor_spawn".into(), FunctionSignature {
+            params: vec![("executor".into(), ValueType::Int), ("task".into(), ValueType::Any)], return_type: ValueType::Any,
+        });
         symbols.functions.insert("taskWaitReadable".into(), FunctionSignature {
             params: vec![("fd".into(), ValueType::Int)], return_type: ValueType::Nothing,
         });
@@ -4202,8 +4235,37 @@ impl TypeChecker {
         // `__scope_register(scope, task)` is the identity on `task`: the
         // spawn it wraps keeps its Task<T> type.
         if let ExprKind::Ident(name) = &func.node {
-            if name == "__scope_register" && args.len() == 2 {
-                self.infer_type(&args[0]);
+            // A static method of the current class with one of these names keeps winning, as it did before the
+            // built-ins existed (programs that defined their own `tr` must not change meaning).
+            if matches!(name.as_str(), "tr" | "trc" | "trn") {
+                if let Some(class_name) = self.current_class.clone() {
+                    let key = format!("{class_name}_{name}");
+                    let is_static = self.symbols.functions.get(&key)
+                        .map(|sig| sig.params.first().map(|(n, _)| n != "self").unwrap_or(true))
+                        .unwrap_or(false);
+                    if is_static {
+                        if let Some(ty) = self.check_class_method_call(&class_name, name, args, &[], span) {
+                            return ty;
+                        }
+                    }
+                }
+            }
+            // Translatable texts must be plain string literals: that is what `tinox i18n extract` can find.
+            if matches!(name.as_str(), "tr" | "trc" | "trn") && self.symbols.functions.contains_key(name) {
+                let texts = if name == "tr" { 1 } else { 2 };
+                for arg in args.iter().take(texts) {
+                    if !matches!(&arg.node, ExprKind::Literal(tinox_parser::Literal::String(_))) {
+                        self.errors.push(Error::new(arg.span, format!(
+                            "{name}() needs string literals for its texts so they can be extracted (`tinox i18n extract`); fill in values with .arg(...) instead of concatenating"
+                        )));
+                    }
+                }
+            }
+            if (name == "__scope_register" || name == "__executor_spawn") && args.len() == 2 {
+                let first = self.infer_type(&args[0]);
+                if name == "__executor_spawn" && !matches!(first, ValueType::Int | ValueType::Any) {
+                    self.errors.push(Error::new(args[0].span, format!("`spawn ... on` needs an executor handle (Int64 from executorCreate), found {first:?}")));
+                }
                 return self.infer_type(&args[1]);
             }
         }
@@ -5403,6 +5465,9 @@ mod tests {
     #[test]
     fn task_control_requires_a_typed_task() {
         ok("class C { fnc f() -> String { return \"x\" } fnc g() -> Nothing { const t = spawn C::f()\ntaskCancel(t)\ntaskDetach(t) } }");
+        // Bounded executors (#551): the task keeps its Task<T> type; the handle must be an Int64.
+        ok("class C { fnc f() -> Int64 { return 1 } fnc g() -> Nothing { const ex = executorCreate(2, 8)\nconst t: Task<Int64> = spawn C::f() on ex\nconst r: Int64 = await t\nexecutorShutdown(ex, true)\nconst n: Int64 = executorStat(ex, 3) } }");
+        err_contains("class C { fnc f() -> Int64 { return 1 } fnc g() -> Nothing { const t = spawn C::f() on \"pool\" } }", "executor handle");
         err_contains("class C { fnc f() -> Nothing { taskCancel(42) } }", "Task");
         err_contains("class C { fnc f() -> Nothing { taskDetach(42) } }", "Task");
         err_contains("class C { fnc f() -> Nothing { taskSetDeadline(\"soon\") } }", "Int");

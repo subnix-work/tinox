@@ -2886,7 +2886,16 @@ impl Parser {
         let span = self.mk_span();
         self.expect_keyword(Keyword::Spawn)?;
         let expr = Box::new(self.parse_expr()?);
-        let spawn = Spanned::new(ExprKind::Spawn(expr), span);
+        let mut spawn = Spanned::new(ExprKind::Spawn(expr), span);
+        // `spawn f(x) on executor` (#551): hand the task to a bounded executor instead of a
+        // new thread. `on` is contextual (still a valid identifier elsewhere) and must
+        // follow on the same line. Desugars to `__executor_spawn(executor, spawn f(x))`,
+        // which yields the task unchanged, so the surrounding code still sees a Task<T>.
+        if matches!(&self.peek().kind, TokenKind::Ident(n) if n == "on") {
+            self.bump();
+            let executor = self.parse_postfix_expr()?;
+            spawn = Self::synth_call("__executor_spawn", vec![executor, spawn], span);
+        }
         // Inside `scope { ... }`: register the new task with the owning
         // scope (`__scope_register(scope, spawn ...)` yields the task
         // unchanged, so the surrounding code still sees a Task<T>).
@@ -4469,6 +4478,20 @@ mod tests {
         let ExprKind::Lambda { body: lbody, .. } = &lambda.node else { panic!() };
         let rendered = format!("{:?}", lbody.node);
         assert!(!rendered.contains("__scope_register"), "closure spawn must not be registered: {rendered}");
+    }
+
+    #[test]
+    fn test_spawn_on_desugars_to_executor_spawn() {
+        let d = first_decl("fn f() { let t = spawn g(1) on pool\nlet on = 2\nlet u = on + 1 }");
+        let DeclKind::Function(f) = d else { panic!() };
+        let StmtKind::Block(stmts) = &f.body.node else { panic!() };
+        let StmtKind::Let { value: Some(first), .. } = &stmts[0].node else { panic!() };
+        let ExprKind::Call { func, args } = &first.node else { panic!("spawn ... on should desugar to a call") };
+        assert!(matches!(&func.node, ExprKind::Ident(n) if n == "__executor_spawn"));
+        assert!(matches!(&args[0].node, ExprKind::Ident(n) if n == "pool"));
+        assert!(matches!(&args[1].node, ExprKind::Spawn(_)));
+        // `on` stays an ordinary identifier everywhere else.
+        assert_eq!(stmts.len(), 3);
     }
 
     #[test]

@@ -1,0 +1,10 @@
+databaseChangeLog:
+  - changeSet:
+      id: 1
+      author: tino
+      changes:
+        - createTable:
+            tableName: notes
+            columns:
+              - column: { name: id, type: bigint, autoIncrement: true, constraints: { primaryKey: true } }
+              - column: { name: text, type: varchar(200), constraints: { nullable: false } }

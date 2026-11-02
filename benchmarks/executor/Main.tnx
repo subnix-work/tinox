@@ -1,0 +1,62 @@
+// Thread-per-task `spawn` versus a bounded executor for many small jobs (#551).
+// Usage: MODE=spawn|executor JOBS=60000 BATCH=256 WORKERS=8 ./app
+// Each batch submits BATCH small jobs and awaits them all; the program prints the wall time per batch (ms) as
+// mean/max plus the total, and the harness (run.sh) adds RSS and the thread count.
+import tinox.core.env
+import tinox.core.process
+
+class Main
+{
+    fnc work(n: Int64) -> Int64
+    {
+        var acc = n
+        var i = 0
+        while (i < 200)
+        {
+            acc = (acc * 31 + i) % 1000003
+            i = i + 1
+        }
+        return acc
+    }
+
+    fnc main() -> Int32
+    {
+        const mode = Env::getVar("MODE")
+        const jobs = Env::getVar("JOBS").toInt()
+        const batch = Env::getVar("BATCH").toInt()
+        const workers = Env::getVar("WORKERS").toInt()
+        var ex: Int64 = 0
+        if (mode == "executor") { ex = executorCreate(workers, batch * 2) }
+        const started = now()
+        var batches = 0
+        var worst = 0
+        var total = 0
+        var done = 0
+        var check = 0
+        while (done < jobs)
+        {
+            const t0 = now()
+            var handles: List<Task<Int64>> = []
+            var i = 0
+            while (i < batch)
+            {
+                if (mode == "executor") { handles.push(spawn Main::work(done + i) on ex) }
+                else { handles.push(spawn Main::work(done + i)) }
+                i = i + 1
+            }
+            for h in handles
+            {
+                check = (check + await h) % 1000003
+            }
+            const dt = now() - t0
+            total = total + dt
+            if (dt > worst) { worst = dt }
+            batches = batches + 1
+            done = done + batch
+        }
+        const wall = now() - started
+        println("mode=" + mode + " jobs=" + done.toString() + " wall_ms=" + wall.toString() + " batch_mean_ms=" + (total / batches).toString() + " batch_max_ms=" + worst.toString() + " check=" + check.toString())
+        if (mode == "executor") { executorShutdown(ex, true) }
+        return 0
+    }
+}

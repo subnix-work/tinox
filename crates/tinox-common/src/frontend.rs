@@ -73,6 +73,14 @@ fn trace(kind: &str, outcome: &str, key: &str) {
 /// including ordering, origins, spans, annotations and any node-ID numbering.
 /// Filesystem resolution/validation remains outside this cache and runs afresh.
 /// Cache I/O or decoding failures always fall back to computing the query.
+/// SHA-256 of the canonical encoding `query` would hash for `input`, or `None` when it cannot be encoded.
+/// Lets a caller that builds many queries over the same large inputs (every file's prelude closure) encode each
+/// input once and key the queries on the digests instead of re-encoding the inputs per query.
+pub fn digest<K: Serialize>(input: &K) -> Option<[u8; 32]> {
+    let encoded = codec().serialize(input).ok()?;
+    Some(Sha256::digest(&encoded).into())
+}
+
 pub fn query<K: Serialize, V: Serialize + DeserializeOwned>(
     kind: &str,
     input: &K,

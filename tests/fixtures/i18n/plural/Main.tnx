@@ -1,0 +1,14 @@
+class Main
+{
+    fnc main() -> Int32
+    {
+        var out = ""
+        var n = 0
+        for n in [1, 2, 5, 11, 21, 22, 25, 101, 111]
+        {
+            out = out + trn("%1 file", "%1 files", n).argInt(n) + "; "
+        }
+        println(out)
+        return 0
+    }
+}

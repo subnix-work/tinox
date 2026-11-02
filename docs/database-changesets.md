@@ -415,3 +415,35 @@ class Book {
   `filter(b => b.authorId == parent.id).orderBy(...).limit(n).list()` for the children). There are no
   lazy or eager relationship fields and no joins yet.
 - Verified with an independent `sqlite3` (`crates/tinox/tests/orm_foreign_keys.rs`).
+
+## Inherited columns (entities)
+
+An entity can extend a plain base class that holds shared columns (a *mapped superclass*, #563):
+
+```tinox
+class Auditable {
+    @Id @GeneratedValue var id: Int64
+    @Column("created_by") @NotNull var createdBy: String
+}
+
+@Entity @Table("invoices")
+class Invoice extends Auditable {
+    @Column("amount") var amount: Int64
+}
+```
+
+- `invoices` has the columns of `Auditable` and `Invoice` (`@Id`, `@GeneratedValue`, `@Column`, `@NotNull`,
+  `@ForeignKey` work on inherited fields too). `tinox db generate`, the ORM's SELECT/INSERT/UPDATE and the object
+  layout use the same field list: ancestors' fields first (nearest base last), the entity's own last. Chains
+  of several base classes work.
+- **Supported:** non-generic base classes without `@Entity`/`@Table`. **Explicit errors** (at `tinox db generate`
+  and at compile time, naming the class): an entity extending another entity (single-table or joined inheritance),
+  a generic entity or a generic base class (a type parameter has no column type, and `extends` takes a bare class
+  name, so a concrete specialization such as `Base<Int64>` cannot be written), a subclass redeclaring an inherited
+  field (override and second column are ambiguous), a missing base class and an inheritance cycle.
+- Because nothing is renamed implicitly, moving a field between the base class and the entity does not change the
+  schema, and changing a hierarchy cannot drop or rename unrelated columns: `generate` only adds, and reports
+  changes to existing columns ("add a manual changeSet").
+- Verified with an independent `sqlite3` (`crates/tinox/tests/orm_inheritance.rs`): schema columns, ORM
+  save/list/update round trip, the inherited `@NotNull` as a real constraint, and each unsupported shape.
+  Single-table/joined hierarchies, polymorphic queries and generic entities remain out of scope.

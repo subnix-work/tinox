@@ -80,9 +80,42 @@ need network; for offline builds, pre-pull both images and pre-populate dependen
 before staging is not reused inside the container today, so offline builds of projects with
 dependencies are not supported yet).
 
+## Running the image
+
+* **Use `docker run --init`** (the command `tinox docker` prints does). The app is PID 1 in the container, and
+  the kernel does not deliver SIGTERM to a PID 1 that installed no handler: `docker stop` then waits its full 10 s
+  and kills the process (exit 137). Measured with the SQLite/REST fixture: 10.2 s without `--init`, 0.18 s with it.
+  Programs with `@Service` lifecycle handle SIGTERM themselves.
+* **Keep state under `/app/data`.** `/app` is read-only for the app user, so a relative SQLite URL such as
+  `url = "crud.db"` fails with `unable to open database file`; use `url = "data/app.db"` and mount a volume at
+  `/app/data`. Files such as migration changelogs must be listed in `[docker] include` for `--source-build`.
+
 ## Status of verification
 
-Unit tests cover Dockerfile generation, context allowlisting and provenance rendering. The end-to-end
-flow (builder image build, two-host run, REST/DB/TLS smoke tests, measured image size) has **not** yet
-been exercised against a real Docker daemon; image size, startup time and the two-host acceptance check
-still need to be recorded.
+Verified against a real Docker daemon (29.9, one Linux host) with `make docker-e2e`
+(`crates/tinox/tests/docker_source_build.rs`, opt-in because it needs network and builds the builder image):
+
+| Check | Result |
+|---|---|
+| Builder image built from the checkout (`docker/builder/Dockerfile`) | ok; tools (`opt`, `llc`, `cc`, `pg_config`) reachable |
+| `tinox docker --source-build` for a REST + SQLite project with migrations | ok; compile in the builder ~3 s, whole flow ~10 s warm |
+| `ldd` inside the image reports no missing library | ok |
+| Default user | uid 10001; `/app` not writable; `/app/build-info.json` present |
+| Image size | 83.1 MB (debian trixie-slim base) |
+| Readiness | HTTP answers within ~1 s of `docker run`; migration applied on startup |
+| REST + ORM write, restart on the same volume | data persists |
+| Build context | printed file list; only `tinox.toml`, `src/`, opted-in `include` paths |
+| PostgreSQL image (REST + migration on startup, `postgres:16-alpine` on a Docker network) | ok; `libpq` selected automatically; the row is read back with `psql` |
+| MySQL image (`mysql:8.4`) | ok; `libmariadb` selected automatically; the row is read back with the `mysql` CLI |
+| TLS image (`listenTls`, certificate and key as a read-only mount at `/app/data/certs`) | ok; `curl -k` gets the response, verification of the self-signed certificate fails, plain HTTP on the TLS port is refused; the image holds no key material |
+
+Contract for features the builder does not provision:
+
+* **HTTP/3 (`TINOX_HTTP3=1`) is unsupported with the stock builder**: the build fails visibly in the builder with
+  `'ngtcp2/ngtcp2.h' file not found`. Use a custom `[docker] builder` that provides ngtcp2/nghttp3, or the host build.
+* **Offline builds are not supported** for projects with dependencies: the builder and base pulls and `tinox install` need the network. Verified: `docker build --network none` of the staged context fails in `tinox install` ("Download failed ... 0 installed") even though the host has every package cached, because the context carries none; no image is produced.
+
+All of these run in `make docker-e2e` (`crates/tinox/tests/docker_source_build.rs`).
+
+Still open: the two-host acceptance check (the same sample built and run on a second, different Linux host) and a
+recorded startup-time measurement on a second machine. Neither can be established from one machine.
