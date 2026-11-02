@@ -1,0 +1,11 @@
+import Auditable
+
+@Entity
+@Table("invoices")
+class Invoice extends Auditable
+{
+    @Column("amount")
+    var amount: Int64
+    @Column("memo")
+    var memo: String
+}

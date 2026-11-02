@@ -4982,6 +4982,9 @@ fn validate_program_annotations(ast: &tinox_parser::SourceFile, ann_result: &tin
     if let Some((class_name, message)) = tinox_typecheck::annotations::foreign_key_errors(&ast.decls).into_iter().next() {
         return Err(annotation_error(&[class_name.as_str()], message));
     }
+    if let Some((class_name, message)) = tinox_typecheck::annotations::entity_inheritance_errors(&ast.decls).into_iter().next() {
+        return Err(annotation_error(&[class_name.as_str()], message));
+    }
     for endpoint in &ann_result.ws_endpoints {
         if ann_result.di_components.iter().any(|component|
             component.class_name == endpoint.class_name

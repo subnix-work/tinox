@@ -1,0 +1,23 @@
+import tinox.core.db
+import Invoice
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        DB::of(Invoice).save(Invoice { id: 0, createdBy: "ann", amount: 120, memo: "first" })
+        DB::of(Invoice).save(Invoice { id: 0, createdBy: "bob", amount: 80, memo: "second" })
+        const all: List<Invoice> = DB::of(Invoice).list()
+        println("count: " + all.len().toString())
+        for inv in all
+        {
+            println("invoice " + inv.id.toString() + " by " + inv.createdBy + " amount " + inv.amount.toString() + " memo " + inv.memo)
+        }
+        const one: Invoice = DB::of(Invoice).filter(i => i.createdBy == "bob").first()
+        one.amount = 95
+        DB::of(Invoice).save(one)
+        const again: Invoice = DB::of(Invoice).filter(i => i.createdBy == "bob").first()
+        println("updated: " + again.amount.toString() + " " + again.memo)
+        return 0
+    }
+}
