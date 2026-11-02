@@ -1,0 +1,9 @@
+import Meta
+
+@Entity
+@Table("counters")
+class Counter extends Meta<Int64>
+{
+    @Column("hits")
+    var hits: Int64
+}

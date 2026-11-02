@@ -2182,6 +2182,130 @@ pub fn entity_class_fields<'a>(class: &'a Class, classes: &HashMap<&str, &'a Cla
     Ok(fields)
 }
 
+fn substitute_entity_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
+    match ty {
+        Type::Named(n) => subst.get(n).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Generic { name, args } => Type::Generic {
+            name: name.clone(),
+            args: args.iter().map(|a| substitute_entity_type(a, subst)).collect(),
+        },
+        Type::Array(inner) => Type::Array(Box::new(substitute_entity_type(inner, subst))),
+        Type::Ref(inner) => Type::Ref(Box::new(substitute_entity_type(inner, subst))),
+        Type::Mutable(inner) => Type::Mutable(Box::new(substitute_entity_type(inner, subst))),
+        Type::Nullable(inner) => Type::Nullable(Box::new(substitute_entity_type(inner, subst))),
+        Type::Map(k, v) => Type::Map(Box::new(substitute_entity_type(k, subst)), Box::new(substitute_entity_type(v, subst))),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(|t| substitute_entity_type(t, subst)).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Readable, injective name part for a scalar or named type argument of `extends Base<...>`.
+fn entity_base_arg_name(ty: &Type) -> Option<String> {
+    Some(match ty {
+        Type::Int8 => "Int8".into(),
+        Type::Int16 => "Int16".into(),
+        Type::Int32 => "Int32".into(),
+        Type::Int64 => "Int64".into(),
+        Type::UInt8 => "UInt8".into(),
+        Type::UInt16 => "UInt16".into(),
+        Type::UInt32 => "UInt32".into(),
+        Type::UInt64 => "UInt64".into(),
+        Type::Float32 => "Float32".into(),
+        Type::Float64 => "Float64".into(),
+        Type::Bool => "Bool".into(),
+        Type::Char => "Char".into(),
+        Type::String => "String".into(),
+        Type::Named(n) => n.clone(),
+        _ => return None,
+    })
+}
+
+/// A concrete specialization of a generic mapped superclass (#563): `@Entity class Order extends Base<Int64>`
+/// becomes `extends Base__Int64`, where `Base__Int64` is a synthesized, non-generic copy of `Base` whose type
+/// parameters are replaced in the field types (field annotations are kept). This runs on the merged program before
+/// annotation processing, the type check and the schema generator, so all of them see one concrete field list.
+///
+/// The supported slice is a generic base class that only declares fields (no methods, no entity annotations) and is
+/// specialized with scalar or named types; everything else is an error naming the class, never a silent mapping:
+/// type arguments on a non-entity class, an unknown or non-generic base, a wrong number of arguments, a base with
+/// methods, an entity base class and a compound type argument. The synthesized copy is shared by all entities that
+/// use the same arguments and has no table of its own.
+pub fn expand_generic_entity_bases(decls: &mut Vec<tinox_parser::Decl>) -> Result<(), (String, Span, String)> {
+    let mut generic: HashMap<String, Class> = HashMap::new();
+    fn collect_generic(decls: &[tinox_parser::Decl], out: &mut HashMap<String, Class>) {
+        for decl in decls {
+            match &decl.node {
+                DeclKind::Class(c) if !c.type_params.is_empty() => { out.insert(c.name.clone(), c.clone()); }
+                DeclKind::Namespace(ns) => collect_generic(&ns.decls, out),
+                _ => {}
+            }
+        }
+    }
+    collect_generic(decls, &mut generic);
+    let mut created: HashSet<String> = HashSet::new();
+    expand_decls(decls, &generic, &mut created)
+}
+
+fn expand_decls(
+    decls: &mut Vec<tinox_parser::Decl>,
+    generic: &HashMap<String, Class>,
+    created: &mut HashSet<String>,
+) -> Result<(), (String, Span, String)> {
+    let mut out: Vec<tinox_parser::Decl> = Vec::with_capacity(decls.len());
+    for mut decl in std::mem::take(decls) {
+        match &mut decl.node {
+            DeclKind::Namespace(ns) => expand_decls(&mut ns.decls, generic, created)?,
+            DeclKind::Class(c) if !c.extends_args.is_empty() => {
+                let fail = |message: String| (c.name.clone(), c.span, message);
+                if !is_entity(c) {
+                    return Err(fail(format!("class {}: type arguments after `extends` are only supported for entities (a generic mapped superclass)", c.name)));
+                }
+                let base_name = c.extends.clone().unwrap_or_default();
+                let Some(base) = generic.get(&base_name) else {
+                    return Err(fail(format!("entity {}: base class {base_name} is not a generic class, so it takes no type arguments", c.name)));
+                };
+                if base.type_params.len() != c.extends_args.len() {
+                    return Err(fail(format!(
+                        "entity {}: base class {base_name} has {} type parameter(s) but {} type argument(s) were given",
+                        c.name, base.type_params.len(), c.extends_args.len()
+                    )));
+                }
+                if is_entity(base) {
+                    return Err(fail(format!("entity {} extends entity {base_name}: inheritance between entities (single-table or joined) is unsupported", c.name)));
+                }
+                if !base.methods.is_empty() {
+                    return Err(fail(format!("entity {}: generic base class {base_name} declares methods; only a base class with fields alone can be specialized for an entity", c.name)));
+                }
+                let mut names = Vec::new();
+                for arg in &c.extends_args {
+                    match entity_base_arg_name(arg) {
+                        Some(n) => names.push(n),
+                        None => return Err(fail(format!("entity {}: type argument of {base_name} must be a scalar or named type", c.name))),
+                    }
+                }
+                let mangled = format!("{base_name}__{}", names.join("__"));
+                if created.insert(mangled.clone()) {
+                    let subst: HashMap<String, Type> =
+                        base.type_params.iter().cloned().zip(c.extends_args.iter().cloned()).collect();
+                    let mut concrete = base.clone();
+                    concrete.name = mangled.clone();
+                    concrete.type_params = Vec::new();
+                    for field in &mut concrete.fields {
+                        field.field_type = substitute_entity_type(&field.field_type, &subst);
+                    }
+                    out.push(tinox_common::Spanned { node: DeclKind::Class(concrete), span: decl.span, id: 0, file: decl.file.clone() });
+                }
+                c.extends = Some(mangled);
+                c.extends_args = Vec::new();
+            }
+            _ => {}
+        }
+        out.push(decl);
+    }
+    *decls = out;
+    Ok(())
+}
+
 /// Entity shapes the ORM and schema generator cannot map, as (class, message) for the compiler to report.
 pub fn entity_inheritance_errors(decls: &[tinox_parser::Decl]) -> Vec<(String, String)> {
     let mut classes = HashMap::new();

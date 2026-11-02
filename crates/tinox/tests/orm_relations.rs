@@ -18,6 +18,20 @@ fn logged(container: &str, needle: &str) -> usize {
     text(&out).lines().filter(|l| l.contains("statement:") || l.contains("execute ")).filter(|l| l.contains(needle)).count()
 }
 
+/// `logged` after the program ran: the server's log reaches `docker logs` a moment later (under load, not before the
+/// next read), so wait until `expected` new statements are visible; extra statements still show up in the result.
+fn logged_since(container: &str, needle: &str, before: usize, expected: usize) -> usize {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let delta = logged(container, needle) - before;
+        if delta >= expected || std::time::Instant::now() >= deadline {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            return logged(container, needle) - before;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn list_and_detail_loading_uses_a_bounded_number_of_queries() {
     if !tool_available("docker", &["--version"]) || !tool_available("psql", &["--version"]) {
@@ -70,7 +84,7 @@ fn list_and_detail_loading_uses_a_bounded_number_of_queries() {
     let before = logged(&container, "FROM authors");
     let n = exec("nplus1");
     assert!(n.status.success(), "{}", text(&n));
-    let n_queries = logged(&container, "FROM authors") - before;
+    let n_queries = logged_since(&container, "FROM authors", before, 12);
     assert_eq!(n_queries, 12, "the naive loop is one query per book");
 
     let before = logged(&container, "FROM authors");
@@ -78,8 +92,8 @@ fn list_and_detail_loading_uses_a_bounded_number_of_queries() {
     let b = exec("batch");
     let out = text(&b);
     assert!(b.status.success(), "{out}");
-    assert_eq!(logged(&container, "FROM authors") - before, 1, "the batch loads all authors with ONE query");
-    assert_eq!(logged(&container, "FROM books") - books_before, 1);
+    assert_eq!(logged_since(&container, "FROM authors", before, 1), 1, "the batch loads all authors with ONE query");
+    assert_eq!(logged_since(&container, "FROM books", books_before, 1), 1);
     // Joined results are right: book-01 has author_id 2 (Bob), book-02 -> 3 (Cy), book-03 -> 1 (Ada) ...
     for expected in ["book-01 by Bob", "book-02 by Cy", "book-03 by Ada", "book-12 by Ada"] {
         assert!(out.contains(expected), "missing {expected:?} in:\n{out}");
@@ -92,7 +106,7 @@ fn list_and_detail_loading_uses_a_bounded_number_of_queries() {
     let c = exec("children");
     let out = text(&c);
     assert!(c.status.success(), "{out}");
-    assert_eq!(logged(&container, "FROM books") - before, 2, "one query for the listing in main, one for the children");
+    assert_eq!(logged_since(&container, "FROM books", before, 2), 2, "one query for the listing in main, one for the children");
     let expected = pg.psql("SELECT string_agg(title, ',' ORDER BY id) FROM books WHERE author_id IN (1, 3)");
     assert_eq!(out.lines().filter(|l| l.starts_with("book-")).collect::<Vec<_>>().join(","), expected);
     let _ = std::fs::remove_dir_all(&dir);

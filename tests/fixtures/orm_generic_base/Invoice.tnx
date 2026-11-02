@@ -1,0 +1,9 @@
+import Meta
+
+@Entity
+@Table("invoices")
+class Invoice extends Meta<String>
+{
+    @Column("amount")
+    var amount: Int64
+}
