@@ -228,6 +228,12 @@ docs-stage:
 
 docs-release-check:
 	python3 scripts/reference.py verify-release
+	python3 scripts/release_manifest.py verify --strict
+
+# Write docs/releases/<compiler>.json for the supported service stack (docs/supported-stack.md, #558).
+.PHONY: release-manifest
+release-manifest:
+	python3 scripts/release_manifest.py generate
 
 # Real-daemon acceptance of `tinox docker --source-build` (#309): needs docker and network, builds the
 # builder image when missing. Not part of `check`.
