@@ -84,6 +84,8 @@ pub struct CliCommandInfo {
 /// Route entry produced by REST annotation processing.
 #[derive(Debug, Clone)]
 pub struct RouteEntry {
+    /// `@Blocking(workers, queue)`: dedicated bounded handler pool for this route (#552).
+    pub blocking: Option<(i64, i64)>,
     pub http_method: String,
     pub path: String,
     pub class_name: String,
@@ -2817,6 +2819,7 @@ impl CodeGen {
         writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_put(i64*, i8*, i64)").unwrap();
         writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_patch(i64*, i8*, i64)").unwrap();
         writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_delete(i64*, i8*, i64)").unwrap();
+        writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_offload_last(i64*, i64, i64)").unwrap();
         writeln!(&mut self.lambda_ir, "declare void @tinox_HttpServer_listen(i64*)").unwrap();
         writeln!(&mut self.lambda_ir).unwrap();
 
@@ -2918,6 +2921,11 @@ impl CodeGen {
                 "  %path_{idx} = getelementptr [{path_len} x i8], [{path_len} x i8]* @__route_path_{idx}, i64 0, i64 0").unwrap();
             writeln!(&mut self.lambda_ir,
                 "  call void @{server_method}(i64* %server, i8* %path_{idx}, i64 %fn_{idx})").unwrap();
+            if let Some((workers, queue)) = route.blocking {
+                // Flags the route just registered; the pool is created here, before the server listens.
+                writeln!(&mut self.lambda_ir,
+                    "  call void @tinox_HttpServer_offload_last(i64* %server, i64 {workers}, i64 {queue})").unwrap();
+            }
         }
 
         // Register the /metrics route if enabled

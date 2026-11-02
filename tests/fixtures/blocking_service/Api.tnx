@@ -1,0 +1,21 @@
+import tinox.core.http_server
+import State
+
+@HttpRequestScoped
+class Api {
+ @Inject
+ private state: State
+ // A request-scoped dependency is used on the pool thread that runs the handler.
+ @GET
+ @Path("/slow")
+ @Blocking(1, 4)
+ fn slow() -> String { sleep(600)
+ return "complete " + toString(this.state.isEnabled()) }
+ @GET
+ @Path("/fast")
+ fn fast() -> String { return "fast" }
+ @POST
+ @Path("/enable")
+ fn enable() -> String { this.state.enable()
+ return "enabled" }
+}

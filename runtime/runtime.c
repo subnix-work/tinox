@@ -1595,6 +1595,7 @@ static TinoxLimits g_limits;
 static pthread_once_t g_limits_once = PTHREAD_ONCE_INIT;
 static atomic_llong g_active_tasks, g_peak_tasks, g_rejected_tasks;
 static atomic_llong g_open_conns, g_peak_conns, g_rejected_conns;
+static atomic_llong g_offload_accepted, g_offload_rejected; // @Blocking routes (#552)
 static atomic_llong g_active_ws, g_peak_ws, g_rejected_ws;
 // Queue (wait-for-slot) accounting shared by the task and WebSocket budgets.
 static atomic_llong g_waiting, g_wait_total_ms, g_wait_max_ms, g_wait_timeouts;
@@ -1862,6 +1863,8 @@ static int tinox_limits_metrics_text(char* buf, size_t cap) {
         "# TYPE tinox_queue_wait_ms_total counter\ntinox_queue_wait_ms_total %lld\n"
         "# TYPE tinox_queue_wait_ms_max gauge\ntinox_queue_wait_ms_max %lld\n"
         "# TYPE tinox_queue_timeouts_total counter\ntinox_queue_timeouts_total %lld\n"
+        "# TYPE tinox_blocking_route_jobs_total counter\ntinox_blocking_route_jobs_total %lld\n"
+        "# TYPE tinox_blocking_route_rejected_total counter\ntinox_blocking_route_rejected_total %lld\n"
         "# TYPE tinox_gc_heap_bytes gauge\ntinox_gc_heap_bytes %lld\n"
         "# TYPE tinox_gc_free_bytes gauge\ntinox_gc_free_bytes %lld\n"
         "# TYPE tinox_gc_used_estimate_bytes gauge\ntinox_gc_used_estimate_bytes %lld\n"
@@ -1877,6 +1880,7 @@ static int tinox_limits_metrics_text(char* buf, size_t cap) {
         (long long)l->queue_wait_ms, (long long)atomic_load(&g_waiting),
         (long long)atomic_load(&g_wait_total_ms), (long long)atomic_load(&g_wait_max_ms),
         (long long)atomic_load(&g_wait_timeouts),
+        (long long)atomic_load(&g_offload_accepted), (long long)atomic_load(&g_offload_rejected),
         (long long)gcStat(0), (long long)gcStat(1), (long long)gcStat(5),
         (long long)gcStat(3), (long long)gcStat(4));
 }
@@ -1997,6 +2001,12 @@ static void task_fail_unstarted(TinoxTask* task, const char* message) {
 }
 static void executor_run_job(TinoxExecutor* ex, TinoxExecJob* job) {
     TinoxTask* task = job->task;
+    if (!task) {
+        // A runtime-internal job (no Task<T>, e.g. an offloaded HTTP request): it owns its whole context.
+        job->fn(job->args);
+        __tinox_err = 0;
+        return;
+    }
     if (telemetry_enabled) telemetry_context = job->telemetry;
     int64_t span_token = telemetry_enter("task", NULL, NULL, 1);
     if (span_token) tinox_histogram_record("tinox_task_queue_duration_ns", telemetry_clock(CLOCK_MONOTONIC) - job->queued_at);
@@ -2118,6 +2128,29 @@ static void executor_submit(int64_t id, TinoxTask* task, void* (*fn)(void*), voi
     if (reject) ex->rejected++;
     pthread_mutex_unlock(&ex->mu);
     if (reject) task_fail_unstarted(task, reject);
+}
+// Queues a runtime-internal job (no Task<T> handle). Returns 0 when the queue is full or the executor is shut down;
+// the caller then owns `args` again.
+static int executor_submit_raw(int64_t id, void* (*fn)(void*), void* args) {
+    TinoxExecutor* ex = executor_find(id);
+    if (!ex) return 0;
+    TinoxExecJob job;
+    memset(&job, 0, sizeof job);
+    job.fn = fn; job.args = args;
+    int accepted = 0;
+    pthread_mutex_lock(&ex->mu);
+    if (ex->state == EXEC_RUNNING && ex->count < ex->cap) {
+        ex->queue[(ex->head + ex->count) % ex->cap] = job;
+        ex->count++;
+        ex->submitted++;
+        if (ex->count > ex->peak_queued) ex->peak_queued = ex->count;
+        pthread_cond_signal(&ex->work);
+        accepted = 1;
+    } else {
+        ex->rejected++;
+    }
+    pthread_mutex_unlock(&ex->mu);
+    return accepted;
 }
 // Stops accepting jobs. With drain != 0 queued jobs still run; otherwise they are rejected and running jobs are
 // cancelled (cooperatively). Returns after every worker has exited.
@@ -2575,6 +2608,18 @@ void tinox_service_existing_work_enter(void) {
 }
 void tinox_service_work_exit(void) {
     if (service_enabled() && service_work_depth > 0 && !--service_work_depth) atomic_fetch_sub(&service_work, 1);
+}
+// Admission for work that another thread will perform (an offloaded request, #552): counts as in-flight work
+// from now until the performing thread calls service_work_release_token(), including the time spent queued, so a
+// graceful stop waits for it. Returns 0 when the service is stopping.
+static int service_work_take_token(void) {
+    if (!service_enabled()) return 1;
+    if (!tinox_service_work_enter()) return 0;
+    service_work_depth = 0; // the count stays; this thread no longer owns it
+    return 1;
+}
+static void service_work_release_token(void) {
+    if (service_enabled()) atomic_fetch_sub(&service_work, 1);
 }
 int64_t tinox_service_worker_start(void) {
     pthread_mutex_lock(&service_mu);
@@ -11838,6 +11883,7 @@ typedef struct {
     char method[8];
     char path[256];
     TinoxRouteHandler handler;
+    int64_t offload; // executor id of the @Blocking pool (#552), 0 = handled on the epoll worker
 } TinoxRoute;
 
 typedef struct {
@@ -11883,6 +11929,12 @@ static void http_server_add_route(int64_t* server, const char* method, char* pat
         srv->routes[srv->route_count].handler = (TinoxRouteHandler)(intptr_t)handler;
         srv->route_count++;
     }
+}
+
+// Gives the route registered last its own bounded handler pool (@Blocking(workers, queue), #552).
+void tinox_HttpServer_offload_last(int64_t* server, int64_t workers, int64_t queue) {
+    TinoxHttpServer* srv = (TinoxHttpServer*)server;
+    if (srv->route_count > 0) srv->routes[srv->route_count - 1].offload = executorCreate(workers, queue);
 }
 
 void tinox_HttpServer_get(int64_t* server, char* path, int64_t handler) {
@@ -12358,11 +12410,52 @@ char* tinox_security_json(void) {
     return GC_strdup(buf);
 }
 
-static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_alive_out) {
+// @Blocking routes (#552): the epoll worker that read the request hands the connection to the route's own bounded
+// pool and goes back to its other connections. The pool thread parses and answers the request exactly like an epoll
+// worker would (all per-request state is thread-local), then closes the connection: an offloaded response is always
+// `Connection: close`, so the epoll worker never has to take a connection back.
+typedef struct {
+    TinoxHttpServer* srv;
+    int fd;
+    char* raw;
+    size_t len;
+} TinoxOffloadJob;
+
+static void tinox_process_request(TinoxHttpServer* srv, int64_t client_fd, char* raw_req, int can_offload, int force_close,
+                                  int* keep_alive_out, int* offloaded_out);
+
+static void* tinox_offload_run(void* arg) {
+    TinoxOffloadJob* job = arg;
+    thread_local_init();
+    if (!g_recv_buf || g_recv_cap < job->len + 1) {
+        free(g_recv_buf);
+        g_recv_cap = job->len + 4096;
+        g_recv_buf = (char*)malloc(g_recv_cap);
+    }
+    memcpy(g_recv_buf, job->raw, job->len + 1);
+    g_recv_used = job->len;
+    int keep_alive = 0, offloaded = 0;
+    tinox_process_request(job->srv, job->fd, g_recv_buf, 0, 1, &keep_alive, &offloaded);
+    close(job->fd);
+    atomic_fetch_sub(&g_open_conns, 1);
+    service_work_release_token();
+    free(job->raw);
+    free(job);
+    return NULL;
+}
+
+static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_alive_out, int* offloaded_out) {
     *keep_alive_out = 0;
+    *offloaded_out = 0;
     char* raw_req = httpServerReadRequest(client_fd);
     if (!raw_req || !raw_req[0]) return;
+    tinox_process_request(srv, client_fd, raw_req, 1, 0, keep_alive_out, offloaded_out);
+}
 
+static void tinox_process_request(TinoxHttpServer* srv, int64_t client_fd, char* raw_req, int can_offload, int force_close,
+                                  int* keep_alive_out, int* offloaded_out) {
+    *keep_alive_out = 0;
+    *offloaded_out = 0;
     char method[8];
     char path[256];
     char* query = (char*)"";
@@ -12385,19 +12478,50 @@ static void tinox_handle_one(TinoxHttpServer* srv, int64_t client_fd, int* keep_
 
     tinox_map_reset(&g_path_params_map);
     TinoxRouteHandler handler = NULL;
+    int64_t route_offload = 0;
     for (int i = 0; i < srv->route_count; i++) {
         if (strcmp(srv->routes[i].method, method) != 0) continue;
         if (route_matches(srv->routes[i].path, path, &g_path_params_map)) {
             handler = srv->routes[i].handler;
+            route_offload = srv->routes[i].offload;
             break;
         }
         tinox_map_reset(&g_path_params_map);
     }
 
+    // The header pass below rewrites the buffer in place, so an offloaded request is copied before it.
+    if (can_offload && route_offload && service_work_take_token()) {
+        size_t raw_len = (raw_req == g_recv_buf) ? g_recv_used : strlen(raw_req);
+        TinoxOffloadJob* job = (TinoxOffloadJob*)malloc(sizeof(*job));
+        job->srv = srv;
+        job->fd = (int)client_fd;
+        job->len = raw_len;
+        job->raw = (char*)malloc(raw_len + 1);
+        memcpy(job->raw, raw_req, raw_len);
+        job->raw[raw_len] = '\0';
+        if (executor_submit_raw(route_offload, tinox_offload_run, job)) {
+            atomic_fetch_add(&g_offload_accepted, 1);
+            *offloaded_out = 1;
+            return;
+        }
+        // Queue full (or pool shut down): say so at once instead of queueing without bound.
+        service_work_release_token();
+        free(job->raw);
+        free(job);
+        atomic_fetch_add(&g_offload_rejected, 1);
+        static const char body[] = "{\"error\":\"overloaded: the blocking route's queue is full\"}";
+        char reply[256];
+        int n = snprintf(reply, sizeof reply,
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nRetry-After: 1\r\n"
+            "Connection: close\r\nContent-Length: %zu\r\n\r\n%s", sizeof(body) - 1, body);
+        (void)!send((int)client_fd, reply, (size_t)n, MSG_NOSIGNAL | MSG_DONTWAIT);
+        return;
+    }
+
     // Parse HTTP headers — normalize keys to Title-Case, track Connection header
     tinox_map_reset(&g_req_headers_map);
     int trace_headers = 0, request_headers = 0;
-    int req_close = 0; // HTTP/1.1 default: keep-alive
+    int req_close = force_close; // HTTP/1.1 default: keep-alive; offloaded requests always close
     char* hdr_line = strchr(raw_req, '\n');
     while (hdr_line) {
         hdr_line++;
@@ -12751,9 +12875,16 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
                 }
             } else {
                 // Handle one request on this client connection
-                int keep_alive = 0;
-                tinox_handle_one(srv, (int64_t)fd, &keep_alive);
-                if (keep_alive) {
+                int keep_alive = 0, offloaded = 0;
+                tinox_handle_one(srv, (int64_t)fd, &keep_alive, &offloaded);
+                if (offloaded) {
+                    // The pool thread owns the connection now (it closes it and releases the connection budget).
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                    if (fd >= 0 && fd < g_epoll_cap && g_epoll_slots[fd].fd >= 0) {
+                        g_epoll_slots[fd].fd = -1;
+                        g_epoll_nconns--;
+                    }
+                } else if (keep_alive) {
                     int idx = fd;
                     g_epoll_slots[idx].last_ms = now_ms;
                     g_epoll_slots[idx].served = 1;

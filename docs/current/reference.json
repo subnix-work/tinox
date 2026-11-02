@@ -66,6 +66,15 @@
       ]
     },
     {
+      "description": "REST route whose handler blocks (slow database, upstream call, ...): @Blocking(workers, queue) gives it its own bounded worker pool (1..256 workers, queue 1..1000000), so it cannot occupy the HTTP epoll workers that serve other routes. A full queue answers 503 with Retry-After; the connection is closed after the response. HTTP/1 plain server only (#552)",
+      "max_args": 2,
+      "min_args": 2,
+      "name": "Blocking",
+      "targets": [
+        "Method"
+      ]
+    },
+    {
       "description": "@CacheEvict(\"Class.method\", ...) -- empties the named @Cacheable caches after the method completed normally (after its own @Transactional commit) and invalidates loads in flight",
       "max_args": 8,
       "min_args": 1,

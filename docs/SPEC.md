@@ -888,7 +888,9 @@ fn createUser(@PostParam user: User) -> User
 A missing/invalid `@PathParam`/`@QueryParam` short-circuits with HTTP 400
 + a JSON error body before the handler ever runs. Also available on
 routes: `@Produces("...")`, `@Consumes("...")`, `@Auth("bearer"|"basic")`,
-`@OIDCRolesAllowed("role", ...)`.
+`@OIDCRolesAllowed("role", ...)`, and `@Blocking(workers, queue)` for a handler
+that waits on slow I/O (its own bounded pool, so other routes keep answering;
+see [docs/blocking-routes.md](blocking-routes.md)).
 
 `@Http3RestController(port, cert, key)` routes the exact same
 `@GET`/`@PathParam`/etc. machinery over HTTP/3 (QUIC) instead of plain

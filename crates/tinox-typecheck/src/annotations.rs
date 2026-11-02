@@ -94,6 +94,8 @@ pub struct RouteInfo {
     /// itself); anything else = auto-serialize mode (the shim serializes
     /// the returned value as the JSON response body).
     pub return_type: Type,
+    /// `@Blocking(workers, queue)`: run the handler on a dedicated bounded pool (#552).
+    pub blocking: Option<(i64, i64)>,
 }
 
 /// The payload type remains in route metadata even though the transport
@@ -542,6 +544,16 @@ impl AnnotationProcessor {
                 min_args: 1,
                 max_args: 1,
                 description: "Requires a verified OIDC access token (RS256/JWKS, IdP config via OIDC_ISSUER/OIDC_JWKS_URI/OIDC_AUDIENCE env vars) carrying at least one of the listed realm roles".to_string(),
+            },
+        );
+        registry.insert(
+            "Blocking".to_string(),
+            AnnotationInfo {
+                name: "Blocking".to_string(),
+                valid_targets: vec![AnnotationTarget::Method],
+                min_args: 2,
+                max_args: 2,
+                description: "REST route whose handler blocks (slow database, upstream call, ...): @Blocking(workers, queue) gives it its own bounded worker pool (1..256 workers, queue 1..1000000), so it cannot occupy the HTTP epoll workers that serve other routes. A full queue answers 503 with Retry-After; the connection is closed after the response. HTTP/1 plain server only (#552)".to_string(),
             },
         );
         registry.insert(
@@ -1965,6 +1977,7 @@ impl AnnotationProcessor {
         let mut consumes: Option<String> = None;
         let mut auth: Option<String> = class_auth.map(|s| s.to_string());
         let mut oidc_roles: Vec<String> = Vec::new();
+        let mut blocking: Option<(i64, i64)> = None;
 
         for ann in &method.annotations {
             match ann.name.as_str() {
@@ -1993,6 +2006,11 @@ impl AnnotationProcessor {
                 "Auth" => {
                     if let Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(s))) = ann.args.first() {
                         auth = Some(s.clone());
+                    }
+                }
+                "Blocking" => {
+                    if let (Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(w))), Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(q)))) = (ann.args.first(), ann.args.get(1)) {
+                        blocking = Some((*w, *q));
                     }
                 }
                 "OIDCRolesAllowed" => {
@@ -2061,6 +2079,7 @@ impl AnnotationProcessor {
             is_static: method.static_,
             params,
             return_type: method.ret_type.clone(),
+            blocking,
         })
     }
 }
@@ -2732,6 +2751,7 @@ fn validate_decl(processor: &AnnotationProcessor, decl: &tinox_parser::Decl, jso
                     errors.extend(processor.validate(&param.annotations, AnnotationTarget::Param));
                 }
                 validate_route_params(method, json_serializable, errors);
+                validate_blocking(method, errors);
             }
         }
         DeclKind::Interface(i) => {
@@ -2811,6 +2831,25 @@ fn is_http_context_type(ty: &Type) -> bool {
 /// since `@HttpContext`'s `valid_targets` is `[Param]` either way -- this
 /// function only adds the REST-specific cardinality/compatibility rules
 /// on top).
+/// `@Blocking(workers, queue)` (#552): integer literals within the executor limits, on a REST route.
+fn validate_blocking(method: &Method, errors: &mut Vec<Error>) {
+    let Some(ann) = method.annotations.iter().find(|a| a.name == "Blocking") else { return };
+    let has_verb = method.annotations.iter().any(|a| matches!(a.name.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE"));
+    if !has_verb {
+        errors.push(Error::new(method.span, format!("@Blocking on '{}' has no effect without @GET/@POST/@PUT/@PATCH/@DELETE", method.name)));
+        return;
+    }
+    let int = |i: usize| match ann.args.get(i) {
+        Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::Integer(v))) => Some(*v),
+        _ => None,
+    };
+    match (int(0), int(1)) {
+        (Some(w), Some(q)) if (1..=256).contains(&w) && (1..=1_000_000).contains(&q) => {}
+        (Some(_), Some(_)) => errors.push(Error::new(method.span, format!("@Blocking on '{}': workers must be 1..256 and queue 1..1000000", method.name))),
+        _ => errors.push(Error::new(method.span, format!("@Blocking on '{}' takes two integer literals: @Blocking(workers, queue)", method.name))),
+    }
+}
+
 fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
     let has_verb = method.annotations.iter()
         .any(|a| matches!(a.name.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE"));
