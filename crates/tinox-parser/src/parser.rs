@@ -386,8 +386,17 @@ impl Parser {
             vec![]
         };
 
+        let mut extends_args = Vec::new();
         let extends = if self.consume_keyword(Keyword::Extends) {
-            Some(self.parse_ident()?)
+            let base = self.parse_ident()?;
+            if self.consume(TokenKind::Less) {
+                extends_args.push(self.parse_type()?);
+                while self.consume(TokenKind::Comma) {
+                    extends_args.push(self.parse_type()?);
+                }
+                self.expect_generic_close()?;
+            }
+            Some(base)
         } else {
             None
         };
@@ -446,6 +455,7 @@ impl Parser {
             name,
             type_params,
             extends,
+            extends_args,
             implements,
             fields,
             methods,

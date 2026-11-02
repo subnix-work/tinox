@@ -71,10 +71,12 @@ fn entity_schema(root: &Path) -> Result<(Schema, BTreeMap<String, Vec<String>>),
                 .map_err(|e| format!("{}: {e}", path.display()))?,
         );
     }
+    // `extends Base<Int64>` is replaced by a concrete copy of the generic base before the model is read (#563),
+    // exactly as the compiler does.
+    let mut program: Vec<Decl> = sources.iter().flat_map(|source| source.decls.iter().cloned()).collect();
+    tinox_typecheck::annotations::expand_generic_entity_bases(&mut program).map_err(|(_, _, message)| message)?;
     let mut decls = Vec::new();
-    for source in &sources {
-        flatten(&source.decls, &mut decls);
-    }
+    flatten(&program, &mut decls);
     let enums: HashSet<_> = decls
         .iter()
         .filter_map(|d| match &d.node {

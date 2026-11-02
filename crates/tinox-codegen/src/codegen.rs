@@ -17741,6 +17741,7 @@ tr_done_{idx}:"#).unwrap();
             name: mangled_name.to_string(),
             type_params: vec![],
             extends: c.extends.clone(),
+            extends_args: c.extends_args.clone(),
             implements: c.implements.clone(),
             fields: c.fields.iter().map(|f| tinox_parser::FieldDef {
                 name: f.name.clone(),
