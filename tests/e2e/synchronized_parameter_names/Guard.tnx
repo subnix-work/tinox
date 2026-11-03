@@ -1,0 +1,10 @@
+@ApplicationComponent
+class Guard {
+    @Synchronized
+    fn locked(n: Int64, body: String) -> String { return body }
+
+    @Synchronized
+    fn echo(body: String, cancelled: String, locked: String, acquired: String, value: String) -> String {
+        return body + cancelled + locked + acquired + value
+    }
+}

@@ -6880,18 +6880,20 @@ tr_done_{idx}:"#).unwrap();
         self.attach_dbg(body_start, dbg_scope, &dbg_params);
         self.dbg_vars = outer_vars;
         if synchronized {
+            // LLVM labels and SSA values share the parameter namespace. Dots cannot
+            // occur in Tinox identifiers, so keep every wrapper name under `sync.`.
             writeln!(&mut self.ir, "define {ret_type} @{inner_public}({params_str}) {{").unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
-            writeln!(&mut self.ir, "  %locked = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
-            writeln!(&mut self.ir, "  %acquired = icmp ne i64 %locked, 0").unwrap();
-            writeln!(&mut self.ir, "  br i1 %acquired, label %body, label %cancelled").unwrap();
-            writeln!(&mut self.ir, "body:").unwrap();
-            let prefix = if ret_type == "void" { "" } else { "%value = " };
+            writeln!(&mut self.ir, "  %sync.locked = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
+            writeln!(&mut self.ir, "  %sync.acquired = icmp ne i64 %sync.locked, 0").unwrap();
+            writeln!(&mut self.ir, "  br i1 %sync.acquired, label %sync.body, label %sync.cancelled").unwrap();
+            writeln!(&mut self.ir, "sync.body:").unwrap();
+            let prefix = if ret_type == "void" { "" } else { "%sync.value = " };
             writeln!(&mut self.ir, "  {prefix}call {ret_type} @{fn_name}({params_str})").unwrap();
             writeln!(&mut self.ir, "  call void @tinox_monitor_exit(i64* @{class_name}_monitor)").unwrap();
             if ret_type == "void" { writeln!(&mut self.ir, "  ret void").unwrap(); }
-            else { writeln!(&mut self.ir, "  ret {ret_type} %value").unwrap(); }
-            writeln!(&mut self.ir, "cancelled:").unwrap();
+            else { writeln!(&mut self.ir, "  ret {ret_type} %sync.value").unwrap(); }
+            writeln!(&mut self.ir, "sync.cancelled:").unwrap();
             if ret_type == "void" { writeln!(&mut self.ir, "  ret void").unwrap(); }
             else {
                 let zero = if ret_type.ends_with('*') { "null" } else if ret_type == "float" || ret_type == "double" { "0.0" } else { "0" };
