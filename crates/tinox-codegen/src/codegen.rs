@@ -480,9 +480,9 @@ pub struct CodeGen {
     throwing_method_basenames: HashSet<String>,
     /// fn_name -> (ret_llvm_ty, param_llvm_tys) for spawn codegen
     fn_sigs: HashMap<String, (String, Vec<String>)>,
-    /// `extern fn` C-ABI extension attributes (return, params) by symbol,
-    /// repeated on every call site (issue #612).
-    extern_call_exts: HashMap<String, (&'static str, Vec<&'static str>)>,
+    /// `extern fn` C-ABI parameter extension attributes by symbol, repeated
+    /// on every call site (issue #612).
+    extern_call_exts: HashMap<String, Vec<&'static str>>,
     spawn_counter: usize,
     /// Executor handle (an i64 value) for the `spawn` expression about to be generated (#551).
     pending_spawn_executor: Option<String>,
@@ -2607,7 +2607,7 @@ impl CodeGen {
                         if matches!(f.body.node, tinox_parser::StmtKind::Empty) {
                             self.extern_call_exts.insert(
                                 fn_name.clone(),
-                                (Self::extern_abi_ext(&f.ret_type), f.params.iter().map(|p| Self::extern_abi_ext(&p.param_type)).collect()),
+                                f.params.iter().map(|p| Self::extern_abi_ext(&p.param_type)).collect(),
                             );
                         }
                         // Register return-class info for let-binding inference —
@@ -6575,12 +6575,14 @@ tr_done_{idx}:"#).unwrap();
             // 32 bits, and expects the same of what it returns. Plain
             // `i1`/`i8`/`i16` without an extension attribute leaves the
             // upper bits undefined.
-            let ret_ext = Self::extern_abi_ext(&f.ret_type);
-            let ret_type = if ret_ext.is_empty() {
-                self.type_to_llvm_inst(&f.ret_type)
-            } else {
-                format!("{} {}", ret_ext, self.type_to_llvm_inst(&f.ret_type))
-            };
+            // The return value deliberately carries NO extension attribute
+            // (issue #612): LLVM reads `signext`/`zeroext` on a return as
+            // "the callee already extended it" and then skips its own
+            // extension, but gcc-built AArch64 callees leave the upper
+            // bits unspecified (AAPCS64), so a returned `int8_t` -56 was
+            // read as 200. Without the attribute the caller truncates and
+            // re-extends the value itself, which is correct on every ABI.
+            let ret_type = self.type_to_llvm_inst(&f.ret_type);
             let params_str = f.params.iter()
                 .map(|p| {
                     let ty = self.type_to_llvm_inst(&p.param_type);
@@ -11117,7 +11119,7 @@ tr_done_{idx}:"#).unwrap();
                         self.convert_semantic_argument(val, ty, expected, arg)?
                     } else { (val, ty) };
                     let arg_ext = if let ExprKind::Ident(n) = &func.node {
-                        self.extern_call_exts.get(n.as_str()).and_then(|e| e.1.get(i)).copied().unwrap_or("")
+                        self.extern_call_exts.get(n.as_str()).and_then(|e| e.get(i)).copied().unwrap_or("")
                     } else { "" };
                     if arg_ext.is_empty() {
                         args_str.push_str(&format!("{} {}", ty, val));
@@ -11900,16 +11902,10 @@ tr_done_{idx}:"#).unwrap();
                     )
                     .unwrap();
                 } else {
-                    // Issue #612: the C ABI extension of sub-32-bit scalars
-                    // is decided at the call site, so repeat the attributes
-                    // of the `extern fn` declaration here (AArch64 does not
-                    // sign-extend the returned `char` for us).
-                    let ret_attr = self.extern_call_exts.get(&fn_name).map(|e| e.0).unwrap_or("");
-                    let ret_part = if ret_attr.is_empty() { ret_ty.clone() } else { format!("{} {}", ret_attr, ret_ty) };
                     writeln!(
                         &mut self.ir,
                         "{} = call {} @{}({})",
-                        result, ret_part, fn_name, args_str
+                        result, ret_ty, fn_name, args_str
                     )
                     .unwrap();
                 }
@@ -15588,8 +15584,8 @@ tr_done_{idx}:"#).unwrap();
     }
 
     /// LLVM extension attribute a sub-32-bit scalar needs at an `extern fn`
-    /// boundary so it follows the platform C ABI. The caller places it
-    /// before the type for a return value and after it for a parameter.
+    /// boundary so it follows the platform C ABI. Only used for parameters
+    /// (placed after the type); never for return values, see `gen_fn`.
     fn extern_abi_ext(ty: &Type) -> &'static str {
         match ty {
             Type::Bool | Type::UInt8 | Type::UInt16 => "zeroext",
