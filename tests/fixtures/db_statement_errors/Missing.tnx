@@ -1,0 +1,5 @@
+@Entity
+@Table("no_such_table")
+class Missing {
+    @Id var id: Int64
+}
