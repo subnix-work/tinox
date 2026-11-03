@@ -40,7 +40,7 @@
       ]
     ],
     "source": {
-      "commit": "f37997f95ffff9559117767d9283a32b0b612590",
+      "commit": "214c5894e3057df28d48cded1dbb394afe137957",
       "tree_clean": false
     }
   },
@@ -48,10 +48,10 @@
     {
       "group": "tinox.core",
       "name": "json",
-      "version": "1.1.2",
-      "content_sha256": "e1b8bcb9553c9bf543ba90b07d2b37cb1dd6159ffe3713d5f435c9e6c1b8a3b8",
+      "version": "1.1.3",
+      "content_sha256": "f4d0ad51f01dd945a07751d1f8a902ac2ca5304db310804f9648626c3c329c6d",
       "files": 5,
-      "docs": "docs/tinox-core/json/1-1-2/docs.html",
+      "docs": "docs/tinox-core/json/1-1-3/docs.html",
       "docs_sha256": "dd79282bd5b486e7151fff338739c3cf7ea79d10da14e564cf14bb7bf36fcc7e",
       "dependencies": []
     },
