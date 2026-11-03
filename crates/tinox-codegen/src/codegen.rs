@@ -480,6 +480,9 @@ pub struct CodeGen {
     throwing_method_basenames: HashSet<String>,
     /// fn_name -> (ret_llvm_ty, param_llvm_tys) for spawn codegen
     fn_sigs: HashMap<String, (String, Vec<String>)>,
+    /// `extern fn` C-ABI extension attributes (return, params) by symbol,
+    /// repeated on every call site (issue #612).
+    extern_call_exts: HashMap<String, (&'static str, Vec<&'static str>)>,
     spawn_counter: usize,
     /// Executor handle (an i64 value) for the `spawn` expression about to be generated (#551).
     pending_spawn_executor: Option<String>,
@@ -777,6 +780,7 @@ impl CodeGen {
             throwing_free_fns: HashSet::new(),
             throwing_method_basenames: HashSet::new(),
             fn_sigs: HashMap::new(),
+            extern_call_exts: HashMap::new(),
             spawn_counter: 0,
             pending_spawn_executor: None,
             generic_fns: HashMap::new(),
@@ -2600,6 +2604,12 @@ impl CodeGen {
                         let ret_ty = self.type_to_llvm_inst(&f.ret_type);
                         let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
                         self.fn_sigs.insert(fn_name.clone(), (ret_ty, param_tys));
+                        if matches!(f.body.node, tinox_parser::StmtKind::Empty) {
+                            self.extern_call_exts.insert(
+                                fn_name.clone(),
+                                (Self::extern_abi_ext(&f.ret_type), f.params.iter().map(|p| Self::extern_abi_ext(&p.param_type)).collect()),
+                            );
+                        }
                         // Register return-class info for let-binding inference —
                         // same rules as for methods (Bug 6: without this,
                         // `let r = someModuleFn(); r.field` reads offset 0).
@@ -11106,7 +11116,14 @@ tr_done_{idx}:"#).unwrap();
                     let (val, ty) = if let Some(expected) = closure_params.as_ref().and_then(|types| types.get(i)) {
                         self.convert_semantic_argument(val, ty, expected, arg)?
                     } else { (val, ty) };
-                    args_str.push_str(&format!("{} {}", ty, val));
+                    let arg_ext = if let ExprKind::Ident(n) = &func.node {
+                        self.extern_call_exts.get(n.as_str()).and_then(|e| e.1.get(i)).copied().unwrap_or("")
+                    } else { "" };
+                    if arg_ext.is_empty() {
+                        args_str.push_str(&format!("{} {}", ty, val));
+                    } else {
+                        args_str.push_str(&format!("{} {} {}", ty, arg_ext, val));
+                    }
                     arg_types.push(ty);
                     arg_vals.push(val);
                 }
@@ -11883,10 +11900,16 @@ tr_done_{idx}:"#).unwrap();
                     )
                     .unwrap();
                 } else {
+                    // Issue #612: the C ABI extension of sub-32-bit scalars
+                    // is decided at the call site, so repeat the attributes
+                    // of the `extern fn` declaration here (AArch64 does not
+                    // sign-extend the returned `char` for us).
+                    let ret_attr = self.extern_call_exts.get(&fn_name).map(|e| e.0).unwrap_or("");
+                    let ret_part = if ret_attr.is_empty() { ret_ty.clone() } else { format!("{} {}", ret_attr, ret_ty) };
                     writeln!(
                         &mut self.ir,
                         "{} = call {} @{}({})",
-                        result, ret_ty, fn_name, args_str
+                        result, ret_part, fn_name, args_str
                     )
                     .unwrap();
                 }
