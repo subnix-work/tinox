@@ -183,6 +183,30 @@ fn workspace_crypto_resolves_from_the_checkout() {
     std::fs::remove_dir_all(&proj).ok();
 }
 
+/// Issue #621: `Ws::readUpgrade` / `requestHeader` / `rejectUpgrade` /
+/// `acceptUpgrade` let a server inspect Cookie/Origin before accepting the
+/// upgrade. New API, so it can only be exercised from the workspace source
+/// (the e2e harness resolves published packages).
+#[test]
+fn workspace_websocket_exposes_upgrade_request_headers() {
+    let proj = fresh_dir("workspace-websocket-upgrade");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    let ws = repo_root().join("crates/tinox-core-ext/websocket");
+    std::fs::write(
+        proj.join("tinox.toml"),
+        format!("[package]\ncompiler = \"2.9.0\"\nname = \"wsupgrade\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\npath = \"{}\"\n", ws.display()),
+    )
+    .unwrap();
+    std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ws_upgrade_inspect/Main.tnx")).unwrap();
+    let out = run(&proj);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "cookie=sid=abc\norigin=https://evil.example\nmissing=[]\nok-rejected\nok-accepted\n"
+    );
+    std::fs::remove_dir_all(&proj).ok();
+}
+
 #[test]
 fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
     let pkg = fresh_dir("pkg-add");

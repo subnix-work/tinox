@@ -1,0 +1,39 @@
+// Fixture for local_override.rs (#621).
+import tinox.core.websocket
+import tinox.core.socket
+
+class Main
+{
+    fnc main() -> Int32 {
+        const srv = WsServer::listen(0)
+        const port = httpServerBoundPort(srv)
+        const head = "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nCookie: sid=abc\r\nOrigin: https://evil.example\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+
+        // 1) inspect + reject
+        const fd1 = socketCreateTcp()
+        socketConnect(fd1, "127.0.0.1", port)
+        const cc1 = httpConnFromFd(fd1)
+        httpConnSendRaw(cc1, head)
+        const s1 = httpServerAcceptConnHandle(srv)
+        const req = Ws::readUpgrade(s1)
+        println("cookie=" + Ws::requestHeader(req, "COOKIE"))
+        println("origin=" + Ws::requestHeader(req, "origin"))
+        println("missing=[" + Ws::requestHeader(req, "x-nope") + "]")
+        Ws::rejectUpgrade(s1, 403, "Forbidden")
+        if (httpConnReadRequest(cc1).contains("403")) {
+            println("ok-rejected")
+        }
+
+        // 2) inspect + accept
+        const fd2 = socketCreateTcp()
+        socketConnect(fd2, "127.0.0.1", port)
+        const cc2 = httpConnFromFd(fd2)
+        httpConnSendRaw(cc2, head)
+        const s2 = httpServerAcceptConnHandle(srv)
+        const req2 = Ws::readUpgrade(s2)
+        if (Ws::acceptUpgrade(s2, req2) && httpConnReadRequest(cc2).contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")) {
+            println("ok-accepted")
+        }
+        return 0
+    }
+}
