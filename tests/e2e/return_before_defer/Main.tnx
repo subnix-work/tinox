@@ -1,0 +1,50 @@
+// Issue #610: the return expression is evaluated BEFORE deferred cleanup, a
+// throwing return expression unwinds through the defers, and an early return
+// from a nested block runs every enclosing scope's defers (inner first).
+// expect: value
+// expect: cleanup
+// expect: 42
+// expect: boom
+// expect: cleanup-throwing
+// expect: caught bang
+// expect: value
+// expect: inner-cleanup
+// expect: outer-cleanup
+// expect: 42
+class Main {
+    fnc value() -> Int64 {
+        println("value")
+        return 42
+    }
+    fnc inner() -> Int64 {
+        defer { println("cleanup") }
+        return Main::value()
+    }
+    fnc boom() -> Int64 {
+        println("boom")
+        throw "bang"
+        return 1
+    }
+    fnc throwing() -> Int64 {
+        defer { println("cleanup-throwing") }
+        return Main::boom()
+    }
+    fnc nested(flag: Bool) -> Int64 {
+        defer { println("outer-cleanup") }
+        if (flag) {
+            defer { println("inner-cleanup") }
+            return Main::value()
+        }
+        return 0
+    }
+    fnc main() -> Int32 {
+        println(Main::inner())
+        try {
+            println(Main::throwing())
+        } catch (e: String) {
+            println("caught " + e)
+        }
+        println(Main::nested(true))
+        return 0
+    }
+}
