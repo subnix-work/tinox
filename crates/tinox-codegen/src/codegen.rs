@@ -12314,8 +12314,11 @@ tr_done_{idx}:"#).unwrap();
                                 writeln!(&mut self.ir, "{} = call i8* @{}(i64 {})", result, func, obj_ptr).unwrap();
                             }
                             _ => {
+                                // Issue #616: widen by signedness, otherwise a
+                                // UInt8 200 prints as -56.
+                                let ext_op = if self.semantic_type(obj.id).is_some_and(|t| t.is_unsigned()) { "zext" } else { "sext" };
                                 let ext = self.temp();
-                                writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, obj_ty, obj_ptr).unwrap();
+                                writeln!(&mut self.ir, "{} = {} {} {} to i64", ext, ext_op, obj_ty, obj_ptr).unwrap();
                                 writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, ext).unwrap();
                             }
                         }
@@ -12575,12 +12578,14 @@ tr_done_{idx}:"#).unwrap();
                                     writeln!(&mut self.ir, "{} = call i8* @tinox_bool_to_string(i1 {})", result, obj_ptr).unwrap();
                                 }
                                 "i64" => {
-                                    writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, obj_ptr).unwrap();
+                                    let func = if self.semantic_type(obj.id).is_some_and(|t| t.is_unsigned()) { "tinox_uint_to_string" } else { "tinox_int_to_string" };
+                                    writeln!(&mut self.ir, "{} = call i8* @{}(i64 {})", result, func, obj_ptr).unwrap();
                                 }
                                 _ => {
-                                    // small int (i8/i16/i32) → sext to i64 first
+                                    // small int (i8/i16/i32) → extend to i64 by signedness first (#616)
+                                    let ext_op = if self.semantic_type(obj.id).is_some_and(|t| t.is_unsigned()) { "zext" } else { "sext" };
                                     let ext = self.temp();
-                                    writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, obj_ty, obj_ptr).unwrap();
+                                    writeln!(&mut self.ir, "{} = {} {} {} to i64", ext, ext_op, obj_ty, obj_ptr).unwrap();
                                     writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, ext).unwrap();
                                 }
                             }
