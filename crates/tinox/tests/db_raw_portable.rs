@@ -102,8 +102,15 @@ fn sqlite_raw_binds_parameters_and_reports_rows_nulls_and_writes() {
     assert_eq!(q("SELECT name FROM items WHERE price = 50"), "x'); DROP TABLE items; --");
     assert_eq!(q("SELECT length(note) FROM items WHERE name = 'long'"), "6000");
 
+    let caught = p.run("catch");
+    let out = text(&caught);
+    assert!(caught.status.success() && caught.stderr.is_empty(), "{out}");
+    assert_eq!(out.matches("caught: ORM query failed for table 'DB::raw': ").count(), 8, "{out}");
+    assert!(out.contains("no_such_table") && out.ends_with("healthy rows: 5\n"), "{out}");
+    assert!(out.contains("constraint: ORM query failed") && out.contains("price"), "{out}");
+
     let fail = p.run("fail");
-    assert!(!fail.status.success(), "a rejected statement must abort the program:\n{}", text(&fail));
+    assert!(!fail.status.success(), "an uncaught database error must terminate the program:\n{}", text(&fail));
     assert!(text(&fail).contains("no_such_table") || text(&fail).contains("no such table"), "{}", text(&fail));
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -174,7 +181,14 @@ fn mysql_raw_binds_parameters_and_reports_rows_nulls_and_writes() {
     assert_eq!(my.exec("SELECT name FROM items WHERE price = 50").unwrap(), "x'); DROP TABLE items; --");
     assert_eq!(my.exec("SELECT CHAR_LENGTH(note) FROM items WHERE name = 'long'").unwrap(), "6000");
 
+    let caught = p.run("catch");
+    let out = text(&caught);
+    assert!(caught.status.success() && caught.stderr.is_empty(), "{out}");
+    assert_eq!(out.matches("caught: ORM query failed for table 'DB::raw': ").count(), 8, "{out}");
+    assert!(out.contains("no_such_table") && out.ends_with("healthy rows: 5\n"), "{out}");
+    assert!(out.contains("constraint: ORM query failed") && out.contains("price"), "{out}");
+
     let fail = p.run("fail");
-    assert!(!fail.status.success(), "a rejected statement must abort the program:\n{}", text(&fail));
+    assert!(!fail.status.success(), "an uncaught database error must terminate the program:\n{}", text(&fail));
     assert!(text(&fail).contains("no_such_table"), "{}", text(&fail));
 }

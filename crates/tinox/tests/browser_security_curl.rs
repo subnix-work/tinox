@@ -97,7 +97,8 @@ class Ctrl
     )
     .unwrap();
     std::fs::write(dir.join("Main.tnx"), "import Ctrl\nimport Policy\nclass Main {\n    fnc main() -> Int32 {\n        return 0\n    }\n}\n").unwrap();
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
     let install = Command::new(env!("CARGO_BIN_EXE_tinox")).arg("install").current_dir(&dir).output().unwrap();
     assert!(install.status.success(), "{install:?}");
     let exe = dir.join("sec");
@@ -109,6 +110,7 @@ class Ctrl
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    drop(reservation);
     let server = Command::new(&exe).current_dir(&dir).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let _guard = Kill(server);
     std::thread::sleep(Duration::from_millis(600));
@@ -236,7 +238,8 @@ fn the_same_policy_guards_http2_routes() {
         "@Cors([\"https://app.example.com\"], true, 600)\n@Csrf\nclass Policy {\n}\n",
     )
     .unwrap();
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
     std::fs::write(
         dir.join("Main.tnx"),
         format!(
@@ -249,6 +252,7 @@ fn the_same_policy_guards_http2_routes() {
     let exe = dir.join("sec2");
     let build = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "Main.tnx", "-o"]).arg(&exe).current_dir(&dir).output().unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    drop(reservation);
     let server = Command::new(&exe).current_dir(&dir).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let _guard = Kill(server);
     std::thread::sleep(Duration::from_millis(600));
@@ -314,7 +318,8 @@ fn the_same_policy_guards_http3_routes() {
     std::fs::copy(root.join("tests/fixtures/tls/selfsigned_key.pem"), dir.join("key.pem")).unwrap();
     std::fs::write(dir.join("Policy.tnx"), "@Cors([\"https://app.example.com\"], true, 600)\n@Csrf\nclass Policy {\n}\n").unwrap();
     // Imperative Http3Server (not the annotated controller) so preflights are covered too.
-    let port = 8869;
+    let reservation = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
     std::fs::write(
         dir.join("Main.tnx"),
         format!(
@@ -327,6 +332,7 @@ fn the_same_policy_guards_http3_routes() {
     let exe = dir.join("sec3");
     let build = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "Main.tnx", "-o"]).arg(&exe).env("TINOX_HTTP3", "1").current_dir(&dir).output().unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    drop(reservation);
     let server = Command::new(&exe).current_dir(&dir).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let _guard = Kill(server);
     std::thread::sleep(Duration::from_millis(800));
@@ -387,7 +393,8 @@ fn the_same_policy_guards_the_imperative_http_server() {
     toml.push_str(&format!("\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\npath = \"{}\"\n", ext.join("http_server").display()));
     std::fs::write(dir.join("tinox.toml"), toml).unwrap();
     std::fs::write(dir.join("Policy.tnx"), "@Cors([\"https://app.example.com\"], true, 600)\n@Csrf\nclass Policy {\n}\n").unwrap();
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
     std::fs::write(
         dir.join("Main.tnx"),
         format!(
@@ -400,6 +407,7 @@ fn the_same_policy_guards_the_imperative_http_server() {
     let exe = dir.join("sec4");
     let build = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "Main.tnx", "-o"]).arg(&exe).current_dir(&dir).output().unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    drop(reservation);
     let server = Command::new(&exe).current_dir(&dir).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let _guard = Kill(server);
     std::thread::sleep(Duration::from_millis(600));
