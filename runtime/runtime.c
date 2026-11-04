@@ -15127,7 +15127,11 @@ char* tinox_db_getval(void* result, int64_t row, int64_t col) {
 
 int64_t tinox_db_getval_int(void* result, int64_t row, int64_t col) {
     char* v = PQgetvalue((PGresult*)result, (int)row, (int)col);
-    return v ? (int64_t)atoll(v) : 0LL;
+    if (!v) return 0LL;
+    // PostgreSQL sends boolean columns in text format as 't' / 'f'; Bool entity fields are read through here.
+    if (v[0] == 't') return 1LL;
+    if (v[0] == 'f') return 0LL;
+    return (int64_t)atoll(v);
 }
 
 bool tinox_db_is_null(void* result, int64_t row, int64_t col) {
