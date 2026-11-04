@@ -9389,36 +9389,31 @@ tr_done_{idx}:"#).unwrap();
                 return Ok(());
             }
             StmtKind::Return(Some(expr)) => {
-                let stmts_to_run: Vec<_> = ctx
-                    .defer_stack
-                    .last().cloned()
-                    .unwrap_or_default();
-                for stmt in stmts_to_run.into_iter().rev() {
-                    self.gen_stmt_body(&Box::new(stmt), ctx)?;
-                }
-                if let Some(scope) = ctx.defer_stack.last_mut() {
-                    scope.clear();
-                }
-                if let Some((ref label, ref start_reg)) = ctx.timed_metric.clone() {
-                    self.emit_histogram_record(label, start_reg);
-                }
+                // Issue #610: evaluate the return expression FIRST, keep its
+                // value in an SSA temp across the deferred cleanup, and only
+                // then replay the defers (with in_defer_exec, like the
+                // ordinary block-exit path) and return.
                 let (val, ty) = self.gen_expr(expr, ctx)?;
-                let expected = &ctx.ret_type.clone();
+                if !ctx.in_defer_exec
+                    && Self::expr_may_throw(expr, &self.throwing_free_fns, &self.throwing_method_basenames)
+                    && !self.last_is_terminator()
+                {
+                    // A throwing return expression unwinds (defers included)
+                    // through the normal throw path instead of returning.
+                    self.emit_post_stmt_throw_check(ctx)?;
+                }
+                let expected = ctx.ret_type.clone();
                 // A void function returns nothing. A void *expression* returned
                 // from a non-void function (e.g. a lambda body `{ f(); }` whose
                 // tail is a void call, under the uniform i64 closure ABI) must
                 // yield a dummy of the expected type — never `ret void 0`.
-                if expected.as_str() == "void" {
-                    self.emit_function_return(ctx, "void", "");
-                    return Ok(());
-                }
-                if ty == "void" {
-                    let rt = if expected.is_empty() { "i64" } else { expected.as_str() };
+                let (ret_ty, ret_val): (String, String) = if expected.as_str() == "void" {
+                    ("void".to_string(), String::new())
+                } else if ty == "void" {
+                    let rt = if expected.is_empty() { "i64".to_string() } else { expected.clone() };
                     let z = if rt.ends_with('*') { "null" } else { "0" };
-                    self.emit_function_return(ctx, rt, z);
-                    return Ok(());
-                }
-                let (final_val, final_ty) = if !expected.is_empty() && &ty != expected {
+                    (rt, z.to_string())
+                } else if !expected.is_empty() && ty != expected {
                     let cast_op = match (ty.as_str(), expected.as_str()) {
                         (from, to) if Self::is_float(from) && Self::is_float(to) => if from == "float" { "fpext" } else { "fptrunc" },
                         (from, to) if Self::is_float(to) && from.starts_with('i') && !from.ends_with('*') => if self.semantic_type(expr.id).is_some_and(|ty| ty.is_unsigned()) { "uitofp" } else { "sitofp" },
@@ -9436,14 +9431,37 @@ tr_done_{idx}:"#).unwrap();
                     if !cast_op.is_empty() {
                         let tmp = self.temp();
                         writeln!(&mut self.ir, "{} = {} {} {} to {}", tmp, cast_op, ty, val, expected).unwrap();
-                        (tmp, expected.clone())
+                        (expected.clone(), tmp)
                     } else {
-                        (val, ty)
+                        (ty, val)
                     }
                 } else {
-                    (val, ty)
+                    (ty, val)
                 };
-                self.emit_function_return(ctx, &final_ty, &final_val);
+                if ctx.in_defer_exec {
+                    self.gen_defer_scope(ctx)?;
+                } else {
+                    // Leaving the function: every enclosing scope's defers
+                    // run, innermost first -- not just the current block's.
+                    // The stack stays intact for the outer scopes (their own
+                    // normal-exit paths still need it); only this scope's
+                    // list is cleared, as before.
+                    let scopes: Vec<Vec<Stmt>> = ctx.defer_stack.iter().rev().cloned().collect();
+                    ctx.in_defer_exec = true;
+                    for scope in scopes {
+                        for stmt in scope.into_iter().rev() {
+                            self.gen_stmt_body(&Box::new(stmt), ctx)?;
+                        }
+                    }
+                    ctx.in_defer_exec = false;
+                }
+                if let Some(scope) = ctx.defer_stack.last_mut() {
+                    scope.clear();
+                }
+                if let Some((ref label, ref start_reg)) = ctx.timed_metric.clone() {
+                    self.emit_histogram_record(label, start_reg);
+                }
+                self.emit_function_return(ctx, &ret_ty, &ret_val);
             }
             StmtKind::Return(None) => {
                 self.gen_defer_scope(ctx)?;
