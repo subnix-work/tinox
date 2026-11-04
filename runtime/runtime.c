@@ -2025,8 +2025,6 @@ static void executor_run_job(TinoxExecutor* ex, TinoxExecJob* job) {
     pthread_mutex_lock(&task->mu);
     task->retval = ret;
     task->error = __tinox_err;
-    task->done = 1;
-    pthread_cond_broadcast(&task->cond);
     pthread_mutex_unlock(&task->mu);
     // Worker reset: nothing of this job's context may leak into the next one.
     task_frame_scope = task_scope = NULL;
@@ -2062,6 +2060,14 @@ static void* executor_worker(void* raw) {
         ex->completed++;
         if (!ex->count && !ex->active) pthread_cond_broadcast(&ex->idle);
         pthread_mutex_unlock(&ex->mu);
+        // Awaiters may read executor stats immediately after completion. Publish
+        // done only after accounting and worker-context cleanup are finished.
+        if (job.task) {
+            pthread_mutex_lock(&job.task->mu);
+            job.task->done = 1;
+            pthread_cond_broadcast(&job.task->cond);
+            pthread_mutex_unlock(&job.task->mu);
+        }
     }
     tinox_gc_unregister_thread_roots();
     return NULL;

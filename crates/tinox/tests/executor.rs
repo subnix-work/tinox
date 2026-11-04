@@ -126,3 +126,33 @@ fn executor_reuses_a_bounded_number_of_threads() {
     assert!(with_executor <= baseline + 4 + 1, "baseline {baseline} threads, with executor {with_executor}");
     let _ = std::fs::remove_dir_all(&base_dir);
 }
+
+#[test]
+fn completion_notification_publishes_executor_accounting() {
+    let root = repo_root();
+    let dir = std::env::temp_dir().join(format!("tinox-executor-publication-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = dir.join("publication");
+    let build = Command::new("cc")
+        .arg("-I").arg(root.join("runtime"))
+        .arg(root.join("tests/fixtures/executor/completion_publication.c"))
+        .arg("-o").arg(&app)
+        .args(["-lm", "-lpthread", "-lgc", "-lz"])
+        .output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let mut child = Command::new(&app).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("executor completion notification deadlocked");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.stdout, b"completion notifications follow executor accounting\n");
+    assert!(output.stderr.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
