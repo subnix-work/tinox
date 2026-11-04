@@ -8,7 +8,7 @@ description = "Tinox-UI -- a server-driven web UI framework (Vaadin/Phoenix Live
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.1.2"
+version = "1.1.3"
 
 [[dependencies]]
 group = "tinox.core"

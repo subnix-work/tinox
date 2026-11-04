@@ -136,7 +136,7 @@ fn oidc_login_creates_a_managed_session_and_logout_ends_it() {
     for m in ["oidc", "http_server", "json", "crypto", "jwt", "oauth2", "http"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
     }
-    for m in ["oidc", "http_server", "http"] {
+    for m in ["oidc", "http_server", "http", "json", "jwt", "oauth2", "crypto"] {
         toml.push_str(&format!("\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\npath = \"{}\"\n", ext.join(m).display()));
     }
     std::fs::write(dir.join("tinox.toml"), toml).unwrap();
