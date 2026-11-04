@@ -2025,8 +2025,6 @@ static void executor_run_job(TinoxExecutor* ex, TinoxExecJob* job) {
     pthread_mutex_lock(&task->mu);
     task->retval = ret;
     task->error = __tinox_err;
-    task->done = 1;
-    pthread_cond_broadcast(&task->cond);
     pthread_mutex_unlock(&task->mu);
     // Worker reset: nothing of this job's context may leak into the next one.
     task_frame_scope = task_scope = NULL;
@@ -2062,6 +2060,14 @@ static void* executor_worker(void* raw) {
         ex->completed++;
         if (!ex->count && !ex->active) pthread_cond_broadcast(&ex->idle);
         pthread_mutex_unlock(&ex->mu);
+        // Awaiters may read executor stats immediately after completion. Publish
+        // done only after accounting and worker-context cleanup are finished.
+        if (job.task) {
+            pthread_mutex_lock(&job.task->mu);
+            job.task->done = 1;
+            pthread_cond_broadcast(&job.task->cond);
+            pthread_mutex_unlock(&job.task->mu);
+        }
     }
     tinox_gc_unregister_thread_roots();
     return NULL;
@@ -14781,6 +14787,14 @@ char* tinox_metrics_prometheus(void) {
     return buf;
 }
 
+// Copy native diagnostics while the driver still owns them. Never replace an
+// exception already being unwound (notably when ROLLBACK also loses its connection).
+static void tinox_db_statement_error(const char* detail) {
+    if (!__tinox_err) {
+        __tinox_err = (int64_t)(intptr_t)GC_strdup(detail && *detail ? detail : "database statement failed");
+    }
+}
+
 // ---- Database / ORM runtime ----
 // Compiled only when libpq is available (postgres driver).
 // SQLite and MySQL variants follow the same interface.
@@ -14828,8 +14842,8 @@ typedef struct { void* conn; int sp; int rollback_only; } TinoxTxFrame;
 static __thread TinoxTxFrame _tinox_tx_frames[TINOX_TX_MAX_DEPTH];
 static __thread int _tinox_tx_n = 0;
 
-static void _tinox_tx_exec(void* c, const char* sql, int fatal) {
-    if (!_tinox_drv_exec_simple(c, sql) && fatal) exit(1);
+static int _tinox_tx_exec(void* c, const char* sql) {
+    return _tinox_drv_exec_simple(c, sql);
 }
 
 static void _tinox_tx_sync_current(void) {
@@ -14843,7 +14857,10 @@ static int64_t _tinox_tx_push(void) {
     }
     void* c = _tinox_drv_tx_conn_acquire();
     if (!c) return -1;
-    _tinox_tx_exec(c, _tinox_drv_begin_sql(), 0);
+    if (!_tinox_tx_exec(c, _tinox_drv_begin_sql())) {
+        _tinox_drv_tx_conn_release(c);
+        return -1;
+    }
     _tinox_tx_frames[_tinox_tx_n].conn = c;
     _tinox_tx_frames[_tinox_tx_n].sp = 0;
     _tinox_tx_frames[_tinox_tx_n].rollback_only = 0;
@@ -14857,8 +14874,9 @@ int64_t tinox_db_tx_enter(int64_t mode) {
     TinoxTxFrame* f = &_tinox_tx_frames[_tinox_tx_n - 1];
     if (mode == 1) {
         char sql[48];
-        snprintf(sql, sizeof sql, "SAVEPOINT tinox_sp%d", ++f->sp);
-        _tinox_tx_exec(f->conn, sql, 1);
+        snprintf(sql, sizeof sql, "SAVEPOINT tinox_sp%d", f->sp + 1);
+        if (!_tinox_tx_exec(f->conn, sql)) return -1;
+        f->sp++;
         return 2;
     }
     if (mode == 2) {
@@ -14886,23 +14904,23 @@ int64_t tinox_db_tx_leave(int64_t token, bool ok) {
         char sql[96];
         if (!ok) {
             snprintf(sql, sizeof sql, "ROLLBACK TO SAVEPOINT tinox_sp%d", f->sp);
-            _tinox_tx_exec(f->conn, sql, 1);
+            _tinox_tx_exec(f->conn, sql);
         }
         snprintf(sql, sizeof sql, "RELEASE SAVEPOINT tinox_sp%d", f->sp);
-        _tinox_tx_exec(f->conn, sql, 1);
+        int released = _tinox_tx_exec(f->conn, sql);
         f->sp--;
-        return 1;
+        return released;
     }
     int refused = ok && f->rollback_only;
-    _tinox_tx_exec(f->conn, (ok && !refused) ? "COMMIT" : "ROLLBACK", 0);
+    int completed = _tinox_tx_exec(f->conn, (ok && !refused) ? "COMMIT" : "ROLLBACK");
     _tinox_drv_tx_conn_release(f->conn);
     _tinox_tx_n--;
     _tinox_tx_sync_current();
-    if (refused) {
+    if (refused && !__tinox_err) {
         __tinox_err = (int64_t)(intptr_t)"transaction rolled back: a joined call of the same transaction failed (rollback-only); handle the error or use NESTED/REQUIRES_NEW";
         return 0;
     }
-    return 1;
+    return completed && !refused;
 }
 
 bool tinox_db_tx_active(void) {
@@ -15015,7 +15033,13 @@ static void _tinox_drv_tx_conn_release(void* c) { _tinox_pg_pool_release((PGconn
 static int _tinox_drv_exec_simple(void* c, const char* sql) {
     PGresult* res = PQexec((PGconn*)c, sql);
     int ok = PQresultStatus(res) == PGRES_COMMAND_OK;
-    if (!ok) fprintf(stderr, "%s failed: %s\n", sql, PQerrorMessage((PGconn*)c));
+    if (!ok) tinox_db_statement_error(PQerrorMessage((PGconn*)c));
+    // PostgreSQL answers COMMIT in an aborted transaction with a successful
+    // ROLLBACK command tag. Report that outcome rather than claiming a commit.
+    if (ok && strcmp(sql, "COMMIT") == 0 && strcmp(PQcmdStatus(res), "ROLLBACK") == 0) {
+        tinox_db_statement_error("transaction rolled back after a failed statement");
+        ok = 0;
+    }
     PQclear(res);
     return ok;
 }
@@ -15040,7 +15064,7 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
     );
     ExecStatusType status = PQresultStatus(res);
     if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Query error: %s\nSQL: %s\n", PQresultErrorMessage(res), sql);
+        tinox_db_statement_error(res ? PQresultErrorMessage(res) : PQerrorMessage((PGconn*)conn));
     }
     return (void*)res;
 }
@@ -15201,7 +15225,7 @@ static void _tinox_drv_tx_conn_release(void* c) { (void)c; pthread_mutex_unlock(
 static int _tinox_drv_exec_simple(void* c, const char* sql) {
     char* err = NULL;
     int ok = sqlite3_exec((sqlite3*)c, sql, NULL, NULL, &err) == SQLITE_OK;
-    if (!ok) { fprintf(stderr, "%s failed: %s\n", sql, err ? err : "?"); }
+    if (!ok) tinox_db_statement_error(err);
     sqlite3_free(err);
     return ok;
 }
@@ -15278,7 +15302,7 @@ void* tinox_db_exec(void* conn, const char* sql_in, const char** params, int64_t
         sqlite3_clear_bindings(stmt);
     } else {
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-            fprintf(stderr, "SQLite prepare error: %s\n", sqlite3_errmsg(db));
+            tinox_db_statement_error(sqlite3_errmsg(db));
             pthread_mutex_unlock(&_tinox_sqlite_mu);
             free(sql_buf);
             return NULL;
@@ -15312,7 +15336,7 @@ void* tinox_db_exec(void* conn, const char* sql_in, const char** params, int64_t
     if (rc != SQLITE_DONE) {
         // A failed step (e.g. a NOT NULL / UNIQUE constraint) used to be
         // swallowed and look like an empty result. Make it visible.
-        fprintf(stderr, "SQLite error: %s\nSQL: %s\n", sqlite3_errmsg(db), sql);
+        tinox_db_statement_error(sqlite3_errmsg(db));
         sqlite3_reset(stmt);
         if (rows) free(rows);
         pthread_mutex_unlock(&_tinox_sqlite_mu);
@@ -15540,7 +15564,7 @@ static void* _tinox_drv_tx_conn_acquire(void) { return _tinox_mysql_pool_acquire
 static void _tinox_drv_tx_conn_release(void* c) { _tinox_mysql_pool_release((MYSQL*)c); }
 static int _tinox_drv_exec_simple(void* c, const char* sql) {
     int ok = mysql_query((MYSQL*)c, sql) == 0;
-    if (!ok) fprintf(stderr, "%s failed: %s\n", sql, mysql_error((MYSQL*)c));
+    if (!ok) tinox_db_statement_error(mysql_error((MYSQL*)c));
     return ok;
 }
 static const char* _tinox_drv_begin_sql(void) { return "START TRANSACTION"; }
@@ -15577,7 +15601,9 @@ static char* _tinox_mysql_translate(const char* sql, const char** params, int64_
             int64_t idx = 0;
             while (j < len && sql[j] >= '0' && sql[j] <= '9') { idx = idx * 10 + (sql[j] - '0'); j++; }
             if (idx < 1 || idx > n_params) {
-                fprintf(stderr, "MySQL: placeholder $%lld has no parameter (have %lld)\n", (long long)idx, (long long)n_params);
+                char message[128];
+                snprintf(message, sizeof message, "MySQL: placeholder $%lld has no parameter (have %lld)", (long long)idx, (long long)n_params);
+                tinox_db_statement_error(message);
                 free(out); free(ordered);
                 return NULL;
             }
@@ -15613,7 +15639,7 @@ void* tinox_db_exec(void* conn, const char* sql, const char** params, int64_t n_
 static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const char** params, int64_t n_params, int wants_insert_id) {
     MYSQL_STMT* stmt = mysql_stmt_init((MYSQL*)conn);
     if (mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0) {
-        fprintf(stderr, "MySQL prepare error: %s\n", mysql_stmt_error(stmt));
+        tinox_db_statement_error(mysql_stmt_error(stmt));
         mysql_stmt_close(stmt);
         return NULL;
     }
@@ -15634,7 +15660,7 @@ static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const cha
     }
 
     if (mysql_stmt_execute(stmt) != 0) {
-        fprintf(stderr, "MySQL execute error: %s\n", mysql_stmt_error(stmt));
+        tinox_db_statement_error(mysql_stmt_error(stmt));
         if (bind)    free(bind);
         if (lengths) free(lengths);
         mysql_stmt_close(stmt);
@@ -15692,7 +15718,7 @@ static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const cha
         for (int r = 0; r < n_rows; r++) {
             int frc = mysql_stmt_fetch(stmt);
             if (frc != 0 && frc != MYSQL_DATA_TRUNCATED) {
-                fprintf(stderr, "MySQL fetch error: %s\n", mysql_stmt_error(stmt));
+                tinox_db_statement_error(mysql_stmt_error(stmt));
                 free(out_bind); free(bufs); free(out_len); free(out_null);
                 if (meta)    mysql_free_result(meta);
                 if (bind)    free(bind);
@@ -15715,7 +15741,7 @@ static void* _tinox_mysql_exec_translated(void* conn, const char* sql, const cha
                     one.buffer_length = full;
                     one.length        = &got;
                     if (mysql_stmt_fetch_column(stmt, &one, (unsigned int)c, 0) != 0) {
-                        fprintf(stderr, "MySQL fetch error: %s\n", mysql_stmt_error(stmt));
+                        tinox_db_statement_error(mysql_stmt_error(stmt));
                         free(out_bind); free(bufs); free(out_len); free(out_null);
                         if (meta)    mysql_free_result(meta);
                         if (bind)    free(bind);
@@ -15848,8 +15874,19 @@ static void tinox_mig_die(const char* msg) {
     exit(1);
 }
 
+// Native migration code handles status values itself (including lock-contention
+// retries). Keep its diagnostics and do not leak a handled failure into Main.
+static void* tinox_mig_query(void* conn, const char* sql, const char** params, int64_t n) {
+    int64_t saved_error = __tinox_err;
+    __tinox_err = 0;
+    void* result = tinox_db_exec(conn, sql, params, n);
+    if (__tinox_err) fprintf(stderr, "Query error: %s\nSQL: %s\n", (char*)(intptr_t)__tinox_err, sql);
+    __tinox_err = saved_error;
+    return result;
+}
+
 static int tinox_mig_exec(void* conn, const char* sql, const char** params, int64_t n) {
-    void* r = tinox_db_exec(conn, sql, params, n);
+    void* r = tinox_mig_query(conn, sql, params, n);
     int failed = tinox_db_result_failed(r);
     if (r) tinox_db_free(r);
     return !failed;
@@ -15959,7 +15996,7 @@ static int tinox_mig_table_exists(void* conn, const char* table) {
     const char* sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
 #endif
     const char* params[1] = { table };
-    void* r = tinox_db_exec(conn, sql, params, 1);
+    void* r = tinox_mig_query(conn, sql, params, 1);
     int exists = (r && !tinox_db_result_failed(r)) ? tinox_db_getval_int(r, 0, 0) > 0 : 0;
     if (r) tinox_db_free(r);
     return exists;
@@ -15967,7 +16004,7 @@ static int tinox_mig_table_exists(void* conn, const char* table) {
 
 // Runs a query that returns one COUNT-like value; a failing query is a hard error, never "false".
 static int64_t tinox_mig_scalar_int(void* conn, const char* sql, const char** params, int64_t n) {
-    void* r = tinox_db_exec(conn, sql, params, n);
+    void* r = tinox_mig_query(conn, sql, params, n);
     if (!r || tinox_db_result_failed(r)) tinox_mig_die("a precondition query failed");
     int64_t v = tinox_db_getval_int(r, 0, 0);
     tinox_db_free(r);
@@ -15980,7 +16017,7 @@ static int tinox_mig_check_holds(void* conn, char** c) {
     if (!strcmp(kind, "const")) return a[0] == '1';
     if (!strcmp(kind, "tableExists")) return tinox_mig_table_exists(conn, a);
     if (!strcmp(kind, "sqlCheck")) {
-        void* r = tinox_db_exec(conn, a, NULL, 0);
+        void* r = tinox_mig_query(conn, a, NULL, 0);
         if (!r || tinox_db_result_failed(r)) tinox_mig_die("the sqlCheck precondition query failed");
         int ok = tinox_db_nrows(r) > 0 && tinox_db_ncols(r) > 0 && !tinox_db_is_null(r, 0, 0)
                  && strcmp(tinox_db_getval(r, 0, 0), b) == 0;
@@ -16059,7 +16096,7 @@ static void tinox_mig_lock(void* conn) {
     const char* params[1] = { who };
     long waited = 0;
     for (;;) {
-        void* r = tinox_db_exec(conn, "SELECT COUNT(*) FROM tinox_changelog_lock", NULL, 0);
+        void* r = tinox_mig_query(conn, "SELECT COUNT(*) FROM tinox_changelog_lock", NULL, 0);
         int64_t held = (r && !tinox_db_result_failed(r)) ? tinox_db_getval_int(r, 0, 0) : 1;
         if (r) tinox_db_free(r);
         if (held == 0 && tinox_mig_exec(conn,
@@ -16128,7 +16165,7 @@ static void* tinox_diff_catalog(void* conn) {
 #else
     const char* sql = "";
 #endif
-    void* r = tinox_db_exec(conn, sql, NULL, 0);
+    void* r = tinox_mig_query(conn, sql, NULL, 0);
     if (!r || tinox_db_result_failed(r)) tinox_mig_die("cannot inspect schema catalogs");
     for (int64_t row = 0; row < tinox_db_nrows(r); row++) {
         if (!strcmp(tinox_db_getval(r, row, 0), "unsupported-index"))
@@ -16276,7 +16313,7 @@ void tinox_migrate_run(const char* payload) {
     if (!status_only) tinox_mig_lock(conn);
 
     // What the database already ran.
-    void* r = tinox_db_exec(conn, "SELECT changeset_id, author, checksum FROM tinox_changelog ORDER BY exec_order", NULL, 0);
+    void* r = tinox_mig_query(conn, "SELECT changeset_id, author, checksum FROM tinox_changelog ORDER BY exec_order", NULL, 0);
     if (!r || tinox_db_result_failed(r)) tinox_mig_die("cannot read tinox_changelog");
     int64_t n_applied = tinox_db_nrows(r);
     TinoxMigApplied* applied = (TinoxMigApplied*)calloc((size_t)(n_applied + 1), sizeof(TinoxMigApplied));
@@ -16458,17 +16495,22 @@ static void service_close_database(void) {
 #endif
 }
 
-// ORM save() hit a failed INSERT/UPDATE (the driver already logged the
-// SQL error). Never continue with a half-saved entity.
+// Codegen calls these only on the failed-result branch, then frees the result,
+// releases the statement connection and unwinds through the normal catch/defer path.
+static void tinox_orm_statement_failed(const char* operation, const char* table) {
+    const char* detail = __tinox_err ? (const char*)(intptr_t)__tinox_err : "database statement failed";
+    size_t size = strlen(operation) + strlen(table) + strlen(detail) + 40;
+    char* message = (char*)GC_malloc(size);
+    snprintf(message, size, "ORM %s failed for table '%s': %s", operation, table, detail);
+    __tinox_err = (int64_t)(intptr_t)message;
+}
+
 void tinox_orm_save_failed(const char* table) {
-    fprintf(stderr, "ORM save failed for table '%s' (see database error above); "
-                    "unassigned String fields are bound as NULL\n", table);
-    exit(1);
+    tinox_orm_statement_failed("save", table);
 }
 
 void tinox_orm_query_failed(const char* table) {
-    fprintf(stderr, "ORM query failed for table '%s' (see database error above)\n", table);
-    exit(1);
+    tinox_orm_statement_failed("query", table);
 }
 
 // Param helpers (always available)

@@ -1,0 +1,7 @@
+@ApplicationComponent
+@Synchronized
+class ClassGuard {
+    fn echo(body: String, cancelled: String, locked: String, acquired: String, value: String) -> Nothing {
+        println(body + cancelled + locked + acquired + value)
+    }
+}

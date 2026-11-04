@@ -480,6 +480,9 @@ pub struct CodeGen {
     throwing_method_basenames: HashSet<String>,
     /// fn_name -> (ret_llvm_ty, param_llvm_tys) for spawn codegen
     fn_sigs: HashMap<String, (String, Vec<String>)>,
+    /// `extern fn` C-ABI parameter extension attributes by symbol, repeated
+    /// on every call site (issue #612).
+    extern_call_exts: HashMap<String, Vec<&'static str>>,
     spawn_counter: usize,
     /// Executor handle (an i64 value) for the `spawn` expression about to be generated (#551).
     pending_spawn_executor: Option<String>,
@@ -777,6 +780,7 @@ impl CodeGen {
             throwing_free_fns: HashSet::new(),
             throwing_method_basenames: HashSet::new(),
             fn_sigs: HashMap::new(),
+            extern_call_exts: HashMap::new(),
             spawn_counter: 0,
             pending_spawn_executor: None,
             generic_fns: HashMap::new(),
@@ -2600,6 +2604,12 @@ impl CodeGen {
                         let ret_ty = self.type_to_llvm_inst(&f.ret_type);
                         let param_tys: Vec<String> = f.params.iter().map(|p| Self::type_to_llvm(&p.param_type)).collect();
                         self.fn_sigs.insert(fn_name.clone(), (ret_ty, param_tys));
+                        if matches!(f.body.node, tinox_parser::StmtKind::Empty) {
+                            self.extern_call_exts.insert(
+                                fn_name.clone(),
+                                f.params.iter().map(|p| Self::extern_abi_ext(&p.param_type)).collect(),
+                            );
+                        }
                         // Register return-class info for let-binding inference —
                         // same rules as for methods (Bug 6: without this,
                         // `let r = someModuleFn(); r.field` reads offset 0).
@@ -6565,12 +6575,14 @@ tr_done_{idx}:"#).unwrap();
             // 32 bits, and expects the same of what it returns. Plain
             // `i1`/`i8`/`i16` without an extension attribute leaves the
             // upper bits undefined.
-            let ret_ext = Self::extern_abi_ext(&f.ret_type);
-            let ret_type = if ret_ext.is_empty() {
-                self.type_to_llvm_inst(&f.ret_type)
-            } else {
-                format!("{} {}", ret_ext, self.type_to_llvm_inst(&f.ret_type))
-            };
+            // The return value deliberately carries NO extension attribute
+            // (issue #612): LLVM reads `signext`/`zeroext` on a return as
+            // "the callee already extended it" and then skips its own
+            // extension, but gcc-built AArch64 callees leave the upper
+            // bits unspecified (AAPCS64), so a returned `int8_t` -56 was
+            // read as 200. Without the attribute the caller truncates and
+            // re-extends the value itself, which is correct on every ABI.
+            let ret_type = self.type_to_llvm_inst(&f.ret_type);
             let params_str = f.params.iter()
                 .map(|p| {
                     let ty = self.type_to_llvm_inst(&p.param_type);
@@ -6880,18 +6892,20 @@ tr_done_{idx}:"#).unwrap();
         self.attach_dbg(body_start, dbg_scope, &dbg_params);
         self.dbg_vars = outer_vars;
         if synchronized {
+            // LLVM labels and SSA values share the parameter namespace. Dots cannot
+            // occur in Tinox identifiers, so keep every wrapper name under `sync.`.
             writeln!(&mut self.ir, "define {ret_type} @{inner_public}({params_str}) {{").unwrap();
             writeln!(&mut self.ir, "entry.tnx:").unwrap();
-            writeln!(&mut self.ir, "  %locked = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
-            writeln!(&mut self.ir, "  %acquired = icmp ne i64 %locked, 0").unwrap();
-            writeln!(&mut self.ir, "  br i1 %acquired, label %body, label %cancelled").unwrap();
-            writeln!(&mut self.ir, "body:").unwrap();
-            let prefix = if ret_type == "void" { "" } else { "%value = " };
+            writeln!(&mut self.ir, "  %sync.locked = call i64 @tinox_monitor_enter(i64* @{class_name}_monitor)").unwrap();
+            writeln!(&mut self.ir, "  %sync.acquired = icmp ne i64 %sync.locked, 0").unwrap();
+            writeln!(&mut self.ir, "  br i1 %sync.acquired, label %sync.body, label %sync.cancelled").unwrap();
+            writeln!(&mut self.ir, "sync.body:").unwrap();
+            let prefix = if ret_type == "void" { "" } else { "%sync.value = " };
             writeln!(&mut self.ir, "  {prefix}call {ret_type} @{fn_name}({params_str})").unwrap();
             writeln!(&mut self.ir, "  call void @tinox_monitor_exit(i64* @{class_name}_monitor)").unwrap();
             if ret_type == "void" { writeln!(&mut self.ir, "  ret void").unwrap(); }
-            else { writeln!(&mut self.ir, "  ret {ret_type} %value").unwrap(); }
-            writeln!(&mut self.ir, "cancelled:").unwrap();
+            else { writeln!(&mut self.ir, "  ret {ret_type} %sync.value").unwrap(); }
+            writeln!(&mut self.ir, "sync.cancelled:").unwrap();
             if ret_type == "void" { writeln!(&mut self.ir, "  ret void").unwrap(); }
             else {
                 let zero = if ret_type.ends_with('*') { "null" } else if ret_type == "float" || ret_type == "double" { "0.0" } else { "0" };
@@ -8299,9 +8313,9 @@ tr_done_{idx}:"#).unwrap();
         let result_reg = self.temp();
         writeln!(&mut self.ir, "  {conn_reg} = call i8* @tinox_db_acquire_stmt_conn()").unwrap();
         writeln!(&mut self.ir, "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {params_arr}, i64 {n_params})").unwrap();
-        writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
         // A failed query must not look like an empty result set.
-        self.emit_orm_failure_check(&result_reg, &entity.table_name, "tinox_orm_query_failed");
+        self.emit_orm_failure_check(&result_reg, &entity.table_name, "tinox_orm_query_failed", &conn_reg, ctx)?;
+        writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
 
         match chain.terminal.as_str() {
             "count" => {
@@ -8409,7 +8423,7 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.ir, "  {sql_ptr} = call i8* @{entity_class}_deleteSql()").unwrap();
             let result_reg = self.temp();
             writeln!(&mut self.ir, "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {key_params}, i64 {n_keys})").unwrap();
-            self.emit_orm_save_check(&result_reg, &entity.table_name);
+            self.emit_orm_save_check(&result_reg, &entity.table_name, &conn_reg, ctx)?;
             writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
             let as_i64 = self.temp();
@@ -8435,6 +8449,7 @@ tr_done_{idx}:"#).unwrap();
                 "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_ptr}, i8** {params_arr}, i64 1)"
             )
             .unwrap();
+            self.emit_orm_save_check(&result_reg, &entity.table_name, &conn_reg, ctx)?;
             writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
             let as_i64 = self.temp();
@@ -8451,7 +8466,7 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.ir, "  {exists_sql} = call i8* @{entity_class}_existsSql()").unwrap();
             let exists_res = self.temp();
             writeln!(&mut self.ir, "  {exists_res} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {exists_sql}, i8** {key_params}, i64 {n_keys})").unwrap();
-            self.emit_orm_save_check(&exists_res, &entity.table_name);
+            self.emit_orm_save_check(&exists_res, &entity.table_name, &conn_reg, ctx)?;
             let nrows = self.temp();
             writeln!(&mut self.ir, "  {nrows} = call i64 @tinox_db_nrows(i8* {exists_res})").unwrap();
             writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {exists_res})").unwrap();
@@ -8472,7 +8487,7 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.ir, "  {ins_sql} = call i8* @{entity_class}_insertSql()").unwrap();
             let ins_result = self.temp();
             writeln!(&mut self.ir, "  {ins_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {ins_sql}, i8** {ins_params}, i64 {n_ins})").unwrap();
-            self.emit_orm_save_check(&ins_result, &entity.table_name);
+            self.emit_orm_save_check(&ins_result, &entity.table_name, &conn_reg, ctx)?;
             writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {ins_result})").unwrap();
             writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
 
@@ -8484,7 +8499,7 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.ir, "  {upd_sql} = call i8* @{entity_class}_updateSql()").unwrap();
             let upd_result = self.temp();
             writeln!(&mut self.ir, "  {upd_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {upd_sql}, i8** {upd_params}, i64 {n_upd})").unwrap();
-            self.emit_orm_save_check(&upd_result, &entity.table_name);
+            self.emit_orm_save_check(&upd_result, &entity.table_name, &conn_reg, ctx)?;
             writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {upd_result})").unwrap();
             writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
 
@@ -8526,7 +8541,7 @@ tr_done_{idx}:"#).unwrap();
             "  {ins_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {ins_sql}, i8** {ins_params}, i64 {n_ins})"
         )
         .unwrap();
-        self.emit_orm_save_check(&ins_result, &entity.table_name);
+        self.emit_orm_save_check(&ins_result, &entity.table_name, &conn_reg, ctx)?;
         let new_id = self.temp();
         writeln!(&mut self.ir, "  {new_id} = call i64 @tinox_db_getval_int(i8* {ins_result}, i64 0, i64 0)").unwrap();
         writeln!(&mut self.ir, "  store i64 {new_id}, i64* {id_ptr}").unwrap();
@@ -8549,7 +8564,7 @@ tr_done_{idx}:"#).unwrap();
             "  {upd_result} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {upd_sql}, i8** {upd_params}, i64 {n_upd})"
         )
         .unwrap();
-        self.emit_orm_save_check(&upd_result, &entity.table_name);
+        self.emit_orm_save_check(&upd_result, &entity.table_name, &conn_reg, ctx)?;
         writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {upd_result})").unwrap();
         writeln!(&mut self.ir, "  br label %{done_bb}").unwrap();
 
@@ -8560,13 +8575,13 @@ tr_done_{idx}:"#).unwrap();
         Ok((as_i64, "i64".to_string()))
     }
 
-    /// Abort with a visible error if an ORM save's INSERT/UPDATE failed.
-    fn emit_orm_save_check(&mut self, result_reg: &str, table: &str) {
-        self.emit_orm_failure_check(result_reg, table, "tinox_orm_save_failed");
+    /// Throw if an ORM write failed, releasing the statement's resources first.
+    fn emit_orm_save_check(&mut self, result_reg: &str, table: &str, conn_reg: &str, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
+        self.emit_orm_failure_check(result_reg, table, "tinox_orm_save_failed", conn_reg, ctx)
     }
 
-    /// Abort via `fail_fn(table)` if a DB result signals failure.
-    fn emit_orm_failure_check(&mut self, result_reg: &str, table: &str, fail_fn: &str) {
+    /// Attach ORM context to the driver's error and unwind before any result access.
+    fn emit_orm_failure_check(&mut self, result_reg: &str, table: &str, fail_fn: &str, conn_reg: &str, ctx: &mut GenCtx) -> Result<(), ErrorBag> {
         let failed = self.temp();
         writeln!(&mut self.ir, "  {failed} = call i1 @tinox_db_result_failed(i8* {result_reg})").unwrap();
         let fail_bb = self.new_bb("orm_save_failed");
@@ -8579,8 +8594,12 @@ tr_done_{idx}:"#).unwrap();
         let p = self.temp();
         writeln!(&mut self.ir, "  {p} = getelementptr [{len} x i8], [{len} x i8]* @{label}, i64 0, i64 0").unwrap();
         writeln!(&mut self.ir, "  call void @{fail_fn}(i8* {p})").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_free(i8* {result_reg})").unwrap();
+        writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
+        self.emit_post_stmt_throw_check(ctx)?;
         writeln!(&mut self.ir, "  unreachable").unwrap();
         writeln!(&mut self.ir, "{ok_bb}:").unwrap();
+        Ok(())
     }
 
     /// `DB::raw(sql, params)` — arbitrary parameterized SQL against the pool.
@@ -8642,9 +8661,9 @@ tr_done_{idx}:"#).unwrap();
             "  {result_reg} = call i8* @tinox_db_exec(i8* {conn_reg}, i8* {sql_val}, i8** {params_arr}, i64 {n_params})"
         )
         .unwrap();
+        // Throw before marshaling a failed result or continuing the expression.
+        self.emit_orm_failure_check(&result_reg, "DB::raw", "tinox_orm_query_failed", &conn_reg, ctx)?;
         writeln!(&mut self.ir, "  call void @tinox_db_release_stmt_conn(i8* {conn_reg})").unwrap();
-        // A failed statement aborts visibly instead of yielding an empty list.
-        self.emit_orm_failure_check(&result_reg, "DB::raw", "tinox_orm_query_failed");
 
         let rows = self.temp();
         writeln!(&mut self.ir, "  {rows} = call i64* @tinox_db_result_to_row_maps(i8* {result_reg})").unwrap();
@@ -11106,7 +11125,14 @@ tr_done_{idx}:"#).unwrap();
                     let (val, ty) = if let Some(expected) = closure_params.as_ref().and_then(|types| types.get(i)) {
                         self.convert_semantic_argument(val, ty, expected, arg)?
                     } else { (val, ty) };
-                    args_str.push_str(&format!("{} {}", ty, val));
+                    let arg_ext = if let ExprKind::Ident(n) = &func.node {
+                        self.extern_call_exts.get(n.as_str()).and_then(|e| e.get(i)).copied().unwrap_or("")
+                    } else { "" };
+                    if arg_ext.is_empty() {
+                        args_str.push_str(&format!("{} {}", ty, val));
+                    } else {
+                        args_str.push_str(&format!("{} {} {}", ty, arg_ext, val));
+                    }
                     arg_types.push(ty);
                     arg_vals.push(val);
                 }
@@ -12295,8 +12321,11 @@ tr_done_{idx}:"#).unwrap();
                                 writeln!(&mut self.ir, "{} = call i8* @{}(i64 {})", result, func, obj_ptr).unwrap();
                             }
                             _ => {
+                                // Issue #616: widen by signedness, otherwise a
+                                // UInt8 200 prints as -56.
+                                let ext_op = if self.semantic_type(obj.id).is_some_and(|t| t.is_unsigned()) { "zext" } else { "sext" };
                                 let ext = self.temp();
-                                writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, obj_ty, obj_ptr).unwrap();
+                                writeln!(&mut self.ir, "{} = {} {} {} to i64", ext, ext_op, obj_ty, obj_ptr).unwrap();
                                 writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, ext).unwrap();
                             }
                         }
@@ -12556,12 +12585,14 @@ tr_done_{idx}:"#).unwrap();
                                     writeln!(&mut self.ir, "{} = call i8* @tinox_bool_to_string(i1 {})", result, obj_ptr).unwrap();
                                 }
                                 "i64" => {
-                                    writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, obj_ptr).unwrap();
+                                    let func = if self.semantic_type(obj.id).is_some_and(|t| t.is_unsigned()) { "tinox_uint_to_string" } else { "tinox_int_to_string" };
+                                    writeln!(&mut self.ir, "{} = call i8* @{}(i64 {})", result, func, obj_ptr).unwrap();
                                 }
                                 _ => {
-                                    // small int (i8/i16/i32) → sext to i64 first
+                                    // small int (i8/i16/i32) → extend to i64 by signedness first (#616)
+                                    let ext_op = if self.semantic_type(obj.id).is_some_and(|t| t.is_unsigned()) { "zext" } else { "sext" };
                                     let ext = self.temp();
-                                    writeln!(&mut self.ir, "{} = sext {} {} to i64", ext, obj_ty, obj_ptr).unwrap();
+                                    writeln!(&mut self.ir, "{} = {} {} {} to i64", ext, ext_op, obj_ty, obj_ptr).unwrap();
                                     writeln!(&mut self.ir, "{} = call i8* @tinox_int_to_string(i64 {})", result, ext).unwrap();
                                 }
                             }
@@ -15565,8 +15596,8 @@ tr_done_{idx}:"#).unwrap();
     }
 
     /// LLVM extension attribute a sub-32-bit scalar needs at an `extern fn`
-    /// boundary so it follows the platform C ABI. The caller places it
-    /// before the type for a return value and after it for a parameter.
+    /// boundary so it follows the platform C ABI. Only used for parameters
+    /// (placed after the type); never for return values, see `gen_fn`.
     fn extern_abi_ext(ty: &Type) -> &'static str {
         match ty {
             Type::Bool | Type::UInt8 | Type::UInt16 => "zeroext",
@@ -15841,15 +15872,19 @@ tr_done_{idx}:"#).unwrap();
                 }
             }
             ExprKind::MethodCall { obj, method, args } => {
-                tm.contains(method.as_str())
+                (matches!(method.as_str(), "list" | "first" | "count" | "save" | "delete")
+                    && try_extract_orm_chain(obj, method).is_some())
+                    || (method == "raw" && matches!(&obj.node, ExprKind::Ident(name) if name == "DB"))
+                    || tm.contains(method.as_str())
                     || Self::expr_may_throw(obj, tf, tm)
                     || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
             }
             ExprKind::SuperCall { method, args } => {
                 tm.contains(method.as_str()) || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
             }
-            ExprKind::EnumValue { variant, args, .. } => {
-                tm.contains(variant.as_str()) || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
+            ExprKind::EnumValue { enum_name, variant, args, .. } => {
+                (enum_name == "DB" && variant == "raw")
+                    || tm.contains(variant.as_str()) || args.iter().any(|a| Self::expr_may_throw(a, tf, tm))
             }
             ExprKind::New { .. } | ExprKind::Await(_) | ExprKind::Recv(_) | ExprKind::Spawn(_) => true,
             ExprKind::Literal(_) | ExprKind::Ident(_) | ExprKind::This | ExprKind::Channel => false,
@@ -15919,22 +15954,24 @@ tr_done_{idx}:"#).unwrap();
 
         let mut tf: HashSet<String> = ["sleep", "sleep_ms", "taskCheckCancellation", "taskSetDeadline", "taskWaitReadable"]
             .into_iter().map(String::from).collect();
-        fn synchronized_names(decls: &[tinox_parser::Decl], names: &mut HashSet<String>) {
+        fn intrinsic_throwing_method_names(decls: &[tinox_parser::Decl], names: &mut HashSet<String>) {
             for decl in decls {
                 match &decl.node {
                     DeclKind::Class(c) => for m in &c.methods {
-                        if !m.static_ && (c.annotations.iter().any(|a| a.name == "Synchronized")
-                            || m.annotations.iter().any(|a| a.name == "Synchronized")) {
+                        if (!m.static_ && (c.annotations.iter().any(|a| a.name == "Synchronized")
+                            || m.annotations.iter().any(|a| a.name == "Synchronized")))
+                            || c.annotations.iter().any(|a| a.name == "Transactional")
+                            || m.annotations.iter().any(|a| a.name == "Transactional") {
                             names.insert(m.name.clone());
                         }
                     },
-                    DeclKind::Namespace(ns) => synchronized_names(&ns.decls, names),
+                    DeclKind::Namespace(ns) => intrinsic_throwing_method_names(&ns.decls, names),
                     _ => {}
                 }
             }
         }
         let mut tm: HashSet<String> = HashSet::new();
-        synchronized_names(&source.decls, &mut tm);
+        intrinsic_throwing_method_names(&source.decls, &mut tm);
         loop {
             let mut changed = false;
             for (name, body, is_method) in &fns {

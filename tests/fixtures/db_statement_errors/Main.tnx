@@ -1,0 +1,78 @@
+import tinox.core.db
+import tinox.core.env
+import Item
+import Membership
+import Missing
+import Service
+
+class Main {
+    fnc cleanup() -> Nothing {
+        const rows = DB::raw("SELECT id FROM items", [])
+        if (rows.len() != 1) { throw "cleanup query failed" }
+        println("raw cleanup")
+    }
+    // The compiler must propagate the intrinsic DB effects through ordinary helper calls.
+    fnc invalidJson() -> List<Map<String, String>> {
+        // Cleanup may itself use the pool: the failed statement must release it first.
+        defer { Main::cleanup() }
+        const result = DB::raw("SELECT $1::jsonb AS j", ["{bad"])
+        return result
+    }
+    fnc missingList() -> Int64 { return DB::of(Missing).list().len() }
+    fnc missingFirst() -> Missing { return DB::of(Missing).first() }
+    fnc missingCount() -> Int64 { return DB::of(Missing).count() }
+
+    fnc main() -> Int32 {
+        const service = Service {}
+        if (Env::getVar("MODE") == "disconnect") {
+            try { service.disconnect() }
+            catch (e: String) { println("caught disconnect: " + e) }
+            // A new transaction on the disconnected pool connection must also throw at BEGIN.
+            try { service.empty() }
+            catch (e: String) { println("caught begin: " + e) }
+            println("still alive")
+            return 0
+        }
+        // More failures than pool slots: every failure must return its connection.
+        for i in 0..8 {
+            try { println(Main::invalidJson().len()) }
+            catch (e: String) { println("caught json: " + e) }
+        }
+        const bad = Item { id: 0, name: "bad", amount: -1 }
+        try { DB::of(Item).save(bad) }
+        catch (e: String) { println("caught insert: " + e) }
+        bad.id = 1
+        try { DB::of(Item).save(bad) }
+        catch (e: String) { println("caught update: " + e) }
+        try { DB::of(Item).delete(bad) }
+        catch (e: String) { println("caught delete: " + e) }
+        try { println(Main::missingList()) }
+        catch (e: String) { println("caught list: " + e) }
+        try { Main::missingFirst() }
+        catch (e: String) { println("caught first: " + e) }
+        try { println(Main::missingCount()) }
+        catch (e: String) { println("caught count: " + e) }
+
+        const member = Membership { org: 2, member: 2, amount: -1 }
+        try { DB::of(Membership).save(member) }
+        catch (e: String) { println("caught composite insert: " + e) }
+        member.org = 1
+        member.member = 1
+        try { DB::of(Membership).save(member) }
+        catch (e: String) { println("caught composite update: " + e) }
+        try { DB::of(Membership).delete(member) }
+        catch (e: String) { println("caught composite delete: " + e) }
+        DB::raw("ALTER TABLE memberships RENAME TO hidden_memberships", [])
+        try { DB::of(Membership).save(member) }
+        catch (e: String) { println("caught composite lookup: " + e) }
+        DB::raw("ALTER TABLE hidden_memberships RENAME TO memberships", [])
+
+        try { service.change() }
+        catch (e: String) { println("caught transaction: " + e) }
+        try { service.swallowed() }
+        catch (e: String) { println("caught rollback: " + e) }
+        println("healthy rows: " + DB::raw("SELECT id FROM items", []).len().toString())
+        println("still alive")
+        return 0
+    }
+}

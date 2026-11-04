@@ -1,0 +1,7 @@
+@Entity
+@Table("memberships")
+class Membership {
+    @Id var org: Int64
+    @Id var member: Int64
+    var amount: Int64
+}
