@@ -13159,6 +13159,34 @@ static void json_obj_map_set(void* map, const char* key, int64_t value) {
 
 static TinoxJsonValue* json_parse_value(const char** p);
 
+// Issue #603: parse exactly four hex digits at `s`; -1 if any is not hex.
+static int json_hex4(const char* s) {
+    int v = 0;
+    for (int i = 0; i < 4; i++) {
+        char c = s[i];
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return -1;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
+// Append code point `cp` (<= 0x10FFFF, not 0) to `buf` as UTF-8; returns bytes written.
+static size_t json_put_utf8(char* buf, uint32_t cp) {
+    if (cp < 0x80) { buf[0] = (char)cp; return 1; }
+    if (cp < 0x800) { buf[0] = (char)(0xC0 | (cp >> 6)); buf[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+    if (cp < 0x10000) {
+        buf[0] = (char)(0xE0 | (cp >> 12)); buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    buf[0] = (char)(0xF0 | (cp >> 18)); buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
 static char* json_parse_string_raw(const char** p) {
     (*p)++; // skip '"'
     // Pre-scan to get exact length — avoids malloc+realloc
@@ -13193,6 +13221,27 @@ static char* json_parse_string_raw(const char** p) {
             else if (esc == '"')  buf[len++] = '"';
             else if (esc == '\\') buf[len++] = '\\';
             else if (esc == '/')  buf[len++] = '/';
+            else if (esc == 'b')  buf[len++] = '\b';
+            else if (esc == 'f')  buf[len++] = '\f';
+            else if (esc == 'u' && json_hex4(*p + 1) >= 0) {
+                // Issue #603: \uXXXX -> UTF-8, surrogate pairs combined. A
+                // lone surrogate or \u0000 (cannot live in a C string) becomes
+                // U+FFFD instead of silently producing invalid UTF-8.
+                uint32_t cp = (uint32_t)json_hex4(*p + 1);
+                *p += 4;
+                if (cp >= 0xD800 && cp <= 0xDBFF) {
+                    int lo = ((*p)[1] == '\\' && (*p)[2] == 'u') ? json_hex4(*p + 3) : -1;
+                    if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + ((uint32_t)lo - 0xDC00);
+                        *p += 6;
+                    } else {
+                        cp = 0xFFFD;
+                    }
+                } else if ((cp >= 0xDC00 && cp <= 0xDFFF) || cp == 0) {
+                    cp = 0xFFFD;
+                }
+                len += json_put_utf8(buf + len, cp);
+            }
             else                  buf[len++] = esc;
         } else {
             buf[len++] = **p;
