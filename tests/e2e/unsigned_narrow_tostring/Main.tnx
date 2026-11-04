@@ -1,0 +1,16 @@
+// Issue #616: toString() on unsigned narrow ints must zero-extend
+// expect: 200 60000 4000000000 -5 18446744073709551615
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const a: UInt8 = 200
+        const b: UInt16 = 60000
+        const c: UInt32 = 4000000000
+        const d: Int8 = -5
+        const e: UInt64 = 18446744073709551615
+        println(a.toString() + " " + b.toString() + " " + c.toString() + " " + d.toString() + " " + e.toString())
+        return 0
+    }
+}
