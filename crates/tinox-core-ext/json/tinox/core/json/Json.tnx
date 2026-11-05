@@ -83,6 +83,12 @@ namespace tinox.core.json
         fnc deserialize<T>(text: String) -> T
         {
             const value: JsonValue = jsonParse(text)
+            // jsonParse yields null for unparseable text and T::fromJson maps JSON null to null, so a
+            // caller that then read a field would crash the process; throw so `catch` can handle it.
+            if (value == null || value.isNull())
+            {
+                throw "Json::deserialize: input is not valid JSON or is null"
+            }
             return T::fromJson(value)
         }
     }

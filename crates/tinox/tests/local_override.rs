@@ -183,6 +183,30 @@ fn workspace_crypto_resolves_from_the_checkout() {
     std::fs::remove_dir_all(&proj).ok();
 }
 
+/// Issue #621: `Ws::readUpgrade` / `requestHeader` / `rejectUpgrade` /
+/// `acceptUpgrade` let a server inspect Cookie/Origin before accepting the
+/// upgrade. New API, so it can only be exercised from the workspace source
+/// (the e2e harness resolves published packages).
+#[test]
+fn workspace_websocket_exposes_upgrade_request_headers() {
+    let proj = fresh_dir("workspace-websocket-upgrade");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    let ws = repo_root().join("crates/tinox-core-ext/websocket");
+    std::fs::write(
+        proj.join("tinox.toml"),
+        format!("[package]\ncompiler = \"2.9.0\"\nname = \"wsupgrade\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\npath = \"{}\"\n", ws.display()),
+    )
+    .unwrap();
+    std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ws_upgrade_inspect/Main.tnx")).unwrap();
+    let out = run(&proj);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "cookie=sid=abc\norigin=https://evil.example\nmissing=[]\nok-rejected\nok-accepted\n"
+    );
+    std::fs::remove_dir_all(&proj).ok();
+}
+
 #[test]
 fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
     let pkg = fresh_dir("pkg-add");
@@ -206,5 +230,33 @@ fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(String::from_utf8_lossy(&output.stdout).contains("added locally"));
     std::fs::remove_dir_all(&pkg).ok();
+    std::fs::remove_dir_all(&proj).ok();
+}
+
+/// #605: `Json::deserialize` used to return a null object for JSON `null` / unparseable text, so the
+/// first field access crashed the process even inside `try`. It now throws, which `catch` handles.
+#[test]
+fn workspace_json_deserialize_throws_on_null_and_invalid_text() {
+    let proj = fresh_dir("workspace-json-deserialize");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    let json = repo_root().join("crates/tinox-core-ext/json");
+    std::fs::write(
+        proj.join("tinox.toml"),
+        format!("[package]\ncompiler = \"2.9.0\"\nname = \"wsjson\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\npath = \"{}\"\n", json.display()),
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("src/Item.tnx"),
+        "import tinox.core.json\n\n@JsonSerializable\nclass Item {\n    var name: String\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("src/Main.tnx"),
+        "import tinox.core.json\nimport Item\n\nclass Main {\n    fnc probe(body: String) -> Int64 {\n        var item: Item = Item { name: \"\" }\n        try {\n            item = Json::deserialize<Item>(body)\n        } catch (e: String) {\n            println(\"caught\")\n            return -1\n        }\n        return item.name.len()\n    }\n\n    fnc main() -> Int32 {\n        println(probe(\"{\\\"name\\\":\\\"abc\\\"}\"))\n        println(probe(\"null\"))\n        println(probe(\"abc\"))\n        println(probe(\"\"))\n        println(probe(\"{}\"))\n        return 0\n    }\n}\n",
+    )
+    .unwrap();
+    let out = run(&proj);
+    assert!(out.status.success(), "process must not crash; stderr: {}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "3\ncaught\n-1\ncaught\n-1\ncaught\n-1\n0");
     std::fs::remove_dir_all(&proj).ok();
 }

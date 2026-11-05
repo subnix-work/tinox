@@ -1,0 +1,24 @@
+// Issue #603: \uXXXX escapes decode to UTF-8, surrogate pairs combine
+// expect: größe
+// expect: 😀
+// expect: A/B
+// expect: a<ctrl>b len=4
+// expect: lone=� pair-broken=�x
+// expect: bad=u12zz
+import tinox.core.json
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const v: JsonValue = Json::parse("{\"a\":\"gr\\u00f6\\u00dfe\",\"c\":\"\\ud83d\\ude00\",\"d\":\"A\\u002fB\",\"e\":\"a\\b\\fb\",\"f\":\"\\ud800\",\"g\":\"\\ud800x\",\"h\":\"\\u12zz\"}")
+        println(v.getField("a").getString())
+        println(v.getField("c").getString())
+        println(v.getField("d").getString())
+        const e: String = v.getField("e").getString()
+        println("a<ctrl>b len=" + e.len().toString())
+        println("lone=" + v.getField("f").getString() + " pair-broken=" + v.getField("g").getString())
+        println("bad=" + v.getField("h").getString())
+        return 0
+    }
+}

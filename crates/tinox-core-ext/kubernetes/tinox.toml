@@ -1,13 +1,13 @@
 [package]
 compiler = "2.9.0"
 name = "kubernetes"
-version = "1.1.2"
+version = "1.1.3"
 description = "Kubernetes REST API client for tinox.core -- kubeconfig/in-cluster auth (incl. TLS client certs), a generic dynamic resource client that works with any Group/Version/Kind (including CRDs), and typed convenience classes for the common built-in resource kinds (Pod, Deployment, Service, ConfigMap, Secret, Job, Ingress, RBAC, ...)."
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.1.2"
+version = "1.1.3"
 
 [[dependencies]]
 group = "tinox.core"

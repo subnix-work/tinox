@@ -67,10 +67,62 @@ namespace tinox.core.websocket
          */
         fn handshake(conn: Int64) -> Bool
         {
-            const req = httpConnReadRequest(conn)
+            const req = Ws::readUpgrade(conn)
             if (req.len() == 0) {
                 return false
             }
+            return Ws::acceptUpgrade(conn, req)
+        }
+
+        /*
+         * First half of handshake(), for servers that must inspect the upgrade
+         * request before accepting it (session cookie, Origin check against
+         * cross-site WebSocket hijacking): reads the raw HTTP request head,
+         * "" on EOF/error. Continue with acceptUpgrade(conn, req) to accept,
+         * or rejectUpgrade(conn, status, reason) to refuse; read headers with
+         * requestHeader(req, name).
+         */
+        fn readUpgrade(conn: Int64) -> String
+        {
+            return httpConnReadRequest(conn)
+        }
+
+        /*
+         * Value of the first header `name` (case-insensitive, without the
+         * colon) in a raw request head from readUpgrade(), trimmed; "" when
+         * the header is absent. The request line itself is never matched.
+         */
+        fn requestHeader(req: String, name: String) -> String
+        {
+            const prefix = name.toLowerCase() + ":"
+            const lines = req.split("\r\n")
+            for i in 1..lines.len() {
+                const line = lines[i]
+                if (line.toLowerCase().startsWith(prefix)) {
+                    return line.substring(prefix.len(), line.len()).trim()
+                }
+            }
+            return ""
+        }
+
+        /*
+         * Refuses an upgrade with an HTTP error response and closes nothing
+         * itself (the caller owns the connection). Returns false.
+         */
+        fn rejectUpgrade(conn: Int64, status: Int64, reason: String) -> Bool
+        {
+            httpConnSendRaw(conn, "HTTP/1.1 " + status.toString() + " " + reason + "\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            return false
+        }
+
+        /*
+         * Second half of handshake(): validates the upgrade request `req`
+         * (from readUpgrade) and answers 101, or 400 and false when it is not
+         * a valid WebSocket upgrade. Negotiates permessage-deflate as
+         * documented on handshake().
+         */
+        fn acceptUpgrade(conn: Int64, req: String) -> Bool
+        {
             var key: String = ""
             var version: String = ""
             var hasUpgrade: Bool = false
