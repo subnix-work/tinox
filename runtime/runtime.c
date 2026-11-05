@@ -15044,6 +15044,10 @@ static PGconn* _tinox_pg_pool_acquire(void) {
     }
     PGconn* c = _tinox_pg_pool[_tinox_pg_pool_free[--_tinox_pg_pool_free_count]];
     pthread_mutex_unlock(&_tinox_pg_pool_mu);
+    // A server restart or network cut leaves the pooled connection dead. The failing statement already reported the
+    // error to its caller; reconnect here (the connection is exclusively ours until released) so the pool recovers
+    // instead of failing every later statement forever. If the server is still down the statement fails visibly again.
+    if (PQstatus(c) != CONNECTION_OK) PQreset(c);
     return c;
 }
 
