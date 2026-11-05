@@ -1,9 +1,9 @@
 [package]
-compiler = "2.9.0"
+compiler = "2.9.1"
 name = "blocking_route"
 version = "0.1.0"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.2"
+version = "1.2.4"

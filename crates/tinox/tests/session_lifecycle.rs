@@ -107,7 +107,7 @@ fn session_lifecycle_is_enforced_for_an_independent_client() {
             .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
             .unwrap()
     };
-    let mut toml = String::from("[package]\ncompiler = \"2.9.0\"\nname = \"sess\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.1\"\nname = \"sess\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
     for m in ["oidc", "http_server", "json", "crypto", "jwt", "oauth2", "http"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
     }

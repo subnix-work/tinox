@@ -36,7 +36,7 @@ impl Project {
         std::fs::write(
             dir.join("tinox.toml"),
             format!(
-                "[package]\ncompiler = \"2.9.0\"\nname = \"txdrv\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"{driver}\"\nurl = \"{url}\"\npool = {pool}\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n"
+                "[package]\ncompiler = \"2.9.1\"\nname = \"txdrv\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"{driver}\"\nurl = \"{url}\"\npool = {pool}\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n"
             ),
         )
         .unwrap();

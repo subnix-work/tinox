@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.0"
+compiler = "2.9.1"
 name = "service_latency"
 version = "0.1.0"
 description = "Service workload profiles for tail-latency / RSS measurement (#312)"
@@ -7,9 +7,9 @@ description = "Service workload profiles for tail-latency / RSS measurement (#31
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.2"
+version = "1.2.4"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.1.2"
+version = "1.1.4"

@@ -1,6 +1,6 @@
 # permessage-deflate: stateless vs context takeover (issue #560)
 
-Measured 2026-11-01, compiler 2.9.0, `tinox.core.websocket` 1.1.2, `websockets` 17.2 as the
+Measured 2026-11-01, compiler 2.9.1, `tinox.core.websocket` 1.1.2, `websockets` 17.2 as the
 independent client, zlib via Python 3.14. Reproduce: build `server/` and run
 `python3 measure.py <binary>`. Byte counts are deterministic (seeded corpora); the CPU columns
 are single-run and noisy (about +-20%).
