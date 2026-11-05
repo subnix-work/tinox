@@ -27,8 +27,11 @@ class Main {
         if (Env::getVar("MODE") == "disconnect") {
             try { service.disconnect() }
             catch (e: String) { println("caught disconnect: " + e) }
-            // A new transaction on the disconnected pool connection must also throw at BEGIN.
-            try { service.empty() }
+            // The pool replaces the dead connection when it is checked out, so a new transaction works again (#631).
+            try {
+                service.empty()
+                println("begin recovered")
+            }
             catch (e: String) { println("caught begin: " + e) }
             println("still alive")
             return 0
