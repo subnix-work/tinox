@@ -132,7 +132,7 @@ fn failure_policy_against_real_rabbitmq() {
     std::fs::write(
         dir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.0\"\nname = \"policy\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\npath = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"{db_version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\npath = \"{}\"\n",
+            "[package]\ncompiler = \"2.9.1\"\nname = \"policy\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"amqp091\"\npath = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"{db_version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\npath = \"{}\"\n",
             db.display(),
             root.join("crates/tinox-core-ext/amqp091").display(),
             root.join("crates/tinox-core-ext/db").display()

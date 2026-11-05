@@ -979,8 +979,11 @@ for row in rows
   checked, so building it from untrusted input is an SQL injection.
 - Each row is a `Map<String, String>` from column name to text value. A `NULL`
   column is absent from its row's map: test it with `row.contains(col)`.
-- No matching rows give an empty list. A failed statement aborts the program with
-  the database error, like a failed ORM query.
+- No matching rows give an empty list. A failed statement throws a catchable
+  `String` containing the database error, like a failed ORM query or write.
+  `try`/`catch` can handle it; `@Transactional` rolls back when it propagates.
+  Uncaught errors still terminate the program. Failed statements are never retried
+  automatically, including on connection loss.
 - Inside `@Transactional` it runs on the transaction's connection; otherwise it
   uses a pooled connection per call.
 - Drivers: `postgres`, `mysql` and `sqlite` (#562). With no `[database] driver`

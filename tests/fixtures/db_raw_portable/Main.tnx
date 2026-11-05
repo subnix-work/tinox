@@ -14,6 +14,16 @@ class Main
     fnc main() -> Int32
     {
         const mode = Env::getVar("MODE")
+        if (mode == "catch") {
+            for i in 0..8 {
+                try { DB::raw("SELECT * FROM no_such_table", []) }
+                catch (e: String) { println("caught: " + e) }
+            }
+            try { DB::raw("INSERT INTO items (name, price) VALUES ($1, NULL)", ["invalid"]) }
+            catch (e: String) { println("constraint: " + e) }
+            println("healthy rows: " + DB::raw("SELECT id FROM items", []).len().toString())
+            return 0
+        }
         if (mode == "fail")
         {
             // A statement the database rejects must abort visibly, never look like an empty result.

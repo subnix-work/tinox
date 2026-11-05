@@ -32,7 +32,7 @@ fn fresh_dir(name: &str) -> PathBuf {
 fn write_localdemo(dir: &Path, greeting: &str) {
     let src = dir.join("tinox/core/localdemo");
     std::fs::create_dir_all(&src).expect("mkdir pkg");
-    std::fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.0\"\nname = \"localdemo\"\nversion = \"9.9.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n").expect("pkg toml");
+    std::fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.1\"\nname = \"localdemo\"\nversion = \"9.9.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n").expect("pkg toml");
     std::fs::write(
         src.join("Greeter.tnx"),
         format!("class Greeter {{\n    fn greet() -> String {{ return \"{greeting}\" }}\n}}\n"),
@@ -47,7 +47,7 @@ fn project(name: &str, extra_toml: &str) -> PathBuf {
     std::fs::create_dir_all(p.join("src")).expect("mkdir src");
     std::fs::write(
         p.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.0\"\nname = \"overridetest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"localdemo\"\nversion = \"1.0.0\"\n{extra_toml}"),
+        format!("[package]\ncompiler = \"2.9.1\"\nname = \"overridetest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"localdemo\"\nversion = \"1.0.0\"\n{extra_toml}"),
     )
     .expect("toml");
     std::fs::write(p.join("src/Main.tnx"), MAIN).expect("Main");
@@ -120,7 +120,7 @@ fn misconfigured_overrides_are_hard_errors() {
     // package name mismatch
     let pkg = fresh_dir("pkg-mismatch");
     write_localdemo(&pkg, "v1");
-    std::fs::write(pkg.join("tinox.toml"), "[package]\ncompiler = \"2.9.0\"\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
+    std::fs::write(pkg.join("tinox.toml"), "[package]\ncompiler = \"2.9.1\"\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
     let proj2 = project("name-mismatch", &override_toml(pkg.to_str().unwrap()));
     let out = run(&proj2);
     assert!(!out.status.success());
@@ -168,7 +168,7 @@ fn workspace_crypto_resolves_from_the_checkout() {
     let crypto = repo_root().join("crates/tinox-core-ext/crypto");
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.0\"\nname = \"wscrypto\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"{}\"\n", crypto.display()),
+        format!("[package]\ncompiler = \"2.9.1\"\nname = \"wscrypto\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"{}\"\n", crypto.display()),
     )
     .unwrap();
     std::fs::write(
@@ -183,6 +183,62 @@ fn workspace_crypto_resolves_from_the_checkout() {
     std::fs::remove_dir_all(&proj).ok();
 }
 
+/// Issue #621: `Ws::readUpgrade` / `requestHeader` / `rejectUpgrade` /
+/// `acceptUpgrade` let a server inspect Cookie/Origin before accepting the
+/// upgrade. New API, so it can only be exercised from the workspace source
+/// (the e2e harness resolves published packages).
+#[test]
+fn workspace_websocket_exposes_upgrade_request_headers() {
+    let proj = fresh_dir("workspace-websocket-upgrade");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    let ws = repo_root().join("crates/tinox-core-ext/websocket");
+    std::fs::write(
+        proj.join("tinox.toml"),
+        format!("[package]\ncompiler = \"2.9.1\"\nname = \"wsupgrade\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\npath = \"{}\"\n", ws.display()),
+    )
+    .unwrap();
+    std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ws_upgrade_inspect/Main.tnx")).unwrap();
+    let out = run(&proj);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "cookie=sid=abc\norigin=https://evil.example\nmissing=[]\nok-rejected\nok-accepted\n"
+    );
+    std::fs::remove_dir_all(&proj).ok();
+}
+
+/// Issue #627: the `ui` shell loads no third-party fonts unless `TINOX_UI_FONTS=google`;
+/// an unknown value is a hard error. Workspace source (new behaviour, not yet in a published package).
+#[test]
+fn workspace_ui_shell_uses_system_fonts_by_default() {
+    let proj = fresh_dir("workspace-ui-fonts");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    let ext = repo_root().join("crates/tinox-core-ext");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.1\"\nname = \"uifonts\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n");
+    for m in ["ui", "json", "http_server", "websocket", "http"] {
+        toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\npath = \"{}\"\n", ext.join(m).display()));
+    }
+    std::fs::write(proj.join("tinox.toml"), toml).unwrap();
+    std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ui_shell_fonts/Main.tnx")).unwrap();
+    let go = |value: Option<&str>| {
+        let mut c = Command::new(tinox());
+        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS");
+        if let Some(v) = value { c.env("TINOX_UI_FONTS", v); }
+        c.output().unwrap()
+    };
+    let expect = |o: &Output, google: &str| {
+        assert!(o.status.success(), "stderr: {}", stderr(o));
+        assert_eq!(String::from_utf8_lossy(&o.stdout), format!("google={google}\nplaceholder=false\nport=true\n"));
+    };
+    expect(&go(None), "false");
+    expect(&go(Some("system")), "false");
+    expect(&go(Some("google")), "true");
+    let bad = go(Some("comic-sans"));
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stdout).contains("TINOX_UI_FONTS must be"), "{:?}", bad);
+    std::fs::remove_dir_all(&proj).ok();
+}
+
 #[test]
 fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
     let pkg = fresh_dir("pkg-add");
@@ -192,7 +248,7 @@ fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
     std::fs::write(proj.join("src/Main.tnx"), MAIN).unwrap();
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.0\"\nname = \"overridetest\"\nversion = \"0.1.0\"\n{}", override_toml(pkg.to_str().unwrap())),
+        format!("[package]\ncompiler = \"2.9.1\"\nname = \"overridetest\"\nversion = \"0.1.0\"\n{}", override_toml(pkg.to_str().unwrap())),
     ).unwrap();
     let output = Command::new(tinox()).args(["add", "tinox.core", "localdemo", "1.0.0", "http://127.0.0.1:1/unreachable"])
         .current_dir(&proj).env("TINOX_HOME", proj.join("empty-home"))
@@ -206,5 +262,33 @@ fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(String::from_utf8_lossy(&output.stdout).contains("added locally"));
     std::fs::remove_dir_all(&pkg).ok();
+    std::fs::remove_dir_all(&proj).ok();
+}
+
+/// #605: `Json::deserialize` used to return a null object for JSON `null` / unparseable text, so the
+/// first field access crashed the process even inside `try`. It now throws, which `catch` handles.
+#[test]
+fn workspace_json_deserialize_throws_on_null_and_invalid_text() {
+    let proj = fresh_dir("workspace-json-deserialize");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    let json = repo_root().join("crates/tinox-core-ext/json");
+    std::fs::write(
+        proj.join("tinox.toml"),
+        format!("[package]\ncompiler = \"2.9.1\"\nname = \"wsjson\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\npath = \"{}\"\n", json.display()),
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("src/Item.tnx"),
+        "import tinox.core.json\n\n@JsonSerializable\nclass Item {\n    var name: String\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("src/Main.tnx"),
+        "import tinox.core.json\nimport Item\n\nclass Main {\n    fnc probe(body: String) -> Int64 {\n        var item: Item = Item { name: \"\" }\n        try {\n            item = Json::deserialize<Item>(body)\n        } catch (e: String) {\n            println(\"caught\")\n            return -1\n        }\n        return item.name.len()\n    }\n\n    fnc main() -> Int32 {\n        println(probe(\"{\\\"name\\\":\\\"abc\\\"}\"))\n        println(probe(\"null\"))\n        println(probe(\"abc\"))\n        println(probe(\"\"))\n        println(probe(\"{}\"))\n        return 0\n    }\n}\n",
+    )
+    .unwrap();
+    let out = run(&proj);
+    assert!(out.status.success(), "process must not crash; stderr: {}", stderr(&out));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "3\ncaught\n-1\ncaught\n-1\ncaught\n-1\n0");
     std::fs::remove_dir_all(&proj).ok();
 }

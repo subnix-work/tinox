@@ -1,0 +1,21 @@
+import tinox.core.db
+import Flag
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const rows: List<Flag> = DB::of(Flag).list()
+        for f in rows {
+            println(f.name + "=" + f.enabled.toString())
+        }
+        // Round trip: a Bool written by the ORM must read back unchanged.
+        const saved: Flag = new Flag()
+        saved.name = "saved"
+        saved.enabled = true
+        DB::of(Flag).save(saved)
+        const back: Flag = DB::of(Flag).filter(x => x.name == "saved").first()
+        println("roundtrip=" + back.enabled.toString())
+        return 0
+    }
+}

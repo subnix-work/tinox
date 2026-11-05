@@ -43,6 +43,10 @@ claude
 *.s
 a.out
 test_*
+# Source files are never build artifacts: do not let the `test_*` rule above
+# (meant for compiled test binaries) hide them (issue #613).
+!test_*.rs
+!test_*.tnx
 test
 test2
 test_manual

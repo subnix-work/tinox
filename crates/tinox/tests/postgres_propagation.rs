@@ -27,7 +27,7 @@ fn propagation_modes_and_savepoints_behave_against_real_postgres() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.9.0"
+compiler = "2.9.1"
 name = "postgres_propagation"
 version = "0.1.0"
 description = "issue #532 e2e fixture"
@@ -40,7 +40,7 @@ pool = 3
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.4"
+version = "1.2.5"
 "#,
             pg.url()
         ),

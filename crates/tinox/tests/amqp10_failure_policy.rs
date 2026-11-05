@@ -105,7 +105,7 @@ fn amqp10_failure_policy_against_real_rabbitmq() {
     std::fs::write(
         dir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.0\"\nname = \"policy10\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp10\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"amqp10\"\npath = \"{}\"\n",
+            "[package]\ncompiler = \"2.9.1\"\nname = \"policy10\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"amqp10\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"amqp10\"\npath = \"{}\"\n",
             root.join("crates/tinox-core-ext/amqp10").display()
         ),
     )

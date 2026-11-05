@@ -4,8 +4,23 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-11-05
+
+**Notable change:** every package is republished for compiler 2.9.1 (patch version bump; a package declaring `compiler = "2.9.0"` is rejected by 2.9.1). `tinox.core.ui` no longer loads Google Fonts by default (see #627 below). This release also makes the `websocket` and `ui` packages link against the release runtime (#620).
+
+### Fixed
+
+- #603: `Json::parse` decodes `\uXXXX` escapes (and `\b`, `\f`), combining surrogate pairs.
+- #604: PostgreSQL `boolean` columns are read into `Bool` entity fields (they always read as false).
+- #605: `Json::deserialize` throws a catchable error for JSON `null` and unparseable text instead of crashing the process.
+- #610: a `return` expression is evaluated before deferred cleanup runs.
+- #613: the `test_*` ignore rule no longer hides Rust test sources; `test_fixtures.rs` is tracked.
+- #620: `ui`/`websocket` need runtime symbols (`wsSetContext`, ...) that 2.9.0 did not ship; 2.9.1 ships them and the packages declare `compiler = "2.9.1"`.
+
 ### Added
 
+- **`ui` shell loads no third-party fonts by default** (#627, `tinox.core.ui` 1.1.5): the shell page no longer links Google Fonts, so it works offline and under a strict Content-Security-Policy (system fonts via `--tinox-font*`). `TINOX_UI_FONTS=google` opts back in; `system` is the explicit default; any other value is a hard startup error. **Behaviour change:** apps that relied on Inter/Space Grotesk/JetBrains Mono must set the variable.
+- **WebSocket upgrade inspection** (#621): `Ws::readUpgrade(conn)`, `Ws::requestHeader(req, name)`, `Ws::acceptUpgrade(conn, req)` and `Ws::rejectUpgrade(conn, status, reason)` split `Ws::handshake` so a server can check Cookie/Origin (session auth, cross-site WebSocket hijacking) before accepting, without re-implementing the handshake. `handshake` is unchanged in behaviour. Covered by `workspace_websocket_exposes_upgrade_request_headers` (`crates/tinox/tests/local_override.rs`); needs a `websocket` package release.
 - **`@Blocking(workers, queue)` routes** (#552): a REST route with a slow, blocking handler runs on its own bounded pool instead of occupying the HTTP epoll worker, so unrelated routes keep answering (about 2.8 s to 0.2 ms for a fast route behind three 1 s requests on one worker). A full queue is an immediate `503` with `Retry-After`, offloaded responses close the connection, `@Service` draining waits for queued and running requests, request-scoped injection and request ids work on the pool thread. Counters `tinox_blocking_route_jobs_total` / `_rejected_total`. `docs/blocking-routes.md`, `crates/tinox/tests/blocking_route.rs`.
 - **Message translation** (#588): built-in `tr(text)`, `trc(context, text)`, `trn(singular, plural, n)` backed by gettext `.mo` catalogs (LANGUAGE/LC_ALL/LC_MESSAGES/LANG, `TINOX_LOCALE_DIR`, `TINOX_TEXTDOMAIN`, Plural-Forms expressions), `%N` placeholders filled by `.arg(String)` / `.argInt(Int64)` so translations can reorder them, string-literal texts enforced by the compiler, and `tinox i18n extract` producing a `.pot` template. Verified with `msgfmt` and `msgmerge` (`crates/tinox/tests/i18n.rs`, `docs/i18n.md`). A class's own static `tr`/`trc`/`trn` keeps winning.
 - **Inherited entity columns** (#563, narrow slice): an `@Entity` may extend a non-entity, non-generic base class; the base class's fields become columns of the entity's table, in `tinox db generate`, the ORM and the object layout alike. Entity-extends-entity, generic entities/bases, redeclared inherited fields, missing bases and cycles are explicit errors instead of the former blanket rejection. Verified with `sqlite3` (`crates/tinox/tests/orm_inheritance.rs`, `docs/database-changesets.md`).

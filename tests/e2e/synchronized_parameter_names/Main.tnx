@@ -1,0 +1,17 @@
+// Regression for #607: wrapper labels and SSA values share a namespace with parameters.
+// expect: request body
+// expect: body/cancelled/locked/acquired/value
+// expect: body/cancelled/locked/acquired/value
+import Guard
+import ClassGuard
+
+class Main {
+    fnc main() -> Int32 {
+        const guard = Guard {}
+        println(guard.locked(1, "request body"))
+        println(guard.echo("body/", "cancelled/", "locked/", "acquired/", "value"))
+        const classGuard = ClassGuard {}
+        classGuard.echo("body/", "cancelled/", "locked/", "acquired/", "value")
+        return 0
+    }
+}

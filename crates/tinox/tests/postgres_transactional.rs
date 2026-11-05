@@ -54,7 +54,7 @@ fn transactional_commits_on_success_and_rolls_back_on_error() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.9.0"
+compiler = "2.9.1"
 name = "postgres_transactional"
 version = "0.1.0"
 description = "issue #191 e2e fixture"
@@ -67,7 +67,7 @@ pool = 3
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.4"
+version = "1.2.5"
 "#,
             pg.url()
         ),
