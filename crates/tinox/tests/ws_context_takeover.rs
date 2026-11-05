@@ -89,7 +89,7 @@ fn build_server(dir: &PathBuf, port: u16) -> PathBuf {
     std::fs::write(
         dir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"{}\"\nname = \"ctx\"\nversion = \"0.0.0\"\n\n[startup]\nbanner = false\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.1.3\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\npath = \"{}\"\n",
+            "[package]\ncompiler = \"{}\"\nname = \"ctx\"\nversion = \"0.0.0\"\n\n[startup]\nbanner = false\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"1.1.5\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\npath = \"{}\"\n",
             env!("CARGO_PKG_VERSION"),
             ext.display()
         ),
