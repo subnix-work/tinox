@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.0"
+compiler = "2.9.1"
 name = "ws_compression_bench"
 version = "0.1.0"
 description = "Echo server for the permessage-deflate measurements (#560)"

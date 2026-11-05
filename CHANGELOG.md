@@ -4,6 +4,19 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-11-05
+
+**Notable change:** every package is republished for compiler 2.9.1 (patch version bump; a package declaring `compiler = "2.9.0"` is rejected by 2.9.1). `tinox.core.ui` no longer loads Google Fonts by default (see #627 below). This release also makes the `websocket` and `ui` packages link against the release runtime (#620).
+
+### Fixed
+
+- #603: `Json::parse` decodes `\uXXXX` escapes (and `\b`, `\f`), combining surrogate pairs.
+- #604: PostgreSQL `boolean` columns are read into `Bool` entity fields (they always read as false).
+- #605: `Json::deserialize` throws a catchable error for JSON `null` and unparseable text instead of crashing the process.
+- #610: a `return` expression is evaluated before deferred cleanup runs.
+- #613: the `test_*` ignore rule no longer hides Rust test sources; `test_fixtures.rs` is tracked.
+- #620: `ui`/`websocket` need runtime symbols (`wsSetContext`, ...) that 2.9.0 did not ship; 2.9.1 ships them and the packages declare `compiler = "2.9.1"`.
+
 ### Added
 
 - **`ui` shell loads no third-party fonts by default** (#627, `tinox.core.ui` 1.1.5): the shell page no longer links Google Fonts, so it works offline and under a strict Content-Security-Policy (system fonts via `--tinox-font*`). `TINOX_UI_FONTS=google` opts back in; `system` is the explicit default; any other value is a hard startup error. **Behaviour change:** apps that relied on Inter/Space Grotesk/JetBrains Mono must set the variable.

@@ -77,7 +77,7 @@ fn verify(http3: bool) {
         );
     }
     for(name,source)in[
- ("tinox.toml","[package]\ncompiler = \"2.9.0\"\nname=\"dto_validation\"\nversion=\"0.0.0\"\n"),
+ ("tinox.toml","[package]\ncompiler = \"2.9.1\"\nname=\"dto_validation\"\nversion=\"0.0.0\"\n"),
  ("Main.tnx","import Ctrl\nclass Main { fnc main() -> Int32 { return 0 } }"),
  ("Base.tnx","import tinox.core.json\n@JsonSerializable class Base { @Required var id: Int64\n @Length(1,1) var name: String }"),
  ("Address.tnx","import tinox.core.json\n@JsonSerializable class Address { @Length(1,4) var city: String }"),

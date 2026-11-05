@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.0"
+compiler = "2.9.1"
 name = "rest_with_mini"
 version = "0.1.0"
 description = ""

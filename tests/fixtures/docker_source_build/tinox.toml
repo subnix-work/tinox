@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.0"
+compiler = "2.9.1"
 name = "notes"
 version = "0.1.0"
 description = "source-build acceptance fixture"
@@ -18,7 +18,7 @@ include = ["migrations"]
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.4"
+version = "1.2.5"
 
 [[dependencies]]
 group = "tinox.core"

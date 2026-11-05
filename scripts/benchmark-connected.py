@@ -56,7 +56,7 @@ PAIR = 'class Pair<T, U> {\n    var first: T\n    var second: U\n}\n'
 
 def write_project(project, topology, count, degree, signature=None, body=0):
     project.mkdir(parents=True, exist_ok=True)
-    (project / 'tinox.toml').write_text('[package]\ncompiler = "2.9.0"\nname = "connected-benchmark"\nversion = "0.1.0"\n')
+    (project / 'tinox.toml').write_text('[package]\ncompiler = "2.9.1"\nname = "connected-benchmark"\nversion = "0.1.0"\n')
     if topology == 'generic':
         (project / 'Box.tnx').write_text(BOX)
         (project / 'Pair.tnx').write_text(PAIR)

@@ -43,7 +43,7 @@ fn outbox_survives_crashes_with_at_least_once_delivery() {
             .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
             .unwrap()
     };
-    let mut toml = format!("[package]\ncompiler = \"2.9.0\"\nname = \"outboxapp\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[database]\ndriver = \"postgres\"\nurl = \"{}\"\npool = 3\n", pg.url());
+    let mut toml = format!("[package]\ncompiler = \"2.9.1\"\nname = \"outboxapp\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[database]\ndriver = \"postgres\"\nurl = \"{}\"\npool = 3\n", pg.url());
     for m in ["db", "amqp091", "outbox"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
         toml.push_str(&format!("\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\npath = \"{}\"\n", root.join("crates/tinox-core-ext").join(m).display()));
@@ -137,7 +137,7 @@ fn annotated_dispatcher_runs_with_the_service_parks_after_nacks_and_drains_on_si
             .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
             .unwrap()
     };
-    let mut toml = format!("[package]\ncompiler = \"2.9.0\"\nname = \"relay\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[startup]\nbanner = false\n\n[database]\ndriver = \"postgres\"\nurl = \"{}\"\npool = 3\n", pg.url());
+    let mut toml = format!("[package]\ncompiler = \"2.9.1\"\nname = \"relay\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[startup]\nbanner = false\n\n[database]\ndriver = \"postgres\"\nurl = \"{}\"\npool = 3\n", pg.url());
     for m in ["db", "amqp091", "outbox"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
         toml.push_str(&format!("\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\npath = \"{}\"\n", root.join("crates/tinox-core-ext").join(m).display()));

@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.0"
+compiler = "2.9.1"
 name = "crud"
 version = "0.1.0"
 description = "Full CRUD REST API example with SQLite and related entities"
@@ -11,7 +11,7 @@ url = "crud.db"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.4"
+version = "1.2.5"
 
 [[dependencies]]
 group = "tinox.core"
