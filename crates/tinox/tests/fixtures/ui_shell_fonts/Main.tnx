@@ -1,0 +1,13 @@
+// Fixture for local_override.rs (#627): prints whether the shell HTML links Google Fonts.
+import tinox.core.ui
+
+class Main
+{
+    fnc main() -> Int32 {
+        const html: String = Assets::shellHtml(9001)
+        println("google=" + html.contains("fonts.googleapis.com").toString())
+        println("placeholder=" + html.contains("__TINOX_UI_").toString())
+        println("port=" + html.contains("9001").toString())
+        return 0
+    }
+}

@@ -785,11 +785,11 @@
           "version": "1.1.4"
         }
       ],
-      "docs": "docs/tinox-core/ui/1-1-4/docs.html",
+      "docs": "docs/tinox-core/ui/1-1-5/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/ui/tinox.toml",
       "name": "ui",
-      "version": "1.1.4"
+      "version": "1.1.5"
     },
     {
       "dependencies": [],
