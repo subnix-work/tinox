@@ -32,7 +32,27 @@ namespace tinox.core.ui
         fnc shellHtml(wsPort: Int64) -> String
         {
             const template: String = Assets::shellHtmlTemplate()
-            return template.replace("__TINOX_UI_WS_PORT__", wsPort.toString())
+            return template.replace("__TINOX_UI_WS_PORT__", wsPort.toString()).replace("__TINOX_UI_FONT_LINKS__", Assets::fontLinks())
+        }
+
+        // Web fonts (#621): by default the shell loads NOTHING from a third party, so it works
+        // offline and under a strict Content-Security-Policy; the page falls back to the system
+        // fonts named in --tinox-font*. TINOX_UI_FONTS=google opts back into Google Fonts
+        // (Inter, Space Grotesk, JetBrains Mono); "system" is accepted as the explicit default.
+        // Any other value is a hard startup error, not a silent fallback.
+        fnc fontLinks() -> String
+        {
+            const mode: String = envGet("TINOX_UI_FONTS")
+            if (mode == "" || mode == "system") {
+                return ""
+            }
+            if (mode != "google") {
+                println("TINOX_UI_FONTS must be 'system' or 'google', got '" + mode + "'")
+                exit(1)
+            }
+            return r#"<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">"#
         }
 
         // Design tokens (dark, glassy, cyan/purple neon-accented) ported
@@ -54,9 +74,7 @@ namespace tinox.core.ui
 <head>
 <meta charset="utf-8">
 <title>Tinox-UI</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+__TINOX_UI_FONT_LINKS__
 <style>
   :root {
     --tinox-base: #070b14;

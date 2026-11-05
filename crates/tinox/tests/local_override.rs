@@ -207,6 +207,38 @@ fn workspace_websocket_exposes_upgrade_request_headers() {
     std::fs::remove_dir_all(&proj).ok();
 }
 
+/// Issue #627: the `ui` shell loads no third-party fonts unless `TINOX_UI_FONTS=google`;
+/// an unknown value is a hard error. Workspace source (new behaviour, not yet in a published package).
+#[test]
+fn workspace_ui_shell_uses_system_fonts_by_default() {
+    let proj = fresh_dir("workspace-ui-fonts");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    let ext = repo_root().join("crates/tinox-core-ext");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.0\"\nname = \"uifonts\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n");
+    for m in ["ui", "json", "http_server", "websocket", "http"] {
+        toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\npath = \"{}\"\n", ext.join(m).display()));
+    }
+    std::fs::write(proj.join("tinox.toml"), toml).unwrap();
+    std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ui_shell_fonts/Main.tnx")).unwrap();
+    let go = |value: Option<&str>| {
+        let mut c = Command::new(tinox());
+        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS");
+        if let Some(v) = value { c.env("TINOX_UI_FONTS", v); }
+        c.output().unwrap()
+    };
+    let expect = |o: &Output, google: &str| {
+        assert!(o.status.success(), "stderr: {}", stderr(o));
+        assert_eq!(String::from_utf8_lossy(&o.stdout), format!("google={google}\nplaceholder=false\nport=true\n"));
+    };
+    expect(&go(None), "false");
+    expect(&go(Some("system")), "false");
+    expect(&go(Some("google")), "true");
+    let bad = go(Some("comic-sans"));
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stdout).contains("TINOX_UI_FONTS must be"), "{:?}", bad);
+    std::fs::remove_dir_all(&proj).ok();
+}
+
 #[test]
 fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
     let pkg = fresh_dir("pkg-add");
