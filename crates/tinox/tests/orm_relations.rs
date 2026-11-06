@@ -52,7 +52,7 @@ fn list_and_detail_loading_uses_a_bounded_number_of_queries() {
     }
     std::fs::write(
         dir.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.1\"\nname = \"relations\"\nversion = \"0.0.0\"\n\n[database]\ndriver = \"postgres\"\nurl = \"{}\"\npool = 3\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n", pg.url()),
+        format!("[package]\ncompiler = \"2.9.2\"\nname = \"relations\"\nversion = \"0.0.0\"\n\n[database]\ndriver = \"postgres\"\nurl = \"{}\"\npool = 3\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n", pg.url()),
     )
     .unwrap();
     let tinox = env!("CARGO_BIN_EXE_tinox");

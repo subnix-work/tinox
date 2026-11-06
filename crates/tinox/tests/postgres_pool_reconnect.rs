@@ -1,6 +1,6 @@
 //! The PostgreSQL pool reconnects after its connections were killed (a database
 //! restart), verified against a REAL Postgres (docker). Statement failures are
-//! catchable since 2.9.1, so a dead pooled connection must not stay dead.
+//! catchable since 2.9.2, so a dead pooled connection must not stay dead.
 
 use std::process::Command;
 
@@ -37,7 +37,7 @@ fn pool_recovers_after_all_connections_were_terminated() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.9.1"
+compiler = "2.9.2"
 name = "postgres_pool_reconnect"
 version = "0.1.0"
 description = "pool reconnect fixture"
@@ -50,7 +50,7 @@ pool = 3
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.5"
+version = "1.2.6"
 
 [[overrides]]
 group = "tinox.core"

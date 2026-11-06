@@ -4,6 +4,14 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.2] - 2026-11-06
+
+**Notable change:** every package is republished for compiler 2.9.2 (patch version bump; a package declaring `compiler = "2.9.1"` is rejected by 2.9.2).
+
+### Fixed
+
+- #631: the PostgreSQL connection pool replaces a dead connection (database restart, network cut) when it is checked out. Since 2.9.1 statement failures are catchable, so a service no longer ended on a lost connection and stayed broken forever; it now recovers on the next statement.
+
 ## [2.9.1] - 2026-11-05
 
 **Notable change:** every package is republished for compiler 2.9.1 (patch version bump; a package declaring `compiler = "2.9.0"` is rejected by 2.9.1). `tinox.core.ui` no longer loads Google Fonts by default (see #627 below). This release also makes the `websocket` and `ui` packages link against the release runtime (#620).

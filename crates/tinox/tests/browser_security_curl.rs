@@ -61,7 +61,7 @@ fn cors_and_csrf_policies_hold_for_a_browser_style_client() {
     std::fs::write(
         dir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.1\"\nname = \"sec\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"{}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\npath = \"{}\"\n",
+            "[package]\ncompiler = \"2.9.2\"\nname = \"sec\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"{}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\npath = \"{}\"\n",
             read_version("http_server"),
             read_version("json"),
             root.join("crates/tinox-core-ext/http_server").display()
@@ -225,7 +225,7 @@ fn the_same_policy_guards_http2_routes() {
             .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
             .unwrap()
     };
-    let mut toml = String::from("[package]\ncompiler = \"2.9.1\"\nname = \"sec2\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.2\"\nname = \"sec2\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
     for m in ["http2_server", "hpack", "http_server", "json"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
     }
@@ -306,7 +306,7 @@ fn the_same_policy_guards_http3_routes() {
             .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
             .unwrap()
     };
-    let mut toml = String::from("[package]\ncompiler = \"2.9.1\"\nname = \"sec3\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.2\"\nname = \"sec3\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
     for m in ["http3_server", "http_server", "json"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
     }
@@ -386,7 +386,7 @@ fn the_same_policy_guards_the_imperative_http_server() {
             .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
             .unwrap()
     };
-    let mut toml = String::from("[package]\ncompiler = \"2.9.1\"\nname = \"sec4\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.2\"\nname = \"sec4\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
     for m in ["http_server", "json"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
     }

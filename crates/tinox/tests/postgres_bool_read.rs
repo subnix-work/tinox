@@ -37,7 +37,7 @@ fn bool_entity_fields_read_back_from_postgres_boolean_columns() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.9.1"
+compiler = "2.9.2"
 name = "postgres_bool_read"
 version = "0.1.0"
 description = "issue #604 fixture"
@@ -50,7 +50,7 @@ pool = 3
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.5"
+version = "1.2.6"
 
 [[overrides]]
 group = "tinox.core"

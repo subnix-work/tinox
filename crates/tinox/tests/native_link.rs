@@ -11,7 +11,7 @@ fn project(name: &str, toml_native: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("tinox_native_{}_{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    std::fs::write(d.join("tinox.toml"), format!("[package]\ncompiler = \"2.9.1\"\nname = \"native_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\n{toml_native}\n", env!("CARGO_PKG_VERSION"))).unwrap();
+    std::fs::write(d.join("tinox.toml"), format!("[package]\ncompiler = \"2.9.2\"\nname = \"native_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\n{toml_native}\n", env!("CARGO_PKG_VERSION"))).unwrap();
     std::fs::write(
         d.join("Main.tnx"),
         "extern fn nat_add(a: Int64, b: Int64) -> Int64\n\nclass Main\n{\n    fnc main() -> Int32 {\n        println(nat_add(40, 2).toString())\n        return 0\n    }\n}\n",
@@ -120,7 +120,7 @@ fn native_test_section_links_a_different_library_for_tests_only() {
     std::fs::write(
         d.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.1\"\nname = \"native_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n\n[native]\nlibs = [\"natreal\"]\nlib_dirs = [\"lib\"]\nrpath = [\"lib\"]\n\n[native.test]\nlibs = [\"nattest\"]\n",
+            "[package]\ncompiler = \"2.9.2\"\nname = \"native_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n\n[native]\nlibs = [\"natreal\"]\nlib_dirs = [\"lib\"]\nrpath = [\"lib\"]\n\n[native.test]\nlibs = [\"nattest\"]\n",
             env!("CARGO_PKG_VERSION")
         ),
     )

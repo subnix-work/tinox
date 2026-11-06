@@ -19,7 +19,7 @@ def package(name, version='1.0.0', deps=()):
 
 def manifest(**changes):
     base = dict(schema=1, stack=dict(name='s', database='postgres', members=['a']),
-                compiler=dict(version='2.9.1', runtime_c_sha256='r', runtime_h_sha256='h', cargo_lock_sha256='c',
+                compiler=dict(version='2.9.2', runtime_c_sha256='r', runtime_h_sha256='h', cargo_lock_sha256='c',
                               builder_apt_packages=[['x']], source=dict(commit=None, tree_clean=None)),
                 packages=[dict(group='tinox.core', name='a', version='1.0.0', content_sha256='aaa', files=1,
                                docs='docs/a.html', docs_sha256='ddd', dependencies=[])])
