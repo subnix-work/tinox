@@ -301,7 +301,7 @@ namespace tinox.core.http_server
         /**
          * Formats an HttpResponse into a raw HTTP/1.1 response string
          */
-        fn formatResponse(response: HttpResponse) -> String
+        fn formatResponse(response: HttpResponse, includeBody: Bool) -> String
         {
             const statusText: String = HttpServer::statusText(response.statusCode)
             var raw: String = "HTTP/1.1 " + response.statusCode.toString() + " " + statusText + "\r\n"
@@ -328,7 +328,8 @@ namespace tinox.core.http_server
             }
             raw = raw + "Connection: close\r\n"
             raw = raw + "\r\n"
-            if (response.statusCode != 204)
+            // RFC 9110 §9.3.2: the answer to HEAD has the headers (incl. Content-Length) but no body.
+            if (response.statusCode != 204 && includeBody)
             {
                 raw = raw + response.body
             }
@@ -411,7 +412,7 @@ namespace tinox.core.http_server
                     ctx.response.text("Not Found")
                 }
             }
-            const raw: String = this.formatResponse(ctx.response)
+            const raw: String = this.formatResponse(ctx.response, ctx.request.method != "HEAD")
             httpConnSendRaw(conn, raw)
             httpConnClose(conn)
         }
