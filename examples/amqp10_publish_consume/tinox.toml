@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.1"
+compiler = "2.9.2"
 name = "amqp10_publish_consume"
 version = "0.1.0"
 description = ""
@@ -7,4 +7,4 @@ description = ""
 [[dependencies]]
 group = "tinox.core"
 artifactId = "amqp10"
-version = "1.4.2"
+version = "1.4.3"

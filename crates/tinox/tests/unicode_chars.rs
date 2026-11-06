@@ -7,7 +7,7 @@ fn unicode_chars_validates_native_strings_and_preserves_scalars() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("tinox.toml"), format!(
-        "[package]\ncompiler = \"2.9.1\"\nname = \"unicode_chars\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\nsources = [\"input.c\"]\n", env!("CARGO_PKG_VERSION")
+        "[package]\ncompiler = \"2.9.2\"\nname = \"unicode_chars\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\nsources = [\"input.c\"]\n", env!("CARGO_PKG_VERSION")
     )).unwrap();
     std::fs::write(dir.join("Main.tnx"), r#"
 extern fn native_text() -> String

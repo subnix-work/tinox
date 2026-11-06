@@ -33,7 +33,7 @@ impl Project {
         std::fs::write(
             dir.join("tinox.toml"),
             format!(
-                "[package]\ncompiler = \"2.9.1\"\nname = \"dbraw\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"{driver}\"\nurl = \"{url}\"\npool = 2\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.2.5\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\npath = \"{}\"\n",
+                "[package]\ncompiler = \"2.9.2\"\nname = \"dbraw\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"{driver}\"\nurl = \"{url}\"\npool = 2\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.2.6\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\npath = \"{}\"\n",
                 repo_root().join("crates/tinox-core-ext/db").display()
             ),
         )

@@ -4,7 +4,7 @@
 trivial jobs (a 200-iteration integer loop), awaits each batch, and totals 60,160 jobs. The `check=` value is a
 checksum of all results; it is identical for both modes.
 
-Environment: Arch Linux, 32 logical CPUs, compiler 2.9.1 (release build), `WORKERS=8`.
+Environment: Arch Linux, 32 logical CPUs, compiler 2.9.2 (release build), `WORKERS=8`.
 
 | mode | wall ms (5 runs) | batch mean / max ms | max RSS (KB) |
 |---|---|---|---|

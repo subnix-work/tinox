@@ -1,4 +1,4 @@
 [package]
-compiler = "2.9.1"
+compiler = "2.9.2"
 name = "concurrent_eval"
 version = "0.0.0"
