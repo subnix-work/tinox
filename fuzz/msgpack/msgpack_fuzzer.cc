@@ -25,7 +25,7 @@ struct TinoxArray {
 // Unreachable (libFuzzer's own main drives this binary) but the renamed
 // main's body still references tinox_main, so the symbol must resolve at
 // link time regardless — same as every other driver-module target here.
-extern "C" int64_t tinox_main(void) { return 0; }
+// tinox_main is now emitted by the driver itself (class Main), no stub needed.
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     // Msgpack::decode's own bounds checks (declared length vs. actual
