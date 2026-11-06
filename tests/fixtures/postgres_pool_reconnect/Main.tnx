@@ -1,0 +1,33 @@
+import tinox.core.db
+import Flag
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        println("before=" + DB::of(Flag).count().toString())
+        // Kill every pooled connection (including the one running this statement), like a database restart would.
+        try {
+            DB::raw("SELECT count(pg_terminate_backend(pid)) AS killed FROM pg_stat_activity WHERE datname = current_database() AND $1::text = $1::text", ["x"])
+        } catch (e: String) {
+            println("terminate: connection lost")
+        }
+        var recovered: Bool = false
+        var attempt: Int64 = 0
+        while (!recovered && attempt < 10) {
+            attempt = attempt + 1
+            try {
+                const n: Int64 = DB::of(Flag).count()
+                println("after=" + n.toString())
+                recovered = true
+            } catch (e: String) {
+                println("attempt " + attempt.toString() + " failed")
+            }
+        }
+        println("recovered=" + recovered.toString())
+        // A second round trip proves the whole pool works again, not just one connection.
+        const rows: List<Flag> = DB::of(Flag).list()
+        println("rows=" + rows.len().toString())
+        return 0
+    }
+}
