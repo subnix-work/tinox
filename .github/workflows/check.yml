@@ -132,7 +132,7 @@ jobs:
 
   # Issue #557: native ARM64 service/database/protocol/FFI/container coverage. Mandatory: a skipped test fails the
   # lane (scripts/check-no-skips.sh) so a missing optional tool cannot hide missing coverage. See docs/arm64.md;
-  # this lane has not yet run on ARM64 hardware.
+  # this lane runs on real ARM64 hardware.
   arm64-services:
     name: arm64 (services, databases, FFI, images)
     runs-on: ubuntu-24.04-arm

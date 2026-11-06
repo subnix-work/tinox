@@ -39,9 +39,14 @@ long-running fuzz/ASan deep checks.
 * The inventory above is from source reading plus one x86-64 proxy run: the full `e2e`, `boundary`, `stdlib_smoke` and
   `matrix` suites pass with the runtime compiled under `TINOX_CFLAGS=-funsigned-char` (aarch64's `char`). A proxy for one
   hazard class, not a substitute for the hardware.
-* The `arm64-services` lane was **added but has not been executed on ARM64 hardware** by the author of this change
-  (no ARM machine was available). Its first run on GitHub's ARM runner is the real acceptance check; expect to adjust
-  package names or skip lists after it. Until it has run green, published support claims should say "ARM64: build,
-  codegen and e2e smoke verified natively" and not claim parity for databases, TLS, FFI or images.
+* The `arm64-services` lane has **run green on real ARM64 hardware** (GitHub `ubuntu-24.04-arm`, `aarch64-unknown-linux-gnu`,
+  first recorded on the PR #637 run, 2026-11-06, again on every later run): the database, executor, thread-root, FFI,
+  native-link and body-limit suites and the container source-build suite all passed, with `scripts/check-no-skips.sh`
+  failing the lane on any skipped test. Published support claims may therefore say: "ARM64: build, codegen, e2e, SQLite,
+  MySQL and PostgreSQL (raw and transactional), executor/task scopes, foreign threads, FFI, HTTP/1 limits and container
+  image build+run verified natively". The "Not covered" list above still applies (TLS and HTTP/3 clients, broker suites,
+  Kubernetes, deep fuzz/ASan).
+* An earlier x86-64 proxy run (`TINOX_CFLAGS=-funsigned-char`) covered the `char` signedness hazard before hardware was used;
+  it is not a substitute for the lane.
 * The lane needs Actions minutes (or a self-hosted ARM runner); with the minutes exhausted (#597, closed as not planned)
   it will not run on GitHub-hosted runners.
