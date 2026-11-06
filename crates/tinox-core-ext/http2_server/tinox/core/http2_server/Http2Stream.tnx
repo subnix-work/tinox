@@ -1,5 +1,7 @@
 module tinox.core.http2_server
 
+import tinox.core.hpack
+
 namespace tinox.core.http2_server
 {
     /**
@@ -17,8 +19,22 @@ namespace tinox.core.http2_server
         var body: List<Int64>
         var endStream: Bool
         var expectingContinuation: Bool
+        /** Decoded request header fields (decoded when END_HEADERS arrives, in wire order). */
+        var headers: List<HpackHeader>
+        /** True once the initial header block is complete; a later HEADERS is a trailer block. */
+        var headersDone: Bool
+        var trailerBlock: Bool
+        var sendWindow: Int64
+        /** Over the concurrent-stream limit: decoded for HPACK state, then answered with RST_STREAM. */
+        var refused: Bool
+        /** Response body still to be sent (flow-controlled), with the bytes already written. */
+        var outBody: String
+        /** Byte copy of a body that could not be sent at once (the length-aware bridge is only valid right after the handler ran). */
+        var outBytes: List<Int64>
+        var bodyLength: Int64
+        var sendOffset: Int64
 
-        fn new(id: Int64) -> Http2Stream
+        fn new(id: Int64, window: Int64) -> Http2Stream
         {
             return Http2Stream {
                 id: id,
@@ -26,7 +42,16 @@ namespace tinox.core.http2_server
                 headerBlock: [],
                 body: [],
                 endStream: false,
-                expectingContinuation: false
+                expectingContinuation: false,
+                headers: [],
+                headersDone: false,
+                trailerBlock: false,
+                sendWindow: window,
+                refused: false,
+                outBody: "",
+                outBytes: [],
+                bodyLength: 0,
+                sendOffset: 0
             }
         }
     }

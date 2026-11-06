@@ -17,5 +17,6 @@ namespace tinox.core.http2_server
         fn REFUSED_STREAM()      -> Int64 { return 0x7 }
         fn CANCEL()              -> Int64 { return 0x8 }
         fn COMPRESSION_ERROR()   -> Int64 { return 0x9 }
+        fn ENHANCE_YOUR_CALM()   -> Int64 { return 0xb }
     }
 }

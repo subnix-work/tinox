@@ -13,10 +13,12 @@ namespace tinox.core.hpack
         var entries: List<HpackHeader>
         var maxSize: Int64
         var currentSize: Int64
+        /** Largest size a peer's table-size update may set (the size this side advertised). */
+        var limit: Int64
 
         fn new(maxSize: Int64) -> HpackDynTable
         {
-            return HpackDynTable { entries: [], maxSize: maxSize, currentSize: 0 }
+            return HpackDynTable { entries: [], maxSize: maxSize, currentSize: 0, limit: maxSize }
         }
 
         fn add(header: HpackHeader) -> Nothing
