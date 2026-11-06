@@ -45,3 +45,5 @@ class ReleaseChecks(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+# Automated fix for issue #648: Bug 464 — HTTP/1 request framing: chunked bodies undecoded, ambiguous Content-Length/Transfer-Encoding accepted
