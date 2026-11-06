@@ -16,7 +16,7 @@
 extern "C" int64_t Amqp10Driver_tinoxAmqp10ReadFrame(int64_t conn);
 extern "C" int64_t httpConnFromFd(int64_t fd);
 
-extern "C" int64_t tinox_main(void) { return 0; }
+// tinox_main is now emitted by the driver itself (class Main), no stub needed.
 
 // readFrame() itself already rejects a body size above 16777216 (16MB)
 // before trying to read it (Amqp10.tnx: `bodyBytes > 16777216` ->

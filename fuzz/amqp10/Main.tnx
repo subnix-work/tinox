@@ -1,0 +1,9 @@
+import Amqp10Driver
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        return 0
+    }
+}

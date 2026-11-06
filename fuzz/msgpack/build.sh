@@ -28,12 +28,16 @@ fi
 # before the failing final link step.
 "$TINOX_BIN" install >/dev/null
 rm -f driver_out.ll driver_out.o driver_out_runtime.o
-"$TINOX_BIN" build MsgpackDriver.tnx -o driver_out >/dev/null 2>&1 || true
+"$TINOX_BIN" build Main.tnx -o driver_out >/dev/null 2>&1 || true
 if [ ! -f driver_out.ll ]; then
-    echo "tinox build did not produce driver_out.ll — compile error in MsgpackDriver.tnx?" >&2
-    "$TINOX_BIN" build MsgpackDriver.tnx -o driver_out
+    echo "tinox build did not produce driver_out.ll — compile error in Main.tnx/MsgpackDriver.tnx?" >&2
+    "$TINOX_BIN" build Main.tnx -o driver_out
     exit 1
 fi
+
+# The mandatory `class Main` makes the IR define @main and tinox_main; rename @main so it
+# cannot clash with libFuzzer's own main() (the harness never calls it).
+sed -i 's/@main(/@tinox_driver_unused_main(/' driver_out.ll
 
 # Recompile the emitted IR with ASan + libFuzzer coverage instrumentation —
 # tinox build's own clang/opt/llc pipeline adds neither.
@@ -49,5 +53,5 @@ clang -c "$RUNTIME_C" -o runtime_fuzz.o \
 clang++ -fsanitize=fuzzer,address msgpack_fuzzer.cc driver_instrumented.o runtime_fuzz.o \
     -o "$OUT" -lm -lpthread -lz
 
-rm -f driver_out.ll driver_out.o driver_out_runtime.o driver_instrumented.o runtime_fuzz.o
+rm -f driver_out driver_out.ll driver_out.o driver_out_runtime.o driver_instrumented.o runtime_fuzz.o
 echo "built fuzz/msgpack/$OUT"
