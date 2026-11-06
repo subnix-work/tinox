@@ -15,7 +15,7 @@
   },
   "compiler": {
     "version": "2.9.2",
-    "runtime_c_sha256": "b343345db75eae9bfbe3c8374054d05fbe1d36c356d96baf1a2a96918af23371",
+    "runtime_c_sha256": "748930251e107168d9fe1a743719c5e142094802865a2066010653705f3998e7",
     "runtime_h_sha256": "7f2a9007232ec3428f43768440a75dad6470da4e87c4df6805111cafe2265cbd",
     "cargo_lock_sha256": "baedfcf33371929edcb89d29eba6e7a0a030287f1b382aa3d34cb61a204fc44a",
     "builder_apt_packages": [
@@ -58,11 +58,11 @@
     {
       "group": "tinox.core",
       "name": "http_server",
-      "version": "1.2.5",
-      "content_sha256": "9b732a60ae4bd70aa9fa53894029070012f26381b783968ce81de31db92d666f",
+      "version": "1.2.6",
+      "content_sha256": "9b38d7f4b7a2dc8b11500f102496e95034d4e3916fce1689cac58bb60831f689",
       "files": 12,
-      "docs": "docs/tinox-core/http_server/1-2-5/docs.html",
-      "docs_sha256": "78e9f22d73f41a3469fcd734b1893c3a7d1f3f380f86d41bd5626bc09a5dbd3f",
+      "docs": "docs/tinox-core/http_server/1-2-6/docs.html",
+      "docs_sha256": "fdb37a060825b99c44a6374bbb3ac6cd83bc092ef463e84ee0481b096bd1d8e4",
       "dependencies": [
         {
           "name": "json",
@@ -176,11 +176,11 @@
     {
       "group": "tinox.core",
       "name": "websocket",
-      "version": "1.1.6",
-      "content_sha256": "bf608918450d0c8b9511e5bbba4f17727e02b6c2da5cf79d0bf91e697f215d3f",
+      "version": "1.1.7",
+      "content_sha256": "6347d755c0ab256b2ecfeef1d662fbe953cfc07954b524cffe9963ab453d6911",
       "files": 5,
-      "docs": "docs/tinox-core/websocket/1-1-6/docs.html",
-      "docs_sha256": "6d1396b2afa11797cc2fbe318d954c11b28046bdbfafcfe1e6cfef3ca5ca2ed3",
+      "docs": "docs/tinox-core/websocket/1-1-7/docs.html",
+      "docs_sha256": "690b4390226d06beaed84df6fedd2c9286d397362afe965624d8391bf6a44eeb",
       "dependencies": []
     }
   ]
