@@ -8705,6 +8705,87 @@ static __thread size_t g_recv_cap = 0;
 // defined but never referenced) so conn_read_request() can enforce it.
 // The cap is TINOX_MAX_BODY_BYTES (default 4 MiB, see the limits block above).
 
+static int http_chunked_end(const char* buf, size_t len, size_t from, size_t* end);
+static void conn_send_all(TinoxConn* c, const char* data, size_t len);
+
+// Answers a request that cannot be framed safely and hands the caller an empty request, so the
+// connection is closed without ever running a handler on a guessed body.
+static void conn_reject_request(TinoxConn* c, char* buf, int status) {
+    const char* reason = status == 413 ? "Payload Too Large" : status == 501 ? "Not Implemented" :
+                         status == 505 ? "HTTP Version Not Supported" : "Bad Request";
+    char resp[256];
+    int rn = snprintf(resp, sizeof(resp),
+        "HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s\n",
+        status, reason, strlen(reason) + 1, reason);
+    conn_send_all(c, resp, (size_t)rn);
+    buf[0] = '\0';
+    g_recv_used = 0;
+}
+
+static int http_ascii_ieq(const char* a, size_t alen, const char* lower) {
+    size_t n = strlen(lower);
+    if (alen != n) return 0;
+    for (size_t i = 0; i < n; i++) {
+        char ch = a[i];
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+        if (ch != lower[i]) return 0;
+    }
+    return 1;
+}
+
+// Strict request framing. *cl is the single Content-Length (-1 when absent), *chunked is set for
+// "Transfer-Encoding: chunked". Returns 0, or the status to answer with: 400 for a malformed or
+// ambiguous message (non-numeric / signed / differing Content-Length, Content-Length together with
+// Transfer-Encoding, whitespace before a header colon), 501 for a transfer coding other than
+// chunked, 505 for an unknown HTTP version. Ambiguity here is how request smuggling starts.
+static int http_request_framing(const char* buf, const char* hdr_end, long* cl, int* chunked) {
+    *cl = -1; *chunked = 0;
+    const char* nl = memchr(buf, '\n', (size_t)(hdr_end - buf) + 2);
+    if (!nl) return 400;
+    // request line: "<method> <target> HTTP/1.x"
+    const char* line_end = nl; if (line_end > buf && line_end[-1] == '\r') line_end--;
+    const char* sp = line_end;
+    while (sp > buf && *sp != ' ') sp--;
+    if (sp > buf && (size_t)(line_end - sp) > 6 && !strncmp(sp + 1, "HTTP/", 5)) {
+        if (!(line_end - sp == 9 && sp[6] == '1' && sp[7] == '.' && (sp[8] == '0' || sp[8] == '1'))) return 505;
+    }
+    int saw_cl = 0;
+    const char* p = nl + 1;
+    const char* limit = hdr_end + 2;
+    while (p < limit) {
+        const char* e = memchr(p, '\n', (size_t)(limit - p));
+        if (!e) e = limit;
+        const char* le = e; if (le > p && le[-1] == '\r') le--;
+        if (le == p) break;
+        const char* colon = memchr(p, ':', (size_t)(le - p));
+        if (colon) {
+            // field-name is a token: no whitespace or control characters (also none before the colon)
+            for (const char* ch = p; ch < colon; ch++) if ((unsigned char)*ch <= ' ' || *ch == 127) return 400;
+            const char* v = colon + 1;
+            while (v < le && (*v == ' ' || *v == '\t')) v++;
+            const char* ve = le;
+            while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) ve--;
+            size_t nlen = (size_t)(colon - p);
+            if (http_ascii_ieq(p, nlen, "content-length")) {
+                if (ve == v || ve - v > 18) return 400;
+                long val = 0;
+                for (const char* d = v; d < ve; d++) {
+                    if (*d < '0' || *d > '9') return 400;
+                    val = val * 10 + (*d - '0');
+                }
+                if (saw_cl && val != *cl) return 400;
+                saw_cl = 1; *cl = val;
+            } else if (http_ascii_ieq(p, nlen, "transfer-encoding")) {
+                if (!http_ascii_ieq(v, (size_t)(ve - v), "chunked")) return 501;
+                *chunked = 1;
+            }
+        }
+        p = e + 1;
+    }
+    if (*chunked && saw_cl) return 400;
+    return 0;
+}
+
 // Reads a full HTTP/1.1 request from the connection into g_recv_buf (static, not freed by caller).
 // Works for both plaintext (ssl==NULL) and TLS connections via conn_recv.
 static char* conn_read_request(TinoxConn* c) {
@@ -8727,20 +8808,48 @@ static char* conn_read_request(TinoxConn* c) {
         // Stop once we have the full headers (and body if Content-Length matches)
         char* hdr_end = strstr(buf, "\r\n\r\n");
         if (!hdr_end) continue;
-        // Check for Content-Length — scan line by line, no strcasestr overhead
-        char* cl = NULL;
-        for (char* s = buf; *s; ) {
-            while (*s && *s != '\n') s++;
-            if (*s) s++;
-            if ((s[0]=='C'||s[0]=='c') && (s[1]=='o'||s[1]=='O') && (s[2]=='n'||s[2]=='N') &&
-                (s[3]=='t'||s[3]=='T') && (s[4]=='e'||s[4]=='E') && (s[5]=='n'||s[5]=='N') &&
-                (s[6]=='t'||s[6]=='T') &&  s[7]=='-' &&
-                (s[8]=='L'||s[8]=='l') && (s[9]=='e'||s[9]=='E') && (s[10]=='n'||s[10]=='N') &&
-                (s[11]=='g'||s[11]=='G') && (s[12]=='t'||s[12]=='T') && (s[13]=='h'||s[13]=='H') &&
-                s[14]==':') { cl = s; break; }
+        // Strict request framing (RFC 9112 §6, §11.2): one unambiguous body length, or a hard error.
+        long body_len = -1;
+        int chunked = 0;
+        int framing = http_request_framing(buf, hdr_end, &body_len, &chunked);
+        if (framing) { conn_reject_request(c, buf, framing); return buf; }
+        if (chunked) {
+            long chunk_start = (long)(hdr_end - buf) + 4;
+            for (;;) {
+                size_t end = 0;
+                int r = http_chunked_end(buf, used, (size_t)chunk_start, &end);
+                if (r < 0) { conn_reject_request(c, buf, 400); return buf; }
+                if (r == 1) break;
+                if ((long)used - chunk_start > tinox_limits()->max_body_bytes + 65536) { conn_reject_request(c, buf, 413); return buf; }
+                if (used + 1 >= cap) {
+                    cap *= 2;
+                    char* nb = (char*)realloc(buf, cap);
+                    if (!nb) { conn_reject_request(c, buf, 400); return buf; }
+                    buf = nb; g_recv_buf = buf; g_recv_cap = cap;
+                }
+                ssize_t m = conn_recv(c, buf + used, cap - used - 1);
+                // A body that ends early is an error, never a silently shortened request.
+                if (m <= 0) { conn_reject_request(c, buf, 400); return buf; }
+                used += (size_t)m;
+                buf[used] = '\0';
+            }
+            // Decode in place so the handler sees the payload, not the chunk framing.
+            size_t src = (size_t)chunk_start, dst = (size_t)chunk_start;
+            for (;;) {
+                size_t q = src;
+                while (!(buf[q] == '\r' && buf[q + 1] == '\n')) q++;
+                unsigned long long size = strtoull(buf + src, NULL, 16);
+                src = q + 2;
+                if (size == 0) break;
+                memmove(buf + dst, buf + src, (size_t)size);
+                dst += (size_t)size;
+                src += (size_t)size + 2;
+            }
+            if ((long)(dst - (size_t)chunk_start) > tinox_limits()->max_body_bytes) { conn_reject_request(c, buf, 413); return buf; }
+            used = dst;
+            break;
         }
-        if (cl) {
-            long body_len = atol(cl + 15);
+        if (body_len >= 0) {
             long header_len = (long)(hdr_end - buf) + 4;
             // Bug 96 clamped an over-cap Content-Length down to
             // TINOX_MAX_BODY and kept reading -- which stopped the
@@ -12721,7 +12830,8 @@ static void tinox_process_request(TinoxHttpServer* srv, int64_t client_fd, char*
     }
     memcpy(out, conn_hdr, conn_hdr_len); out += conn_hdr_len;
     out[0] = '\r'; out[1] = '\n'; out += 2;
-    memcpy(out, body, body_len); out += body_len;
+    // RFC 9110 §9.3.2: the answer to HEAD carries the headers (incl. Content-Length) but never a body.
+    if (strcmp(method, "HEAD") != 0) { memcpy(out, body, body_len); out += body_len; }
     size_t resp_total = (size_t)(out - http_resp);
 
     // Send with pre-computed length (no strlen). Bug 175: this loop used to
