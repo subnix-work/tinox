@@ -46,7 +46,7 @@ fn postgres_statement_errors_are_catchable_and_preserve_transaction_outcomes() {
             project.0.join(format!("src/{name}.tnx"))).unwrap();
     }
     fs::write(project.0.join("tinox.toml"), format!(
-        "[package]\ncompiler=\"2.9.1\"\nname=\"db_errors\"\nversion=\"0.0.0\"\n\
+        "[package]\ncompiler=\"2.9.2\"\nname=\"db_errors\"\nversion=\"0.0.0\"\n\
         [database]\ndriver=\"postgres\"\nurl=\"{}\"\npool=1\n\
         [[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"db\"\nversion=\"1.2.5\"\n\
         [[overrides]]\ngroup=\"tinox.core\"\nartifactId=\"db\"\npath=\"{}\"\n",
@@ -78,7 +78,8 @@ fn postgres_statement_errors_are_catchable_and_preserve_transaction_outcomes() {
     let out = text(&disconnected);
     assert!(disconnected.status.success(), "{out}");
     assert!(disconnected.stderr.is_empty(), "{out}");
-    assert!(out.contains("caught disconnect: ") && out.contains("caught begin: "), "{out}");
+    assert!(out.contains("caught disconnect: ") && out.contains("begin recovered"), "{out}");
+    assert!(!out.contains("caught begin: "), "the pool must reconnect: {out}");
     assert!(out.ends_with("still alive\n"), "{out}");
     assert_eq!(pg.psql("SELECT amount FROM items WHERE id = 1"), "7");
 }

@@ -56,7 +56,7 @@ for protocol in (2, 3):
         for module in ('http_server', 'http2_server', 'hpack', 'http3_server', 'json', 'amqp091'):
             shutil.copytree(repo / f'crates/tinox-core-ext/{module}/tinox',
                             work / f'.tinox/deps/tinox.core/{module}/checkout/tinox')
-        (work / 'tinox.toml').write_text('[package]\ncompiler="2.9.1"\nname="protocol_bytes"\nversion="0.0.0"\n')
+        (work / 'tinox.toml').write_text('[package]\ncompiler="2.9.2"\nname="protocol_bytes"\nversion="0.0.0"\n')
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM if protocol == 3 else socket.SOCK_STREAM) as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]

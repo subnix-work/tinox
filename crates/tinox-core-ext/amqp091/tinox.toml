@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.1"
+compiler = "2.9.2"
 name = "amqp091"
-version = "1.4.3"
+version = "1.4.4"
 description = "tinox.core.amqp091, split out of the bundled stdlib as a standalone tinox-central package."

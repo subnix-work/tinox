@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.1"
+compiler = "2.9.2"
 name = "keycloak_oidc_api"
 version = "0.1.0"
 description = "REST endpoint protected by a role in an OIDC access token, verified live against a real Keycloak IdP (see docker-compose.yml)"
@@ -7,19 +7,19 @@ description = "REST endpoint protected by a role in an OIDC access token, verifi
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.4"
+version = "1.2.5"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.1.4"
+version = "1.1.5"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "oidc"
-version = "1.2.4"
+version = "1.2.5"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "rest"
-version = "1.1.4"
+version = "1.1.5"
