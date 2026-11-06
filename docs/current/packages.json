@@ -471,11 +471,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/hpack/1-2-4/docs.html",
+      "docs": "docs/tinox-core/hpack/1-2-5/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/hpack/tinox.toml",
       "name": "hpack",
-      "version": "1.2.4"
+      "version": "1.2.5"
     },
     {
       "dependencies": [],
@@ -490,7 +490,7 @@
         {
           "artifactId": "hpack",
           "group": "tinox.core",
-          "version": "1.2.4"
+          "version": "1.2.5"
         },
         {
           "artifactId": "http_server",
@@ -498,11 +498,11 @@
           "version": "1.2.5"
         }
       ],
-      "docs": "docs/tinox-core/http2_server/1-1-9/docs.html",
+      "docs": "docs/tinox-core/http2_server/1-1-10/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/http2_server/tinox.toml",
       "name": "http2_server",
-      "version": "1.1.9"
+      "version": "1.1.10"
     },
     {
       "dependencies": [
