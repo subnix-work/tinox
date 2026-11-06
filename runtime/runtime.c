@@ -194,11 +194,15 @@ int64_t tinox_now_ms(void) {
 // own connection's read finished) on sight, without needing a debugger.
 static int g_tinox_ws_debug = -1; // -1 = not yet checked, 0 = off, 1 = on
 static bool tinox_ws_debug_enabled(void) {
-    if (g_tinox_ws_debug < 0) {
+    // Lazily initialised from several threads at once; the computed value is
+    // idempotent, so relaxed atomics are enough to make the race well-defined.
+    int state = __atomic_load_n(&g_tinox_ws_debug, __ATOMIC_RELAXED);
+    if (state < 0) {
         const char* v = getenv("TINOX_WS_DEBUG");
-        g_tinox_ws_debug = (v && v[0] == '1') ? 1 : 0;
+        state = (v && v[0] == '1') ? 1 : 0;
+        __atomic_store_n(&g_tinox_ws_debug, state, __ATOMIC_RELAXED);
     }
-    return g_tinox_ws_debug == 1;
+    return state == 1;
 }
 static void tinox_ws_debug_log(const char* fmt, ...) {
     if (!tinox_ws_debug_enabled()) return;
