@@ -35,7 +35,13 @@ def h2_echo(port, payload, invalid_frame_size=False):
             data = exact(sock, int.from_bytes(head[:3], 'big'))
             kind, flags = head[3:5]
             if kind == 4 and not flags & 1:
-                sock.sendall(frame(4, 1, 0, b''))
+                try:
+                    sock.sendall(frame(4, 1, 0, b''))
+                except OSError:
+                    # With an invalid SETTINGS_MAX_FRAME_SIZE the server now answers GOAWAY as soon as it sees
+                    # the setting and may already have closed; the GOAWAY is still read below.
+                    if not invalid_frame_size:
+                        raise
             if kind == 7 and invalid_frame_size:
                 assert int.from_bytes(data[4:8], 'big') == 1
                 return b'goaway'

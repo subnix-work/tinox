@@ -86,7 +86,7 @@ namespace tinox.core.http2_server
         @Throws(Http2ServerError)
         /**
          * Starts listening and enters the connection accept loop.
-         * Each accepted connection is handled synchronously (blocking per connection).
+         * Each accepted connection runs on its own task, so one idle client never blocks the others.
          */
         fn listen() -> Nothing
         {
@@ -101,16 +101,28 @@ namespace tinox.core.http2_server
                 const clientFd: Int64 = httpServerAcceptConn(this.socketHandle)
                 if (clientFd >= 0)
                 {
-                    try { this.handleConnection(clientFd) }
-                    catch (error: String)
-                    {
-                        tinoxHttpClearBodyBridge()
-                        httpServerCloseConn(clientFd)
-                        println("HTTP/2 connection failed: " + error)
-                    }
+                    // One task per connection: an idle or slow client must not block every other one.
+                    const task = spawn serveConnection(this, clientFd)
+                    taskDetach(task)
                 }
             }
             httpServerClose(this.socketHandle)
+        }
+
+        /**
+         * Runs one connection to completion on its own task (a static function, because spawn does not
+         * take a this-bound method). Errors are contained here: a failing connection only closes itself.
+         */
+        async fnc serveConnection(server: Http2Server, fd: Int64) -> Int64
+        {
+            try { server.handleConnection(fd) }
+            catch (error: String)
+            {
+                tinoxHttpClearBodyBridge()
+                httpServerCloseConn(fd)
+                println("HTTP/2 connection failed: " + error)
+            }
+            return 0
         }
 
         // =====================================================================
@@ -168,7 +180,17 @@ namespace tinox.core.http2_server
             const flags: Int64 = header[4]
             // R bit (MSB of stream ID) is reserved and must be ignored
             const streamId: Int64 = ((header[5] & 127) << 24) | (header[6] << 16) | (header[7] << 8) | header[8]
+            // RFC 9113 §4.2: nothing above SETTINGS_MAX_FRAME_SIZE (the 16384 default we never raise)
+            // is read at all; type -2 tells the loop to answer FRAME_SIZE_ERROR.
+            if (length > 16384)
+            {
+                return Http2Frame { length: length, type: -2, flags: 0, streamId: streamId, payload: [] }
+            }
             const payload: List<Int64> = this.readBytes(conn.handle, length)
+            if (payload.len() < length)
+            {
+                return Http2Frame { length: 0, type: -1, flags: 0, streamId: 0, payload: [] }
+            }
             return Http2Frame {
                 length: length,
                 type: frameType,
@@ -261,13 +283,79 @@ namespace tinox.core.http2_server
         }
 
         // =====================================================================
+        // Error handling helpers (RFC 9113 §5.4)
+        // =====================================================================
+
+        /** Connection error: GOAWAY with the error code, then the frame loop ends. */
+        fn connError(conn: Http2Conn, errorCode: Int64) -> Nothing
+        {
+            if (conn.dead == false)
+            {
+                this.sendGoaway(conn, errorCode)
+                conn.dead = true
+            }
+        }
+
+        /** Marks a stream closed and drops its buffers; the small stub stays so later frames see "closed". */
+        fn closeStream(conn: Http2Conn, stream: Http2Stream) -> Nothing
+        {
+            if (stream.state != "closed")
+            {
+                stream.state = "closed"
+                conn.openStreams = conn.openStreams - 1
+                conn.closedCount = conn.closedCount + 1
+            }
+            stream.headerBlock = []
+            stream.body = []
+            stream.headers = []
+            stream.outBody = ""
+            stream.outBytes = []
+            if (conn.closedCount > 4096)
+            {
+                // Bound the per-connection stub table: old closed streams are forgotten.
+                const keys: List<String> = conn.streams.keys()
+                var k: Int64 = 0
+                while k < keys.len()
+                {
+                    const old: Http2Stream = conn.streams[keys[k]]
+                    if (old.state == "closed" && old.id + 8192 < conn.lastStreamId)
+                    {
+                        conn.streams.remove(keys[k])
+                    }
+                    k = k + 1
+                }
+                conn.closedCount = 0
+            }
+        }
+
+        fn streamError(conn: Http2Conn, stream: Http2Stream, errorCode: Int64) -> Nothing
+        {
+            this.sendRstStream(conn, stream.id, errorCode)
+            this.closeStream(conn, stream)
+        }
+
+        // =====================================================================
         // SETTINGS frame processing (RFC 7540 §6.5)
         // =====================================================================
 
         fn processSettings(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
+            if (frame.streamId != 0)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                return
+            }
             if ((frame.flags & Http2Flags::ACK()) != 0)
             {
+                if (frame.payload.len() != 0)
+                {
+                    this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
+                }
+                return
+            }
+            if (frame.payload.len() % 6 != 0)
+            {
+                this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
                 return
             }
             var i: Int64 = 0
@@ -275,21 +363,163 @@ namespace tinox.core.http2_server
             {
                 const settingId: Int64 = (frame.payload[i] << 8) | frame.payload[i + 1]
                 const settingVal: Int64 = (frame.payload[i + 2] << 24) | (frame.payload[i + 3] << 16) | (frame.payload[i + 4] << 8) | frame.payload[i + 5]
-                if (settingId == Http2Settings::HEADER_TABLE_SIZE())
+                if (settingId == Http2Settings::ENABLE_PUSH() && settingVal > 1)
                 {
-                    conn.recvDynTable.setMaxSize(settingVal)
+                    this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                    return
                 }
                 if (settingId == Http2Settings::INITIAL_WINDOW_SIZE())
                 {
+                    if (settingVal > 2147483647)
+                    {
+                        this.connError(conn, Http2Error::FLOW_CONTROL_ERROR())
+                        return
+                    }
+                    // §6.9.2: the change applies to every open stream's window.
+                    const delta: Int64 = settingVal - conn.peerInitWindowSize
+                    const keys: List<String> = conn.streams.keys()
+                    var k: Int64 = 0
+                    while k < keys.len()
+                    {
+                        const st: Http2Stream = conn.streams[keys[k]]
+                        st.sendWindow = st.sendWindow + delta
+                        if (st.sendWindow > 2147483647)
+                        {
+                            this.connError(conn, Http2Error::FLOW_CONTROL_ERROR())
+                            return
+                        }
+                        k = k + 1
+                    }
                     conn.peerInitWindowSize = settingVal
                 }
                 if (settingId == Http2Settings::MAX_FRAME_SIZE())
                 {
+                    if (settingVal < 16384 || settingVal > 16777215)
+                    {
+                        this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                        return
+                    }
                     conn.peerMaxFrameSize = settingVal
                 }
+                // HEADER_TABLE_SIZE limits our ENCODER table; the decoder table (recvDynTable)
+                // is bounded by the size this server advertised, so it is not touched here.
                 i = i + 6
             }
             this.sendSettingsAck(conn)
+            // A larger initial window (or a bigger frame size) may unblock queued responses.
+            this.flushSendQueue(conn)
+        }
+
+        // =====================================================================
+        // Header block completion: HPACK decoding in wire order + request validation
+        // (RFC 9113 §8.2, §8.3). Decoding must happen when END_HEADERS arrives, not later,
+        // because the dynamic table is shared state across streams.
+        // =====================================================================
+
+        fn hasUpper(name: String) -> Bool
+        {
+            var i: Int64 = 0
+            while i < name.len()
+            {
+                const c: Int64 = name.charCodeAt(i)
+                if (c >= 65 && c <= 90)
+                {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+
+        /** Returns true if the decoded request (or trailer) header list is well-formed. */
+        fn validHeaderList(headers: List<HpackHeader>, trailer: Bool) -> Bool
+        {
+            var seenRegular: Bool = false
+            var methodCount: Int64 = 0
+            var schemeCount: Int64 = 0
+            var pathCount: Int64 = 0
+            var pathEmpty: Bool = false
+            var i: Int64 = 0
+            while i < headers.len()
+            {
+                const h: HpackHeader = headers[i]
+                if (this.hasUpper(h.name) || h.name.len() == 0)
+                {
+                    return false
+                }
+                if (h.name.startsWith(":"))
+                {
+                    if (trailer || seenRegular)
+                    {
+                        return false
+                    }
+                    if (h.name == ":method") { methodCount = methodCount + 1 }
+                    else if (h.name == ":scheme") { schemeCount = schemeCount + 1 }
+                    else if (h.name == ":path")
+                    {
+                        pathCount = pathCount + 1
+                        if (h.value.len() == 0) { pathEmpty = true }
+                    }
+                    else if (h.name != ":authority")
+                    {
+                        return false
+                    }
+                }
+                else
+                {
+                    seenRegular = true
+                    if (h.name == "connection" || h.name == "keep-alive" || h.name == "proxy-connection" || h.name == "transfer-encoding" || h.name == "upgrade")
+                    {
+                        return false
+                    }
+                    if (h.name == "te" && h.value != "trailers")
+                    {
+                        return false
+                    }
+                }
+                i = i + 1
+            }
+            if (trailer)
+            {
+                return true
+            }
+            return methodCount == 1 && schemeCount == 1 && pathCount == 1 && pathEmpty == false
+        }
+
+        /**
+         * Called when a header block is complete (END_HEADERS). Decodes it, validates it and,
+         * if the request is already complete (END_STREAM), dispatches it.
+         */
+        fn headerBlockComplete(conn: Http2Conn, stream: Http2Stream) -> Nothing
+        {
+            conn.continuationStream = 0
+            stream.expectingContinuation = false
+            var decoded: List<HpackHeader> = []
+            try
+            {
+                decoded = Hpack::decode(stream.headerBlock, conn.recvDynTable)
+            }
+            catch (error: String)
+            {
+                this.connError(conn, Http2Error::COMPRESSION_ERROR())
+                return
+            }
+            stream.headerBlock = []
+            if (this.validHeaderList(decoded, stream.trailerBlock) == false)
+            {
+                this.streamError(conn, stream, Http2Error::PROTOCOL_ERROR())
+                return
+            }
+            if (stream.trailerBlock == false)
+            {
+                stream.headers = decoded
+                stream.headersDone = true
+            }
+            if (stream.endStream)
+            {
+                stream.state = "half_closed_remote"
+                this.dispatchStream(conn, stream)
+            }
         }
 
         // =====================================================================
@@ -298,33 +528,79 @@ namespace tinox.core.http2_server
 
         fn processHeaders(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
-            const sid: String = frame.streamId.toString()
-            var stream: Http2Stream
-            if (conn.streams.contains(sid))
+            if (frame.streamId == 0 || frame.streamId % 2 == 0)
             {
-                stream = conn.streams[sid]
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                return
             }
-            else
-            {
-                stream = Http2Stream::new(frame.streamId)
-                conn.streams[sid] = stream
-                if (frame.streamId > conn.lastStreamId)
-                {
-                    conn.lastStreamId = frame.streamId
-                }
-            }
-
             var payloadOffset: Int64 = 0
             var padLength: Int64 = 0
             if ((frame.flags & Http2Flags::PADDED()) != 0)
             {
+                if (frame.payload.len() < 1)
+                {
+                    this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
+                    return
+                }
                 padLength = frame.payload[0]
                 payloadOffset = 1
             }
             if ((frame.flags & Http2Flags::PRIORITY()) != 0)
             {
-                // Skip 4-byte stream dependency + 1-byte weight
+                if (frame.payload.len() < payloadOffset + 5)
+                {
+                    this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
+                    return
+                }
+                const dependency: Int64 = ((frame.payload[payloadOffset] & 127) << 24) | (frame.payload[payloadOffset + 1] << 16) | (frame.payload[payloadOffset + 2] << 8) | frame.payload[payloadOffset + 3]
+                if (dependency == frame.streamId)
+                {
+                    this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                    return
+                }
                 payloadOffset = payloadOffset + 5
+            }
+            if (padLength > frame.payload.len() - payloadOffset)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                return
+            }
+
+            const sid: String = frame.streamId.toString()
+            var stream: Http2Stream
+            if (conn.streams.contains(sid))
+            {
+                stream = conn.streams[sid]
+                if (stream.state == "closed" || stream.state == "half_closed_remote")
+                {
+                    this.connError(conn, Http2Error::STREAM_CLOSED())
+                    return
+                }
+                // A second HEADERS on an open stream is the trailer block and must end the stream.
+                if (stream.headersDone == false || (frame.flags & Http2Flags::END_STREAM()) == 0)
+                {
+                    this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                    return
+                }
+                stream.trailerBlock = true
+            }
+            else
+            {
+                if (frame.streamId <= conn.lastStreamId)
+                {
+                    this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                    return
+                }
+                conn.lastStreamId = frame.streamId
+                stream = Http2Stream::new(frame.streamId, conn.peerInitWindowSize)
+                conn.streams[sid] = stream
+                conn.openStreams = conn.openStreams + 1
+                if (conn.openStreams > 128)
+                {
+                    // Over the advertised SETTINGS_MAX_CONCURRENT_STREAMS. The header block still has
+                    // to be decoded to keep the HPACK table in sync, so only refuse after that.
+                    stream.refused = true
+                }
             }
 
             const headerEnd: Int64 = frame.payload.len() - padLength
@@ -335,38 +611,25 @@ namespace tinox.core.http2_server
                 i = i + 1
             }
 
-            // Bug 94: a single HEADERS frame is already bounded by the 24-bit
-            // wire length field (~16MB), but a stream's header block
-            // accumulates across an UNBOUNDED number of CONTINUATION frames
-            // (RFC 7540 §6.10 sets no limit itself) — an unauthenticated
-            // client can otherwise grow one stream's headerBlock without
-            // bound just by sending more CONTINUATION frames. Cap the
-            // cumulative size and abort the stream instead of the connection.
+            // Bug 94: cap the cumulative header block (CONTINUATION flood).
             if (stream.headerBlock.len() > 1048576)
             {
-                this.sendRstStream(conn, frame.streamId, Http2Error::FRAME_SIZE_ERROR())
-                stream.state = "closed"
+                this.connError(conn, Http2Error::ENHANCE_YOUR_CALM())
                 return
             }
 
-            const endHeaders: Bool = (frame.flags & Http2Flags::END_HEADERS()) != 0
-            const endStream: Bool = (frame.flags & Http2Flags::END_STREAM()) != 0
-            if (endStream)
+            if ((frame.flags & Http2Flags::END_STREAM()) != 0)
             {
                 stream.endStream = true
             }
-            if (endHeaders)
+            if ((frame.flags & Http2Flags::END_HEADERS()) != 0)
             {
-                stream.expectingContinuation = false
-                if (stream.endStream)
-                {
-                    stream.state = "half_closed_remote"
-                    this.dispatchStream(conn, stream)
-                }
+                this.headerBlockComplete(conn, stream)
             }
             else
             {
                 stream.expectingContinuation = true
+                conn.continuationStream = frame.streamId
             }
         }
 
@@ -376,32 +639,20 @@ namespace tinox.core.http2_server
 
         fn processContinuation(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
-            const sid: String = frame.streamId.toString()
-            if (conn.streams.contains(sid) == false)
-            {
-                return
-            }
-            const stream: Http2Stream = conn.streams[sid]
+            // The loop already guarantees continuationStream == frame.streamId here.
+            const stream: Http2Stream = conn.streams[frame.streamId.toString()]
             this.appendBytes(stream.headerBlock, frame.payload)
 
-            // Bug 94: same cumulative cap as processHeaders() — this is the
-            // actual CONTINUATION-flood path (RFC 7540 §6.10 sets no limit
-            // on how many CONTINUATION frames may follow a HEADERS frame).
+            // Bug 94: same cumulative cap as processHeaders() — the actual CONTINUATION-flood path.
             if (stream.headerBlock.len() > 1048576)
             {
-                this.sendRstStream(conn, frame.streamId, Http2Error::FRAME_SIZE_ERROR())
-                stream.state = "closed"
+                this.connError(conn, Http2Error::ENHANCE_YOUR_CALM())
                 return
             }
 
             if ((frame.flags & Http2Flags::END_HEADERS()) != 0)
             {
-                stream.expectingContinuation = false
-                if (stream.endStream)
-                {
-                    stream.state = "half_closed_remote"
-                    this.dispatchStream(conn, stream)
-                }
+                this.headerBlockComplete(conn, stream)
             }
         }
 
@@ -411,20 +662,53 @@ namespace tinox.core.http2_server
 
         fn processData(conn: Http2Conn, frame: Http2Frame) -> Nothing
         {
+            if (frame.streamId == 0)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                return
+            }
             const sid: String = frame.streamId.toString()
             if (conn.streams.contains(sid) == false)
+            {
+                if (frame.streamId > conn.lastStreamId)
+                {
+                    // idle stream
+                    this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                }
+                else
+                {
+                    this.sendRstStream(conn, frame.streamId, Http2Error::STREAM_CLOSED())
+                }
+                return
+            }
+            const stream: Http2Stream = conn.streams[sid]
+            if (stream.state == "closed" || stream.state == "half_closed_remote")
             {
                 this.sendRstStream(conn, frame.streamId, Http2Error::STREAM_CLOSED())
                 return
             }
-            const stream: Http2Stream = conn.streams[sid]
+            if (stream.headersDone == false)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                return
+            }
 
             var payloadOffset: Int64 = 0
             var padLength: Int64 = 0
             if ((frame.flags & Http2Flags::PADDED()) != 0)
             {
+                if (frame.payload.len() < 1)
+                {
+                    this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
+                    return
+                }
                 padLength = frame.payload[0]
                 payloadOffset = 1
+            }
+            if (padLength > frame.payload.len() - payloadOffset)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                return
             }
             const dataEnd: Int64 = frame.payload.len() - padLength
             var i: Int64 = payloadOffset
@@ -434,25 +718,153 @@ namespace tinox.core.http2_server
                 i = i + 1
             }
 
-            // Bug 94: a single DATA frame is already bounded by the 24-bit
-            // wire length field (~16MB), but a stream's body accumulates
-            // across an unbounded number of DATA frames with no overall cap.
+            // Bug 94: cap the accumulated request body.
             if (stream.body.len() > 16777216)
             {
-                this.sendRstStream(conn, frame.streamId, Http2Error::FRAME_SIZE_ERROR())
-                stream.state = "closed"
+                this.streamError(conn, stream, Http2Error::FRAME_SIZE_ERROR())
                 return
+            }
+
+            // Receive-side flow control: return the credit for every consumed byte, otherwise a client
+            // upload larger than the initial 65535-byte window stalls forever.
+            if (frame.length > 0)
+            {
+                this.sendWindowUpdate(conn, 0, frame.length)
+                if ((frame.flags & Http2Flags::END_STREAM()) == 0)
+                {
+                    this.sendWindowUpdate(conn, frame.streamId, frame.length)
+                }
             }
 
             if ((frame.flags & Http2Flags::END_STREAM()) != 0)
             {
                 stream.endStream = true
                 stream.state = "half_closed_remote"
-                if (stream.expectingContinuation == false)
-                {
-                    this.dispatchStream(conn, stream)
-                }
+                this.dispatchStream(conn, stream)
             }
+        }
+
+        fn sendWindowUpdate(conn: Http2Conn, streamId: Int64, increment: Int64) -> Nothing
+        {
+            const payload: List<Int64> = []
+            payload.push((increment >> 24) & 127)
+            payload.push((increment >> 16) & 255)
+            payload.push((increment >> 8) & 255)
+            payload.push(increment & 255)
+            this.writeFrame(conn, Http2Frame::new(Http2FrameType::WINDOW_UPDATE(), 0, streamId, payload))
+        }
+
+        // =====================================================================
+        // Control frames: PING, PRIORITY, RST_STREAM, WINDOW_UPDATE, PUSH_PROMISE
+        // =====================================================================
+
+        fn processPing(conn: Http2Conn, frame: Http2Frame) -> Nothing
+        {
+            if (frame.streamId != 0)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                return
+            }
+            if (frame.payload.len() != 8)
+            {
+                this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
+                return
+            }
+            // A PING with ACK is the answer to ours; echoing it would ping-pong forever.
+            if ((frame.flags & Http2Flags::ACK()) == 0)
+            {
+                this.sendPong(conn, frame.payload)
+            }
+        }
+
+        fn processPriority(conn: Http2Conn, frame: Http2Frame) -> Nothing
+        {
+            if (frame.streamId == 0)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                return
+            }
+            if (frame.payload.len() != 5)
+            {
+                this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
+                return
+            }
+            const dependency: Int64 = ((frame.payload[0] & 127) << 24) | (frame.payload[1] << 16) | (frame.payload[2] << 8) | frame.payload[3]
+            if (dependency == frame.streamId)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+            }
+        }
+
+        fn processRstStream(conn: Http2Conn, frame: Http2Frame) -> Nothing
+        {
+            if (frame.streamId == 0)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                return
+            }
+            if (frame.payload.len() != 4)
+            {
+                this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
+                return
+            }
+            const sid: String = frame.streamId.toString()
+            if (conn.streams.contains(sid))
+            {
+                this.closeStream(conn, conn.streams[sid])
+            }
+            else if (frame.streamId > conn.lastStreamId)
+            {
+                this.connError(conn, Http2Error::PROTOCOL_ERROR())
+            }
+        }
+
+        fn processWindowUpdate(conn: Http2Conn, frame: Http2Frame) -> Nothing
+        {
+            if (frame.payload.len() != 4)
+            {
+                this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
+                return
+            }
+            const increment: Int64 = ((frame.payload[0] & 127) << 24) | (frame.payload[1] << 16) | (frame.payload[2] << 8) | frame.payload[3]
+            if (frame.streamId == 0)
+            {
+                if (increment == 0)
+                {
+                    this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                    return
+                }
+                conn.sendWindow = conn.sendWindow + increment
+                if (conn.sendWindow > 2147483647)
+                {
+                    this.connError(conn, Http2Error::FLOW_CONTROL_ERROR())
+                    return
+                }
+                this.flushSendQueue(conn)
+                return
+            }
+            const sid: String = frame.streamId.toString()
+            if (conn.streams.contains(sid) == false)
+            {
+                if (frame.streamId > conn.lastStreamId)
+                {
+                    this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                }
+                return
+            }
+            const stream: Http2Stream = conn.streams[sid]
+            if (increment == 0)
+            {
+                this.streamError(conn, stream, Http2Error::PROTOCOL_ERROR())
+                return
+            }
+            stream.sendWindow = stream.sendWindow + increment
+            if (stream.sendWindow > 2147483647)
+            {
+                this.streamError(conn, stream, Http2Error::FLOW_CONTROL_ERROR())
+                return
+            }
+            this.flushSendQueue(conn)
         }
 
         // =====================================================================
@@ -465,7 +877,26 @@ namespace tinox.core.http2_server
          */
         fn dispatchStream(conn: Http2Conn, stream: Http2Stream) -> Nothing
         {
-            const rawHeaders: List<HpackHeader> = Hpack::decode(stream.headerBlock, conn.recvDynTable)
+            if (stream.refused)
+            {
+                this.streamError(conn, stream, Http2Error::REFUSED_STREAM())
+                return
+            }
+            const rawHeaders: List<HpackHeader> = stream.headers
+            // RFC 9113 §8.1.1: a content-length that disagrees with the DATA actually received is malformed.
+            var ci: Int64 = 0
+            while ci < rawHeaders.len()
+            {
+                if (rawHeaders[ci].name == "content-length")
+                {
+                    if (rawHeaders[ci].value != stream.body.len().toString())
+                    {
+                        this.streamError(conn, stream, Http2Error::PROTOCOL_ERROR())
+                        return
+                    }
+                }
+                ci = ci + 1
+            }
 
             const request: HttpRequest = HttpRequest::new("", "", "", Map::new(), "")
             var i: Int64 = 0
@@ -530,8 +961,7 @@ namespace tinox.core.http2_server
                 }
             }
 
-            this.sendResponse(conn, stream.id, ctx.response)
-            stream.state = "closed"
+            this.sendResponse(conn, stream, ctx.response)
         }
 
         /**
@@ -539,13 +969,14 @@ namespace tinox.core.http2_server
          * HEADERS carries the :status pseudo-header plus all response headers.
          * DATA carries the body (omitted for empty bodies; END_STREAM on HEADERS instead).
          */
-        fn sendResponse(conn: Http2Conn, streamId: Int64, response: HttpResponse) -> Nothing
+        fn sendResponse(conn: Http2Conn, stream: Http2Stream, response: HttpResponse) -> Nothing
         {
             // A peer-controlled zero/invalid maximum must never stall the
             // bounded DATA-frame loop. Reject on the wire, without guessing.
             if (conn.peerMaxFrameSize < 16384 || conn.peerMaxFrameSize > 16777215)
             {
                 this.sendGoaway(conn, Http2Error::PROTOCOL_ERROR())
+                conn.dead = true
                 tinoxHttpClearBodyBridge()
                 return
             }
@@ -579,25 +1010,101 @@ namespace tinox.core.http2_server
             {
                 headersFlags = headersFlags | Http2Flags::END_STREAM()
             }
-            this.writeFrame(conn, Http2Frame::new(Http2FrameType::HEADERS(), headersFlags, streamId, encodedHeaders))
+            this.writeFrame(conn, Http2Frame::new(Http2FrameType::HEADERS(), headersFlags, stream.id, encodedHeaders))
 
-            if (bodyLength > 0)
+            if (bodyLength == 0)
             {
-                // Retain the legacy frame ABI, widening only one DATA frame
-                // at a time rather than the entire compact application body.
-                var offset: Int64 = 0
-                while (offset < bodyLength)
+                tinoxHttpClearBodyBridge()
+                this.closeStream(conn, stream)
+                return
+            }
+            // The body is flow-controlled (RFC 9113 §6.9): send what the windows allow now and keep
+            // the rest queued; WINDOW_UPDATE / SETTINGS frames continue it via flushSendQueue.
+            stream.outBody = response.body
+            stream.bodyLength = bodyLength
+            stream.sendOffset = 0
+            var firstWindow: Int64 = conn.sendWindow
+            if (stream.sendWindow < firstWindow) { firstWindow = stream.sendWindow }
+            if (bodyLength > firstWindow)
+            {
+                // Will be continued later, after the bridge is gone: keep an exact byte copy now.
+                stream.outBytes = tinoxHttpBodySlice(response.body, 0, bodyLength)
+            }
+            this.flushStream(conn, stream)
+            if (stream.state != "closed")
+            {
+                conn.sendQueue.push(stream.id)
+            }
+        }
+
+        /** Sends as much of the stream's pending body as the connection and stream windows allow. */
+        fn flushStream(conn: Http2Conn, stream: Http2Stream) -> Nothing
+        {
+            while (stream.sendOffset < stream.bodyLength && conn.dead == false)
+            {
+                var allowed: Int64 = conn.sendWindow
+                if (stream.sendWindow < allowed) { allowed = stream.sendWindow }
+                if (allowed <= 0)
                 {
-                    var end: Int64 = offset + conn.peerMaxFrameSize
-                    if (end > bodyLength) { end = bodyLength }
-                    const bodyBytes: List<Int64> = tinoxHttpBodySlice(response.body, offset, end)
-                    var flags: Int64 = 0
-                    if (end == bodyLength) { flags = Http2Flags::END_STREAM() }
-                    this.writeFrame(conn, Http2Frame::new(Http2FrameType::DATA(), flags, streamId, bodyBytes))
-                    offset = end
+                    return
                 }
+                var size: Int64 = conn.peerMaxFrameSize
+                if (allowed < size) { size = allowed }
+                var end: Int64 = stream.sendOffset + size
+                if (end > stream.bodyLength) { end = stream.bodyLength }
+                var bodyBytes: List<Int64> = []
+                if (stream.outBytes.len() > 0)
+                {
+                    var b: Int64 = stream.sendOffset
+                    while b < end
+                    {
+                        bodyBytes.push(stream.outBytes[b])
+                        b = b + 1
+                    }
+                }
+                else
+                {
+                    bodyBytes = tinoxHttpBodySlice(stream.outBody, stream.sendOffset, end)
+                }
+                var flags: Int64 = 0
+                if (end == stream.bodyLength) { flags = Http2Flags::END_STREAM() }
+                this.writeFrame(conn, Http2Frame::new(Http2FrameType::DATA(), flags, stream.id, bodyBytes))
+                conn.sendWindow = conn.sendWindow - (end - stream.sendOffset)
+                stream.sendWindow = stream.sendWindow - (end - stream.sendOffset)
+                stream.sendOffset = end
             }
             tinoxHttpClearBodyBridge()
+            if (stream.sendOffset >= stream.bodyLength)
+            {
+                stream.outBody = ""
+                stream.outBytes = []
+                this.closeStream(conn, stream)
+            }
+        }
+
+        /** Continues every queued response after a window grew (WINDOW_UPDATE, SETTINGS). */
+        fn flushSendQueue(conn: Http2Conn) -> Nothing
+        {
+            const waiting: List<Int64> = conn.sendQueue
+            conn.sendQueue = []
+            var i: Int64 = 0
+            while i < waiting.len()
+            {
+                const key: String = waiting[i].toString()
+                if (conn.streams.contains(key))
+                {
+                    const stream: Http2Stream = conn.streams[key]
+                    if (stream.state != "closed" && stream.sendOffset < stream.bodyLength)
+                    {
+                        this.flushStream(conn, stream)
+                        if (stream.state != "closed")
+                        {
+                            conn.sendQueue.push(stream.id)
+                        }
+                    }
+                }
+                i = i + 1
+            }
         }
 
         // =====================================================================
@@ -646,13 +1153,22 @@ namespace tinox.core.http2_server
             this.sendServerSettings(conn)
 
             var active: Bool = true
-            while active
+            while active && conn.dead == false
             {
                 const frame: Http2Frame = this.readFrame(conn)
 
                 if (frame.type == -1)
                 {
                     active = false
+                }
+                else if (frame.type == -2)
+                {
+                    this.connError(conn, Http2Error::FRAME_SIZE_ERROR())
+                }
+                else if (conn.continuationStream != 0 && (frame.type != Http2FrameType::CONTINUATION() || frame.streamId != conn.continuationStream))
+                {
+                    // RFC 9113 §6.10: nothing may interleave a header block.
+                    this.connError(conn, Http2Error::PROTOCOL_ERROR())
                 }
                 else if (frame.type == Http2FrameType::SETTINGS())
                 {
@@ -664,7 +1180,15 @@ namespace tinox.core.http2_server
                 }
                 else if (frame.type == Http2FrameType::CONTINUATION())
                 {
-                    this.processContinuation(conn, frame)
+                    // Valid only inside an open header block (matching stream id checked above).
+                    if (conn.continuationStream == 0)
+                    {
+                        this.connError(conn, Http2Error::PROTOCOL_ERROR())
+                    }
+                    else
+                    {
+                        this.processContinuation(conn, frame)
+                    }
                 }
                 else if (frame.type == Http2FrameType::DATA())
                 {
@@ -672,24 +1196,36 @@ namespace tinox.core.http2_server
                 }
                 else if (frame.type == Http2FrameType::PING())
                 {
-                    this.sendPong(conn, frame.payload)
+                    this.processPing(conn, frame)
+                }
+                else if (frame.type == Http2FrameType::PRIORITY())
+                {
+                    this.processPriority(conn, frame)
                 }
                 else if (frame.type == Http2FrameType::RST_STREAM())
                 {
-                    const sid: String = frame.streamId.toString()
-                    if (conn.streams.contains(sid))
-                    {
-                        conn.streams[sid].state = "closed"
-                    }
+                    this.processRstStream(conn, frame)
+                }
+                else if (frame.type == Http2FrameType::WINDOW_UPDATE())
+                {
+                    this.processWindowUpdate(conn, frame)
+                }
+                else if (frame.type == Http2FrameType::PUSH_PROMISE())
+                {
+                    // Clients must never push (RFC 9113 §8.4).
+                    this.connError(conn, Http2Error::PROTOCOL_ERROR())
                 }
                 else if (frame.type == Http2FrameType::GOAWAY())
                 {
                     active = false
                 }
-                // WINDOW_UPDATE and PRIORITY are accepted but not tracked
+                // Unknown frame types are ignored (RFC 9113 §4.1).
             }
 
-            this.sendGoaway(conn, Http2Error::NO_ERROR())
+            if (conn.dead == false)
+            {
+                this.sendGoaway(conn, Http2Error::NO_ERROR())
+            }
             httpConnClose(wire)
         }
 

@@ -189,5 +189,16 @@ jobs:
           sudo apt-get install -y clang llvm libgc-dev libsqlite3-dev libpq-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Bug 462: the HTTP/2 server is checked against h2spec, an independent conformance suite.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: install h2spec
+        run: |
+          GOBIN="$HOME/.local/bin" go install github.com/summerwind/h2spec/cmd/h2spec@v2.2.1
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: workspace-source lane
+        env:
+          TINOX_REQUIRE_H2SPEC: "1"
         run: make workspace-ext
