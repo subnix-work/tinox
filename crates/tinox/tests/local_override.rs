@@ -208,9 +208,10 @@ fn workspace_websocket_exposes_upgrade_request_headers() {
 }
 
 /// Issue #627: the `ui` shell loads no third-party fonts unless `TINOX_UI_FONTS=google`;
-/// an unknown value is a hard error. Workspace source (new behaviour, not yet in a published package).
+/// themes default to neon, accept Material variants and reject unknown names.
+/// Workspace source is used so the test covers unpublished UI changes.
 #[test]
-fn workspace_ui_shell_uses_system_fonts_by_default() {
+fn workspace_ui_shell_selects_themes_and_fonts() {
     let proj = fresh_dir("workspace-ui-fonts");
     std::fs::create_dir_all(proj.join("src")).unwrap();
     let ext = repo_root().join("crates/tinox-core-ext");
@@ -220,22 +221,60 @@ fn workspace_ui_shell_uses_system_fonts_by_default() {
     }
     std::fs::write(proj.join("tinox.toml"), toml).unwrap();
     std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ui_shell_fonts/Main.tnx")).unwrap();
-    let go = |value: Option<&str>| {
+    let go = |value: Option<&str>, theme: Option<&str>| {
         let mut c = Command::new(tinox());
-        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS");
+        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS").env_remove("TINOX_UI_THEME").env_remove("TINOX_UI_COLOR");
         if let Some(v) = value { c.env("TINOX_UI_FONTS", v); }
+        if let Some(v) = theme { c.env("TINOX_UI_THEME", v); }
         c.output().unwrap()
     };
-    let expect = |o: &Output, google: &str| {
+    let expect = |o: &Output, google: &str, material: bool, dark: bool| {
         assert!(o.status.success(), "stderr: {}", stderr(o));
-        assert_eq!(String::from_utf8_lossy(&o.stdout), format!("google={google}\nplaceholder=false\nport=true\n"));
+        assert_eq!(String::from_utf8_lossy(&o.stdout), format!("google={google}\nplaceholder=false\nport=true\nmaterial={material}\ndark={dark}\nexplicit=true\n"));
     };
-    expect(&go(None), "false");
-    expect(&go(Some("system")), "false");
-    expect(&go(Some("google")), "true");
-    let bad = go(Some("comic-sans"));
+    expect(&go(None, None), "false", false, false);
+    expect(&go(None, Some("neon")), "false", false, false);
+    expect(&go(None, Some("material")), "false", true, false);
+    expect(&go(None, Some("material-dark")), "false", false, true);
+    expect(&go(Some("system"), None), "false", false, false);
+    expect(&go(Some("google"), Some("material")), "true", true, false);
+    let bad = go(Some("comic-sans"), None);
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stdout).contains("TINOX_UI_FONTS must be"), "{:?}", bad);
+    let bad_theme = go(None, Some("unknown"));
+    assert!(!bad_theme.status.success());
+    assert!(String::from_utf8_lossy(&bad_theme.stdout).contains("TINOX_UI_THEME must be"));
+    // Exercise the actual rendered shell against all curated accent/mode pairs.
+    std::fs::write(proj.join("src/Main.tnx"),
+        "import tinox.core.ui\nclass Main {\n    fnc main() -> Int32 {\n        println(Assets::shellHtml(9001))\n        return 0\n    }\n}\n").unwrap();
+    let colored = |theme: &str, color: &str| {
+        Command::new(tinox()).arg("run").current_dir(&proj)
+            .env("TINOX_UI_THEME", theme).env("TINOX_UI_COLOR", color)
+            .env_remove("TINOX_UI_FONTS").output().unwrap()
+    };
+    for (color, light, dark) in [
+        ("red", "#a63c46", "#ffb2b9"),
+        ("green", "#286747", "#94d5ab"),
+        ("blue", "#315da8", "#adc7ff"),
+        ("purple", "#6554a4", "#cbb9ff"),
+        ("", "#6554a4", "#cbb9ff"),
+    ] {
+        for (theme, primary) in [("material", light), ("material-dark", dark)] {
+            let out = colored(theme, color);
+            assert!(out.status.success(), "{theme}/{color}: {}", stderr(&out));
+            let html = String::from_utf8_lossy(&out.stdout);
+            // Check the last declaration, since presets override the base palette.
+            let last_primary = html.rsplit("--tinox-primary:").next().unwrap();
+            assert!(last_primary.trim_start().starts_with(primary), "{theme}/{color}: {last_primary}");
+            assert!(!html.contains("__TINOX_UI_"));
+        }
+    }
+    let bad_color = colored("material", "orange");
+    assert!(!bad_color.status.success());
+    assert!(String::from_utf8_lossy(&bad_color.stdout).contains("TINOX_UI_COLOR must be"));
+    let neon_color = colored("neon", "blue");
+    assert!(!neon_color.status.success());
+    assert!(String::from_utf8_lossy(&neon_color.stdout).contains("TINOX_UI_COLOR requires"));
     std::fs::remove_dir_all(&proj).ok();
 }
 

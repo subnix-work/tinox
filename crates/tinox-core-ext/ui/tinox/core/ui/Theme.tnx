@@ -1,0 +1,262 @@
+module tinox.core.ui
+
+namespace tinox.core.ui
+{
+    // Built-in shell themes. Material uses opaque surfaces, tonal accents and
+    // shared component rules; only semantic color roles differ in dark mode.
+    class Theme
+    {
+        fnc validate(name: String) -> Nothing
+        {
+            if (name != "neon" && name != "material" && name != "material-dark") {
+                println("TINOX_UI_THEME must be 'neon', 'material' or 'material-dark', got '" + name + "'")
+                exit(1)
+            }
+        }
+
+        fnc css(name: String) -> String
+        {
+            Theme::validate(name)
+            const color: String = envGet("TINOX_UI_COLOR")
+            if (name == "neon") {
+                if (color != "") {
+                    println("TINOX_UI_COLOR requires TINOX_UI_THEME=material or material-dark")
+                    exit(1)
+                }
+                return ""
+            }
+            var palette: String = r#"
+  :root {
+    color-scheme: light;
+    --tinox-base: #f8f9fc;
+    --tinox-surface: #ffffff;
+    --tinox-surface-container: #f0f1f7;
+    --tinox-text: #20212a;
+    --tinox-text2: #595b69;
+    --tinox-primary: #6554a4;
+    --tinox-primary-text: #594892;
+    --tinox-primary-contrast: #ffffff;
+    --tinox-primary-10: #eeebfa;
+    --tinox-accent-2: #79719a;
+    --tinox-error: #b3261e;
+    --tinox-success: #216b47;
+    --tinox-outline: #777580;
+    --tinox-glass-border: #dedee8;
+    --tinox-shadow: 0 8px 32px rgba(32, 33, 42, 0.10);
+    --tinox-scrim: rgba(24, 22, 33, 0.36);
+  }
+"#
+            if (name == "material-dark") {
+                palette = r#"
+  :root {
+    color-scheme: dark;
+    --tinox-base: #141319;
+    --tinox-surface: #1c1b22;
+    --tinox-surface-container: #27252f;
+    --tinox-text: #e8e4ef;
+    --tinox-text2: #c4bfce;
+    --tinox-primary: #cbb9ff;
+    --tinox-primary-text: #d4c6ff;
+    --tinox-primary-contrast: #33245c;
+    --tinox-primary-10: #373047;
+    --tinox-accent-2: #c8bfdc;
+    --tinox-error: #ffb4ab;
+    --tinox-success: #8ed6ad;
+    --tinox-outline: #98929f;
+    --tinox-glass-border: #46434f;
+    --tinox-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    --tinox-scrim: rgba(0, 0, 0, 0.56);
+  }
+"#
+            }
+            return palette + Theme::materialCss() + Theme::accentCss(name, color)
+        }
+
+        // Curated foreground/container pairs keep controls readable in both modes.
+        // Error and success colors deliberately retain their semantic meaning.
+        fnc accentCss(theme: String, color: String) -> String
+        {
+            if (color == "" || color == "purple") { return "" }
+            if (color != "red" && color != "green" && color != "blue") {
+                println("TINOX_UI_COLOR must be 'red', 'green', 'blue' or 'purple', got '" + color + "'")
+                exit(1)
+            }
+            const dark: Bool = theme == "material-dark"
+            if (color == "red") {
+                if (dark) {
+                    return r#"
+  :root {
+    --tinox-primary: #ffb2b9;
+    --tinox-primary-text: #ffc4c9;
+    --tinox-primary-contrast: #650c22;
+    --tinox-primary-10: #512b34;
+    --tinox-accent-2: #e5bac0;
+  }
+"#
+                }
+                return r#"
+  :root {
+    --tinox-primary: #a63c46;
+    --tinox-primary-text: #912e38;
+    --tinox-primary-contrast: #ffffff;
+    --tinox-primary-10: #ffedef;
+    --tinox-accent-2: #a15a62;
+  }
+"#
+            }
+            if (color == "green") {
+                if (dark) {
+                    return r#"
+  :root {
+    --tinox-primary: #94d5ab;
+    --tinox-primary-text: #b4eac4;
+    --tinox-primary-contrast: #003921;
+    --tinox-primary-10: #1c3e2d;
+    --tinox-accent-2: #b4cebc;
+  }
+"#
+                }
+                return r#"
+  :root {
+    --tinox-primary: #286747;
+    --tinox-primary-text: #1d593b;
+    --tinox-primary-contrast: #ffffff;
+    --tinox-primary-10: #e6f4eb;
+    --tinox-accent-2: #577b64;
+  }
+"#
+            }
+            if (color == "blue") {
+                if (dark) {
+                    return r#"
+  :root {
+    --tinox-primary: #adc7ff;
+    --tinox-primary-text: #c5d8ff;
+    --tinox-primary-contrast: #002e69;
+    --tinox-primary-10: #253b5b;
+    --tinox-accent-2: #bbc9e0;
+  }
+"#
+                }
+                return r#"
+  :root {
+    --tinox-primary: #315da8;
+    --tinox-primary-text: #244f97;
+    --tinox-primary-contrast: #ffffff;
+    --tinox-primary-10: #eaf0ff;
+    --tinox-accent-2: #60799f;
+  }
+"#
+            }
+            return ""
+        }
+
+        fnc materialCss() -> String
+        {
+            return r#"
+  :root {
+    --tinox-glass: var(--tinox-surface);
+    --tinox-font: 'Roboto', ui-sans-serif, system-ui, sans-serif;
+    --tinox-font-display: var(--tinox-font);
+    --tinox-radius-m: 12px;
+    --tinox-radius-l: 24px;
+    --tinox-card-padding: clamp(1.25rem, 3vw, 2rem);
+    --tinox-card-gap: 1rem;
+  }
+  body { background: var(--tinox-base); line-height: 1.6; }
+  #tinox-ui-root { max-width: 76rem; padding: clamp(1.25rem, 5vw, 4rem); gap: 1.5rem; }
+  #tinox-ui-root > div { min-width: 0; }
+  h1, h2, h3, h4, h5, h6 {
+    background: none;
+    color: var(--tinox-text);
+    font-weight: 500;
+    letter-spacing: -0.025em;
+    line-height: 1.25;
+    margin: 0 0 0.5rem;
+  }
+  h1 { font-size: clamp(2rem, 5vw, 3rem); }
+  h2 { font-size: clamp(1.5rem, 4vw, 2rem); }
+  h3 { font-size: 1.5rem; }
+  h4 { font-size: 1.25rem; }
+  button, input, textarea, select { font-size: 1rem; line-height: 1.5; }
+  button {
+    min-height: 44px;
+    justify-content: center;
+    align-self: flex-start;
+    padding: 0.625rem 1.5rem;
+    background: var(--tinox-primary);
+    color: var(--tinox-primary-contrast);
+    border: 1px solid transparent;
+    font-weight: 500;
+    box-shadow: none;
+    transition: filter 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  }
+  button:hover { background: var(--tinox-primary); border-color: transparent; filter: brightness(1.08); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14); }
+  button:active { filter: brightness(0.94); box-shadow: none; }
+  button:disabled, input:disabled, select:disabled, textarea:disabled { opacity: 0.5; cursor: not-allowed; filter: none; box-shadow: none; }
+  :is(button, a, input, textarea, select, [tabindex]):focus-visible {
+    outline: 3px solid var(--tinox-primary);
+    outline-offset: 3px;
+  }
+  input, textarea, select {
+    min-height: 48px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0.75rem 1rem;
+    background: var(--tinox-surface);
+    border-color: var(--tinox-outline);
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+  input::placeholder, textarea::placeholder { color: var(--tinox-text2); opacity: 1; }
+  input:focus, textarea:focus, select:focus { border-color: var(--tinox-primary); box-shadow: 0 0 0 1px var(--tinox-primary); }
+  input[type="checkbox"], input[type="radio"] { min-height: 20px; width: 20px; height: 20px; padding: 0; accent-color: var(--tinox-primary); cursor: pointer; }
+  input[type="range"] { min-height: 44px; }
+  input[type="file"]::file-selector-button {
+    border: 0; border-radius: 8px; padding: 0.5rem 0.75rem; margin-right: 0.75rem;
+    background: var(--tinox-primary-10); color: var(--tinox-primary-text); font: inherit; cursor: pointer;
+  }
+  a { padding: 0.5rem 0.75rem; border: 0; border-radius: 8px; background: transparent; text-decoration: underline; text-underline-offset: 3px; }
+  a:hover { background: var(--tinox-primary-10); color: var(--tinox-primary-text); box-shadow: none; }
+  progress, progress::-webkit-progress-bar { background: var(--tinox-surface-container); }
+  .tinox-tabs-header { gap: 0; padding-bottom: 0; overflow-x: auto; }
+  .tinox-tab { min-height: 48px; padding: 0.75rem 1.25rem; border-radius: 12px 12px 0 0; border-bottom: 3px solid transparent; white-space: nowrap; }
+  .tinox-tab:hover { background: var(--tinox-surface-container); }
+  .tinox-tab-active { border-bottom-color: var(--tinox-primary); background: var(--tinox-primary-10); }
+  .tinox-dialog-backdrop { background: var(--tinox-scrim); padding: 1rem; }
+  .tinox-dialog-box {
+    background: var(--tinox-surface); border: 0; padding: clamp(1.25rem, 4vw, 2rem);
+    min-width: 0; width: 32rem; max-width: 100%; max-height: 90vh; overflow-y: auto;
+    backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: var(--tinox-shadow);
+  }
+  .tinox-dialog-title { font-size: 1.5rem; font-weight: 500; }
+  .tinox-dialog-close, .tinox-datagrid-menu-btn { min-width: 44px; min-height: 44px; background: var(--tinox-primary-10); color: var(--tinox-primary-text); }
+  .tinox-dialog-close:hover, .tinox-datagrid-menu-btn:hover { background: var(--tinox-primary-10); }
+  .tinox-notification { padding: 1rem 1.25rem; background: var(--tinox-surface-container); }
+  .tinox-notification-success { border-color: var(--tinox-success); }
+  .tinox-notification-error { border-color: var(--tinox-error); }
+  .tinox-accordion-header { padding: 1rem 1.25rem; }
+  .tinox-accordion-header:hover { background: var(--tinox-primary-10); }
+  .tinox-accordion-body { padding: 0.5rem 1.25rem 1.25rem; }
+  .tinox-radio-group label, .tinox-checkbox-group label { min-height: 44px; gap: 0.75rem; font-size: 1rem; }
+  .tinox-menubar { flex-wrap: wrap; }
+  .tinox-menubar-top, .tinox-menubar-sub { min-height: 44px; padding: 0.625rem 1rem; }
+  .tinox-menubar-top:hover, .tinox-menubar-sub:hover { background: var(--tinox-primary-10); color: var(--tinox-primary-text); }
+  .tinox-menubar-dropdown, .tinox-datagrid-menu-panel {
+    background: var(--tinox-surface); border-color: var(--tinox-glass-border);
+    backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: var(--tinox-shadow);
+  }
+  .tinox-datagrid-menu-item { min-height: 44px; font-size: 0.9rem; }
+  table.tinox-datagrid { background: var(--tinox-surface); }
+  table.tinox-datagrid th, table.tinox-datagrid td { border-right: 0; padding: 1rem; border-bottom: 1px solid var(--tinox-glass-border); }
+  table.tinox-datagrid th { padding-right: 2rem; background: var(--tinox-surface-container); color: var(--tinox-text2); text-transform: none; font-size: 0.875rem; letter-spacing: 0; }
+  table.tinox-datagrid th:nth-child(even) { background: var(--tinox-surface-container); }
+  table.tinox-datagrid td:nth-child(even) { background: transparent; }
+  table.tinox-datagrid th:hover { color: var(--tinox-primary-text); }
+  table.tinox-datagrid tr:hover td { background: var(--tinox-primary-10); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+  }
+"#
+        }
+    }
+}
