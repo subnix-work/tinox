@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.2"
+compiler = "2.9.3"
 name = "transaction_eval"
 version = "0.0.0"
 
@@ -11,4 +11,4 @@ pool = 2
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.6"
+version = "1.2.7"

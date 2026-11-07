@@ -237,7 +237,7 @@ fn draining_waits_for_running_and_queued_blocking_requests() {
     let dir = Dir(std::env::temp_dir().join(format!("tinox-blocking-service-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(&dir.0);
     // Local copies of the extended modules stand in for installed packages (as the lifecycle tests do).
-    let mut manifest = "[package]\ncompiler = \"2.9.2\"\nname=\"blocking_service\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
+    let mut manifest = "[package]\ncompiler = \"2.9.3\"\nname=\"blocking_service\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
     for module in ["http_server", "json"] {
         manifest.push_str(&format!("[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"{module}\"\nversion=\"9.9.9\"\n"));
         copy_tree(&root.join("crates/tinox-core-ext").join(module).join("tinox"), &dir.0.join(format!(".tinox/repository/central/tinox.core/{module}/9.9.9/tinox")));

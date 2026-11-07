@@ -200,7 +200,7 @@ fn cluster_routes_redirects_and_fails_visibly() {
     std::fs::write(
         dir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.2\"\nname = \"rediscluster\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"redis\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"redis\"\npath = \"{}\"\n",
+            "[package]\ncompiler = \"2.9.3\"\nname = \"rediscluster\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"redis\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"redis\"\npath = \"{}\"\n",
             root.join("crates/tinox-core-ext/redis").display()
         ),
     )

@@ -45,18 +45,18 @@ fn independent_clients_verify_composed_service_recovery_and_draining() {
             std::env::temp_dir().join(format!("tinox-composition-{}-{fresh}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         copy_tree(&root.join("tests/fixtures/service_composition"), &directory);
-        let mut manifest = format!("[package]\ncompiler = \"2.9.2\"\nname=\"composition\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n[database]\ndriver=\"postgres\"\nurl=\"{}\"\npool=2\n", pg.url());
+        let mut manifest = format!("[package]\ncompiler = \"2.9.3\"\nname=\"composition\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n[database]\ndriver=\"postgres\"\nurl=\"{}\"\npool=2\n", pg.url());
         for module in ["http_server", "json", "websocket", "db", "http"] {
             let version = if !fresh {
                 "9.9.9"
             } else {
-                // published versions for compiler 2.9.2
+                // published versions for compiler 2.9.3
                 match module {
-                    "db" => "1.2.6",
-                    "http_server" => "1.2.5",
-                    "http" => "1.3.3",
-                    "json" => "1.1.5",
-                    "websocket" => "1.1.6",
+                    "db" => "1.2.7",
+                    "http_server" => "1.2.7",
+                    "http" => "1.3.4",
+                    "json" => "1.1.6",
+                    "websocket" => "1.1.8",
                     other => panic!("no published version recorded for {other}"),
                 }
             };

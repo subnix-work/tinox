@@ -1,10 +1,10 @@
 [package]
-compiler = "2.9.2"
+compiler = "2.9.3"
 name = "http3_server"
-version = "1.2.4"
+version = "1.2.5"
 description = "tinox.core.http3_server, split out of the bundled stdlib as a standalone tinox-central package."
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.5"
+version = "1.2.7"

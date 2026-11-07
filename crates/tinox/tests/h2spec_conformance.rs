@@ -45,7 +45,7 @@ fn http2_server_passes_h2spec() {
             .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
             .unwrap()
     };
-    let mut toml = String::from("[package]\ncompiler = \"2.9.2\"\nname = \"h2conf\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.3\"\nname = \"h2conf\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
     for m in ["http2_server", "hpack", "http_server", "json"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
     }

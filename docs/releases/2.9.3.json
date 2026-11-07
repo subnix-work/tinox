@@ -1,0 +1,187 @@
+{
+  "schema": 1,
+  "stack": {
+    "name": "service",
+    "database": "postgres",
+    "members": [
+      "http_server",
+      "json",
+      "db",
+      "jwt",
+      "oauth2",
+      "oidc",
+      "websocket"
+    ]
+  },
+  "compiler": {
+    "version": "2.9.3",
+    "runtime_c_sha256": "748930251e107168d9fe1a743719c5e142094802865a2066010653705f3998e7",
+    "runtime_h_sha256": "7f2a9007232ec3428f43768440a75dad6470da4e87c4df6805111cafe2265cbd",
+    "cargo_lock_sha256": "8ec904517167b6a306f5c284dbc871e486f2b0dae949d75c53b6e2543300f4c7",
+    "builder_apt_packages": [
+      [
+        "clang",
+        "libgc-dev",
+        "libssl-dev",
+        "llvm",
+        "zlib1g-dev"
+      ],
+      [
+        "ca-certificates",
+        "clang",
+        "libc6-dev",
+        "libgc-dev",
+        "libmariadb-dev-compat",
+        "libpq-dev",
+        "libsqlite3-dev",
+        "libssl-dev",
+        "llvm",
+        "zlib1g-dev"
+      ]
+    ],
+    "source": {
+      "commit": "615edb1cad561e42b8bdb38148dc19652211f2e6",
+      "tree_clean": false
+    }
+  },
+  "packages": [
+    {
+      "group": "tinox.core",
+      "name": "json",
+      "version": "1.1.6",
+      "content_sha256": "81f49dbecaeb54bfefaa7ae10f72342fe65412e73488ad864164bcbc652f263a",
+      "files": 5,
+      "docs": "docs/tinox-core/json/1-1-6/docs.html",
+      "docs_sha256": "dd79282bd5b486e7151fff338739c3cf7ea79d10da14e564cf14bb7bf36fcc7e",
+      "dependencies": []
+    },
+    {
+      "group": "tinox.core",
+      "name": "http_server",
+      "version": "1.2.7",
+      "content_sha256": "b96e378b0799dcdc8cd56e9caa99ab61b9a9397da47cded6cb2b577c20aa87c4",
+      "files": 12,
+      "docs": "docs/tinox-core/http_server/1-2-7/docs.html",
+      "docs_sha256": "48a033094bb69e8cb495c3f896ab655170fd49739a71967259f67ec4a2507ced",
+      "dependencies": [
+        {
+          "name": "json",
+          "version": "1.1.6"
+        }
+      ]
+    },
+    {
+      "group": "tinox.core",
+      "name": "db",
+      "version": "1.2.7",
+      "content_sha256": "50935353ccdf7a173180af4377f38f381bf14d5bfe3bd19860898bde4b4158e4",
+      "files": 3,
+      "docs": "docs/tinox-core/db/1-2-7/docs.html",
+      "docs_sha256": "f65b096c0cf761a4519e2ec6e2d64351575335577e1f836902e1218af771a1cf",
+      "dependencies": []
+    },
+    {
+      "group": "tinox.core",
+      "name": "http",
+      "version": "1.3.4",
+      "content_sha256": "a395549e7752292e491e3f8ee6e11fe61d9c169975117bf270d7e225b7b2d295",
+      "files": 5,
+      "docs": "docs/tinox-core/http/1-3-4/docs.html",
+      "docs_sha256": "7562e709babbee79d6251e802687c32c3907c73956f49942be458bc389093b99",
+      "dependencies": []
+    },
+    {
+      "group": "tinox.core",
+      "name": "jwt",
+      "version": "1.1.6",
+      "content_sha256": "534c6ce85c564cbd121b812c5d56e3a89be91d519a9ae8d21014c8aab4665b59",
+      "files": 4,
+      "docs": "docs/tinox-core/jwt/1-1-6/docs.html",
+      "docs_sha256": "70da15793223889608a17cc5470c04b8e722cffe1570604be256c0b4c50d278d",
+      "dependencies": [
+        {
+          "name": "http",
+          "version": "1.3.4"
+        },
+        {
+          "name": "json",
+          "version": "1.1.6"
+        }
+      ]
+    },
+    {
+      "group": "tinox.core",
+      "name": "crypto",
+      "version": "1.1.5",
+      "content_sha256": "375dd60342d4463af201e5a95cedbefb6c2c671d6628d01eb0680ac9825f69d9",
+      "files": 3,
+      "docs": "docs/tinox-core/crypto/1-1-5/docs.html",
+      "docs_sha256": "eebcf9f384320ca0540c0790a4d282185a7dce554757ef2cf14b2186588b875c",
+      "dependencies": []
+    },
+    {
+      "group": "tinox.core",
+      "name": "oauth2",
+      "version": "1.1.6",
+      "content_sha256": "832f79d6a134fdf17d4b84503814fcb0ecc62aa087b66f137e73b8e25d6a32d5",
+      "files": 4,
+      "docs": "docs/tinox-core/oauth2/1-1-6/docs.html",
+      "docs_sha256": "0fad0c5229a6119c8cf78b14ab4baf05ccb5b02d28c3ea145d1f685de3e45b2a",
+      "dependencies": [
+        {
+          "name": "crypto",
+          "version": "1.1.5"
+        },
+        {
+          "name": "http",
+          "version": "1.3.4"
+        },
+        {
+          "name": "json",
+          "version": "1.1.6"
+        }
+      ]
+    },
+    {
+      "group": "tinox.core",
+      "name": "oidc",
+      "version": "1.2.6",
+      "content_sha256": "d0cfba96749301b1da7164e4667fb3b5c5641a63cb17cb9efbb292ce7d12f0f7",
+      "files": 7,
+      "docs": "docs/tinox-core/oidc/1-2-6/docs.html",
+      "docs_sha256": "d50e9642d5e2817356b96632b1aefe549783d7fb95fad936d9f4a8c4f5362a92",
+      "dependencies": [
+        {
+          "name": "crypto",
+          "version": "1.1.5"
+        },
+        {
+          "name": "http_server",
+          "version": "1.2.7"
+        },
+        {
+          "name": "json",
+          "version": "1.1.6"
+        },
+        {
+          "name": "jwt",
+          "version": "1.1.6"
+        },
+        {
+          "name": "oauth2",
+          "version": "1.1.6"
+        }
+      ]
+    },
+    {
+      "group": "tinox.core",
+      "name": "websocket",
+      "version": "1.1.8",
+      "content_sha256": "0fc658c79a2b968f3a0c95487711e70cf6d78c7d0b6fdbfd4f6539f1cf145d9a",
+      "files": 5,
+      "docs": "docs/tinox-core/websocket/1-1-8/docs.html",
+      "docs_sha256": "690b4390226d06beaed84df6fedd2c9286d397362afe965624d8391bf6a44eeb",
+      "dependencies": []
+    }
+  ]
+}
