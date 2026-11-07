@@ -93,3 +93,45 @@ fn all_problems_are_reported_together_before_anything_runs() {
     assert!(ok && stdout == "started", "{stdout} {err}");
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn properties_values_expand_environment_placeholders() {
+    // ${VAR} / ${VAR:default}: the variable name is free (unlike the key-derived override).
+    let props = "app.port=${TEST_PORT_VAR:8080}\napp.name=host-${TEST_HOST_VAR:localhost}:${TEST_NAME_PORT:5432}/db\n";
+    let (root, exe) = build("expand", props);
+    assert_eq!(run(&root, &exe, &[]).1, "8080 host-localhost:5432/db false");
+    assert_eq!(run(&root, &exe, &[("TEST_PORT_VAR", "9090"), ("TEST_HOST_VAR", "db1")]).1, "9090 host-db1:5432/db false");
+    // A set-but-empty variable counts as set and wins over the default.
+    assert_eq!(run(&root, &exe, &[("TEST_HOST_VAR", "")]).1, "8080 host-:5432/db false");
+    // The key-derived override still beats the (expanded) file value.
+    assert_eq!(run(&root, &exe, &[("TEST_PORT_VAR", "9090"), ("APP_PORT", "7")]).1, "7 host-localhost:5432/db false");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn unset_placeholder_without_default_and_malformed_placeholders_fail_startup() {
+    let (root, exe) = build("expand-missing", "app.port=${TEST_REQUIRED_VAR}\napp.name=${BROKEN\napp.debug=${:x}\n");
+    let (ok, _, err) = run(&root, &exe, &[]);
+    assert!(!ok);
+    assert!(err.contains("key 'app.port' refers to environment variable 'TEST_REQUIRED_VAR', which is not set and has no default"), "{err}");
+    assert!(err.contains("key 'app.name' has an unterminated"), "{err}");
+    assert!(err.contains("key 'app.debug' has a ${...} placeholder with an empty"), "{err}");
+    assert!(err.contains("3 configuration problem(s)"), "{err}");
+    // Once the variable is set the unrelated malformed entries are the only blockers.
+    let (root2, exe2) = build("expand-secret", "app.port=${TEST_REQUIRED_VAR}\napp.name=${TEST_NAME_VAR}\n");
+    let (ok, _, err) = run(&root2, &exe2, &[("TEST_REQUIRED_VAR", "1")]);
+    assert!(!ok && err.contains("'TEST_NAME_VAR'"), "{err}");
+    // Values (possibly secrets) never appear in the error text.
+    let (ok, _, err) = run(&root2, &exe2, &[("TEST_REQUIRED_VAR", "topsecret-not-int")]);
+    assert!(!ok && !err.contains("topsecret-not-int"), "{err}");
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(root2);
+}
+
+#[test]
+fn escaped_placeholder_stays_literal_and_expansion_is_not_rescanned() {
+    let (root, exe) = build("expand-escape", "app.port=1\napp.name=a\\${NOT_EXPANDED}b-${TEST_RESCAN_VAR}\n");
+    // The variable's own value contains `${...}` and must not be expanded a second time.
+    assert_eq!(run(&root, &exe, &[("TEST_RESCAN_VAR", "${X}")]).1, "1 a${NOT_EXPANDED}b-${X} false");
+    let _ = fs::remove_dir_all(root);
+}

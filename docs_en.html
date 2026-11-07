@@ -1507,7 +1507,7 @@ class Api {
         <tr><td><code>@Required</code> / <code>@Optional</code></td><td>Field</td><td>Presence/null contract for JSON request DTOs</td></tr>
         <tr><td><code>@Length(min, max)</code></td><td>Field</td><td>Inclusive Unicode-codepoint or list-element count bounds</td></tr>
         <tr><td><code>@Range(min, max)</code></td><td>Field</td><td>Inclusive numeric request-DTO bounds; <code>@NotNull</code> remains a database annotation</td></tr>
-        <tr><td><code>@Config("key")</code></td><td>Field</td><td>Value from application.properties</td></tr>
+        <tr><td><code>@Config("key")</code></td><td>Field</td><td>Value from application.properties; values may contain <code>${ENV}</code> / <code>${ENV:default}</code> (environment variable, optional default; <code>\${</code> = literal)</td></tr>
         <tr><td><code>@Synchronized</code></td><td>Class/method</td><td>Recursive class monitor for singleton instance methods</td></tr>
         <tr><td><code>@ApplicationComponent</code></td><td>Class</td><td>Singleton scope for DI</td></tr>
         <tr><td><code>@HttpRequestScoped</code></td><td>Class</td><td>One instance per concrete provider and synchronous REST request context</td></tr>
