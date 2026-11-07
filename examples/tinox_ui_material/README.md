@@ -1,13 +1,13 @@
 # Material themes for Tinox-UI
 
-A calm, responsive workspace with rounded cards, clear type, tonal violet accents,
+A calm, responsive workspace with rounded cards, clear type, configurable tonal accents,
 outlined fields and subtle interaction feedback. The example uses `@TinoxUIApp`
 and `@View`; the existing widgets inherit the selected theme automatically.
 
 From the repository root, using a compiler built from this checkout:
 
 ```sh
-TINOX_UI_THEME=material target/release/tinox run examples/tinox_ui_material/Main.tnx
+TINOX_UI_THEME=material TINOX_UI_COLOR=blue target/release/tinox run examples/tinox_ui_material/Main.tnx
 ```
 
 Open <http://localhost:8300/>. Try the preferences tab, save a change, mark the
@@ -17,6 +17,12 @@ browser session on the server and are not persisted to a database.
 Restart with `TINOX_UI_THEME=material-dark` for dark surfaces and pastel accents.
 `neon` retains the original Tinox appearance and remains the default for existing
 apps. Unknown names fail at startup with a clear message.
+
+Choose `TINOX_UI_COLOR=red`, `green`, `blue`, or `purple` for either Material
+variant. Purple is the default when the variable is unset or empty. Each preset
+provides matching button, text, focus and tonal surface colors for light/dark mode;
+error and success messages retain their semantic colors. Unknown values fail
+clearly. Color presets require a Material theme; using them with `neon` is an error.
 
 The example overrides `tinox.core:ui` with the workspace source, so it exercises
 this implementation before publication. No registry release is needed.

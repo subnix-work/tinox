@@ -223,7 +223,7 @@ fn workspace_ui_shell_selects_themes_and_fonts() {
     std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ui_shell_fonts/Main.tnx")).unwrap();
     let go = |value: Option<&str>, theme: Option<&str>| {
         let mut c = Command::new(tinox());
-        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS").env_remove("TINOX_UI_THEME");
+        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS").env_remove("TINOX_UI_THEME").env_remove("TINOX_UI_COLOR");
         if let Some(v) = value { c.env("TINOX_UI_FONTS", v); }
         if let Some(v) = theme { c.env("TINOX_UI_THEME", v); }
         c.output().unwrap()
@@ -244,6 +244,37 @@ fn workspace_ui_shell_selects_themes_and_fonts() {
     let bad_theme = go(None, Some("unknown"));
     assert!(!bad_theme.status.success());
     assert!(String::from_utf8_lossy(&bad_theme.stdout).contains("TINOX_UI_THEME must be"));
+    // Exercise the actual rendered shell against all curated accent/mode pairs.
+    std::fs::write(proj.join("src/Main.tnx"),
+        "import tinox.core.ui\nclass Main {\n    fnc main() -> Int32 {\n        println(Assets::shellHtml(9001))\n        return 0\n    }\n}\n").unwrap();
+    let colored = |theme: &str, color: &str| {
+        Command::new(tinox()).arg("run").current_dir(&proj)
+            .env("TINOX_UI_THEME", theme).env("TINOX_UI_COLOR", color)
+            .env_remove("TINOX_UI_FONTS").output().unwrap()
+    };
+    for (color, light, dark) in [
+        ("red", "#a63c46", "#ffb2b9"),
+        ("green", "#286747", "#94d5ab"),
+        ("blue", "#315da8", "#adc7ff"),
+        ("purple", "#6554a4", "#cbb9ff"),
+        ("", "#6554a4", "#cbb9ff"),
+    ] {
+        for (theme, primary) in [("material", light), ("material-dark", dark)] {
+            let out = colored(theme, color);
+            assert!(out.status.success(), "{theme}/{color}: {}", stderr(&out));
+            let html = String::from_utf8_lossy(&out.stdout);
+            // Check the last declaration, since presets override the base palette.
+            let last_primary = html.rsplit("--tinox-primary:").next().unwrap();
+            assert!(last_primary.trim_start().starts_with(primary), "{theme}/{color}: {last_primary}");
+            assert!(!html.contains("__TINOX_UI_"));
+        }
+    }
+    let bad_color = colored("material", "orange");
+    assert!(!bad_color.status.success());
+    assert!(String::from_utf8_lossy(&bad_color.stdout).contains("TINOX_UI_COLOR must be"));
+    let neon_color = colored("neon", "blue");
+    assert!(!neon_color.status.success());
+    assert!(String::from_utf8_lossy(&neon_color.stdout).contains("TINOX_UI_COLOR requires"));
     std::fs::remove_dir_all(&proj).ok();
 }
 

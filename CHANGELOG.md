@@ -6,6 +6,8 @@ All notable changes to Tinox are documented in this file.
 
 ### Added
 
+- #663: Material accent presets through `TINOX_UI_COLOR=red|green|blue|purple`, with matching light/dark palettes and validation.
+
 - #660: Tinox-UI Material light and dark themes (`TINOX_UI_THEME=material` / `material-dark`), with tonal surfaces, rounded cards, readable typography, visible keyboard focus and reduced-motion support. Existing apps retain the neon default. Includes an interactive `examples/tinox_ui_material` workspace demo and explicit `Assets::shellHtmlWithTheme` selection.
 
 ### Fixed

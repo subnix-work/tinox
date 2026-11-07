@@ -17,7 +17,14 @@ namespace tinox.core.ui
         fnc css(name: String) -> String
         {
             Theme::validate(name)
-            if (name == "neon") { return "" }
+            const color: String = envGet("TINOX_UI_COLOR")
+            if (name == "neon") {
+                if (color != "") {
+                    println("TINOX_UI_COLOR requires TINOX_UI_THEME=material or material-dark")
+                    exit(1)
+                }
+                return ""
+            }
             var palette: String = r#"
   :root {
     color-scheme: light;
@@ -62,7 +69,86 @@ namespace tinox.core.ui
   }
 "#
             }
-            return palette + Theme::materialCss()
+            return palette + Theme::materialCss() + Theme::accentCss(name, color)
+        }
+
+        // Curated foreground/container pairs keep controls readable in both modes.
+        // Error and success colors deliberately retain their semantic meaning.
+        fnc accentCss(theme: String, color: String) -> String
+        {
+            if (color == "" || color == "purple") { return "" }
+            if (color != "red" && color != "green" && color != "blue") {
+                println("TINOX_UI_COLOR must be 'red', 'green', 'blue' or 'purple', got '" + color + "'")
+                exit(1)
+            }
+            const dark: Bool = theme == "material-dark"
+            if (color == "red") {
+                if (dark) {
+                    return r#"
+  :root {
+    --tinox-primary: #ffb2b9;
+    --tinox-primary-text: #ffc4c9;
+    --tinox-primary-contrast: #650c22;
+    --tinox-primary-10: #512b34;
+    --tinox-accent-2: #e5bac0;
+  }
+"#
+                }
+                return r#"
+  :root {
+    --tinox-primary: #a63c46;
+    --tinox-primary-text: #912e38;
+    --tinox-primary-contrast: #ffffff;
+    --tinox-primary-10: #ffedef;
+    --tinox-accent-2: #a15a62;
+  }
+"#
+            }
+            if (color == "green") {
+                if (dark) {
+                    return r#"
+  :root {
+    --tinox-primary: #94d5ab;
+    --tinox-primary-text: #b4eac4;
+    --tinox-primary-contrast: #003921;
+    --tinox-primary-10: #1c3e2d;
+    --tinox-accent-2: #b4cebc;
+  }
+"#
+                }
+                return r#"
+  :root {
+    --tinox-primary: #286747;
+    --tinox-primary-text: #1d593b;
+    --tinox-primary-contrast: #ffffff;
+    --tinox-primary-10: #e6f4eb;
+    --tinox-accent-2: #577b64;
+  }
+"#
+            }
+            if (color == "blue") {
+                if (dark) {
+                    return r#"
+  :root {
+    --tinox-primary: #adc7ff;
+    --tinox-primary-text: #c5d8ff;
+    --tinox-primary-contrast: #002e69;
+    --tinox-primary-10: #253b5b;
+    --tinox-accent-2: #bbc9e0;
+  }
+"#
+                }
+                return r#"
+  :root {
+    --tinox-primary: #315da8;
+    --tinox-primary-text: #244f97;
+    --tinox-primary-contrast: #ffffff;
+    --tinox-primary-10: #eaf0ff;
+    --tinox-accent-2: #60799f;
+  }
+"#
+            }
+            return ""
         }
 
         fnc materialCss() -> String
