@@ -2,7 +2,7 @@
 # and the integration matrix exercises. See docs/supported-stack.md for the compatibility policy.
 [stack]
 name = "service"
-compiler = "2.9.3"
+compiler = "2.9.4"
 database = "postgres"
 # Direct members; dependencies are added automatically.
 packages = ["http_server", "json", "db", "jwt", "oauth2", "oidc", "websocket"]
