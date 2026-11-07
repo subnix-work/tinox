@@ -14377,7 +14377,8 @@ int64_t* tinox_json_list_deserialize(int64_t* arr_val, int64_t* (*from_json)(int
 }
 
 // ---- Config (@Config annotation) ----
-// Reads key=value pairs from application.properties in the current directory.
+// Reads key=value pairs from application.properties in the current directory. Values may contain
+// ${ENV_VAR} / ${ENV_VAR:default} placeholders, expanded once at load (see tinox_config_expand).
 
 #define TINOX_CONFIG_MAX_ENTRIES 256
 #define TINOX_CONFIG_MAX_LINE    1024
@@ -14387,11 +14388,64 @@ typedef struct { char* key; char* value; } TinoxConfigEntry;
 static TinoxConfigEntry tinox_config_entries[TINOX_CONFIG_MAX_ENTRIES];
 static int              tinox_config_count = -1; // -1 = not loaded
 
+// Expands ${NAME} and ${NAME:default} placeholders in a properties value. NAME is read from the
+// process environment; a variable that is set but empty counts as set (explicit empty value). A
+// placeholder with no default whose variable is unset, an unterminated or empty `${}`, is a
+// configuration error. `\${` yields a literal `${`. Placeholders are not nested and the
+// expansion result is never rescanned. Errors name the key and the variable, never a value.
+// Returns a heap string (never freed: the entries live for the whole process), or NULL on error.
+static char* tinox_config_expand(const char* key, const char* raw) {
+    size_t cap = strlen(raw) + 1, len = 0;
+    char* out = (char*)malloc(cap);
+    if (!out) { fprintf(stderr, "tinox: out of memory expanding configuration\n"); exit(1); }
+    for (const char* c = raw; *c; ) {
+        const char* piece = NULL;
+        size_t plen = 0, adv = 1;
+        if (c[0] == '\\' && c[1] == '$' && c[2] == '{') { piece = "${"; plen = 2; adv = 3; }
+        else if (c[0] == '$' && c[1] == '{') {
+            const char* end = strchr(c + 2, '}');
+            if (!end) {
+                fprintf(stderr, "tinox: invalid configuration: key '%s' has an unterminated ${...} placeholder\n", key);
+                free(out); return NULL;
+            }
+            const char* colon = memchr(c + 2, ':', (size_t)(end - (c + 2)));
+            size_t nlen = (size_t)((colon ? colon : end) - (c + 2));
+            char name[256];
+            if (nlen == 0 || nlen >= sizeof(name)) {
+                fprintf(stderr, "tinox: invalid configuration: key '%s' has a ${...} placeholder with an empty or overlong variable name\n", key);
+                free(out); return NULL;
+            }
+            memcpy(name, c + 2, nlen);
+            name[nlen] = '\0';
+            const char* v = getenv(name);
+            if (v) { piece = v; plen = strlen(v); }
+            else if (colon) { piece = colon + 1; plen = (size_t)(end - (colon + 1)); }
+            else {
+                fprintf(stderr, "tinox: invalid configuration: key '%s' refers to environment variable '%s', which is not set and has no default\n", key, name);
+                free(out); return NULL;
+            }
+            adv = (size_t)(end - c) + 1;
+        }
+        size_t add = piece ? plen : 1;
+        if (len + add + 1 > cap) {
+            cap = (len + add + 1) * 2;
+            out = (char*)realloc(out, cap);
+            if (!out) { fprintf(stderr, "tinox: out of memory expanding configuration\n"); exit(1); }
+        }
+        if (piece) memcpy(out + len, piece, plen); else out[len] = *c;
+        len += add;
+        c += adv;
+    }
+    out[len] = '\0';
+    return out;
+}
+
 static void tinox_config_load(void) {
     tinox_config_count = 0;
     FILE* f = fopen("application.properties", "r");
     if (!f) return;
     char line[TINOX_CONFIG_MAX_LINE];
+    int expand_problems = 0;
     while (fgets(line, sizeof(line), f)) {
         // strip newline
         size_t len = strlen(line);
@@ -14409,12 +14463,18 @@ static void tinox_config_load(void) {
         // trim leading whitespace from value
         while (*val == ' ' || *val == '\t') val++;
         if (tinox_config_count < TINOX_CONFIG_MAX_ENTRIES) {
+            char* expanded = tinox_config_expand(key, val);
+            if (!expanded) { expand_problems++; continue; }
             tinox_config_entries[tinox_config_count].key   = strdup(key);
-            tinox_config_entries[tinox_config_count].value = strdup(val);
+            tinox_config_entries[tinox_config_count].value = expanded;
             tinox_config_count++;
         }
     }
     fclose(f);
+    if (expand_problems) {
+        fprintf(stderr, "tinox: %d configuration problem(s); refusing to start\n", expand_problems);
+        exit(1);
+    }
 }
 
 // Lookup in the file only (used by limits/telemetry, which read the environment themselves).

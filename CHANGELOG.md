@@ -6,6 +6,8 @@ All notable changes to Tinox are documented in this file.
 
 ### Added
 
+- `application.properties` values expand environment placeholders: `key=${ENV_VAR}` (required) and `key=${ENV_VAR:default}`, several per value, with `\${` as a literal escape. The variable name is free (e.g. `app.port=${PORT:8080}`); an unset variable without default, an unterminated or empty `${}` is a startup error that names the key and variable, never a value. The key-derived override (`APP_PORT`) still wins over the file. Expanded values are not rescanned.
+
 - #663: Material accent presets through `TINOX_UI_COLOR=red|green|blue|purple`, with matching light/dark palettes and validation.
 
 - #660: Tinox-UI Material light and dark themes (`TINOX_UI_THEME=material` / `material-dark`), with tonal surfaces, rounded cards, readable typography, visible keyboard focus and reduced-motion support. Existing apps retain the neon default. Includes an interactive `examples/tinox_ui_material` workspace demo and explicit `Assets::shellHtmlWithTheme` selection.
