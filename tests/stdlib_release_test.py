@@ -22,7 +22,7 @@ class ReleaseChecks(unittest.TestCase):
             for directory in ['crates/tinox-core/packages', 'crates/tinox-core-ext']:
                 manifest = root / directory / 'demo/tinox.toml'
                 manifest.parent.mkdir(parents=True)
-                manifest.write_text('[package]\ncompiler = "2.9.3"\nname = "demo"\nversion = "1.1.0"\n')
+                manifest.write_text('[package]\ncompiler = "2.9.4"\nname = "demo"\nversion = "1.1.0"\n')
                 package = dict(name='demo', manifest=str(manifest.relative_to(root)))
                 source = release.reference.package_source(root, package)
                 source.mkdir(parents=True)

@@ -262,7 +262,7 @@ fn source_build_tls_image_serves_https() {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
         dir.join("tinox.toml"),
-        "[package]\ncompiler = \"2.9.3\"\nname = \"tlsapp\"\nversion = \"0.1.0\"\n\n[docker]\nports = [8443]\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.2.7\"\n",
+        "[package]\ncompiler = \"2.9.4\"\nname = \"tlsapp\"\nversion = \"0.1.0\"\n\n[docker]\nports = [8443]\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"1.2.8\"\n",
     )
     .unwrap();
     std::fs::write(

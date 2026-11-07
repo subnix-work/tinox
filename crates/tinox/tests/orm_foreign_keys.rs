@@ -28,7 +28,7 @@ impl Project {
         }
         std::fs::write(
             dir.join("tinox.toml"),
-            format!("[package]\ncompiler = \"2.9.3\"\nname = \"fk\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\nmigrate_on_startup = true\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n", dir.join("data.db").display()),
+            format!("[package]\ncompiler = \"2.9.4\"\nname = \"fk\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\nmigrate_on_startup = true\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n", dir.join("data.db").display()),
         )
         .unwrap();
         let p = Project { dir };
