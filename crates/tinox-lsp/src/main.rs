@@ -1040,8 +1040,12 @@ impl LanguageServer for Backend {
         };
         let offset = lsp_pos_to_offset(&text, pos);
         let snippet = {
-            let end = offset.min(text.len() as u32) as usize;
-            let start = end.saturating_sub(20);
+            // Byte offsets are not necessarily char boundaries once the line holds
+            // multi-byte characters (Bug 467): snap both ends to a boundary.
+            let mut end = offset.min(text.len() as u32) as usize;
+            while !text.is_char_boundary(end) { end -= 1; }
+            let mut start = end.saturating_sub(20);
+            while !text.is_char_boundary(start) { start -= 1; }
             format!("{:?}", &text[start..end])
         };
         let has_ast = self.asts.contains_key(uri);
