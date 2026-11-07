@@ -1040,8 +1040,12 @@ impl LanguageServer for Backend {
         };
         let offset = lsp_pos_to_offset(&text, pos);
         let snippet = {
-            let end = offset.min(text.len() as u32) as usize;
-            let start = end.saturating_sub(20);
+            // Byte offsets are not necessarily char boundaries once the line holds
+            // multi-byte characters (Bug 467): snap both ends to a boundary.
+            let mut end = offset.min(text.len() as u32) as usize;
+            while !text.is_char_boundary(end) { end -= 1; }
+            let mut start = end.saturating_sub(20);
+            while !text.is_char_boundary(start) { start -= 1; }
             format!("{:?}", &text[start..end])
         };
         let has_ast = self.asts.contains_key(uri);
@@ -1395,7 +1399,7 @@ mod tests {
     fn write_demo_fixture(root: &std::path::Path) {
         std::fs::create_dir_all(root.join("demo/model")).unwrap();
         std::fs::create_dir_all(root.join("demo/dao")).unwrap();
-        std::fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.9.3\"\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        std::fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.9.4\"\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
         std::fs::write(
             root.join("demo/model/Person.tnx"),
             "namespace demo.model {\n    class Person {\n        var id: Int64\n    }\n}\n",
@@ -1534,7 +1538,7 @@ mod diagnostic_tests {
         let local = root.join("package/src/tinox/core/json");
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(root.join("tinox.toml"), "[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"json\"\nversion=\"1.0.0\"\n").unwrap();
-        std::fs::write(root.join("package/tinox.toml"), "[package]\ncompiler = \"2.9.3\"\nname=\"json\"\nversion=\"1.0.0\"\n").unwrap();
+        std::fs::write(root.join("package/tinox.toml"), "[package]\ncompiler = \"2.9.4\"\nname=\"json\"\nversion=\"1.0.0\"\n").unwrap();
         std::fs::write(root.join("tinox.overrides.yaml"), "overrides:\n  'tinox.core:json:1.0.0': package\n").unwrap();
         let entry = root.join("Main.tnx");
         let source = "import tinox.core.json.LocalJson\nclass Main { fnc main() -> Int32 { const n: Int64 = LocalJson::unpublished()\nreturn 0 } }";

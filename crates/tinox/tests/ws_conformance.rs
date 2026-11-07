@@ -30,7 +30,7 @@ fn websocket_server_passes_the_conformance_cases() {
             .find_map(|l| l.strip_prefix("version = ").map(|v| v.trim_matches('"').to_string()))
             .unwrap()
     };
-    let mut toml = String::from("[package]\ncompiler = \"2.9.3\"\nname = \"wsconf\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.4\"\nname = \"wsconf\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
     for m in ["websocket", "http_server", "json"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"{}\"\n", version(m)));
     }

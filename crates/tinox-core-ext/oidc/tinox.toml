@@ -1,30 +1,30 @@
 [package]
-compiler = "2.9.3"
+compiler = "2.9.4"
 name = "oidc"
-version = "1.2.6"
+version = "1.2.7"
 description = "tinox.core.oidc, split out of the bundled stdlib as a standalone tinox-central package."
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "crypto"
-version = "1.1.5"
+version = "1.1.6"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.7"
+version = "1.2.8"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.1.6"
+version = "1.1.7"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "jwt"
-version = "1.1.6"
+version = "1.1.7"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "oauth2"
-version = "1.1.6"
+version = "1.1.7"

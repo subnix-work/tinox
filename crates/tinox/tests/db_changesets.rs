@@ -211,7 +211,7 @@ impl Project {
         std::fs::write(
             dir.join("tinox.toml"),
             format!(
-                "[package]\ncompiler = \"2.9.3\"\nname = \"cs\"\nversion = \"0.1.0\"\nentry = \"src/Main.tnx\"\n\n[database]\ndriver = \"{driver}\"\nurl = \"{url}\"\n{extra}"
+                "[package]\ncompiler = \"2.9.4\"\nname = \"cs\"\nversion = \"0.1.0\"\nentry = \"src/Main.tnx\"\n\n[database]\ndriver = \"{driver}\"\nurl = \"{url}\"\n{extra}"
             ),
         )
         .unwrap();

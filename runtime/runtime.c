@@ -415,8 +415,9 @@ char* tinox_int_to_string(int64_t val) {
     char buf[32];
     int len = 0;
     int neg = val < 0;
-    if (neg) val = -val;
-    do { buf[len++] = '0' + (val % 10); val /= 10; } while (val > 0);
+    // Magnitude as unsigned: -INT64_MIN overflows int64_t (Bug 466).
+    uint64_t mag = neg ? (uint64_t)0 - (uint64_t)val : (uint64_t)val;
+    do { buf[len++] = '0' + (int)(mag % 10); mag /= 10; } while (mag > 0);
     if (neg) buf[len++] = '-';
     char* result = malloc(len + 1);
     for (int i = 0; i < len; i++) result[i] = buf[len - 1 - i];

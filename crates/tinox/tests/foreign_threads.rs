@@ -164,7 +164,7 @@ fn blocked_main_thread_foreign_thread_and_task_share_the_collector() {
     std::fs::write(
         d.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.3\"\nname = \"foreign_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\nsources = [\"ffi.c\"]\nlibs = [\"pthread\"]\n",
+            "[package]\ncompiler = \"2.9.4\"\nname = \"foreign_demo\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n\n[native]\nsources = [\"ffi.c\"]\nlibs = [\"pthread\"]\n",
             env!("CARGO_PKG_VERSION")
         ),
     )

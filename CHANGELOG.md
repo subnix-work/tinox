@@ -4,6 +4,15 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.4] - 2026-11-07
+
+**Notable change:** every package is republished for compiler 2.9.4 (patch version bump; a package declaring `compiler = "2.9.3"` is rejected by 2.9.4). The runtime now converts `Int64` minimum values correctly.
+
+### Fixed
+
+- #655: `Int64.toString()` returned `-8` for `INT64_MIN` (the magnitude was negated in signed arithmetic); the magnitude is now computed unsigned.
+- #657 (`tinox-lsp`): completion requests on lines with multi-byte characters panicked on a non-character-boundary slice and were never answered.
+
 ## [2.9.3] - 2026-11-07
 
 **Notable change:** every package is republished for compiler 2.9.3 (patch version bump; a package declaring `compiler = "2.9.2"` is rejected by 2.9.3). The HTTP/1 request parser in the runtime is stricter (see #648).

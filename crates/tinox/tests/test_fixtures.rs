@@ -12,7 +12,7 @@ fn project(name: &str, suite: &str) -> std::path::PathBuf {
     fs::create_dir_all(&root).unwrap();
     fs::write(
         root.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.3\"\nname = \"fx\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION")),
+        format!("[package]\ncompiler = \"2.9.4\"\nname = \"fx\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION")),
     )
     .unwrap();
     fs::write(root.join("Suite.tnx"), suite).unwrap();

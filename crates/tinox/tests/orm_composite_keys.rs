@@ -40,7 +40,7 @@ fn composite_primary_key_ddl_and_crud_use_every_component() {
     std::fs::write(
         dir.0.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.3\"\nname = \"composite\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\nmigrate_on_startup = true\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n",
+            "[package]\ncompiler = \"2.9.4\"\nname = \"composite\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\nmigrate_on_startup = true\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n",
             db.display()
         ),
     )
