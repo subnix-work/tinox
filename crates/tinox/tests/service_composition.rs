@@ -50,13 +50,13 @@ fn independent_clients_verify_composed_service_recovery_and_draining() {
             let version = if !fresh {
                 "9.9.9"
             } else {
-                // published versions for compiler 2.9.2
+                // published versions for compiler 2.9.3
                 match module {
-                    "db" => "1.2.6",
-                    "http_server" => "1.2.5",
-                    "http" => "1.3.3",
-                    "json" => "1.1.5",
-                    "websocket" => "1.1.6",
+                    "db" => "1.2.7",
+                    "http_server" => "1.2.7",
+                    "http" => "1.3.4",
+                    "json" => "1.1.6",
+                    "websocket" => "1.1.8",
                     other => panic!("no published version recorded for {other}"),
                 }
             };

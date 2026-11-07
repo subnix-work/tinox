@@ -137,7 +137,7 @@ class Job {
  }
 }
 ''')
-    (work / "tinox.toml").write_text('[package]\ncompiler = \"2.9.3\"\ncompiler="2.9.2"\nname="concurrent_accept"\nversion="0.0.0"\n[native]\nsources=["eval_job.c"]\n')
+    (work / "tinox.toml").write_text('[package]\ncompiler = \"2.9.3\"\nname="concurrent_accept"\nversion="0.0.0"\n[native]\nsources=["eval_job.c"]\n')
     cases = [([], 3), ([7], 1), ([1, 2, 3, 4, 5], 2), (list(range(1, 18)), 4), ([9, 2, 9], 9), ([1, 2], 0), ([1, -1, 3, 4], 3)]
     body = []
     for values, limit in cases:
@@ -187,7 +187,7 @@ def transactional(work, tinox):
         repo = Path(__file__).resolve().parents[3]
         shutil.rmtree(work / '.tinox', ignore_errors=True)
         shutil.copytree(repo / 'crates/tinox-core-ext/db/tinox', work / '.tinox/deps/tinox.core/db/checkout/tinox')
-        (work / 'tinox.toml').write_text('[package]\ncompiler = \"2.9.3\"\ncompiler="2.9.2"\nname="transaction_accept"\nversion="0.0.0"\n[database]\ndriver="postgres"\nurl="postgres://postgres@127.0.0.1:' + str(port) + '/postgres"\npool=2\n')
+        (work / 'tinox.toml').write_text('[package]\ncompiler = \"2.9.3\"\nname="transaction_accept"\nversion="0.0.0"\n[database]\ndriver="postgres"\nurl="postgres://postgres@127.0.0.1:' + str(port) + '/postgres"\npool=2\n')
         calls = [(1, 2, 100), (1, 2, 2000), (1, 2, 300), (1, 99, 2), (1, 1, 2), (1, 2, 0), (1, 2, -2), (1, 2, 50)]
         body = ['const bank = new BankService()', 'const selected: Int64 = envGet("TINOX_EVAL_CASE").toInt()']
         for index, (a, b, amount) in enumerate(calls):
@@ -257,7 +257,7 @@ def broker(work, tinox, compact_publish=False):
         repo = Path(__file__).resolve().parents[3]
         shutil.rmtree(work / '.tinox', ignore_errors=True)
         shutil.copytree(repo / 'crates/tinox-core-ext/amqp091/tinox', work / '.tinox/deps/tinox.core/amqp091/checkout/tinox')
-        (work / 'tinox.toml').write_text('[package]\ncompiler = \"2.9.3\"\ncompiler="2.9.2"\nname="broker_accept"\nversion="0.0.0"\n')
+        (work / 'tinox.toml').write_text('[package]\ncompiler = \"2.9.3\"\nname="broker_accept"\nversion="0.0.0"\n')
         main = '''fnc main() -> Int32 {
  const connection = AmqpConnection091::connect("127.0.0.1", PORT, "/", "eval", "eval")
  if (connection.conn <= 0) { throw connection.errorMessage }
