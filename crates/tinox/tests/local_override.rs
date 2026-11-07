@@ -208,9 +208,10 @@ fn workspace_websocket_exposes_upgrade_request_headers() {
 }
 
 /// Issue #627: the `ui` shell loads no third-party fonts unless `TINOX_UI_FONTS=google`;
-/// an unknown value is a hard error. Workspace source (new behaviour, not yet in a published package).
+/// themes default to neon, accept Material variants and reject unknown names.
+/// Workspace source is used so the test covers unpublished UI changes.
 #[test]
-fn workspace_ui_shell_uses_system_fonts_by_default() {
+fn workspace_ui_shell_selects_themes_and_fonts() {
     let proj = fresh_dir("workspace-ui-fonts");
     std::fs::create_dir_all(proj.join("src")).unwrap();
     let ext = repo_root().join("crates/tinox-core-ext");
@@ -220,22 +221,29 @@ fn workspace_ui_shell_uses_system_fonts_by_default() {
     }
     std::fs::write(proj.join("tinox.toml"), toml).unwrap();
     std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ui_shell_fonts/Main.tnx")).unwrap();
-    let go = |value: Option<&str>| {
+    let go = |value: Option<&str>, theme: Option<&str>| {
         let mut c = Command::new(tinox());
-        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS");
+        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS").env_remove("TINOX_UI_THEME");
         if let Some(v) = value { c.env("TINOX_UI_FONTS", v); }
+        if let Some(v) = theme { c.env("TINOX_UI_THEME", v); }
         c.output().unwrap()
     };
-    let expect = |o: &Output, google: &str| {
+    let expect = |o: &Output, google: &str, material: bool, dark: bool| {
         assert!(o.status.success(), "stderr: {}", stderr(o));
-        assert_eq!(String::from_utf8_lossy(&o.stdout), format!("google={google}\nplaceholder=false\nport=true\n"));
+        assert_eq!(String::from_utf8_lossy(&o.stdout), format!("google={google}\nplaceholder=false\nport=true\nmaterial={material}\ndark={dark}\nexplicit=true\n"));
     };
-    expect(&go(None), "false");
-    expect(&go(Some("system")), "false");
-    expect(&go(Some("google")), "true");
-    let bad = go(Some("comic-sans"));
+    expect(&go(None, None), "false", false, false);
+    expect(&go(None, Some("neon")), "false", false, false);
+    expect(&go(None, Some("material")), "false", true, false);
+    expect(&go(None, Some("material-dark")), "false", false, true);
+    expect(&go(Some("system"), None), "false", false, false);
+    expect(&go(Some("google"), Some("material")), "true", true, false);
+    let bad = go(Some("comic-sans"), None);
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stdout).contains("TINOX_UI_FONTS must be"), "{:?}", bad);
+    let bad_theme = go(None, Some("unknown"));
+    assert!(!bad_theme.status.success());
+    assert!(String::from_utf8_lossy(&bad_theme.stdout).contains("TINOX_UI_THEME must be"));
     std::fs::remove_dir_all(&proj).ok();
 }
 

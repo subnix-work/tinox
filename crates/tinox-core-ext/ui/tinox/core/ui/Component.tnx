@@ -688,7 +688,7 @@ namespace tinox.core.ui
         // A titled, bordered content box (Vaadin Card equivalent).
         fnc card(title: String, content: Component) -> Component
         {
-            const style: String = "border:1px solid var(--tinox-glass-border);border-radius:var(--tinox-radius-l);padding:1rem;background:var(--tinox-glass);"
+            const style: String = "border:1px solid var(--tinox-glass-border);border-radius:var(--tinox-radius-l);padding:var(--tinox-card-padding,1rem);gap:var(--tinox-card-gap,0.5rem);background:var(--tinox-glass);"
             return Component::vbox([
                 Component::heading(title, 4),
                 content

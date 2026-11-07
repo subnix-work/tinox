@@ -4,6 +4,15 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- #660: Tinox-UI Material light and dark themes (`TINOX_UI_THEME=material` / `material-dark`), with tonal surfaces, rounded cards, readable typography, visible keyboard focus and reduced-motion support. Existing apps retain the neon default. Includes an interactive `examples/tinox_ui_material` workspace demo and explicit `Assets::shellHtmlWithTheme` selection.
+
+### Fixed
+
+- #661: DataGrid client tests now extract the shipped JavaScript without requiring an absent Tinox semicolon.
+- #662: Notification severity styling now follows incremental updates when `kind` changes.
+
 ## [2.9.3] - 2026-11-07
 
 **Notable change:** every package is republished for compiler 2.9.3 (patch version bump; a package declaring `compiler = "2.9.2"` is rejected by 2.9.3). The HTTP/1 request parser in the runtime is stricter (see #648).

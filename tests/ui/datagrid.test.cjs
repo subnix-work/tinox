@@ -58,7 +58,7 @@ class Element {
 function client() {
   const assets = fs.readFileSync(path.join(__dirname,
     '../../crates/tinox-core-ext/ui/tinox/core/ui/Assets.tnx'), 'utf8');
-  const js = assets.match(/fnc clientJs\(\) -> String\s*\{\s*return r#"([\s\S]*?)"#;/)[1];
+  const js = assets.match(/fnc clientJs\(\) -> String\s*\{\s*return r#"([\s\S]*?)"#/)[1];
   const mount = new Element('div');
   let socket;
   const sent = [];
@@ -166,5 +166,20 @@ test('inserts also respect other inner containers and ordinary component parents
     app.send({ kind: 'patch', ops: [insert('parent', 99, node('Label', 'new'))] });
     assert.equal(app.find('new').parentNode, target);
     assert.equal(target.children.at(-1), app.find('new'));
+  }
+});
+
+
+test('notification severity follows diff updates without replacing the element', () => {
+  const app = client();
+  app.send({ kind: 'init', root: node('Notification', 'status', [], 'Ready', { kind: 'info' }) });
+  const original = app.find('status');
+  for (const kind of ['success', 'error', undefined]) {
+    app.send({ kind: 'patch', ops: [
+      { op: 'update', id: 'status', text: 'Changed', props: kind ? { kind } : {} },
+    ] });
+    assert.equal(app.find('status'), original);
+    assert.equal(original.className, `tinox-notification tinox-notification-${kind || 'info'}`);
+    assert.equal(original.textContent, 'Changed');
   }
 });
