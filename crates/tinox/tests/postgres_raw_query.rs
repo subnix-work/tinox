@@ -52,7 +52,7 @@ fn raw_query_binds_params_and_omits_null_columns() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.9.3"
+compiler = "2.9.4"
 name = "postgres_raw_query"
 version = "0.1.0"
 description = "DB::raw e2e fixture"
@@ -65,7 +65,7 @@ pool = 3
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.7"
+version = "1.2.8"
 
 [[overrides]]
 group = "tinox.core"
