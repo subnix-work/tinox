@@ -52,11 +52,11 @@ fn independent_clients_verify_composed_service_recovery_and_draining() {
             } else {
                 // published versions for compiler 2.9.4
                 match module {
-                    "db" => "1.2.7",
-                    "http_server" => "1.2.7",
-                    "http" => "1.3.4",
-                    "json" => "1.1.6",
-                    "websocket" => "1.1.8",
+                    "db" => "1.2.8",
+                    "http_server" => "1.2.8",
+                    "http" => "1.3.5",
+                    "json" => "1.1.7",
+                    "websocket" => "1.1.9",
                     other => panic!("no published version recorded for {other}"),
                 }
             };
