@@ -117,7 +117,7 @@ def image(tinox, work, tag, port, variant=None, database_url=None):
     for module in ('http_server', 'json', 'http', 'db'):
         target = project / f'.tinox/deps/tinox.core/{module}/checkout/tinox'
         shutil.copytree(REPO / f'crates/tinox-core-ext/{module}/tinox', target, dirs_exist_ok=True)
-    (project / 'tinox.toml').write_text('[package]\ncompiler="2.9.2"\nname="service_latency"\nversion="0.1.0"\n')
+    (project / 'tinox.toml').write_text('[package]\ncompiler = \"2.9.3\"\nname="service_latency"\nversion="0.1.0"\n')
     if database_url:
         with (project / 'tinox.toml').open('a') as manifest:
             manifest.write('[database]\ndriver="postgres"\nurl="' + database_url + '"\npool=2\n')

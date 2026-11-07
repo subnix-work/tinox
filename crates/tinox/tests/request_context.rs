@@ -33,7 +33,7 @@ fn requests_share_one_graph_and_release_it_after_success_error_and_binding_failu
     let directory = std::env::temp_dir().join(format!("tinox-request-http-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tinox-core-ext");
-    let mut manifest = "[package]\ncompiler = \"2.9.2\"\nname=\"request_context\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
+    let mut manifest = "[package]\ncompiler = \"2.9.3\"\nname=\"request_context\"\nversion=\"0.0.0\"\n[startup]\nbanner=false\n".to_string();
     for module in ["http_server", "json"] {
         manifest.push_str(&format!("\n[[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"{module}\"\nversion=\"9.9.9\"\n"));
         copy_tree(

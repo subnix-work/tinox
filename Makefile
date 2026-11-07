@@ -61,7 +61,7 @@ e2e:
 # artifact compatibility stays with stdlib_smoke et al., which resolve real
 # installed packages. Already part of `test`; standalone for quick iteration.
 workspace-ext:
-	cargo test --release -p tinox --test local_override
+	cargo test --release -p tinox --test local_override --test h2spec_conformance --test ws_conformance
 
 # Dogfood: build examples/ + benchmarks/, build and test jgrep/ygrep
 # (jgrep checkout configurable via DOGFOOD_DIR)

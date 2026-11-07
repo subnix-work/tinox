@@ -117,5 +117,7 @@ Contract for features the builder does not provision:
 
 All of these run in `make docker-e2e` (`crates/tinox/tests/docker_source_build.rs`).
 
-Still open: the two-host acceptance check (the same sample built and run on a second, different Linux host) and a
-recorded startup-time measurement on a second machine. Neither can be established from one machine.
+Second-host acceptance: the same `make docker-e2e` suite (`docker_source_build.rs`) runs in CI on a real daemon on
+`ubuntu-24.04-arm` (aarch64, Ubuntu 24.04), a different host class than the development machine (see the
+`arm64-services` lane and `docs/arm64.md`); it passes there, with the UID, linked-library, readiness, database and TLS
+assertions above. A startup-time measurement on a second machine is not recorded.

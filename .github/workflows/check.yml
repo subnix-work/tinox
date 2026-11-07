@@ -80,7 +80,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: subnix-work/jgrep-tinox
-          ref: 9c515e5885866a7b320d591b5296e4840dbc1b5c # main, as of 2026-11-06 (v1.0.14, compiler 2.9.2)
+          ref: 9e628ace50e33692e531b2e39b8220e4f2e521c2 # main, as of 2026-11-07 (v1.0.15, compiler 2.9.3)
           path: jgrep-tinox
 
       - name: Install system toolchain
@@ -132,7 +132,7 @@ jobs:
 
   # Issue #557: native ARM64 service/database/protocol/FFI/container coverage. Mandatory: a skipped test fails the
   # lane (scripts/check-no-skips.sh) so a missing optional tool cannot hide missing coverage. See docs/arm64.md;
-  # this lane has not yet run on ARM64 hardware.
+  # this lane runs on real ARM64 hardware.
   arm64-services:
     name: arm64 (services, databases, FFI, images)
     runs-on: ubuntu-24.04-arm
@@ -189,5 +189,16 @@ jobs:
           sudo apt-get install -y clang llvm libgc-dev libsqlite3-dev libpq-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Bug 462: the HTTP/2 server is checked against h2spec, an independent conformance suite.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: install h2spec
+        run: |
+          GOBIN="$HOME/.local/bin" go install github.com/summerwind/h2spec/cmd/h2spec@v2.2.1
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: workspace-source lane
+        env:
+          TINOX_REQUIRE_H2SPEC: "1"
         run: make workspace-ext

@@ -630,6 +630,12 @@ __TINOX_UI_FONT_LINKS__
         break;
     }
     el.setAttribute("style", props.style || "");
+    // setAttribute("style") above wipes the inline display that build()
+    // set from `open`: a closed Dialog (display:none) became visible on
+    // any props-only update (issue #635). Re-apply it from the live prop.
+    if (el.className === "tinox-dialog-backdrop" && props.open !== undefined) {
+      el.style.display = props.open === "true" ? "" : "none";
+    }
     if (props.tooltip !== undefined) {
       el.title = props.tooltip;
     }

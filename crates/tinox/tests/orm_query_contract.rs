@@ -31,7 +31,7 @@ impl Project {
         assert!(out.status.success(), "{}", text(&out));
         std::fs::write(
             dir.join("tinox.toml"),
-            format!("[package]\ncompiler = \"2.9.2\"\nname = \"ormq\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n", db.display()),
+            format!("[package]\ncompiler = \"2.9.3\"\nname = \"ormq\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n", db.display()),
         )
         .unwrap();
         let install = Command::new(env!("CARGO_BIN_EXE_tinox")).arg("install").current_dir(&dir).output().unwrap();

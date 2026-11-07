@@ -39,6 +39,7 @@
 #include <unistd.h>
 
 extern "C" int64_t Http2Driver_tinoxHttp2ReadFrame(int64_t conn);
+extern "C" int64_t httpConnFromFd(int64_t fd);
 
 // runtime.c's main() (renamed at compile time, see build.sh) calls into
 // tinox_main() -- a symbol codegen normally supplies for a real Tinox
@@ -46,7 +47,7 @@ extern "C" int64_t Http2Driver_tinoxHttp2ReadFrame(int64_t conn);
 // Unreachable (libFuzzer's own main drives this binary) but the renamed
 // main's body still references tinox_main, so the symbol must resolve at
 // link time regardless -- same as every other driver-module target here.
-extern "C" int64_t tinox_main(void) { return 0; }
+// tinox_main is now emitted by the driver itself (class Main), no stub needed.
 
 // readFrame()'s length field is a 24-bit wire value (RFC 7540 §4.1, up to
 // ~16MB) and httpServerReadRawBytes additionally hard-caps at 16MB
@@ -70,7 +71,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     }
     shutdown(fds[0], SHUT_WR);
 
-    Http2Driver_tinoxHttp2ReadFrame(static_cast<int64_t>(fds[1]));
+    // readFrame() takes a runtime TinoxConn* handle, not a raw fd (passing the fd
+    // itself dereferenced a near-null pointer on every input, including the empty one).
+    int64_t conn = httpConnFromFd(static_cast<int64_t>(fds[1]));
+    if (conn > 0) {
+        Http2Driver_tinoxHttp2ReadFrame(conn);
+    }
 
     // Same fd-exhaustion rationale as fuzz/amqp091/amqp091_fuzzer.cc:
     // file descriptors are far scarcer than the heap memory this

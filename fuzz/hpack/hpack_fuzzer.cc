@@ -38,7 +38,7 @@ struct TinoxArray {
 // (Unlike the JSON/ZIP harnesses, __tinox_err needs no stub here: codegen
 // always emits that global for any compiled Tinox file — driver_out.ll
 // already defines it, redefining it here would collide.)
-extern "C" int64_t tinox_main(void) { return 0; }
+// tinox_main is now emitted by the driver itself (class Main), no stub needed.
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     // Not a correctness workaround — HpackDynTable::add()'s eviction loop

@@ -17,6 +17,16 @@ namespace tinox.core.http2_server
         var peerMaxFrameSize: Int64
         var peerInitWindowSize: Int64
         var lastStreamId: Int64
+        /** Set once a connection error (GOAWAY) was sent: the frame loop stops. */
+        var dead: Bool
+        /** Stream id whose header block is still open (awaiting CONTINUATION), else 0. */
+        var continuationStream: Int64
+        /** Connection-level send window as announced by WINDOW_UPDATE frames. */
+        var sendWindow: Int64
+        var openStreams: Int64
+        /** Streams whose response body is still waiting for flow-control credit, in arrival order. */
+        var sendQueue: List<Int64>
+        var closedCount: Int64
 
         fn new(handle: Int64) -> Http2Conn
         {
@@ -27,7 +37,13 @@ namespace tinox.core.http2_server
                 sendDynTable: HpackDynTable::new(4096),
                 peerMaxFrameSize: 16384,
                 peerInitWindowSize: 65535,
-                lastStreamId: 0
+                lastStreamId: 0,
+                dead: false,
+                continuationStream: 0,
+                sendWindow: 65535,
+                openStreams: 0,
+                sendQueue: [],
+                closedCount: 0
             }
         }
     }

@@ -103,8 +103,11 @@ namespace tinox.core.hpack
             return ""
         }
 
+        @Throws(HpackError)
         /**
-         * Looks up a header from the combined static + dynamic index table (1-based)
+         * Looks up a header from the combined static + dynamic index table (1-based).
+         * Index 0 and indexes past the end of the dynamic table are decoding errors
+         * (RFC 7541 §2.3.3, §6.1), never an empty header.
          */
         fn lookupHeader(dynTable: HpackDynTable, index: Int64) -> HpackHeader
         {
@@ -117,7 +120,7 @@ namespace tinox.core.hpack
             {
                 return dynTable.entries[dynIndex]
             }
-            return HpackHeader::new("", "")
+            throw HpackError { message: "HPACK: invalid index " + index.toString() }
         }
 
         /**
@@ -167,6 +170,31 @@ namespace tinox.core.hpack
 
         @Throws(HpackError)
         /**
+         * decodeInt that rejects a truncated encoding (RFC 7541 §5.1) instead of returning
+         * a value built from the bytes that happened to be left.
+         */
+        fn decodeIntChecked(data: List<Int64>, offset: Int64, prefixBits: Int64) -> HpackIntResult
+        {
+            if (offset < 0 || offset >= data.len())
+            {
+                throw HpackError { message: "HPACK: truncated integer" }
+            }
+            const result: HpackIntResult = Hpack::decodeInt(data, offset, prefixBits)
+            const mask: Int64 = (1 << prefixBits) - 1
+            const used: Int64 = result.nextOffset - offset
+            if ((data[offset] & mask) == mask)
+            {
+                // continuation bytes were required: the last consumed one must terminate the integer
+                if (used < 2 || (data[result.nextOffset - 1] & 128) != 0)
+                {
+                    throw HpackError { message: "HPACK: truncated integer" }
+                }
+            }
+            return result
+        }
+
+        @Throws(HpackError)
+        /**
          * Decodes an HPACK string literal (RFC 7541 §5.2)
          * Huffman-coded strings (flag bit 0x80) are decoded; see huffmanDecode.
          *
@@ -176,9 +204,13 @@ namespace tinox.core.hpack
          */
         fn decodeStr(data: List<Int64>, offset: Int64) -> HpackStrResult
         {
-            const lenResult: HpackIntResult = Hpack::decodeInt(data, offset, 7)
+            const lenResult: HpackIntResult = Hpack::decodeIntChecked(data, offset, 7)
             const strLen: Int64 = lenResult.value
             const pos: Int64 = lenResult.nextOffset
+            if (strLen > data.len() - pos)
+            {
+                throw HpackError { message: "HPACK: string literal longer than the header block" }
+            }
             var bytes: List<Int64> = []
             var i: Int64 = 0
             // strLen comes straight off the wire (decodeInt) and can claim
@@ -274,13 +306,18 @@ namespace tinox.core.hpack
         {
             const headers: List<HpackHeader> = []
             var offset: Int64 = 0
+            var sawField: Bool = false
             while offset < data.len()
             {
                 const b: Int64 = data[offset]
+                if ((b & 224) != 32)
+                {
+                    sawField = true
+                }
                 if ((b & 128) != 0)
                 {
                     // §6.1 Indexed header field representation
-                    const result: HpackIntResult = Hpack::decodeInt(data, offset, 7)
+                    const result: HpackIntResult = Hpack::decodeIntChecked(data, offset, 7)
                     const header: HpackHeader = Hpack::lookupHeader(dynTable, result.value)
                     headers.push(header)
                     offset = result.nextOffset
@@ -288,7 +325,7 @@ namespace tinox.core.hpack
                 else if ((b & 64) != 0)
                 {
                     // §6.2.1 Literal with incremental indexing
-                    const nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 6)
+                    const nameResult: HpackIntResult = Hpack::decodeIntChecked(data, offset, 6)
                     offset = nameResult.nextOffset
                     var name: String = ""
                     if (nameResult.value == 0)
@@ -310,14 +347,23 @@ namespace tinox.core.hpack
                 else if ((b & 32) != 0)
                 {
                     // §6.3 Dynamic table size update
-                    const result: HpackIntResult = Hpack::decodeInt(data, offset, 5)
+                    const result: HpackIntResult = Hpack::decodeIntChecked(data, offset, 5)
+                    // RFC 7541 §4.2: size updates only at the start of a block, never above the advertised limit.
+                    if (sawField)
+                    {
+                        throw HpackError { message: "HPACK: dynamic table size update after a header field" }
+                    }
+                    if (result.value > dynTable.limit)
+                    {
+                        throw HpackError { message: "HPACK: dynamic table size update above the limit" }
+                    }
                     dynTable.setMaxSize(result.value)
                     offset = result.nextOffset
                 }
                 else
                 {
                     // §6.2.2 / §6.2.3 Literal without indexing / never indexed
-                    const nameResult: HpackIntResult = Hpack::decodeInt(data, offset, 4)
+                    const nameResult: HpackIntResult = Hpack::decodeIntChecked(data, offset, 4)
                     offset = nameResult.nextOffset
                     var name: String = ""
                     if (nameResult.value == 0)

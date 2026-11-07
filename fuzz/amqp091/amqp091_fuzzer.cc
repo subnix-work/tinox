@@ -39,7 +39,7 @@ extern "C" int64_t httpConnFromFd(int64_t fd);
 // here. The renamed main is unreachable (libFuzzer's own main drives this
 // binary) but its body still references tinox_main, so the symbol must
 // resolve at link time regardless — same as fuzz/hpack/hpack_fuzzer.cc.
-extern "C" int64_t tinox_main(void) { return 0; }
+// tinox_main is now emitted by the driver itself (class Main), no stub needed.
 
 // readFrame() itself already rejects any declared frame size above
 // 16777216 (16MB) before trying to read it (Amqp091.tnx: `size > 16777216`
