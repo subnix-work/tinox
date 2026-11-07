@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.3"
+compiler = "2.9.4"
 name = "http3_rest_api"
 version = "0.1.0"
 description = ""
@@ -7,14 +7,14 @@ description = ""
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http3_server"
-version = "1.2.5"
+version = "1.2.6"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.7"
+version = "1.2.8"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "json"
-version = "1.1.6"
+version = "1.1.7"

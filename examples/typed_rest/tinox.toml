@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.3"
+compiler = "2.9.4"
 name = "typed_rest"
 version = "0.1.0"
 description = "Typed annotation-driven REST responses from checkout sources"

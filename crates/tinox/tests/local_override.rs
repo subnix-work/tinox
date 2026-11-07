@@ -32,7 +32,7 @@ fn fresh_dir(name: &str) -> PathBuf {
 fn write_localdemo(dir: &Path, greeting: &str) {
     let src = dir.join("tinox/core/localdemo");
     std::fs::create_dir_all(&src).expect("mkdir pkg");
-    std::fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.3\"\nname = \"localdemo\"\nversion = \"9.9.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n").expect("pkg toml");
+    std::fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.4\"\nname = \"localdemo\"\nversion = \"9.9.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n").expect("pkg toml");
     std::fs::write(
         src.join("Greeter.tnx"),
         format!("class Greeter {{\n    fn greet() -> String {{ return \"{greeting}\" }}\n}}\n"),
@@ -47,7 +47,7 @@ fn project(name: &str, extra_toml: &str) -> PathBuf {
     std::fs::create_dir_all(p.join("src")).expect("mkdir src");
     std::fs::write(
         p.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.3\"\nname = \"overridetest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"localdemo\"\nversion = \"1.0.0\"\n{extra_toml}"),
+        format!("[package]\ncompiler = \"2.9.4\"\nname = \"overridetest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"localdemo\"\nversion = \"1.0.0\"\n{extra_toml}"),
     )
     .expect("toml");
     std::fs::write(p.join("src/Main.tnx"), MAIN).expect("Main");
@@ -120,7 +120,7 @@ fn misconfigured_overrides_are_hard_errors() {
     // package name mismatch
     let pkg = fresh_dir("pkg-mismatch");
     write_localdemo(&pkg, "v1");
-    std::fs::write(pkg.join("tinox.toml"), "[package]\ncompiler = \"2.9.3\"\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
+    std::fs::write(pkg.join("tinox.toml"), "[package]\ncompiler = \"2.9.4\"\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
     let proj2 = project("name-mismatch", &override_toml(pkg.to_str().unwrap()));
     let out = run(&proj2);
     assert!(!out.status.success());
@@ -168,7 +168,7 @@ fn workspace_crypto_resolves_from_the_checkout() {
     let crypto = repo_root().join("crates/tinox-core-ext/crypto");
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.3\"\nname = \"wscrypto\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"{}\"\n", crypto.display()),
+        format!("[package]\ncompiler = \"2.9.4\"\nname = \"wscrypto\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"{}\"\n", crypto.display()),
     )
     .unwrap();
     std::fs::write(
@@ -194,7 +194,7 @@ fn workspace_websocket_exposes_upgrade_request_headers() {
     let ws = repo_root().join("crates/tinox-core-ext/websocket");
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.3\"\nname = \"wsupgrade\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\npath = \"{}\"\n", ws.display()),
+        format!("[package]\ncompiler = \"2.9.4\"\nname = \"wsupgrade\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\npath = \"{}\"\n", ws.display()),
     )
     .unwrap();
     std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ws_upgrade_inspect/Main.tnx")).unwrap();
@@ -215,7 +215,7 @@ fn workspace_ui_shell_selects_themes_and_fonts() {
     let proj = fresh_dir("workspace-ui-fonts");
     std::fs::create_dir_all(proj.join("src")).unwrap();
     let ext = repo_root().join("crates/tinox-core-ext");
-    let mut toml = String::from("[package]\ncompiler = \"2.9.3\"\nname = \"uifonts\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.4\"\nname = \"uifonts\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n");
     for m in ["ui", "json", "http_server", "websocket", "http"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\npath = \"{}\"\n", ext.join(m).display()));
     }
@@ -287,7 +287,7 @@ fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
     std::fs::write(proj.join("src/Main.tnx"), MAIN).unwrap();
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.3\"\nname = \"overridetest\"\nversion = \"0.1.0\"\n{}", override_toml(pkg.to_str().unwrap())),
+        format!("[package]\ncompiler = \"2.9.4\"\nname = \"overridetest\"\nversion = \"0.1.0\"\n{}", override_toml(pkg.to_str().unwrap())),
     ).unwrap();
     let output = Command::new(tinox()).args(["add", "tinox.core", "localdemo", "1.0.0", "http://127.0.0.1:1/unreachable"])
         .current_dir(&proj).env("TINOX_HOME", proj.join("empty-home"))
@@ -313,7 +313,7 @@ fn workspace_json_deserialize_throws_on_null_and_invalid_text() {
     let json = repo_root().join("crates/tinox-core-ext/json");
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.3\"\nname = \"wsjson\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\npath = \"{}\"\n", json.display()),
+        format!("[package]\ncompiler = \"2.9.4\"\nname = \"wsjson\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\npath = \"{}\"\n", json.display()),
     )
     .unwrap();
     std::fs::write(

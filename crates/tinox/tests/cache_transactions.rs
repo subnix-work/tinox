@@ -23,7 +23,7 @@ fn eviction_follows_the_commit_and_concurrent_readers_see_the_new_value() {
     assert!(create.status.success());
     std::fs::write(
         dir.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.3\"\nname = \"cachetx\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n", db.display()),
+        format!("[package]\ncompiler = \"2.9.4\"\nname = \"cachetx\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n", db.display()),
     )
     .unwrap();
     let tinox = env!("CARGO_BIN_EXE_tinox");
