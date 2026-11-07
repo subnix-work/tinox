@@ -1,0 +1,25 @@
+// Bug 466: Int64.toString() negated the value in int64_t, so INT64_MIN
+// overflowed and printed "-8" instead of "-9223372036854775808".
+// expect: -9223372036854775808
+// expect: -9223372036854775807
+// expect: 9223372036854775807
+// expect: v=-9223372036854775808
+// expect: -2147483648
+// expect: 0
+// expect: -1
+
+class Main
+{
+    fnc main() -> Int32 {
+        const m: Int64 = (0 - 9223372036854775807) - 1
+        println(m.toString())
+        println((m + 1).toString())
+        println((m - 1).toString())
+        println("v=" + m.toString())
+        const s: Int32 = ((0 - 2147483647) - 1) as Int32
+        println(s.toString())
+        println((0 as Int64).toString())
+        println((0 - 1).toString())
+        return 0
+    }
+}
