@@ -526,11 +526,11 @@
           "version": "1.1.5"
         }
       ],
-      "docs": "docs/tinox-core/http_server/1-2-5/docs.html",
+      "docs": "docs/tinox-core/http_server/1-2-6/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/http_server/tinox.toml",
       "name": "http_server",
-      "version": "1.2.5"
+      "version": "1.2.6"
     },
     {
       "dependencies": [],
@@ -793,11 +793,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/websocket/1-1-6/docs.html",
+      "docs": "docs/tinox-core/websocket/1-1-7/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/websocket/tinox.toml",
       "name": "websocket",
-      "version": "1.1.6"
+      "version": "1.1.7"
     },
     {
       "dependencies": [],
