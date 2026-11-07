@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.2"
+compiler = "2.9.3"
 name = "observability"
 version = "0.1.0"
 description = "Correlate annotated routes, spawned operations and outbound HTTP calls"
@@ -7,9 +7,9 @@ description = "Correlate annotated routes, spawned operations and outbound HTTP 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http_server"
-version = "1.2.5"
+version = "1.2.7"
 
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http"
-version = "1.3.3"
+version = "1.3.4"

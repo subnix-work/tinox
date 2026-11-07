@@ -67,7 +67,7 @@ fn project(name: &str, main: &str) -> PathBuf {
     std::fs::write(
         dir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.2\"\nname = \"ka\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"http\"\npath = \"{}\"\n",
+            "[package]\ncompiler = \"2.9.3\"\nname = \"ka\"\nversion = \"0.1.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http\"\nversion = \"{version}\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"http\"\npath = \"{}\"\n",
             root.join("crates/tinox-core-ext/http").display()
         ),
     )

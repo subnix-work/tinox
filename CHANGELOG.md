@@ -4,6 +4,17 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.3] - 2026-11-07
+
+**Notable change:** every package is republished for compiler 2.9.3 (patch version bump; a package declaring `compiler = "2.9.2"` is rejected by 2.9.3). The HTTP/1 request parser in the runtime is stricter (see #648).
+
+### Fixed
+
+- #648: HTTP/1 request framing. Chunked request bodies are decoded (and bounded by the body limit), duplicate or malformed `Content-Length`, `Transfer-Encoding` combined with `Content-Length`, unsupported transfer codings, whitespace in header names and unknown HTTP versions are rejected with 400/413/501/505, and `HEAD` responses carry no body.
+- #643 (`http2_server` 1.1.10, `hpack` 1.2.5): HTTP/2 server rewritten to pass h2spec 145/145 (frame validation, flow control, one task per connection); HPACK rejects invalid indexes and truncated input with a catchable error.
+- #646 (`websocket` 1.1.7): text messages and close frames are validated (UTF-8, close codes) with close codes 1007/1002.
+- #641: data race on the WebSocket debug flag found by ThreadSanitizer.
+
 ## [2.9.2] - 2026-11-06
 
 **Notable change:** every package is republished for compiler 2.9.2 (patch version bump; a package declaring `compiler = "2.9.1"` is rejected by 2.9.2).

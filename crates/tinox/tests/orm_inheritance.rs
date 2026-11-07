@@ -38,7 +38,7 @@ fn project(tag: &str, files: &[(&str, &str)]) -> (Dir, PathBuf) {
     std::fs::write(
         dir.0.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.2\"\nname = \"orminh\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\nmigrate_on_startup = true\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n",
+            "[package]\ncompiler = \"2.9.3\"\nname = \"orminh\"\nversion = \"0.1.0\"\n\n[database]\ndriver = \"sqlite\"\nurl = \"{}\"\nmigrate_on_startup = true\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"db\"\nversion = \"1.1.0\"\n",
             db.display()
         ),
     )

@@ -337,7 +337,7 @@ pub fn run_case(case: &Case) -> Result<(), String> {
             toml.push_str("[database]\ndriver = \"sqlite\"\nurl = \"test.db\"\n");
         }
         if !extended_deps.is_empty() {
-            toml.push_str("[package]\ncompiler = \"2.9.2\"\nname = \"");
+            toml.push_str("[package]\ncompiler = \"2.9.3\"\nname = \"");
             toml.push_str(&case.name);
             toml.push_str("\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
             // Skip a module that's already a transitive dependency of

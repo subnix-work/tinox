@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>semaphore — Tinox Docs</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --bg:        #070b14;
+  --bg2:       rgba(17, 25, 43, 0.6);
+  --bg3:       rgba(34, 211, 238, 0.07);
+  --sidebar:   rgba(7, 11, 20, 0.72);
+  --border:    rgba(103, 232, 249, 0.16);
+  --accent:    #22d3ee;
+  --accent2:   #a78bfa;
+  --link:      #67e8f9;
+  --green:     #34d399;
+  --text:      #e2e8f0;
+  --text2:     #93a4bd;
+  --text3:     #64748b;
+  --code-bg:   rgba(5, 7, 13, 0.65);
+  --tag-bg:    rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(60rem 32rem at 12% -10%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(50rem 30rem at 110% 10%, rgba(167, 139, 250, 0.12), transparent 55%),
+    linear-gradient(180deg, #05070d 0%, #070b14 40%, #060910 100%);
+  background-attachment: fixed;
+  color: var(--text);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, black, transparent 75%);
+}
+nav { position: sticky; top: 0; z-index: 1; width: 270px; min-width: 270px; height: 100vh; background: var(--sidebar); border-right: 1px solid var(--border); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); padding: 32px 0; overflow-y: auto; flex-shrink: 0; }
+nav h1 { padding: 0 24px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-family: 'Space Grotesk', 'JetBrains Mono', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: -0.2px; background: linear-gradient(120deg, #f8fafc 0%, #67e8f9 55%, #a78bfa 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+nav ul { list-style: none; }
+nav li.nav-section { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text3); padding: 16px 24px 6px; }
+nav li a { display: block; padding: 7px 24px; color: var(--text2); text-decoration: none; font-size: 0.88rem; border-left: 2px solid transparent; transition: all 0.15s; }
+nav li a:hover { color: var(--text); background: var(--bg3); border-left-color: var(--accent); }
+main { position: relative; z-index: 1; flex: 1; min-width: 0; padding: 56px clamp(2rem, 4vw, 4rem); }
+main h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.9rem; font-weight: 700; color: #fff; margin-bottom: 8px; letter-spacing: -0.4px; }
+main > p.generated-by { color: var(--text3); margin-bottom: 28px; font-size: 0.78rem; }
+.tool-tag { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text3); }
+.item { border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; background: var(--bg2); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.item-name { font-size: 1.1rem; font-weight: 600; color: var(--text); margin-bottom: 12px; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.kw { color: #c792ea; }
+.doc { color: var(--text2); font-size: 0.88rem; margin-bottom: 16px; line-height: 1.6; }
+h3 { font-size: 0.8rem; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin: 20px 0 8px; font-weight: 700; }
+table.members { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.members tr { border-bottom: 1px solid var(--border); }
+table.members td { padding: 8px 10px; vertical-align: top; }
+.member-name { font-family: 'JetBrains Mono', 'Fira Code', monospace; color: var(--text); width: 35%; }
+.member-type { color: #ffcb6b; width: 20%; }
+.method-sig { background: var(--code-bg); border-radius: 6px; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--text); margin-bottom: 8px; border: 1px solid var(--border); }
+.method-doc { color: var(--text2); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.5; }
+.ann { color: var(--green); font-size: 0.78rem; display: inline-block; margin-right: 6px; }
+code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--link); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>📦 semaphore</h1>
+  <ul><li class="nav-section">Overview</li><li><a href="#overview">Description</a></li><li class="nav-section">Examples</li><li><a href="#ex-mutex">Mutex</a></li><li><a href="#ex-semaphore">Semaphore</a></li><li class="nav-section">Classes</li><li><a href="#class-Mutex">Mutex</a></li><li><a href="#class-RWLock">RWLock</a></li><li><a href="#class-Semaphore">Semaphore</a></li></ul>
+</nav>
+<main>
+  <h1>semaphore</h1>
+  <p class="generated-by">Generated by <span class="tool-tag">tinox doc</span></p>
+  <section id="overview" class="item"><p class="doc" style="margin-bottom:0">tinox.core.semaphore, bundled with the compiler and also available as a standalone tinox-central package.</p></section><section id="ex-mutex" class="item"><h3 style="margin-top:0">Mutex</h3><pre><code><span class="kw">import</span> tinox.core.semaphore
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        <span class="kw">const</span> mutex: <span class="type">Mutex</span> = <span class="type">Mutex</span>::<span class="kw">new</span>()
+        <span class="type">Mutex</span>::lock(mutex)
+        println(<span class="str">&quot;critical section&quot;</span>)
+        <span class="type">Mutex</span>::unlock(mutex)
+        <span class="kw">if</span> (<span class="type">Mutex</span>::tryLock(mutex))
+        {
+            println(<span class="str">&quot;acquired again&quot;</span>)
+            <span class="type">Mutex</span>::unlock(mutex)
+        }
+
+        <span class="kw">return</span> <span class="num">0</span>
+    }
+}
+</code></pre></section><section id="ex-semaphore" class="item"><h3 style="margin-top:0">Semaphore</h3><pre><code><span class="kw">import</span> tinox.core.semaphore
+<span class="kw">class</span> <span class="type">Main</span>
+{
+    <span class="kw">fnc</span> main() -&gt; <span class="type">Int32</span>
+    {
+        // At most 2 concurrent permits.
+        <span class="kw">const</span> sem: <span class="type">Semaphore</span> = <span class="type">Semaphore</span>::<span class="kw">new</span>(<span class="num">2</span>)
+        <span class="type">Semaphore</span>::acquire(sem)
+        <span class="type">Semaphore</span>::acquire(sem)
+        println(<span class="str">&quot;both permits acquired&quot;</span>)
+        <span class="kw">if</span> (<span class="type">Semaphore</span>::tryAcquire(sem) == <span class="kw">false</span>)
+        {
+            println(<span class="str">&quot;no permits available&quot;</span>)
+        }
+
+        <span class="type">Semaphore</span>::release(sem)
+        println(<span class="str">&quot;permit available: &quot;</span> + <span class="type">Semaphore</span>::tryAcquire(sem).toString())
+        <span class="kw">return</span> <span class="num">0</span>
+    }
+}
+</code></pre></section><section id="class-Mutex" class="item"><h2 class="item-name"><span class="kw">class</span> Mutex</h2><p class="doc">
+     * A real mutual-exclusion lock backed by pthread_mutex_t (runtime.c).
+     *
+     * lock() BLOCKS until the mutex is available -- this is a real, atomic
+     * OS-level primitive, not the &quot;if not locked { locked = true }&quot;
+     * check-then-act pattern this class used to be implemented with (a
+     * genuine, previously-undiscovered bug: not actually thread-safe under
+     * concurrent access despite the name/purpose, since there is no way
+     * for pure Tinox code, which has no atomic compare-and-swap builtin,
+     * to implement real mutual exclusion). tryLock()'s non-blocking,
+     * boolean-result contract is unchanged, now backed by a real
+     * pthread_mutex_trylock instead of the same broken check-then-act.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>handle</code></td><td class="member-type"><code>Int64</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new() → <span style="color:#ffcb6b">Mutex</span></div><div class="method-sig"><span class="kw">fn</span> lock(mutex: <span style="color:#ffcb6b">Mutex</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> unlock(mutex: <span style="color:#ffcb6b">Mutex</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> tryLock(mutex: <span style="color:#ffcb6b">Mutex</span>) → <span style="color:#ffcb6b">Bool</span></div></section><section id="class-RWLock" class="item"><h2 class="item-name"><span class="kw">class</span> RWLock</h2><p class="doc">
+     * A real reader/writer lock backed by pthread_rwlock_t (runtime.c).
+     *
+     * All four operations BLOCK as a real RWLock should (multiple readers
+     * concurrently, a writer excludes everyone). See Mutex.tnx's doc
+     * comment for the general issue with this module's previous
+     * implementations: this one was, if anything, more broken than
+     * Mutex/Semaphore -- writeLock() didn't even check for active readers
+     * before &quot;acquiring&quot;, so it provided no real write exclusion at all,
+     * on top of the same check-then-act non-atomicity.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>handle</code></td><td class="member-type"><code>Int64</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new() → <span style="color:#ffcb6b">RWLock</span></div><div class="method-sig"><span class="kw">fn</span> readLock(lock: <span style="color:#ffcb6b">RWLock</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> readUnlock(lock: <span style="color:#ffcb6b">RWLock</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> writeLock(lock: <span style="color:#ffcb6b">RWLock</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> writeUnlock(lock: <span style="color:#ffcb6b">RWLock</span>) → <span style="color:#ffcb6b">Nothing</span></div></section><section id="class-Semaphore" class="item"><h2 class="item-name"><span class="kw">class</span> Semaphore</h2><p class="doc">
+     * A real counting semaphore backed by POSIX sem_t (runtime.c).
+     *
+     * acquire() BLOCKS until a permit is available -- see Mutex.tnx's doc
+     * comment for why the previous &quot;if count &gt; 0 { count-- } else throw&quot;
+     * implementation was a real, previously-undiscovered bug (not
+     * actually thread-safe, and &quot;throw on contention&quot; was an accident of
+     * that broken check-then-act code, not a deliberate semaphore
+     * semantic). tryAcquire()'s non-blocking, boolean-result contract is
+     * unchanged, now backed by a real sem_trywait.
+     </p><h3>Fields</h3><table class="members"><tr><td class="member-name"><code>handle</code></td><td class="member-type"><code>Int64</code></td><td></td></tr></table><h3>Methods</h3><div class="method-sig"><span class="kw">fn</span> new(count: <span style="color:#ffcb6b">Int64</span>) → <span style="color:#ffcb6b">Semaphore</span></div><div class="method-sig"><span class="kw">fn</span> acquire(sem: <span style="color:#ffcb6b">Semaphore</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> release(sem: <span style="color:#ffcb6b">Semaphore</span>) → <span style="color:#ffcb6b">Nothing</span></div><div class="method-sig"><span class="kw">fn</span> tryAcquire(sem: <span style="color:#ffcb6b">Semaphore</span>) → <span style="color:#ffcb6b">Bool</span></div></section>
+</main>
+</body>
+</html>

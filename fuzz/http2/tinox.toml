@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.2"
+compiler = "2.9.3"
 name = "http2-fuzz-driver"
 version = "0.1.0"
 description = "Local-only manifest so Http2Driver.tnx can pull in the real tinox.core.http2_server module as a dependency."
@@ -7,4 +7,4 @@ description = "Local-only manifest so Http2Driver.tnx can pull in the real tinox
 [[dependencies]]
 group = "tinox.core"
 artifactId = "http2_server"
-version = "1.1.9"
+version = "1.1.11"
