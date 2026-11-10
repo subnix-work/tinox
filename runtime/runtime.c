@@ -1569,6 +1569,9 @@ typedef struct {
 //   TINOX_MAX_BODY_BYTES        largest HTTP/1 request body (4 MiB); larger ones get 413. The
 //                               whole body is held in memory per request in flight, so budget
 //                               max body x concurrent uploads (issue #542)
+//   TINOX_MAX_HEADER_BYTES      largest HTTP/1 request line + header block (64 KiB); larger ones
+//                               get 431 and the connection is closed. Without it a single
+//                               client could make the server buffer headers without bound
 //   TINOX_QUEUE_WAIT_MS         how long `spawn` / a WebSocket accept may
 //                               wait for a free slot before the request is
 //                               rejected (default 0 = reject immediately)
@@ -1594,6 +1597,7 @@ typedef struct {
     int64_t max_ws_connections;
     int64_t queue_wait_ms;
     int64_t max_body_bytes;
+    int64_t max_header_bytes;
 } TinoxLimits;
 
 static TinoxLimits g_limits;
@@ -1742,6 +1746,7 @@ static void tinox_limits_init_once(void) {
     g_limits.max_ws_connections = tinox_limit_env("TINOX_MAX_WS_CONNECTIONS", 1024, 1, 1000000);
     g_limits.queue_wait_ms = tinox_limit_env("TINOX_QUEUE_WAIT_MS", 0, 0, 600000);
     g_limits.max_body_bytes = tinox_limit_env("TINOX_MAX_BODY_BYTES", 4 * 1024 * 1024, 1024, 1073741824LL);
+    g_limits.max_header_bytes = tinox_limit_env("TINOX_MAX_HEADER_BYTES", 64 * 1024, 1024, 16 * 1024 * 1024);
     pthread_condattr_t ca;
     pthread_condattr_init(&ca);
     pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
@@ -8713,7 +8718,8 @@ static void conn_send_all(TinoxConn* c, const char* data, size_t len);
 // connection is closed without ever running a handler on a guessed body.
 static void conn_reject_request(TinoxConn* c, char* buf, int status) {
     const char* reason = status == 413 ? "Payload Too Large" : status == 501 ? "Not Implemented" :
-                         status == 505 ? "HTTP Version Not Supported" : "Bad Request";
+                         status == 505 ? "HTTP Version Not Supported" :
+                         status == 431 ? "Request Header Fields Too Large" : "Bad Request";
     char resp[256];
     int rn = snprintf(resp, sizeof(resp),
         "HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s\n",
@@ -8808,6 +8814,12 @@ static char* conn_read_request(TinoxConn* c) {
         buf[used] = '\0';
         // Stop once we have the full headers (and body if Content-Length matches)
         char* hdr_end = strstr(buf, "\r\n\r\n");
+        // The head (request line + headers) is bounded: otherwise a client that never finishes
+        // its headers makes the server buffer without limit.
+        if ((hdr_end ? (size_t)(hdr_end - buf) : used) > (size_t)tinox_limits()->max_header_bytes) {
+            conn_reject_request(c, buf, 431);
+            return buf;
+        }
         if (!hdr_end) continue;
         // Strict request framing (RFC 9112 §6, §11.2): one unambiguous body length, or a hard error.
         long body_len = -1;
