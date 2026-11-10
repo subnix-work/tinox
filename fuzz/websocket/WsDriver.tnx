@@ -1,0 +1,10 @@
+import tinox.core.websocket
+
+class WsDriver
+{
+    fnc tinoxWsReadMessage(conn: Int64, requireMasked: Bool) -> Int64
+    {
+        const f = Ws::readMessageGeneric(conn, requireMasked, !requireMasked)
+        return f.opcode
+    }
+}
