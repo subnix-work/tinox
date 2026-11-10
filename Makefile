@@ -160,7 +160,7 @@ FUZZ_SECONDS ?= 60
 fuzz:
 	cargo build --release -p tinox
 	@set -e; \
-	for t in json zip hpack amqp091 amqp10 http2 msgpack; do \
+	for t in json zip hpack amqp091 amqp10 http2 msgpack http1; do \
 		echo "=== fuzz/$$t ==="; \
 		bash fuzz/$$t/build.sh; \
 		mkdir -p fuzz/$$t/corpus; \

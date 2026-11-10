@@ -9449,6 +9449,7 @@ static char* http_dechunk(const char* body) {
     size_t cap = 8192, len = 0;
     char* out = (char*)malloc(cap);
     const char* p = body;
+    const char* body_end = body + strlen(body);
     while (1) {
         char* endptr = NULL;
         long chunk_size = strtol(p, &endptr, 16);
@@ -9457,6 +9458,9 @@ static char* http_dechunk(const char* body) {
         if (!line_end) break;
         p = line_end + 2;
         if (chunk_size == 0) break; // terminating chunk
+        // The size comes from the peer: never copy past the bytes actually received (heap
+        // over-read), and never size the buffer from an unchecked length.
+        if ((unsigned long)chunk_size > (size_t)(body_end - p)) break;
         if (len + (size_t)chunk_size >= cap) {
             while (len + (size_t)chunk_size >= cap) cap *= 2;
             char* grown = (char*)malloc(cap);
