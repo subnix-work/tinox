@@ -26,6 +26,7 @@ against clang 22.1.8.
 | AMQP-1.0 frame reader | `amqp10/` | `Amqp10::readFrame(Int64)` (`crates/tinox-core/amqp10/Amqp10.tnx`) | same socketpair bridging as `amqp091/` |
 | HTTP/2 frame reader | `http2/` | `Http2Server::readFrame(Http2Conn)` (`crates/tinox-core/http2_server/Http2Server.tnx`) | `Http2Driver.tnx` wraps it same as AMQP — same socketpair bridging, but `Http2Conn::new(conn)`'s `handle` field can be the socketpair fd directly, since `httpServerReadRawBytes` reads off a raw fd rather than a `TinoxConn*` — see "HTTP/2: frame parsing without a connection" below |
 | MessagePack decoder | `msgpack/` | `Msgpack::decode(List<Int64>)` (`crates/tinox-core/msgpack/Msgpack.tnx`) | `MsgpackDriver.tnx` wraps it exactly like HPACK — a pure `(List<Int64>) -> MsgpackValue` function with no socket dependency, same driver-module + recompiled-IR technique, no bridging needed beyond the `TinoxArray` handle itself |
+| HTTP/1 framing helpers | `http1/` | `http_request_framing`, `http_chunked_end`, `http_dechunk`, `http_headers_has_chunked_encoding`, `http_header_value`, `http_parse_url` (all `static` in `runtime/runtime.c`) | `http1_fuzzer.c` `#include`s `runtime.c` into its own translation unit (the targets are `static`); first input byte selects the helper, the payload is a heap copy of exactly size+1 bytes with a trailing NUL, mirroring `conn_read_request`, so ASan flags any read past the terminator |
 
 JSON and ZIP call straight into the real `runtime/runtime.c`; HPACK,
 AMQP-0-9-1, AMQP-1.0, HTTP/2, and MessagePack call straight into the
