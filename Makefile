@@ -5,7 +5,7 @@
 DOGFOOD_DIR ?= ../jgrep-tinox
 export DOGFOOD_DIR
 
-.PHONY: check test-and-dogfood test e2e dogfood install-hooks asan checked clippy fuzz grammar-sync workspace-ext
+.PHONY: check test-and-dogfood test e2e dogfood install-hooks asan tsan checked clippy fuzz grammar-sync workspace-ext
 
 check: clippy test-and-dogfood grammar-sync workspace-stdlib docs-check ai-eval-test service-benchmark-test
 
@@ -78,6 +78,30 @@ asan:
 	TINOX_CFLAGS="-fsanitize=address -g -DTINOX_NO_GC" \
 	ASAN_OPTIONS="detect_leaks=0" \
 	cargo test --release -p tinox --test e2e --test boundary
+
+# ThreadSanitizer run: the concurrency-focused suites (spawn/scope/cancellation, connection and
+# task budgets, WebSocket accept loops, HTTP stress) against a runtime.c built with
+# -fsanitize=thread. Plain malloc (-DTINOX_NO_GC): Boehm's stop-the-world signalling is not
+# TSan-compatible. LIMITATION: only the C runtime is instrumented -- the LLVM code tinox
+# generates is not, so this finds data races inside runtime.c (task registry, workers, limits,
+# metrics), not races in user code or between user code and the runtime. Thread-leak reports are
+# off (many tests deliberately leave a service task running at exit). The full e2e suite is not
+# included: it is mostly single-threaded and takes ~26 min under TSan (gc_telemetry cannot pass
+# without a GC). Reports are written to target/tsan-reports/ and the target fails if any exists
+# (a test only fails on a race if it happens to check the program's exit code, so that alone is
+# not enough). Not part of `make check`.
+TSAN_TESTS = --test concurrency_budgets --test http_server_gc_stress_curl --test task_cancellation \
+	--test task_scopes --test ws_concurrent_connections --test ws_annotations \
+	--test metrics_with_routes_curl --test body_size_limit_curl
+tsan:
+	cargo build --release
+	rm -rf target/tsan-reports && mkdir -p target/tsan-reports
+	TINOX_CFLAGS="-fsanitize=thread -g -DTINOX_NO_GC" \
+	TSAN_OPTIONS="report_thread_leaks=0 halt_on_error=0 log_path=$(CURDIR)/target/tsan-reports/rep" \
+	cargo test --release --no-fail-fast -p tinox $(TSAN_TESTS)
+	@if ls target/tsan-reports/rep.* >/dev/null 2>&1; then \
+		echo "ThreadSanitizer reported races:"; grep -h SUMMARY target/tsan-reports/rep.* | sort | uniq -c; exit 1; \
+	fi
 
 # Checked run (TESTPLAN Phase 4): e2e + boundary suite with the
 # heap-kind registry (-DTINOX_CHECKED, see `tinox build --checked`).
