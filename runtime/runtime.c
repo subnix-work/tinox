@@ -12895,6 +12895,8 @@ typedef struct {
     int      served;      // 0 until this connection's first request has completed --
                            // see the stale-scan below for why this needs to be tracked
                            // separately from a genuinely-idle keep-alive connection
+    uint64_t head_start;  // 0 = not parked; else when the first bytes of a still-incomplete request
+                           // head arrived (the connection is parked edge-triggered, see below)
 } EpollConnSlot;
 
 // Slot table indexed directly by fd (no modulo, so two live fds can never share a slot), grown on
@@ -12910,7 +12912,7 @@ static void epoll_slot_reserve(int fd) {
     while (cap <= fd) cap *= 2;
     EpollConnSlot* grown = realloc(g_epoll_slots, (size_t)cap * sizeof(EpollConnSlot));
     if (!grown) { fprintf(stderr, "tinox: out of memory growing the connection table\n"); exit(1); }
-    for (int i = g_epoll_cap; i < cap; i++) { grown[i].fd = -1; grown[i].last_ms = 0; grown[i].served = 0; }
+    for (int i = g_epoll_cap; i < cap; i++) { grown[i].fd = -1; grown[i].last_ms = 0; grown[i].served = 0; grown[i].head_start = 0; }
     g_epoll_slots = grown;
     g_epoll_cap = cap;
 }
@@ -12946,6 +12948,7 @@ static void epoll_slot_add(int fd, uint64_t now_ms) {
     g_epoll_slots[idx].fd = fd;
     g_epoll_slots[idx].last_ms = now_ms;
     g_epoll_slots[idx].served = 0;
+    g_epoll_slots[idx].head_start = 0;
 }
 
 static void epoll_slot_remove(int fd) {
@@ -12956,6 +12959,22 @@ static void epoll_slot_remove(int fd) {
         atomic_fetch_sub(&g_open_conns, 1);
     }
     g_epoll_slots[idx].fd = -1;
+}
+
+// Slowloris defence (#684). conn_read_request() blocks in recv(), so handing it a connection
+// whose request head is still incomplete would pin this epoll worker. Before doing so the worker
+// peeks (MSG_PEEK|MSG_DONTWAIT, nothing consumed): only when the whole head (or EOF/an error, or
+// more bytes than the peek window) is there does the blocking reader run, and then it finds the
+// head already buffered. Returns 0 while the head is incomplete.
+static int epoll_head_ready(int fd) {
+    // On the stack, not a lazily malloc'd `static __thread`: a new TLS variable here shifts the
+    // thread-local layout and made the collector's registered thread roots crash in GC mark.
+    char peek[65536];
+    ssize_t n;
+    do { n = recv(fd, peek, sizeof(peek), MSG_PEEK | MSG_DONTWAIT); } while (n < 0 && errno == EINTR);
+    if (n < 0) return errno != EAGAIN && errno != EWOULDBLOCK;
+    if (n == 0 || (size_t)n >= sizeof(peek)) return 1;
+    return memmem(peek, (size_t)n, "\r\n\r\n", 4) != NULL;
 }
 
 static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
@@ -13020,6 +13039,26 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
                     epoll_slot_add(cfd, now_ms);
                 }
             } else {
+                // Head still incomplete: park the connection edge-triggered instead of blocking
+                // this worker on it; new bytes re-fire the event, the stale scan enforces the
+                // absolute head deadline.
+                if (fd >= 0 && fd < g_epoll_cap && g_epoll_slots[fd].fd >= 0 && !epoll_head_ready(fd)) {
+                    if (!g_epoll_slots[fd].head_start) {
+                        struct epoll_event pev;
+                        pev.events = EPOLLIN | EPOLLET;
+                        pev.data.fd = fd;
+                        epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &pev);
+                        g_epoll_slots[fd].head_start = now_ms ? now_ms : 1;
+                    }
+                    continue;
+                }
+                if (fd >= 0 && fd < g_epoll_cap && g_epoll_slots[fd].head_start) {
+                    struct epoll_event lev;
+                    lev.events = EPOLLIN;
+                    lev.data.fd = fd;
+                    epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &lev);
+                    g_epoll_slots[fd].head_start = 0;
+                }
                 // Handle one request on this client connection
                 int keep_alive = 0, offloaded = 0;
                 tinox_handle_one(srv, (int64_t)fd, &keep_alive, &offloaded);
@@ -13067,6 +13106,20 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
         if (g_epoll_nconns > 0) {
             for (int i = 0; i < g_epoll_cap; i++) {
                 if (g_epoll_slots[i].fd < 0) continue;
+                if (g_epoll_slots[i].head_start) {
+                    // Parked mid-head: only the absolute head deadline applies.
+                    if (now_ms - g_epoll_slots[i].head_start >= (uint64_t)tinox_limits()->head_timeout_ms) {
+                        static const char timeout408[] =
+                            "HTTP/1.1 408 Request Timeout\r\nContent-Type: text/plain\r\n"
+                            "Content-Length: 16\r\nConnection: close\r\n\r\nRequest Timeout\n";
+                        int fd = g_epoll_slots[i].fd;
+                        (void)!send(fd, timeout408, sizeof(timeout408) - 1, MSG_NOSIGNAL | MSG_DONTWAIT);
+                        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                        epoll_slot_remove(fd);
+                        close(fd);
+                    }
+                    continue;
+                }
                 uint64_t timeout_ms = g_epoll_slots[i].served
                     ? EPOLL_KEEP_ALIVE_MS
                     : EPOLL_FIRST_REQUEST_GRACE_MS;

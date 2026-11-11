@@ -330,7 +330,7 @@ fn abrupt_disconnects_leave_the_server_healthy() {
 
 /// A client that keeps the request head open by trickling bytes must be cut off at the absolute
 /// head deadline (default 5s) with 408, however often it sends. This bounds the hold time; it
-/// does not (yet) make a stalled client free, see the ignored test below.
+/// a stalled client costs no worker either, see the slowloris test below.
 #[test]
 fn trickling_request_head_is_cut_off_with_408() {
     use std::io::Read;
@@ -358,13 +358,10 @@ fn trickling_request_head_is_cut_off_with_408() {
     assert!(healthy(port).is_some(), "server unhealthy after the head deadline fired");
 }
 
-/// KNOWN ISSUE (see the linked bug): the epoll worker reads a request with a blocking recv, so
-/// one slow client occupies a whole worker. With more slow clients than workers, healthy clients
-/// are not served at all, and because the 5s socket timeout is per recv(), a byte every few
-/// seconds holds a worker for as long as the attacker likes. Run explicitly with
-/// `cargo test --test http1_adversarial -- --ignored` to reproduce.
+/// Regression for the slowloris starvation (#684): connections whose request head is incomplete
+/// are parked by the epoll worker instead of being read with a blocking recv, so more slow
+/// clients than workers must not delay a healthy client.
 #[test]
-#[ignore = "known issue: slow-header clients starve the epoll workers"]
 fn slow_header_clients_do_not_starve_healthy_clients() {
     let (port, _server) = server("slowloris");
     let attackers = cpus() * 8;
