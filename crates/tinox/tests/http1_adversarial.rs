@@ -157,26 +157,20 @@ fn connect(port: u16) -> TcpStream {
     s
 }
 
-/// What a client saw: the first status line's code (if any response arrived) and whether the
-/// server closed the connection.
+/// What a client saw: the first status line's code (if any response arrived).
 #[derive(Debug)]
 struct Outcome {
     status: Option<u16>,
-    closed: bool,
 }
 
 fn read_outcome(mut s: TcpStream, wait: Duration) -> Outcome {
     s.set_read_timeout(Some(wait)).unwrap();
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
-    let mut closed = false;
     let deadline = Instant::now() + wait;
     while Instant::now() < deadline {
         match s.read(&mut chunk) {
-            Ok(0) => {
-                closed = true;
-                break;
-            }
+            Ok(0) => break,
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
                 if buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() > 12 {
@@ -193,7 +187,7 @@ fn read_outcome(mut s: TcpStream, wait: Duration) -> Outcome {
         .and_then(|t| t.strip_prefix("HTTP/1."))
         .and_then(|t| t.get(2..5))
         .and_then(|c| c.parse().ok());
-    Outcome { status, closed }
+    Outcome { status }
 }
 
 /// Sends `bytes` and reports what comes back.
@@ -233,7 +227,7 @@ fn malformed_and_ambiguous_requests_are_rejected() {
     // (name, bytes, acceptable statuses). `None` in the set means "closing without a response is
     // also acceptable"; 200 is never acceptable for these.
     let mut huge_header = b"GET /fast HTTP/1.1\r\nHost: t\r\nX-Big: ".to_vec();
-    huge_header.extend(std::iter::repeat(b'a').take(1 << 20));
+    huge_header.extend(std::iter::repeat_n(b'a', 1 << 20));
     huge_header.extend_from_slice(b"\r\n\r\n");
     let cases: Vec<(&str, Vec<u8>, Vec<u16>)> = vec![
         ("1 MiB header value (default cap is 64 KiB)", huge_header, vec![431]),
@@ -254,12 +248,12 @@ fn malformed_and_ambiguous_requests_are_rejected() {
     let mut failures = Vec::new();
     for (name, bytes, ok) in &cases {
         let o = exchange(port, bytes);
-        let pass = o.status.map_or(false, |s| ok.contains(&s));
+        let pass = o.status.is_some_and(|s| ok.contains(&s));
         eprintln!("[{}] {name}: {o:?}", if pass { "ok" } else { "FAIL" });
         if !pass {
             failures.push(format!("{name}: got {o:?}, expected one of {ok:?}"));
         }
-        if healthy(port).map_or(true, |d| d > Duration::from_secs(3)) {
+        if healthy(port).is_none_or(|d| d > Duration::from_secs(3)) {
             failures.push(format!("{name}: server not healthy afterwards"));
         }
     }
@@ -285,7 +279,7 @@ fn malformed_and_ambiguous_requests_are_rejected() {
         if o.status == Some(200) && *name != "5000 headers" && *name != "request line without a version" {
             failures.push(format!("{name}: answered 200 ({o:?})"));
         }
-        if healthy(port).map_or(true, |d| d > Duration::from_secs(3)) {
+        if healthy(port).is_none_or(|d| d > Duration::from_secs(3)) {
             failures.push(format!("{name}: server not healthy afterwards"));
         }
     }
@@ -321,7 +315,7 @@ fn abrupt_disconnects_leave_the_server_healthy() {
         }
     }
     let latency = healthy(port);
-    assert!(latency.map_or(false, |d| d < Duration::from_secs(3)), "server unhealthy after 300 abrupt disconnects: {latency:?}");
+    assert!(latency.is_some_and(|d| d < Duration::from_secs(3)), "server unhealthy after 300 abrupt disconnects: {latency:?}");
     // The connection budget must have been released: a burst of fresh requests all succeed.
     for i in 0..200 {
         assert!(healthy(port).is_some(), "request {i} failed after the disconnect storm (budget leak?)");
@@ -402,7 +396,7 @@ fn slow_header_clients_do_not_starve_healthy_clients() {
 
     let limit = Duration::from_secs(3);
     assert!(
-        stalled_latency.map_or(false, |d| d < limit) && trickle_latency.map_or(false, |d| d < limit),
+        stalled_latency.is_some_and(|d| d < limit) && trickle_latency.is_some_and(|d| d < limit),
         "{attackers} slow clients starved a healthy one: stalled -> {stalled_latency:?}, trickling -> {trickle_latency:?}"
     );
 }
