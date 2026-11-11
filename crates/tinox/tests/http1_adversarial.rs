@@ -328,6 +328,36 @@ fn abrupt_disconnects_leave_the_server_healthy() {
     }
 }
 
+/// A client that keeps the request head open by trickling bytes must be cut off at the absolute
+/// head deadline (default 5s) with 408, however often it sends. This bounds the hold time; it
+/// does not (yet) make a stalled client free, see the ignored test below.
+#[test]
+fn trickling_request_head_is_cut_off_with_408() {
+    use std::io::Read;
+    let (port, _server) = server("head-deadline");
+    let mut s = connect(port);
+    s.write_all(b"GET /fast HTTP/1.1\r\nHost: t\r\nX-Slow: ").unwrap();
+    let start = Instant::now();
+    let mut reply = Vec::new();
+    let mut buf = [0u8; 512];
+    s.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    while start.elapsed() < Duration::from_secs(12) {
+        let _ = s.write_all(b"a");
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => reply.extend_from_slice(&buf[..n]),
+            Err(_) => std::thread::sleep(Duration::from_millis(900)),
+        }
+        if reply.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&reply);
+    assert!(text.starts_with("HTTP/1.1 408"), "expected 408, got {text:?}");
+    assert!(start.elapsed() < Duration::from_secs(10), "cut off too late: {:?}", start.elapsed());
+    assert!(healthy(port).is_some(), "server unhealthy after the head deadline fired");
+}
+
 /// KNOWN ISSUE (see the linked bug): the epoll worker reads a request with a blocking recv, so
 /// one slow client occupies a whole worker. With more slow clients than workers, healthy clients
 /// are not served at all, and because the 5s socket timeout is per recv(), a byte every few

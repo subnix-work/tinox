@@ -1569,6 +1569,8 @@ typedef struct {
 //   TINOX_MAX_BODY_BYTES        largest HTTP/1 request body (4 MiB); larger ones get 413. The
 //                               whole body is held in memory per request in flight, so budget
 //                               max body x concurrent uploads (issue #542)
+//   TINOX_HEAD_TIMEOUT_MS       absolute budget for receiving one request head (5000 ms); a client
+//                               still sending it later gets 408 (slowloris bound)
 //   TINOX_MAX_HEADER_BYTES      largest HTTP/1 request line + header block (64 KiB); larger ones
 //                               get 431 and the connection is closed. Without it a single
 //                               client could make the server buffer headers without bound
@@ -1598,6 +1600,7 @@ typedef struct {
     int64_t queue_wait_ms;
     int64_t max_body_bytes;
     int64_t max_header_bytes;
+    int64_t head_timeout_ms;
 } TinoxLimits;
 
 static TinoxLimits g_limits;
@@ -1747,6 +1750,7 @@ static void tinox_limits_init_once(void) {
     g_limits.queue_wait_ms = tinox_limit_env("TINOX_QUEUE_WAIT_MS", 0, 0, 600000);
     g_limits.max_body_bytes = tinox_limit_env("TINOX_MAX_BODY_BYTES", 4 * 1024 * 1024, 1024, 1073741824LL);
     g_limits.max_header_bytes = tinox_limit_env("TINOX_MAX_HEADER_BYTES", 64 * 1024, 1024, 16 * 1024 * 1024);
+    g_limits.head_timeout_ms = tinox_limit_env("TINOX_HEAD_TIMEOUT_MS", 5000, 100, 600000);
     pthread_condattr_t ca;
     pthread_condattr_init(&ca);
     pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
@@ -8719,7 +8723,8 @@ static void conn_send_all(TinoxConn* c, const char* data, size_t len);
 static void conn_reject_request(TinoxConn* c, char* buf, int status) {
     const char* reason = status == 413 ? "Payload Too Large" : status == 501 ? "Not Implemented" :
                          status == 505 ? "HTTP Version Not Supported" :
-                         status == 431 ? "Request Header Fields Too Large" : "Bad Request";
+                         status == 431 ? "Request Header Fields Too Large" :
+                         status == 408 ? "Request Timeout" : "Bad Request";
     char resp[256];
     int rn = snprintf(resp, sizeof(resp),
         "HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s\n",
@@ -8802,6 +8807,7 @@ static char* conn_read_request(TinoxConn* c) {
     size_t used = 0;
     char* buf = g_recv_buf;
     size_t cap = g_recv_cap;
+    int64_t head_start = tinox_now_ms();
     while (1) {
         if (used + 1 >= cap) {
             cap *= 2;
@@ -8820,7 +8826,14 @@ static char* conn_read_request(TinoxConn* c) {
             conn_reject_request(c, buf, 431);
             return buf;
         }
-        if (!hdr_end) continue;
+        if (!hdr_end) {
+            // Absolute deadline: per-recv timeouts alone let a trickling client hold a worker forever.
+            if (tinox_now_ms() - head_start > tinox_limits()->head_timeout_ms) {
+                conn_reject_request(c, buf, 408);
+                return buf;
+            }
+            continue;
+        }
         // Strict request framing (RFC 9112 §6, §11.2): one unambiguous body length, or a hard error.
         long body_len = -1;
         int chunked = 0;
