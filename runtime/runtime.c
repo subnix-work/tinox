@@ -12967,8 +12967,9 @@ static void epoll_slot_remove(int fd) {
 // more bytes than the peek window) is there does the blocking reader run, and then it finds the
 // head already buffered. Returns 0 while the head is incomplete.
 static int epoll_head_ready(int fd) {
-    // On the stack, not a lazily malloc'd `static __thread`: a new TLS variable here shifts the
-    // thread-local layout and made the collector's registered thread roots crash in GC mark.
+    // On the stack on purpose: malloc is GC_malloc in this file, and a `static __thread` pointer to
+    // it is not a registered GC root (see TINOX_GC_THREAD_ROOTS), so the collector freed the buffer
+    // while recv() still wrote into it and crashed later in GC mark.
     char peek[65536];
     ssize_t n;
     do { n = recv(fd, peek, sizeof(peek), MSG_PEEK | MSG_DONTWAIT); } while (n < 0 && errno == EINTR);
