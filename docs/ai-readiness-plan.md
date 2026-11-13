@@ -58,8 +58,8 @@ compiler must *steer it back* when it is wrong. So the plan has three levers:
   (e.g. `claude -p`), then applies the acceptance check.
 - Metrics per task: pass/fail, number of `tinox check/build` iterations to
   green, tokens, wall time. Report as JSON; compare runs.
-- Not part of `make check` (needs a model and costs money); a manual /
-  scheduled lane, results committed under `docs/current/` or kept as CI artifacts.
+- Not part of `make check` or any CI workflow (needs a model and costs money):
+  a manual local lane, results committed under `docs/current/` or kept locally.
 - **Exit criterion:** a baseline number for today's guide.
 
 ### Phase 1 — Discoverability
@@ -149,9 +149,17 @@ then 3 and 4 (compiler work), then 5. Phases 1/6 can start in parallel with 0.
 - **Spec churn:** every language change must update guide examples in the same
   PR (already enforced by `make docs-check` once the examples exist).
 
+## Decisions
+
+1. **No paid CI.** Everything in CI must be free. The eval harness (phase 0) is
+   a manual, local lane; it is never part of `make check` or a CI workflow, and
+   its results are committed or kept locally.
+2. **The MCP server lives in this repo** (phase 4), as a thin wrapper over the
+   existing JSON commands.
+
 ## Open decisions
 
-1. Is the eval allowed to call a paid model in a scheduled CI lane, or manual only?
-2. Do we want an MCP server in this repo or as a separate package?
-3. Target budget for the always-loaded core guide (keep 8 KB or change)?
-4. Is `AGENTS.md` in `tinox new` acceptable for all users, or opt-in (`--ai`)?
+1. Budget of the always-loaded core guide (`docs/AI_GUIDE.md`; today 8192 bytes
+   with 4312 used). Proposal: keep 8 KB and let the phase-0 eval show whether
+   more is worth it. Topic pages are loaded on demand via `tinox guide <topic>`.
+2. Is `AGENTS.md` in `tinox new` acceptable for all users, or opt-in (`--ai`)?
