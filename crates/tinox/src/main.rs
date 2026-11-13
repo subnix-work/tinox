@@ -22,6 +22,7 @@ mod db_new;
 use dockerfile::{generate_dockerfile, DEFAULT_CONTAINER_UID};
 mod pm;
 mod reference;
+mod guide;
 
 mod runtime_cache;
 mod build_cache;
@@ -67,6 +68,12 @@ fn run() {
         "doc"   => gen_docs(&args[2..]),
         "reference" => {
             if let Err(e) = reference::run(&args[2..]) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        "guide" => {
+            if let Err(e) = guide::run(&args[2..]) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -148,6 +155,7 @@ fn print_help() {
     println!("  tinox test --watch         Re-run tests on file changes (TDD mode)");
     println!("  tinox doc   [--open]       Generate HTML documentation in docs/");
     println!("  tinox reference [path]     Export compiler reference metadata as JSON");
+    println!("  tinox guide [topic]        Print the compact language guide for AI agents (--list for topics)");
     println!("  tinox graph [file]         Generate a Mermaid call-graph diagram in docs/");
     println!("  tinox db <command>         Schema changelog: new, update, status, baseline, generate, diff, rollback, validate, update-sql, release-lock");
     println!("  tinox contract [file]      Print the validated REST API as OpenAPI YAML");

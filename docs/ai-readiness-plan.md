@@ -22,6 +22,7 @@ compiler must *steer it back* when it is wrong. So the plan has three levers:
 | `tinox reference`, `docs/current/reference.json` | Builtin signatures + annotation targets/arity as JSON |
 | `tinox describe <Symbol> --json`, `tinox explain --bootstrap --json` | Resolved API lookup, explanation of generated wiring |
 | `tinox check/build --json`, `--message-format=json` | Versioned diagnostics with codes and ranges (`docs/compiler-diagnostics.md`) |
+| `benchmarks/ai/` (#315) | Eval runner, 6 tasks, held-out checks, Ollama adapter, comparison tool; no baseline measured yet |
 | `docs/SPEC.md`, `examples/`, `tests/e2e/*.tnx` | Spec plus ~35 examples and ~250 executable fixtures |
 | `make docs-check` | Mechanism that keeps generated guide examples compiling and passing |
 
@@ -39,28 +40,33 @@ compiler must *steer it back* when it is wrong. So the plan has three levers:
   file, class `Main`, REST parameters need a binding annotation).
 - Diagnostics have codes and ranges but, as far as `compiler-diagnostics.md`
   shows, no uniform "how to fix" hint or machine-applicable fix. To verify in phase 3.
-- There is no measurement. We cannot say whether a guide change helped.
+- There is no *measured baseline* yet (the runner exists, see phase 0). We cannot say whether a guide change helped.
 - Published extended-tier packages can lag the language (the `;` removal left
   old package sources unparseable until republished), which makes an agent's
   correct code fail for reasons it cannot fix.
 
 ## Phases
 
-### Phase 0 — Baseline eval harness (first, because everything else is judged by it)
+### Phase 0 — Baseline eval (infrastructure exists; the measurement does not)
 
-- `tests/ai-eval/`: ~25 small task specs in English, each with an acceptance
-  check that is *executable* (compile, run, compare stdout, or `tinox test`,
-  or an HTTP probe for server tasks). Spread across: basics/collections,
-  classes+interfaces, REST CRUD, JSON, DB with `@Transactional`, concurrency
-  (`spawn`/`scope`/channels), CLI `@Command`, WebSocket, error handling, tests.
-- A runner that gives an agent only a fresh project dir plus a chosen context
-  bundle (none / AI_GUIDE only / new guide + topic pages), runs it headless
-  (e.g. `claude -p`), then applies the acceptance check.
-- Metrics per task: pass/fail, number of `tinox check/build` iterations to
-  green, tokens, wall time. Report as JSON; compare runs.
-- Not part of `make check` or any CI workflow (needs a model and costs money):
-  a manual local lane, results committed under `docs/current/` or kept locally.
-- **Exit criterion:** a baseline number for today's guide.
+`benchmarks/ai/` (#315, see its README) already provides an isolated-workspace
+runner with held-out acceptance checks, a local Ollama adapter (no paid
+provider), checker controls (`validate_controls.py`) and a baseline/changed
+comparison (`compare.py`). Six tasks exist: bugfix, validation, crud
+(no external services) and concurrent, transactional, broker (need Docker).
+**What is missing:**
+
+- A measured baseline. This needs a model; see "Open decisions" (the dev
+  machine has no GPU, no Ollama and no Docker, so the choice is not neutral).
+- More tasks that need no Docker and cover what agents really build: JSON,
+  collections/classes/interfaces, enums + `match`, CLI `@Command`, `spawn`/
+  `scope`, error handling, writing `@Test`s. Each new task needs a known-good
+  control solution checked by a model-free test, so the acceptance check itself
+  is verified for free in `make ai-eval-test`.
+- Recording the guide variant as the `context` so guide changes are comparable
+  (`compare.py --variable context`).
+- **Exit criterion:** a baseline number for today's guide, with the model
+  identity pinned.
 
 ### Phase 1 — Discoverability
 
@@ -158,6 +164,12 @@ then 3 and 4 (compiler work), then 5. Phases 1/6 can start in parallel with 0.
    existing JSON commands.
 
 ## Open decisions
+
+0. **Which model produces the baseline?** Free options: a small local model via
+   Ollama (CPU-only here, slow, and weak, so it says little about how Claude
+   fares), or the agent CLI the developer already uses, run by hand (costs
+   subscription quota, not metered money). Needs a decision before phase 0 can
+   finish.
 
 1. Budget of the always-loaded core guide (`docs/AI_GUIDE.md`; today 8192 bytes
    with 4312 used). Proposal: keep 8 KB and let the phase-0 eval show whether
