@@ -84,6 +84,38 @@ cannot enforce a remote provider's billing behavior. A timeout or missing usage
 marks accounting incomplete, reserves the possible cost, saves the failure, and
 halts further provider calls. Such runs cannot support an efficiency comparison.
 
+## Claude Code adapter (no API key, no metered billing)
+
+`claude_adapter.py` implements the protocol below through `claude -p`, using the
+developer's own Claude Code login. Every call consumes subscription quota, so
+`billing` stays `local` with zero rates (nothing is billed per call); record that
+in `execution_conditions.provider_billing`. Copy `config.claude.example.json`,
+set the adapter path and an exact model id (`model` and `model_revision` are the
+same id; the adapter fails if the CLI reports another model).
+
+What the adapter does and does not control, all of it part of the adapter version:
+
+- Claude Code runs as a plain text model: tools off, its own system prompt
+  replaced, no settings/MCP/CLAUDE.md, empty working directory, no stored session.
+- A strict output-format instruction is appended to the runner's system prompt.
+  Without it Claude answers in prose or pseudo-XML and most turns are lost to
+  `JSONDecodeError`, which measures formatting habits, not Tinox.
+- One reply that is exactly a single markdown fence around the JSON is unwrapped.
+  Everything else is passed through, so real protocol violations still count.
+- Extended thinking is disabled (`MAX_THINKING_TOKENS=0`).
+- Temperature/seed cannot be set: runs vary, use several repetitions.
+- Use `context_tokens` of about 100000 (the runner's byte bound is conservative
+  and a 40-turn run otherwise stops with `context_limit`).
+
+```sh
+sed "s#/ABSOLUTE/PATH/TO#$PWD#" benchmarks/ai/config.claude.example.json > /tmp/eval.json
+python3 benchmarks/ai/runner.py --config /tmp/eval.json --out /tmp/baseline --tasks bugfix --execute
+```
+
+A two-run smoke test of `bugfix` with `claude-haiku-4-5-20251001` passed both runs
+after the adapter fixes above. That is a pipeline check, **not a baseline**.
+`make ai-eval-test` covers the adapter's pure functions without any model call.
+
 ## Provider adapter protocol (version 1)
 
 The runner sends one JSON object on stdin with `model`, immutable

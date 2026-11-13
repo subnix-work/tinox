@@ -1,0 +1,30 @@
+{
+  "provider": "claude-code-cli",
+  "model": "claude-haiku-4-5-20251001",
+  "model_revision": "claude-haiku-4-5-20251001",
+  "adapter_version": "claude_adapter.py-v2; record `claude --version` here",
+  "condition": "baseline",
+  "command": [
+    "python3",
+    "/ABSOLUTE/PATH/TO/benchmarks/ai/claude_adapter.py"
+  ],
+  "settings": {},
+  "context": {},
+  "runs": 5,
+  "max_turns": 40,
+  "context_tokens": 100000,
+  "max_output_tokens": 4096,
+  "token_budget": 600000,
+  "max_cost_usd": 0,
+  "input_usd_per_million": 0,
+  "output_usd_per_million": 0,
+  "wall_seconds": 900,
+  "call_seconds": 300,
+  "billing": "local",
+  "execution_conditions": {
+    "package_cache": "Record exact prewarmed package versions before both conditions",
+    "runtime_cache": "Record and keep the same cold/warm cache policy",
+    "machine_isolation": "Record shared versus isolated machine and concurrent workloads",
+    "provider_billing": "Claude Code subscription quota, not metered; sampling settings not controllable"
+  }
+}
