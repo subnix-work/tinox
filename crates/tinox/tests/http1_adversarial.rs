@@ -95,7 +95,7 @@ class Ctrl
     std::fs::write(
         dir.join("tinox.toml"),
         format!(
-            "[package]\ncompiler = \"2.9.4\"\nname = \"adversarial_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{version}\"\n",
+            "[package]\ncompiler = \"2.9.6\"\nname = \"adversarial_server\"\nversion = \"0.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"http_server\"\nversion = \"{version}\"\n",
         ),
     )
     .unwrap();
