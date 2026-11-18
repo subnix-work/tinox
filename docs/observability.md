@@ -101,7 +101,7 @@ become top-level keys of the JSON record, which is what Logstash/Kibana expect:
 import tinox.core.logger
 
 Mdc::put("customer", "4711")
-log.info("order paid")
+Logger::info(log, "order paid")
 // {"timestamp":"...","level":"INFO","logger":"OrderService","message":"order paid",
 //  "request_id":"...","trace_id":"...","span_id":"...","customer":"4711"}
 Mdc::remove("customer")
@@ -122,6 +122,15 @@ Mdc::remove("customer")
   `request_id`, `trace_id` and `span_id` are reserved.
 * A rejected `put` returns `false`, increments `tinox_mdc_rejected_total` and prints one
   warning to stderr per process.
+* **`@LogField`** puts a bound REST parameter into the MDC without code: on a
+  `@PathParam` or `@QueryParam` parameter, `@LogField` logs the raw value under the parameter's
+  name and `@LogField("customer")` under that key.
+  ```tinox
+  fn order(@PathParam @LogField orderId: Int64, @QueryParam @LogField("customer") c: String) -> String
+  ```
+  The raw text is stored before it is converted. The key is checked at compile time against the
+  same rules as `Mdc::put`. For other values (a header, a field of a request body) call
+  `Mdc::put` in the handler.
 * Fields stay in the process: they are not sent as headers (no `baggage`) and not exported as
   span attributes. Do not store secrets; values are not masked.
 

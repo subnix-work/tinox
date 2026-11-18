@@ -988,6 +988,7 @@ fn convert_route_params(
         },
         name: p.name.clone(),
         ty: p.ty.clone(),
+        log_field: p.log_field.clone(),
     }).collect()
 }
 

@@ -1261,6 +1261,9 @@ int64_t mdcPut(const char* key, const char* value) {
     mdc_current.val[slot][n] = 0;
     return 1;
 }
+// Called by generated REST shims for @LogField parameters (no Tinox-level extern, so the compiler
+// can declare it without clashing with the logger module's own declarations).
+int64_t tinox_mdc_put(const char* key, const char* value) { return mdcPut(key, value); }
 int64_t mdcRemove(const char* key) {
     if (!key) return 0;
     for (int i = 0; i < mdc_current.n; i++) {
