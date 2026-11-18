@@ -1,0 +1,43 @@
+module tinox.core.logger
+
+namespace tinox.core.logger
+{
+    extern fn mdcPut(key: String, value: String) -> Int64
+    extern fn mdcRemove(key: String) -> Int64
+    extern fn mdcGet(key: String) -> String
+    extern fn mdcClear() -> Nothing
+    extern fn mdcText() -> String
+
+    // Mapped diagnostic context: structured fields that every log record of the current request,
+    // message or task carries (customer number, tenant, order id, ...). Works with
+    // TINOX_LOG_JSON=true alone, no telemetry needed.
+    //
+    // Scope: a spawned task inherits a copy (its own changes do not flow back); every HTTP
+    // request and every WebSocket/AMQP message starts and ends empty. At most 8 fields, keys
+    // 1..32 bytes of [A-Za-z0-9_.-] starting with a letter or underscore, values at most
+    // 128 bytes (longer values are truncated and counted). The keys timestamp, level, logger,
+    // message, request_id, trace_id and span_id are reserved. A rejected put returns false
+    // and increments tinox_mdc_rejected_total. Fields are never sent to other services.
+    class Mdc
+    {
+        fnc put(key: String, value: String) -> Bool
+        {
+            return mdcPut(key, value) == 1
+        }
+
+        fnc remove(key: String) -> Bool
+        {
+            return mdcRemove(key) == 1
+        }
+
+        fnc get(key: String) -> String
+        {
+            return mdcGet(key)
+        }
+
+        fnc clear() -> Nothing
+        {
+            mdcClear()
+        }
+    }
+}
