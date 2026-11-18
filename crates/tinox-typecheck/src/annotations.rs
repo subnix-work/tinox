@@ -70,6 +70,10 @@ pub struct RouteParamBinding {
     /// argument on the annotation).
     pub name: String,
     pub ty: Type,
+    /// `@LogField` / `@LogField("key")` on a `@PathParam`/`@QueryParam` parameter: the MDC key
+    /// the raw bound value is stored under for the duration of the request (default: the
+    /// parameter name).
+    pub log_field: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -589,6 +593,16 @@ impl AnnotationProcessor {
                 min_args: 0,
                 max_args: 0,
                 description: "Binds a query string key (same name as the parameter) to this parameter — String/Int64/Int32/Bool/Float64/Float32".to_string(),
+            },
+        );
+        registry.insert(
+            "LogField".to_string(),
+            AnnotationInfo {
+                name: "LogField".to_string(),
+                valid_targets: vec![AnnotationTarget::Param],
+                min_args: 0,
+                max_args: 1,
+                description: "On a @PathParam/@QueryParam handler parameter: adds the raw bound value to the log context (Mdc) for the request, so every log record carries it as a JSON field. Optional key argument (default: the parameter name); see docs/observability.md".to_string(),
             },
         );
         registry.insert(
@@ -2063,7 +2077,11 @@ impl AnnotationProcessor {
                 "HttpContext" => Some(RouteParamKind::HttpContext),
                 _ => None,
             })?;
-            Some(RouteParamBinding { kind, name: p.name.clone(), ty: p.param_type.clone() })
+            let log_field = p.annotations.iter().find(|a| a.name == "LogField").map(|a| match a.args.first() {
+                Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(k))) => k.clone(),
+                _ => p.name.clone(),
+            });
+            Some(RouteParamBinding { kind, name: p.name.clone(), ty: p.param_type.clone(), log_field })
         }).collect();
 
         Some(RouteInfo {
@@ -2974,6 +2992,23 @@ fn validate_blocking(method: &Method, errors: &mut Vec<Error>) {
     }
 }
 
+/// MDC key rules (runtime `mdc_key_valid`): 1..32 bytes of [A-Za-z0-9_.-], not starting with a
+/// digit, `.` or `-`, and not one of the reserved log record keys.
+fn invalid_log_field_key(k: &str) -> Option<&'static str> {
+    const RESERVED: [&str; 7] = ["timestamp", "level", "logger", "message", "request_id", "trace_id", "span_id"];
+    if k.is_empty() || k.len() > 32 {
+        return Some("must be 1..32 bytes");
+    }
+    if RESERVED.contains(&k) {
+        return Some("is a reserved log record key");
+    }
+    let first_ok = k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    if !first_ok || !k.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {
+        return Some("must consist of [A-Za-z0-9_.-] and start with a letter or '_'");
+    }
+    None
+}
+
 fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, errors: &mut Vec<Error>) {
     let has_verb = method.annotations.iter()
         .any(|a| matches!(a.name.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE"));
@@ -3004,6 +3039,27 @@ fn validate_route_params(method: &Method, json_serializable: &HashSet<String>, e
             }
         }
         let binding = bindings[0];
+        for lf in param.annotations.iter().filter(|a| a.name == "LogField") {
+            if !matches!(binding.name.as_str(), "PathParam" | "QueryParam") {
+                errors.push(Error::new(param.span, format!(
+                    "@LogField on '{}' needs @PathParam or @QueryParam (found @{}); log other values with Mdc::put",
+                    param.name, binding.name
+                )));
+            }
+            let key = match lf.args.first() {
+                Some(tinox_parser::AnnotationArg::Literal(tinox_parser::Literal::String(k))) => Some(k.as_str()),
+                Some(_) => {
+                    errors.push(Error::new(param.span, format!("@LogField on '{}' takes an optional string key", param.name)));
+                    None
+                }
+                None => Some(param.name.as_str()),
+            };
+            if let Some(k) = key {
+                if let Some(why) = invalid_log_field_key(k) {
+                    errors.push(Error::new(param.span, format!("@LogField key '{k}' on '{}' {why}", param.name)));
+                }
+            }
+        }
         match binding.name.as_str() {
             "PathParam" | "QueryParam" => {
                 if !is_supported_param_scalar_type(&param.param_type) {
@@ -3690,6 +3746,25 @@ mod tests {
             let errors = valid(source);
             assert!(errors.iter().any(|e| e.message.contains(expected)), "expected {expected}: {errors:?}");
         }
+    }
+
+    // --- validate: @LogField (MDC) ---
+
+    #[test]
+    fn log_field_rules() {
+        let messages = |src: &str| valid(src).into_iter().map(|e| e.message).collect::<Vec<_>>().join(" | ");
+        let h = |param: &str| format!("class Ctrl {{ @GET\nfn list({param}) -> HttpContext {{ return HttpContext::new() }} }}");
+        // Accepted: default key (the parameter name) and an explicit key.
+        assert_eq!(messages(&h("@PathParam @LogField id: Int64")), "");
+        assert_eq!(messages(&h("@QueryParam @LogField(\"customer.no\") c: String")), "");
+        // Only on a bound path/query value.
+        assert!(messages(&h("@PostParam @LogField item: Item")).contains("@LogField on 'item' needs @PathParam or @QueryParam"));
+        // Key rules mirror the runtime's Mdc limits.
+        assert!(messages(&h("@PathParam @LogField(\"message\") id: Int64")).contains("reserved log record key"));
+        assert!(messages(&h("@PathParam @LogField(\"bad key\") id: Int64")).contains("must consist of"));
+        assert!(messages(&h("@PathParam @LogField(\"\") id: Int64")).contains("must be 1..32 bytes"));
+        assert!(messages(&h("@PathParam @LogField(\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\") id: Int64")).contains("must be 1..32 bytes"));
+        assert!(messages(&h("@PathParam @LogField(5) id: Int64")).contains("optional string key"));
     }
 
     // --- validate: unknown annotation ---

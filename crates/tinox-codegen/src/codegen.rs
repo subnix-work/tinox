@@ -131,6 +131,8 @@ pub struct RouteParamBinding {
     pub kind: RouteParamKind,
     pub name: String,
     pub ty: tinox_parser::Type,
+    /// MDC key from `@LogField` (the raw bound value is logged under it for this request).
+    pub log_field: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2113,6 +2115,7 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare void @tinox_counter_inc(i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_message_handler_failed(i8*, i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_telemetry_message_begin(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @tinox_mdc_put(i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare void @tinox_telemetry_message_end(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @tinox_cache_named(i8*, i64, i64)").unwrap();
         writeln!(&mut self.ir, "declare i8** @tinox_orm_in_params(i64*, i64, i64*)").unwrap();
@@ -3335,6 +3338,13 @@ impl CodeGen {
                     let getter = if binding.kind == RouteParamKind::PathParam { "HttpRequest_getParam" } else { "HttpRequest_getQuery" };
                     writeln!(&mut self.lambda_ir,
                         "  %raw_{n} = call i8* @{getter}(i64* %req_ptr_{n}, i8* {name_ptr})").unwrap();
+                    if let Some(key) = &binding.log_field {
+                        // The raw text goes into the log context before conversion, so even a request
+                        // rejected with 400 carries what the client sent (bounded by the MDC limits).
+                        let key_ptr = self.emit_lambda_string_literal(key);
+                        writeln!(&mut self.lambda_ir,
+                            "  %mdc_{n} = call i64 @tinox_mdc_put(i8* {key_ptr}, i8* %raw_{n})").unwrap();
+                    }
 
                     if matches!(binding.ty, Type::String) {
                         writeln!(&mut self.lambda_ir, "  %len_{n} = call i64 @tinox_string_length(i8* %raw_{n})").unwrap();

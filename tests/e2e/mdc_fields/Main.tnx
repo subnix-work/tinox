@@ -1,0 +1,75 @@
+// MDC: structured fields on every log record of the current thread/task.
+// Covers JSON output, update/remove, spawn inheritance (copy, no flow back), rejected keys,
+// value truncation and the plain-text format. Timestamps vary, so substrings are checked.
+// expect-contains: "message":"one","request_id":"","trace_id":"","span_id":"","customer":"4711","tenant":"acme"
+// expect-contains: "message":"two","request_id":"","trace_id":"","span_id":"","customer":"4712"
+// expect-contains: "message":"three","request_id":"","trace_id":"","span_id":""}
+// expect-contains: "message":"child","request_id":"","trace_id":"","span_id":"","customer":"9","child_only":"x"
+// expect-contains: "message":"parent after child","request_id":"","trace_id":"","span_id":"","customer":"9"}
+// expect-contains: put reserved: false
+// expect-contains: put bad key: false
+// expect-contains: put 9th: false
+// expect-contains: value length: 128
+// expect-contains: get missing: [] get customer: [9]
+// expect-contains: [INFO] [plain] plain text tenant=acme
+
+import tinox.core.env
+import tinox.core.logger
+
+class Main
+{
+    fnc child(log: Logger) -> Int64
+    {
+        Mdc::put("child_only", "x")
+        Logger::info(log, "child")
+        return 0
+    }
+
+    fnc main() -> Int32
+    {
+        Env::setVar("TINOX_LOG_JSON", "true")
+        const log: Logger = Logger::new("mdc")
+        Mdc::put("customer", "4711")
+        Mdc::put("tenant", "acme")
+        Logger::info(log, "one")
+        Mdc::put("customer", "4712")
+        Mdc::remove("tenant")
+        Logger::info(log, "two")
+        Mdc::clear()
+        Logger::info(log, "three")
+
+        Mdc::put("customer", "9")
+        const task = spawn Main::child(log)
+        await task
+        Logger::info(log, "parent after child")
+
+        println("get missing: [" + Mdc::get("nope") + "] get customer: [" + Mdc::get("customer") + "]")
+        println("put reserved: " + Mdc::put("message", "x").toString())
+        println("put bad key: " + Mdc::put("bad key", "x").toString())
+        Mdc::clear()
+        var i: Int64 = 0
+        while i < 8
+        {
+            Mdc::put("k" + i.toString(), "v")
+            i = i + 1
+        }
+        println("put 9th: " + Mdc::put("k8", "v").toString())
+        Mdc::clear()
+        var long: String = ""
+        var j: Int64 = 0
+        while j < 200
+        {
+            long = long + "a"
+            j = j + 1
+        }
+        Mdc::put("long", long)
+        println("value length: " + Mdc::get("long").len().toString())
+        Mdc::clear()
+
+        Env::setVar("TINOX_LOG_JSON", "false")
+        const plain: Logger = Logger::new("plain")
+        Mdc::put("tenant", "acme")
+        Logger::info(plain, "plain text")
+        return 0
+    }
+}

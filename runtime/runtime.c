@@ -921,6 +921,20 @@ typedef struct {
 static __thread TinoxTelemetryContext telemetry_context;
 static __thread TinoxTelemetryContext telemetry_stack[32];
 static __thread int telemetry_depth;
+
+// ---- MDC: mapped diagnostic context (per-thread structured log fields) ----
+// Independent of telemetry: works with only TINOX_LOG_JSON=true. Fixed-size and value-only, so a
+// spawn captures it by value like the telemetry context (the child inherits, changes do not flow
+// back). Every HTTP request and every WebSocket/AMQP message starts and ends with an empty MDC.
+#define TINOX_MDC_MAX 8
+#define TINOX_MDC_KEY 32
+#define TINOX_MDC_VAL 128
+typedef struct {
+    int n;
+    char key[TINOX_MDC_MAX][TINOX_MDC_KEY + 1];
+    char val[TINOX_MDC_MAX][TINOX_MDC_VAL + 1];
+} TinoxMdc;
+static __thread TinoxMdc mdc_current;
 static int telemetry_enabled, telemetry_sample = 10000;
 static char telemetry_service[65] = "tinox";
 static struct sockaddr_in telemetry_collector;
@@ -1166,8 +1180,8 @@ static void telemetry_leave(int64_t token) {
 // Automatic message boundaries (WebSocket @OnMessage, AMQP consumers, issue #548): every message
 // starts a fresh consumer span (kind 5) so no context from a previous message on a reused worker
 // can leak into it; the scope is closed (together with anything the handler left open) afterwards.
-int64_t tinox_telemetry_message_begin(const char* name) { return telemetry_enter(name, "", NULL, 5); }
-void tinox_telemetry_message_end(int64_t token) { telemetry_leave(token); }
+int64_t tinox_telemetry_message_begin(const char* name) { mdc_current.n = 0; return telemetry_enter(name, "", NULL, 5); }
+void tinox_telemetry_message_end(int64_t token) { telemetry_leave(token); mdc_current.n = 0; }
 char* telemetryTraceparent(void) {
     char p[56] = "";
     if (telemetry_context.trace[0]) snprintf(p, sizeof(p), "00-%s-%s-%02x", telemetry_context.trace, telemetry_context.span, telemetry_context.sampled);
@@ -1204,6 +1218,77 @@ static void telemetry_quote(char** out, const char* s, size_t limit) {
     }
     *(*out)++ = '"'; **out = 0;
 }
+static int mdc_reserved(const char* k) {
+    static const char* const reserved[] = {"timestamp", "level", "logger", "message", "request_id", "trace_id", "span_id"};
+    for (size_t i = 0; i < sizeof(reserved) / sizeof(*reserved); i++) if (!strcmp(k, reserved[i])) return 1;
+    return 0;
+}
+static int mdc_key_valid(const char* k) {
+    size_t n = k ? strlen(k) : 0;
+    if (n == 0 || n > TINOX_MDC_KEY || mdc_reserved(k)) return 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = k[i];
+        int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || (i && ((c >= '0' && c <= '9') || c == '.' || c == '-'));
+        if (!ok) return 0;
+    }
+    return 1;
+}
+static void mdc_reject(const char* why) {
+    static int warned;
+    tinox_counter_inc("tinox_mdc_rejected_total");
+    if (!__atomic_exchange_n(&warned, 1, __ATOMIC_RELAXED))
+        fprintf(stderr, "tinox: Mdc::put rejected (%s); limits: %d fields, keys %d bytes [A-Za-z0-9_.-], reserved log keys\n",
+                why, TINOX_MDC_MAX, TINOX_MDC_KEY);
+}
+// Returns 1 when stored, 0 when rejected (invalid or reserved key, or all slots in use).
+int64_t mdcPut(const char* key, const char* value) {
+    if (!mdc_key_valid(key)) { mdc_reject("invalid or reserved key"); return 0; }
+    if (!value) value = "";
+    size_t n = strnlen(value, TINOX_MDC_VAL + 1);
+    if (n > TINOX_MDC_VAL) {
+        tinox_counter_inc("tinox_mdc_truncated_total");
+        n = TINOX_MDC_VAL;
+        while (n && ((unsigned char)value[n] & 0xc0) == 0x80) n--;
+    }
+    int slot = -1;
+    for (int i = 0; i < mdc_current.n; i++) if (!strcmp(mdc_current.key[i], key)) { slot = i; break; }
+    if (slot < 0) {
+        if (mdc_current.n == TINOX_MDC_MAX) { mdc_reject("all slots in use"); return 0; }
+        slot = mdc_current.n++;
+        strcpy(mdc_current.key[slot], key);
+    }
+    memcpy(mdc_current.val[slot], value, n);
+    mdc_current.val[slot][n] = 0;
+    return 1;
+}
+// Called by generated REST shims for @LogField parameters (no Tinox-level extern, so the compiler
+// can declare it without clashing with the logger module's own declarations).
+int64_t tinox_mdc_put(const char* key, const char* value) { return mdcPut(key, value); }
+int64_t mdcRemove(const char* key) {
+    if (!key) return 0;
+    for (int i = 0; i < mdc_current.n; i++) {
+        if (strcmp(mdc_current.key[i], key)) continue;
+        for (int j = i + 1; j < mdc_current.n; j++) {
+            memcpy(mdc_current.key[j - 1], mdc_current.key[j], sizeof mdc_current.key[0]);
+            memcpy(mdc_current.val[j - 1], mdc_current.val[j], sizeof mdc_current.val[0]);
+        }
+        mdc_current.n--;
+        return 1;
+    }
+    return 0;
+}
+void mdcClear(void) { mdc_current.n = 0; }
+char* mdcGet(const char* key) {
+    for (int i = 0; key && i < mdc_current.n; i++) if (!strcmp(mdc_current.key[i], key)) return GC_strdup(mdc_current.val[i]);
+    return GC_strdup("");
+}
+// Plain-text logs: " key=value ..." (empty when no field is set, so existing output is unchanged).
+char* mdcText(void) {
+    char buf[TINOX_MDC_MAX * (TINOX_MDC_KEY + TINOX_MDC_VAL + 4) + 1], *o = buf;
+    *o = 0;
+    for (int i = 0; i < mdc_current.n; i++) o += sprintf(o, " %s=%s", mdc_current.key[i], mdc_current.val[i]);
+    return GC_strdup(buf);
+}
 char* telemetryLogJson(const char* timestamp, const char* level, const char* logger, const char* message) {
     char buf[32768], *out = buf;
     const char* keys[] = {"timestamp", "level", "logger", "message", "request_id", "trace_id", "span_id"};
@@ -1214,6 +1299,11 @@ char* telemetryLogJson(const char* timestamp, const char* level, const char* log
         if (i) *out++ = ',';
         telemetry_quote(&out, keys[i], 32); *out++ = ':';
         telemetry_quote(&out, vals[i], limits[i]);
+    }
+    for (int i = 0; i < mdc_current.n; i++) {
+        *out++ = ',';
+        telemetry_quote(&out, mdc_current.key[i], TINOX_MDC_KEY); *out++ = ':';
+        telemetry_quote(&out, mdc_current.val[i], TINOX_MDC_VAL);
     }
     *out++ = '}'; *out = 0;
     return GC_strdup(buf);
@@ -1913,6 +2003,7 @@ typedef struct {
     void* args;
     TinoxTask* task;
     TinoxTelemetryContext telemetry;
+    TinoxMdc mdc;
     int64_t queued_at;
     int service_id;
     int cleanup_mode;
@@ -1922,6 +2013,7 @@ static void* tinox_spawn_trampoline(void* raw) {
     TinoxSpawnTrampolineArgs* t = raw;
     tinox_gc_register_thread_roots();
     if (telemetry_enabled) telemetry_context = t->telemetry;
+    mdc_current = t->mdc;
     int64_t span_token = telemetry_enter("task", NULL, NULL, 1);
     if (span_token) tinox_histogram_record("tinox_task_queue_duration_ns", telemetry_clock(CLOCK_MONOTONIC) - t->queued_at);
     service_task_id = t->service_id;
@@ -1970,6 +2062,7 @@ typedef struct {
     void* args;
     TinoxTask* task;
     TinoxTelemetryContext telemetry;
+    TinoxMdc mdc;
     int64_t queued_at;
     int service_id;
     int cleanup_mode;
@@ -2022,6 +2115,7 @@ static void executor_run_job(TinoxExecutor* ex, TinoxExecJob* job) {
         return;
     }
     if (telemetry_enabled) telemetry_context = job->telemetry;
+    mdc_current = job->mdc;
     int64_t span_token = telemetry_enter("task", NULL, NULL, 1);
     if (span_token) tinox_histogram_record("tinox_task_queue_duration_ns", telemetry_clock(CLOCK_MONOTONIC) - job->queued_at);
     service_task_id = job->service_id;
@@ -2047,6 +2141,7 @@ static void executor_run_job(TinoxExecutor* ex, TinoxExecJob* job) {
     service_task_id = -1;
     service_cleanup_mode = 0;
     if (telemetry_enabled) memset(&telemetry_context, 0, sizeof telemetry_context);
+    mdc_current.n = 0;
 }
 typedef struct { TinoxExecutor* ex; int64_t index; } TinoxExecWorkerArgs;
 static void* executor_worker(void* raw) {
@@ -2130,6 +2225,7 @@ static void executor_submit(int64_t id, TinoxTask* task, void* (*fn)(void*), voi
     memset(&job, 0, sizeof job);
     job.fn = fn; job.args = args; job.task = task;
     job.telemetry = t->telemetry;
+    job.mdc = t->mdc;
     job.queued_at = t->queued_at;
     job.service_id = t->service_id;
     job.cleanup_mode = t->cleanup_mode;
@@ -2240,6 +2336,7 @@ static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted, int64
     task_add_owner(task, owner);
     TinoxSpawnTrampolineArgs* t = malloc(sizeof(*t));
     t->fn = fn; t->args = args; t->task = task;
+    if (mdc_current.n) t->mdc = mdc_current; else t->mdc.n = 0;
     if (telemetry_enabled) {
         t->telemetry = telemetry_context;
         t->queued_at = telemetry_clock(CLOCK_MONOTONIC);
@@ -12727,6 +12824,7 @@ static void tinox_process_request(TinoxHttpServer* srv, int64_t client_fd, char*
     g_ctx[1] = (int64_t)g_response;
 
     int64_t span_token = 0;
+    mdc_current.n = 0;
     if (telemetry_enabled) {
         const char* incoming_parent = (const char*)(uintptr_t)tinox_map_get(&g_req_headers_map, "Traceparent");
         const char* incoming_request = (const char*)(uintptr_t)tinox_map_get(&g_req_headers_map, "X-Request-Id");
@@ -12769,6 +12867,7 @@ static void tinox_process_request(TinoxHttpServer* srv, int64_t client_fd, char*
         telemetry_event("request.end");
     }
     telemetry_leave(span_token);
+    mdc_current.n = 0;
 
     char* body = (char*)g_response[2];
     if (!body) body = "";

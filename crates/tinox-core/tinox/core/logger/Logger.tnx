@@ -80,7 +80,8 @@ namespace tinox.core.logger
                 print("] [")
                 print(logger.name)
                 print("] ")
-                println(message)
+                print(message)
+                println(mdcText())
             }
         }
 

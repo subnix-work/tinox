@@ -91,6 +91,49 @@ still use the explicit API; automatic adapters for them are a future
 increment. Log output to stdout retains the operating system's normal
 backpressure behavior.
 
+## Custom log fields (MDC)
+
+`Mdc` (in `tinox.core.logger`) attaches structured fields to every log record of the
+current request, message or task: a customer number, a tenant, an order id. The fields
+become top-level keys of the JSON record, which is what Logstash/Kibana expect:
+
+```tinox
+import tinox.core.logger
+
+Mdc::put("customer", "4711")
+Logger::info(log, "order paid")
+// {"timestamp":"...","level":"INFO","logger":"OrderService","message":"order paid",
+//  "request_id":"...","trace_id":"...","span_id":"...","customer":"4711"}
+Mdc::remove("customer")
+```
+
+`Mdc::put(key, value) -> Bool`, `Mdc::remove(key) -> Bool`, `Mdc::get(key) -> String`
+(empty when unset) and `Mdc::clear()`.
+
+* Works with `TINOX_LOG_JSON=true` alone; telemetry is not required. The plain-text format
+  appends ` key=value` pairs only when a field is set, so existing output does not change.
+* A `spawn`ed task starts with a copy of its parent's fields. Its own changes do not flow
+  back, and sibling tasks do not see each other's fields.
+* Every HTTP request and every WebSocket/AMQP message starts and ends with an empty MDC, so
+  a reused worker cannot leak fields into the next request.
+* At most 8 fields. Keys are 1..32 bytes of `[A-Za-z0-9_.-]` starting with a letter or `_`;
+  values are at most 128 bytes (longer values are truncated at a UTF-8 boundary and counted
+  in `tinox_mdc_truncated_total`). The keys `timestamp`, `level`, `logger`, `message`,
+  `request_id`, `trace_id` and `span_id` are reserved.
+* A rejected `put` returns `false`, increments `tinox_mdc_rejected_total` and prints one
+  warning to stderr per process.
+* **`@LogField`** puts a bound REST parameter into the MDC without code: on a
+  `@PathParam` or `@QueryParam` parameter, `@LogField` logs the raw value under the parameter's
+  name and `@LogField("customer")` under that key.
+  ```tinox
+  fn order(@PathParam @LogField orderId: Int64, @QueryParam @LogField("customer") c: String) -> String
+  ```
+  The raw text is stored before it is converted. The key is checked at compile time against the
+  same rules as `Mdc::put`. For other values (a header, a field of a request body) call
+  `Mdc::put` in the handler.
+* Fields stay in the process: they are not sent as headers (no `baggage`) and not exported as
+  span attributes. Do not store secrets; values are not masked.
+
 ## Explicit API
 
 Import `tinox.core.logger`. These functions are also available for message
