@@ -1,0 +1,90 @@
+import tinox.core.ui
+import tinox.core.websocket
+import tinox.core.http_server
+
+@TinoxUIApp(8300, 8301)
+class MaterialApp
+{
+    var initialized: Bool
+    var name: String
+    var email: String
+    var notifications: Bool
+    var completed: Bool
+    var saved: Bool
+    var dialogOpen: Bool
+    var activeTab: Int64
+
+    @View
+    fn render() -> Component
+    {
+        const app: MaterialApp = this
+        if (!this.initialized) {
+            this.name = "Alex Morgan"
+            this.email = "alex@example.com"
+            this.notifications = true
+            this.initialized = true
+        }
+        return Component::vbox([
+            Component::hbox([
+                Component::avatar("Alex Morgan", ""),
+                Component::label("STUDIO / WORKSPACE").withStyle("color:var(--tinox-text2);font-size:0.8rem;letter-spacing:0.12em;")
+            ]).withStyle("display:flex;align-items:center;gap:0.75rem;"),
+            Component::heading("A little space to focus.", 1),
+            Component::label("Your projects, preferences and next steps. All in one calm place.").withStyle("color:var(--tinox-text2);"),
+            Component::tabs(["Overview", "Preferences"], this.activeTab, this.content(), fn(v: String) { app.activeTab = v.toInt() }),
+            Component::dialog("Ready for your next idea?", Component::vbox([
+                Component::label("Start small. Give your project a clear goal, then take the first step."),
+                Component::button("Got it", fn(v: String) { app.dialogOpen = false })
+            ]), this.dialogOpen, fn(v: String) { app.dialogOpen = false })
+        ]).withStyle("display:flex;flex-direction:column;gap:1.5rem;")
+    }
+
+    fn content() -> Component
+    {
+        const app: MaterialApp = this
+        if (this.activeTab == 1) {
+            return Component::card("Make yourself at home", Component::vbox([
+                Component::label("Display name"),
+                Component::textField(this.name, fn(v: String) {
+                    app.name = v
+                    app.saved = false
+                }).withDomId("material-name").withTooltip("Display name"),
+                Component::label("Email address"),
+                Component::emailField(this.email, fn(v: String) {
+                    app.email = v
+                    app.saved = false
+                }).withTooltip("Email address"),
+                Component::hbox([
+                    Component::checkbox(this.notifications, fn(v: String) {
+                        app.notifications = v == "true"
+                        app.saved = false
+                    }).withTooltip("Email notifications"),
+                    Component::label("Keep me updated by email")
+                ]).withStyle("display:flex;align-items:center;gap:0.75rem;"),
+                Component::button("Save preferences", fn(v: String) { app.saved = true }),
+                Component::notification(this.saved ? "Preferences saved for this session." : "Changes stay in this demo session.", this.saved ? "success" : "info")
+            ]).withStyle("display:flex;flex-direction:column;gap:1rem;"))
+        }
+        return Component::vbox([
+            Component::card("Welcome back, " + this.name, Component::vbox([
+                Component::label("Build something thoughtful."),
+                Component::label("A clear plan and a little momentum are all you need to get started.").withStyle("color:var(--tinox-text2);"),
+                Component::button("Find your focus", fn(v: String) { app.dialogOpen = true }).withDomId("material-focus")
+            ]).withStyle("display:flex;flex-direction:column;gap:1rem;")),
+            Component::hbox([
+                Component::card("Your next step", Component::vbox([
+                    Component::label("Review the workspace design"),
+                    Component::label("Keep the essentials. Make every action feel obvious.").withStyle("color:var(--tinox-text2);"),
+                    Component::button(this.completed ? "Mark as unfinished" : "Mark as complete", fn(v: String) { app.completed = !app.completed }).withStyle("background:var(--tinox-primary-10);color:var(--tinox-primary-text);"),
+                    Component::notification(this.completed ? "All caught up. Nice work." : "One small task to move things forward.", this.completed ? "success" : "info")
+                ]).withStyle("display:flex;flex-direction:column;gap:1rem;")),
+                Component::card("Weekly progress", Component::vbox([
+                    Component::heading(this.completed ? "100%" : "75%", 2),
+                    Component::progressBar(this.completed ? 100.0 : 75.0),
+                    Component::label(this.completed ? "4 of 4 milestones completed" : "3 of 4 milestones completed").withStyle("color:var(--tinox-text2);"),
+                    Component::label("Steady progress, at your own pace.")
+                ]).withStyle("display:flex;flex-direction:column;gap:1rem;"))
+            ]).withStyle("display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:1.5rem;")
+        ]).withStyle("display:flex;flex-direction:column;gap:1.5rem;")
+    }
+}

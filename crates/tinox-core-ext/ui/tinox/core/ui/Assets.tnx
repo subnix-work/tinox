@@ -31,8 +31,17 @@ namespace tinox.core.ui
         // used to reach this page) plus this port, at connect time.
         fnc shellHtml(wsPort: Int64) -> String
         {
+            var theme: String = envGet("TINOX_UI_THEME")
+            if (theme == "") { theme = "neon" }
+            return Assets::shellHtmlWithTheme(wsPort, theme)
+        }
+
+        // Explicit selection for custom HTTP shells; @TinoxUIApp uses TINOX_UI_THEME.
+        fnc shellHtmlWithTheme(wsPort: Int64, theme: String) -> String
+        {
+            Theme::validate(theme)
             const template: String = Assets::shellHtmlTemplate()
-            return template.replace("__TINOX_UI_WS_PORT__", wsPort.toString()).replace("__TINOX_UI_FONT_LINKS__", Assets::fontLinks())
+            return template.replace("__TINOX_UI_WS_PORT__", wsPort.toString()).replace("__TINOX_UI_FONT_LINKS__", Assets::fontLinks()).replace("__TINOX_UI_THEME__", theme).replace("__TINOX_UI_THEME_CSS__", Theme::css(theme))
         }
 
         // Web fonts (#621): by default the shell loads NOTHING from a third party, so it works
@@ -52,7 +61,7 @@ namespace tinox.core.ui
             }
             return r#"<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">"#
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=Roboto:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">"#
         }
 
         // Design tokens (dark, glassy, cyan/purple neon-accented) ported
@@ -63,16 +72,18 @@ namespace tinox.core.ui
         // (button/input/table/...) instead of Vaadin web components,
         // since ui.js renders plain DOM, not Vaadin. Every Tinox-UI app
         // gets this by default (no opt-in) -- an app that wants its own
-        // look can still override via Component::withStyle's inline
+        // look can select TINOX_UI_THEME=material or material-dark, override
+        // via Component::withStyle's inline
         // style hook, or by not using this shell template at all
         // (Assets::clientJs() works standalone against any HTML page
         // with a `#tinox-ui-root` element).
         fnc shellHtmlTemplate() -> String
         {
             return r#"<!doctype html>
-<html>
+<html lang="en" data-tinox-theme="__TINOX_UI_THEME__">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tinox-UI</title>
 __TINOX_UI_FONT_LINKS__
 <style>
@@ -363,6 +374,7 @@ __TINOX_UI_FONT_LINKS__
   }
   .tinox-menubar-sub { padding: 0.4rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
   .tinox-menubar-sub:hover { background: rgba(34, 211, 238, 0.12); color: var(--tinox-primary-text); }
+__TINOX_UI_THEME_CSS__
 </style>
 </head>
 <body>
@@ -583,6 +595,7 @@ __TINOX_UI_FONT_LINKS__
         // plain, unmarked `<div>` (or their own distinct className).
         if (el.className.indexOf("tinox-notification") === 0) {
           el.textContent = op.text;
+          el.className = "tinox-notification tinox-notification-" + (props.kind || "info");
         } else if (el.className === "tinox-html") {
           el.innerHTML = op.text;
         } else if (el.className === "tinox-combobox") {

@@ -347,6 +347,15 @@
       ]
     },
     {
+      "description": "On a @PathParam/@QueryParam handler parameter: adds the raw bound value to the log context (Mdc) for the request, so every log record carries it as a JSON field. Optional key argument (default: the parameter name); see docs/observability.md",
+      "max_args": 1,
+      "min_args": 0,
+      "name": "LogField",
+      "targets": [
+        "Param"
+      ]
+    },
+    {
       "description": "Marks a field for partial masking in logs (shows first/last chars)",
       "max_args": 0,
       "min_args": 0,
@@ -1126,7 +1135,7 @@
     "zipListEntries": "(path: String) -> Array",
     "zipRemoveFile": "(path: String) -> Nothing"
   },
-  "compiler_version": "2.9.4",
+  "compiler_version": "2.9.6",
   "schema_version": 1,
   "sources": {}
 }

@@ -85,6 +85,7 @@ GOOD_EXAMPLES=(
     examples/modules/multi_import_example/Main.tnx
     examples/interface_extends/Main.tnx
     examples/rest_with_mini/Main.tnx
+    examples/tinox_ui_material/Main.tnx
 )
 # Core/extended stdlib split (see CLAUDE.md): any example importing an
 # extended-tier module (e.g. tinox.core.http_server) needs its declared

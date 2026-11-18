@@ -32,7 +32,7 @@ fn fresh_dir(name: &str) -> PathBuf {
 fn write_localdemo(dir: &Path, greeting: &str) {
     let src = dir.join("tinox/core/localdemo");
     std::fs::create_dir_all(&src).expect("mkdir pkg");
-    std::fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.4\"\nname = \"localdemo\"\nversion = \"9.9.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n").expect("pkg toml");
+    std::fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.6\"\nname = \"localdemo\"\nversion = \"9.9.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n").expect("pkg toml");
     std::fs::write(
         src.join("Greeter.tnx"),
         format!("class Greeter {{\n    fn greet() -> String {{ return \"{greeting}\" }}\n}}\n"),
@@ -47,7 +47,7 @@ fn project(name: &str, extra_toml: &str) -> PathBuf {
     std::fs::create_dir_all(p.join("src")).expect("mkdir src");
     std::fs::write(
         p.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.4\"\nname = \"overridetest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"localdemo\"\nversion = \"1.0.0\"\n{extra_toml}"),
+        format!("[package]\ncompiler = \"2.9.6\"\nname = \"overridetest\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"localdemo\"\nversion = \"1.0.0\"\n{extra_toml}"),
     )
     .expect("toml");
     std::fs::write(p.join("src/Main.tnx"), MAIN).expect("Main");
@@ -120,7 +120,7 @@ fn misconfigured_overrides_are_hard_errors() {
     // package name mismatch
     let pkg = fresh_dir("pkg-mismatch");
     write_localdemo(&pkg, "v1");
-    std::fs::write(pkg.join("tinox.toml"), "[package]\ncompiler = \"2.9.4\"\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
+    std::fs::write(pkg.join("tinox.toml"), "[package]\ncompiler = \"2.9.6\"\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
     let proj2 = project("name-mismatch", &override_toml(pkg.to_str().unwrap()));
     let out = run(&proj2);
     assert!(!out.status.success());
@@ -168,7 +168,7 @@ fn workspace_crypto_resolves_from_the_checkout() {
     let crypto = repo_root().join("crates/tinox-core-ext/crypto");
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.4\"\nname = \"wscrypto\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"{}\"\n", crypto.display()),
+        format!("[package]\ncompiler = \"2.9.6\"\nname = \"wscrypto\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"{}\"\n", crypto.display()),
     )
     .unwrap();
     std::fs::write(
@@ -194,7 +194,7 @@ fn workspace_websocket_exposes_upgrade_request_headers() {
     let ws = repo_root().join("crates/tinox-core-ext/websocket");
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.4\"\nname = \"wsupgrade\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\npath = \"{}\"\n", ws.display()),
+        format!("[package]\ncompiler = \"2.9.6\"\nname = \"wsupgrade\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"websocket\"\npath = \"{}\"\n", ws.display()),
     )
     .unwrap();
     std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ws_upgrade_inspect/Main.tnx")).unwrap();
@@ -208,34 +208,73 @@ fn workspace_websocket_exposes_upgrade_request_headers() {
 }
 
 /// Issue #627: the `ui` shell loads no third-party fonts unless `TINOX_UI_FONTS=google`;
-/// an unknown value is a hard error. Workspace source (new behaviour, not yet in a published package).
+/// themes default to neon, accept Material variants and reject unknown names.
+/// Workspace source is used so the test covers unpublished UI changes.
 #[test]
-fn workspace_ui_shell_uses_system_fonts_by_default() {
+fn workspace_ui_shell_selects_themes_and_fonts() {
     let proj = fresh_dir("workspace-ui-fonts");
     std::fs::create_dir_all(proj.join("src")).unwrap();
     let ext = repo_root().join("crates/tinox-core-ext");
-    let mut toml = String::from("[package]\ncompiler = \"2.9.4\"\nname = \"uifonts\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n");
+    let mut toml = String::from("[package]\ncompiler = \"2.9.6\"\nname = \"uifonts\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n");
     for m in ["ui", "json", "http_server", "websocket", "http"] {
         toml.push_str(&format!("\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"{m}\"\npath = \"{}\"\n", ext.join(m).display()));
     }
     std::fs::write(proj.join("tinox.toml"), toml).unwrap();
     std::fs::write(proj.join("src/Main.tnx"), include_str!("fixtures/ui_shell_fonts/Main.tnx")).unwrap();
-    let go = |value: Option<&str>| {
+    let go = |value: Option<&str>, theme: Option<&str>| {
         let mut c = Command::new(tinox());
-        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS");
+        c.arg("run").current_dir(&proj).env_remove("TINOX_UI_FONTS").env_remove("TINOX_UI_THEME").env_remove("TINOX_UI_COLOR");
         if let Some(v) = value { c.env("TINOX_UI_FONTS", v); }
+        if let Some(v) = theme { c.env("TINOX_UI_THEME", v); }
         c.output().unwrap()
     };
-    let expect = |o: &Output, google: &str| {
+    let expect = |o: &Output, google: &str, material: bool, dark: bool| {
         assert!(o.status.success(), "stderr: {}", stderr(o));
-        assert_eq!(String::from_utf8_lossy(&o.stdout), format!("google={google}\nplaceholder=false\nport=true\n"));
+        assert_eq!(String::from_utf8_lossy(&o.stdout), format!("google={google}\nplaceholder=false\nport=true\nmaterial={material}\ndark={dark}\nexplicit=true\n"));
     };
-    expect(&go(None), "false");
-    expect(&go(Some("system")), "false");
-    expect(&go(Some("google")), "true");
-    let bad = go(Some("comic-sans"));
+    expect(&go(None, None), "false", false, false);
+    expect(&go(None, Some("neon")), "false", false, false);
+    expect(&go(None, Some("material")), "false", true, false);
+    expect(&go(None, Some("material-dark")), "false", false, true);
+    expect(&go(Some("system"), None), "false", false, false);
+    expect(&go(Some("google"), Some("material")), "true", true, false);
+    let bad = go(Some("comic-sans"), None);
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stdout).contains("TINOX_UI_FONTS must be"), "{:?}", bad);
+    let bad_theme = go(None, Some("unknown"));
+    assert!(!bad_theme.status.success());
+    assert!(String::from_utf8_lossy(&bad_theme.stdout).contains("TINOX_UI_THEME must be"));
+    // Exercise the actual rendered shell against all curated accent/mode pairs.
+    std::fs::write(proj.join("src/Main.tnx"),
+        "import tinox.core.ui\nclass Main {\n    fnc main() -> Int32 {\n        println(Assets::shellHtml(9001))\n        return 0\n    }\n}\n").unwrap();
+    let colored = |theme: &str, color: &str| {
+        Command::new(tinox()).arg("run").current_dir(&proj)
+            .env("TINOX_UI_THEME", theme).env("TINOX_UI_COLOR", color)
+            .env_remove("TINOX_UI_FONTS").output().unwrap()
+    };
+    for (color, light, dark) in [
+        ("red", "#a63c46", "#ffb2b9"),
+        ("green", "#286747", "#94d5ab"),
+        ("blue", "#315da8", "#adc7ff"),
+        ("purple", "#6554a4", "#cbb9ff"),
+        ("", "#6554a4", "#cbb9ff"),
+    ] {
+        for (theme, primary) in [("material", light), ("material-dark", dark)] {
+            let out = colored(theme, color);
+            assert!(out.status.success(), "{theme}/{color}: {}", stderr(&out));
+            let html = String::from_utf8_lossy(&out.stdout);
+            // Check the last declaration, since presets override the base palette.
+            let last_primary = html.rsplit("--tinox-primary:").next().unwrap();
+            assert!(last_primary.trim_start().starts_with(primary), "{theme}/{color}: {last_primary}");
+            assert!(!html.contains("__TINOX_UI_"));
+        }
+    }
+    let bad_color = colored("material", "orange");
+    assert!(!bad_color.status.success());
+    assert!(String::from_utf8_lossy(&bad_color.stdout).contains("TINOX_UI_COLOR must be"));
+    let neon_color = colored("neon", "blue");
+    assert!(!neon_color.status.success());
+    assert!(String::from_utf8_lossy(&neon_color.stdout).contains("TINOX_UI_COLOR requires"));
     std::fs::remove_dir_all(&proj).ok();
 }
 
@@ -248,7 +287,7 @@ fn add_uses_local_overrides_without_installing_or_locking_the_coordinate() {
     std::fs::write(proj.join("src/Main.tnx"), MAIN).unwrap();
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.4\"\nname = \"overridetest\"\nversion = \"0.1.0\"\n{}", override_toml(pkg.to_str().unwrap())),
+        format!("[package]\ncompiler = \"2.9.6\"\nname = \"overridetest\"\nversion = \"0.1.0\"\n{}", override_toml(pkg.to_str().unwrap())),
     ).unwrap();
     let output = Command::new(tinox()).args(["add", "tinox.core", "localdemo", "1.0.0", "http://127.0.0.1:1/unreachable"])
         .current_dir(&proj).env("TINOX_HOME", proj.join("empty-home"))
@@ -274,7 +313,7 @@ fn workspace_json_deserialize_throws_on_null_and_invalid_text() {
     let json = repo_root().join("crates/tinox-core-ext/json");
     std::fs::write(
         proj.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.4\"\nname = \"wsjson\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\npath = \"{}\"\n", json.display()),
+        format!("[package]\ncompiler = \"2.9.6\"\nname = \"wsjson\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\nversion = \"0.0.0-workspace\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"json\"\npath = \"{}\"\n", json.display()),
     )
     .unwrap();
     std::fs::write(

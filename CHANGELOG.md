@@ -4,6 +4,25 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.6] - 2026-11-18
+
+**Notable change:** every package is republished for compiler 2.9.6 (patch version bump; a package declaring `compiler = "2.9.4"` is rejected by 2.9.6). There is no 2.9.5 release.
+
+### Added
+
+- #688: MDC log fields. `Mdc::put/remove/get/clear` (`tinox.core.logger`) attach structured fields (customer number, tenant, ...) to every log record of the current request, message or task, emitted as top-level JSON keys for ELK/Kibana. They work with `TINOX_LOG_JSON=true` alone, are copied into `spawn`ed tasks, and every HTTP request and WebSocket/AMQP message starts and ends empty. Limits: 8 fields, keys 1..32 bytes `[A-Za-z0-9_.-]`, values 128 bytes, reserved log keys; rejections are counted (`tinox_mdc_rejected_total`). `@LogField` / `@LogField("key")` on a `@PathParam`/`@QueryParam` parameter logs the bound value without code. Fields never leave the process. See `docs/observability.md`.
+
+- `application.properties` values expand environment placeholders: `key=${ENV_VAR}` (required) and `key=${ENV_VAR:default}`, several per value, with `\${` as a literal escape. The variable name is free (e.g. `app.port=${PORT:8080}`); an unset variable without default, an unterminated or empty `${}` is a startup error that names the key and variable, never a value. The key-derived override (`APP_PORT`) still wins over the file. Expanded values are not rescanned.
+
+- #663: Material accent presets through `TINOX_UI_COLOR=red|green|blue|purple`, with matching light/dark palettes and validation.
+
+- #660: Tinox-UI Material light and dark themes (`TINOX_UI_THEME=material` / `material-dark`), with tonal surfaces, rounded cards, readable typography, visible keyboard focus and reduced-motion support. Existing apps retain the neon default. Includes an interactive `examples/tinox_ui_material` workspace demo and explicit `Assets::shellHtmlWithTheme` selection.
+
+### Fixed
+
+- #661: DataGrid client tests now extract the shipped JavaScript without requiring an absent Tinox semicolon.
+- #662: Notification severity styling now follows incremental updates when `kind` changes.
+
 ## [2.9.4] - 2026-11-07
 
 **Notable change:** every package is republished for compiler 2.9.4 (patch version bump; a package declaring `compiler = "2.9.3"` is rejected by 2.9.4). The runtime now converts `Int64` minimum values correctly.

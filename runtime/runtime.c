@@ -921,6 +921,20 @@ typedef struct {
 static __thread TinoxTelemetryContext telemetry_context;
 static __thread TinoxTelemetryContext telemetry_stack[32];
 static __thread int telemetry_depth;
+
+// ---- MDC: mapped diagnostic context (per-thread structured log fields) ----
+// Independent of telemetry: works with only TINOX_LOG_JSON=true. Fixed-size and value-only, so a
+// spawn captures it by value like the telemetry context (the child inherits, changes do not flow
+// back). Every HTTP request and every WebSocket/AMQP message starts and ends with an empty MDC.
+#define TINOX_MDC_MAX 8
+#define TINOX_MDC_KEY 32
+#define TINOX_MDC_VAL 128
+typedef struct {
+    int n;
+    char key[TINOX_MDC_MAX][TINOX_MDC_KEY + 1];
+    char val[TINOX_MDC_MAX][TINOX_MDC_VAL + 1];
+} TinoxMdc;
+static __thread TinoxMdc mdc_current;
 static int telemetry_enabled, telemetry_sample = 10000;
 static char telemetry_service[65] = "tinox";
 static struct sockaddr_in telemetry_collector;
@@ -1166,8 +1180,8 @@ static void telemetry_leave(int64_t token) {
 // Automatic message boundaries (WebSocket @OnMessage, AMQP consumers, issue #548): every message
 // starts a fresh consumer span (kind 5) so no context from a previous message on a reused worker
 // can leak into it; the scope is closed (together with anything the handler left open) afterwards.
-int64_t tinox_telemetry_message_begin(const char* name) { return telemetry_enter(name, "", NULL, 5); }
-void tinox_telemetry_message_end(int64_t token) { telemetry_leave(token); }
+int64_t tinox_telemetry_message_begin(const char* name) { mdc_current.n = 0; return telemetry_enter(name, "", NULL, 5); }
+void tinox_telemetry_message_end(int64_t token) { telemetry_leave(token); mdc_current.n = 0; }
 char* telemetryTraceparent(void) {
     char p[56] = "";
     if (telemetry_context.trace[0]) snprintf(p, sizeof(p), "00-%s-%s-%02x", telemetry_context.trace, telemetry_context.span, telemetry_context.sampled);
@@ -1204,6 +1218,77 @@ static void telemetry_quote(char** out, const char* s, size_t limit) {
     }
     *(*out)++ = '"'; **out = 0;
 }
+static int mdc_reserved(const char* k) {
+    static const char* const reserved[] = {"timestamp", "level", "logger", "message", "request_id", "trace_id", "span_id"};
+    for (size_t i = 0; i < sizeof(reserved) / sizeof(*reserved); i++) if (!strcmp(k, reserved[i])) return 1;
+    return 0;
+}
+static int mdc_key_valid(const char* k) {
+    size_t n = k ? strlen(k) : 0;
+    if (n == 0 || n > TINOX_MDC_KEY || mdc_reserved(k)) return 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = k[i];
+        int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || (i && ((c >= '0' && c <= '9') || c == '.' || c == '-'));
+        if (!ok) return 0;
+    }
+    return 1;
+}
+static void mdc_reject(const char* why) {
+    static int warned;
+    tinox_counter_inc("tinox_mdc_rejected_total");
+    if (!__atomic_exchange_n(&warned, 1, __ATOMIC_RELAXED))
+        fprintf(stderr, "tinox: Mdc::put rejected (%s); limits: %d fields, keys %d bytes [A-Za-z0-9_.-], reserved log keys\n",
+                why, TINOX_MDC_MAX, TINOX_MDC_KEY);
+}
+// Returns 1 when stored, 0 when rejected (invalid or reserved key, or all slots in use).
+int64_t mdcPut(const char* key, const char* value) {
+    if (!mdc_key_valid(key)) { mdc_reject("invalid or reserved key"); return 0; }
+    if (!value) value = "";
+    size_t n = strnlen(value, TINOX_MDC_VAL + 1);
+    if (n > TINOX_MDC_VAL) {
+        tinox_counter_inc("tinox_mdc_truncated_total");
+        n = TINOX_MDC_VAL;
+        while (n && ((unsigned char)value[n] & 0xc0) == 0x80) n--;
+    }
+    int slot = -1;
+    for (int i = 0; i < mdc_current.n; i++) if (!strcmp(mdc_current.key[i], key)) { slot = i; break; }
+    if (slot < 0) {
+        if (mdc_current.n == TINOX_MDC_MAX) { mdc_reject("all slots in use"); return 0; }
+        slot = mdc_current.n++;
+        strcpy(mdc_current.key[slot], key);
+    }
+    memcpy(mdc_current.val[slot], value, n);
+    mdc_current.val[slot][n] = 0;
+    return 1;
+}
+// Called by generated REST shims for @LogField parameters (no Tinox-level extern, so the compiler
+// can declare it without clashing with the logger module's own declarations).
+int64_t tinox_mdc_put(const char* key, const char* value) { return mdcPut(key, value); }
+int64_t mdcRemove(const char* key) {
+    if (!key) return 0;
+    for (int i = 0; i < mdc_current.n; i++) {
+        if (strcmp(mdc_current.key[i], key)) continue;
+        for (int j = i + 1; j < mdc_current.n; j++) {
+            memcpy(mdc_current.key[j - 1], mdc_current.key[j], sizeof mdc_current.key[0]);
+            memcpy(mdc_current.val[j - 1], mdc_current.val[j], sizeof mdc_current.val[0]);
+        }
+        mdc_current.n--;
+        return 1;
+    }
+    return 0;
+}
+void mdcClear(void) { mdc_current.n = 0; }
+char* mdcGet(const char* key) {
+    for (int i = 0; key && i < mdc_current.n; i++) if (!strcmp(mdc_current.key[i], key)) return GC_strdup(mdc_current.val[i]);
+    return GC_strdup("");
+}
+// Plain-text logs: " key=value ..." (empty when no field is set, so existing output is unchanged).
+char* mdcText(void) {
+    char buf[TINOX_MDC_MAX * (TINOX_MDC_KEY + TINOX_MDC_VAL + 4) + 1], *o = buf;
+    *o = 0;
+    for (int i = 0; i < mdc_current.n; i++) o += sprintf(o, " %s=%s", mdc_current.key[i], mdc_current.val[i]);
+    return GC_strdup(buf);
+}
 char* telemetryLogJson(const char* timestamp, const char* level, const char* logger, const char* message) {
     char buf[32768], *out = buf;
     const char* keys[] = {"timestamp", "level", "logger", "message", "request_id", "trace_id", "span_id"};
@@ -1214,6 +1299,11 @@ char* telemetryLogJson(const char* timestamp, const char* level, const char* log
         if (i) *out++ = ',';
         telemetry_quote(&out, keys[i], 32); *out++ = ':';
         telemetry_quote(&out, vals[i], limits[i]);
+    }
+    for (int i = 0; i < mdc_current.n; i++) {
+        *out++ = ',';
+        telemetry_quote(&out, mdc_current.key[i], TINOX_MDC_KEY); *out++ = ':';
+        telemetry_quote(&out, mdc_current.val[i], TINOX_MDC_VAL);
     }
     *out++ = '}'; *out = 0;
     return GC_strdup(buf);
@@ -1569,6 +1659,11 @@ typedef struct {
 //   TINOX_MAX_BODY_BYTES        largest HTTP/1 request body (4 MiB); larger ones get 413. The
 //                               whole body is held in memory per request in flight, so budget
 //                               max body x concurrent uploads (issue #542)
+//   TINOX_HEAD_TIMEOUT_MS       absolute budget for receiving one request head (5000 ms); a client
+//                               still sending it later gets 408 (slowloris bound)
+//   TINOX_MAX_HEADER_BYTES      largest HTTP/1 request line + header block (64 KiB); larger ones
+//                               get 431 and the connection is closed. Without it a single
+//                               client could make the server buffer headers without bound
 //   TINOX_QUEUE_WAIT_MS         how long `spawn` / a WebSocket accept may
 //                               wait for a free slot before the request is
 //                               rejected (default 0 = reject immediately)
@@ -1594,6 +1689,8 @@ typedef struct {
     int64_t max_ws_connections;
     int64_t queue_wait_ms;
     int64_t max_body_bytes;
+    int64_t max_header_bytes;
+    int64_t head_timeout_ms;
 } TinoxLimits;
 
 static TinoxLimits g_limits;
@@ -1742,6 +1839,8 @@ static void tinox_limits_init_once(void) {
     g_limits.max_ws_connections = tinox_limit_env("TINOX_MAX_WS_CONNECTIONS", 1024, 1, 1000000);
     g_limits.queue_wait_ms = tinox_limit_env("TINOX_QUEUE_WAIT_MS", 0, 0, 600000);
     g_limits.max_body_bytes = tinox_limit_env("TINOX_MAX_BODY_BYTES", 4 * 1024 * 1024, 1024, 1073741824LL);
+    g_limits.max_header_bytes = tinox_limit_env("TINOX_MAX_HEADER_BYTES", 64 * 1024, 1024, 16 * 1024 * 1024);
+    g_limits.head_timeout_ms = tinox_limit_env("TINOX_HEAD_TIMEOUT_MS", 5000, 100, 600000);
     pthread_condattr_t ca;
     pthread_condattr_init(&ca);
     pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
@@ -1904,6 +2003,7 @@ typedef struct {
     void* args;
     TinoxTask* task;
     TinoxTelemetryContext telemetry;
+    TinoxMdc mdc;
     int64_t queued_at;
     int service_id;
     int cleanup_mode;
@@ -1913,6 +2013,7 @@ static void* tinox_spawn_trampoline(void* raw) {
     TinoxSpawnTrampolineArgs* t = raw;
     tinox_gc_register_thread_roots();
     if (telemetry_enabled) telemetry_context = t->telemetry;
+    mdc_current = t->mdc;
     int64_t span_token = telemetry_enter("task", NULL, NULL, 1);
     if (span_token) tinox_histogram_record("tinox_task_queue_duration_ns", telemetry_clock(CLOCK_MONOTONIC) - t->queued_at);
     service_task_id = t->service_id;
@@ -1961,6 +2062,7 @@ typedef struct {
     void* args;
     TinoxTask* task;
     TinoxTelemetryContext telemetry;
+    TinoxMdc mdc;
     int64_t queued_at;
     int service_id;
     int cleanup_mode;
@@ -2013,6 +2115,7 @@ static void executor_run_job(TinoxExecutor* ex, TinoxExecJob* job) {
         return;
     }
     if (telemetry_enabled) telemetry_context = job->telemetry;
+    mdc_current = job->mdc;
     int64_t span_token = telemetry_enter("task", NULL, NULL, 1);
     if (span_token) tinox_histogram_record("tinox_task_queue_duration_ns", telemetry_clock(CLOCK_MONOTONIC) - job->queued_at);
     service_task_id = job->service_id;
@@ -2038,6 +2141,7 @@ static void executor_run_job(TinoxExecutor* ex, TinoxExecJob* job) {
     service_task_id = -1;
     service_cleanup_mode = 0;
     if (telemetry_enabled) memset(&telemetry_context, 0, sizeof telemetry_context);
+    mdc_current.n = 0;
 }
 typedef struct { TinoxExecutor* ex; int64_t index; } TinoxExecWorkerArgs;
 static void* executor_worker(void* raw) {
@@ -2121,6 +2225,7 @@ static void executor_submit(int64_t id, TinoxTask* task, void* (*fn)(void*), voi
     memset(&job, 0, sizeof job);
     job.fn = fn; job.args = args; job.task = task;
     job.telemetry = t->telemetry;
+    job.mdc = t->mdc;
     job.queued_at = t->queued_at;
     job.service_id = t->service_id;
     job.cleanup_mode = t->cleanup_mode;
@@ -2231,6 +2336,7 @@ static void* task_spawn_impl(void* (*fn)(void*), void* args, int budgeted, int64
     task_add_owner(task, owner);
     TinoxSpawnTrampolineArgs* t = malloc(sizeof(*t));
     t->fn = fn; t->args = args; t->task = task;
+    if (mdc_current.n) t->mdc = mdc_current; else t->mdc.n = 0;
     if (telemetry_enabled) {
         t->telemetry = telemetry_context;
         t->queued_at = telemetry_clock(CLOCK_MONOTONIC);
@@ -8713,7 +8819,9 @@ static void conn_send_all(TinoxConn* c, const char* data, size_t len);
 // connection is closed without ever running a handler on a guessed body.
 static void conn_reject_request(TinoxConn* c, char* buf, int status) {
     const char* reason = status == 413 ? "Payload Too Large" : status == 501 ? "Not Implemented" :
-                         status == 505 ? "HTTP Version Not Supported" : "Bad Request";
+                         status == 505 ? "HTTP Version Not Supported" :
+                         status == 431 ? "Request Header Fields Too Large" :
+                         status == 408 ? "Request Timeout" : "Bad Request";
     char resp[256];
     int rn = snprintf(resp, sizeof(resp),
         "HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s\n",
@@ -8796,6 +8904,7 @@ static char* conn_read_request(TinoxConn* c) {
     size_t used = 0;
     char* buf = g_recv_buf;
     size_t cap = g_recv_cap;
+    int64_t head_start = tinox_now_ms();
     while (1) {
         if (used + 1 >= cap) {
             cap *= 2;
@@ -8808,7 +8917,20 @@ static char* conn_read_request(TinoxConn* c) {
         buf[used] = '\0';
         // Stop once we have the full headers (and body if Content-Length matches)
         char* hdr_end = strstr(buf, "\r\n\r\n");
-        if (!hdr_end) continue;
+        // The head (request line + headers) is bounded: otherwise a client that never finishes
+        // its headers makes the server buffer without limit.
+        if ((hdr_end ? (size_t)(hdr_end - buf) : used) > (size_t)tinox_limits()->max_header_bytes) {
+            conn_reject_request(c, buf, 431);
+            return buf;
+        }
+        if (!hdr_end) {
+            // Absolute deadline: per-recv timeouts alone let a trickling client hold a worker forever.
+            if (tinox_now_ms() - head_start > tinox_limits()->head_timeout_ms) {
+                conn_reject_request(c, buf, 408);
+                return buf;
+            }
+            continue;
+        }
         // Strict request framing (RFC 9112 §6, §11.2): one unambiguous body length, or a hard error.
         long body_len = -1;
         int chunked = 0;
@@ -9449,6 +9571,7 @@ static char* http_dechunk(const char* body) {
     size_t cap = 8192, len = 0;
     char* out = (char*)malloc(cap);
     const char* p = body;
+    const char* body_end = body + strlen(body);
     while (1) {
         char* endptr = NULL;
         long chunk_size = strtol(p, &endptr, 16);
@@ -9457,6 +9580,9 @@ static char* http_dechunk(const char* body) {
         if (!line_end) break;
         p = line_end + 2;
         if (chunk_size == 0) break; // terminating chunk
+        // The size comes from the peer: never copy past the bytes actually received (heap
+        // over-read), and never size the buffer from an unchecked length.
+        if ((unsigned long)chunk_size > (size_t)(body_end - p)) break;
         if (len + (size_t)chunk_size >= cap) {
             while (len + (size_t)chunk_size >= cap) cap *= 2;
             char* grown = (char*)malloc(cap);
@@ -12698,6 +12824,7 @@ static void tinox_process_request(TinoxHttpServer* srv, int64_t client_fd, char*
     g_ctx[1] = (int64_t)g_response;
 
     int64_t span_token = 0;
+    mdc_current.n = 0;
     if (telemetry_enabled) {
         const char* incoming_parent = (const char*)(uintptr_t)tinox_map_get(&g_req_headers_map, "Traceparent");
         const char* incoming_request = (const char*)(uintptr_t)tinox_map_get(&g_req_headers_map, "X-Request-Id");
@@ -12740,6 +12867,7 @@ static void tinox_process_request(TinoxHttpServer* srv, int64_t client_fd, char*
         telemetry_event("request.end");
     }
     telemetry_leave(span_token);
+    mdc_current.n = 0;
 
     char* body = (char*)g_response[2];
     if (!body) body = "";
@@ -12870,6 +12998,8 @@ typedef struct {
     int      served;      // 0 until this connection's first request has completed --
                            // see the stale-scan below for why this needs to be tracked
                            // separately from a genuinely-idle keep-alive connection
+    uint64_t head_start;  // 0 = not parked; else when the first bytes of a still-incomplete request
+                           // head arrived (the connection is parked edge-triggered, see below)
 } EpollConnSlot;
 
 // Slot table indexed directly by fd (no modulo, so two live fds can never share a slot), grown on
@@ -12885,7 +13015,7 @@ static void epoll_slot_reserve(int fd) {
     while (cap <= fd) cap *= 2;
     EpollConnSlot* grown = realloc(g_epoll_slots, (size_t)cap * sizeof(EpollConnSlot));
     if (!grown) { fprintf(stderr, "tinox: out of memory growing the connection table\n"); exit(1); }
-    for (int i = g_epoll_cap; i < cap; i++) { grown[i].fd = -1; grown[i].last_ms = 0; grown[i].served = 0; }
+    for (int i = g_epoll_cap; i < cap; i++) { grown[i].fd = -1; grown[i].last_ms = 0; grown[i].served = 0; grown[i].head_start = 0; }
     g_epoll_slots = grown;
     g_epoll_cap = cap;
 }
@@ -12921,6 +13051,7 @@ static void epoll_slot_add(int fd, uint64_t now_ms) {
     g_epoll_slots[idx].fd = fd;
     g_epoll_slots[idx].last_ms = now_ms;
     g_epoll_slots[idx].served = 0;
+    g_epoll_slots[idx].head_start = 0;
 }
 
 static void epoll_slot_remove(int fd) {
@@ -12931,6 +13062,23 @@ static void epoll_slot_remove(int fd) {
         atomic_fetch_sub(&g_open_conns, 1);
     }
     g_epoll_slots[idx].fd = -1;
+}
+
+// Slowloris defence (#684). conn_read_request() blocks in recv(), so handing it a connection
+// whose request head is still incomplete would pin this epoll worker. Before doing so the worker
+// peeks (MSG_PEEK|MSG_DONTWAIT, nothing consumed): only when the whole head (or EOF/an error, or
+// more bytes than the peek window) is there does the blocking reader run, and then it finds the
+// head already buffered. Returns 0 while the head is incomplete.
+static int epoll_head_ready(int fd) {
+    // On the stack on purpose: malloc is GC_malloc in this file, and a `static __thread` pointer to
+    // it is not a registered GC root (see TINOX_GC_THREAD_ROOTS), so the collector freed the buffer
+    // while recv() still wrote into it and crashed later in GC mark.
+    char peek[65536];
+    ssize_t n;
+    do { n = recv(fd, peek, sizeof(peek), MSG_PEEK | MSG_DONTWAIT); } while (n < 0 && errno == EINTR);
+    if (n < 0) return errno != EAGAIN && errno != EWOULDBLOCK;
+    if (n == 0 || (size_t)n >= sizeof(peek)) return 1;
+    return memmem(peek, (size_t)n, "\r\n\r\n", 4) != NULL;
 }
 
 static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
@@ -12995,6 +13143,26 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
                     epoll_slot_add(cfd, now_ms);
                 }
             } else {
+                // Head still incomplete: park the connection edge-triggered instead of blocking
+                // this worker on it; new bytes re-fire the event, the stale scan enforces the
+                // absolute head deadline.
+                if (fd >= 0 && fd < g_epoll_cap && g_epoll_slots[fd].fd >= 0 && !epoll_head_ready(fd)) {
+                    if (!g_epoll_slots[fd].head_start) {
+                        struct epoll_event pev;
+                        pev.events = EPOLLIN | EPOLLET;
+                        pev.data.fd = fd;
+                        epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &pev);
+                        g_epoll_slots[fd].head_start = now_ms ? now_ms : 1;
+                    }
+                    continue;
+                }
+                if (fd >= 0 && fd < g_epoll_cap && g_epoll_slots[fd].head_start) {
+                    struct epoll_event lev;
+                    lev.events = EPOLLIN;
+                    lev.data.fd = fd;
+                    epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &lev);
+                    g_epoll_slots[fd].head_start = 0;
+                }
                 // Handle one request on this client connection
                 int keep_alive = 0, offloaded = 0;
                 tinox_handle_one(srv, (int64_t)fd, &keep_alive, &offloaded);
@@ -13042,6 +13210,20 @@ static void tinox_handle_connections(TinoxHttpServer* srv, int64_t server_fd) {
         if (g_epoll_nconns > 0) {
             for (int i = 0; i < g_epoll_cap; i++) {
                 if (g_epoll_slots[i].fd < 0) continue;
+                if (g_epoll_slots[i].head_start) {
+                    // Parked mid-head: only the absolute head deadline applies.
+                    if (now_ms - g_epoll_slots[i].head_start >= (uint64_t)tinox_limits()->head_timeout_ms) {
+                        static const char timeout408[] =
+                            "HTTP/1.1 408 Request Timeout\r\nContent-Type: text/plain\r\n"
+                            "Content-Length: 16\r\nConnection: close\r\n\r\nRequest Timeout\n";
+                        int fd = g_epoll_slots[i].fd;
+                        (void)!send(fd, timeout408, sizeof(timeout408) - 1, MSG_NOSIGNAL | MSG_DONTWAIT);
+                        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                        epoll_slot_remove(fd);
+                        close(fd);
+                    }
+                    continue;
+                }
                 uint64_t timeout_ms = g_epoll_slots[i].served
                     ? EPOLL_KEEP_ALIVE_MS
                     : EPOLL_FIRST_REQUEST_GRACE_MS;
@@ -14377,7 +14559,8 @@ int64_t* tinox_json_list_deserialize(int64_t* arr_val, int64_t* (*from_json)(int
 }
 
 // ---- Config (@Config annotation) ----
-// Reads key=value pairs from application.properties in the current directory.
+// Reads key=value pairs from application.properties in the current directory. Values may contain
+// ${ENV_VAR} / ${ENV_VAR:default} placeholders, expanded once at load (see tinox_config_expand).
 
 #define TINOX_CONFIG_MAX_ENTRIES 256
 #define TINOX_CONFIG_MAX_LINE    1024
@@ -14387,11 +14570,64 @@ typedef struct { char* key; char* value; } TinoxConfigEntry;
 static TinoxConfigEntry tinox_config_entries[TINOX_CONFIG_MAX_ENTRIES];
 static int              tinox_config_count = -1; // -1 = not loaded
 
+// Expands ${NAME} and ${NAME:default} placeholders in a properties value. NAME is read from the
+// process environment; a variable that is set but empty counts as set (explicit empty value). A
+// placeholder with no default whose variable is unset, an unterminated or empty `${}`, is a
+// configuration error. `\${` yields a literal `${`. Placeholders are not nested and the
+// expansion result is never rescanned. Errors name the key and the variable, never a value.
+// Returns a heap string (never freed: the entries live for the whole process), or NULL on error.
+static char* tinox_config_expand(const char* key, const char* raw) {
+    size_t cap = strlen(raw) + 1, len = 0;
+    char* out = (char*)malloc(cap);
+    if (!out) { fprintf(stderr, "tinox: out of memory expanding configuration\n"); exit(1); }
+    for (const char* c = raw; *c; ) {
+        const char* piece = NULL;
+        size_t plen = 0, adv = 1;
+        if (c[0] == '\\' && c[1] == '$' && c[2] == '{') { piece = "${"; plen = 2; adv = 3; }
+        else if (c[0] == '$' && c[1] == '{') {
+            const char* end = strchr(c + 2, '}');
+            if (!end) {
+                fprintf(stderr, "tinox: invalid configuration: key '%s' has an unterminated ${...} placeholder\n", key);
+                free(out); return NULL;
+            }
+            const char* colon = memchr(c + 2, ':', (size_t)(end - (c + 2)));
+            size_t nlen = (size_t)((colon ? colon : end) - (c + 2));
+            char name[256];
+            if (nlen == 0 || nlen >= sizeof(name)) {
+                fprintf(stderr, "tinox: invalid configuration: key '%s' has a ${...} placeholder with an empty or overlong variable name\n", key);
+                free(out); return NULL;
+            }
+            memcpy(name, c + 2, nlen);
+            name[nlen] = '\0';
+            const char* v = getenv(name);
+            if (v) { piece = v; plen = strlen(v); }
+            else if (colon) { piece = colon + 1; plen = (size_t)(end - (colon + 1)); }
+            else {
+                fprintf(stderr, "tinox: invalid configuration: key '%s' refers to environment variable '%s', which is not set and has no default\n", key, name);
+                free(out); return NULL;
+            }
+            adv = (size_t)(end - c) + 1;
+        }
+        size_t add = piece ? plen : 1;
+        if (len + add + 1 > cap) {
+            cap = (len + add + 1) * 2;
+            out = (char*)realloc(out, cap);
+            if (!out) { fprintf(stderr, "tinox: out of memory expanding configuration\n"); exit(1); }
+        }
+        if (piece) memcpy(out + len, piece, plen); else out[len] = *c;
+        len += add;
+        c += adv;
+    }
+    out[len] = '\0';
+    return out;
+}
+
 static void tinox_config_load(void) {
     tinox_config_count = 0;
     FILE* f = fopen("application.properties", "r");
     if (!f) return;
     char line[TINOX_CONFIG_MAX_LINE];
+    int expand_problems = 0;
     while (fgets(line, sizeof(line), f)) {
         // strip newline
         size_t len = strlen(line);
@@ -14409,12 +14645,18 @@ static void tinox_config_load(void) {
         // trim leading whitespace from value
         while (*val == ' ' || *val == '\t') val++;
         if (tinox_config_count < TINOX_CONFIG_MAX_ENTRIES) {
+            char* expanded = tinox_config_expand(key, val);
+            if (!expanded) { expand_problems++; continue; }
             tinox_config_entries[tinox_config_count].key   = strdup(key);
-            tinox_config_entries[tinox_config_count].value = strdup(val);
+            tinox_config_entries[tinox_config_count].value = expanded;
             tinox_config_count++;
         }
     }
     fclose(f);
+    if (expand_problems) {
+        fprintf(stderr, "tinox: %d configuration problem(s); refusing to start\n", expand_problems);
+        exit(1);
+    }
 }
 
 // Lookup in the file only (used by limits/telemetry, which read the environment themselves).

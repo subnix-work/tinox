@@ -1,0 +1,8 @@
+// Start: TINOX_UI_THEME=material tinox run examples/tinox_ui_material/Main.tnx
+// Open: http://localhost:8300/
+import MaterialApp
+
+class Main
+{
+    fnc main() -> Int32 { return 0 }
+}

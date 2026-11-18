@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [asan, checked, fuzz]
+        target: [asan, tsan, checked, fuzz]
     steps:
       - uses: actions/checkout@v5
 
