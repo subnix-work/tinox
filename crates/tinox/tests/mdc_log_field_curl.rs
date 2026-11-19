@@ -72,7 +72,7 @@ class Ctrl
     @Produces("application/json")
     fn order(@PathParam @LogField orderId: Int64, @QueryParam @LogField("customer") c: String) -> String
     {
-        Logger::info(Logger::new("Ctrl"), "order requested")
+        Logger::new("Ctrl").info("order requested")
         return "\"ok\""
     }
 
@@ -81,7 +81,7 @@ class Ctrl
     @Produces("application/json")
     fn plain() -> String
     {
-        Logger::info(Logger::new("Ctrl"), "plain request")
+        Logger::new("Ctrl").info("plain request")
         return "\"ok\""
     }
 }

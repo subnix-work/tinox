@@ -21,7 +21,7 @@ class Main
     fnc child(log: Logger) -> Int64
     {
         Mdc::put("child_only", "x")
-        Logger::info(log, "child")
+        log.info("child")
         return 0
     }
 
@@ -31,17 +31,17 @@ class Main
         const log: Logger = Logger::new("mdc")
         Mdc::put("customer", "4711")
         Mdc::put("tenant", "acme")
-        Logger::info(log, "one")
+        log.info("one")
         Mdc::put("customer", "4712")
         Mdc::remove("tenant")
-        Logger::info(log, "two")
+        log.info("two")
         Mdc::clear()
-        Logger::info(log, "three")
+        log.info("three")
 
         Mdc::put("customer", "9")
         const task = spawn Main::child(log)
         await task
-        Logger::info(log, "parent after child")
+        log.info("parent after child")
 
         println("get missing: [" + Mdc::get("nope") + "] get customer: [" + Mdc::get("customer") + "]")
         println("put reserved: " + Mdc::put("message", "x").toString())
@@ -69,7 +69,7 @@ class Main
         Env::setVar("TINOX_LOG_JSON", "false")
         const plain: Logger = Logger::new("plain")
         Mdc::put("tenant", "acme")
-        Logger::info(plain, "plain text")
+        plain.info("plain text")
         return 0
     }
 }

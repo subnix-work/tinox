@@ -1782,12 +1782,12 @@ class User
     {
         // toString() is generated automatically
         // and honors @Sensitive/@Masked
-        Logger::info(this.log, "User: " + this);
+        this.log.info("User: " + this);
         // prints: User{name=Alice, password=***, email=al***ce}
 
         // Also for direct string expressions:
         const s: String = this.email;
-        Logger::info(this.log, s); // unmasked value
+        this.log.info(s); // unmasked value
         // Only the toString() conversion is masked
     }
 }</code></pre>
