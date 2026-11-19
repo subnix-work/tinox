@@ -81,6 +81,52 @@ fn jobs_fire_once_per_minute_report_failures_and_stop_with_the_process() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A managed `@Service` with a `@Scheduled` runner must become ready (issue #675): before the fix the
+/// runner never reported readiness and the startup deadline killed the process after 5 s.
+#[test]
+fn scheduled_runner_reports_readiness_to_a_managed_service() {
+    let dir = std::env::temp_dir().join(format!("tinox-scheduled-service-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Jobs.tnx"),
+        "import tinox.core.cron\n\nclass Jobs\n{\n    @Scheduled(\"* * * * *\")\n    fn tick() -> Nothing\n    {\n        println(\"JOB tick\")\n    }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Main.tnx"),
+        "import Jobs\n\n@Service(5000, 4000)\nclass Main\n{\n    fnc main() -> Int32\n    {\n        println(\"READY\")\n        serviceAwaitShutdown()\n        return 0\n    }\n}\n",
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "Main.tnx", "-o", "app"]).current_dir(&dir).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+
+    let mut child = Command::new(dir.join("app"))
+        .current_dir(&dir)
+        .stdout(Stdio::from(std::fs::File::create(dir.join("out.txt")).unwrap()))
+        .stderr(Stdio::from(std::fs::File::create(dir.join("err.txt")).unwrap()))
+        .spawn()
+        .unwrap();
+    // Past the 5 s startup deadline the service must still be running.
+    std::thread::sleep(Duration::from_secs(7));
+    assert!(child.try_wait().unwrap().is_none(), "service died: {}", std::fs::read_to_string(dir.join("err.txt")).unwrap());
+    unsafe { libc_kill(child.id() as i32, 15) };
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "the service did not stop on SIGTERM");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let out = std::fs::read_to_string(dir.join("out.txt")).unwrap();
+    let err = std::fs::read_to_string(dir.join("err.txt")).unwrap();
+    assert!(out.contains("READY"), "{out}");
+    assert!(status.success(), "graceful stop expected, got {status:?}: {err}");
+    assert!(!err.contains("deadline exceeded"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 extern "C" {
     #[link_name = "kill"]
     fn libc_kill(pid: i32, sig: i32) -> i32;

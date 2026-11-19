@@ -4871,6 +4871,12 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
             self.emit_field_defaults(&job.class_name, "%inst");
             writeln!(&mut self.lambda_ir, "  %job = call i64* @ScheduledJob_create(i8* {cron_ptr})").unwrap();
+            if self.service_enabled() {
+                // The runner is a required background task of the managed service: without
+                // this signal readiness never completes and the startup deadline kills the
+                // process (issue #675). Instance built and schedule parsed at this point.
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_listener_ready(i64 -1)").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
             writeln!(&mut self.lambda_ir, "tick:").unwrap();
             if self.service_enabled() {
