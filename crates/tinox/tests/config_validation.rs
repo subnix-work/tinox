@@ -135,3 +135,34 @@ fn escaped_placeholder_stays_literal_and_expansion_is_not_rescanned() {
     assert_eq!(run(&root, &exe, &[("TEST_RESCAN_VAR", "${X}")]).1, "1 a${NOT_EXPANDED}b-${X} false");
     let _ = fs::remove_dir_all(root);
 }
+
+/// A DI-constructed component takes its `@Config` values from the file and the environment, not
+/// only the declared default (issue #671).
+#[test]
+fn di_components_honour_resolved_config_values() {
+    let root = std::env::temp_dir().join(format!("tinox-config-di-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("tinox.toml"),
+        format!("[package]\ncompiler = \"{}\"\nname = \"cfgdi\"\nversion = \"0.1.0\"\n", env!("CARGO_PKG_VERSION")),
+    )
+    .unwrap();
+    fs::write(
+        root.join("Resources.tnx"),
+        "@Startup\nclass Resources\n{\n    @Config(\"app.name\")\n    private var name: String = \"Task API\"\n\n    @OnStart\n    fn started() -> Nothing\n    {\n        println(\"START \" + this.name)\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Main.tnx"),
+        "import Resources\n\n@Service(3000, 2000)\nclass Main\n{\n    fnc main() -> Int32\n    {\n        serviceRequestShutdown()\n        return 0\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(root.join("application.properties"), "app.name=Tinox Tasks\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "Main.tnx", "-o", "app"]).current_dir(&root).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let exe = root.join("app");
+    assert!(run(&root, &exe, &[]).1.contains("START Tinox Tasks"), "file value must beat the declared default");
+    assert!(run(&root, &exe, &[("APP_NAME", "Deployment Tasks")]).1.contains("START Deployment Tasks"), "environment must beat the file");
+    let _ = fs::remove_dir_all(root);
+}
