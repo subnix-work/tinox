@@ -3359,6 +3359,23 @@ impl TypeChecker {
                         }
                     }
                 }
+                // Issue #669: `Array_push`/`Array_insert` declare their value as `Any`
+                // (the dispatch key is element-agnostic), so a value that does not
+                // fit the receiver's declared element type passed silently.
+                if let ValueType::Array(elem) = &obj_ty {
+                    let value_idx = match method.as_str() { "push" => Some(0), "insert" => Some(1), _ => None };
+                    if let Some(arg) = value_idx.and_then(|i| args.get(i)) {
+                        if !matches!(elem.as_ref(), ValueType::Any) {
+                            let arg_ty = self.infer_type(arg);
+                            if !matches!(arg_ty, ValueType::Any) && !self.types_compatible(elem, &arg_ty) {
+                                self.errors.push(Error::new(
+                                    arg.span,
+                                    format!("cannot {} {} into a {}: the element type is {}", method, arg_ty.display(), obj_ty.display(), elem.display()),
+                                ));
+                            }
+                        }
+                    }
+                }
                 let generic_ret = self.check_call(&func_expr, &call_args, expr.span);
                 // #158: check_call has no call-site generic-return
                 // unification of its own (unlike check_class_method_call
@@ -5579,6 +5596,16 @@ mod tests {
             "fn main() -> Int32 { let xs: List<Int64> = [1]\nfor x in xs { let s: String = x } return 0 }",
             "expected String, found Int64",
         );
+    }
+
+    #[test]
+    fn push_rejects_an_element_that_does_not_fit_the_list() {
+        err_contains("fn f() { const v: List<Int64> = [1, 2]\n v.push(\"three\") }", "cannot push");
+        err_contains("fn f() { const v: List<Int64> = [1, 2]\n const alias = v\n alias.push(\"four\") }", "cannot push");
+        err_contains("fn f() { const v: List<String> = [\"a\"]\n v.push(1) }", "cannot push");
+        // Compatible values keep working, including numeric widening.
+        let ok = typecheck_code("fn f() { const v: List<Int64> = [1, 2]\n v.push(3)\n const w: List<String> = [\"a\"]\n w.push(\"b\") }");
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|b| b.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()));
     }
 
     #[test]
