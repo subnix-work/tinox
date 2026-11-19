@@ -8199,6 +8199,14 @@ tr_done_{idx}:"#).unwrap();
                         "i8*" => {
                             writeln!(&mut self.ir, "  {reg} = bitcast i8* {val_reg} to i8*").unwrap();
                         }
+                        // Bool is an i1 (and Int32/Int16/Int8 are narrower than i64):
+                        // widen before the i64 conversion, otherwise the IR is invalid.
+                        "i1" | "i8" | "i16" | "i32" => {
+                            let wide = self.temp();
+                            let op = if val_ty == "i1" { "zext" } else { "sext" };
+                            writeln!(&mut self.ir, "  {wide} = {op} {val_ty} {val_reg} to i64").unwrap();
+                            writeln!(&mut self.ir, "  {reg} = call i8* @tinox_int_to_param(i64 {wide})").unwrap();
+                        }
                         _ => {
                             writeln!(&mut self.ir, "  {reg} = call i8* @tinox_int_to_param(i64 {val_reg})").unwrap();
                         }

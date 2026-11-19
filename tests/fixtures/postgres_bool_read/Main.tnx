@@ -16,6 +16,15 @@ class Main
         DB::of(Flag).save(saved)
         const back: Flag = DB::of(Flag).filter(x => x.name == "saved").first()
         println("roundtrip=" + back.enabled.toString())
+        // A runtime Bool (i1) filter parameter must be widened before the i64 conversion (#672).
+        println("filtered_on=" + Main::countWith(true).toString())
+        println("filtered_off=" + Main::countWith(false).toString())
         return 0
+    }
+
+    fnc countWith(wanted: Bool) -> Int64
+    {
+        const rows: List<Flag> = DB::of(Flag).filter(x => x.enabled == wanted).list()
+        return rows.len()
     }
 }
