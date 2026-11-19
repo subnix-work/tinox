@@ -6,6 +6,7 @@ All notable changes to Tinox are documented in this file.
 
 ### Fixed
 
+- `HttpServer::listenTls` serves each connection on its own task and runs the TLS handshake there (new runtime primitive `httpServerTlsHandshake`), so idle clients no longer delay legitimate ones by 5 s each (#654). Ships with the next `http_server` release.
 - `@Log` classes instantiated without a struct literal (HTTP route controllers, DI singletons, WebSocket/AMQP endpoints, scheduled jobs) now get their `log` field initialised; `this.log.info(...)` in a controller no longer crashes (#674).
 
 ### Changed

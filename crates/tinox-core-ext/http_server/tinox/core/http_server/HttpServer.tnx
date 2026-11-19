@@ -9,6 +9,7 @@ namespace tinox.core.http_server
 {
     // @Cors/@Csrf policy (#529): 1 = the guard already filled the response.
     extern fn tinoxSecurityGuard(ctx: HttpContext, routeExists: Int64) -> Int64
+    extern fn tinoxHttpClearBodyBridge() -> Nothing
 
     /**
      * HTTP server for handling incoming HTTP requests
@@ -220,14 +221,35 @@ namespace tinox.core.http_server
             this.running = true
             while this.running
             {
-                const conn: Int64 = httpServerAcceptTls(this.socketHandle)
+                // Accept only here; the blocking TLS handshake and the whole request run on the
+                // connection's own task, so a client that never sends a ClientHello delays nobody
+                // (it is released by its own 5 s receive timeout).
+                const clientFd: Int64 = httpServerAcceptConn(this.socketHandle)
+                if (clientFd >= 0)
+                {
+                    const task = spawn serveTlsConnection(this, clientFd)
+                    taskDetach(task)
+                }
+            }
+            httpServerClose(this.socketHandle)
+        }
+
+        /**
+         * Serves one accepted TLS connection to completion (a static function, because spawn does
+         * not take a this-bound method). Errors are contained: a failing connection only closes itself.
+         */
+        async fnc serveTlsConnection(server: HttpServer, fd: Int64) -> Int64
+        {
+            try
+            {
+                const conn: Int64 = httpServerTlsHandshake(fd)
                 if (conn > 0)
                 {
                     const raw: String = httpConnReadRequest(conn)
                     if (raw.len() > 0)
                     {
-                        const ctx: HttpContext = this.parseRawRequest(raw)
-                        this.handleRequest(ctx, conn)
+                        const ctx: HttpContext = server.parseRawRequest(raw)
+                        server.handleRequest(ctx, conn)
                     }
                     else
                     {
@@ -235,7 +257,12 @@ namespace tinox.core.http_server
                     }
                 }
             }
-            httpServerClose(this.socketHandle)
+            catch (error: String)
+            {
+                tinoxHttpClearBodyBridge()
+                println("HTTPS connection failed: " + error)
+            }
+            return 0
         }
 
         /**

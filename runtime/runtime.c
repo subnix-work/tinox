@@ -9095,26 +9095,16 @@ int64_t httpServerCreateTls(int64_t port, const char* cert_path, const char* key
 #endif
 }
 
-// Accepts a connection and performs the TLS handshake. Return value:
-// opaque connection handle (>0) or -1. The handshake is blocking.
-int64_t httpServerAcceptTls(int64_t server_fd) {
 #ifdef TINOX_TLS
-    if (!g_tls_ctx) return -1;
-    struct sockaddr_in client = {0};
-    socklen_t len = sizeof(client);
-    if (!service_io_wait((int)server_fd, POLLIN)) return -1;
-    int fd = accept((int)server_fd, (struct sockaddr*)&client, &len);
-    if (fd < 0) return -1;
+// Runs the (blocking) TLS handshake on an already accepted fd and wraps it in a conn handle.
+// The fd is closed when the handshake fails. Bug 91: the 5s receive timeout is set here so a
+// client that opens the TCP connection and never sends a ClientHello cannot block SSL_accept()
+// forever; it stays on `fd` for the life of the connection, so it also bounds later blocking
+// reads (an idle client stalling mid-request/mid-frame).
+static int64_t tls_handshake_fd(int fd) {
+    if (!g_tls_ctx) { close(fd); return -1; }
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    // Bug 91: same 5s zombie guard as the plaintext path (httpServerAcceptConn
-    // above). Without it, a client that opens the TCP connection and never
-    // sends TLS ClientHello bytes blocks SSL_accept() forever; since both
-    // HttpServer::listenTls and WsServer::acceptTls run a single-threaded
-    // blocking accept loop, one such client prevents the server from ever
-    // accepting anyone else. The timeout persists on `fd` for the life of
-    // the connection, so it also protects later blocking reads after a
-    // successful handshake (an idle client stalling mid-request/mid-frame).
     struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     SSL* ssl = SSL_new(g_tls_ctx);
@@ -9135,8 +9125,35 @@ int64_t httpServerAcceptTls(int64_t server_fd) {
     c->closing = false;
     conn_ws_init(c);
     return (int64_t)(intptr_t)c;
+}
+#endif
+
+// Accepts a connection and performs the TLS handshake. Return value:
+// opaque connection handle (>0) or -1. The handshake is blocking.
+int64_t httpServerAcceptTls(int64_t server_fd) {
+#ifdef TINOX_TLS
+    if (!g_tls_ctx) return -1;
+    struct sockaddr_in client = {0};
+    socklen_t len = sizeof(client);
+    if (!service_io_wait((int)server_fd, POLLIN)) return -1;
+    int fd = accept((int)server_fd, (struct sockaddr*)&client, &len);
+    if (fd < 0) return -1;
+    return tls_handshake_fd(fd);
 #else
     (void)server_fd;
+    return -1;
+#endif
+}
+
+// Performs the TLS handshake on an fd returned by httpServerAcceptConn and returns a conn handle
+// (>0) or -1 (the fd is closed on failure). Lets a server accept on one thread and run the
+// blocking handshake on the task that serves the connection (issue #654).
+int64_t httpServerTlsHandshake(int64_t fd) {
+#ifdef TINOX_TLS
+    if (fd < 0) return -1;
+    return tls_handshake_fd((int)fd);
+#else
+    (void)fd;
     return -1;
 #endif
 }

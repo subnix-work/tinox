@@ -2090,6 +2090,7 @@ impl CodeGen {
         // HTTPS/TLS + connection-handle API (see runtime.c, TinoxConn)
         writeln!(&mut self.ir, "declare i64 @httpServerCreateTls(i64, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptTls(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpServerTlsHandshake(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConnHandle(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @httpConnReadRequest(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnSendRaw(i64, i8*)").unwrap();
