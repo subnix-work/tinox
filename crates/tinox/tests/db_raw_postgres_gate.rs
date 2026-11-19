@@ -49,7 +49,7 @@ version = "0.1.0"
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.9"
+version = "1.2.10"
 
 [[overrides]]
 group = "tinox.core"
