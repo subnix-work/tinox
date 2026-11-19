@@ -3171,6 +3171,23 @@ impl TypeChecker {
                         }
                         return sig.return_type.clone();
                     }
+                    // Issue #687: active-record style calls (`Account.findById(id)`) on an
+                    // @Entity class. The class name evaluates to `Any`, so nothing downstream
+                    // complained and codegen failed late with a spanless internal message.
+                    if !obj_is_variable
+                        && self.entity_class_names.contains(class_name.as_str())
+                        && !self.symbols.functions.contains_key(&method_key)
+                    {
+                        for arg in args { self.infer_type(arg); }
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!(
+                                "@Entity class '{c}' has no method '{m}': entities are accessed through the ORM, e.g. DB::of({c}).filter(x => x.id == id).first() or DB::of({c}).save(entity)",
+                                c = class_name, m = method
+                            ),
+                        ));
+                        return ValueType::Any;
+                    }
                     // Also handle Time_now, etc. even if obj is not registered as variable
                     let is_static = self.symbols.functions.get(&method_key)
                         .map(|sig| sig.params.first().map(|(n, _)| n != "self").unwrap_or(true))
@@ -3299,6 +3316,21 @@ impl TypeChecker {
 
                 if let Some(vis) = self.method_visibility.get(&method_name).cloned() {
                     self.check_member_visibility(&class_name, method, &vis, expr.span);
+                }
+
+                // Issue #687: `entity.save()` and friends do not exist; say where the real API is.
+                if matches!(&obj_ty, ValueType::Named(n, _) if self.entity_class_names.contains(n.as_str()))
+                    && !self.symbols.functions.contains_key(&method_name)
+                {
+                    for arg in args { self.infer_type(arg); }
+                    self.errors.push(Error::new(
+                        expr.span,
+                        format!(
+                            "@Entity class '{c}' has no method '{m}': entities are accessed through the ORM, e.g. DB::of({c}).save(entity) or DB::of({c}).delete(entity)",
+                            c = class_name, m = method
+                        ),
+                    ));
+                    return ValueType::Any;
                 }
 
                 let func_expr = Spanned::new(ExprKind::Ident(method_name.clone()), expr.span);
@@ -5596,6 +5628,13 @@ mod tests {
             "fn main() -> Int32 { let xs: List<Int64> = [1]\nfor x in xs { let s: String = x } return 0 }",
             "expected String, found Int64",
         );
+    }
+
+    #[test]
+    fn entity_active_record_calls_are_rejected_with_a_hint() {
+        let entity = "@Entity\n@Table(\"t\")\nclass Account { @Id @GeneratedValue\n var id: Int64\n var balance: Int64 }\n";
+        err_contains(&format!("{entity}class S {{ fn f(id: Int64) -> Nothing {{ var a = Account.findById(id) }} }}"), "DB::of(Account)");
+        err_contains(&format!("{entity}class S {{ fn f(a: Account) -> Nothing {{ a.save() }} }}"), "DB::of(Account)");
     }
 
     #[test]
