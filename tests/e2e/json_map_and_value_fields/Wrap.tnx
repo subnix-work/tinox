@@ -1,0 +1,9 @@
+import tinox.core.json
+
+@JsonSerializable
+class Wrap
+{
+    var totals: Map<String, Int64>
+    var flags: Map<String, Bool>
+    var patch: JsonValue
+}

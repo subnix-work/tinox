@@ -1,0 +1,7 @@
+import tinox.core.json
+
+@JsonSerializable
+class StatusResponse
+{
+    var status: String
+}

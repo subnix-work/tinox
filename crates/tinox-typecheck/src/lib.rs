@@ -3634,6 +3634,17 @@ impl TypeChecker {
                 // `Named("T")` in symbols.variables). The result only
                 // carries args if ALL type params get bound — otherwise
                 // exactly the previous behavior (empty args, permissive).
+                // Issue #640: a literal of a class nobody imported used to pass the checker and
+                // fail in codegen ("FlagView_toJson ... not implemented"); name the real problem.
+                if !self.known_class_names.contains(name)
+                    && !self.type_param_scope.contains(name)
+                    && !self.symbols.functions.keys().any(|k| k.starts_with(&format!("{name}_")))
+                {
+                    self.errors.push(Error::new(
+                        expr.span,
+                        format!("unknown class '{name}': declare it or add the missing `import` for the file that defines it"),
+                    ));
+                }
                 let tparams = self.class_type_params.get(name).cloned();
                 let mut bindings: HashMap<String, ValueType> = HashMap::new();
                 for (fname, field_expr) in fields {
@@ -5636,6 +5647,13 @@ mod tests {
         let entity = "@Entity\n@Table(\"t\")\nclass Account { @Id @GeneratedValue\n var id: Int64\n var balance: Int64 }\n";
         err_contains(&format!("{entity}class S {{ fn f(id: Int64) -> Nothing {{ var a = Account.findById(id) }} }}"), "DB::of(Account)");
         err_contains(&format!("{entity}class S {{ fn f(a: Account) -> Nothing {{ a.save() }} }}"), "DB::of(Account)");
+    }
+
+    #[test]
+    fn struct_literal_of_an_unknown_class_is_rejected() {
+        err_contains("fn f() { const x = Missing { a: 1 } }", "unknown class 'Missing'");
+        let ok = typecheck_code("class Known { var a: Int64 }\nfn f() { const x = Known { a: 1 } }");
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|b| b.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()));
     }
 
     #[test]

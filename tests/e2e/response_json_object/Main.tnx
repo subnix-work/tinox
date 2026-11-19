@@ -1,0 +1,19 @@
+// Regression test for #640: HttpResponse.jsonObject<T> is a generic instance method of a non-generic
+// class; it used to type-check and then fail in codegen ("HttpResponse_jsonObject ... not implemented").
+// expect: {"status":"up"}
+// expect: application/json; charset=utf-8
+import tinox.core.http_server
+import tinox.core.json
+import StatusResponse
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const r: HttpResponse = HttpResponse::new()
+        r.status(200).jsonObject(StatusResponse { status: "up" })
+        println(r.body)
+        println(r.headers["Content-Type"])
+        return 0
+    }
+}

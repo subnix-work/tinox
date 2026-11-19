@@ -1986,6 +1986,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @jsonGetStringListField(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_json_string_list_serialize(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_json_string_map_serialize(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_int_map_serialize(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_bool_map_serialize(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_value_serialize(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_json_list_deserialize(i64*, ptr)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.floor.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.ceil.f64(double)").unwrap();
@@ -2546,6 +2549,16 @@ impl CodeGen {
                     if !method.type_params.is_empty() {
                         // Monomorphized at the call site; no normal
                         // registration (that would log T as i64*)
+                        // An instance method with its own type params on a NON-generic class
+                        // (`HttpResponse.jsonObject<T>`) monomorphizes through the same
+                        // instance-call path as `Option<T>.map<U>` (#640); with no class-level
+                        // bindings to combine.
+                        if !method.static_ {
+                            self.generic_instance_methods.insert(
+                                key.clone(),
+                                (c.name.clone(), HashMap::new(), method.clone()),
+                            );
+                        }
                         self.generic_methods.insert(key, method.clone());
                         continue;
                     }
@@ -7794,6 +7807,29 @@ tr_done_{idx}:"#).unwrap();
                     // other Map<String, V> value type is out of scope here (no
                     // current caller needs it) and falls back to a placeholder
                     // rather than risking the same silent misread.
+                    // Map<String, Int*> / Map<String, Bool> (plain "Map" marker): the declared value
+                    // type decides how the raw words are written (issue #640).
+                    "i8*" if marker.as_deref() == Some("Map") => {
+                        let value_ty = match self.struct_field_decl_types.get(&class_name).and_then(|m| m.get(field_name)) {
+                            Some(Type::Map(_, v)) => Some(v.as_ref().clone()),
+                            _ => None,
+                        };
+                        let func = match value_ty {
+                            Some(Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::UInt8 | Type::UInt16 | Type::UInt32 | Type::UInt64) => Some("tinox_json_int_map_serialize"),
+                            Some(Type::Bool) => Some("tinox_json_bool_map_serialize"),
+                            _ => None,
+                        };
+                        if let Some(func) = func {
+                            let map_ptr = self.temp();
+                            writeln!(&mut self.ir, "  {map_ptr} = inttoptr i64 {raw} to i8*").unwrap();
+                            let json = self.temp();
+                            writeln!(&mut self.ir, "  {json} = call i8* @{func}(i8* {map_ptr})").unwrap();
+                            writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                        } else {
+                            let placeholder = self.intern_json_placeholder_string();
+                            writeln!(&mut self.ir, "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {placeholder})").unwrap();
+                        }
+                    }
                     "i8*" if marker.as_deref().map(|m| m.starts_with("Map:")).unwrap_or(false) => {
                         if marker.as_deref() == Some("Map:String") {
                             let map_ptr = self.temp();
@@ -7841,6 +7877,14 @@ tr_done_{idx}:"#).unwrap();
                     // resources: every nested spec/status/metadata field, and
                     // every List<Container>-shaped field, serialized as
                     // garbage int arrays).
+                    // A JsonValue field is embedded as-is (issue #640).
+                    "i64*" if marker.as_deref() == Some("JsonValue") => {
+                        let value_ptr = self.temp();
+                        writeln!(&mut self.ir, "  {value_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                        let json = self.temp();
+                        writeln!(&mut self.ir, "  {json} = call i8* @tinox_json_value_serialize(i64* {value_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                    }
                     "i64*" if marker.as_deref() == Some("Array:String") => {
                         let arr_ptr = self.temp();
                         writeln!(&mut self.ir, "  {arr_ptr} = inttoptr i64 {raw} to i64*").unwrap();

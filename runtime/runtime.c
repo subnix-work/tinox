@@ -14522,6 +14522,30 @@ char* tinox_json_string_map_serialize(void* map) {
     return jsonBuilderFinish(b);
 }
 
+// Map<String, Int*> / Map<String, Bool> -> JSON object (values are the raw int64 words).
+static char* json_scalar_map_serialize(void* map, int as_bool) {
+    char* b = jsonBuilderCreate();
+    if (map) {
+        TinoxArray* ka = (TinoxArray*)tinox_map_keys(map);
+        int64_t n = ka ? ka->len : 0;
+        for (int64_t i = 0; i < n; i++) {
+            const char* k = (const char*)(intptr_t)ka->data[i];
+            int64_t v = tinox_map_get(map, k);
+            if (as_bool) jsonBuilderAddBool(b, k, v != 0);
+            else jsonBuilderAddInt(b, k, v);
+        }
+    }
+    return jsonBuilderFinish(b);
+}
+char* tinox_json_int_map_serialize(void* map) { return json_scalar_map_serialize(map, 0); }
+char* tinox_json_bool_map_serialize(void* map) { return json_scalar_map_serialize(map, 1); }
+
+// A JsonValue field embedded as-is (NULL -> null).
+char* tinox_json_value_serialize(int64_t* value) {
+    if (!value) return strdup("null");
+    return jsonStringify(value);
+}
+
 // JSON object field -> Map<String, String>. Missing/wrong-typed field ->
 // an empty map (jsonGetObject already gives that for free), not a crash --
 // same defensive-read convention jsonGetStringField/jsonGetIntListField
