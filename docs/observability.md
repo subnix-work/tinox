@@ -101,7 +101,7 @@ become top-level keys of the JSON record, which is what Logstash/Kibana expect:
 import tinox.core.logger
 
 Mdc::put("customer", "4711")
-Logger::info(log, "order paid")
+log.info("order paid")
 // {"timestamp":"...","level":"INFO","logger":"OrderService","message":"order paid",
 //  "request_id":"...","trace_id":"...","span_id":"...","customer":"4711"}
 Mdc::remove("customer")

@@ -27,49 +27,49 @@ namespace tinox.core.logger
             return Logger { name: name, level: LogLevel::Info, jsonFormat: Env::getVar("TINOX_LOG_JSON") == "true" || telemetryEnabled() == 1 }
         }
 
-        fn debug(logger: Logger, message: String) -> Nothing
+        fn debug(message: String) -> Nothing
         {
-            if (logger.level <= LogLevel::Debug)
+            if (this.level <= LogLevel::Debug)
             {
-                Logger::log(logger, "DEBUG", message)
+                this.log("DEBUG", message)
             }
         }
 
-        fn info(logger: Logger, message: String) -> Nothing
+        fn info(message: String) -> Nothing
         {
-            if (logger.level <= LogLevel::Info)
+            if (this.level <= LogLevel::Info)
             {
-                Logger::log(logger, "INFO", message)
+                this.log("INFO", message)
             }
         }
 
-        fn warn(logger: Logger, message: String) -> Nothing
+        fn warn(message: String) -> Nothing
         {
-            if (logger.level <= LogLevel::Warn)
+            if (this.level <= LogLevel::Warn)
             {
-                Logger::log(logger, "WARN", message)
+                this.log("WARN", message)
             }
         }
 
-        fn error(logger: Logger, message: String) -> Nothing
+        fn error(message: String) -> Nothing
         {
-            if (logger.level <= LogLevel::Error)
+            if (this.level <= LogLevel::Error)
             {
-                Logger::log(logger, "ERROR", message)
+                this.log("ERROR", message)
             }
         }
 
-        fn setLevel(logger: Logger, level: Int64) -> Nothing
+        fn setLevel(level: Int64) -> Nothing
         {
-            logger.level = level
+            this.level = level
         }
 
-        fn log(logger: Logger, level: String, message: String) -> Nothing
+        fn log(level: String, message: String) -> Nothing
         {
             const timestamp: String = Time::now().toString()
-            if (logger.jsonFormat)
+            if (this.jsonFormat)
             {
-                telemetryWriteLogJson(timestamp, level, logger.name, message)
+                telemetryWriteLogJson(timestamp, level, this.name, message)
             }
             else
             {
@@ -78,7 +78,7 @@ namespace tinox.core.logger
                 print("] [")
                 print(level)
                 print("] [")
-                print(logger.name)
+                print(this.name)
                 print("] ")
                 print(message)
                 println(mdcText())

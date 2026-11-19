@@ -4,6 +4,10 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- `tinox.core.logger`: `Logger` `debug`/`info`/`warn`/`error`/`setLevel`/`log` are real instance methods now. Call `log.info("msg")` instead of `Logger::info(log, "msg")`. **Breaking** for code using the static-style call.
+
 ## [2.9.6] - 2026-11-18
 
 **Notable change:** every package is republished for compiler 2.9.6 (patch version bump; a package declaring `compiler = "2.9.4"` is rejected by 2.9.6). There is no 2.9.5 release.

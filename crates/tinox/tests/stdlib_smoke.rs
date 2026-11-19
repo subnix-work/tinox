@@ -307,7 +307,7 @@ const SMOKES: &[Smoke] = &[
     Smoke {
         key: "logger",
         imports: &["tinox.core.logger"],
-        body: "let l: Logger = Logger::new(\"t\")\n    Logger::info(l, \"hello-smoke\")",
+        body: "let l: Logger = Logger::new(\"t\")\n    l.info(\"hello-smoke\")",
         expects: &[],
         contains: &["hello-smoke"],
     },

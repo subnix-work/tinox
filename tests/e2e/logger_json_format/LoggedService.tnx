@@ -10,6 +10,6 @@ class LoggedService
 
     fn doWork(svc: LoggedService) -> Nothing
     {
-        Logger::info(svc.log, "service doing work")
+        svc.log.info("service doing work")
     }
 }
