@@ -185,7 +185,7 @@ fn print_help() {
 /// declaration (#159).
 fn new_project_files(name: &str) -> (String, String, String, String) {
     let toml = format!(
-        "[package]\ncompiler = \"2.9.6\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n",
+        "[package]\ncompiler = \"{}\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n",
         pm::COMPILER_VERSION
     );
     let main_tnx = format!(
@@ -6332,5 +6332,23 @@ mod structured_annotation_tests {
         assert!(diagnostic.range.is_some());
         assert_eq!(diagnostic.related.len(), 1);
         assert_eq!(diagnostic.related[0].file, "/tmp/Second.tnx");
+    }
+}
+
+#[cfg(test)]
+mod new_project_manifest_tests {
+    use super::*;
+
+    /// `tinox new` must emit each key once: a duplicate `compiler` key is
+    /// invalid TOML for every independent parser (issue #668).
+    #[test]
+    fn generated_manifest_has_no_duplicate_keys_and_the_current_compiler() {
+        let (toml, _, _, _) = new_project_files("hello");
+        let mut seen = std::collections::HashSet::new();
+        for line in toml.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('[')) {
+            let key = line.split('=').next().unwrap().trim().to_string();
+            assert!(seen.insert(key.clone()), "duplicate key `{key}` in:\n{toml}");
+        }
+        assert!(toml.contains(&format!("compiler = \"{}\"", pm::COMPILER_VERSION)));
     }
 }

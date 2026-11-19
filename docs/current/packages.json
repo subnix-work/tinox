@@ -239,11 +239,11 @@
     },
     {
       "dependencies": [],
-      "docs": "docs/tinox-core/logger/1-1-6/docs.html",
+      "docs": "docs/tinox-core/logger/1-1-7/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core/packages/logger/tinox.toml",
       "name": "logger",
-      "version": "1.1.6"
+      "version": "1.1.7"
     },
     {
       "dependencies": [],
@@ -526,11 +526,11 @@
           "version": "1.1.8"
         }
       ],
-      "docs": "docs/tinox-core/http_server/1-2-9/docs.html",
+      "docs": "docs/tinox-core/http_server/1-2-10/docs.html",
       "group": "tinox.core",
       "manifest": "crates/tinox-core-ext/http_server/tinox.toml",
       "name": "http_server",
-      "version": "1.2.9"
+      "version": "1.2.10"
     },
     {
       "dependencies": [],

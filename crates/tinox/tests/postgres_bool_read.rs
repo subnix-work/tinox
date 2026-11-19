@@ -105,6 +105,9 @@ path = "{db_dir}"
 
     assert!(stdout.contains("on=true"), "TRUE column must read as true:\n{stdout}");
     assert!(stdout.contains("off=false"), "FALSE column must read as false:\n{stdout}");
+    // rows: on(TRUE), off(FALSE), saved(TRUE)
+    assert!(stdout.contains("filtered_on=2"), "runtime Bool filter (true):\n{stdout}");
+    assert!(stdout.contains("filtered_off=1"), "runtime Bool filter (false):\n{stdout}");
     assert!(stdout.contains("roundtrip=true"), "saved Bool must read back as true:\n{stdout}");
 
     // Independent verification against real Postgres state.

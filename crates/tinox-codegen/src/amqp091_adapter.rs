@@ -240,6 +240,14 @@ impl CodeGen {
                 "  %msg_obj = call i64* @AmqpChannel091_nextMessage(i64* %chan_obj)"
             )
             .unwrap();
+            // A cancelled blocking receive (service shutdown) unwinds out of nextMessage and
+            // returns null with the error slot set: never dereference it (issue #676). Clear the
+            // slot and go back to the loop head, which sees the stop request.
+            writeln!(
+                &mut self.lambda_ir,
+                "  %msg_is_null = icmp eq i64* %msg_obj, null\n  br i1 %msg_is_null, label %msg_cancelled, label %msg_present\nmsg_cancelled:\n  store i64 0, i64* @__tinox_err\n  br label %recv_loop\nmsg_present:"
+            )
+            .unwrap();
             writeln!(
                 &mut self.lambda_ir,
                 "  %ok_field = getelementptr %class.AmqpMessage091, ptr %msg_obj, i32 0, i32 5"

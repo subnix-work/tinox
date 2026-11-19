@@ -906,6 +906,7 @@ impl TypeChecker {
         // HTTPS/TLS + connection-handle API
         symbols.functions.insert("httpServerCreateTls".to_string(), FunctionSignature { params: vec![("port".to_string(), ValueType::Int), ("certPath".to_string(), ValueType::String), ("keyPath".to_string(), ValueType::String)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerAcceptTls".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
+        symbols.functions.insert("httpServerTlsHandshake".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpServerAcceptConnHandle".to_string(), FunctionSignature { params: vec![("fd".to_string(), ValueType::Int)], return_type: ValueType::Int });
         symbols.functions.insert("httpConnReadRequest".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int)], return_type: ValueType::String });
         symbols.functions.insert("httpConnSendRaw".to_string(), FunctionSignature { params: vec![("conn".to_string(), ValueType::Int), ("data".to_string(), ValueType::String)], return_type: ValueType::Nothing });
@@ -3171,6 +3172,23 @@ impl TypeChecker {
                         }
                         return sig.return_type.clone();
                     }
+                    // Issue #687: active-record style calls (`Account.findById(id)`) on an
+                    // @Entity class. The class name evaluates to `Any`, so nothing downstream
+                    // complained and codegen failed late with a spanless internal message.
+                    if !obj_is_variable
+                        && self.entity_class_names.contains(class_name.as_str())
+                        && !self.symbols.functions.contains_key(&method_key)
+                    {
+                        for arg in args { self.infer_type(arg); }
+                        self.errors.push(Error::new(
+                            expr.span,
+                            format!(
+                                "@Entity class '{c}' has no method '{m}': entities are accessed through the ORM, e.g. DB::of({c}).filter(x => x.id == id).first() or DB::of({c}).save(entity)",
+                                c = class_name, m = method
+                            ),
+                        ));
+                        return ValueType::Any;
+                    }
                     // Also handle Time_now, etc. even if obj is not registered as variable
                     let is_static = self.symbols.functions.get(&method_key)
                         .map(|sig| sig.params.first().map(|(n, _)| n != "self").unwrap_or(true))
@@ -3301,6 +3319,21 @@ impl TypeChecker {
                     self.check_member_visibility(&class_name, method, &vis, expr.span);
                 }
 
+                // Issue #687: `entity.save()` and friends do not exist; say where the real API is.
+                if matches!(&obj_ty, ValueType::Named(n, _) if self.entity_class_names.contains(n.as_str()))
+                    && !self.symbols.functions.contains_key(&method_name)
+                {
+                    for arg in args { self.infer_type(arg); }
+                    self.errors.push(Error::new(
+                        expr.span,
+                        format!(
+                            "@Entity class '{c}' has no method '{m}': entities are accessed through the ORM, e.g. DB::of({c}).save(entity) or DB::of({c}).delete(entity)",
+                            c = class_name, m = method
+                        ),
+                    ));
+                    return ValueType::Any;
+                }
+
                 let func_expr = Spanned::new(ExprKind::Ident(method_name.clone()), expr.span);
                 let mut call_args = vec![(**obj).clone()];
                 call_args.extend(args.iter().cloned());
@@ -3355,6 +3388,23 @@ impl TypeChecker {
                                         .collect();
                                     self.infer_lambda_with_param_hints(lam, &hints);
                                 }
+                            }
+                        }
+                    }
+                }
+                // Issue #669: `Array_push`/`Array_insert` declare their value as `Any`
+                // (the dispatch key is element-agnostic), so a value that does not
+                // fit the receiver's declared element type passed silently.
+                if let ValueType::Array(elem) = &obj_ty {
+                    let value_idx = match method.as_str() { "push" => Some(0), "insert" => Some(1), _ => None };
+                    if let Some(arg) = value_idx.and_then(|i| args.get(i)) {
+                        if !matches!(elem.as_ref(), ValueType::Any) {
+                            let arg_ty = self.infer_type(arg);
+                            if !matches!(arg_ty, ValueType::Any) && !self.types_compatible(elem, &arg_ty) {
+                                self.errors.push(Error::new(
+                                    arg.span,
+                                    format!("cannot {} {} into a {}: the element type is {}", method, arg_ty.display(), obj_ty.display(), elem.display()),
+                                ));
                             }
                         }
                     }
@@ -3584,6 +3634,17 @@ impl TypeChecker {
                 // `Named("T")` in symbols.variables). The result only
                 // carries args if ALL type params get bound — otherwise
                 // exactly the previous behavior (empty args, permissive).
+                // Issue #640: a literal of a class nobody imported used to pass the checker and
+                // fail in codegen ("FlagView_toJson ... not implemented"); name the real problem.
+                if !self.known_class_names.contains(name)
+                    && !self.type_param_scope.contains(name)
+                    && !self.symbols.functions.keys().any(|k| k.starts_with(&format!("{name}_")))
+                {
+                    self.errors.push(Error::new(
+                        expr.span,
+                        format!("unknown class '{name}': declare it or add the missing `import` for the file that defines it"),
+                    ));
+                }
                 let tparams = self.class_type_params.get(name).cloned();
                 let mut bindings: HashMap<String, ValueType> = HashMap::new();
                 for (fname, field_expr) in fields {
@@ -5579,6 +5640,30 @@ mod tests {
             "fn main() -> Int32 { let xs: List<Int64> = [1]\nfor x in xs { let s: String = x } return 0 }",
             "expected String, found Int64",
         );
+    }
+
+    #[test]
+    fn entity_active_record_calls_are_rejected_with_a_hint() {
+        let entity = "@Entity\n@Table(\"t\")\nclass Account { @Id @GeneratedValue\n var id: Int64\n var balance: Int64 }\n";
+        err_contains(&format!("{entity}class S {{ fn f(id: Int64) -> Nothing {{ var a = Account.findById(id) }} }}"), "DB::of(Account)");
+        err_contains(&format!("{entity}class S {{ fn f(a: Account) -> Nothing {{ a.save() }} }}"), "DB::of(Account)");
+    }
+
+    #[test]
+    fn struct_literal_of_an_unknown_class_is_rejected() {
+        err_contains("fn f() { const x = Missing { a: 1 } }", "unknown class 'Missing'");
+        let ok = typecheck_code("class Known { var a: Int64 }\nfn f() { const x = Known { a: 1 } }");
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|b| b.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()));
+    }
+
+    #[test]
+    fn push_rejects_an_element_that_does_not_fit_the_list() {
+        err_contains("fn f() { const v: List<Int64> = [1, 2]\n v.push(\"three\") }", "cannot push");
+        err_contains("fn f() { const v: List<Int64> = [1, 2]\n const alias = v\n alias.push(\"four\") }", "cannot push");
+        err_contains("fn f() { const v: List<String> = [\"a\"]\n v.push(1) }", "cannot push");
+        // Compatible values keep working, including numeric widening.
+        let ok = typecheck_code("fn f() { const v: List<Int64> = [1, 2]\n v.push(3)\n const w: List<String> = [\"a\"]\n w.push(\"b\") }");
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|b| b.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>()));
     }
 
     #[test]

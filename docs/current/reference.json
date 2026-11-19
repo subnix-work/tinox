@@ -976,6 +976,7 @@
     "httpServerCreateTls": "(port: Int64, certPath: String, keyPath: String) -> Int64",
     "httpServerReadRequest": "(fd: Int64) -> String",
     "httpServerSendRaw": "(fd: Int64, data: String) -> Nothing",
+    "httpServerTlsHandshake": "(fd: Int64) -> Int64",
     "httpSetHeader": "(v: Any) -> String",
     "httpStatusCode": "(v: Any) -> Int64",
     "indexOf": "(col: Any, val: Any) -> Any",
