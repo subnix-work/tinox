@@ -927,7 +927,7 @@ mod tests {
         let sq = cs(Dialect::Sqlite, y).unwrap().unwrap();
         assert_eq!(sq.stmts[0], "CREATE TABLE \"person\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"name\" VARCHAR(10) NOT NULL, \"active\" INTEGER DEFAULT 1)");
         let pg = cs(Dialect::Postgres, y).unwrap().unwrap();
-        assert_eq!(pg.stmts[0], "CREATE TABLE \"person\" (\"id\" BIGSERIAL PRIMARY KEY, \"name\" VARCHAR(10) NOT NULL, \"active\" BOOLEAN DEFAULT 1)");
+        assert_eq!(pg.stmts[0], "CREATE TABLE \"person\" (\"id\" BIGSERIAL PRIMARY KEY, \"name\" VARCHAR(10) NOT NULL, \"active\" BOOLEAN DEFAULT TRUE)");
         assert_eq!(sq.checksum, pg.checksum, "checksum must not depend on the driver");
     }
 
