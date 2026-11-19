@@ -3936,7 +3936,7 @@ tr_done_{idx}:"#).unwrap();
     /// path, so a component built by a DI provider honours the resolved value too (issue #671).
     fn emit_config_injection(&mut self, name: &str, layout: &[String], typed_ptr: &str) {
         let cfg_fields: Vec<ConfigFieldInfo> = self.config_fields.iter()
-            .filter(|f| &f.class_name == name)
+            .filter(|f| f.class_name == *name)
             .cloned()
             .collect();
         for cf in &cfg_fields {
