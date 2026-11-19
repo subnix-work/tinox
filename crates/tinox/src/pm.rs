@@ -635,7 +635,7 @@ pub fn write_manifest(root: &Path, manifest: &TinoxManifest) -> Result<(), Strin
     if !saw_package_header {
         if let Some(pkg) = &manifest.package {
             content.push_str(&format!(
-                "[package]\ncompiler = \"2.9.6\"\nname = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\ncompiler = \"{}\"\n",
+                "[package]\ncompiler = \"2.9.7\"\nname = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\ncompiler = \"{}\"\n",
                 pkg.name, pkg.version, pkg.description, pkg.compiler.as_deref().unwrap_or(COMPILER_VERSION)
             ));
         }
@@ -1032,6 +1032,29 @@ fn verify_checksum(dep: &Dependency, effective_url: &str, lock: &TinoxLock, upda
     Ok(())
 }
 
+/// Archive hash recorded next to a cached package at download time (issue #670).
+const ARCHIVE_SHA256_FILE: &str = ".archive.sha256";
+
+/// Downloads `effective_url` and unwraps a registry envelope if there is one: the artifact
+/// bytes plus the filename the registry reported (if any).
+fn download_archive(effective_url: &str) -> Result<(Vec<u8>, Option<String>), String> {
+    let response = get_with_retry(effective_url)
+        .map_err(|e| format!("Download failed ({}): {}", effective_url, e))?;
+    let mut raw_bytes: Vec<u8> = Vec::new();
+    response
+        .into_reader()
+        .read_to_end(&mut raw_bytes)
+        .map_err(|e| format!("Read failed: {}", e))?;
+    // A registry API (e.g. tinox-central) wraps the artifact in a
+    // `{"filename": "...", "contentBase64": "..."}` JSON envelope because tinox's `String` is
+    // NUL-terminated at the runtime level (tinox-central PLAN.md §7.1); fall back to "the
+    // response body IS the artifact" for anything else.
+    Ok(match parse_registry_envelope(&raw_bytes) {
+        Some((filename, decoded)) => (decoded, Some(filename)),
+        None => (raw_bytes, None),
+    })
+}
+
 /// Installs one dependency, verifying the downloaded bytes against an
 /// expected SHA-256 when one is available (`dep.sha256` from tinox.toml
 /// takes priority; otherwise a matching `tinox.lock` entry for the same
@@ -1055,7 +1078,39 @@ fn install_dep(root: &Path, dep: &Dependency, effective_url: &str, lock: &TinoxL
             "  already installed: {}:{} {}",
             dep.group, dep.artifact_id, dep.version
         );
-        return Ok(None);
+        // A warm cache must not leave this project without an integrity pin (issue #670): when
+        // the lock has no entry for this coordinate, take the archive hash recorded at download
+        // time, or fetch and hash the archive once (never a hash of the extracted files).
+        let pinned = lock_entry_for(lock, dep).is_some_and(|e| e.url == effective_url);
+        if update || pinned {
+            return Ok(None);
+        }
+        let sidecar = install_dir.join(ARCHIVE_SHA256_FILE);
+        let recorded = fs::read_to_string(&sidecar).ok().map(|t| t.trim().to_string()).filter(|t| t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()));
+        let sha256 = match recorded {
+            Some(h) => h,
+            None => {
+                println!("  pinning {}:{} {} (no recorded archive hash, downloading to verify) ...", dep.group, dep.artifact_id, dep.version);
+                match download_archive(effective_url) {
+                    Ok((bytes, _)) => {
+                        let h = sha256_hex(&bytes);
+                        let _ = fs::write(&sidecar, &h);
+                        h
+                    }
+                    Err(e) => {
+                        // A cache populated by hand or by an older tinox, with the registry out of
+                        // reach: keep working, but say loudly that nothing is pinned.
+                        eprintln!(
+                            "  warning: {}:{} {} is not pinned in tinox.lock: no archive hash is recorded for the cached copy and it cannot be fetched ({})",
+                            dep.group, dep.artifact_id, dep.version, e
+                        );
+                        return Ok(None);
+                    }
+                }
+            }
+        };
+        verify_checksum(dep, effective_url, lock, update, &sha256)?;
+        return Ok(Some(sha256));
     }
 
     println!(
@@ -1063,29 +1118,7 @@ fn install_dep(root: &Path, dep: &Dependency, effective_url: &str, lock: &TinoxL
         dep.group, dep.artifact_id, dep.version
     );
 
-    let response = get_with_retry(effective_url)
-        .map_err(|e| format!("Download failed ({}): {}", effective_url, e))?;
-
-    let mut raw_bytes: Vec<u8> = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut raw_bytes)
-        .map_err(|e| format!("Read failed: {}", e))?;
-
-    // A registry API (e.g. tinox-central) can't return artifact bytes as a
-    // raw response body — tinox's `String` is NUL-terminated at the
-    // runtime level (see tinox-central's PLAN.md §7.1), so any server
-    // built with tinox.core.http_server has to wrap the artifact in a
-    // `{"filename": "...", "contentBase64": "..."}` JSON envelope instead
-    // of streaming octets directly. Detect and unwrap that shape before
-    // falling back to "response body IS the artifact", so a dependency
-    // URL pointing at such a registry (whose path rarely carries a
-    // .tar.gz/.zip suffix) still resolves to the right filename/bytes.
-    let (bytes, filename_hint): (Vec<u8>, Option<String>) =
-        match parse_registry_envelope(&raw_bytes) {
-            Some((filename, decoded)) => (decoded, Some(filename)),
-            None => (raw_bytes, None),
-        };
+    let (bytes, filename_hint) = download_archive(effective_url)?;
 
     let actual_sha256 = sha256_hex(&bytes);
     verify_checksum(dep, effective_url, lock, update, &actual_sha256)?;
@@ -1149,6 +1182,9 @@ fn install_dep(root: &Path, dep: &Dependency, effective_url: &str, lock: &TinoxL
         let _ = fs::remove_dir_all(&staging_dir);
         return Err(e);
     }
+
+    // Record the real archive hash so a later project reusing this cache entry can pin it (#670).
+    let _ = fs::write(staging_dir.join(ARCHIVE_SHA256_FILE), &actual_sha256);
 
     if let Some(parent) = install_dir.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Cannot create install parent dir: {}", e))?;
@@ -1869,7 +1905,7 @@ pub fn cmd_publish(args: &[String]) {
         }
     };
     let Some(group) = pkg.group.clone() else {
-        eprintln!("error: tinox.toml's [package] section is missing `group` — publishing needs a full group:artifactId:version coordinate (artifactId/version come from `name`/`version`), e.g.:\n\n  [package]\ncompiler = \"2.9.6\"\n  name = \"{}\"\n  version = \"{}\"\n  group = \"your.group\"", pkg.name, pkg.version);
+        eprintln!("error: tinox.toml's [package] section is missing `group` — publishing needs a full group:artifactId:version coordinate (artifactId/version come from `name`/`version`), e.g.:\n\n  [package]\ncompiler = \"2.9.7\"\n  name = \"{}\"\n  version = \"{}\"\n  group = \"your.group\"", pkg.name, pkg.version);
         return;
     };
     let Ok(admin_key) = std::env::var("TINOX_CENTRAL_ADMIN_KEY") else {
@@ -2183,7 +2219,7 @@ mod tests {
         ));
         let nested = root.join("src").join("deeper");
         fs::create_dir_all(&nested).unwrap();
-        fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.9.6\"\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.9.7\"\nname = \"x\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
 
         // cwd (wherever the test runner happens to be) has no tinox.toml of
         // its own reachable from `nested` — only walking up from `nested`
@@ -2204,8 +2240,8 @@ mod tests {
         ));
         let inner = root.join("inner");
         fs::create_dir_all(&inner).unwrap();
-        fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.9.6\"\nname = \"outer\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
-        fs::write(inner.join("tinox.toml"), "[package]\ncompiler = \"2.9.6\"\nname = \"inner\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        fs::write(root.join("tinox.toml"), "[package]\ncompiler = \"2.9.7\"\nname = \"outer\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
+        fs::write(inner.join("tinox.toml"), "[package]\ncompiler = \"2.9.7\"\nname = \"inner\"\nversion = \"0.1.0\"\ndescription = \"\"\n").unwrap();
 
         assert_eq!(find_project_root_from(&inner), Some(inner.clone()));
 
@@ -2360,7 +2396,7 @@ mod tests {
 
     #[test]
     fn parse_manifest_reads_package_and_dependencies() {
-        let content = "[package]\ncompiler = \"2.9.6\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"x\"\nentry = \"src/main.tnx\"\n\n[[dependencies]]\ngroup = \"com.example\"\nartifactId = \"mylib\"\nversion = \"1.0.0\"\nurl = \"https://example.com/mylib.tar.gz\"\nsha256 = \"abc123\"\n";
+        let content = "[package]\ncompiler = \"2.9.7\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"x\"\nentry = \"src/main.tnx\"\n\n[[dependencies]]\ngroup = \"com.example\"\nartifactId = \"mylib\"\nversion = \"1.0.0\"\nurl = \"https://example.com/mylib.tar.gz\"\nsha256 = \"abc123\"\n";
         let m = parse_manifest(content);
         let pkg = m.package.expect("package");
         assert_eq!(pkg.name, "demo");
@@ -2389,7 +2425,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("tinox.toml"),
-            "[package]\ncompiler = \"2.9.6\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/main.tnx\"\n\n[build]\noutput = \"demo_bin\"\n\n[metrics]\nenabled = true\n",
+            "[package]\ncompiler = \"2.9.7\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/main.tnx\"\n\n[build]\noutput = \"demo_bin\"\n\n[metrics]\nenabled = true\n",
         )
         .unwrap();
 
@@ -2634,7 +2670,7 @@ mod tests {
         fs::create_dir_all(&oauth2_dir).unwrap();
         fs::write(
             oidc_dir.join("tinox.toml"),
-            "[package]\ncompiler = \"2.9.6\"\nname = \"oidc\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"oauth2\"\nversion = \"1.0.0\"\n",
+            "[package]\ncompiler = \"2.9.7\"\nname = \"oidc\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"tinox.core\"\nartifactId = \"oauth2\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
 
@@ -2761,14 +2797,14 @@ mod tests {
 
     #[test]
     fn parse_manifest_reads_package_group() {
-        let content = "[package]\ncompiler = \"2.9.6\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\ngroup = \"com.example\"\n";
+        let content = "[package]\ncompiler = \"2.9.7\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\ngroup = \"com.example\"\n";
         let m = parse_manifest(content);
         assert_eq!(m.package.expect("package").group.as_deref(), Some("com.example"));
     }
 
     #[test]
     fn parse_manifest_missing_group_is_none() {
-        let content = "[package]\ncompiler = \"2.9.6\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\n";
+        let content = "[package]\ncompiler = \"2.9.7\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"\"\n";
         let m = parse_manifest(content);
         assert_eq!(m.package.expect("package").group, None);
     }
@@ -2839,7 +2875,7 @@ mod tests {
         fs::write(src_dir.join("foo").join("Bar.tnx"), "class Bar {}").unwrap();
         fs::write(
             dir.join("tinox.toml"),
-            "[package]\ncompiler = \"2.9.6\"\nname = \"foo\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"g\"\nartifactId = \"a\"\nversion = \"1.0.0\"\nurl = \"http://example.com/a\"\n",
+            "[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[dependencies]]\ngroup = \"g\"\nartifactId = \"a\"\nversion = \"1.0.0\"\nurl = \"http://example.com/a\"\n",
         )
         .unwrap();
 
@@ -2953,7 +2989,7 @@ mod tests {
         .unwrap();
         fs::write(
             dir.join("tinox.toml"),
-            "[package]\ncompiler = \"2.9.6\"\nname = \"ui\"\nversion = \"1.0.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n",
+            "[package]\ncompiler = \"2.9.7\"\nname = \"ui\"\nversion = \"1.0.9\"\ndescription = \"\"\ngroup = \"tinox.core\"\n",
         )
         .unwrap();
 
@@ -2968,7 +3004,7 @@ mod tests {
 
     #[test]
     fn parse_manifest_reads_overrides_and_write_manifest_preserves_them() {
-        let content = "[package]\ncompiler = \"2.9.6\"\nname = \"p\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"../crypto\"\n";
+        let content = "[package]\ncompiler = \"2.9.7\"\nname = \"p\"\nversion = \"1.0.0\"\ndescription = \"\"\n\n[[overrides]]\ngroup = \"tinox.core\"\nartifactId = \"crypto\"\npath = \"../crypto\"\n";
         let m = parse_manifest(content);
         assert_eq!(
             m.overrides,
@@ -2987,7 +3023,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tinox-pm-test-{}-resolve_overrides", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("pkg")).unwrap();
-        fs::write(dir.join("pkg/tinox.toml"), "[package]\ncompiler = \"2.9.6\"\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
+        fs::write(dir.join("pkg/tinox.toml"), "[package]\ncompiler = \"2.9.7\"\nname = \"other\"\nversion = \"1.0.0\"\ndescription = \"\"\n").unwrap();
         let ovr = |path: &str| LocalOverride { group: "com.example".into(), artifact_id: "lib".into(), path: path.into() };
         let manifest = |o: LocalOverride| TinoxManifest { overrides: vec![o], ..TinoxManifest::default() };
         assert!(resolve_overrides(&dir, &manifest(ovr("nope"))).is_err());

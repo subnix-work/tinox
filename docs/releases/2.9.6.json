@@ -15,7 +15,7 @@
   },
   "compiler": {
     "version": "2.9.6",
-    "runtime_c_sha256": "36fefaa2c68cda195fcd5003fe8682139637415e7f9a61054d5898648d8a26f6",
+    "runtime_c_sha256": "f4faee56a32f5f42a202c0bcb548ee24a65510b2da140d20b35002df4399c734",
     "runtime_h_sha256": "7f2a9007232ec3428f43768440a75dad6470da4e87c4df6805111cafe2265cbd",
     "cargo_lock_sha256": "652ef71ec0bdf43c023fe2dbe0e478fb690901bbeb7021ed078543d7ba85d14e",
     "builder_apt_packages": [
@@ -40,7 +40,7 @@
       ]
     ],
     "source": {
-      "commit": "761a5efaa5acd1249209a3b981933b1802728b23",
+      "commit": "f00a5dbfc442ac7e766113eb752591c378aab461",
       "tree_clean": false
     }
   },
@@ -58,11 +58,11 @@
     {
       "group": "tinox.core",
       "name": "http_server",
-      "version": "1.2.9",
-      "content_sha256": "53683d37588e6a37e1f3694f2deb0464ece5b3f169f87a629c2cc5b8ee2d6561",
+      "version": "1.2.10",
+      "content_sha256": "e3cecbb58499c513d09b7cacf5ddb159f881c3edc0609403ccfa76834e12693e",
       "files": 12,
-      "docs": "docs/tinox-core/http_server/1-2-9/docs.html",
-      "docs_sha256": "a2ef01978a84604c171ffbbf09e6d3426322640b22be578288c58ddb44d8b0c2",
+      "docs": "docs/tinox-core/http_server/1-2-10/docs.html",
+      "docs_sha256": "3d8b67538a4482d7187f8a08ea93a054ec99b3e267b74ea952978d86b42bcbf2",
       "dependencies": [
         {
           "name": "json",

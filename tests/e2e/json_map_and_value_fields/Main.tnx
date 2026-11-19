@@ -1,0 +1,19 @@
+// Regression test for #640: Map<String, Int64>/Map<String, Bool> fields serialize as JSON objects and a
+// JsonValue field is embedded as-is (they used to give binary garbage / "<unsupported field type>").
+// expect: {"totals":{"a":3},"flags":{"on":true},"patch":{"x":[1,2]}}
+import tinox.core.json
+import Wrap
+
+class Main
+{
+    fnc main() -> Int32
+    {
+        const totals: Map<String, Int64> = Map::new()
+        totals["a"] = 3
+        const flags: Map<String, Bool> = Map::new()
+        flags["on"] = true
+        const patch: JsonValue = Json::parse("{\"x\":[1,2]}")
+        println(Json::serialize(Wrap { totals: totals, flags: flags, patch: patch }))
+        return 0
+    }
+}

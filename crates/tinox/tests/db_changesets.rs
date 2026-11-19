@@ -182,8 +182,9 @@ const MORE: &str = r#"databaseChangeLog:
             tableName: person
             columns:
               - column: { name: status, type: varchar(20), defaultValue: ACTIVE }
+              - column: { name: archived, type: boolean, defaultValue: false, constraints: { nullable: false } }
         - createIndex: { tableName: person, indexName: idx_person_name, columns: [name] }
-        - insert: { tableName: person, values: { name: seeded } }
+        - insert: { tableName: person, values: { name: seeded, archived: true } }
 "#;
 
 const FAILING: &str = r#"
@@ -211,7 +212,7 @@ impl Project {
         std::fs::write(
             dir.join("tinox.toml"),
             format!(
-                "[package]\ncompiler = \"2.9.6\"\nname = \"cs\"\nversion = \"0.1.0\"\nentry = \"src/Main.tnx\"\n\n[database]\ndriver = \"{driver}\"\nurl = \"{url}\"\n{extra}"
+                "[package]\ncompiler = \"2.9.7\"\nname = \"cs\"\nversion = \"0.1.0\"\nentry = \"src/Main.tnx\"\n\n[database]\ndriver = \"{driver}\"\nurl = \"{url}\"\n{extra}"
             ),
         )
         .unwrap();
@@ -370,6 +371,9 @@ fn changesets_postgres_apply_and_concurrent_starters() {
     let up = p.tinox(&["db", "update"]);
     assert!(up.status.success(), "{}", text(&up));
     assert_eq!(pg.psql("SELECT name || ':' || status FROM person"), "seeded:ACTIVE");
+    // Boolean defaults and inserts render as TRUE/FALSE for PostgreSQL (issue #673).
+    assert_eq!(pg.psql("SELECT archived FROM person"), "t");
+    assert_eq!(pg.psql("SELECT column_default FROM information_schema.columns WHERE table_name = 'person' AND column_name = 'archived'"), "false");
     assert_eq!(pg.psql("SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'idx_person_name'"), "1");
     assert_eq!(pg.psql("SELECT data_type FROM information_schema.columns WHERE table_name = 'person' AND column_name = 'id'"), "bigint");
 
@@ -800,7 +804,7 @@ fn changesets_diff_sqlite_catalog_and_read_only_live_database() {
     let p = Project::new("diff", "sqlite", "data/test.db", "");
     let db = p.dir.join("data/test.db");
     // Before baseline, no history is needed and none is created.
-    sqlite(&db, "CREATE TABLE person (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(100) NOT NULL, status VARCHAR(20) DEFAULT 'ACTIVE'); CREATE INDEX idx_person_name ON person(name);");
+    sqlite(&db, "CREATE TABLE person (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(100) NOT NULL, status VARCHAR(20) DEFAULT 'ACTIVE', archived INTEGER NOT NULL DEFAULT 0); CREATE INDEX idx_person_name ON person(name);");
     let before = std::fs::read(&db).unwrap();
     let clean = p.tinox(&["db", "diff"]);
     assert!(clean.status.success(), "{}", text(&clean));

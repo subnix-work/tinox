@@ -65,6 +65,7 @@ fn log_field_reaches_log_records_and_does_not_leak() {
         r#"import tinox.core.http_server
 import tinox.core.logger
 
+@Log
 class Ctrl
 {
     @GET
@@ -72,7 +73,7 @@ class Ctrl
     @Produces("application/json")
     fn order(@PathParam @LogField orderId: Int64, @QueryParam @LogField("customer") c: String) -> String
     {
-        Logger::info(Logger::new("Ctrl"), "order requested")
+        this.log.info("order requested")
         return "\"ok\""
     }
 
@@ -81,7 +82,7 @@ class Ctrl
     @Produces("application/json")
     fn plain() -> String
     {
-        Logger::info(Logger::new("Ctrl"), "plain request")
+        this.log.info("plain request")
         return "\"ok\""
     }
 }

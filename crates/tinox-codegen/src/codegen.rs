@@ -1986,6 +1986,9 @@ impl CodeGen {
         writeln!(&mut self.ir, "declare i64* @jsonGetStringListField(i64*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_json_string_list_serialize(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i8* @tinox_json_string_map_serialize(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_int_map_serialize(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_bool_map_serialize(i8*)").unwrap();
+        writeln!(&mut self.ir, "declare i8* @tinox_json_value_serialize(i64*)").unwrap();
         writeln!(&mut self.ir, "declare i64* @tinox_json_list_deserialize(i64*, ptr)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.floor.f64(double)").unwrap();
         writeln!(&mut self.ir, "declare double @llvm.ceil.f64(double)").unwrap();
@@ -2090,6 +2093,7 @@ impl CodeGen {
         // HTTPS/TLS + connection-handle API (see runtime.c, TinoxConn)
         writeln!(&mut self.ir, "declare i64 @httpServerCreateTls(i64, i8*, i8*)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptTls(i64)").unwrap();
+        writeln!(&mut self.ir, "declare i64 @httpServerTlsHandshake(i64)").unwrap();
         writeln!(&mut self.ir, "declare i64 @httpServerAcceptConnHandle(i64)").unwrap();
         writeln!(&mut self.ir, "declare i8* @httpConnReadRequest(i64)").unwrap();
         writeln!(&mut self.ir, "declare void @httpConnSendRaw(i64, i8*)").unwrap();
@@ -2545,6 +2549,16 @@ impl CodeGen {
                     if !method.type_params.is_empty() {
                         // Monomorphized at the call site; no normal
                         // registration (that would log T as i64*)
+                        // An instance method with its own type params on a NON-generic class
+                        // (`HttpResponse.jsonObject<T>`) monomorphizes through the same
+                        // instance-call path as `Option<T>.map<U>` (#640); with no class-level
+                        // bindings to combine.
+                        if !method.static_ {
+                            self.generic_instance_methods.insert(
+                                key.clone(),
+                                (c.name.clone(), HashMap::new(), method.clone()),
+                            );
+                        }
                         self.generic_methods.insert(key, method.clone());
                         continue;
                     }
@@ -3247,6 +3261,10 @@ impl CodeGen {
                             "  %raw_{idx} = call i8* @tinox_alloc(i64 {ctrl_size})").unwrap();
                         writeln!(&mut self.lambda_ir,
                             "  %ctrl_{idx} = bitcast i8* %raw_{idx} to i64*").unwrap();
+                        // Fresh zeroed instance, no struct literal: apply
+                        // declared defaults and the @Log logger (#674).
+                        let ctrl_reg = format!("%ctrl_{idx}");
+                        self.emit_field_defaults(&route.class_name, &ctrl_reg);
                     }
                 }
                 let ctrl_arg = format!("%ctrl_{idx}");
@@ -3912,6 +3930,75 @@ tr_done_{idx}:"#).unwrap();
         }
     }
 
+    /// @Config: inject values from application.properties into the annotated fields of the
+    /// instance at `typed_ptr`, writing into the current function buffer (`self.ir`). Shared by
+    /// struct-literal construction and (through `emit_field_defaults`) every generated allocation
+    /// path, so a component built by a DI provider honours the resolved value too (issue #671).
+    fn emit_config_injection(&mut self, name: &str, layout: &[String], typed_ptr: &str) {
+        let cfg_fields: Vec<ConfigFieldInfo> = self.config_fields.iter()
+            .filter(|f| f.class_name == *name)
+            .cloned()
+            .collect();
+        for cf in &cfg_fields {
+            if let Some(field_idx) = layout.iter().position(|f| f == &cf.field_name) {
+                let key_label = format!("str{}", self.strings.len());
+                self.strings.insert(key_label.clone(), cf.config_key.clone());
+                let key_len = cf.config_key.len() + 1;
+                let key_ptr = self.temp();
+                writeln!(&mut self.ir,
+                    "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0",
+                    key_ptr, key_len, key_len, key_label).unwrap();
+                let field_ptr = self.temp();
+                writeln!(&mut self.ir,
+                    "{} = getelementptr i64, ptr {}, i64 {}",
+                    field_ptr, typed_ptr, field_idx).unwrap();
+                // Absent key: keep the field's declared default, or fail startup visibly
+                // when there is none (never a silent 0/""/false).
+                let present = self.temp();
+                writeln!(&mut self.ir, "{} = call i64 @tinox_config_present(i8* {})", present, key_ptr).unwrap();
+                let has = self.temp();
+                writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", has, present).unwrap();
+                let set_bb = self.new_bb("cfg_set");
+                let miss_bb = self.new_bb("cfg_missing");
+                let done_bb = self.new_bb("cfg_done");
+                writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", has, set_bb, miss_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", miss_bb).unwrap();
+                if !cf.has_default {
+                    writeln!(&mut self.ir, "call void @tinox_config_missing(i8* {})", key_ptr).unwrap();
+                }
+                writeln!(&mut self.ir, "br label %{}", done_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", set_bb).unwrap();
+                match cf.field_llvm_type.as_str() {
+                    "i8*" => {
+                        let raw = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = call i8* @tinox_config_get(i8* {})",
+                            raw, key_ptr).unwrap();
+                        let as_i64 = self.temp();
+                        writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", as_i64, raw).unwrap();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", as_i64, field_ptr).unwrap();
+                    }
+                    "i1" => {
+                        let raw = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = call i64 @tinox_config_get_bool(i8* {})",
+                            raw, key_ptr).unwrap();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
+                    }
+                    _ => {
+                        let raw = self.temp();
+                        writeln!(&mut self.ir,
+                            "{} = call i64 @tinox_config_get_int(i8* {})",
+                            raw, key_ptr).unwrap();
+                        writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
+                    }
+                }
+                writeln!(&mut self.ir, "br label %{}", done_bb).unwrap();
+                writeln!(&mut self.ir, "{}:", done_bb).unwrap();
+            }
+        }
+    }
+
     fn emit_field_defaults(&mut self, class_name: &str, inst_reg: &str) {
         let fields = match self.struct_layouts.get(class_name) {
             Some(f) => f.clone(),
@@ -3929,6 +4016,34 @@ tr_done_{idx}:"#).unwrap();
             let field_ptr = self.temp();
             writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
             writeln!(&mut self.lambda_ir, "  store {store_ty} {value}, {store_ty}* {field_ptr}").unwrap();
+        }
+
+        // @Config: apply the resolved application.properties / environment values on top of
+        // the declared defaults (issue #671). The injection code is written for `self.ir`, the
+        // per-function buffer; swap so it lands in the provider/shim being emitted here.
+        if self.config_fields.iter().any(|f| f.class_name == class_name) {
+            std::mem::swap(&mut self.ir, &mut self.lambda_ir);
+            self.emit_config_injection(class_name, &fields, inst_reg);
+            std::mem::swap(&mut self.ir, &mut self.lambda_ir);
+        }
+
+        // @Log: instances that never go through a struct literal (route
+        // controllers, DI singletons, endpoint/consumer/job instances) need
+        // the synthetic `log` field initialised here, otherwise the first
+        // `this.log.info(...)` dereferences null (issue #674).
+        if self.log_classes.contains(class_name) {
+            if let Some(log_idx) = fields.iter().position(|f| f == "log") {
+                let name_ptr = self.emit_lambda_string_literal(class_name);
+                let logger_raw = self.temp();
+                writeln!(&mut self.lambda_ir,
+                    "  {logger_raw} = call i64* @Logger_new(i64* null, i8* {name_ptr})").unwrap();
+                let logger_i64 = self.temp();
+                writeln!(&mut self.lambda_ir, "  {logger_i64} = ptrtoint i64* {logger_raw} to i64").unwrap();
+                let field_ptr = self.temp();
+                writeln!(&mut self.lambda_ir,
+                    "  {field_ptr} = getelementptr i64, ptr {inst_reg}, i64 {log_idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  store i64 {logger_i64}, i64* {field_ptr}").unwrap();
+            }
         }
 
         // Remaining String fields with no declared default still get a real
@@ -4702,6 +4817,9 @@ tr_done_{idx}:"#).unwrap();
                 .unwrap();
             }
             writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @Amqp10Link_nextMessage(i64* %link_obj)").unwrap();
+            // A cancelled blocking receive (service shutdown) returns null with the error slot
+            // set: never dereference it (issue #676); go back to the loop head, which sees the stop.
+            writeln!(&mut self.lambda_ir, "  %msg_is_null = icmp eq i64* %msg_obj, null\n  br i1 %msg_is_null, label %msg_cancelled, label %msg_present\nmsg_cancelled:\n  store i64 0, i64* @__tinox_err\n  br label %recv_loop\nmsg_present:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 3").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
             writeln!(&mut self.lambda_ir, "  %is_ok = icmp ne i64 %ok_val, 0").unwrap();
@@ -4848,6 +4966,12 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.lambda_ir, "  %inst = bitcast i8* %raw to i64*").unwrap();
             self.emit_field_defaults(&job.class_name, "%inst");
             writeln!(&mut self.lambda_ir, "  %job = call i64* @ScheduledJob_create(i8* {cron_ptr})").unwrap();
+            if self.service_enabled() {
+                // The runner is a required background task of the managed service: without
+                // this signal readiness never completes and the startup deadline kills the
+                // process (issue #675). Instance built and schedule parsed at this point.
+                writeln!(&mut self.lambda_ir, "  call void @tinox_service_listener_ready(i64 -1)").unwrap();
+            }
             writeln!(&mut self.lambda_ir, "  br label %tick").unwrap();
             writeln!(&mut self.lambda_ir, "tick:").unwrap();
             if self.service_enabled() {
@@ -7686,6 +7810,29 @@ tr_done_{idx}:"#).unwrap();
                     // other Map<String, V> value type is out of scope here (no
                     // current caller needs it) and falls back to a placeholder
                     // rather than risking the same silent misread.
+                    // Map<String, Int*> / Map<String, Bool> (plain "Map" marker): the declared value
+                    // type decides how the raw words are written (issue #640).
+                    "i8*" if marker.as_deref() == Some("Map") => {
+                        let value_ty = match self.struct_field_decl_types.get(&class_name).and_then(|m| m.get(field_name)) {
+                            Some(Type::Map(_, v)) => Some(v.as_ref().clone()),
+                            _ => None,
+                        };
+                        let func = match value_ty {
+                            Some(Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::UInt8 | Type::UInt16 | Type::UInt32 | Type::UInt64) => Some("tinox_json_int_map_serialize"),
+                            Some(Type::Bool) => Some("tinox_json_bool_map_serialize"),
+                            _ => None,
+                        };
+                        if let Some(func) = func {
+                            let map_ptr = self.temp();
+                            writeln!(&mut self.ir, "  {map_ptr} = inttoptr i64 {raw} to i8*").unwrap();
+                            let json = self.temp();
+                            writeln!(&mut self.ir, "  {json} = call i8* @{func}(i8* {map_ptr})").unwrap();
+                            writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                        } else {
+                            let placeholder = self.intern_json_placeholder_string();
+                            writeln!(&mut self.ir, "  call void @jsonBuilderAddString(i8* {builder}, i8* {key_ptr}, i8* {placeholder})").unwrap();
+                        }
+                    }
                     "i8*" if marker.as_deref().map(|m| m.starts_with("Map:")).unwrap_or(false) => {
                         if marker.as_deref() == Some("Map:String") {
                             let map_ptr = self.temp();
@@ -7733,6 +7880,14 @@ tr_done_{idx}:"#).unwrap();
                     // resources: every nested spec/status/metadata field, and
                     // every List<Container>-shaped field, serialized as
                     // garbage int arrays).
+                    // A JsonValue field is embedded as-is (issue #640).
+                    "i64*" if marker.as_deref() == Some("JsonValue") => {
+                        let value_ptr = self.temp();
+                        writeln!(&mut self.ir, "  {value_ptr} = inttoptr i64 {raw} to i64*").unwrap();
+                        let json = self.temp();
+                        writeln!(&mut self.ir, "  {json} = call i8* @tinox_json_value_serialize(i64* {value_ptr})").unwrap();
+                        writeln!(&mut self.ir, "  call void @jsonBuilderAddRaw(i8* {builder}, i8* {key_ptr}, i8* {json})").unwrap();
+                    }
                     "i64*" if marker.as_deref() == Some("Array:String") => {
                         let arr_ptr = self.temp();
                         writeln!(&mut self.ir, "  {arr_ptr} = inttoptr i64 {raw} to i64*").unwrap();
@@ -8175,6 +8330,14 @@ tr_done_{idx}:"#).unwrap();
                     match val_ty.as_str() {
                         "i8*" => {
                             writeln!(&mut self.ir, "  {reg} = bitcast i8* {val_reg} to i8*").unwrap();
+                        }
+                        // Bool is an i1 (and Int32/Int16/Int8 are narrower than i64):
+                        // widen before the i64 conversion, otherwise the IR is invalid.
+                        "i1" | "i8" | "i16" | "i32" => {
+                            let wide = self.temp();
+                            let op = if val_ty == "i1" { "zext" } else { "sext" };
+                            writeln!(&mut self.ir, "  {wide} = {op} {val_ty} {val_reg} to i64").unwrap();
+                            writeln!(&mut self.ir, "  {reg} = call i8* @tinox_int_to_param(i64 {wide})").unwrap();
                         }
                         _ => {
                             writeln!(&mut self.ir, "  {reg} = call i8* @tinox_int_to_param(i64 {val_reg})").unwrap();
@@ -13344,69 +13507,7 @@ tr_done_{idx}:"#).unwrap();
                     let store_val = self.coerce_to_i64(&val, &val_ty);
                     writeln!(&mut self.ir, "store i64 {}, i64* {}", store_val, field_ptr).unwrap();
                 }
-                // @Config: inject values from application.properties for annotated fields
-                let cfg_fields: Vec<ConfigFieldInfo> = self.config_fields.iter()
-                    .filter(|f| &f.class_name == name)
-                    .cloned()
-                    .collect();
-                for cf in &cfg_fields {
-                    if let Some(field_idx) = layout.iter().position(|f| f == &cf.field_name) {
-                        let key_label = format!("str{}", self.strings.len());
-                        self.strings.insert(key_label.clone(), cf.config_key.clone());
-                        let key_len = cf.config_key.len() + 1;
-                        let key_ptr = self.temp();
-                        writeln!(&mut self.ir,
-                            "{} = getelementptr [{} x i8], [{} x i8]* @{}, i64 0, i64 0",
-                            key_ptr, key_len, key_len, key_label).unwrap();
-                        let field_ptr = self.temp();
-                        writeln!(&mut self.ir,
-                            "{} = getelementptr i64, ptr {}, i64 {}",
-                            field_ptr, typed_ptr, field_idx).unwrap();
-                        // Absent key: keep the field's declared default, or fail startup visibly
-                        // when there is none (never a silent 0/""/false).
-                        let present = self.temp();
-                        writeln!(&mut self.ir, "{} = call i64 @tinox_config_present(i8* {})", present, key_ptr).unwrap();
-                        let has = self.temp();
-                        writeln!(&mut self.ir, "{} = icmp ne i64 {}, 0", has, present).unwrap();
-                        let set_bb = self.new_bb("cfg_set");
-                        let miss_bb = self.new_bb("cfg_missing");
-                        let done_bb = self.new_bb("cfg_done");
-                        writeln!(&mut self.ir, "br i1 {}, label %{}, label %{}", has, set_bb, miss_bb).unwrap();
-                        writeln!(&mut self.ir, "{}:", miss_bb).unwrap();
-                        if !cf.has_default {
-                            writeln!(&mut self.ir, "call void @tinox_config_missing(i8* {})", key_ptr).unwrap();
-                        }
-                        writeln!(&mut self.ir, "br label %{}", done_bb).unwrap();
-                        writeln!(&mut self.ir, "{}:", set_bb).unwrap();
-                        match cf.field_llvm_type.as_str() {
-                            "i8*" => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir,
-                                    "{} = call i8* @tinox_config_get(i8* {})",
-                                    raw, key_ptr).unwrap();
-                                let as_i64 = self.temp();
-                                writeln!(&mut self.ir, "{} = ptrtoint i8* {} to i64", as_i64, raw).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", as_i64, field_ptr).unwrap();
-                            }
-                            "i1" => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir,
-                                    "{} = call i64 @tinox_config_get_bool(i8* {})",
-                                    raw, key_ptr).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
-                            }
-                            _ => {
-                                let raw = self.temp();
-                                writeln!(&mut self.ir,
-                                    "{} = call i64 @tinox_config_get_int(i8* {})",
-                                    raw, key_ptr).unwrap();
-                                writeln!(&mut self.ir, "store i64 {}, i64* {}", raw, field_ptr).unwrap();
-                            }
-                        }
-                        writeln!(&mut self.ir, "br label %{}", done_bb).unwrap();
-                        writeln!(&mut self.ir, "{}:", done_bb).unwrap();
-                    }
-                }
+                self.emit_config_injection(name, &layout, &typed_ptr);
 
                 // @Log: auto-initialize the synthetic 'log' field with Logger::new(ClassName)
                 if self.log_classes.contains(name) {

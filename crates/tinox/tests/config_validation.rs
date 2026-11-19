@@ -10,7 +10,7 @@ fn build(name: &str, properties: &str) -> (std::path::PathBuf, std::path::PathBu
     fs::create_dir_all(&root).unwrap();
     fs::write(
         root.join("tinox.toml"),
-        format!("[package]\ncompiler = \"2.9.6\"\nname = \"cfg\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION")),
+        format!("[package]\ncompiler = \"2.9.7\"\nname = \"cfg\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION")),
     )
     .unwrap();
     fs::write(
@@ -72,7 +72,7 @@ fn all_problems_are_reported_together_before_anything_runs() {
     let root = std::env::temp_dir().join(format!("tinox-config-agg-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("tinox.toml"), format!("[package]\ncompiler = \"2.9.6\"\nname = \"cfg\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION"))).unwrap();
+    fs::write(root.join("tinox.toml"), format!("[package]\ncompiler = \"2.9.7\"\nname = \"cfg\"\nversion = \"0.1.0\"\ncompiler = \"{}\"\n", env!("CARGO_PKG_VERSION"))).unwrap();
     fs::write(
         root.join("Settings.tnx"),
         "class Settings {\n    @Config(\"app.port\") var port: Int64\n    @Config(\"app.limit\") var limit: Int64 = 5\n    @Config(\"app.debug\") var debug: Bool = false\n    @Config(\"app.secret\") var secret: String\n}\n",
@@ -133,5 +133,36 @@ fn escaped_placeholder_stays_literal_and_expansion_is_not_rescanned() {
     let (root, exe) = build("expand-escape", "app.port=1\napp.name=a\\${NOT_EXPANDED}b-${TEST_RESCAN_VAR}\n");
     // The variable's own value contains `${...}` and must not be expanded a second time.
     assert_eq!(run(&root, &exe, &[("TEST_RESCAN_VAR", "${X}")]).1, "1 a${NOT_EXPANDED}b-${X} false");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A DI-constructed component takes its `@Config` values from the file and the environment, not
+/// only the declared default (issue #671).
+#[test]
+fn di_components_honour_resolved_config_values() {
+    let root = std::env::temp_dir().join(format!("tinox-config-di-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("tinox.toml"),
+        format!("[package]\ncompiler = \"{}\"\nname = \"cfgdi\"\nversion = \"0.1.0\"\n", env!("CARGO_PKG_VERSION")),
+    )
+    .unwrap();
+    fs::write(
+        root.join("Resources.tnx"),
+        "@Startup\nclass Resources\n{\n    @Config(\"app.name\")\n    private var name: String = \"Task API\"\n\n    @OnStart\n    fn started() -> Nothing\n    {\n        println(\"START \" + this.name)\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Main.tnx"),
+        "import Resources\n\n@Service(3000, 2000)\nclass Main\n{\n    fnc main() -> Int32\n    {\n        serviceRequestShutdown()\n        return 0\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(root.join("application.properties"), "app.name=Tinox Tasks\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_tinox")).args(["build", "Main.tnx", "-o", "app"]).current_dir(&root).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let exe = root.join("app");
+    assert!(run(&root, &exe, &[]).1.contains("START Tinox Tasks"), "file value must beat the declared default");
+    assert!(run(&root, &exe, &[("APP_NAME", "Deployment Tasks")]).1.contains("START Deployment Tasks"), "environment must beat the file");
     let _ = fs::remove_dir_all(root);
 }

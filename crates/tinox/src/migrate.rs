@@ -129,9 +129,11 @@ fn quote_ident(d: Dialect, name: &str, ctx: &str) -> Result<String, String> {
     })
 }
 
-fn sql_literal(v: &Value, ctx: &str) -> Result<String, String> {
+fn sql_literal(d: Dialect, v: &Value, ctx: &str) -> Result<String, String> {
     match v {
         Value::Null => Ok("NULL".to_string()),
+        // PostgreSQL has a real BOOLEAN type and rejects an integer default/insert value for it.
+        Value::Bool(b) if d == Dialect::Postgres => Ok(if *b { "TRUE".into() } else { "FALSE".into() }),
         Value::Bool(b) => Ok(if *b { "1".into() } else { "0".into() }),
         Value::Number(n) => Ok(n.to_string()),
         Value::String(s) => Ok(format!("'{}'", s.replace('\'', "''"))),
@@ -251,7 +253,7 @@ fn parse_column(d: Dialect, table: &str, v: &Value, ctx: &str) -> Result<Column,
                 _ => return Err(format!("{cctx}: defaultValue must be a variant of enum {en} ({})", vars.join(", "))),
             }
         }
-        c.default = Some(sql_literal(dv, &cctx)?);
+        c.default = Some(sql_literal(d, dv, &cctx)?);
     }
     if let (Some((_, vars)), true) = (&enum_ty, enum_check) {
         c.check = Some((enum_check_name(d, table, &name, &cctx)?, enum_check_expr(d, &c.name, vars)));
@@ -475,7 +477,7 @@ fn change_to_sql(d: Dialect, change: &Value, ctx: &str) -> Result<Vec<String>, S
             let mut lits = Vec::new();
             for (k, v) in vals {
                 names.push(quote_ident(d, k.as_str().unwrap_or(""), &ctx)?);
-                lits.push(sql_literal(v, &ctx)?);
+                lits.push(sql_literal(d, v, &ctx)?);
             }
             Ok(vec![format!("INSERT INTO {t} ({}) VALUES ({})", names.join(", "), lits.join(", "))])
         }
@@ -890,6 +892,16 @@ mod tests {
     }
 
     #[test]
+    fn boolean_literals_follow_the_driver() {
+        let t = Value::Bool(true);
+        let f = Value::Bool(false);
+        assert_eq!(sql_literal(Dialect::Postgres, &t, "t").unwrap(), "TRUE");
+        assert_eq!(sql_literal(Dialect::Postgres, &f, "t").unwrap(), "FALSE");
+        assert_eq!(sql_literal(Dialect::Sqlite, &t, "t").unwrap(), "1");
+        assert_eq!(sql_literal(Dialect::Mysql, &f, "t").unwrap(), "0");
+    }
+
+    #[test]
     fn tags_and_qualifiers_validate() {
         let base = "id: point\nauthor: a\nchanges: [{tag: {tag: release}}]\n";
         let point = cs(Dialect::Sqlite, base).unwrap().unwrap();
@@ -915,7 +927,7 @@ mod tests {
         let sq = cs(Dialect::Sqlite, y).unwrap().unwrap();
         assert_eq!(sq.stmts[0], "CREATE TABLE \"person\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"name\" VARCHAR(10) NOT NULL, \"active\" INTEGER DEFAULT 1)");
         let pg = cs(Dialect::Postgres, y).unwrap().unwrap();
-        assert_eq!(pg.stmts[0], "CREATE TABLE \"person\" (\"id\" BIGSERIAL PRIMARY KEY, \"name\" VARCHAR(10) NOT NULL, \"active\" BOOLEAN DEFAULT 1)");
+        assert_eq!(pg.stmts[0], "CREATE TABLE \"person\" (\"id\" BIGSERIAL PRIMARY KEY, \"name\" VARCHAR(10) NOT NULL, \"active\" BOOLEAN DEFAULT TRUE)");
         assert_eq!(sq.checksum, pg.checksum, "checksum must not depend on the driver");
     }
 

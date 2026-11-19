@@ -37,7 +37,7 @@ fn bool_entity_fields_read_back_from_postgres_boolean_columns() {
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.9.6"
+compiler = "2.9.7"
 name = "postgres_bool_read"
 version = "0.1.0"
 description = "issue #604 fixture"
@@ -50,7 +50,7 @@ pool = 3
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.9"
+version = "1.2.10"
 
 [[overrides]]
 group = "tinox.core"
@@ -105,6 +105,9 @@ path = "{db_dir}"
 
     assert!(stdout.contains("on=true"), "TRUE column must read as true:\n{stdout}");
     assert!(stdout.contains("off=false"), "FALSE column must read as false:\n{stdout}");
+    // rows: on(TRUE), off(FALSE), saved(TRUE)
+    assert!(stdout.contains("filtered_on=2"), "runtime Bool filter (true):\n{stdout}");
+    assert!(stdout.contains("filtered_off=1"), "runtime Bool filter (false):\n{stdout}");
     assert!(stdout.contains("roundtrip=true"), "saved Bool must read back as true:\n{stdout}");
 
     // Independent verification against real Postgres state.

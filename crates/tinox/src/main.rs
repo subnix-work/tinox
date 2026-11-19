@@ -185,7 +185,7 @@ fn print_help() {
 /// declaration (#159).
 fn new_project_files(name: &str) -> (String, String, String, String) {
     let toml = format!(
-        "[package]\ncompiler = \"2.9.6\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\ncompiler = \"{}\"\nentry = \"src/Main.tnx\"\n",
+        "[package]\ncompiler = \"{}\"\nname = \"{name}\"\nversion = \"0.1.0\"\ndescription = \"\"\nentry = \"src/Main.tnx\"\n",
         pm::COMPILER_VERSION
     );
     let main_tnx = format!(
@@ -5938,7 +5938,7 @@ mod namespace_path_matches_tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.6\"\nname = \"t\"\n").unwrap();
+        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.7\"\nname = \"t\"\n").unwrap();
         if with_src {
             fs::create_dir_all(dir.join("src")).unwrap();
         }
@@ -6115,25 +6115,25 @@ mod read_project_entry_tests {
 
     #[test]
     fn entry_field_found() {
-        let toml = "[package]\ncompiler = \"2.9.6\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
     #[test]
     fn no_entry_field_returns_none() {
-        let toml = "[package]\ncompiler = \"2.9.6\"\nname = \"foo\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_outside_package_section_ignored() {
-        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.9.6\"\nname = \"foo\"\n";
+        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_field_whitespace_tolerant() {
-        let toml = "[package]\ncompiler = \"2.9.6\"\nentry=\"src/Main.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.9.7\"\nentry=\"src/Main.tnx\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
@@ -6144,7 +6144,7 @@ mod read_project_entry_tests {
     // of them (issue #257).
     #[test]
     fn undeclared_entry_prefers_capital_main_then_lowercase() {
-        let toml = "[package]\ncompiler = \"2.9.6\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
+        let toml = "[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
         assert_eq!(
             entry_candidates(toml),
             vec!["src/Main.tnx".to_string(), "src/main.tnx".to_string()]
@@ -6154,7 +6154,7 @@ mod read_project_entry_tests {
     #[test]
     fn declared_entry_is_the_only_candidate() {
         // No silent fallback to a default when an explicit entry is wrong.
-        let toml = "[package]\ncompiler = \"2.9.6\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
         assert_eq!(entry_candidates(toml), vec!["src/Cli.tnx".to_string()]);
     }
 }
@@ -6332,5 +6332,23 @@ mod structured_annotation_tests {
         assert!(diagnostic.range.is_some());
         assert_eq!(diagnostic.related.len(), 1);
         assert_eq!(diagnostic.related[0].file, "/tmp/Second.tnx");
+    }
+}
+
+#[cfg(test)]
+mod new_project_manifest_tests {
+    use super::*;
+
+    /// `tinox new` must emit each key once: a duplicate `compiler` key is
+    /// invalid TOML for every independent parser (issue #668).
+    #[test]
+    fn generated_manifest_has_no_duplicate_keys_and_the_current_compiler() {
+        let (toml, _, _, _) = new_project_files("hello");
+        let mut seen = std::collections::HashSet::new();
+        for line in toml.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('[')) {
+            let key = line.split('=').next().unwrap().trim().to_string();
+            assert!(seen.insert(key.clone()), "duplicate key `{key}` in:\n{toml}");
+        }
+        assert!(toml.contains(&format!("compiler = \"{}\"", pm::COMPILER_VERSION)));
     }
 }
