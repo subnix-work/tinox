@@ -4817,6 +4817,9 @@ tr_done_{idx}:"#).unwrap();
                 .unwrap();
             }
             writeln!(&mut self.lambda_ir, "  %msg_obj = call i64* @Amqp10Link_nextMessage(i64* %link_obj)").unwrap();
+            // A cancelled blocking receive (service shutdown) returns null with the error slot
+            // set: never dereference it (issue #676); go back to the loop head, which sees the stop.
+            writeln!(&mut self.lambda_ir, "  %msg_is_null = icmp eq i64* %msg_obj, null\n  br i1 %msg_is_null, label %msg_cancelled, label %msg_present\nmsg_cancelled:\n  store i64 0, i64* @__tinox_err\n  br label %recv_loop\nmsg_present:").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_field = getelementptr %class.Amqp10Message, ptr %msg_obj, i32 0, i32 3").unwrap();
             writeln!(&mut self.lambda_ir, "  %ok_val = load i64, i64* %ok_field").unwrap();
             writeln!(&mut self.lambda_ir, "  %is_ok = icmp ne i64 %ok_val, 0").unwrap();
