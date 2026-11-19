@@ -4,6 +4,10 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `@Log` classes instantiated without a struct literal (HTTP route controllers, DI singletons, WebSocket/AMQP endpoints, scheduled jobs) now get their `log` field initialised; `this.log.info(...)` in a controller no longer crashes (#674).
+
 ### Changed
 
 - `tinox.core.logger`: `Logger` `debug`/`info`/`warn`/`error`/`setLevel`/`log` are real instance methods now. Call `log.info("msg")` instead of `Logger::info(log, "msg")`. **Breaking** for code using the static-style call.

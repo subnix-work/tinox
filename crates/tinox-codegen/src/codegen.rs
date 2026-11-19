@@ -3247,6 +3247,10 @@ impl CodeGen {
                             "  %raw_{idx} = call i8* @tinox_alloc(i64 {ctrl_size})").unwrap();
                         writeln!(&mut self.lambda_ir,
                             "  %ctrl_{idx} = bitcast i8* %raw_{idx} to i64*").unwrap();
+                        // Fresh zeroed instance, no struct literal: apply
+                        // declared defaults and the @Log logger (#674).
+                        let ctrl_reg = format!("%ctrl_{idx}");
+                        self.emit_field_defaults(&route.class_name, &ctrl_reg);
                     }
                 }
                 let ctrl_arg = format!("%ctrl_{idx}");
@@ -3929,6 +3933,25 @@ tr_done_{idx}:"#).unwrap();
             let field_ptr = self.temp();
             writeln!(&mut self.lambda_ir, "  {field_ptr} = getelementptr %class.{class_name}, ptr {inst_reg}, i32 0, i32 {idx}").unwrap();
             writeln!(&mut self.lambda_ir, "  store {store_ty} {value}, {store_ty}* {field_ptr}").unwrap();
+        }
+
+        // @Log: instances that never go through a struct literal (route
+        // controllers, DI singletons, endpoint/consumer/job instances) need
+        // the synthetic `log` field initialised here, otherwise the first
+        // `this.log.info(...)` dereferences null (issue #674).
+        if self.log_classes.contains(class_name) {
+            if let Some(log_idx) = fields.iter().position(|f| f == "log") {
+                let name_ptr = self.emit_lambda_string_literal(class_name);
+                let logger_raw = self.temp();
+                writeln!(&mut self.lambda_ir,
+                    "  {logger_raw} = call i64* @Logger_new(i64* null, i8* {name_ptr})").unwrap();
+                let logger_i64 = self.temp();
+                writeln!(&mut self.lambda_ir, "  {logger_i64} = ptrtoint i64* {logger_raw} to i64").unwrap();
+                let field_ptr = self.temp();
+                writeln!(&mut self.lambda_ir,
+                    "  {field_ptr} = getelementptr i64, ptr {inst_reg}, i64 {log_idx}").unwrap();
+                writeln!(&mut self.lambda_ir, "  store i64 {logger_i64}, i64* {field_ptr}").unwrap();
+            }
         }
 
         // Remaining String fields with no declared default still get a real
