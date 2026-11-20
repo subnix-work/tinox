@@ -46,10 +46,10 @@ fn postgres_statement_errors_are_catchable_and_preserve_transaction_outcomes() {
             project.0.join(format!("src/{name}.tnx"))).unwrap();
     }
     fs::write(project.0.join("tinox.toml"), format!(
-        "[package]\ncompiler = \"2.9.7\"\nname=\"db_errors\"\nversion=\"0.0.0\"\n\
+        "[package]\ncompiler = \"2.9.8\"\nname=\"db_errors\"\nversion=\"0.0.0\"\n\
         [database]\ndriver=\"postgres\"\nurl=\"{}\"\npool=1\n\
         [analysis]\nlevel=\"off\"\n\
-        [[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"db\"\nversion=\"1.2.10\"\n\
+        [[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"db\"\nversion=\"1.2.11\"\n\
         [[overrides]]\ngroup=\"tinox.core\"\nartifactId=\"db\"\npath=\"{}\"\n",
         pg.url(), repo_root().join("crates/tinox-core-ext/db").display())).unwrap();
     for args in [&["install"][..], &["build", "src/Main.tnx", "-o", "app"][..]] {

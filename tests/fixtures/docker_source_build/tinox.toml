@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.7"
+compiler = "2.9.8"
 name = "notes"
 version = "0.1.0"
 description = "source-build acceptance fixture"

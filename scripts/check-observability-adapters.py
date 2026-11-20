@@ -49,7 +49,7 @@ class EchoEndpoint
 }
 """
 TOML = """[package]
-compiler = "2.9.7"
+compiler = "2.9.8"
 name = "wsobs"
 version = "0.1.0"
 description = ""

@@ -4,6 +4,22 @@ All notable changes to Tinox are documented in this file.
 
 ## [Unreleased]
 
+## [2.9.8] - 2026-11-21
+
+**Notable change:** every package is republished for compiler 2.9.8 (patch version bump; a package declaring `compiler = "2.9.7"` is rejected by 2.9.8). **Existing projects need attention:** complexity limits are now enforced by default (see Added), so a project with very long or deeply nested functions fails to build until it is split up, annotated with `@AllowComplexity`, or set to `level = "warn"`.
+
+### Added
+
+- Compiler complexity analysis (#698): `[analysis]` in `tinox.toml` sets `max_cyclomatic` (15), `max_nesting` (4), `max_function_lines` (80), `max_params` (7) and `level` (`error` | `warn` | `off`; the default is `error`). A function or method over a limit fails `tinox build`/`run`/`check` with a `TINOX-COMPLEXITY` diagnostic. `@AllowComplexity("reason")` exempts one method or a whole class; `extern fn` declarations are never measured. Only the project's own sources are measured (not installed dependencies); an unknown key or an invalid value in `[analysis]` is a hard error. Reference: `docs/code-analysis.md`.
+
+### Changed
+
+- 37 functions across 13 stdlib packages (`amqp091`, `amqp10`, `hpack`, `http_server`, `http2_server`, `msgpack`, `oidc`, `redis`, `rest`, `websocket`, `yaml` and the core tier: `Uri`, `Cron`, `Multipart`, `Http1Stream`) were split into smaller helpers to meet the new limits. Behavior is unchanged: protocol codecs were compared against the previous sources with differential tests, and the e2e/conformance suites pass. `Cookie.validate()` is new (the validation that `toHeaderValue()` runs).
+
+### Known issues
+
+- `Uri.parse("http://host?query")` (a query directly after the host without a path or fragment) aborts with a `substring` range error, and `YamlParser` treats `1e` as a float and then aborts converting it. Both pre-date this release and were deliberately left unchanged by the refactoring.
+
 ## [2.9.7] - 2026-11-19
 
 **Notable change:** every package is republished for compiler 2.9.7 (patch version bump; a package declaring `compiler = "2.9.6"` is rejected by 2.9.7).

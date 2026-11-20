@@ -1,5 +1,5 @@
 [package]
-compiler = "2.9.7"
+compiler = "2.9.8"
 name = "websocket-fuzz-driver"
 version = "0.1.0"
 description = "Local-only manifest so WsDriver.tnx can pull in the real tinox.core.websocket module as a dependency."
