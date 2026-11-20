@@ -17,19 +17,47 @@ namespace tinox.core.hpack
          */
         fn staticName(index: Int64) -> String
         {
-            if (index == 1)  { return ":authority" }
-            if (index == 2)  { return ":method" }
-            if (index == 3)  { return ":method" }
-            if (index == 4)  { return ":path" }
-            if (index == 5)  { return ":path" }
-            if (index == 6)  { return ":scheme" }
-            if (index == 7)  { return ":scheme" }
-            if (index == 8)  { return ":status" }
-            if (index == 9)  { return ":status" }
+            if (index <= 13)
+            {
+                return Hpack::staticName0(index)
+            }
+            if (index <= 26)
+            {
+                return Hpack::staticName1(index)
+            }
+            if (index <= 39)
+            {
+                return Hpack::staticName2(index)
+            }
+            if (index <= 52)
+            {
+                return Hpack::staticName3(index)
+            }
+            return Hpack::staticName4(index)
+        }
+
+        // Static table entries 1-13 (RFC 7541 Appendix A); "" for any other index.
+        fnc staticName0(index: Int64) -> String
+        {
+            if (index == 1) { return ":authority" }
+            if (index == 2) { return ":method" }
+            if (index == 3) { return ":method" }
+            if (index == 4) { return ":path" }
+            if (index == 5) { return ":path" }
+            if (index == 6) { return ":scheme" }
+            if (index == 7) { return ":scheme" }
+            if (index == 8) { return ":status" }
+            if (index == 9) { return ":status" }
             if (index == 10) { return ":status" }
             if (index == 11) { return ":status" }
             if (index == 12) { return ":status" }
             if (index == 13) { return ":status" }
+            return ""
+        }
+
+        // Static table entries 14-26 (RFC 7541 Appendix A); "" for any other index.
+        fnc staticName1(index: Int64) -> String
+        {
             if (index == 14) { return ":status" }
             if (index == 15) { return "accept-charset" }
             if (index == 16) { return "accept-encoding" }
@@ -43,6 +71,12 @@ namespace tinox.core.hpack
             if (index == 24) { return "cache-control" }
             if (index == 25) { return "content-disposition" }
             if (index == 26) { return "content-encoding" }
+            return ""
+        }
+
+        // Static table entries 27-39 (RFC 7541 Appendix A); "" for any other index.
+        fnc staticName2(index: Int64) -> String
+        {
             if (index == 27) { return "content-language" }
             if (index == 28) { return "content-length" }
             if (index == 29) { return "content-location" }
@@ -56,6 +90,12 @@ namespace tinox.core.hpack
             if (index == 37) { return "from" }
             if (index == 38) { return "host" }
             if (index == 39) { return "if-match" }
+            return ""
+        }
+
+        // Static table entries 40-52 (RFC 7541 Appendix A); "" for any other index.
+        fnc staticName3(index: Int64) -> String
+        {
             if (index == 40) { return "if-modified-since" }
             if (index == 41) { return "if-none-match" }
             if (index == 42) { return "if-range" }
@@ -69,6 +109,12 @@ namespace tinox.core.hpack
             if (index == 50) { return "range" }
             if (index == 51) { return "referer" }
             if (index == 52) { return "refresh" }
+            return ""
+        }
+
+        // Static table entries 53-61 (RFC 7541 Appendix A); "" for any other index.
+        fnc staticName4(index: Int64) -> String
+        {
             if (index == 53) { return "retry-after" }
             if (index == 54) { return "server" }
             if (index == 55) { return "set-cookie" }
@@ -325,19 +371,9 @@ namespace tinox.core.hpack
                 else if ((b & 64) != 0)
                 {
                     // §6.2.1 Literal with incremental indexing
-                    const nameResult: HpackIntResult = Hpack::decodeIntChecked(data, offset, 6)
-                    offset = nameResult.nextOffset
-                    var name: String = ""
-                    if (nameResult.value == 0)
-                    {
-                        const nameStr: HpackStrResult = Hpack::decodeStr(data, offset)
-                        name = nameStr.value
-                        offset = nameStr.nextOffset
-                    }
-                    else
-                    {
-                        name = Hpack::lookupHeader(dynTable, nameResult.value).name
-                    }
+                    const nameRead: HpackStrResult = Hpack::readLiteralName(data, offset, 6, dynTable)
+                    const name: String = nameRead.value
+                    offset = nameRead.nextOffset
                     const valStr: HpackStrResult = Hpack::decodeStr(data, offset)
                     offset = valStr.nextOffset
                     const header: HpackHeader = HpackHeader::new(name, valStr.value)
@@ -363,25 +399,28 @@ namespace tinox.core.hpack
                 else
                 {
                     // §6.2.2 / §6.2.3 Literal without indexing / never indexed
-                    const nameResult: HpackIntResult = Hpack::decodeIntChecked(data, offset, 4)
-                    offset = nameResult.nextOffset
-                    var name: String = ""
-                    if (nameResult.value == 0)
-                    {
-                        const nameStr: HpackStrResult = Hpack::decodeStr(data, offset)
-                        name = nameStr.value
-                        offset = nameStr.nextOffset
-                    }
-                    else
-                    {
-                        name = Hpack::lookupHeader(dynTable, nameResult.value).name
-                    }
+                    const nameRead: HpackStrResult = Hpack::readLiteralName(data, offset, 4, dynTable)
+                    const name: String = nameRead.value
+                    offset = nameRead.nextOffset
                     const valStr: HpackStrResult = Hpack::decodeStr(data, offset)
                     offset = valStr.nextOffset
                     headers.push(HpackHeader::new(name, valStr.value))
                 }
             }
             return headers
+        }
+
+        // Name part of a literal header field: an index into the tables (prefix integer != 0) or a
+        // literal string. `nextOffset` of the result points at the value string.
+        fnc readLiteralName(data: List<Int64>, offset: Int64, prefixBits: Int64, dynTable: HpackDynTable) -> HpackStrResult
+        {
+            const nameResult: HpackIntResult = Hpack::decodeIntChecked(data, offset, prefixBits)
+            if (nameResult.value == 0)
+            {
+                return Hpack::decodeStr(data, nameResult.nextOffset)
+            }
+            const name: String = Hpack::lookupHeader(dynTable, nameResult.value).name
+            return HpackStrResult { value: name, nextOffset: nameResult.nextOffset }
         }
 
         /**

@@ -224,7 +224,34 @@ namespace tinox.core.msgpack
             {
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
             }
+            if (tag <= 0xbf || tag >= 0xe0)
+            {
+                return Msgpack::decodeFixTag(reader, tag)
+            }
+            if (tag <= 0xcb)
+            {
+                return Msgpack::decodeScalarTag(reader, tag)
+            }
+            if (tag <= 0xd3)
+            {
+                return Msgpack::decodeIntTag(reader, tag)
+            }
+            return Msgpack::decodeSizedTag(reader, tag)
+        }
 
+        // 0xc1 (never used), bin8/16/32 (0xc4-0xc6), ext8/16/32 (0xc7-0xc9), fixext1/2/4/8/16
+        // (0xd4-0xd8): not supported in v1 -- fail the decode rather than silently misreading the
+        // following bytes as something else.
+        fn unsupportedTag(reader: MsgpackReader) -> MsgpackValue
+        {
+            reader.failed = true
+            return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+        }
+
+        // Tags that carry their value or length in the tag byte itself: positive/negative fixint,
+        // fixmap, fixarray, fixstr.
+        fn decodeFixTag(reader: MsgpackReader, tag: Int64) -> MsgpackValue
+        {
             if (tag <= 0x7f)
             {
                 return MsgpackValue { kind: "int", stringValue: "", intValue: tag, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
@@ -245,6 +272,12 @@ namespace tinox.core.msgpack
             {
                 return Msgpack::decodeString(reader, tag & 0x1f)
             }
+            return Msgpack::unsupportedTag(reader)
+        }
+
+        // nil, false, true, float32, float64 (0xc0-0xcb).
+        fn decodeScalarTag(reader: MsgpackReader, tag: Int64) -> MsgpackValue
+        {
             if (tag == 0xc0)
             {
                 return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
@@ -269,6 +302,12 @@ namespace tinox.core.msgpack
                 if (reader.failed) { return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() } }
                 return MsgpackValue { kind: "float", stringValue: "", intValue: 0, floatValue: msgpackBitsToFloat64(bits), boolValue: false, arrayValue: [], objectValue: Map::new() }
             }
+            return Msgpack::unsupportedTag(reader)
+        }
+
+        // uint8/16/32/64 and int8/16/32/64 (0xcc-0xd3).
+        fn decodeIntTag(reader: MsgpackReader, tag: Int64) -> MsgpackValue
+        {
             if (tag == 0xcc) { return Msgpack::intResult(reader, reader.readBE(1)) }
             if (tag == 0xcd) { return Msgpack::intResult(reader, reader.readBE(2)) }
             if (tag == 0xce) { return Msgpack::intResult(reader, reader.readBE(4)) }
@@ -277,6 +316,12 @@ namespace tinox.core.msgpack
             if (tag == 0xd1) { return Msgpack::intResult(reader, Msgpack::signExtend(reader.readBE(2), 2)) }
             if (tag == 0xd2) { return Msgpack::intResult(reader, Msgpack::signExtend(reader.readBE(4), 4)) }
             if (tag == 0xd3) { return Msgpack::intResult(reader, reader.readBE(8)) }
+            return Msgpack::unsupportedTag(reader)
+        }
+
+        // str8/16/32, array16/32, map16/32 (0xd9-0xdf); anything else is unsupported.
+        fn decodeSizedTag(reader: MsgpackReader, tag: Int64) -> MsgpackValue
+        {
             if (tag == 0xd9) { return Msgpack::decodeString(reader, reader.readBE(1)) }
             if (tag == 0xda) { return Msgpack::decodeString(reader, reader.readBE(2)) }
             if (tag == 0xdb) { return Msgpack::decodeString(reader, reader.readBE(4)) }
@@ -284,13 +329,7 @@ namespace tinox.core.msgpack
             if (tag == 0xdd) { return Msgpack::decodeArray(reader, reader.readBE(4)) }
             if (tag == 0xde) { return Msgpack::decodeMap(reader, reader.readBE(2)) }
             if (tag == 0xdf) { return Msgpack::decodeMap(reader, reader.readBE(4)) }
-
-            // 0xc1 (never used), bin8/16/32 (0xc4-0xc6), ext8/16/32
-            // (0xc7-0xc9), fixext1/2/4/8/16 (0xd4-0xd8): not supported in
-            // v1 -- fail the decode rather than silently misreading the
-            // following bytes as something else.
-            reader.failed = true
-            return MsgpackValue { kind: "null", stringValue: "", intValue: 0, floatValue: 0.0, boolValue: false, arrayValue: [], objectValue: Map::new() }
+            return Msgpack::unsupportedTag(reader)
         }
 
         fn intResult(reader: MsgpackReader, v: Int64) -> MsgpackValue

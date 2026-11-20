@@ -31,7 +31,8 @@ level = "error"            # default; "error" | "warn" | "off"
 | function lines | from the declaration's first line to the closing brace |
 | parameters | declared parameters |
 
-Lambdas count towards their enclosing function. Compiler-synthesized helper classes
+Lambdas count towards their enclosing function. `extern fn` declarations are never measured
+(no body; the parameter list is dictated by the C ABI). Compiler-synthesized helper classes
 (`__Enum_*`) are skipped.
 
 Function length is approximate: spans carry only a start position, so the length runs to the
