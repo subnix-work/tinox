@@ -11,6 +11,16 @@
       ]
     },
     {
+      "description": "Exempts the method (or every method of the class) from the [analysis] complexity limits in tinox.toml. Optional string argument: the reason",
+      "max_args": 1,
+      "min_args": 0,
+      "name": "AllowComplexity",
+      "targets": [
+        "Method",
+        "Class"
+      ]
+    },
+    {
       "description": "@Amqp091Consumer(host, port, vhost, user, pass, queue) — marks a class as an auto-run AMQP-0-9-1 receiver; the compiler generates a connect/open/qos/consume/nextMessage/ack loop as `main` that calls the class's @OnMessage method for each delivered message. Only valid when the file defines no `main` and has exactly one @Amqp091Consumer class.",
       "max_args": 6,
       "min_args": 6,
