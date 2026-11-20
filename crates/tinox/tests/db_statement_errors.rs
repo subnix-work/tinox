@@ -48,6 +48,7 @@ fn postgres_statement_errors_are_catchable_and_preserve_transaction_outcomes() {
     fs::write(project.0.join("tinox.toml"), format!(
         "[package]\ncompiler = \"2.9.7\"\nname=\"db_errors\"\nversion=\"0.0.0\"\n\
         [database]\ndriver=\"postgres\"\nurl=\"{}\"\npool=1\n\
+        [analysis]\nlevel=\"off\"\n\
         [[dependencies]]\ngroup=\"tinox.core\"\nartifactId=\"db\"\nversion=\"1.2.10\"\n\
         [[overrides]]\ngroup=\"tinox.core\"\nartifactId=\"db\"\npath=\"{}\"\n",
         pg.url(), repo_root().join("crates/tinox-core-ext/db").display())).unwrap();
