@@ -15,6 +15,15 @@ namespace tinox.core.rest.client
          */
         fn fromCode(code: Int64) -> HttpStatus
         {
+            if (code < 400)
+            {
+                return HttpStatusHelper::fromCodeBelow400(code)
+            }
+            return HttpStatusHelper::fromCodeFrom400(code)
+        }
+
+        fnc fromCodeBelow400(code: Int64) -> HttpStatus
+        {
             match code
             {
                 100 => return HttpStatus::Continue
@@ -26,6 +35,14 @@ namespace tinox.core.rest.client
                 301 => return HttpStatus::MovedPermanently
                 302 => return HttpStatus::Found
                 304 => return HttpStatus::NotModified
+            }
+            return HttpStatus::NotFound
+        }
+
+        fnc fromCodeFrom400(code: Int64) -> HttpStatus
+        {
+            match code
+            {
                 400 => return HttpStatus::BadRequest
                 401 => return HttpStatus::Unauthorized
                 403 => return HttpStatus::Forbidden
@@ -50,6 +67,16 @@ namespace tinox.core.rest.client
          */
         fn toCode(status: HttpStatus) -> Int64
         {
+            let low = HttpStatusHelper::toCodeBelow400(status)
+            if (low != 0)
+            {
+                return low
+            }
+            return HttpStatusHelper::toCodeFrom400(status)
+        }
+
+        fnc toCodeBelow400(status: HttpStatus) -> Int64
+        {
             match status
             {
                 Continue => return 100
@@ -61,6 +88,15 @@ namespace tinox.core.rest.client
                 MovedPermanently => return 301
                 Found => return 302
                 NotModified => return 304
+                _ => return 0
+            }
+            return 0
+        }
+
+        fnc toCodeFrom400(status: HttpStatus) -> Int64
+        {
+            match status
+            {
                 BadRequest => return 400
                 Unauthorized => return 401
                 Forbidden => return 403
@@ -73,7 +109,9 @@ namespace tinox.core.rest.client
                 BadGateway => return 502
                 ServiceUnavailable => return 503
                 GatewayTimeout => return 504
+                _ => return 0
             }
+            return 0
         }
 
         /**
