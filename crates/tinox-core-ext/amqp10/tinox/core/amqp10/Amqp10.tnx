@@ -290,67 +290,35 @@ namespace tinox.core.amqp10
             return bytes
         }
 
-        /*
-         * SASL negotiation: receive sasl-mechanisms (0x40) -> pick the
-         * strongest shared mechanism -> run the handshake for THAT
-         * mechanism. Runs AFTER the SASL protocol header
-         * (sendSaslProtocolHeader + checkProtocolHeaderEcho) on the SAME
-         * connection on which the AMQP header + `open` follow afterward.
-         *
-         * Issue 77: SCRAM-SHA-256 is preferred (real challenge-response
-         * authentication with mutual verification) over PLAIN (the
-         * password goes over the connection in plaintext — protected
-         * only by TLS if amqps:// is used). Falling back to PLAIN still
-         * works if the broker doesn't offer SCRAM-SHA-256 — no API
-         * break for existing PLAIN-only brokers/tests.
-         */
-        fn negotiateSasl(conn: Int64, user: String, pass: String) -> Amqp10SaslResult
+        // True when the sasl-server-mechanisms value (sasl-mechanisms field 0) lists `name`.
+        // The spec says it is always a symbol array (ListVal is the generic return type of
+        // Amqp10Reader::readArray); the bare SymbolVal branch is pure defense against
+        // non-conforming brokers.
+        fnc offersMechanism(offered: Amqp10Value, name: String) -> Bool
         {
-            // --- receive sasl-mechanisms ---
-            const f1 = Amqp10::readFrame(conn)
-            if (f1.frameType != 1) {
-                return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1), got frameType=" + f1.frameType.toString() }
-            }
-            const p1 = Amqp10::decodePerformative(f1.body)
-            if (p1.descriptor != 0x40) {
-                return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-mechanisms (0x40), got descriptor=" + p1.descriptor.toString() }
-            }
-            if (p1.fields.len() < 1) {
-                return Amqp10SaslResult { ok: false, errorMessage: "sasl-mechanisms with no mechanisms field" }
-            }
-            var hasPlain: Bool = false
-            var hasScram: Bool = false
-            match p1.fields[0]
+            match offered
             {
-                // sasl-server-mechanisms is always a symbol array per
-                // spec (even with exactly one mechanism) — ListVal is
-                // the generic return type of Amqp10Reader::readArray.
-                // The SymbolVal branch is pure defense against
-                // non-conforming brokers, not spec-required.
                 ListVal(mechs) => {
                     for i in 0..mechs.len() {
                         match mechs[i] {
                             SymbolVal(s) => {
-                                if (s == "PLAIN") { hasPlain = true }
-                                if (s == "SCRAM-SHA-256") { hasScram = true }
+                                if (s == name) { return true }
                             }
                             _ => {}
                         }
                     }
                 }
                 SymbolVal(s) => {
-                    if (s == "PLAIN") { hasPlain = true }
-                    if (s == "SCRAM-SHA-256") { hasScram = true }
+                    if (s == name) { return true }
                 }
                 _ => {}
             }
-            if (hasScram) {
-                return Amqp10::negotiateSaslScram(conn, user, pass)
-            }
-            if (!hasPlain) {
-                return Amqp10SaslResult { ok: false, errorMessage: "broker offers neither SCRAM-SHA-256 nor PLAIN" }
-            }
+            return false
+        }
 
+        // SASL PLAIN: sasl-init, then the sasl-outcome.
+        fnc plainExchange(conn: Int64, user: String, pass: String) -> Amqp10SaslResult
+        {
             // --- send sasl-init: mechanism, initial-response, hostname(null) ---
             var initFields: List<Amqp10Value> = [
                 Amqp10Value::SymbolVal("PLAIN"),
@@ -382,6 +350,44 @@ namespace tinox.core.amqp10
                 return Amqp10SaslResult { ok: false, errorMessage: "SASL auth failed, sasl-outcome-code=" + code.toString() }
             }
             return Amqp10SaslResult { ok: true, errorMessage: "" }
+        }
+
+        /*
+         * SASL negotiation: receive sasl-mechanisms (0x40) -> pick the
+         * strongest shared mechanism -> run the handshake for THAT
+         * mechanism. Runs AFTER the SASL protocol header
+         * (sendSaslProtocolHeader + checkProtocolHeaderEcho) on the SAME
+         * connection on which the AMQP header + `open` follow afterward.
+         *
+         * Issue 77: SCRAM-SHA-256 is preferred (real challenge-response
+         * authentication with mutual verification) over PLAIN (the
+         * password goes over the connection in plaintext — protected
+         * only by TLS if amqps:// is used). Falling back to PLAIN still
+         * works if the broker doesn't offer SCRAM-SHA-256 — no API
+         * break for existing PLAIN-only brokers/tests.
+         */
+        fn negotiateSasl(conn: Int64, user: String, pass: String) -> Amqp10SaslResult
+        {
+            // --- receive sasl-mechanisms ---
+            const f1 = Amqp10::readFrame(conn)
+            if (f1.frameType != 1) {
+                return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1), got frameType=" + f1.frameType.toString() }
+            }
+            const p1 = Amqp10::decodePerformative(f1.body)
+            if (p1.descriptor != 0x40) {
+                return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-mechanisms (0x40), got descriptor=" + p1.descriptor.toString() }
+            }
+            if (p1.fields.len() < 1) {
+                return Amqp10SaslResult { ok: false, errorMessage: "sasl-mechanisms with no mechanisms field" }
+            }
+            if (Amqp10::offersMechanism(p1.fields[0], "SCRAM-SHA-256")) {
+                return Amqp10::negotiateSaslScram(conn, user, pass)
+            }
+            if (!Amqp10::offersMechanism(p1.fields[0], "PLAIN")) {
+                return Amqp10SaslResult { ok: false, errorMessage: "broker offers neither SCRAM-SHA-256 nor PLAIN" }
+            }
+
+            return Amqp10::plainExchange(conn, user, pass)
         }
 
         /*
@@ -501,17 +507,45 @@ namespace tinox.core.amqp10
             const initBody = Amqp10::encodePerformative(0x41, initFields)
             Amqp10::writeFrame(conn, 1, 0, initBody)
 
-            // --- receive sasl-challenge (server-first-message) ---
+            // The stage helpers return an error text ("" = ok) and leave their results in these
+            // holders: texts [serverFirstMessage, clientFinalMessage], bytes [expectedServerSignature].
+            const texts: List<String> = []
+            const bytes: List<List<Int64>> = []
+
+            var problem: String = Amqp10::scramReadChallenge(conn, texts)
+            if (problem != "") {
+                return Amqp10SaslResult { ok: false, errorMessage: problem }
+            }
+            problem = Amqp10::scramBuildProof(clientNonce, clientFirstMessageBare, pass, texts, bytes)
+            if (problem != "") {
+                return Amqp10SaslResult { ok: false, errorMessage: problem }
+            }
+
+            // --- send sasl-response ---
+            var respFields: List<Amqp10Value> = [Amqp10Value::BinaryVal(Amqp10::stringToBytes(texts[1]))]
+            const respBody = Amqp10::encodePerformative(0x43, respFields)
+            Amqp10::writeFrame(conn, 1, 0, respBody)
+
+            problem = Amqp10::scramVerifyOutcome(conn, bytes[0])
+            if (problem != "") {
+                return Amqp10SaslResult { ok: false, errorMessage: problem }
+            }
+            return Amqp10SaslResult { ok: true, errorMessage: "" }
+        }
+
+        // --- receive sasl-challenge (server-first-message); stores it in texts[0] ---
+        fnc scramReadChallenge(conn: Int64, texts: List<String>) -> String
+        {
             const f2 = Amqp10::readFrame(conn)
             if (f2.frameType != 1) {
-                return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1) for SCRAM challenge, got frameType=" + f2.frameType.toString() }
+                return "expected SASL frame (type=1) for SCRAM challenge, got frameType=" + f2.frameType.toString()
             }
             const p2 = Amqp10::decodePerformative(f2.body)
             if (p2.descriptor != 0x42) {
-                return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-challenge (0x42), got descriptor=" + p2.descriptor.toString() }
+                return "expected sasl-challenge (0x42), got descriptor=" + p2.descriptor.toString()
             }
             if (p2.fields.len() < 1) {
-                return Amqp10SaslResult { ok: false, errorMessage: "sasl-challenge with no challenge field" }
+                return "sasl-challenge with no challenge field"
             }
             var serverFirstMessage: String = ""
             match p2.fields[0] {
@@ -519,9 +553,18 @@ namespace tinox.core.amqp10
                 _ => {}
             }
             if (serverFirstMessage.len() == 0) {
-                return Amqp10SaslResult { ok: false, errorMessage: "sasl-challenge with an empty/invalid challenge field" }
+                return "sasl-challenge with an empty/invalid challenge field"
             }
+            texts.push(serverFirstMessage)
+            return ""
+        }
 
+        // Validates the server-first-message in texts[0] and derives the client proof. Pushes the
+        // client-final-message onto `texts` and the expected server signature onto `bytes`.
+        fnc scramBuildProof(clientNonce: String, clientFirstMessageBare: String, pass: String, texts: List<String>, bytes: List<List<Int64>>) -> String
+        {
+            const gs2Header = "n,,"
+            const serverFirstMessage: String = texts[0]
             // --- parse the server-first-message ---
             const parts = serverFirstMessage.split(",")
             var combinedNonce: String = ""
@@ -540,10 +583,10 @@ namespace tinox.core.amqp10
                 }
             }
             if (!combinedNonce.startsWith(clientNonce)) {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: broker nonce doesn't start with the client nonce (possible downgrade attack)" }
+                return "SCRAM: broker nonce doesn't start with the client nonce (possible downgrade attack)"
             }
             if (saltB64.len() == 0 || iterations <= 0) {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-first-message with no valid salt/iterations field" }
+                return "SCRAM: server-first-message with no valid salt/iterations field"
             }
             // Bug 87: `iterations` is broker-controlled and fed straight into
             // an O(iterations) PBKDF2-HMAC loop below. A malicious/compromised
@@ -552,7 +595,7 @@ namespace tinox.core.amqp10
             // with an absurd `i=` value. 200000 is well above real-world
             // broker defaults (typically 4096-100000) but caps the worst case.
             if (iterations > 200000) {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: iteration count " + iterations.toString() + " exceeds safety cap (200000)" }
+                return "SCRAM: iteration count " + iterations.toString() + " exceeds safety cap (200000)"
             }
 
             // --- SaltedPassword / ClientKey / StoredKey ---
@@ -567,33 +610,46 @@ namespace tinox.core.amqp10
             const authMessage = clientFirstMessageBare + "," + serverFirstMessage + "," + clientFinalMessageWithoutProof
             const clientSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), storedKey)
             const clientProof = Amqp10::xorBytes(clientKey, clientSignature)
-            const clientFinalMessage = clientFinalMessageWithoutProof + ",p=" + Base64::encodeBytes(clientProof)
+            texts.push(clientFinalMessageWithoutProof + ",p=" + Base64::encodeBytes(clientProof))
 
-            // --- send sasl-response ---
-            var respFields: List<Amqp10Value> = [Amqp10Value::BinaryVal(Amqp10::stringToBytes(clientFinalMessage))]
-            const respBody = Amqp10::encodePerformative(0x43, respFields)
-            Amqp10::writeFrame(conn, 1, 0, respBody)
+            // The signature the server must prove (mutual authentication) in its final message.
+            const serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword)
+            bytes.push(hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey))
+            return ""
+        }
 
-            // --- receive sasl-outcome (additional-data = server-final-message) ---
+        // Byte-wise equality (full scan, no early exit).
+        fnc sameBytes(a: List<Int64>, b: List<Int64>) -> Bool
+        {
+            var same: Bool = a.len() == b.len()
+            if (same) {
+                for i in 0..b.len() {
+                    if (a[i] != b[i]) { same = false }
+                }
+            }
+            return same
+        }
+
+        // --- receive sasl-outcome (additional-data = server-final-message) and verify the server
+        // signature (mutual authentication, not just client -> server) -- no silent trust ---
+        fnc scramVerifyOutcome(conn: Int64, expectedServerSignature: List<Int64>) -> String
+        {
             const f3 = Amqp10::readFrame(conn)
             if (f3.frameType != 1) {
-                return Amqp10SaslResult { ok: false, errorMessage: "expected SASL frame (type=1) for SCRAM outcome, got frameType=" + f3.frameType.toString() }
+                return "expected SASL frame (type=1) for SCRAM outcome, got frameType=" + f3.frameType.toString()
             }
             const p3 = Amqp10::decodePerformative(f3.body)
             if (p3.descriptor != 0x44) {
-                return Amqp10SaslResult { ok: false, errorMessage: "expected sasl-outcome (0x44), got descriptor=" + p3.descriptor.toString() }
+                return "expected sasl-outcome (0x44), got descriptor=" + p3.descriptor.toString()
             }
             if (p3.fields.len() < 1) {
-                return Amqp10SaslResult { ok: false, errorMessage: "sasl-outcome with no code field" }
+                return "sasl-outcome with no code field"
             }
             var code: Int64 = -1
             match p3.fields[0] { UByteVal(n) => { code = n } _ => {} }
             if (code != 0) {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM auth failed, sasl-outcome-code=" + code.toString() }
+                return "SCRAM auth failed, sasl-outcome-code=" + code.toString()
             }
-
-            // --- verify the server signature (mutual authentication,
-            // not just client -> server) — no silent trust ---
             var serverFinalMessage: String = ""
             if (p3.fields.len() > 1) {
                 match p3.fields[1] {
@@ -602,26 +658,17 @@ namespace tinox.core.amqp10
                 }
             }
             if (serverFinalMessage.len() == 0) {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: sasl-outcome with no additional-data (server-final-message) — server identity not verifiable" }
+                return "SCRAM: sasl-outcome with no additional-data (server-final-message) — server identity not verifiable"
             }
             if (!serverFinalMessage.startsWith("v=")) {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server-final-message with no 'v=' field" }
+                return "SCRAM: server-final-message with no 'v=' field"
             }
             const serverSignatureB64 = serverFinalMessage.substring(2, serverFinalMessage.len())
             const receivedServerSignature = Base64::decodeBytes(serverSignatureB64)
-            const serverKey = hmacSha256Bytes(Amqp10::stringToBytes("Server Key"), saltedPassword)
-            const expectedServerSignature = hmacSha256Bytes(Amqp10::stringToBytes(authMessage), serverKey)
-            var sigMatch: Bool = receivedServerSignature.len() == expectedServerSignature.len()
-            if (sigMatch) {
-                for i in 0..expectedServerSignature.len() {
-                    if (receivedServerSignature[i] != expectedServerSignature[i]) { sigMatch = false }
-                }
+            if (!Amqp10::sameBytes(receivedServerSignature, expectedServerSignature)) {
+                return "SCRAM: server signature mismatch — server identity NOT verified (possible MITM)"
             }
-            if (!sigMatch) {
-                return Amqp10SaslResult { ok: false, errorMessage: "SCRAM: server signature mismatch — server identity NOT verified (possible MITM)" }
-            }
-
-            return Amqp10SaslResult { ok: true, errorMessage: "" }
+            return ""
         }
     }
 }

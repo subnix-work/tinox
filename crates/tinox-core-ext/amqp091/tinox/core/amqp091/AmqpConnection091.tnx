@@ -158,6 +158,13 @@ namespace tinox.core.amqp091
             const serverFrameMax = tuneArgs.long()
             const serverHeartbeat = tuneArgs.short()
 
+            return AmqpConnection091::completeOpen(conn, vhost, serverChannelMax, serverFrameMax, serverHeartbeat)
+        }
+
+        // Second half of the handshake, after connection.tune: answers with tune-ok, opens the
+        // virtual host, waits for open-ok and starts the dispatcher.
+        fnc completeOpen(conn: Int64, vhost: String, serverChannelMax: Int64, serverFrameMax: Int64, serverHeartbeat: Int64) -> AmqpConnection091
+        {
             // --- connection.tune-ok ---
             var negotiatedFrameMax: Int64 = 131072
             if (serverFrameMax > 0) {
