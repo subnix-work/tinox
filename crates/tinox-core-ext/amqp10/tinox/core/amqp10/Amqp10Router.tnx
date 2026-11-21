@@ -135,6 +135,28 @@ namespace tinox.core.amqp10
                 }
                 return false
             }
+            const s: Int64 = this.findSession(p, f)
+            if (s < 0) {
+                this.unroutable = this.unroutable + 1
+                return true
+            }
+            this.updateSessionState(p, s)
+            if (p.descriptor == 0x12 && p.fields.len() > 1) {
+                this.routeAttach(p, f, s)
+                return true
+            }
+            if (this.routeLinkFrame(p, f, s)) {
+                return true
+            }
+            this.sessionInboxes[s].post(f)
+            return true
+        }
+
+        // Index of the session a frame belongs to, -1 when none. A `begin` (0x11) is matched by the
+        // remote-channel it answers and records the peer's channel; every other frame is matched by
+        // its channel.
+        fn findSession(p: Amqp10Performative, f: Amqp10Frame) -> Int64
+        {
             var s: Int64 = -1
             if (p.descriptor == 0x11) {
                 var ours: Int64 = -1
@@ -154,10 +176,12 @@ namespace tinox.core.amqp10
                     }
                 }
             }
-            if (s < 0) {
-                this.unroutable = this.unroutable + 1
-                return true
-            }
+            return s
+        }
+
+        // Session-level bookkeeping from begin / transfer / flow performatives.
+        fn updateSessionState(p: Amqp10Performative, s: Int64) -> Nothing
+        {
             if (p.descriptor == 0x11 && p.fields.len() > 2) {
                 // the peer's initial incoming-window; our next-outgoing-id was 0 when we sent begin
                 const w = Amqp10Router::uint(p.fields[2])
@@ -178,60 +202,69 @@ namespace tinox.core.amqp10
                     this.sessionInboxes[s].windowSeq = this.sessionInboxes[s].windowSeq + 1
                 }
             }
-            if (p.descriptor == 0x12 && p.fields.len() > 1) {
-                const name = this.nameOf(p.fields[0])
-                for i in 0..this.linkNames.len() {
-                    if (this.linkSessions[i] == this.sessionChans[s] && this.linkNames[i] == name && this.linkRemote[i] < 0 && this.linkActive[i]) {
-                        this.linkRemote[i] = Amqp10Router::uint(p.fields[1])
-                        this.linkInboxes[i].post(f)
-                        return true
-                    }
+        }
+
+        // An `attach` answers one of our pending links: deliver it to that link's inbox.
+        fn routeAttach(p: Amqp10Performative, f: Amqp10Frame, s: Int64) -> Nothing
+        {
+            const name = this.nameOf(p.fields[0])
+            for i in 0..this.linkNames.len() {
+                if (this.linkSessions[i] == this.sessionChans[s] && this.linkNames[i] == name && this.linkRemote[i] < 0 && this.linkActive[i]) {
+                    this.linkRemote[i] = Amqp10Router::uint(p.fields[1])
+                    this.linkInboxes[i].post(f)
+                    return
                 }
-                this.unroutable = this.unroutable + 1
-                return true
             }
-            if (p.descriptor == 0x14 || p.descriptor == 0x16 || p.descriptor == 0x13) {
-                var handle: Int64 = -1
-                if (p.descriptor == 0x13) {
-                    if (p.fields.len() > 4) {
-                        handle = Amqp10Router::uint(p.fields[4])
-                    }
-                } else if (p.fields.len() > 0) {
-                    handle = Amqp10Router::uint(p.fields[0])
+            this.unroutable = this.unroutable + 1
+        }
+
+        // Routes a transfer / detach / flow frame to the link its handle names. Returns true when the
+        // frame was consumed; false when it should go to the session inbox instead.
+        fn routeLinkFrame(p: Amqp10Performative, f: Amqp10Frame, s: Int64) -> Bool
+        {
+            if (p.descriptor != 0x14 && p.descriptor != 0x16 && p.descriptor != 0x13) {
+                return false
+            }
+            var handle: Int64 = -1
+            if (p.descriptor == 0x13) {
+                if (p.fields.len() > 4) {
+                    handle = Amqp10Router::uint(p.fields[4])
                 }
-                if (handle >= 0) {
-                    var found: Bool = false
-                    for i in 0..this.linkRemote.len() {
-                        if (this.linkSessions[i] == this.sessionChans[s] && this.linkRemote[i] == handle && this.linkActive[i]) {
-                            found = true
-                            if (p.descriptor == 0x13) {
-                                const inbox = this.linkInboxes[i]
-                                if (p.fields.len() > 6) {
-                                    // credit edge = delivery-count + link-credit (mod 2^32); a flow
-                                    // lacking either carries no usable credit information
-                                    const dc = Amqp10Router::uint(p.fields[5])
-                                    const lc = Amqp10Router::uint(p.fields[6])
-                                    if (dc >= 0 && lc >= 0) {
-                                        inbox.flowCredit = (dc + lc) & 4294967295
-                                        inbox.flowSeq = inbox.flowSeq + 1
-                                    }
-                                }
-                            } else {
-                                this.linkInboxes[i].post(f)
-                            }
+            } else if (p.fields.len() > 0) {
+                handle = Amqp10Router::uint(p.fields[0])
+            }
+            if (handle >= 0) {
+                var found: Bool = false
+                for i in 0..this.linkRemote.len() {
+                    if (this.linkSessions[i] == this.sessionChans[s] && this.linkRemote[i] == handle && this.linkActive[i]) {
+                        found = true
+                        if (p.descriptor == 0x13) {
+                            Amqp10Router::applyFlowCredit(p, this.linkInboxes[i])
+                        } else {
+                            this.linkInboxes[i].post(f)
                         }
                     }
-                    if (!found) {
-                        this.unroutable = this.unroutable + 1
-                    }
-                    return true
                 }
-                if (p.descriptor == 0x13) {
-                    return true
+                if (!found) {
+                    this.unroutable = this.unroutable + 1
+                }
+                return true
+            }
+            return p.descriptor == 0x13
+        }
+
+        // credit edge = delivery-count + link-credit (mod 2^32); a flow lacking either carries no
+        // usable credit information
+        fnc applyFlowCredit(p: Amqp10Performative, inbox: Amqp10Inbox) -> Nothing
+        {
+            if (p.fields.len() > 6) {
+                const dc = Amqp10Router::uint(p.fields[5])
+                const lc = Amqp10Router::uint(p.fields[6])
+                if (dc >= 0 && lc >= 0) {
+                    inbox.flowCredit = (dc + lc) & 4294967295
+                    inbox.flowSeq = inbox.flowSeq + 1
                 }
             }
-            this.sessionInboxes[s].post(f)
-            return true
         }
 
         fn nameOf(v: Amqp10Value) -> String

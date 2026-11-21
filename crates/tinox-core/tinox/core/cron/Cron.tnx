@@ -252,40 +252,57 @@ namespace tinox.core.cron
             {
                 if (month[date[1]] == 1 && Cron::dayMatches(expr, dom, dow, date[2], (days + 4) % 7))
                 {
-                    var h: Int64 = 0
-                    while h < 24
+                    const found: Int64 = Cron::firstMinuteAfter(minute, hour, days, timestamp)
+                    if (found >= 0)
                     {
-                        if (hour[h] == 1)
-                        {
-                            var m: Int64 = 0
-                            while m < 60
-                            {
-                                const candidate: Int64 = days * 86400000 + h * 3600000 + m * 60000
-                                if (minute[m] == 1 && candidate > timestamp)
-                                {
-                                    return candidate
-                                }
-                                m = m + 1
-                            }
-                        }
-                        h = h + 1
+                        return found
                     }
                 }
                 days = days + 1
                 searched = searched + 1
-                date[2] = date[2] + 1
-                if (date[2] > Cron::monthDays(date[0], date[1]))
-                {
-                    date[2] = 1
-                    date[1] = date[1] + 1
-                    if (date[1] > 12)
-                    {
-                        date[1] = 1
-                        date[0] = date[0] + 1
-                    }
-                }
+                Cron::advanceDate(date)
             }
             throw CronError { message: "Cron: no future matching date in supported timestamp range" }
+        }
+
+        // First matching minute on day number `days` that lies strictly after `timestamp`, or -1.
+        fnc firstMinuteAfter(minute: List<Int64>, hour: List<Int64>, days: Int64, timestamp: Int64) -> Int64
+        {
+            var h: Int64 = 0
+            while h < 24
+            {
+                if (hour[h] == 1)
+                {
+                    var m: Int64 = 0
+                    while m < 60
+                    {
+                        const candidate: Int64 = days * 86400000 + h * 3600000 + m * 60000
+                        if (minute[m] == 1 && candidate > timestamp)
+                        {
+                            return candidate
+                        }
+                        m = m + 1
+                    }
+                }
+                h = h + 1
+            }
+            return -1
+        }
+
+        // Moves `date` ([year, month, day]) forward by one calendar day.
+        fnc advanceDate(date: List<Int64>)
+        {
+            date[2] = date[2] + 1
+            if (date[2] > Cron::monthDays(date[0], date[1]))
+            {
+                date[2] = 1
+                date[1] = date[1] + 1
+                if (date[1] > 12)
+                {
+                    date[1] = 1
+                    date[0] = date[0] + 1
+                }
+            }
         }
 
         // Legacy helper: wildcard keeps current; explicit fields advance strictly.

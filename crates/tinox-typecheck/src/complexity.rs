@@ -10,7 +10,8 @@
 //! - length: lines from the function's first to last line
 //! - parameter count
 //!
-//! `@AllowComplexity` on a method, function or class opts it out of every limit.
+//! `@AllowComplexity` on a method, function or class opts it out of every limit. `extern fn`
+//! declarations (no body, signature fixed by the C ABI) are never measured.
 
 use tinox_common::Span;
 use tinox_parser::{BinaryOp, Decl, DeclKind, Expr, ExprKind, Function, Method, Stmt, StmtKind};
@@ -341,7 +342,13 @@ fn check_method(class: &str, m: &Method, in_scope: &dyn Fn(&str) -> bool, l: &Li
 fn walk(decls: &[Decl], in_scope: &dyn Fn(&str) -> bool, l: &Limits, out: &mut Vec<Finding>) {
     for d in decls {
         match &d.node {
-            DeclKind::Function(f) => check_function(f, in_scope, l, out),
+            // `extern fn` is a top-level function with an empty body: its signature is dictated by
+            // the C ABI, so there is nothing to measure or split.
+            DeclKind::Function(f) => {
+                if !matches!(f.body.node, StmtKind::Empty) {
+                    check_function(f, in_scope, l, out);
+                }
+            }
             DeclKind::Class(c) => {
                 // Hidden helper classes the compiler synthesizes (`__Enum_*`) are not user code.
                 if c.name.starts_with("__") || allowed(&c.annotations) {
@@ -425,6 +432,12 @@ mod tests {
         assert_eq!(findings(&wrap("", ""), l).len(), 1);
         let l = Limits { max_function_lines: 2, ..Limits::default() };
         assert_eq!(findings(&wrap("println(\"a\")\nprintln(\"b\")", ""), l).len(), 1);
+    }
+
+    #[test]
+    fn extern_functions_are_not_measured() {
+        let l = Limits { max_params: 1, ..Limits::default() };
+        assert!(findings("extern fn cCall(a: Int64, b: Int64, c: Int64) -> Int64\n", l).is_empty());
     }
 
     #[test]

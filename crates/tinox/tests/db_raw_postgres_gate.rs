@@ -42,14 +42,14 @@ fn build_fixture(fixture_dir: &str, workdir_name: &str, database_toml: &str) -> 
         workdir.join("tinox.toml"),
         format!(
             r#"[package]
-compiler = "2.9.7"
+compiler = "2.9.8"
 name = "{workdir_name}"
 version = "0.1.0"
 {database_toml}
 [[dependencies]]
 group = "tinox.core"
 artifactId = "db"
-version = "1.2.10"
+version = "1.2.11"
 
 [[overrides]]
 group = "tinox.core"

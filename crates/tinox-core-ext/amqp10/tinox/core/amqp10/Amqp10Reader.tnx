@@ -143,59 +143,169 @@ namespace tinox.core.amqp10
             if (this.truncated) {
                 return Amqp10Value::ErrorVal("truncated: unexpected end of input")
             }
+            const nib: Int64 = code >> 4
+            if (nib <= 5) {
+                return this.readCodeLow(code, nib)
+            }
+            if (nib <= 8) {
+                return this.readCodeMid(code, nib)
+            }
+            return this.readCodeHigh(code, nib)
+        }
+
+        // Unknown format code: width unknown, the cursor CANNOT be
+        // safely resynchronized -- a fatal error, caller MUST abort
+        // the whole decode (analogous to 0-9-1's frameType -2).
+        fnc unknownCode(code: Int64) -> Amqp10Value
+        {
+            return Amqp10Value::ErrorVal("unknown format code: " + code.toString())
+        }
+
+        // Format codes 0x00-0x5f: described (0x00), constants/booleans/small ints (0x4x, 0x5x).
+        fn readCodeLow(code: Int64, nib: Int64) -> Amqp10Value
+        {
+            if (code == 0x00) { return this.readDescribed() }
+            if (nib == 4) { return this.readCode4x(code) }
+            if (nib == 5) { return this.readCode5x(code) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0x60-0x8f: fixed-width numbers (the float/decimal ones are not supported).
+        fn readCodeMid(code: Int64, nib: Int64) -> Amqp10Value
+        {
+            if (nib == 6) { return this.readCode6x(code) }
+            if (nib == 7) { return this.readCode7x(code) }
+            if (nib == 8) { return this.readCode8x(code) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0x90-0xff: uuid, binary/string/symbol, list/map/array.
+        fn readCodeHigh(code: Int64, nib: Int64) -> Amqp10Value
+        {
+            if (nib == 9) { return this.readCode9x(code) }
+            if (nib == 0xa) { return this.readCodeAx(code) }
+            if (nib == 0xb) { return this.readCodeBx(code) }
+            if (nib == 0xc) { return this.readCodeCx(code) }
+            if (nib == 0xd) { return this.readCodeDx(code) }
+            if (nib == 0xe) { return this.readCodeEx(code) }
+            if (nib == 0xf) { return this.readCodeFx(code) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0x40-0x4f.
+        fn readCode4x(code: Int64) -> Amqp10Value
+        {
             if (code == 0x40) { return Amqp10Value::NullVal }
             if (code == 0x41) { return Amqp10Value::BoolVal(true) }
             if (code == 0x42) { return Amqp10Value::BoolVal(false) }
+            if (code == 0x43) { return Amqp10Value::UIntVal(0) }
+            if (code == 0x44) { return Amqp10Value::ULongVal(0) }
+            if (code == 0x45) { return Amqp10Value::ListVal([]) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0x50-0x5f.
+        fn readCode5x(code: Int64) -> Amqp10Value
+        {
             if (code == 0x56) { return Amqp10Value::BoolVal(this.readU8() != 0) }
             if (code == 0x50) { return Amqp10Value::UByteVal(this.readU8()) }
-            if (code == 0x60) { return Amqp10Value::UShortVal(this.readU16()) }
-            if (code == 0x70) { return Amqp10Value::UIntVal(this.readU32()) }
             if (code == 0x52) { return Amqp10Value::UIntVal(this.readU8()) }
-            if (code == 0x43) { return Amqp10Value::UIntVal(0) }
-            if (code == 0x80) { return Amqp10Value::ULongVal(this.readU64()) }
             if (code == 0x53) { return Amqp10Value::ULongVal(this.readU8()) }
-            if (code == 0x44) { return Amqp10Value::ULongVal(0) }
             if (code == 0x51) { return Amqp10Value::ByteVal(this.toSigned8(this.readU8())) }
-            if (code == 0x61) { return Amqp10Value::ShortVal(this.toSigned16(this.readU16())) }
-            if (code == 0x71) { return Amqp10Value::IntVal(this.toSigned32(this.readU32())) }
             if (code == 0x54) { return Amqp10Value::IntVal(this.toSigned8(this.readU8())) }
-            if (code == 0x81) { return Amqp10Value::LongVal(this.readU64()) }
             if (code == 0x55) { return Amqp10Value::LongVal(this.toSigned8(this.readU8())) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0x60-0x6f.
+        fn readCode6x(code: Int64) -> Amqp10Value
+        {
+            if (code == 0x60) { return Amqp10Value::UShortVal(this.readU16()) }
+            if (code == 0x61) { return Amqp10Value::ShortVal(this.toSigned16(this.readU16())) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0x70-0x7f.
+        fn readCode7x(code: Int64) -> Amqp10Value
+        {
+            if (code == 0x70) { return Amqp10Value::UIntVal(this.readU32()) }
+            if (code == 0x71) { return Amqp10Value::IntVal(this.toSigned32(this.readU32())) }
             if (code == 0x73) { return Amqp10Value::CharVal(this.readU32()) }
-            if (code == 0x83) { return Amqp10Value::TimestampVal(this.readU64()) }
-            if (code == 0x98) { return Amqp10Value::UuidVal(this.readRawBytes(16)) }
-            if (code == 0xa0) { return Amqp10Value::BinaryVal(this.readRawBytes(this.readU8())) }
-            if (code == 0xb0) { return Amqp10Value::BinaryVal(this.readRawBytes(this.readU32())) }
-            if (code == 0xa1) { return Amqp10Value::StrVal(this.readRawStr(this.readU8())) }
-            if (code == 0xb1) { return Amqp10Value::StrVal(this.readRawStr(this.readU32())) }
-            if (code == 0xa3) { return Amqp10Value::SymbolVal(this.readRawStr(this.readU8())) }
-            if (code == 0xb3) { return Amqp10Value::SymbolVal(this.readRawStr(this.readU32())) }
-            if (code == 0x45) { return Amqp10Value::ListVal([]) }
-            if (code == 0xc0) { return this.readList(this.readU8(), this.readU8()) }
-            if (code == 0xd0) { return this.readList(this.readU32(), this.readU32()) }
-            if (code == 0xc1) { return this.readMap(this.readU8(), this.readU8()) }
-            if (code == 0xd1) { return this.readMap(this.readU32(), this.readU32()) }
-            if (code == 0xe0) { return this.readArray(this.readU8(), this.readU8()) }
-            if (code == 0xf0) { return this.readArray(this.readU32(), this.readU32()) }
-            if (code == 0x00) { return this.readDescribed() }
-            // float/double/decimal32/64/128: not supported (see the
-            // Amqp10Value comment) — the cursor still advances correctly
-            // (no resync loss for subsequent fields), but the value
-            // itself is a hard error marker instead of silent garbage.
             if (code == 0x72) { this.readU32()
             return Amqp10Value::ErrorVal("float not supported in v1") }
-            if (code == 0x82) { this.readU64()
-            return Amqp10Value::ErrorVal("double not supported in v1") }
             if (code == 0x74) { this.readU32()
             return Amqp10Value::ErrorVal("decimal32 not supported in v1") }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0x80-0x8f.
+        fn readCode8x(code: Int64) -> Amqp10Value
+        {
+            if (code == 0x80) { return Amqp10Value::ULongVal(this.readU64()) }
+            if (code == 0x81) { return Amqp10Value::LongVal(this.readU64()) }
+            if (code == 0x83) { return Amqp10Value::TimestampVal(this.readU64()) }
+            if (code == 0x82) { this.readU64()
+            return Amqp10Value::ErrorVal("double not supported in v1") }
             if (code == 0x84) { this.readU64()
             return Amqp10Value::ErrorVal("decimal64 not supported in v1") }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0x90-0x9f.
+        fn readCode9x(code: Int64) -> Amqp10Value
+        {
+            if (code == 0x98) { return Amqp10Value::UuidVal(this.readRawBytes(16)) }
             if (code == 0x94) { this.readRawBytes(16)
             return Amqp10Value::ErrorVal("decimal128 not supported in v1") }
-            // Unknown format code: width unknown, the cursor CANNOT be
-            // safely resynchronized — a fatal error, caller MUST abort
-            // the whole decode (analogous to 0-9-1's frameType -2).
-            return Amqp10Value::ErrorVal("unknown format code: " + code.toString())
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0xa0-0xaf.
+        fn readCodeAx(code: Int64) -> Amqp10Value
+        {
+            if (code == 0xa0) { return Amqp10Value::BinaryVal(this.readRawBytes(this.readU8())) }
+            if (code == 0xa1) { return Amqp10Value::StrVal(this.readRawStr(this.readU8())) }
+            if (code == 0xa3) { return Amqp10Value::SymbolVal(this.readRawStr(this.readU8())) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0xb0-0xbf.
+        fn readCodeBx(code: Int64) -> Amqp10Value
+        {
+            if (code == 0xb0) { return Amqp10Value::BinaryVal(this.readRawBytes(this.readU32())) }
+            if (code == 0xb1) { return Amqp10Value::StrVal(this.readRawStr(this.readU32())) }
+            if (code == 0xb3) { return Amqp10Value::SymbolVal(this.readRawStr(this.readU32())) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0xc0-0xcf.
+        fn readCodeCx(code: Int64) -> Amqp10Value
+        {
+            if (code == 0xc0) { return this.readList(this.readU8(), this.readU8()) }
+            if (code == 0xc1) { return this.readMap(this.readU8(), this.readU8()) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0xd0-0xdf.
+        fn readCodeDx(code: Int64) -> Amqp10Value
+        {
+            if (code == 0xd0) { return this.readList(this.readU32(), this.readU32()) }
+            if (code == 0xd1) { return this.readMap(this.readU32(), this.readU32()) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0xe0-0xef.
+        fn readCodeEx(code: Int64) -> Amqp10Value
+        {
+            if (code == 0xe0) { return this.readArray(this.readU8(), this.readU8()) }
+            return Amqp10Reader::unknownCode(code)
+        }
+
+        // Format codes 0xf0-0xff.
+        fn readCodeFx(code: Int64) -> Amqp10Value
+        {
+            if (code == 0xf0) { return this.readArray(this.readU32(), this.readU32()) }
+            return Amqp10Reader::unknownCode(code)
         }
 
         fn readValue() -> Amqp10Value

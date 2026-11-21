@@ -167,56 +167,61 @@ namespace tinox.core.uri
             {
                 return UriParts { scheme: "", host: "", path: "", query: "", fragment: "" }
             }
-            const scheme: String = url.substring(0, schemeEnd)
-            var remaining: String = url.substring(schemeEnd + 3, url.len())
+            const remaining: String = url.substring(schemeEnd + 3, url.len())
             const pathStart: Int64 = remaining.indexOf("/")
             const queryStart: Int64 = remaining.indexOf("?")
             const fragmentStart: Int64 = remaining.indexOf("#")
-            var host: String = ""
-            var path: String = ""
-            var query: String = ""
-            var fragment: String = ""
+            const parts: UriParts = UriParts { scheme: url.substring(0, schemeEnd), host: "", path: "", query: "", fragment: "" }
             if (pathStart == -1 && queryStart == -1 && fragmentStart == -1)
             {
-                host = remaining
+                parts.host = remaining
+            }
+            else if (pathStart != -1 && (queryStart == -1 || pathStart < queryStart) && (fragmentStart == -1 || pathStart < fragmentStart))
+            {
+                Uri::splitAtPath(parts, remaining, pathStart, queryStart, fragmentStart)
+            }
+            else if (queryStart != -1 && (fragmentStart == -1 || queryStart < fragmentStart))
+            {
+                Uri::splitAtQuery(parts, remaining, queryStart, fragmentStart)
+            }
+            else if (fragmentStart != -1)
+            {
+                parts.host = remaining.substring(0, fragmentStart)
+                parts.fragment = remaining.substring(fragmentStart + 1, remaining.len())
+            }
+            return parts
+        }
+
+        // Authority followed by a path: `host/path[?query][#fragment]`.
+        fnc splitAtPath(parts: UriParts, remaining: String, pathStart: Int64, queryStart: Int64, fragmentStart: Int64)
+        {
+            parts.host = remaining.substring(0, pathStart)
+            const remainingPath: String = remaining.substring(pathStart, remaining.len())
+            if (fragmentStart != -1 && queryStart != -1 && fragmentStart < queryStart)
+            {
+                parts.path = remainingPath.substring(0, fragmentStart - pathStart)
+                parts.fragment = remainingPath.substring(fragmentStart - pathStart + 1, remainingPath.len())
+            }
+            else if (queryStart != -1)
+            {
+                parts.path = remainingPath.substring(0, queryStart - pathStart)
+                parts.query = remainingPath.substring(queryStart - pathStart + 1, remainingPath.len())
             }
             else
             {
-                if (pathStart != -1 && (queryStart == -1 || pathStart < queryStart) && (fragmentStart == -1 || pathStart < fragmentStart))
-                {
-                    host = remaining.substring(0, pathStart)
-                    const remainingPath: String = remaining.substring(pathStart, remaining.len())
-                    if (fragmentStart != -1 && queryStart != -1 && fragmentStart < queryStart)
-                    {
-                        path = remainingPath.substring(0, fragmentStart - pathStart)
-                        fragment = remainingPath.substring(fragmentStart - pathStart + 1, remainingPath.len())
-                    }
-                    else if (queryStart != -1)
-                    {
-                        path = remainingPath.substring(0, queryStart - pathStart)
-                        query = remainingPath.substring(queryStart - pathStart + 1, remainingPath.len())
-                    }
-                    else
-                    {
-                        path = remainingPath
-                    }
-                }
-                else if (queryStart != -1 && (fragmentStart == -1 || queryStart < fragmentStart))
-                {
-                    host = remaining.substring(0, queryStart)
-                    query = remaining.substring(queryStart + 1, fragmentStart)
-                    if (fragmentStart != -1)
-                    {
-                        fragment = remaining.substring(fragmentStart + 1, remaining.len())
-                    }
-                }
-                else if (fragmentStart != -1)
-                {
-                    host = remaining.substring(0, fragmentStart)
-                    fragment = remaining.substring(fragmentStart + 1, remaining.len())
-                }
+                parts.path = remainingPath
             }
-            return UriParts { scheme: scheme, host: host, path: path, query: query, fragment: fragment }
+        }
+
+        // Authority followed directly by a query: `host?query[#fragment]`.
+        fnc splitAtQuery(parts: UriParts, remaining: String, queryStart: Int64, fragmentStart: Int64)
+        {
+            parts.host = remaining.substring(0, queryStart)
+            parts.query = remaining.substring(queryStart + 1, fragmentStart)
+            if (fragmentStart != -1)
+            {
+                parts.fragment = remaining.substring(fragmentStart + 1, remaining.len())
+            }
         }
     }
 }

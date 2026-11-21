@@ -25,32 +25,7 @@ namespace tinox.core.bytes
                 const lines: List<String> = text.split("\r\n")
                 const first: List<String> = lines[0].split(" ")
                 if (first.len() != 3 || first[2] != "HTTP/1.1") { throw "invalid HTTP/1.1 request line" }
-                var size: Int64 = 0
-                var found: Bool = false
-                var i: Int64 = 1
-                while (i < lines.len() && lines[i] != "")
-                {
-                    const colon: Int64 = lines[i].indexOf(":")
-                    if (colon <= 0) { throw "invalid HTTP header" }
-                    const name: String = lines[i].substring(0, colon).toLowerCase()
-                    const value: String = lines[i].substring(colon + 1, lines[i].len()).trim()
-                    if (name == "transfer-encoding") { throw "streaming Transfer-Encoding is unsupported" }
-                    if (name == "content-length")
-                    {
-                        if (found || value == "") { throw "invalid duplicate/empty Content-Length" }
-                        found = true
-                        var j: Int64 = 0
-                        while (j < value.len())
-                        {
-                            const digit: Int64 = value.charCodeAt(j) - 48
-                            if (digit < 0 || digit > 9 || size > 922337203685477580 || (size == 922337203685477580 && digit > 7))
-                            { throw "invalid Content-Length" }
-                            size = size * 10 + digit
-                            j = j + 1
-                        }
-                    }
-                    i = i + 1
-                }
+                const size: Int64 = Http1Stream::scanHeaders(lines)
                 return Http1Stream { transport: transport, method: first[0], target: first[1],
                     headers: text, remaining: size, responseRemaining: 0, responded: false }
             }
@@ -59,6 +34,47 @@ namespace tinox.core.bytes
                 transport.close()
                 throw error
             }
+        }
+
+        // Walks the header lines (after the request line) and returns the Content-Length (0 when
+        // absent). Rejects malformed headers, streaming Transfer-Encoding and duplicate/empty lengths.
+        fnc scanHeaders(lines: List<String>) -> Int64
+        {
+            var size: Int64 = 0
+            var found: Bool = false
+            var i: Int64 = 1
+            while (i < lines.len() && lines[i] != "")
+            {
+                const colon: Int64 = lines[i].indexOf(":")
+                if (colon <= 0) { throw "invalid HTTP header" }
+                const name: String = lines[i].substring(0, colon).toLowerCase()
+                const value: String = lines[i].substring(colon + 1, lines[i].len()).trim()
+                if (name == "transfer-encoding") { throw "streaming Transfer-Encoding is unsupported" }
+                if (name == "content-length")
+                {
+                    if (found || value == "") { throw "invalid duplicate/empty Content-Length" }
+                    found = true
+                    size = Http1Stream::parseLength(value)
+                }
+                i = i + 1
+            }
+            return size
+        }
+
+        // Decimal Content-Length value; rejects non-digits and overflow of Int64.
+        fnc parseLength(value: String) -> Int64
+        {
+            var size: Int64 = 0
+            var j: Int64 = 0
+            while (j < value.len())
+            {
+                const digit: Int64 = value.charCodeAt(j) - 48
+                if (digit < 0 || digit > 9 || size > 922337203685477580 || (size == 922337203685477580 && digit > 7))
+                { throw "invalid Content-Length" }
+                size = size * 10 + digit
+                j = j + 1
+            }
+            return size
         }
 
         fn readBody(maximum: Int64, timeout: Int64) -> StreamResult

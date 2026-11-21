@@ -46,7 +46,7 @@ namespace tinox.core.http_server
         }
 
         @Throws(HttpServerError)
-        fn toHeaderValue() -> String
+        fn validate()
         {
             if (this.name.len() == 0 || Cookie::forbidden(this.name, "()<>@,;:\\\"/[]?={}"))
             {
@@ -72,6 +72,12 @@ namespace tinox.core.http_server
             {
                 throw HttpServerError { message: "SameSite=None requires Secure" }
             }
+        }
+
+        @Throws(HttpServerError)
+        fn toHeaderValue() -> String
+        {
+            this.validate()
             var out: String = this.name + "=" + this.value
             if (this.path != "")
             {
