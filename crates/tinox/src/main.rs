@@ -2194,8 +2194,9 @@ fn check(args: &[String]) {
         diagnostics::finish(args, Err(Failure::new("driver", None, None, "No entry file found")));
         std::process::exit(1);
     });
+    let covered: std::cell::RefCell<HashSet<PathBuf>> = std::cell::RefCell::new(HashSet::new());
     let check_one = |input: &str| -> Result<(), Failure> {
-        prepare_program(input).and_then(|(ast, _)| {
+        prepare_program_covering(input, &mut covered.borrow_mut()).and_then(|(ast, _)| {
             let ann = tinox_typecheck::annotations::process_annotations(&ast);
             validate_program_annotations(&ast, &ann, input)?;
             check_declared_exceptions(&ast)?;
@@ -2214,6 +2215,14 @@ fn check(args: &[String]) {
         let mut diagnostics_all: Vec<tinox_common::diagnostic::Diagnostic> = Vec::new();
         let mut seen_diagnostics: HashSet<String> = HashSet::new();
         for file in &files {
+            // A file merged into an earlier program was type-checked, analysed and
+            // import-validated there: re-running the whole pipeline for it is the
+            // quadratic cost that made `tinox check` take half an hour on a large
+            // project. Only files no earlier entry reaches get their own run.
+            let canonical = fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+            if covered.borrow().contains(&canonical) {
+                continue;
+            }
             if let Err(failure) = check_one(file) {
                 for d in failure.0 {
                     if seen_diagnostics.insert(serde_json::to_string(&d).unwrap_or_default()) {
@@ -5022,6 +5031,17 @@ fn is_unresolved_name_error(message: &str) -> bool {
 }
 
 fn prepare_program(input_path: &str) -> Result<(tinox_parser::SourceFile, tinox_typecheck::cache::CheckedProgram), Failure> {
+    prepare_program_covering(input_path, &mut HashSet::new())
+}
+
+/// Like [`prepare_program`], additionally recording in `covered` every file
+/// that was merged into the checked program (the entry file and everything it
+/// imports), so a caller checking many entry points can skip files an earlier
+/// run already covered.
+fn prepare_program_covering(
+    input_path: &str,
+    covered: &mut HashSet<PathBuf>,
+) -> Result<(tinox_parser::SourceFile, tinox_typecheck::cache::CheckedProgram), Failure> {
     let source =
         build_cache::read_to_string(input_path).map_err(|e| Failure::new("io", Some(input_path), None, format!("Failed to read file: {e}")))?;
 
@@ -5044,6 +5064,7 @@ fn prepare_program(input_path: &str) -> Result<(tinox_parser::SourceFile, tinox_
     }
     let (dep_dirs, missing_deps) = load_dep_dirs(&base_dir)?;
     resolve_imports(&mut ast, &base_dir, Path::new(input_path), &mut visited, &dep_dirs, &missing_deps)?;
+    covered.extend(visited.iter().cloned());
     // No "Import error:" prefix here: this pass reports more than import
     // problems, and labels the import ones itself (see its own tail).
     check_explicit_imports(Path::new(input_path), &dep_dirs, &missing_deps)?;
