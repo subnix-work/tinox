@@ -561,6 +561,16 @@ impl AnnotationProcessor {
             },
         );
         registry.insert(
+            "AllowComplexity".to_string(),
+            AnnotationInfo {
+                name: "AllowComplexity".to_string(),
+                valid_targets: vec![AnnotationTarget::Method, AnnotationTarget::Class],
+                min_args: 0,
+                max_args: 1,
+                description: "Exempts the method (or every method of the class) from the [analysis] complexity limits in tinox.toml. Optional string argument: the reason".to_string(),
+            },
+        );
+        registry.insert(
             "Transactional".to_string(),
             AnnotationInfo {
                 name: "Transactional".to_string(),

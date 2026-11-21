@@ -115,6 +115,56 @@ namespace tinox.core.websocket
             return false
         }
 
+        // The first permessage-deflate offer of a (lower-cased) Sec-WebSocket-Extensions line.
+        fnc firstDeflateOffer(lower: String) -> String
+        {
+            const offers = lower.substring(25, lower.len()).split(",")
+            var first = offers[0]
+            for k in 0..offers.len() {
+                if (offers[k].contains("permessage-deflate")) {
+                    first = offers[k]
+                    break
+                }
+            }
+            return first
+        }
+
+        // server_max_window_bits of an offer (15 when absent).
+        fnc serverWindowBits(offer: String) -> Int64
+        {
+            const bitsAt = offer.indexOf("server_max_window_bits=")
+            if (bitsAt >= 0) {
+                const rest = offer.substring(bitsAt + 23, offer.len()).split(";")[0].trim()
+                return rest.toInt()
+            }
+            return 15
+        }
+
+        // Applies the negotiated permessage-deflate mode to `conn` and returns the response header
+        // line to append ("" when the extension is not used).
+        fnc negotiateDeflate(conn: Int64, offeredDeflate: Bool, clientNoCtx: Bool, serverNoCtx: Bool, serverBits: Int64) -> String
+        {
+            if (offeredDeflate && wsContextTakeoverConfigured()) {
+                // Context takeover (opt-in): echo the client's parameters, keep the contexts otherwise.
+                // A window below 9 bits cannot be honoured by zlib, so the extension is declined then.
+                if (serverBits >= 9 && serverBits <= 15) {
+                    wsSetCompressed(conn, true)
+                    wsSetContext(conn, serverNoCtx, clientNoCtx, serverBits)
+                    var ext = "permessage-deflate"
+                    if (clientNoCtx) { ext = ext + "; client_no_context_takeover" }
+                    if (serverNoCtx) { ext = ext + "; server_no_context_takeover" }
+                    if (serverBits < 15) { ext = ext + "; server_max_window_bits=" + serverBits.toString() }
+                    return "Sec-WebSocket-Extensions: " + ext + "\r\n"
+                }
+                return ""
+            }
+            if (offeredDeflate) {
+                wsSetCompressed(conn, true)
+                return "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover\r\n"
+            }
+            return ""
+        }
+
         /*
          * Second half of handshake(): validates the upgrade request `req`
          * (from readUpgrade) and answers 101, or 400 and false when it is not
@@ -140,32 +190,17 @@ namespace tinox.core.websocket
                 if (lower.startsWith("sec-websocket-version:")) {
                     version = line.substring(22, line.len()).trim()
                 }
-                if (lower.startsWith("upgrade:")) {
-                    if (lower.contains("websocket")) {
-                        hasUpgrade = true
-                    }
+                if (lower.startsWith("upgrade:") && lower.contains("websocket")) {
+                    hasUpgrade = true
                 }
-                if (lower.startsWith("sec-websocket-extensions:")) {
-                    if (lower.contains("permessage-deflate")) {
-                        offeredDeflate = true
-                        // Parameters of the FIRST permessage-deflate offer (RFC 7692 §7.1): only the
-                        // opt-in context mode honours them, the stateless mode ignores them as before.
-                        const offers = lower.substring(25, lower.len()).split(",")
-                        var first = offers[0]
-                        for k in 0..offers.len() {
-                            if (offers[k].contains("permessage-deflate")) {
-                                first = offers[k]
-                                break
-                            }
-                        }
-                        offerClientNoCtx = first.contains("client_no_context_takeover")
-                        offerServerNoCtx = first.contains("server_no_context_takeover")
-                        const bitsAt = first.indexOf("server_max_window_bits=")
-                        if (bitsAt >= 0) {
-                            const rest = first.substring(bitsAt + 23, first.len()).split(";")[0].trim()
-                            offerServerBits = rest.toInt()
-                        }
-                    }
+                if (lower.startsWith("sec-websocket-extensions:") && lower.contains("permessage-deflate")) {
+                    offeredDeflate = true
+                    // Parameters of the FIRST permessage-deflate offer (RFC 7692 §7.1): only the
+                    // opt-in context mode honours them, the stateless mode ignores them as before.
+                    const first = Ws::firstDeflateOffer(lower)
+                    offerClientNoCtx = first.contains("client_no_context_takeover")
+                    offerServerNoCtx = first.contains("server_no_context_takeover")
+                    offerServerBits = Ws::serverWindowBits(first)
                 }
             }
             if (!hasUpgrade || key.len() == 0 || version != "13") {
@@ -174,25 +209,62 @@ namespace tinox.core.websocket
             }
             const accept = wsAcceptKey(key)
             var response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n"
-            if (offeredDeflate && wsContextTakeoverConfigured()) {
-                // Context takeover (opt-in): echo the client's parameters, keep the contexts otherwise.
-                // A window below 9 bits cannot be honoured by zlib, so the extension is declined then.
-                if (offerServerBits >= 9 && offerServerBits <= 15) {
-                    wsSetCompressed(conn, true)
-                    wsSetContext(conn, offerServerNoCtx, offerClientNoCtx, offerServerBits)
-                    var ext = "permessage-deflate"
-                    if (offerClientNoCtx) { ext = ext + "; client_no_context_takeover" }
-                    if (offerServerNoCtx) { ext = ext + "; server_no_context_takeover" }
-                    if (offerServerBits < 15) { ext = ext + "; server_max_window_bits=" + offerServerBits.toString() }
-                    response = response + "Sec-WebSocket-Extensions: " + ext + "\r\n"
-                }
-            } else if (offeredDeflate) {
-                wsSetCompressed(conn, true)
-                response = response + "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover\r\n"
-            }
+            response = response + Ws::negotiateDeflate(conn, offeredDeflate, offerClientNoCtx, offerServerNoCtx, offerServerBits)
             response = response + "\r\n"
             httpConnSendRaw(conn, response)
             return true
+        }
+
+        // Protocol checks on the first two header bytes of a frame (before any further read):
+        // RSV2/RSV3 (no extension uses them), RSV1 without negotiated compression or on a control
+        // frame, masking in the wrong direction for this role, and Bug 92 (RFC 6455 §5.5) control
+        // frames (8=close, 9=ping, 10=pong), which MUST have FIN set and a payload length <= 125.
+        fnc frameHeaderInvalid(conn: Int64, b0: Int64, b1: Int64, requireMasked: Bool) -> Bool
+        {
+            const fin = (b0 & 0x80) != 0
+            const rsv1 = (b0 & 0x40) != 0
+            const rsvOther = (b0 & 0x30) != 0
+            const opcode = b0 & 0x0F
+            const masked = (b1 & 0x80) != 0
+            const plen: Int64 = b1 & 0x7F
+            const isControlFrame = opcode >= 8 && opcode <= 10
+            if (rsvOther || (rsv1 && (isControlFrame || !wsIsCompressed(conn))) || masked != requireMasked) {
+                return true
+            }
+            return isControlFrame && (!fin || plen > 125)
+        }
+
+        // Reads the masking key (when `masked`) and `plen` payload bytes; the returned frame carries
+        // the unmasked payload, or opcode -1 when the connection ended early.
+        fnc readFramePayload(conn: Int64, masked: Bool, plen: Int64) -> WsFrame
+        {
+            const bad = WsFrame { fin: true, opcode: -1, payload: [], rsv1: false }
+            // The mask field only exists on the wire when the mask bit is set (masked ==
+            // requireMasked, see frameHeaderInvalid) -- for unmasked frames (server->client), read
+            // the payload directly.
+            var mask: List<Int64> = [0, 0, 0, 0]
+            if (masked) {
+                const readMask = httpConnReadN(conn, 4)
+                if (readMask.len() < 4) {
+                    return bad
+                }
+                mask = readMask
+            }
+            var payload: List<Int64> = []
+            if (plen > 0) {
+                const raw = httpConnReadN(conn, plen)
+                if (raw.len() < plen) {
+                    return bad
+                }
+                if (masked) {
+                    for i in 0..plen {
+                        payload.push(raw[i] ^ mask[i % 4])
+                    }
+                } else {
+                    payload = raw
+                }
+            }
+            return WsFrame { fin: true, opcode: 0, payload: payload, rsv1: false }
         }
 
         /*
@@ -224,74 +296,33 @@ namespace tinox.core.websocket
             const b1 = hdr[1]
             const fin = (b0 & 0x80) != 0
             const rsv1 = (b0 & 0x40) != 0
-            const rsvOther = (b0 & 0x30) != 0
             const opcode = b0 & 0x0F
             const masked = (b1 & 0x80) != 0
             var plen: Int64 = b1 & 0x7F
-            // Bug 92 (RFC 6455 §5.5): control frames (8=close, 9=ping,
-            // 10=pong) MUST have FIN set and payload length <= 125 — they
-            // can never use the 126/127 extended-length encoding and must
-            // never be fragmented. Computed before the RSV check below
-            // since RSV1 must never appear on a control frame either way.
-            const isControlFrame = opcode >= 8 && opcode <= 10
-            // RSV2/RSV3 (no extension ever uses them here), RSV1 without
-            // negotiated compression or on a control frame, and masking
-            // in the wrong direction for this role: a protocol error.
-            if (rsvOther || (rsv1 && (isControlFrame || !wsIsCompressed(conn))) || masked != requireMasked) {
+            if (Ws::frameHeaderInvalid(conn, b0, b1, requireMasked)) {
                 return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false }
             }
-            if (isControlFrame && (!fin || plen > 125)) {
-                return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false }
-            }
-            if (plen == 126) {
-                const ext = httpConnReadN(conn, 2)
-                if (ext.len() < 2) {
+            if (plen == 126 || plen == 127) {
+                const extBytes: Int64 = plen == 126 ? 2 : 8
+                const ext = httpConnReadN(conn, extBytes)
+                if (ext.len() < extBytes) {
                     return bad
                 }
-                plen = (ext[0] << 8) | ext[1]
-            } else if (plen == 127) {
-                const ext = httpConnReadN(conn, 8)
-                if (ext.len() < 8) {
-                    return bad
-                }
-                // 64-bit big-endian; values above 2^53 are unrealistic
-                // in practice, and we reject >16 MB anyway (memory
-                // protection).
+                // Big-endian; values above 2^53 are unrealistic in practice, and we reject >16 MB
+                // anyway (memory protection).
                 plen = 0
-                for i in 0..8 {
+                for i in 0..extBytes {
                     plen = (plen << 8) | ext[i]
                 }
             }
             if (plen < 0 || plen > 16777216) {
                 return WsFrame { fin: true, opcode: -2, payload: [], rsv1: false }
             }
-            // The mask field only exists on the wire when the mask bit
-            // is set (masked == requireMasked, see above) — for
-            // unmasked frames (server->client), read the payload
-            // directly.
-            var mask: List<Int64> = [0, 0, 0, 0]
-            if (masked) {
-                const readMask = httpConnReadN(conn, 4)
-                if (readMask.len() < 4) {
-                    return bad
-                }
-                mask = readMask
+            const body = Ws::readFramePayload(conn, masked, plen)
+            if (body.opcode == -1) {
+                return bad
             }
-            var payload: List<Int64> = []
-            if (plen > 0) {
-                const raw = httpConnReadN(conn, plen)
-                if (raw.len() < plen) {
-                    return bad
-                }
-                if (masked) {
-                    for i in 0..plen {
-                        payload.push(raw[i] ^ mask[i % 4])
-                    }
-                } else {
-                    payload = raw
-                }
-            }
-            return WsFrame { fin: fin, opcode: opcode, payload: payload, rsv1: rsv1 }
+            return WsFrame { fin: fin, opcode: opcode, payload: body.payload, rsv1: rsv1 }
         }
 
         /*
@@ -302,6 +333,43 @@ namespace tinox.core.websocket
         fn readFrame(conn: Int64) -> WsFrame
         {
             return Ws::readFrameGeneric(conn, true)
+        }
+
+        // Appends the length field (with the mask bit), the optional masking key and the payload of a
+        // frame to `out`. `n` is the payload length.
+        fnc appendFrameBody(out: List<Int64>, payload: List<Int64>, n: Int64, masked: Bool) -> Nothing
+        {
+            const maskBit: Int64 = masked ? 0x80 : 0
+            if (n < 126) {
+                out.push(maskBit | n)
+            } else if (n < 65536) {
+                out.push(maskBit | 126)
+                out.push((n >> 8) & 0xFF)
+                out.push(n & 0xFF)
+            } else {
+                out.push(maskBit | 127)
+                var shift: Int64 = 56
+                while shift >= 0 {
+                    out.push((n >> shift) & 0xFF)
+                    shift = shift - 8
+                }
+            }
+            if (masked) {
+                var maskBytes: List<Int64> = []
+                for i in 0..4 {
+                    maskBytes.push(randomInt(0, 256))
+                }
+                for i in 0..4 {
+                    out.push(maskBytes[i])
+                }
+                for i in 0..n {
+                    out.push((payload[i] & 0xFF) ^ maskBytes[i % 4])
+                }
+            } else {
+                for i in 0..n {
+                    out.push(payload[i] & 0xFF)
+                }
+            }
         }
 
         /*
@@ -337,37 +405,7 @@ namespace tinox.core.websocket
             var out: List<Int64> = []
             out.push(0x80 | rsv1Bit | (opcode & 0x0F))
             const n = actualPayload.len()
-            const maskBit: Int64 = masked ? 0x80 : 0
-            if (n < 126) {
-                out.push(maskBit | n)
-            } else if (n < 65536) {
-                out.push(maskBit | 126)
-                out.push((n >> 8) & 0xFF)
-                out.push(n & 0xFF)
-            } else {
-                out.push(maskBit | 127)
-                var shift: Int64 = 56
-                while shift >= 0 {
-                    out.push((n >> shift) & 0xFF)
-                    shift = shift - 8
-                }
-            }
-            if (masked) {
-                var maskBytes: List<Int64> = []
-                for i in 0..4 {
-                    maskBytes.push(randomInt(0, 256))
-                }
-                for i in 0..4 {
-                    out.push(maskBytes[i])
-                }
-                for i in 0..n {
-                    out.push((actualPayload[i] & 0xFF) ^ maskBytes[i % 4])
-                }
-            } else {
-                for i in 0..n {
-                    out.push(actualPayload[i] & 0xFF)
-                }
-            }
+            Ws::appendFrameBody(out, actualPayload, n, masked)
             httpConnWriteBytes(conn, out)
             if (ordered) {
                 wsDefUnlock(conn)
@@ -515,6 +553,37 @@ namespace tinox.core.websocket
          * Strict UTF-8 check (RFC 3629): no overlong forms, no surrogates, nothing above U+10FFFF,
          * no truncated sequence.
          */
+        // Number of continuation bytes the UTF-8 lead byte `b` (>= 128) announces, -1 when `b` can
+        // never start a sequence (continuation byte, overlong C0/C1, F5..FF).
+        fnc utf8Extra(b: Int64) -> Int64
+        {
+            if (b >= 194 && b <= 223) { return 1 }
+            if (b == 224) { return 2 }
+            if (b >= 225 && b <= 236) { return 2 }
+            if (b == 237) { return 2 }
+            if (b == 238 || b == 239) { return 2 }
+            if (b == 240) { return 3 }
+            if (b >= 241 && b <= 243) { return 3 }
+            if (b == 244) { return 3 }
+            return -1
+        }
+
+        // Smallest legal first continuation byte after lead byte `b` (rejects overlong forms).
+        fnc utf8Low(b: Int64) -> Int64
+        {
+            if (b == 224) { return 160 }
+            if (b == 240) { return 144 }
+            return 128
+        }
+
+        // Largest legal first continuation byte after lead byte `b` (rejects surrogates / > U+10FFFF).
+        fnc utf8High(b: Int64) -> Int64
+        {
+            if (b == 237) { return 159 }
+            if (b == 244) { return 143 }
+            return 191
+        }
+
         fn isValidUtf8(bytes: List<Int64>) -> Bool
         {
             const n = bytes.len()
@@ -525,37 +594,15 @@ namespace tinox.core.websocket
                     i = i + 1
                     continue
                 }
-                var extra = 0
-                var low = 128
-                var high = 191
-                if (b >= 194 && b <= 223) {
-                    extra = 1
-                } else if (b == 224) {
-                    extra = 2
-                    low = 160
-                } else if (b >= 225 && b <= 236) {
-                    extra = 2
-                } else if (b == 237) {
-                    extra = 2
-                    high = 159
-                } else if (b == 238 || b == 239) {
-                    extra = 2
-                } else if (b == 240) {
-                    extra = 3
-                    low = 144
-                } else if (b >= 241 && b <= 243) {
-                    extra = 3
-                } else if (b == 244) {
-                    extra = 3
-                    high = 143
-                } else {
+                const extra = Ws::utf8Extra(b)
+                if (extra < 0) {
                     return false
                 }
                 if (i + extra >= n) {
                     return false
                 }
                 const first = bytes[i + 1]
-                if (first < low || first > high) {
+                if (first < Ws::utf8Low(b) || first > Ws::utf8High(b)) {
                     return false
                 }
                 var k = 2

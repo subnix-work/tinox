@@ -212,6 +212,52 @@ namespace tinox.core.redis
             return false
         }
 
+        // "host:port@cport[,hostname]" -> "host:port"; an empty host (":port", a node that does not
+        // know its own address) is completed with the host of the node we asked (`via`).
+        fnc nodeAddress(field: String, via: String) -> String
+        {
+            var addr: String = field
+            const at = addr.lastIndexOf("@")
+            if (at > 0) {
+                addr = addr.substring(0, at)
+            }
+            const comma = addr.lastIndexOf(",")
+            if (comma > 0) {
+                addr = addr.substring(0, comma)
+            }
+            if (addr.startsWith(":")) {
+                const viaAt: RedisSentinel = RedisSentinel::address(via)
+                addr = viaAt.host + addr
+            }
+            return addr
+        }
+
+        // Assigns the slot range `part` ("5" or "0-5460") to `addr` in `table`; returns how many of
+        // those slots were not assigned before.
+        fnc assignRange(table: List<String>, part: String, addr: String) -> Int64
+        {
+            const dash = part.indexOf("-")
+            var from: Int64 = 0
+            var to: Int64 = 0
+            if (dash < 0) {
+                from = part.toInt()
+                to = from
+            } else {
+                from = part.substring(0, dash).toInt()
+                to = part.substring(dash + 1, part.len()).toInt()
+            }
+            var added: Int64 = 0
+            var slot: Int64 = from
+            while slot <= to && slot < 16384 {
+                if (table[slot] == "") {
+                    added = added + 1
+                }
+                table[slot] = addr
+                slot = slot + 1
+            }
+            return added
+        }
+
         // Parses CLUSTER NODES: "<id> <host:port@cport[,hostname]> <flags> <master> ... <slot ranges>".
         // Only complete coverage of all 16384 slots is accepted -- a partial table would route
         // some keys to "" (no silent garbage).
@@ -229,42 +275,12 @@ namespace tinox.core.redis
             while l < lines.len() {
                 const fields: List<String> = lines[l].split(" ")
                 if (fields.len() >= 9 && fields[2].contains("master") && !fields[2].contains("fail")) {
-                    var addr: String = fields[1]
-                    const at = addr.lastIndexOf("@")
-                    if (at > 0) {
-                        addr = addr.substring(0, at)
-                    }
-                    const comma = addr.lastIndexOf(",")
-                    if (comma > 0) {
-                        addr = addr.substring(0, comma)
-                    }
-                    if (addr.startsWith(":")) {
-                        // a node that does not know its own address reports an empty host: use the one we asked
-                        const viaAt: RedisSentinel = RedisSentinel::address(via)
-                        addr = viaAt.host + addr
-                    }
+                    const addr: String = RedisCluster::nodeAddress(fields[1], via)
                     var f: Int64 = 8
                     while f < fields.len() {
                         const part = fields[f]
                         if (part != "" && !part.startsWith("[")) {
-                            const dash = part.indexOf("-")
-                            var from: Int64 = 0
-                            var to: Int64 = 0
-                            if (dash < 0) {
-                                from = part.toInt()
-                                to = from
-                            } else {
-                                from = part.substring(0, dash).toInt()
-                                to = part.substring(dash + 1, part.len()).toInt()
-                            }
-                            var slot: Int64 = from
-                            while slot <= to && slot < 16384 {
-                                if (table[slot] == "") {
-                                    covered = covered + 1
-                                }
-                                table[slot] = addr
-                                slot = slot + 1
-                            }
+                            covered = covered + RedisCluster::assignRange(table, part, addr)
                         }
                         f = f + 1
                     }

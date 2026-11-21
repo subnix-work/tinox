@@ -566,6 +566,88 @@ fn read_checked_exceptions_config() -> Option<(PathBuf, bool)> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AnalysisLevel { Error, Warn, Off }
+
+/// `[analysis]` in the nearest `tinox.toml`: complexity limits (`max_cyclomatic`, `max_nesting`,
+/// `max_function_lines`, `max_params`) and `level = "error" | "warn" | "off"`. Without the section
+/// (but with a tinox.toml) the defaults apply at level `error`. An unknown key or an unparseable
+/// value is a hard error, never a silent fallback. Returns the project root with the settings.
+fn read_analysis_config() -> Result<Option<(PathBuf, tinox_typecheck::complexity::Limits, AnalysisLevel)>, Failure> {
+    let Ok(mut dir) = std::env::current_dir() else { return Ok(None) };
+    loop {
+        let toml_path = dir.join("tinox.toml");
+        if toml_path.exists() {
+            let Ok(content) = build_cache::read_to_string(&toml_path) else { return Ok(None) };
+            let (limits, level) = parse_analysis_config(&content)
+                .map_err(|e| Failure::new("analysis", Some(&toml_path.to_string_lossy()), None, e))?;
+            return Ok(Some((dir, limits, level)));
+        }
+        if !dir.pop() { return Ok(None); }
+    }
+}
+
+fn parse_analysis_config(content: &str) -> Result<(tinox_typecheck::complexity::Limits, AnalysisLevel), String> {
+    let mut limits = tinox_typecheck::complexity::Limits::default();
+    let mut level = AnalysisLevel::Error;
+    let mut in_analysis = false;
+    for line in content.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            in_analysis = line == "[analysis]";
+            continue;
+        }
+        if !in_analysis || line.is_empty() { continue; }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!("[analysis]: cannot parse line '{line}'"));
+        };
+        let (key, value) = (key.trim(), value.trim().trim_matches('"'));
+        let number = |v: &str| v.parse::<u32>().ok().filter(|n| *n > 0)
+            .ok_or_else(|| format!("[analysis] {key} must be a positive integer, got '{v}'"));
+        match key {
+            "max_cyclomatic" => limits.max_cyclomatic = number(value)?,
+            "max_nesting" => limits.max_nesting = number(value)?,
+            "max_function_lines" => limits.max_function_lines = number(value)?,
+            "max_params" => limits.max_params = number(value)?,
+            "level" => level = match value {
+                "error" => AnalysisLevel::Error,
+                "warn" => AnalysisLevel::Warn,
+                "off" => AnalysisLevel::Off,
+                other => return Err(format!("[analysis] level must be \"error\", \"warn\" or \"off\", got '{other}'")),
+            },
+            other => return Err(format!(
+                "[analysis]: unknown key '{other}' (expected max_cyclomatic, max_nesting, max_function_lines, max_params, level)"
+            )),
+        }
+    }
+    Ok((limits, level))
+}
+
+/// Enforces the `[analysis]` complexity limits on the project's own sources.
+fn check_complexity(ast: &tinox_parser::SourceFile) -> Result<(), Failure> {
+    let Some((root, limits, level)) = read_analysis_config()? else { return Ok(()) };
+    if level == AnalysisLevel::Off { return Ok(()); }
+    let root = root.canonicalize().unwrap_or(root);
+    let findings = tinox_typecheck::complexity::check(&ast.decls, &limits, &|file: &str| {
+        let path = Path::new(file);
+        path.starts_with(&root) && !path.components().any(|c| c.as_os_str() == ".tinox")
+    });
+    if findings.is_empty() { return Ok(()); }
+    if level == AnalysisLevel::Warn {
+        for f in &findings {
+            eprintln!("warning: {}:{}:{}: {}", f.file, f.span.start.line, f.span.start.column, f.message);
+        }
+        return Ok(());
+    }
+    let mut failure = Failure::new("complexity", Some(findings[0].file.as_str()), Some(findings[0].span), findings[0].message.clone());
+    for f in findings.iter().skip(1) {
+        failure.0[0].related.push(tinox_common::diagnostic::RelatedLocation {
+            file: f.file.clone(), range: f.span, message: f.message.clone(),
+        });
+    }
+    Err(failure)
+}
+
 /// Runs the `@Throws` checker on the project's own sources when the project enables it.
 fn check_declared_exceptions(ast: &tinox_parser::SourceFile) -> Result<(), Failure> {
     let Some((root, as_error)) = read_checked_exceptions_config() else { return Ok(()) };
@@ -2117,6 +2199,7 @@ fn check(args: &[String]) {
             let ann = tinox_typecheck::annotations::process_annotations(&ast);
             validate_program_annotations(&ast, &ann, input)?;
             check_declared_exceptions(&ast)?;
+            check_complexity(&ast)?;
             for warning in ann.deprecated_warnings.iter().chain(&ann.shared_state_warnings) { eprintln!("warning: {warning}"); }
             Ok(())
         })
@@ -5253,6 +5336,7 @@ fn generate_program(input_path: &str, opt: OptLevel, progress: bool) -> Result<C
     drop(annotation_stage);
     validate_program_annotations(&ast, &ann_result, input_path)?;
     check_declared_exceptions(&ast)?;
+    check_complexity(&ast)?;
     if progress {
         for warning in ann_result.deprecated_warnings.iter().chain(&ann_result.shared_state_warnings) {
             eprintln!("warning: {}", warning);
@@ -5938,7 +6022,7 @@ mod namespace_path_matches_tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.7\"\nname = \"t\"\n").unwrap();
+        fs::write(dir.join("tinox.toml"), "[package]\ncompiler = \"2.9.8\"\nname = \"t\"\n").unwrap();
         if with_src {
             fs::create_dir_all(dir.join("src")).unwrap();
         }
@@ -6115,25 +6199,25 @@ mod read_project_entry_tests {
 
     #[test]
     fn entry_field_found() {
-        let toml = "[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\nentry = \"src/Main.tnx\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
     #[test]
     fn no_entry_field_returns_none() {
-        let toml = "[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\noutput = \"foo\"\n";
+        let toml = "[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\noutput = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_outside_package_section_ignored() {
-        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\n";
+        let toml = "[build]\nentry = \"not/this/one.tnx\"\n[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\n";
         assert_eq!(read_project_entry(toml), None);
     }
 
     #[test]
     fn entry_field_whitespace_tolerant() {
-        let toml = "[package]\ncompiler = \"2.9.7\"\nentry=\"src/Main.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.9.8\"\nentry=\"src/Main.tnx\"\n";
         assert_eq!(read_project_entry(toml), Some("src/Main.tnx".to_string()));
     }
 
@@ -6144,7 +6228,7 @@ mod read_project_entry_tests {
     // of them (issue #257).
     #[test]
     fn undeclared_entry_prefers_capital_main_then_lowercase() {
-        let toml = "[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
+        let toml = "[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\nversion = \"0.1.0\"\n";
         assert_eq!(
             entry_candidates(toml),
             vec!["src/Main.tnx".to_string(), "src/main.tnx".to_string()]
@@ -6154,7 +6238,7 @@ mod read_project_entry_tests {
     #[test]
     fn declared_entry_is_the_only_candidate() {
         // No silent fallback to a default when an explicit entry is wrong.
-        let toml = "[package]\ncompiler = \"2.9.7\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
+        let toml = "[package]\ncompiler = \"2.9.8\"\nname = \"foo\"\nentry = \"src/Cli.tnx\"\n";
         assert_eq!(entry_candidates(toml), vec!["src/Cli.tnx".to_string()]);
     }
 }
@@ -6350,5 +6434,33 @@ mod new_project_manifest_tests {
             assert!(seen.insert(key.clone()), "duplicate key `{key}` in:\n{toml}");
         }
         assert!(toml.contains(&format!("compiler = \"{}\"", pm::COMPILER_VERSION)));
+    }
+}
+
+#[cfg(test)]
+mod analysis_config_tests {
+    use super::*;
+
+    #[test]
+    fn no_section_means_defaults_at_error() {
+        let (l, level) = parse_analysis_config("[package]\ncompiler = \"2.9.8\"\nname = \"x\"\n").unwrap();
+        assert_eq!(l, tinox_typecheck::complexity::Limits::default());
+        assert_eq!(level, AnalysisLevel::Error);
+    }
+
+    #[test]
+    fn section_overrides_limits_and_level() {
+        let (l, level) = parse_analysis_config("[analysis]\nmax_nesting = 6 # deep\nlevel = \"warn\"\n[other]\nmax_params = 1\n").unwrap();
+        assert_eq!(l.max_nesting, 6);
+        assert_eq!(l.max_params, 7);
+        assert_eq!(level, AnalysisLevel::Warn);
+    }
+
+    #[test]
+    fn invalid_values_are_hard_errors() {
+        assert!(parse_analysis_config("[analysis]\nlevel = \"loud\"\n").is_err());
+        assert!(parse_analysis_config("[analysis]\nmax_params = 0\n").is_err());
+        assert!(parse_analysis_config("[analysis]\nmax_params = many\n").is_err());
+        assert!(parse_analysis_config("[analysis]\nbogus = 1\n").is_err());
     }
 }

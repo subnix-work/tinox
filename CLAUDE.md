@@ -2033,3 +2033,25 @@ Built for the Tinox IDE (`subnix-work/tinox-ide`), useful to any tool author.
   (`TinoxArray`, `TinoxMap`), keep them in sync. `runtime/tinox-gdb.py` keys on typedefs
   whose name equals their struct's name. `tinox dap` sets `TINOX_DAP` so printers also
   return one-line summaries (a DAP client shows "None" without `to_string`).
+
+## Complexity Analysis (`[analysis]`, since 2026-11-20)
+
+The compiler enforces per-function complexity limits on the project's own sources
+(cyclomatic, nesting, lines, parameters), configured in `tinox.toml`'s `[analysis]` section.
+**The default is level `error`** for any project with a `tinox.toml` (decided explicitly, even
+though existing projects need adapting). Full reference: `docs/code-analysis.md`.
+
+- Pure analysis in `crates/tinox-typecheck/src/complexity.rs`; config + wiring
+  (`read_analysis_config`, `check_complexity`) in `crates/tinox/src/main.rs`, called next to
+  `check_declared_exceptions` in `generate_program` and `tinox check`.
+- **Parser spans have only a start position** (`mk_span` sets start == end), so a function's
+  length is measured to the last statement's start line + 1; don't expect `span.end` to be real.
+- `;` is not a statement terminator any more (#445) and a line may not start with a binary
+  operator: when refactoring `.tnx` code, put `||`/`&&` at the END of the line.
+- **Test fixtures that are protocol simulators or long drivers opt out** with
+  `[analysis]\nlevel = "off"` in the manifest the harness writes (`tests/common/mod.rs`,
+  `db_statement_errors.rs`, `redis_cluster.rs`). A new integration test that generates its own
+  `tinox.toml` and compiles a long `main()` needs the same, or it fails with "too complex".
+- **jgrep-tinox runs at `level = "warn"`** (33 findings, e.g. `Evaluator.evalBuiltin` with
+  cyclomatic 734 over 2136 lines): known debt, tracked as an issue, only `ArgParser.parse` was
+  split so far (verified identical against the old binary on 34 argument combinations).

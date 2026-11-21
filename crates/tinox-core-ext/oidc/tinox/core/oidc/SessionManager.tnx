@@ -229,40 +229,9 @@ namespace tinox.core.oidc
             {
                 return Session::invalid("missing")
             }
-            var table: Map<String, JsonValue> = Map::new()
-            var keyIndex: Int64 = -1
-            var i: Int64 = 0
-            while (i < this.secrets.len() && keyIndex < 0)
-            {
-                var attempt: String = ""
-                try
-                {
-                    attempt = Crypto::aesDecrypt(sealed, this.secrets[i])
-                }
-                catch (e: String)
-                {
-                    attempt = ""
-                }
-                if (attempt != "")
-                {
-                    var parsed: Bool = false
-                    try
-                    {
-                        table = Json::parse(attempt).asTable()
-                        parsed = true
-                    }
-                    catch (e: String)
-                    {
-                        parsed = false
-                    }
-                    if (parsed)
-                    {
-                        keyIndex = i
-                    }
-                }
-                i = i + 1
-            }
-            if (keyIndex < 0 || !table.contains("sid") || !table.contains("iat") || !table.contains("exp") || !table.contains("seen") || !table.contains("claims"))
+            const table: Map<String, JsonValue> = Map::new()
+            const keyIndex: Int64 = this.openSealed(sealed, table)
+            if (keyIndex < 0 || !SessionManager::hasSessionFields(table))
             {
                 return Session::invalid("invalid")
             }
@@ -287,6 +256,59 @@ namespace tinox.core.oidc
                 this.issue(ctx, s)
             }
             return s
+        }
+
+        // Tries every configured secret (newest first) on the sealed cookie. The first one that
+        // decrypts to a JSON object wins: its entries are copied into `table` and its index is
+        // returned (-1 when none matches).
+        fn openSealed(sealed: String, table: Map<String, JsonValue>) -> Int64
+        {
+            var keyIndex: Int64 = -1
+            var i: Int64 = 0
+            while (i < this.secrets.len() && keyIndex < 0)
+            {
+                var attempt: String = ""
+                try
+                {
+                    attempt = Crypto::aesDecrypt(sealed, this.secrets[i])
+                }
+                catch (e: String)
+                {
+                    attempt = ""
+                }
+                if (attempt != "")
+                {
+                    var parsed: Bool = false
+                    var candidate: Map<String, JsonValue> = Map::new()
+                    try
+                    {
+                        candidate = Json::parse(attempt).asTable()
+                        parsed = true
+                    }
+                    catch (e: String)
+                    {
+                        parsed = false
+                    }
+                    if (parsed)
+                    {
+                        const names: List<String> = candidate.keys()
+                        var k: Int64 = 0
+                        while (k < names.len())
+                        {
+                            table[names[k]] = candidate[names[k]]
+                            k = k + 1
+                        }
+                        keyIndex = i
+                    }
+                }
+                i = i + 1
+            }
+            return keyIndex
+        }
+
+        fnc hasSessionFields(table: Map<String, JsonValue>) -> Bool
+        {
+            return table.contains("sid") && table.contains("iat") && table.contains("exp") && table.contains("seen") && table.contains("claims")
         }
 
         fn isRevoked(id: String, issuedAt: Int64) -> Bool

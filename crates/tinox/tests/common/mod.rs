@@ -332,12 +332,14 @@ pub fn run_case(case: &Case) -> Result<(), String> {
     // e.g. the orm_sqlite_* cases, which do both) -- write ONE merged file
     // covering whichever apply, then `tinox install` before build/test.
     if !case.db_sql.is_empty() || !extended_deps.is_empty() {
-        let mut toml = String::new();
+        // e2e fixtures are protocol simulators and test drivers (long `main()`s, deeply nested
+        // fake brokers), not code held to the compiler's complexity limits.
+        let mut toml = String::from("[analysis]\nlevel = \"off\"\n\n");
         if !case.db_sql.is_empty() {
             toml.push_str("[database]\ndriver = \"sqlite\"\nurl = \"test.db\"\n");
         }
         if !extended_deps.is_empty() {
-            toml.push_str("[package]\ncompiler = \"2.9.7\"\nname = \"");
+            toml.push_str("[package]\ncompiler = \"2.9.8\"\nname = \"");
             toml.push_str(&case.name);
             toml.push_str("\"\nversion = \"0.0.0\"\ndescription = \"\"\n");
             // Skip a module that's already a transitive dependency of

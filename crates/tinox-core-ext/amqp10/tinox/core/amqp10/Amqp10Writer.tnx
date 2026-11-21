@@ -212,6 +212,18 @@ namespace tinox.core.amqp10
 
         fn writeValue(v: Amqp10Value) -> Nothing
         {
+            if (this.writeNumeric(v)) {
+                return
+            }
+            if (this.writeBytesOrText(v)) {
+                return
+            }
+            this.writeCompound(v)
+        }
+
+        // null, boolean and the numeric/char/timestamp types. Returns false for any other value.
+        fn writeNumeric(v: Amqp10Value) -> Bool
+        {
             match v
             {
                 NullVal => { this.writeNull() }
@@ -226,10 +238,30 @@ namespace tinox.core.amqp10
                 LongVal(n) => { this.writeLong(n) }
                 CharVal(n) => { this.writeChar(n) }
                 TimestampVal(n) => { this.writeTimestamp(n) }
+                _ => { return false }
+            }
+            return true
+        }
+
+        // uuid, binary, string and symbol. Returns false for any other value.
+        fn writeBytesOrText(v: Amqp10Value) -> Bool
+        {
+            match v
+            {
                 UuidVal(b) => { this.writeUuid(b) }
                 BinaryVal(b) => { this.writeBinary(b) }
                 StrVal(s) => { this.writeString(s) }
                 SymbolVal(s) => { this.writeSymbol(s) }
+                _ => { return false }
+            }
+            return true
+        }
+
+        // list, map, described and the decode-only error marker.
+        fn writeCompound(v: Amqp10Value) -> Nothing
+        {
+            match v
+            {
                 ListVal(items) => { this.writeList(items) }
                 MapVal(pairs) => { this.writeMap(pairs) }
                 DescribedVal(d) => { this.writeDescribed(d) }
@@ -241,6 +273,7 @@ namespace tinox.core.amqp10
                     // handling).
                     this.writeNull()
                 }
+                _ => {}
             }
         }
     }

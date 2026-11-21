@@ -465,6 +465,32 @@ namespace tinox.core.amqp091
             return r.shortstr()
         }
 
+        // Reads the basic properties selected by `flags` from the content header, in wire order.
+        // Only content-type and message-id are kept ([contentType, messageId]); every other property
+        // is skipped by its bit so the byte cursor stays on track.
+        fnc readProperties(hr: AmqpReader091, flags: Int64) -> List<String>
+        {
+            var contentType: String = ""
+            var messageId: String = ""
+            if ((flags & 32768) != 0) {
+                contentType = hr.shortstr()
+            }
+            if ((flags & 16384) != 0) { hr.longstr() }      // content-encoding
+            if ((flags & 8192) != 0) { hr.fieldTable() }    // headers
+            if ((flags & 4096) != 0) { hr.octet() }         // delivery-mode
+            if ((flags & 2048) != 0) { hr.octet() }         // priority
+            if ((flags & 1024) != 0) { hr.shortstr() }      // correlation-id
+            if ((flags & 512) != 0) { hr.shortstr() }       // reply-to
+            if ((flags & 256) != 0) { hr.shortstr() }       // expiration
+            if ((flags & 128) != 0) { messageId = hr.shortstr() } // message-id
+            if ((flags & 64) != 0) { hr.longlong() }        // timestamp
+            if ((flags & 32) != 0) { hr.shortstr() }        // type
+            if ((flags & 16) != 0) { hr.shortstr() }        // user-id
+            if ((flags & 8) != 0) { hr.shortstr() }         // app-id
+            if ((flags & 4) != 0) { hr.shortstr() }         // cluster-id
+            return [contentType, messageId]
+        }
+
         /*
          * Blocking pull: reads exactly ONE complete message
          * (`basic.deliver` method + content header + body frame(s),
@@ -507,24 +533,9 @@ namespace tinox.core.amqp091
             hr.short() // weight (unused)
             const bodySize = hr.longlong()
             const flags = hr.short()
-            var contentType: String = ""
-            var messageId: String = ""
-            if ((flags & 32768) != 0) {
-                contentType = hr.shortstr()
-            }
-            if ((flags & 16384) != 0) { hr.longstr() }      // content-encoding
-            if ((flags & 8192) != 0) { hr.fieldTable() }    // headers
-            if ((flags & 4096) != 0) { hr.octet() }         // delivery-mode
-            if ((flags & 2048) != 0) { hr.octet() }         // priority
-            if ((flags & 1024) != 0) { hr.shortstr() }      // correlation-id
-            if ((flags & 512) != 0) { hr.shortstr() }       // reply-to
-            if ((flags & 256) != 0) { hr.shortstr() }       // expiration
-            if ((flags & 128) != 0) { messageId = hr.shortstr() } // message-id
-            if ((flags & 64) != 0) { hr.longlong() }        // timestamp
-            if ((flags & 32) != 0) { hr.shortstr() }        // type
-            if ((flags & 16) != 0) { hr.shortstr() }        // user-id
-            if ((flags & 8) != 0) { hr.shortstr() }         // app-id
-            if ((flags & 4) != 0) { hr.shortstr() }         // cluster-id
+            const props: List<String> = AmqpChannel091::readProperties(hr, flags)
+            const contentType: String = props[0]
+            const messageId: String = props[1]
 
             var body: List<Int64> = []
             while body.len() < bodySize {

@@ -17,6 +17,36 @@ namespace tinox.core.rest.server
      */
     class OidcGuard
     {
+        // True when the token's `realm_access.roles` contains at least one of `allowedRoles`.
+        fnc hasAnyRole(claims: Map<String, JsonValue>, allowedRoles: List<String>) -> Bool
+        {
+            if (!claims.contains("realm_access"))
+            {
+                return false
+            }
+            const realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable()
+            if (!realmAccess.contains("roles"))
+            {
+                return false
+            }
+            const tokenRoles: List<JsonValue> = realmAccess["roles"].asList()
+            var i: Int64 = 0
+            while i < tokenRoles.len()
+            {
+                var j: Int64 = 0
+                while j < allowedRoles.len()
+                {
+                    if (tokenRoles[i].getString() == allowedRoles[j])
+                    {
+                        return true
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+            return false
+        }
+
         @Throws(RestAuthError)
         /*
          * Verifies the request's Authorization: Bearer <token> header
@@ -74,30 +104,7 @@ namespace tinox.core.rest.server
                 return false
             }
 
-            const allowedRoles: List<String> = rolesCsv.split("|")
-            var hasRole: Bool = false
-            if (claims.contains("realm_access"))
-            {
-                const realmAccess: Map<String, JsonValue> = claims["realm_access"].asTable()
-                if (realmAccess.contains("roles"))
-                {
-                    const tokenRoles: List<JsonValue> = realmAccess["roles"].asList()
-                    var i: Int64 = 0
-                    while i < tokenRoles.len()
-                    {
-                        var j: Int64 = 0
-                        while j < allowedRoles.len()
-                        {
-                            if (tokenRoles[i].getString() == allowedRoles[j])
-                            {
-                                hasRole = true
-                            }
-                            j = j + 1
-                        }
-                        i = i + 1
-                    }
-                }
-            }
+            const hasRole: Bool = OidcGuard::hasAnyRole(claims, rolesCsv.split("|"))
             if (!hasRole)
             {
                 ctx.response.status(403).json("{\"error\":\"missing required role (one of: " + rolesCsv + ")\"}")

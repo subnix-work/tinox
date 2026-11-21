@@ -105,9 +105,7 @@ namespace tinox.core.bytes
             }
             const delimiter: Bytes = Bytes::fromText("--" + boundary)
             const crlfDelimiter: Bytes = Bytes::fromText("\r\n--" + boundary)
-            const crlf2: Bytes = Bytes::fromText("\r\n\r\n")
-            const total: Int64 = body.len()
-            var parts: List<MultipartPart> = []
+            const result: MultipartResult = MultipartResult { ok: true, error: "", parts: [] }
             // The first delimiter may follow a preamble; everything before it is ignored.
             var pos: Int64 = tinoxBufFind(body.handle, delimiter.handle, 0)
             if (pos < 0)
@@ -117,101 +115,171 @@ namespace tinox.core.bytes
             pos = pos + delimiter.len()
             while (true)
             {
-                if (pos + 2 > total)
+                pos = Multipart::readNextPart(body, pos, delimiter, crlfDelimiter, limits, result)
+                if (pos < 0)
                 {
-                    return Multipart::fail("truncated body: no closing boundary")
-                }
-                const a: Int64 = body.get(pos)
-                const b: Int64 = body.get(pos + 1)
-                if (a == 45 && b == 45)
-                {
-                    return MultipartResult { ok: true, error: "", parts: parts }
-                }
-                if (a != 13 || b != 10)
-                {
-                    return Multipart::fail("malformed boundary line")
-                }
-                pos = pos + 2
-                if (parts.len() >= limits.maxParts)
-                {
-                    return Multipart::fail("too many parts (limit " + limits.maxParts.toString() + ")")
-                }
-                const headerEnd: Int64 = tinoxBufFind(body.handle, crlf2.handle, pos - 2)
-                if (headerEnd < 0)
-                {
-                    return Multipart::fail("truncated body: part headers never end")
-                }
-                // The header block may be empty (CRLF CRLF straight after the boundary line).
-                const headerLen: Int64 = headerEnd + 2 - pos
-                if (headerLen > limits.maxHeaderBytes)
-                {
-                    return Multipart::fail("part headers exceed " + limits.maxHeaderBytes.toString() + " bytes")
-                }
-                var headerBytes: Bytes = Bytes::new(0)
-                if (headerLen > 0)
-                {
-                    headerBytes = body.slice(pos, pos + headerLen)
-                }
-                var h: Int64 = 0
-                while (h < headerBytes.len())
-                {
-                    if (headerBytes.get(h) == 0)
+                    if (result.ok)
                     {
-                        return Multipart::fail("NUL byte in part headers")
+                        return result
                     }
-                    h = h + 1
+                    return Multipart::fail(result.error)
                 }
-                const dataStart: Int64 = headerEnd + 4
-                const dataEnd: Int64 = tinoxBufFind(body.handle, crlfDelimiter.handle, dataStart - 2)
-                if (dataEnd < 0 || dataEnd + 2 < dataStart)
-                {
-                    return Multipart::fail("truncated body: part never ends")
-                }
-                // An empty value: the CRLF before the next delimiter is the one closing the headers.
-                var data: Bytes = Bytes::new(0)
-                if (dataEnd > dataStart)
-                {
-                    data = body.slice(dataStart, dataEnd)
-                }
-                var disposition: String = ""
-                var partType: String = "text/plain"
-                const lines: List<String> = headerBytes.toText().split("\r\n")
-                var li: Int64 = 0
-                while (li < lines.len())
-                {
-                    const line: String = lines[li]
-                    const lower: String = line.toLowerCase()
-                    if (lower.startsWith("content-disposition:"))
-                    {
-                        disposition = line.substring(20, line.len()).trim()
-                    }
-                    else if (lower.startsWith("content-type:"))
-                    {
-                        partType = line.substring(13, line.len()).trim()
-                    }
-                    li = li + 1
-                }
-                const name: String = Multipart::paramOf(disposition, "name")
-                if (!disposition.toLowerCase().startsWith("form-data") || name == "")
-                {
-                    return Multipart::fail("part without a form-data name")
-                }
-                const filename: String = Multipart::paramOf(disposition, "filename")
-                const isFile: Bool = disposition.toLowerCase().contains("filename=")
-                const size: Int64 = data.len()
-                var cap: Int64 = limits.maxFieldBytes
-                if (isFile)
-                {
-                    cap = limits.maxFileBytes
-                }
-                if (size > cap)
-                {
-                    return Multipart::fail("part '" + name + "' is " + size.toString() + " bytes, limit " + cap.toString())
-                }
-                parts.push(MultipartPart { name: name, filename: filename, isFile: isFile, contentType: partType, data: data, size: data.len(), tempPath: "" })
-                pos = dataEnd + 2 + delimiter.len()
             }
             return Multipart::fail("unreachable")
+        }
+
+        // Marks `result` as failed and returns -1 (the "stop" value of readNextPart).
+        fnc abort(result: MultipartResult, message: String) -> Int64
+        {
+            result.ok = false
+            result.error = message
+            return -1
+        }
+
+        // What follows a delimiter at `pos`: 0 = a part (CRLF), 1 = the closing "--",
+        // 2 = truncated, 3 = malformed boundary line.
+        fnc boundaryLine(body: Bytes, pos: Int64) -> Int64
+        {
+            if (pos + 2 > body.len())
+            {
+                return 2
+            }
+            const a: Int64 = body.get(pos)
+            const b: Int64 = body.get(pos + 1)
+            if (a == 45 && b == 45)
+            {
+                return 1
+            }
+            if (a != 13 || b != 10)
+            {
+                return 3
+            }
+            return 0
+        }
+
+        // Reads the part after the delimiter that ends at `pos` into `result.parts`. Returns the
+        // position after the next delimiter, or -1 when parsing stops (`result.ok` tells whether
+        // the closing boundary was reached or the body was rejected).
+        fnc readNextPart(body: Bytes, pos: Int64, delimiter: Bytes, crlfDelimiter: Bytes, limits: MultipartLimits, result: MultipartResult) -> Int64
+        {
+            const line: Int64 = Multipart::boundaryLine(body, pos)
+            if (line == 1)
+            {
+                return -1
+            }
+            if (line == 2)
+            {
+                return Multipart::abort(result, "truncated body: no closing boundary")
+            }
+            if (line == 3)
+            {
+                return Multipart::abort(result, "malformed boundary line")
+            }
+            const start: Int64 = pos + 2
+            if (result.parts.len() >= limits.maxParts)
+            {
+                return Multipart::abort(result, "too many parts (limit " + limits.maxParts.toString() + ")")
+            }
+            const crlf2: Bytes = Bytes::fromText("\r\n\r\n")
+            const headerEnd: Int64 = tinoxBufFind(body.handle, crlf2.handle, start - 2)
+            if (headerEnd < 0)
+            {
+                return Multipart::abort(result, "truncated body: part headers never end")
+            }
+            const headerProblem: String = Multipart::headerProblem(body, start, headerEnd, limits)
+            if (headerProblem != "")
+            {
+                return Multipart::abort(result, headerProblem)
+            }
+            const dataStart: Int64 = headerEnd + 4
+            const dataEnd: Int64 = tinoxBufFind(body.handle, crlfDelimiter.handle, dataStart - 2)
+            if (dataEnd < 0 || dataEnd + 2 < dataStart)
+            {
+                return Multipart::abort(result, "truncated body: part never ends")
+            }
+            const built: MultipartResult = Multipart::buildPart(body, start, headerEnd, dataStart, dataEnd, limits)
+            if (!built.ok)
+            {
+                return Multipart::abort(result, built.error)
+            }
+            result.parts.push(built.parts[0])
+            return dataEnd + 2 + delimiter.len()
+        }
+
+        // "" when the header block [start, headerEnd + 2) is acceptable, else the rejection reason.
+        fnc headerProblem(body: Bytes, start: Int64, headerEnd: Int64, limits: MultipartLimits) -> String
+        {
+            // The header block may be empty (CRLF CRLF straight after the boundary line).
+            const headerLen: Int64 = headerEnd + 2 - start
+            if (headerLen > limits.maxHeaderBytes)
+            {
+                return "part headers exceed " + limits.maxHeaderBytes.toString() + " bytes"
+            }
+            var h: Int64 = 0
+            while (h < headerLen)
+            {
+                if (body.get(start + h) == 0)
+                {
+                    return "NUL byte in part headers"
+                }
+                h = h + 1
+            }
+            return ""
+        }
+
+        // Builds the part whose headers span [start, headerEnd + 2) and data [dataStart, dataEnd).
+        // Returns a result holding exactly that part, or the rejection.
+        fnc buildPart(body: Bytes, start: Int64, headerEnd: Int64, dataStart: Int64, dataEnd: Int64, limits: MultipartLimits) -> MultipartResult
+        {
+            const headerLen: Int64 = headerEnd + 2 - start
+            var headerBytes: Bytes = Bytes::new(0)
+            if (headerLen > 0)
+            {
+                headerBytes = body.slice(start, start + headerLen)
+            }
+            // An empty value: the CRLF before the next delimiter is the one closing the headers.
+            var data: Bytes = Bytes::new(0)
+            if (dataEnd > dataStart)
+            {
+                data = body.slice(dataStart, dataEnd)
+            }
+            var disposition: String = ""
+            var partType: String = "text/plain"
+            const lines: List<String> = headerBytes.toText().split("\r\n")
+            var li: Int64 = 0
+            while (li < lines.len())
+            {
+                const line: String = lines[li]
+                const lower: String = line.toLowerCase()
+                if (lower.startsWith("content-disposition:"))
+                {
+                    disposition = line.substring(20, line.len()).trim()
+                }
+                else if (lower.startsWith("content-type:"))
+                {
+                    partType = line.substring(13, line.len()).trim()
+                }
+                li = li + 1
+            }
+            const name: String = Multipart::paramOf(disposition, "name")
+            if (!disposition.toLowerCase().startsWith("form-data") || name == "")
+            {
+                return Multipart::fail("part without a form-data name")
+            }
+            const filename: String = Multipart::paramOf(disposition, "filename")
+            const isFile: Bool = disposition.toLowerCase().contains("filename=")
+            const size: Int64 = data.len()
+            var cap: Int64 = limits.maxFieldBytes
+            if (isFile)
+            {
+                cap = limits.maxFileBytes
+            }
+            if (size > cap)
+            {
+                return Multipart::fail("part '" + name + "' is " + size.toString() + " bytes, limit " + cap.toString())
+            }
+            const part: MultipartPart = MultipartPart { name: name, filename: filename, isFile: isFile, contentType: partType, data: data, size: data.len(), tempPath: "" }
+            return MultipartResult { ok: true, error: "", parts: [part] }
         }
     }
 }
