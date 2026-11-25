@@ -2,6 +2,9 @@
 import argparse
 import concurrent.futures
 import http.client
+import gzip
+import hashlib
+import itertools
 import json
 import math
 import os
@@ -22,10 +25,13 @@ def command(binary, cores):
     return ["prlimit", f"--as={ADDRESS_SPACE_LIMIT}", "--", "taskset", "-c", cores, binary]
 
 
-def build(compiler, root, name, gc, port):
+def build(compiler, root, name, gc, port, baseline_runtime=None):
     exe = root / f"{name}-{gc}"
+    env = dict(os.environ, TINOX_GC="tinox" if baseline_runtime else gc, TINOX_PORT=str(port))
+    if baseline_runtime:
+        env["TINOX_RUNTIME_PATH"] = str(baseline_runtime)
     subprocess.run([compiler, "build", "Main.tnx", "--release", "-o", exe], cwd=root, check=True,
-                   env=dict(os.environ, TINOX_GC=gc, TINOX_PORT=str(port)))
+                   env=env)
     libs = subprocess.check_output(["ldd", exe], text=True)
     if ("libgc.so" in libs) != (gc == "boehm"):
         raise ValueError(libs)
@@ -105,12 +111,26 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("compiler", type=Path)
     ap.add_argument("output", type=Path)
+    ap.add_argument("--baseline-compiler", type=Path, help="compiler built at the baseline revision")
+    ap.add_argument("--baseline-runtime", type=Path, help="matching baseline runtime.c")
+    ap.add_argument("--larger-live-set", action="store_true", help="also measure 500,000 live entries")
     args = ap.parse_args()
+    if bool(args.baseline_compiler) != bool(args.baseline_runtime):
+        ap.error("supply both baseline paths")
     compiler = args.compiler.resolve()
     cores = ",".join(map(str, sorted(os.sched_getaffinity(0))[:2]))
     results = dict(base=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                    kernel=platform.release(), machine=platform.machine(), cores=cores, address_space_limit=ADDRESS_SPACE_LIMIT,
                    compiler=subprocess.check_output([compiler, "--version"], text=True).strip(), runs=[])
+    sizes = [10000, 50000] + ([500000] if args.larger_live_set else [])
+    results["pause_sizes"] = sizes
+    def sha(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    results["compiler_sha256"] = sha(compiler)
+    results["runtime_sha256"] = sha(BENCH.parent / "runtime/runtime.c")
+    if args.baseline_compiler:
+        results["baseline_compiler_sha256"] = sha(args.baseline_compiler)
+        results["baseline_runtime_sha256"] = sha(args.baseline_runtime)
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         for name in ("pause", "service"):
@@ -118,7 +138,7 @@ def main():
                 source = (BENCH / "bench_gc_pause/Main.tnx").read_text()
                 lines = [line for line in source.splitlines()
                          if "benchAtSize(" not in line or "fnc benchAtSize" in line or
-                         line.strip() in ("benchAtSize(10000)", "benchAtSize(50000)")]
+                         line.strip() in {f"benchAtSize({n})" for n in sizes}]
                 (root / "Main.tnx").write_text("\n".join(lines))
             else:
                 for p in (BENCH / "service_latency").iterdir():
@@ -129,17 +149,26 @@ def main():
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
             binaries = {gc: build(compiler, root, name, gc, port) for gc in ("boehm", "tinox")}
-            for trial in range(4):
-                for gc in (list(reversed(binaries)) if trial % 2 else binaries):
+            if args.baseline_compiler:
+                binaries["tinox-original"] = build(args.baseline_compiler.resolve(), root, name,
+                                                    "tinox-original", port, args.baseline_runtime.resolve())
+                orders = itertools.permutations(binaries)
+            else:
+                orders = [list(binaries), list(reversed(binaries))] * 2
+            for trial, order in enumerate(orders):
+                for gc in order:
                     if name == "pause":
                         output = subprocess.check_output(command(binaries[gc], cores), text=True, timeout=60)
-                        if not all(f"live_objects={n} (checked {n})" in output for n in (10000, 50000)):
+                        if not all(f"live_objects={n} (checked {n})" in output for n in sizes):
                             raise ValueError(output)
                         sample = dict(stdout=output.splitlines())
                     else:
                         sample = service(binaries[gc], port, cores)
                     results["runs"].append(dict(workload=name, collector=gc, trial=trial, **sample))
-                    args.output.write_text(json.dumps(results, indent=2)+"\n")
+                    data = (json.dumps(results, indent=2)+"\n").encode()
+                    if args.output.suffix == ".gz":
+                        data = gzip.compress(data, mtime=0)
+                    args.output.write_bytes(data)
 
 
 if __name__ == "__main__":

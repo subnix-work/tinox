@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 #include "runtime.h"
 
 extern void gcCollect(void);
@@ -44,7 +45,40 @@ static void* worker(void* unused) {
     return NULL;
 }
 
+// Fill several slabs, reopen full ones by freeing alternating slots, then
+// allocate into their holes. Test the exact size boundaries and large fallback.
+static void exercise_slots(void) {
+    static const size_t sizes[] = {1, 16, 17, 31, 32, 63, 64, 127, 128, 255, 256, 511, 512, 513};
+    enum { count = 3000 };
+    unsigned char** roots = tinox_alloc(count * sizeof(*roots));
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < count; i++) {
+            size_t n = sizes[i % (sizeof(sizes)/sizeof(*sizes))];
+            if (pass && i % 2) continue;
+            roots[i] = tinox_alloc(n);
+            for (size_t j = 0; j < n; j++) if (roots[i][j]) abort();
+            memset(roots[i], 0x5a, n);
+        }
+        gcCollect();
+        for (int i = 0; i < count; i++) {
+            size_t n = sizes[i % (sizeof(sizes)/sizeof(*sizes))];
+            if (roots[i][0] != 0x5a || roots[i][n-1] != 0x5a) abort();
+            if (pass || !(i % 2)) {
+                tinox_free(roots[i]);
+                roots[i] = NULL;
+            }
+        }
+    }
+    tinox_free(roots);
+}
+
 int64_t native_roots(void) {
+    exercise_slots();
+    pid_t child = fork();
+    if (child < 0) abort();
+    if (!child) { tinox_alloc(16); _exit(1); }
+    int status;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 125) abort();
     if (pipe(ready) || pipe(release_worker)) abort();
     pthread_t tid;
     if (pthread_create(&tid, NULL, worker, NULL)) abort();
@@ -57,4 +91,23 @@ int64_t native_roots(void) {
     gcCollect(); // no thread-local or stack ranges from the exited worker
     close(ready[0]); close(ready[1]); close(release_worker[0]); close(release_worker[1]);
     return tinox_gc_swept_bytes() - before >= 256 * 1024;
+}
+
+// Int64 is a documented FFI handle representation. Keep the only reference
+// to a small slot one byte past its end, including at a slab slot boundary.
+int64_t make_handle(void) {
+    unsigned char* p = tinox_alloc(32);
+    p[0] = 42;
+    return (intptr_t)(p + 32);
+}
+int64_t check_handle(int64_t handle) {
+    return *((unsigned char*)(intptr_t)handle - 32);
+}
+// A genuinely numeric slot must not retain a coincidental pointer bit pattern.
+// Construct it on a worker so no stale native stack copy is present at collection.
+double pointer_bits_as_score(void) {
+    uintptr_t address = (uintptr_t)tinox_alloc(1024 * 1024);
+    double number;
+    memcpy(&number, &address, sizeof(number));
+    return number;
 }

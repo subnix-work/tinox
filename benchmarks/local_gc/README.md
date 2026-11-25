@@ -22,15 +22,26 @@ allocator; both combinations are rejected.
 
 * Objects stay at a fixed address until explicitly freed, resized or collected.
   New payloads are zeroed and aligned to max_align_t. Runtime realloc copies
-  the common prefix and preserves the block's scan policy. Ordinary payloads
-  are scanned; atomic byte buffers and duplicated strings contain no pointers.
+  the common prefix. Ordinary payloads are conservatively scanned. Known text
+  buffers (including concatenation, numeric formatting and JSON output) are
+  pointer-free. Resizing a mixed typed object falls back to scanning all slots.
   Uncollectable executor queues are traced until explicitly released.
-* A collection builds a sorted address index and uses an explicit mark stack.
-  An aligned machine word that points to the start, interior or one-past end
+* Objects up to 512 bytes use aligned 64 KiB slabs with a power-of-two slot
+  size and a common field mask. An address lookup hashes its slab base and
+  computes its slot from the offset. The marker checks both neighbours at
+  an exact boundary. Free slots are reused and empty slabs are released.
+  Larger and permanent allocations use the sorted index. Both paths use
+  an explicit mark stack outside the scanned roots.
+* For class literals and `new` with a known layout of at most 64 slots, the
+  compiler can pass a field mask. It omits checked floating-point, Boolean
+  and narrow integer fields. Full-width integer slots can carry native handles;
+  they and unknown or synthetic fields are traced. Other allocations use
+  the conservative path unless the runtime knows the payload is pointer-free.
+* An aligned machine word that points to the start, interior or one-past end
   of a payload retains it. This includes references represented as integers.
   Conservative false positives can retain garbage. Unreachable cycles are
   swept. Before the next allocation, the runtime collects after at least
-  max(4 MiB, previous surviving payload bytes) of allocation since the last
+  max(1 MiB, previous surviving payload bytes) of allocation since the last
   collection. Debug::gcCollect() forces a collection.
 * Roots include the executable's writable data and BSS, its ELF TLS block
   on each registered thread, active pthread stacks and saved registers.
@@ -59,8 +70,9 @@ allocator; both combinations are rejected.
 Debug::gcAllocatedBytes() counts cumulative requested payload bytes (minimum
 one per allocation, resize counts the new block). Debug::gcHeapBytes(),
 Debug::memoryUsage() and Debug::gcUsedEstimateBytes() report the sum of
-managed payload bytes still owned, including unswept garbage. The collector
-has no managed free list, so Debug::gcFreeBytes() returns zero. The collection
+managed payload bytes still owned, including unswept garbage. The prototype's
+payload counters exclude unused slab capacity. Debug::gcFreeBytes() continues
+to return zero; it does not measure reusable slots. The collection
 counter includes explicit and automatic collections. Experimental native
 symbol `tinox_gc_swept_bytes()` counts payload bytes reclaimed by tracing,
 excluding explicit free and resize. Allocator metadata, libc arenas and OS
@@ -83,7 +95,9 @@ closure on a worker. The suite also checks the linked libraries. The HTTP
 workload exercises registered epoll workers under allocation pressure (#140);
 repeated collection after thread exit exercises TLS removal (#290).
 
-The comparison reuses the 10k and 50k cases from the existing pause benchmark
+## Original prototype at 69e8df1b
+
+The original comparison reuses the 10k and 50k cases from the existing pause benchmark
 and the existing annotation-driven /report/200 route. Each variant gets four
 fresh processes in alternating order, the same two-CPU affinity and a 1 GiB
 address-space limit. Each pause result averages ten forced collections. Each
@@ -102,8 +116,43 @@ are medians across processes on a shared host. [Raw samples](results.json)
 | Service CPU seconds per 1,000 requests | 0.075 | 0.225 |
 | Peak service RSS, KiB | 9,892 | 16,910 |
 
-**Decision.** Keep Boehm as the default. The Tinox prototype runs the tested
-workloads independently, but the larger live set takes about 13 times as
-long to collect, and the service uses more CPU and memory. Profile index
-construction, conservative pointer lookup and allocator overhead before
-expanding architecture or workload support.
+## Optimized collector
+
+The initial 50k profile spent about 0.8 ms preparing the sorted index and
+1.7 ms marking on a typical forced collection. The small-object path now
+avoids that sort, and string payloads no longer enter the mark stack. The
+allocator also checks a kernel-cleared fork cookie on Linux kernels that
+support it, retaining the getpid fallback. A smaller minimum allocation
+budget limits the amount of garbage accumulated between cheap collections.
+
+Six fresh processes per workload and collector covered every ordering of
+Boehm, the original Tinox compiler/runtime and the optimized version. The
+same CPU affinity, address-space limit, checked outputs and HTTP workload
+apply as above. The third pause case holds 500,000 live entries. Values
+below are medians; CPU readings have clock-tick granularity.
+[Per-run pause averages, individual HTTP latencies and binary/source hashes](optimized-results.json.gz)
+
+| Metric | Original Tinox | Optimized Tinox | Boehm |
+| --- | ---: | ---: | ---: |
+| Full collection at 10k, µs | 903 | 46 | 132.5 |
+| Full collection at 50k, µs | 4,428.5 | 166.5 | 239 |
+| Full collection at 500k, µs | 36,218.5 | 1,543.5 | 1,406 |
+| HTTP p99, ms | 2.497 | 0.586 | 0.594 |
+| Validated requests/s | 3,727 | 5,264 | 5,341 |
+| Service CPU seconds per 1,000 requests | 0.210 | 0.090 | 0.075 |
+| Peak service RSS, KiB | 16,744 | 9,828 | 9,906 |
+
+To reproduce the three-way comparison with a compiler and matching runtime
+built from revision `69e8df1b`:
+
+```sh
+python3 benchmarks/local_gc/compare.py target/release/tinox /tmp/optimized.json.gz \
+  --baseline-compiler /path/to/baseline/target/release/tinox \
+  --baseline-runtime /path/to/baseline/runtime/runtime.c --larger-live-set
+```
+
+**Decision.** Keep the collector opt-in. It substantially improves both
+workloads over the original prototype. It completes the two smaller forced
+collections faster than Boehm and the 500k collection more slowly. HTTP p99
+ranges overlap. These workloads do not establish performance for long-lived
+heterogeneous heaps, sustained overload or larger worker counts.

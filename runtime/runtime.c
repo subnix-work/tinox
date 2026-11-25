@@ -60,6 +60,7 @@
 #endif
 #include <link.h>
 #include <linux/futex.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
 #include <stddef.h>
@@ -86,8 +87,10 @@ static LocalThread* local_threads;
 static LocalBlock* local_blocks;
 static pthread_mutex_t local_lock = PTHREAD_MUTEX_INITIALIZER;
 static size_t local_count, local_bytes, local_total, local_since, local_collections, local_swept;
-static size_t local_threshold = 4 * 1024 * 1024;
+enum { LOCAL_MIN_BUDGET = 1024 * 1024 };
+static size_t local_threshold = LOCAL_MIN_BUDGET;
 static pid_t local_pid;
+static volatile unsigned char* fork_cookie;
 static pthread_key_t local_thread_key;
 
 static void local_fatal(const char* message) {
@@ -96,7 +99,7 @@ static void local_fatal(const char* message) {
     _exit(125);
 }
 static void local_require_thread(void) {
-    if (!local_self || getpid() != local_pid)
+    if (!local_self || (fork_cookie ? !*fork_cookie : getpid() != local_pid))
         local_fatal("tinox GC: unregistered thread or fork without exec\n");
 }
 
@@ -185,6 +188,19 @@ static void local_unregister(void* unused) {
 }
 static void local_init(void) {
     local_pid = getpid();
+#ifdef MADV_WIPEONFORK
+    // The kernel clears this private mapping in fork children, including
+    // when native code bypasses pthread_atfork. Older kernels use getpid.
+    void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (page != MAP_FAILED) {
+        if (madvise(page, 4096, MADV_WIPEONFORK) == 0) {
+            fork_cookie = page;
+            *fork_cookie = 1;
+        } else {
+            munmap(page, 4096);
+        }
+    }
+#endif
     if (pthread_key_create(&local_thread_key, local_unregister))
         local_fatal("tinox GC: cannot create exit hook\n");
     struct sigaction action = {0}, old;
@@ -196,9 +212,102 @@ static void local_init(void) {
     local_register();
 }
 
+// Power-of-two strides give interior pointers a slot in constant time. Look
+// up the aligned base before dereferencing: most candidate words are not
+// pointers. Metadata precedes the slots so the global lists are not roots.
+enum {
+    SPAN_BYTES = 65536,
+    SPAN_BUCKETS = 1024,
+    SMALL_CLASSES = 6,
+    SMALL_LIMIT = 512,
+    SLOT_MARK = 0x8000,
+    NO_SLOT = UINT16_MAX
+};
+typedef struct LocalSpan LocalSpan;
+struct LocalSpan {
+    LocalSpan *hash_next, *avail_next, **avail_link;
+    uint64_t trace;
+    uint16_t start, capacity, used, cursor, free_head;
+    unsigned shift;
+    uint16_t sizes[];
+};
+static LocalSpan* span_index[SPAN_BUCKETS];
+static LocalSpan* available[SMALL_CLASSES];
+static size_t large_count;
+static unsigned span_hash(uintptr_t base) { return ((base >> 16) ^ (base >> 29)) & (SPAN_BUCKETS - 1); }
+static LocalSpan* span_find(uintptr_t word) {
+    uintptr_t base = word & ~(uintptr_t)(SPAN_BYTES - 1);
+    for (LocalSpan* s = span_index[span_hash(base)]; s; s = s->hash_next)
+        if ((uintptr_t)s == base) return s;
+    return NULL;
+}
+static void span_offer(LocalSpan* s) {
+    LocalSpan** head = &available[s->shift - 4];
+    s->avail_next = *head;
+    s->avail_link = head;
+    if (*head) (*head)->avail_link = &s->avail_next;
+    *head = s;
+}
+static void span_withdraw(LocalSpan* s) {
+    *s->avail_link = s->avail_next;
+    if (s->avail_next) s->avail_next->avail_link = s->avail_link;
+    s->avail_link = NULL;
+}
+static LocalSpan* span_new(unsigned shift, uint64_t trace) {
+    LocalSpan* s = aligned_alloc(SPAN_BYTES, SPAN_BYTES);
+    if (!s) local_fatal("tinox GC: slab allocation failed\n");
+    memset(s, 0, sizeof(*s));
+    s->shift = shift;
+    s->trace = trace;
+    // Leave a guard word after the last slot for one-past-end roots.
+    s->capacity = (SPAN_BYTES - 16 - sizeof(*s)) / ((1u << shift) + sizeof(uint16_t));
+    s->start = SPAN_BYTES - 16 - ((unsigned)s->capacity << shift);
+    s->free_head = NO_SLOT;
+    unsigned h = span_hash((uintptr_t)s);
+    s->hash_next = span_index[h];
+    span_index[h] = s;
+    span_offer(s);
+    return s;
+}
+static void* span_allocate(size_t n, uint64_t trace) {
+    unsigned shift = n <= 16 ? 4 : 32u - (unsigned)__builtin_clz((unsigned)n - 1);
+    LocalSpan* s = available[shift - 4];
+    while (s && s->trace != trace)
+        s = s->avail_next;
+    if (!s) s = span_new(shift, trace);
+    unsigned i = s->free_head == NO_SLOT ? s->cursor++ : s->free_head;
+    char* data = (char*)s + s->start + (i << shift);
+    if (s->free_head != NO_SLOT) memcpy(&s->free_head, data, sizeof(s->free_head));
+    s->sizes[i] = n;
+    if (++s->used == s->capacity) span_withdraw(s);
+    memset(data, 0, n);
+    return data;
+}
+static void span_drop(LocalSpan* s, unsigned i) {
+    local_bytes -= s->sizes[i];
+    local_count--;
+    s->sizes[i] = 0;
+    char* p = (char*)s + s->start + (i << s->shift);
+    memcpy(p, &s->free_head, sizeof(s->free_head));
+    s->free_head = i;
+    if (s->used-- == s->capacity) span_offer(s);
+}
+static void span_release(LocalSpan* s) {
+    span_withdraw(s);
+    LocalSpan** link = &span_index[span_hash((uintptr_t)s)];
+    while (*link != s)
+        link = &(*link)->hash_next;
+    *link = s->hash_next;
+    free(s);
+}
+typedef struct {
+    uintptr_t base;
+    size_t size;
+    uint64_t trace;
+} LocalWork;
 typedef struct {
     LocalBlock** sorted;
-    LocalBlock** work;
+    LocalWork* work;
     size_t pending;
     uintptr_t first, last;
 } LocalMark;
@@ -207,27 +316,49 @@ static int local_order(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 static void local_mark(LocalMark* m, LocalBlock* b) {
-    if (!b->marked) {
-        b->marked = true;
-        if (!b->atomic) m->work[m->pending++] = b;
+    if (b->marked) return;
+    b->marked = true;
+    if (!b->atomic) m->work[m->pending++] = (LocalWork){(uintptr_t)b->payload, b->size, UINT64_MAX};
+}
+static void span_mark(LocalMark* m, LocalSpan* s, unsigned i, unsigned offset) {
+    unsigned n = s->sizes[i];
+    if (!n || (n & SLOT_MARK) || offset > n) return;
+    s->sizes[i] |= SLOT_MARK;
+    if (s->trace)
+        m->work[m->pending++] = (LocalWork){(uintptr_t)s + s->start + (i << s->shift), n, s->trace};
+}
+static void local_visit(LocalMark* m, uintptr_t word) {
+    LocalSpan* s = span_find(word);
+    if (s) {
+        unsigned pos = word & (SPAN_BYTES - 1);
+        if (pos < s->start) return;
+        pos -= s->start;
+        unsigned i = pos >> s->shift;
+        unsigned stride = 1u << s->shift;
+        unsigned off = pos & (stride - 1);
+        if (i < s->cursor) span_mark(m, s, i, off);
+        // At an exact boundary either neighbour may own a valid C pointer.
+        if (!off && i && i <= s->cursor) span_mark(m, s, i - 1, stride);
+        return;
     }
+    if (word < m->first || word > m->last) return;
+    size_t left = 0, right = large_count;
+    while (left < right) {
+        size_t mid = left + (right - left) / 2;
+        if ((uintptr_t)m->sorted[mid]->payload <= word)
+            left = mid + 1;
+        else
+            right = mid;
+    }
+    LocalBlock* b = m->sorted[left - 1];
+    if (word - (uintptr_t)b->payload <= b->size) local_mark(m, b);
 }
 static void local_scan(LocalMark* m, uintptr_t lo, uintptr_t hi) {
     lo = (lo + sizeof(uintptr_t) - 1) & ~(uintptr_t)(sizeof(uintptr_t) - 1);
     for (; lo < hi && hi - lo >= sizeof(uintptr_t); lo += sizeof(uintptr_t)) {
         uintptr_t word;
         memcpy(&word, (const void*)lo, sizeof(word));
-        if (word < m->first || word > m->last) continue;
-        size_t left = 0, right = local_count;
-        while (left < right) {
-            size_t mid = left + (right - left) / 2;
-            if ((uintptr_t)m->sorted[mid]->payload <= word)
-                left = mid + 1;
-            else
-                right = mid;
-        }
-        LocalBlock* b = m->sorted[left - 1];
-        if (word - (uintptr_t)b->payload <= b->size) local_mark(m, b);
+        if (word >= SPAN_BYTES) local_visit(m, word);
     }
 }
 extern char __data_start[], _end[];
@@ -240,6 +371,7 @@ static void local_drop(LocalBlock* b) {
     if (b->next) b->next->prev = b->prev;
     local_bytes -= b->size;
     local_count--;
+    large_count--;
     free(b);
 }
 
@@ -251,16 +383,20 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
         local_since = 0;
         return;
     }
-    LocalBlock** scratch = calloc(local_count, 2 * sizeof(*scratch));
-    if (!scratch) local_fatal("tinox GC: mark index allocation failed\n");
-    LocalMark m = {.sorted = scratch, .work = scratch + local_count};
-    size_t i = 0;
-    for (LocalBlock* b = local_blocks; b; b = b->next)
-        m.sorted[i++] = b;
-    qsort(m.sorted, local_count, sizeof(*scratch), local_order);
-    m.first = (uintptr_t)m.sorted[0]->payload;
-    LocalBlock* last = m.sorted[local_count - 1];
-    m.last = (uintptr_t)last->payload + last->size;
+    LocalMark m = {.first = UINTPTR_MAX};
+    m.work = reallocarray(NULL, local_count, sizeof(*m.work));
+    if (!m.work) local_fatal("tinox GC: mark stack allocation failed\n");
+    if (large_count) {
+        m.sorted = reallocarray(NULL, large_count, sizeof(*m.sorted));
+        if (!m.sorted) local_fatal("tinox GC: large object index allocation failed\n");
+        size_t i = 0;
+        for (LocalBlock* b = local_blocks; b; b = b->next)
+            m.sorted[i++] = b;
+        qsort(m.sorted, large_count, sizeof(*m.sorted), local_order);
+        m.first = (uintptr_t)m.sorted[0]->payload;
+        LocalBlock* last = m.sorted[large_count - 1];
+        m.last = (uintptr_t)last->payload + last->size;
+    }
 
     for (LocalThread* t = local_threads; t; t = t->next) {
         if (t == local_self) continue;
@@ -280,11 +416,20 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
         local_scan(&m, sp, t->stack_hi);
         local_scan(&m, t->tls_lo, t->tls_hi);
     }
-    for (i = 0; i < local_count; i++)
+    for (size_t i = 0; i < large_count; i++)
         if (m.sorted[i]->permanent) local_mark(&m, m.sorted[i]);
     while (m.pending) {
-        LocalBlock* b = m.work[--m.pending];
-        local_scan(&m, (uintptr_t)b->payload, (uintptr_t)b->payload + b->size);
+        LocalWork w = m.work[--m.pending];
+        if (w.trace == UINT64_MAX) {
+            local_scan(&m, w.base, w.base + w.size);
+        } else {
+            for (uint64_t bits = w.trace; bits; bits &= bits - 1) {
+                uintptr_t word;
+                memcpy(&word, (const void*)(w.base + __builtin_ctzll(bits) * sizeof(word)),
+                       sizeof(word));
+                local_visit(&m, word);
+            }
+        }
     }
     for (LocalThread* t = local_threads; t; t = t->next) {
         if (t == local_self) continue;
@@ -292,7 +437,22 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
         local_wake(&t->state);
         local_await(t, RELEASED);
     }
-    free(scratch);
+    free(m.work);
+    free(m.sorted);
+    for (unsigned h = 0; h < SPAN_BUCKETS; h++) {
+        for (LocalSpan *s = span_index[h], *next; s; s = next) {
+            next = s->hash_next;
+            for (unsigned i = 0; i < s->cursor; i++) {
+                if (s->sizes[i] & SLOT_MARK)
+                    s->sizes[i] &= ~SLOT_MARK;
+                else if (s->sizes[i]) {
+                    local_swept += s->sizes[i];
+                    span_drop(s, i);
+                }
+            }
+            if (!s->used) span_release(s);
+        }
+    }
     for (LocalBlock *b = local_blocks, *next; b; b = next) {
         next = b->next;
         if (b->marked)
@@ -304,7 +464,7 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
     }
     local_since = 0;
     local_collections++;
-    local_threshold = local_bytes > 4 * 1024 * 1024 ? local_bytes : 4 * 1024 * 1024;
+    local_threshold = local_bytes > LOCAL_MIN_BUDGET ? local_bytes : LOCAL_MIN_BUDGET;
 }
 // Snapshot the mutator before entering the marker. The index's own range
 // endpoints and traversal temporaries must never be interpreted as roots.
@@ -319,25 +479,35 @@ static void local_lock_heap(void) {
     local_require_thread();
     pthread_mutex_lock(&local_lock);
 }
-static void* local_allocate(size_t n, bool atomic, bool permanent) {
+static void* local_allocate_trace(size_t n, uint64_t trace, bool permanent) {
     if (n > SIZE_MAX - sizeof(LocalBlock)) local_fatal("tinox GC: allocation size overflow\n");
     if (!n) n = 1;
     local_lock_heap();
     if (local_since >= local_threshold) local_collect_locked();
-    LocalBlock* b = calloc(1, sizeof(*b) + n);
-    if (!b) local_fatal("tinox GC: allocation failed\n");
-    b->size = n;
-    b->atomic = atomic;
-    b->permanent = permanent;
-    b->next = local_blocks;
-    if (local_blocks) local_blocks->prev = b;
-    local_blocks = b;
+    void* result;
+    if (n <= SMALL_LIMIT && !permanent) {
+        result = span_allocate(n, trace);
+    } else {
+        LocalBlock* b = calloc(1, sizeof(*b) + n);
+        if (!b) local_fatal("tinox GC: allocation failed\n");
+        b->size = n;
+        b->atomic = !trace;
+        b->permanent = permanent;
+        b->next = local_blocks;
+        if (local_blocks) local_blocks->prev = b;
+        local_blocks = b;
+        result = b->payload;
+        large_count++;
+    }
     local_count++;
     local_bytes += n;
     local_total += n;
     local_since += n;
     pthread_mutex_unlock(&local_lock);
-    return b->payload;
+    return result;
+}
+static void* local_allocate(size_t n, bool atomic, bool permanent) {
+    return local_allocate_trace(n, atomic ? 0 : UINT64_MAX, permanent);
 }
 static LocalBlock* local_header(void* p) {
     return (LocalBlock*)((char*)p - offsetof(LocalBlock, payload));
@@ -345,7 +515,13 @@ static LocalBlock* local_header(void* p) {
 static void local_free(void* p) {
     if (!p) return;
     local_lock_heap();
-    local_drop(local_header(p));
+    LocalSpan* s = span_find((uintptr_t)p);
+    if (s) {
+        unsigned i = ((uintptr_t)p - (uintptr_t)s - s->start) >> s->shift;
+        span_drop(s, i);
+        if (!s->used) span_release(s);
+    } else
+        local_drop(local_header(p));
     pthread_mutex_unlock(&local_lock);
 }
 static void* local_realloc(void* p, size_t n) {
@@ -355,9 +531,24 @@ static void* local_realloc(void* p, size_t n) {
         return NULL;
     }
     void* volatile root = p;
-    LocalBlock* old = local_header(root);
-    void* result = local_allocate(n, old->atomic, old->permanent);
-    memcpy(result, root, n < old->size ? n : old->size);
+    // Other threads can mutate the page index while this thread allocates.
+    local_lock_heap();
+    LocalSpan* s = span_find((uintptr_t)p);
+    size_t size;
+    bool atomic, permanent = false;
+    if (s) {
+        size = s->sizes[((uintptr_t)p - (uintptr_t)s - s->start) >> s->shift];
+        atomic = !s->trace;
+    } else {
+        LocalBlock* old = local_header(root);
+        size = old->size;
+        atomic = old->atomic;
+        permanent = old->permanent;
+    }
+    pthread_mutex_unlock(&local_lock);
+    // A typed block that is resized may acquire new fields; scan its new layout conservatively.
+    void* result = local_allocate(n, atomic, permanent);
+    memcpy(result, root, n < size ? n : size);
     local_free(p);
     return result;
 }
@@ -474,6 +665,20 @@ static int local_create(pthread_t* id, const pthread_attr_t* attr, void* (*fn)(v
 void* tinox_alloc(size_t size) {
     return GC_malloc(size);
 }
+
+#ifdef TINOX_LOCAL_GC
+// One bit per 64-bit Tinox object slot. The compiler emits this call only
+// for complete layouts of at most 64 slots, selected at build time.
+void* tinox_alloc_typed(size_t bytes, uint64_t trace) {
+    if (!bytes || bytes > SMALL_LIMIT || bytes % 8 ||
+        (bytes < SMALL_LIMIT && (trace >> (bytes / 8))))
+        local_fatal("tinox GC: invalid slot descriptor\n");
+    return local_allocate_trace(bytes, trace, false);
+}
+#define TINOX_TEXT_ALLOC(n) GC_malloc_atomic(n)
+#else
+#define TINOX_TEXT_ALLOC(n) malloc(n)
+#endif
 
 void tinox_free(void* ptr) {
     GC_free(ptr);
@@ -773,7 +978,7 @@ int64_t tinox_string_length(const char* str) {
 char* tinox_string_concat(const char* a, const char* b) {
     size_t len_a = strlen(a);
     size_t len_b = strlen(b);
-    char* result = malloc(len_a + len_b + 1);
+    char* result = TINOX_TEXT_ALLOC(len_a + len_b + 1);
     memcpy(result, a, len_a);
     memcpy(result + len_a, b, len_b);
     result[len_a + len_b] = '\0';
@@ -788,7 +993,7 @@ char* tinox_int_to_string(int64_t val) {
     uint64_t mag = neg ? (uint64_t)0 - (uint64_t)val : (uint64_t)val;
     do { buf[len++] = '0' + (int)(mag % 10); mag /= 10; } while (mag > 0);
     if (neg) buf[len++] = '-';
-    char* result = malloc(len + 1);
+    char* result = TINOX_TEXT_ALLOC(len + 1);
     for (int i = 0; i < len; i++) result[i] = buf[len - 1 - i];
     result[len] = '\0';
     return result;
@@ -799,14 +1004,14 @@ char* tinox_uint_to_string(int64_t sval) {
     char buf[32];
     int len = 0;
     do { buf[len++] = '0' + (val % 10); val /= 10; } while (val > 0);
-    char* result = malloc(len + 1);
+    char* result = TINOX_TEXT_ALLOC(len + 1);
     for (int i = 0; i < len; i++) result[i] = buf[len - 1 - i];
     result[len] = '\0';
     return result;
 }
 
 char* tinox_float_to_string(double val) {
-    char* result = malloc(40);
+    char* result = TINOX_TEXT_ALLOC(40);
     // shortest representation that round-trips exactly
     for (int prec = 15; prec <= 17; prec++) {
         snprintf(result, 40, "%.*g", prec, val);
@@ -865,7 +1070,7 @@ char* tinox_json_list_serialize(int64_t* h, char* (*to_json)(void*)) {
         parts[i] = to_json((void*)(uintptr_t)a->data[i]);
         total += strlen(parts[i]) + 1; // + ","
     }
-    char* out = (char*)malloc(total + 1);
+    char* out = (char*)TINOX_TEXT_ALLOC(total + 1);
     size_t pos = 0;
     out[pos++] = '[';
     for (int64_t i = 0; i < n; i++) {
@@ -1022,7 +1227,7 @@ int tinox_parse_bool_checked(const char* s, int* out) {
 // without that function's object-key/comma bookkeeping.
 char* tinox_json_encode_string(const char* s) {
     size_t sl = s ? strlen(s) : 0;
-    char* buf = (char*)malloc(sl * 6 + 3); // allow six-byte JSON control escapes
+    char* buf = (char*)TINOX_TEXT_ALLOC(sl * 6 + 3); // allow six-byte JSON control escapes
     size_t len = 0;
     buf[len++] = '"';
     for (size_t i = 0; i < sl; i++) {
@@ -1048,7 +1253,7 @@ char* tinox_json_encode_string(const char* s) {
 char* tinox_bool_to_string(int val) {
     const char* s = val ? "true" : "false";
     size_t len = val ? 4 : 5;
-    char* result = malloc(len + 1);
+    char* result = TINOX_TEXT_ALLOC(len + 1);
     for (size_t i = 0; i <= len; i++) result[i] = s[i];
     return result;
 }
@@ -4462,7 +4667,7 @@ char* tinox_string_substring(const char* s, int64_t from, int64_t to) {
     }
     if (from == to) { char* r = malloc(1); r[0] = '\0'; return r; }
     int64_t slen = to - from;
-    char* result = malloc(slen + 1);
+    char* result = TINOX_TEXT_ALLOC(slen + 1);
     memcpy(result, s + from, slen);
     result[slen] = '\0';
     return result;
@@ -14641,7 +14846,7 @@ static void jb_key(JsonBuilder* b, const char* key) {
 char* jsonBuilderCreate(void) {
     JsonBuilder* b = (JsonBuilder*)malloc(sizeof(JsonBuilder));
     b->cap = 256;
-    b->buf = (char*)malloc(b->cap);
+    b->buf = (char*)TINOX_TEXT_ALLOC(b->cap);
     b->len = 0;
     b->first = 1;
     b->buf[b->len++] = '{';

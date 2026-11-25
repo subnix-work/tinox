@@ -1,5 +1,10 @@
 import tinox.core.debug
+import Probe
 extern fn native_roots() -> Int64
+extern fn make_handle() -> Int64
+extern fn check_handle(handle: Int64) -> Int64
+extern fn pointer_bits_as_score() -> Float64
+extern fn tinox_gc_swept_bytes() -> Int64
 
 class Main {
     fnc capture(id: Int64) -> fnc(Int64) -> String {
@@ -14,7 +19,17 @@ class Main {
         return f(0)
     }
 
+    fnc sample() -> Probe {
+        return Probe {handle: make_handle(), text: "typed-" + (42).toString(), score: pointer_bits_as_score()}
+    }
+
     fnc main() -> Int32 {
+        const before = tinox_gc_swept_bytes()
+        const sampleTask = spawn Main::sample()
+        const sample = await sampleTask
+        Debug::gcCollect()
+        if (tinox_gc_swept_bytes() - before < 1048576) { return 3 }
+        if (check_handle(sample.handle) != 42 || sample.text != "typed-42") { return 4 }
         for i in 0..8 {
             const job = spawn Main::worker()
             Debug::gcCollect()
