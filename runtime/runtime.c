@@ -14265,13 +14265,17 @@ static void jb_key(JsonBuilder* b, const char* key) {
     b->buf[b->len++] = ':';
 }
 
-char* jsonBuilderCreate(void) {
-    JsonBuilder* b = (JsonBuilder*)malloc(sizeof(JsonBuilder));
+static void jb_init(JsonBuilder* b) {
     b->cap = 256;
     b->buf = (char*)malloc(b->cap);
     b->len = 0;
     b->first = 1;
     b->buf[b->len++] = '{';
+}
+
+char* jsonBuilderCreate(void) {
+    JsonBuilder* b = (JsonBuilder*)malloc(sizeof(JsonBuilder));
+    jb_init(b);
     return (char*)b;
 }
 
@@ -14333,12 +14337,25 @@ void jsonBuilderAddIntList(char* handle, const char* key, int64_t* h) {
     b->buf[b->len++] = ']';
 }
 
-char* jsonBuilderFinish(char* handle) {
-    JsonBuilder* b = (JsonBuilder*)handle;
+static char* jb_finish_buffer(JsonBuilder* b) {
     jb_grow(b, 2);
     b->buf[b->len++] = '}';
     b->buf[b->len] = '\0';
-    char* result = b->buf;
+    return b->buf;
+}
+
+// The compiler supplies a synchronous scalar field writer. Its handle may only
+// be borrowed by the jsonBuilderAdd helpers during this call.
+char* tinox_json_with_local_builder(int64_t* self, void (*write_fields)(int64_t*, char*)) {
+    JsonBuilder builder;
+    jb_init(&builder);
+    write_fields(self, (char*)&builder);
+    return jb_finish_buffer(&builder);
+}
+
+char* jsonBuilderFinish(char* handle) {
+    JsonBuilder* b = (JsonBuilder*)handle;
+    char* result = jb_finish_buffer(b);
     free(b); // free the builder header only; result owns the buffer
     return result;
 }
