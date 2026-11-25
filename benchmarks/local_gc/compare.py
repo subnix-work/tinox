@@ -1,4 +1,4 @@
-"""Measure the existing service controller and the two smallest GC pause workloads."""
+"""Measure the existing service controller and GC pause workloads."""
 import argparse
 import concurrent.futures
 import http.client
@@ -114,6 +114,7 @@ def main():
     ap.add_argument("--baseline-compiler", type=Path, help="compiler built at the baseline revision")
     ap.add_argument("--baseline-runtime", type=Path, help="matching baseline runtime.c")
     ap.add_argument("--larger-live-set", action="store_true", help="also measure 500,000 live entries")
+    ap.add_argument("--shuffle-live-set", action="store_true", help="also trace shuffled references and check every payload")
     args = ap.parse_args()
     if bool(args.baseline_compiler) != bool(args.baseline_runtime):
         ap.error("supply both baseline paths")
@@ -133,8 +134,8 @@ def main():
         results["baseline_runtime_sha256"] = sha(args.baseline_runtime)
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
-        for name in ("pause", "service"):
-            if name == "pause":
+        for name in (["pause", "pause-shuffled", "service"] if args.shuffle_live_set else ["pause", "service"]):
+            if name != "service":
                 source = (BENCH / "bench_gc_pause/Main.tnx").read_text()
                 lines = [line for line in source.splitlines()
                          if "benchAtSize(" not in line or "fnc benchAtSize" in line or
@@ -157,8 +158,9 @@ def main():
                 orders = [list(binaries), list(reversed(binaries))] * 2
             for trial, order in enumerate(orders):
                 for gc in order:
-                    if name == "pause":
-                        output = subprocess.check_output(command(binaries[gc], cores), text=True, timeout=60)
+                    if name != "service":
+                        env = dict(os.environ, TINOX_GC_BENCH_ORDER="shuffled" if name == "pause-shuffled" else "ordered")
+                        output = subprocess.check_output(command(binaries[gc], cores), text=True, timeout=60, env=env)
                         if not all(f"live_objects={n} (checked {n})" in output for n in sizes):
                             raise ValueError(output)
                         sample = dict(stdout=output.splitlines())

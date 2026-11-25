@@ -43,7 +43,9 @@ allocator; both combinations are rejected.
   swept. Before the next allocation, the runtime collects after at least
   max(1 MiB, previous surviving payload bytes) of allocation since the last
   collection. Debug::gcCollect() forces a collection.
-* Roots include the executable's writable data and BSS, its ELF TLS block
+* The initial thread initializes the collector on its first managed allocation
+  or at runtime startup. Eager component constructors can allocate before main.
+  Roots include the executable's writable data and BSS, its ELF TLS block
   on each registered thread, active pthread stacks and saved registers.
   The collecting thread captures its context before entering the marker.
   Runtime thread creation pins the start argument until the child registers.
@@ -116,7 +118,7 @@ are medians across processes on a shared host. [Raw samples](results.json)
 | Service CPU seconds per 1,000 requests | 0.075 | 0.225 |
 | Peak service RSS, KiB | 9,892 | 16,910 |
 
-## Optimized collector
+## First slab collector at 8c1afcd5
 
 The initial 50k profile spent about 0.8 ms preparing the sorted index and
 1.7 ms marking on a typical forced collection. The small-object path now
@@ -151,8 +153,51 @@ python3 benchmarks/local_gc/compare.py target/release/tinox /tmp/optimized.json.
   --baseline-runtime /path/to/baseline/runtime/runtime.c --larger-live-set
 ```
 
-**Decision.** Keep the collector opt-in. It substantially improves both
+**Decision at 8c1afcd5.** Keep the collector opt-in. It substantially improves both
 workloads over the original prototype. It completes the two smaller forced
 collections faster than Boehm and the 500k collection more slowly. HTTP p99
 ranges overlap. These workloads do not establish performance for long-lived
 heterogeneous heaps, sustained overload or larger worker counts.
+
+## Marking ordered and shuffled references
+
+Profiling the first slab version (8c1afcd5) at 500k entries attributed about
+1.39 ms to marking and 0.20 ms to sweeping. The next version stores slot
+metadata outside the payload slabs so a scattered trace can access it on
+fewer pages. References into the same slab share a directory lookup.
+Consecutive references to pointer-free slots can be marked in a single
+run. The marker only checks the preceding slot for a one-past reference if
+the slab has ever held a payload as wide as its slot. It reserves work-stack
+space only for objects that can contain outgoing references.
+
+The same six-order comparison now includes deterministic Fisher–Yates shuffles
+of the list. Every shuffled string is compared with its expected contents
+after timing. The ordered case measures locality typical of a list built by
+appending new objects. The shuffled case visits the same objects in a different
+order. Values are process medians. Each pause sample averages ten full
+collections. [Raw samples and hashes](locality-results.json.gz)
+
+| Workload | Previous Tinox (8c1afcd5) | Current Tinox | Boehm |
+| --- | ---: | ---: | ---: |
+| Ordered 10k, µs | 45.5 | 26.5 | 128 |
+| Ordered 50k, µs | 164.5 | 65 | 237.5 |
+| Ordered 500k, µs | 1,501 | 468.5 | 1,402 |
+| Shuffled 10k, µs | 62.5 | 38.5 | 149 |
+| Shuffled 50k, µs | 322 | 133.5 | 320 |
+| Shuffled 500k, µs | 4,606 | 1,870.5 | 2,328 |
+| HTTP p99, ms | 0.529 | 0.526 | 0.511 |
+| Validated requests/s | 5,735 | 5,620 | 5,927 |
+| Service CPU seconds per 1,000 requests | 0.090 | 0.090 | 0.070 |
+| Peak service RSS, KiB | 9,982 | 8,874 | 9,910 |
+
+At 500k, the current collector completes an ordered collection in 33% of
+Boehm's time and a shuffled collection in 80%. HTTP p99 ranges overlap across
+all three versions. Boehm used less service CPU and had the highest median
+throughput. Tinox remains opt-in. To reproduce, use the compiler and runtime
+from 8c1afcd5 as the baseline:
+
+```sh
+python3 benchmarks/local_gc/compare.py target/release/tinox /tmp/locality.json.gz \
+  --baseline-compiler /path/to/baseline/target/release/tinox \
+  --baseline-runtime /path/to/baseline/runtime/runtime.c --larger-live-set --shuffle-live-set
+```

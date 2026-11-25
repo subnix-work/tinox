@@ -92,6 +92,8 @@ static size_t local_threshold = LOCAL_MIN_BUDGET;
 static pid_t local_pid;
 static volatile unsigned char* fork_cookie;
 static pthread_key_t local_thread_key;
+static pthread_once_t local_init_once = PTHREAD_ONCE_INIT;
+static void local_init(void);
 
 static void local_fatal(const char* message) {
     // May be called with other threads suspended inside libc.
@@ -99,6 +101,10 @@ static void local_fatal(const char* message) {
     _exit(125);
 }
 static void local_require_thread(void) {
+    // Generated database and eager DI constructors can allocate before main.
+    // Only the initial process thread may bootstrap the collector this way.
+    if (!local_self && syscall(SYS_gettid) == getpid())
+        pthread_once(&local_init_once, local_init);
     if (!local_self || (fork_cookie ? !*fork_cookie : getpid() != local_pid))
         local_fatal("tinox GC: unregistered thread or fork without exec\n");
 }
@@ -214,10 +220,11 @@ static void local_init(void) {
 
 // Power-of-two strides give interior pointers a slot in constant time. Look
 // up the aligned base before dereferencing: most candidate words are not
-// pointers. Metadata precedes the slots so the global lists are not roots.
+// pointers. Only descriptors, outside the managed payloads, enter the index.
 enum {
     SPAN_BYTES = 65536,
     SPAN_BUCKETS = 1024,
+    SPAN_GUARD = 16,
     SMALL_CLASSES = 6,
     SMALL_LIMIT = 512,
     SLOT_MARK = 0x8000,
@@ -225,20 +232,25 @@ enum {
 };
 typedef struct LocalSpan LocalSpan;
 struct LocalSpan {
+    uintptr_t base;
     LocalSpan *hash_next, *avail_next, **avail_link;
     uint64_t trace;
-    uint16_t start, capacity, used, cursor, free_head;
+    uint16_t capacity, used, cursor, free_head;
     unsigned shift;
+    // Only a slot filling its stride can end at the start of the next slot.
+    // Once seen, keep checking such boundaries until this span is retired.
+    bool has_full_width;
     uint16_t sizes[];
 };
 static LocalSpan* span_index[SPAN_BUCKETS];
 static LocalSpan* available[SMALL_CLASSES];
-static size_t large_count;
+// Only allocations with outgoing edges can ever enter the mark stack.
+static size_t large_count, traceable_count;
 static unsigned span_hash(uintptr_t base) { return ((base >> 16) ^ (base >> 29)) & (SPAN_BUCKETS - 1); }
 static LocalSpan* span_find(uintptr_t word) {
     uintptr_t base = word & ~(uintptr_t)(SPAN_BYTES - 1);
     for (LocalSpan* s = span_index[span_hash(base)]; s; s = s->hash_next)
-        if ((uintptr_t)s == base) return s;
+        if (s->base == base) return s;
     return NULL;
 }
 static void span_offer(LocalSpan* s) {
@@ -254,16 +266,18 @@ static void span_withdraw(LocalSpan* s) {
     s->avail_link = NULL;
 }
 static LocalSpan* span_new(unsigned shift, uint64_t trace) {
-    LocalSpan* s = aligned_alloc(SPAN_BYTES, SPAN_BYTES);
-    if (!s) local_fatal("tinox GC: slab allocation failed\n");
-    memset(s, 0, sizeof(*s));
+    // Keep descriptors together so tracing scattered objects touches a
+    // compact set of pages. Payload slabs have a trailing one-past guard.
+    size_t capacity = (SPAN_BYTES - 2 * SPAN_GUARD) >> shift;
+    LocalSpan* s = calloc(1, sizeof(*s) + capacity * sizeof(*s->sizes));
+    if (!s) local_fatal("tinox GC: slab descriptor allocation failed\n");
+    s->base = (uintptr_t)aligned_alloc(SPAN_BYTES, SPAN_BYTES);
+    if (!s->base) local_fatal("tinox GC: slab allocation failed\n");
     s->shift = shift;
     s->trace = trace;
-    // Leave a guard word after the last slot for one-past-end roots.
-    s->capacity = (SPAN_BYTES - 16 - sizeof(*s)) / ((1u << shift) + sizeof(uint16_t));
-    s->start = SPAN_BYTES - 16 - ((unsigned)s->capacity << shift);
+    s->capacity = capacity;
     s->free_head = NO_SLOT;
-    unsigned h = span_hash((uintptr_t)s);
+    unsigned h = span_hash(s->base);
     s->hash_next = span_index[h];
     span_index[h] = s;
     span_offer(s);
@@ -276,8 +290,9 @@ static void* span_allocate(size_t n, uint64_t trace) {
         s = s->avail_next;
     if (!s) s = span_new(shift, trace);
     unsigned i = s->free_head == NO_SLOT ? s->cursor++ : s->free_head;
-    char* data = (char*)s + s->start + (i << shift);
+    char* data = (char*)s->base + SPAN_GUARD + (i << shift);
     if (s->free_head != NO_SLOT) memcpy(&s->free_head, data, sizeof(s->free_head));
+    if (n == (1u << shift)) s->has_full_width = true;
     s->sizes[i] = n;
     if (++s->used == s->capacity) span_withdraw(s);
     memset(data, 0, n);
@@ -286,18 +301,20 @@ static void* span_allocate(size_t n, uint64_t trace) {
 static void span_drop(LocalSpan* s, unsigned i) {
     local_bytes -= s->sizes[i];
     local_count--;
+    if (s->trace) traceable_count--;
     s->sizes[i] = 0;
-    char* p = (char*)s + s->start + (i << s->shift);
+    char* p = (char*)s->base + SPAN_GUARD + (i << s->shift);
     memcpy(p, &s->free_head, sizeof(s->free_head));
     s->free_head = i;
     if (s->used-- == s->capacity) span_offer(s);
 }
 static void span_release(LocalSpan* s) {
     span_withdraw(s);
-    LocalSpan** link = &span_index[span_hash((uintptr_t)s)];
+    LocalSpan** link = &span_index[span_hash(s->base)];
     while (*link != s)
         link = &(*link)->hash_next;
     *link = s->hash_next;
+    free((void*)s->base);
     free(s);
 }
 typedef struct {
@@ -325,22 +342,21 @@ static void span_mark(LocalMark* m, LocalSpan* s, unsigned i, unsigned offset) {
     if (!n || (n & SLOT_MARK) || offset > n) return;
     s->sizes[i] |= SLOT_MARK;
     if (s->trace)
-        m->work[m->pending++] = (LocalWork){(uintptr_t)s + s->start + (i << s->shift), n, s->trace};
+        m->work[m->pending++] = (LocalWork){s->base + SPAN_GUARD + (i << s->shift), n, s->trace};
 }
-static void local_visit(LocalMark* m, uintptr_t word) {
-    LocalSpan* s = span_find(word);
-    if (s) {
-        unsigned pos = word & (SPAN_BYTES - 1);
-        if (pos < s->start) return;
-        pos -= s->start;
-        unsigned i = pos >> s->shift;
-        unsigned stride = 1u << s->shift;
-        unsigned off = pos & (stride - 1);
-        if (i < s->cursor) span_mark(m, s, i, off);
-        // At an exact boundary either neighbour may own a valid C pointer.
-        if (!off && i && i <= s->cursor) span_mark(m, s, i - 1, stride);
-        return;
-    }
+static inline void span_visit(LocalMark* m, LocalSpan* s, uintptr_t word) {
+    unsigned pos = word & (SPAN_BYTES - 1);
+    if (pos < SPAN_GUARD) return;
+    pos -= SPAN_GUARD;
+    unsigned i = pos >> s->shift;
+    unsigned stride = 1u << s->shift;
+    unsigned off = pos & (stride - 1);
+    if (i < s->cursor) span_mark(m, s, i, off);
+    // At an exact boundary either neighbour may own a valid C pointer.
+    if (s->has_full_width && !off && i && i <= s->cursor) span_mark(m, s, i - 1, stride);
+}
+
+static void large_visit(LocalMark* m, uintptr_t word) {
     if (word < m->first || word > m->last) return;
     size_t left = 0, right = large_count;
     while (left < right) {
@@ -353,12 +369,63 @@ static void local_visit(LocalMark* m, uintptr_t word) {
     LocalBlock* b = m->sorted[left - 1];
     if (word - (uintptr_t)b->payload <= b->size) local_mark(m, b);
 }
+static void local_visit(LocalMark* m, uintptr_t word) {
+    LocalSpan* s = span_find(word);
+    if (s) span_visit(m, s, word);
+    else large_visit(m, word);
+}
+
+// A run of consecutive slot starts in an array of references to pointer-free
+// objects can be marked in bulk. The caller already checked the first word
+// and its possible one-past predecessor. All subsequent predecessors are in
+// the run. A vacant slot stays vacant even if an integer names its address.
+static uintptr_t span_mark_run(LocalSpan* s, uintptr_t first, uintptr_t lo, uintptr_t hi) {
+    unsigned stride = 1u << s->shift;
+    uintptr_t offset = first - (s->base + SPAN_GUARD);
+    if ((offset & (stride - 1)) || (offset >> s->shift) >= s->cursor) return lo;
+    unsigned i = (unsigned)(offset >> s->shift) + 1;
+    unsigned end = i;
+    while (end < s->cursor && lo < hi) {
+        uintptr_t next;
+        memcpy(&next, (const void*)lo, sizeof(next));
+        first += stride;
+        if (next != first) break;
+        end++;
+        lo += sizeof(next);
+    }
+    for (; i < end; i++) {
+        if (s->sizes[i]) s->sizes[i] |= SLOT_MARK;
+    }
+    return lo;
+}
 static void local_scan(LocalMark* m, uintptr_t lo, uintptr_t hi) {
     lo = (lo + sizeof(uintptr_t) - 1) & ~(uintptr_t)(sizeof(uintptr_t) - 1);
-    for (; lo < hi && hi - lo >= sizeof(uintptr_t); lo += sizeof(uintptr_t)) {
+    hi &= ~(uintptr_t)(sizeof(uintptr_t) - 1);
+    while (lo < hi) {
         uintptr_t word;
         memcpy(&word, (const void*)lo, sizeof(word));
-        if (word >= SPAN_BYTES) local_visit(m, word);
+        lo += sizeof(word);
+        if (word < SPAN_BYTES) continue;
+        LocalSpan* s = span_find(word);
+        if (!s) {
+            large_visit(m, word);
+            continue;
+        }
+        for (;;) {
+            span_visit(m, s, word);
+            if (lo == hi) return;
+            uintptr_t next;
+            memcpy(&next, (const void*)lo, sizeof(next));
+            if ((next ^ s->base) >= SPAN_BYTES) break;
+            if (!s->trace && next - word == (1u << s->shift)) {
+                lo = span_mark_run(s, word, lo, hi);
+                if (lo == hi) return;
+                memcpy(&next, (const void*)lo, sizeof(next));
+                if ((next ^ s->base) >= SPAN_BYTES) break;
+            }
+            word = next;
+            lo += sizeof(word);
+        }
     }
 }
 extern char __data_start[], _end[];
@@ -372,6 +439,7 @@ static void local_drop(LocalBlock* b) {
     local_bytes -= b->size;
     local_count--;
     large_count--;
+    if (!b->atomic) traceable_count--;
     free(b);
 }
 
@@ -384,8 +452,10 @@ static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const
         return;
     }
     LocalMark m = {.first = UINTPTR_MAX};
-    m.work = reallocarray(NULL, local_count, sizeof(*m.work));
-    if (!m.work) local_fatal("tinox GC: mark stack allocation failed\n");
+    if (traceable_count) {
+        m.work = reallocarray(NULL, traceable_count, sizeof(*m.work));
+        if (!m.work) local_fatal("tinox GC: mark stack allocation failed\n");
+    }
     if (large_count) {
         m.sorted = reallocarray(NULL, large_count, sizeof(*m.sorted));
         if (!m.sorted) local_fatal("tinox GC: large object index allocation failed\n");
@@ -500,6 +570,7 @@ static void* local_allocate_trace(size_t n, uint64_t trace, bool permanent) {
         large_count++;
     }
     local_count++;
+    if (trace) traceable_count++;
     local_bytes += n;
     local_total += n;
     local_since += n;
@@ -517,7 +588,7 @@ static void local_free(void* p) {
     local_lock_heap();
     LocalSpan* s = span_find((uintptr_t)p);
     if (s) {
-        unsigned i = ((uintptr_t)p - (uintptr_t)s - s->start) >> s->shift;
+        unsigned i = ((uintptr_t)p - s->base - SPAN_GUARD) >> s->shift;
         span_drop(s, i);
         if (!s->used) span_release(s);
     } else
@@ -537,7 +608,7 @@ static void* local_realloc(void* p, size_t n) {
     size_t size;
     bool atomic, permanent = false;
     if (s) {
-        size = s->sizes[((uintptr_t)p - (uintptr_t)s - s->start) >> s->shift];
+        size = s->sizes[((uintptr_t)p - s->base - SPAN_GUARD) >> s->shift];
         atomic = !s->trace;
     } else {
         LocalBlock* old = local_header(root);
@@ -593,7 +664,7 @@ static int local_create(pthread_t* id, const pthread_attr_t* attr, void* (*fn)(v
 }
 
 #define pthread_create local_create
-#define GC_INIT() local_init()
+#define GC_INIT() local_require_thread()
 #define GC_malloc(n) local_allocate(n, false, false)
 #define GC_malloc_atomic(n) local_allocate(n, true, false)
 #define GC_malloc_uncollectable(n) local_allocate(n, false, true)

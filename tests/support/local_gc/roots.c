@@ -9,9 +9,17 @@
 #include "runtime.h"
 
 extern void gcCollect(void);
+extern void* tinox_alloc_typed(size_t bytes, uint64_t trace);
 extern int64_t gcStat(int64_t kind);
 extern size_t tinox_gc_swept_bytes(void);
 static _Thread_local char* slice;
+static int* startup_root;
+
+// Generated DI startup uses the default ELF constructor priority as well.
+__attribute__((constructor)) static void allocate_before_main(void) {
+    startup_root = tinox_alloc(sizeof(*startup_root));
+    *startup_root = 712;
+}
 static int ready[2], release_worker[2];
 
 static void transfer(int fd, int send) {
@@ -72,7 +80,49 @@ static void exercise_slots(void) {
     tinox_free(roots);
 }
 
+// Feed runs across slab boundaries, including vacant slots and one-past
+// references. Then reverse the traversal and retain each block by its interior.
+static void exercise_atomic_runs(void) {
+    enum { count = 4096, stride = 32 };
+    uintptr_t* roots = tinox_alloc(count * sizeof(*roots));
+    for (unsigned i = 0; i < count; i++) {
+        unsigned* value = tinox_alloc_typed(stride, 0);
+        *value = i + 1;
+        roots[i] = (uintptr_t)value;
+    }
+    for (unsigned i = 7; i < count; i += 13) {
+        tinox_free((void*)roots[i]);
+        // Keep the integer address in the scanned sequence.
+    }
+    for (unsigned i = 0; i < count; i += 19) {
+        if (i % 13 != 7) roots[i] += stride;
+    }
+    gcCollect();
+    for (unsigned i = 0; i < count; i++) {
+        if (i % 13 == 7) {
+            roots[i] = 0;
+            continue;
+        }
+        uintptr_t base = roots[i] - (i % 19 == 0 ? stride : 0);
+        if (*(unsigned*)base != i + 1) abort();
+        roots[i] = base + 3;
+    }
+    for (unsigned i = 0; i < count / 2; i++) {
+        uintptr_t tmp = roots[i];
+        roots[i] = roots[count - 1 - i];
+        roots[count - 1 - i] = tmp;
+    }
+    gcCollect();
+    for (unsigned i = 0; i < count; i++) {
+        if (roots[i] && *(unsigned*)(roots[i] - 3) != count - i) abort();
+    }
+    tinox_free(roots);
+}
+
 int64_t native_roots(void) {
+    gcCollect();
+    if (*startup_root != 712) abort();
+    exercise_atomic_runs();
     exercise_slots();
     pid_t child = fork();
     if (child < 0) abort();

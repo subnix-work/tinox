@@ -1,4 +1,4 @@
-// Measures Boehm GC stop-the-world pause time as a function of live heap
+// Measures full collection time for the selected GC as a function of live heap
 // size (#116). Builds up N long-lived objects, then times an explicit
 // full collection (Debug::gcCollect()) over that live set. See
 // benchmarks/gc_pause_results.md for methodology notes and results.
@@ -6,6 +6,21 @@ import tinox.core.debug
 
 class Main
 {
+    fnc shuffle(heap: List<String>) -> Nothing
+    {
+        var seed: Int64 = 42
+        var remaining: Int64 = heap.len()
+        while remaining > 1 {
+            seed = (seed * 16807) % 2147483647
+            const last = remaining - 1
+            const other = seed % remaining
+            const value = heap[last]
+            heap[last] = heap[other]
+            heap[other] = value
+            remaining = last
+        }
+    }
+
     fnc benchAtSize(n: Int64) -> Nothing
     {
         var heap: List<String> = []
@@ -15,6 +30,9 @@ class Main
             heap.push("object-" + i.toString() + "-payload-000000000000")
             i = i + 1
         }
+
+        const shuffled = envGet("TINOX_GC_BENCH_ORDER") == "shuffled"
+        if (shuffled) { Main::shuffle(heap) }
 
         // Reclaim garbage from any earlier benchAtSize() call before timing,
         // so the live set being collected below is (close to) just this run's
@@ -44,6 +62,17 @@ class Main
         // for something else before we get here, silently unrooting the
         // array we meant to be measuring the collection of.
         println("live_objects=${n} (checked ${heap.len()}) avg_pause_us=${avgUs} heap_bytes=${Debug::memoryUsage()}")
+        if (shuffled) {
+            // Build the oracle after timing. Every string must still be intact.
+            var expected: List<String> = []
+            for k in 0..n { expected.push("object-" + k.toString() + "-payload-000000000000") }
+            Main::shuffle(expected)
+            for k in 0..n {
+                if (heap[k] != expected[k]) {
+                    throw "shuffled heap payload mismatch"
+                }
+            }
+        }
     }
 
 
