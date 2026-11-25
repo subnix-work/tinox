@@ -1,0 +1,44 @@
+import tinox.core.json
+import tinox.core.debug
+import Item
+import Report
+
+class Main
+{
+    fnc serialize(item: Item) -> String
+    {
+        return Json::serialize(item)
+    }
+
+    fnc main() -> Int32
+    {
+        const item = Item { id: 42, name: "item-42", tags: "alpha,beta,gamma-8", score: 0.542 }
+        // Measure serialization of one application-owned object many times.
+        const before = Debug::gcAllocatedBytes()
+        var total: Int64 = 0
+        for i in 0..100000 {
+            total = total + Main::serialize(item).len()
+        }
+        const allocated = Debug::gcAllocatedBytes() - before
+        Debug::gcCollect()
+        const used = Debug::gcUsedEstimateBytes()
+        println(total)
+        println(allocated)
+        println(used)
+
+        // Force growth, keep the result across task completion, mutation and GC.
+        var longName = "a"
+        for i in 0..10 { longName = longName + longName }
+        item.name = longName + "\""
+        const worker = spawn Main::serialize(item)
+        const saved = await worker
+        item.name = "changed"
+        Debug::gcCollect()
+        println(saved)
+        // The list field keeps the containing Report on the ordinary builder path.
+        var items: List<Item> = []
+        items.push(item)
+        println(Json::serialize(Report { count: 1, items: items }))
+        return 0
+    }
+}

@@ -7752,6 +7752,11 @@ tr_done_{idx}:"#).unwrap();
 
         let class_names: Vec<String> = self.json_serializable_classes.clone();
 
+        let experiment = std::env::var_os("TINOX_EXPERIMENT_LOCAL_JSON_BUILDER").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
+        if experiment {
+            writeln!(&mut self.ir, "declare i8* @tinox_json_with_local_builder(i64*, void (i64*, i8*)*)").unwrap();
+        }
         for class_name in class_names {
             let layout = match self.struct_layouts.get(&class_name) {
                 Some(l) => l.clone(),
@@ -7781,7 +7786,21 @@ tr_done_{idx}:"#).unwrap();
             writeln!(&mut self.ir,"  br i1 %json_self_null, label %json_null, label %json_object").unwrap();
             writeln!(&mut self.ir,"json_null:\n  ret i8* getelementptr ([5 x i8], [5 x i8]* @{null_label}, i64 0, i64 0)\njson_object:").unwrap();
             let builder = self.temp();
-            writeln!(&mut self.ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
+            // Only these checked field kinds dispatch to synchronous scalar writers.
+            // The receiver and the returned byte buffer retain their original lifetimes.
+            use tinox_typecheck::ValueType;
+            let local_builder = experiment && !data_fields.is_empty() && data_fields.iter().all(|(field, _, _)| {
+                matches!(self.semantic_field_type(&class_name, field),
+                    Some(ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::String))
+            });
+            let writer = format!("__tinox.write_json.{class_name}");
+            if local_builder {
+                writeln!(&mut self.ir, "  %json = call i8* @tinox_json_with_local_builder(i64* %self, void (i64*, i8*)* @{writer})").unwrap();
+                writeln!(&mut self.ir, "  ret i8* %json\n}}").unwrap();
+                writeln!(&mut self.ir, "define internal void @{writer}(i64* %self, i8* {builder}) {{\nentry.tnx:").unwrap();
+            } else {
+                writeln!(&mut self.ir, "  {builder} = call i8* @jsonBuilderCreate()").unwrap();
+            }
 
             for (field_name, struct_idx, llvm_ty) in &data_fields {
                 // Intern field name as a string constant
@@ -7934,9 +7953,13 @@ tr_done_{idx}:"#).unwrap();
                 }
             }
 
-            let result = self.temp();
-            writeln!(&mut self.ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
-            writeln!(&mut self.ir, "  ret i8* {result}").unwrap();
+            if local_builder {
+                writeln!(&mut self.ir, "  ret void").unwrap();
+            } else {
+                let result = self.temp();
+                writeln!(&mut self.ir, "  {result} = call i8* @jsonBuilderFinish(i8* {builder})").unwrap();
+                writeln!(&mut self.ir, "  ret i8* {result}").unwrap();
+            }
             writeln!(&mut self.ir, "}}").unwrap();
             writeln!(&mut self.ir).unwrap();
         }
