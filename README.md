@@ -1064,7 +1064,7 @@ tinox/
 
 ## Garbage Collection
 
-The runtime uses the [Boehm GC](https://www.hboehm.info/gc/) in its
+By default, the runtime uses the [Boehm GC](https://www.hboehm.info/gc/) in its
 default conservative, **stop-the-world, non-generational, non-incremental**
 configuration — every collection is a full mark-sweep over the entire
 live heap, pausing all threads (`spawn` is real pthreads) simultaneously.
@@ -1076,6 +1076,10 @@ full numbers and methodology (`benchmarks/bench_gc_pause/Main.tnx`). No
 tuning knobs are currently exposed beyond
 `tinox.core.debug.Debug::gcCollect()`/`::memoryUsage()`; if a workload's
 live set is large enough for this to matter, that's the number to watch.
+
+On Linux x86-64 with glibc, `TINOX_GC=tinox tinox build` selects the
+experimental Tinox collector. See the [collector contract, measurements and
+reproduction commands](benchmarks/local_gc/README.md).
 
 ## AI coding evaluations
 

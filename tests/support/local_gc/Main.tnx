@@ -1,0 +1,28 @@
+import tinox.core.debug
+extern fn native_roots() -> Int64
+
+class Main {
+    fnc capture(id: Int64) -> fnc(Int64) -> String {
+        var values: List<String> = []
+        values.push("value-" + id.toString())
+        return fn(n: Int64) { return values[n] }
+    }
+
+    fnc worker() -> String {
+        const f = Main::capture(42)
+        Debug::gcCollect()
+        return f(0)
+    }
+
+    fnc main() -> Int32 {
+        for i in 0..8 {
+            const job = spawn Main::worker()
+            Debug::gcCollect()
+            const value = await job
+            if (value != "value-42") { return 1 }
+        }
+        if (native_roots() != 1) { return 2 }
+        println("roots and cycles OK")
+        return 0
+    }
+}

@@ -52,7 +52,369 @@
 #include <termios.h>
 #endif
 
-#ifdef TINOX_NO_GC
+#if defined(TINOX_LOCAL_GC)
+// Experimental conservative, non-moving collector. Keep it with runtime.c:
+// installed compilers distribute that file as a standalone runtime source.
+#if !defined(__x86_64__) || !defined(__GLIBC__) || defined(TINOX_NO_GC) || defined(TINOX_CHECKED)
+#error "TINOX_GC=tinox requires Linux x86-64 glibc and the normal (unchecked, GC-enabled) runtime"
+#endif
+#include <link.h>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <ucontext.h>
+#include <stddef.h>
+
+typedef struct LocalBlock LocalBlock;
+struct LocalBlock {
+    LocalBlock *next, *prev;
+    size_t size;
+    bool atomic, permanent, marked;
+    max_align_t payload[];
+};
+
+typedef struct LocalThread LocalThread;
+struct LocalThread {
+    LocalThread* next;
+    pid_t tid;
+    uintptr_t stack_lo, stack_hi, tls_lo, tls_hi, stopped_sp;
+    _Atomic int state;
+};
+enum { RUNNING, REQUESTED, STOPPED, RELEASED };
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2 && sizeof(_Atomic int) == 4, "futex ABI");
+static _Thread_local LocalThread* local_self;
+static LocalThread* local_threads;
+static LocalBlock* local_blocks;
+static pthread_mutex_t local_lock = PTHREAD_MUTEX_INITIALIZER;
+static size_t local_count, local_bytes, local_total, local_since, local_collections, local_swept;
+static size_t local_threshold = 4 * 1024 * 1024;
+static pid_t local_pid;
+static pthread_key_t local_thread_key;
+
+static void local_fatal(const char* message) {
+    // May be called with other threads suspended inside libc.
+    write(STDERR_FILENO, message, strlen(message));
+    _exit(125);
+}
+static void local_require_thread(void) {
+    if (!local_self || getpid() != local_pid)
+        local_fatal("tinox GC: unregistered thread or fork without exec\n");
+}
+
+static void local_wake(_Atomic int* word) {
+    syscall(SYS_futex, word, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+}
+static void local_wait(_Atomic int* word, int value, const struct timespec* timeout) {
+    long rc = syscall(SYS_futex, word, FUTEX_WAIT_PRIVATE, value, timeout, NULL, 0);
+    if (rc < 0 && errno != EAGAIN && errno != EINTR)
+        local_fatal("tinox GC: could not park or resume a thread (SIGUSR2 must stay unblocked)\n");
+}
+static void local_suspend(int sig) {
+    (void)sig;
+    int saved_errno = errno;
+    LocalThread* t = local_self;
+    if (t && atomic_load(&t->state) == REQUESTED) {
+        // The kernel signal frame above this stack pointer contains the
+        // interrupted register file, including SIMD state and the red zone.
+        __asm__ volatile("mov %%rsp,%0" : "=r"(t->stopped_sp));
+        atomic_store(&t->state, STOPPED);
+        local_wake(&t->state);
+        while (atomic_load(&t->state) == STOPPED)
+            local_wait(&t->state, STOPPED, NULL);
+        atomic_store(&t->state, RUNNING);
+        local_wake(&t->state);
+    }
+    errno = saved_errno;
+}
+static void local_await(LocalThread* t, int pending) {
+    const struct timespec timeout = {5, 0};
+    while (atomic_load(&t->state) == pending)
+        local_wait(&t->state, pending, &timeout);
+}
+
+static int local_tls(struct dl_phdr_info* info, size_t size, void* raw) {
+    (void)size;
+    if (*info->dlpi_name) return 0;
+    LocalThread* t = raw;
+    for (unsigned i = 0; i < info->dlpi_phnum; i++) {
+        if (info->dlpi_phdr[i].p_type == PT_TLS) {
+            t->tls_lo = (uintptr_t)info->dlpi_tls_data;
+            t->tls_hi = t->tls_lo + info->dlpi_phdr[i].p_memsz;
+        }
+    }
+    return 1;
+}
+static void local_register(void) {
+    if (getpid() != local_pid) local_fatal("tinox GC: unsupported process attachment\n");
+    LocalThread* t = calloc(1, sizeof(*t));
+    if (!t) local_fatal("tinox GC: thread metadata allocation failed\n");
+    t->tid = (pid_t)syscall(SYS_gettid);
+    pthread_attr_t attr;
+    void* low;
+    size_t size;
+    if (pthread_getattr_np(pthread_self(), &attr) || pthread_attr_getstack(&attr, &low, &size))
+        local_fatal("tinox GC: cannot find thread stack\n");
+    pthread_attr_destroy(&attr);
+    t->stack_lo = (uintptr_t)low;
+    t->stack_hi = t->stack_lo + size;
+    dl_iterate_phdr(local_tls, t);
+    if (!t->tls_lo) local_fatal("tinox GC: cannot find executable TLS\n");
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    if (pthread_sigmask(SIG_UNBLOCK, &set, NULL)) local_fatal("tinox GC: cannot unblock SIGUSR2\n");
+    if (pthread_setspecific(local_thread_key, t))
+        local_fatal("tinox GC: cannot register thread exit hook\n");
+    pthread_mutex_lock(&local_lock);
+    local_self = t;
+    t->next = local_threads;
+    local_threads = t;
+    pthread_mutex_unlock(&local_lock);
+}
+static void local_unregister(void* unused) {
+    (void)unused;
+    pthread_setspecific(local_thread_key, NULL);
+    pthread_mutex_lock(&local_lock);
+    LocalThread* t = local_self;
+    LocalThread** slot = &local_threads;
+    while (*slot != t)
+        slot = &(*slot)->next;
+    *slot = t->next;
+    local_self = NULL;
+    pthread_mutex_unlock(&local_lock);
+    free(t);
+}
+static void local_init(void) {
+    local_pid = getpid();
+    if (pthread_key_create(&local_thread_key, local_unregister))
+        local_fatal("tinox GC: cannot create exit hook\n");
+    struct sigaction action = {0}, old;
+    action.sa_handler = local_suspend;
+    action.sa_flags = SA_RESTART;
+    sigfillset(&action.sa_mask);
+    if (sigaction(SIGUSR2, &action, &old) || old.sa_handler != SIG_DFL)
+        local_fatal("tinox GC: SIGUSR2 is required exclusively\n");
+    local_register();
+}
+
+typedef struct {
+    LocalBlock** sorted;
+    LocalBlock** work;
+    size_t pending;
+    uintptr_t first, last;
+} LocalMark;
+static int local_order(const void* a, const void* b) {
+    uintptr_t x = (uintptr_t)*(LocalBlock* const*)a, y = (uintptr_t)*(LocalBlock* const*)b;
+    return (x > y) - (x < y);
+}
+static void local_mark(LocalMark* m, LocalBlock* b) {
+    if (!b->marked) {
+        b->marked = true;
+        if (!b->atomic) m->work[m->pending++] = b;
+    }
+}
+static void local_scan(LocalMark* m, uintptr_t lo, uintptr_t hi) {
+    lo = (lo + sizeof(uintptr_t) - 1) & ~(uintptr_t)(sizeof(uintptr_t) - 1);
+    for (; lo < hi && hi - lo >= sizeof(uintptr_t); lo += sizeof(uintptr_t)) {
+        uintptr_t word;
+        memcpy(&word, (const void*)lo, sizeof(word));
+        if (word < m->first || word > m->last) continue;
+        size_t left = 0, right = local_count;
+        while (left < right) {
+            size_t mid = left + (right - left) / 2;
+            if ((uintptr_t)m->sorted[mid]->payload <= word)
+                left = mid + 1;
+            else
+                right = mid;
+        }
+        LocalBlock* b = m->sorted[left - 1];
+        if (word - (uintptr_t)b->payload <= b->size) local_mark(m, b);
+    }
+}
+extern char __data_start[], _end[];
+
+static void local_drop(LocalBlock* b) {
+    if (b->prev)
+        b->prev->next = b->next;
+    else
+        local_blocks = b->next;
+    if (b->next) b->next->prev = b->prev;
+    local_bytes -= b->size;
+    local_count--;
+    free(b);
+}
+
+// local_lock serializes allocation and thread membership throughout collection.
+// Prepare all scratch space before parking: a mutator may hold a libc lock.
+static __attribute__((noinline)) void local_collect_from(uintptr_t own_sp, const ucontext_t* registers) {
+    if (!local_count) {
+        local_collections++;
+        local_since = 0;
+        return;
+    }
+    LocalBlock** scratch = calloc(local_count, 2 * sizeof(*scratch));
+    if (!scratch) local_fatal("tinox GC: mark index allocation failed\n");
+    LocalMark m = {.sorted = scratch, .work = scratch + local_count};
+    size_t i = 0;
+    for (LocalBlock* b = local_blocks; b; b = b->next)
+        m.sorted[i++] = b;
+    qsort(m.sorted, local_count, sizeof(*scratch), local_order);
+    m.first = (uintptr_t)m.sorted[0]->payload;
+    LocalBlock* last = m.sorted[local_count - 1];
+    m.last = (uintptr_t)last->payload + last->size;
+
+    for (LocalThread* t = local_threads; t; t = t->next) {
+        if (t == local_self) continue;
+        atomic_store(&t->state, REQUESTED);
+        if (syscall(SYS_tgkill, local_pid, t->tid, SIGUSR2))
+            local_fatal("tinox GC: cannot interrupt registered thread\n");
+    }
+    for (LocalThread* t = local_threads; t; t = t->next) {
+        if (t != local_self) local_await(t, REQUESTED);
+    }
+    local_scan(&m, (uintptr_t)__data_start, (uintptr_t)_end);
+    local_scan(&m, (uintptr_t)registers, (uintptr_t)(registers + 1));
+    for (LocalThread* t = local_threads; t; t = t->next) {
+        uintptr_t sp = t == local_self ? own_sp : t->stopped_sp;
+        if (sp < t->stack_lo || sp >= t->stack_hi)
+            local_fatal("tinox GC: unsupported alternate stack\n");
+        local_scan(&m, sp, t->stack_hi);
+        local_scan(&m, t->tls_lo, t->tls_hi);
+    }
+    for (i = 0; i < local_count; i++)
+        if (m.sorted[i]->permanent) local_mark(&m, m.sorted[i]);
+    while (m.pending) {
+        LocalBlock* b = m.work[--m.pending];
+        local_scan(&m, (uintptr_t)b->payload, (uintptr_t)b->payload + b->size);
+    }
+    for (LocalThread* t = local_threads; t; t = t->next) {
+        if (t == local_self) continue;
+        atomic_store(&t->state, RELEASED);
+        local_wake(&t->state);
+        local_await(t, RELEASED);
+    }
+    free(scratch);
+    for (LocalBlock *b = local_blocks, *next; b; b = next) {
+        next = b->next;
+        if (b->marked)
+            b->marked = false;
+        else {
+            local_swept += b->size;
+            local_drop(b);
+        }
+    }
+    local_since = 0;
+    local_collections++;
+    local_threshold = local_bytes > 4 * 1024 * 1024 ? local_bytes : 4 * 1024 * 1024;
+}
+// Snapshot the mutator before entering the marker. The index's own range
+// endpoints and traversal temporaries must never be interpreted as roots.
+static __attribute__((noinline)) void local_collect_locked(void) {
+    ucontext_t registers;
+    if (getcontext(&registers)) local_fatal("tinox GC: cannot capture registers\n");
+    uintptr_t own_sp;
+    __asm__ volatile("mov %%rsp,%0" : "=r"(own_sp));
+    local_collect_from(own_sp, &registers);
+}
+static void local_lock_heap(void) {
+    local_require_thread();
+    pthread_mutex_lock(&local_lock);
+}
+static void* local_allocate(size_t n, bool atomic, bool permanent) {
+    if (n > SIZE_MAX - sizeof(LocalBlock)) local_fatal("tinox GC: allocation size overflow\n");
+    if (!n) n = 1;
+    local_lock_heap();
+    if (local_since >= local_threshold) local_collect_locked();
+    LocalBlock* b = calloc(1, sizeof(*b) + n);
+    if (!b) local_fatal("tinox GC: allocation failed\n");
+    b->size = n;
+    b->atomic = atomic;
+    b->permanent = permanent;
+    b->next = local_blocks;
+    if (local_blocks) local_blocks->prev = b;
+    local_blocks = b;
+    local_count++;
+    local_bytes += n;
+    local_total += n;
+    local_since += n;
+    pthread_mutex_unlock(&local_lock);
+    return b->payload;
+}
+static LocalBlock* local_header(void* p) {
+    return (LocalBlock*)((char*)p - offsetof(LocalBlock, payload));
+}
+static void local_free(void* p) {
+    if (!p) return;
+    local_lock_heap();
+    local_drop(local_header(p));
+    pthread_mutex_unlock(&local_lock);
+}
+static void* local_realloc(void* p, size_t n) {
+    if (!p) return local_allocate(n, false, false);
+    if (!n) {
+        local_free(p);
+        return NULL;
+    }
+    void* volatile root = p;
+    LocalBlock* old = local_header(root);
+    void* result = local_allocate(n, old->atomic, old->permanent);
+    memcpy(result, root, n < old->size ? n : old->size);
+    local_free(p);
+    return result;
+}
+static void* local_calloc(size_t count, size_t size) {
+    if (size && count > SIZE_MAX / size) local_fatal("tinox GC: calloc overflow\n");
+    return local_allocate(count * size, false, false);
+}
+static char* local_strdup(const char* s) {
+    size_t n = strlen(s) + 1;
+    return memcpy(local_allocate(n, true, false), s, n);
+}
+static void GC_gcollect(void) {
+    local_lock_heap();
+    local_collect_locked();
+    pthread_mutex_unlock(&local_lock);
+}
+static size_t local_stat(const size_t* counter) {
+    local_lock_heap();
+    size_t n = *counter;
+    pthread_mutex_unlock(&local_lock);
+    return n;
+}
+size_t GC_get_total_bytes(void) { return local_stat(&local_total); }
+size_t tinox_gc_swept_bytes(void) { return local_stat(&local_swept); }
+
+typedef struct {
+    void* (*fn)(void*);
+    void* arg;
+} LocalStart;
+static void* local_start(void* raw) {
+    local_register();
+    LocalStart saved = *(LocalStart*)raw;
+    local_free(raw);
+    return saved.fn(saved.arg); // thread key unregisters on exit
+}
+static int local_create(pthread_t* id, const pthread_attr_t* attr, void* (*fn)(void*), void* arg) {
+    LocalStart* start = local_allocate(sizeof(*start), false, true);
+    *start = (LocalStart){fn, arg};
+    int rc = pthread_create(id, attr, local_start, start);
+    if (rc) local_free(start);
+    return rc;
+}
+
+#define pthread_create local_create
+#define GC_INIT() local_init()
+#define GC_malloc(n) local_allocate(n, false, false)
+#define GC_malloc_atomic(n) local_allocate(n, true, false)
+#define GC_malloc_uncollectable(n) local_allocate(n, false, true)
+#define GC_realloc local_realloc
+#define GC_free local_free
+#define GC_strdup local_strdup
+#define GC_get_heap_size() local_stat(&local_bytes)
+#define GC_get_free_bytes() ((size_t)0)
+#define GC_get_bytes_since_gc() local_stat(&local_since)
+#define GC_get_gc_no() local_stat(&local_collections)
+
+#elif defined(TINOX_NO_GC)
 // Sanitizer mode (make asan): plain malloc instead of Boehm GC, so ASan
 // sees every allocation (the GC heap is invisible to ASan). Nothing gets
 // freed — leaks are intentional here, overflows/UAF are the target.
@@ -89,13 +451,20 @@
 #define GC_THREADS
 #define GC_PTHREADS
 #include <gc.h>
+#endif
+
+#if !defined(TINOX_NO_GC)
 #undef malloc
 #undef calloc
 #undef realloc
 #undef free
 #undef strdup
 #define malloc(s)    GC_malloc(s)
+#ifdef TINOX_LOCAL_GC
+#define calloc(n,s) local_calloc((n),(s))
+#else
 #define calloc(n,s)  GC_malloc((size_t)(n)*(size_t)(s))
+#endif
 #define realloc(p,s) GC_realloc((p),(s))
 #define free(p)      GC_free(p)
 #define strdup(s)    GC_strdup(s)
@@ -6487,8 +6856,12 @@ int64_t gcStat(int64_t kind) {
     case 3: return (int64_t)GC_get_total_bytes();
     case 4: return (int64_t)GC_get_gc_no();
     case 5: {
+#ifdef TINOX_LOCAL_GC
+        return (int64_t)GC_get_heap_size();
+#else
         int64_t used = (int64_t)GC_get_heap_size() - (int64_t)GC_get_free_bytes() + (int64_t)GC_get_bytes_since_gc();
         return used < 0 ? 0 : used;
+#endif
     }
     default:
         fprintf(stderr, "gcStat: unknown counter %lld\n", (long long)kind);
@@ -17098,7 +17471,7 @@ extern __thread int64_t __tinox_err;
     X(service_hook_stack) \
     X(__tinox_err)
 
-#ifndef TINOX_NO_GC
+#if !defined(TINOX_NO_GC) && !defined(TINOX_LOCAL_GC)
 // Per-thread one-shot guard; file scope (not a function-local static) so
 // tinox_gc_unregister_thread_roots can clear it and a thread can be
 // attached again after a detach (issue #487).
@@ -17106,7 +17479,7 @@ static __thread int tinox_gc_roots_registered = 0;
 #endif
 
 static void tinox_gc_register_thread_roots(void) {
-#ifndef TINOX_NO_GC
+#if !defined(TINOX_NO_GC) && !defined(TINOX_LOCAL_GC)
     // GC_add_roots is a Boehm-GC-specific API (<gc.h>, only included in
     // the #else branch of the TINOX_NO_GC switch near the top of this
     // file) — under TINOX_NO_GC (make asan, and every fuzz/*/build.sh
@@ -17140,7 +17513,7 @@ static void tinox_gc_register_thread_roots(void) {
 // var at a time (GC_remove_roots only drops segments fully inside the
 // given range).
 static void tinox_gc_unregister_thread_roots(void) {
-#ifndef TINOX_NO_GC
+#if !defined(TINOX_NO_GC) && !defined(TINOX_LOCAL_GC)
     char* lo = (char*)UINTPTR_MAX;
     char* hi = NULL;
 #define TINOX_GC_ROOT_SPAN(var) \
@@ -17176,11 +17549,16 @@ int tinox_thread_attach(void) {
         tinox_foreign_attach_depth++;
         return 0;
     }
+#ifdef TINOX_LOCAL_GC
+    if (local_self) return 1;
+    local_register();
+#else
     struct GC_stack_base sb;
     if (GC_get_stack_base(&sb) != GC_SUCCESS) return -1;
     int rc = GC_register_my_thread(&sb);
     if (rc == GC_DUPLICATE) return 1;
     if (rc != GC_SUCCESS) return -1;
+#endif
     tinox_foreign_attach_depth = 1;
     tinox_gc_register_thread_roots();
     return 0;
@@ -17194,13 +17572,17 @@ void tinox_thread_detach(void) {
     if (tinox_foreign_attach_depth == 0) return;
     if (--tinox_foreign_attach_depth > 0) return;
     tinox_gc_unregister_thread_roots();
+#ifdef TINOX_LOCAL_GC
+    local_unregister(NULL);
+#else
     GC_unregister_my_thread();
+#endif
 #endif
 }
 
 int main(int argc, char** argv) {
     GC_INIT();
-#ifndef TINOX_NO_GC
+#if !defined(TINOX_NO_GC) && !defined(TINOX_LOCAL_GC)
     // Lets foreign threads join the collector via tinox_thread_attach().
     GC_allow_register_threads();
 #endif
